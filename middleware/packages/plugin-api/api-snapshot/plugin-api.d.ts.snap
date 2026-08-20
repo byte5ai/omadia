@@ -1,0 +1,2331 @@
+// Golden API snapshot for @omadia/plugin-api — generated, do not hand-edit.
+// Regenerate deliberately: npm run api:update -w packages/plugin-api
+
+// ===== agentGraph.d.ts =====
+export interface CanvasPosition {
+readonly x: number;
+readonly y: number;
+}
+export type ModelRoutingMode = 'single' | 'triage';
+export type EscalationTrigger = 'tool_error' | 'long_context' | 'low_confidence';
+export interface ModelRoutingConfig {
+readonly mode: ModelRoutingMode;
+readonly main: string;
+readonly triage?: string;
+readonly simple?: string;
+readonly escalateOn?: readonly EscalationTrigger[];
+}
+export interface AgentNode {
+readonly id: string;
+readonly slug: string;
+readonly name: string;
+readonly description: string | null;
+readonly privacyProfile: 'strict' | 'default';
+readonly status: 'enabled' | 'disabled';
+readonly modelRouting: ModelRoutingConfig | null;
+readonly position: CanvasPosition | null;
+}
+export interface ChannelNode {
+readonly channelType: string;
+readonly channelKey: string;
+readonly position: CanvasPosition | null;
+}
+export interface SubAgentNode {
+readonly id: string;
+readonly parentAgentId: string;
+readonly name: string;
+readonly skillId: string | null;
+readonly model: string | null;
+readonly maxTokens: number | null;
+readonly maxIterations: number | null;
+readonly systemPromptOverride: string | null;
+readonly status: 'enabled' | 'disabled';
+readonly position: CanvasPosition | null;
+}
+export type SkillSource = 'db' | 'file';
+export interface SkillNode {
+readonly id: string;
+readonly slug: string;
+readonly name: string;
+readonly description: string | null;
+readonly body: string;
+readonly source: SkillSource;
+}
+export type ToolKind = 'native' | 'mcp';
+export interface ToolGrantNode {
+readonly id: string;
+readonly agentId: string | null;
+readonly subAgentId: string | null;
+readonly toolKind: ToolKind;
+readonly toolRef: string;
+readonly mcpServerId: string | null;
+}
+export type McpTransport = 'stdio' | 'http' | 'sse';
+export interface McpDiscoveredTool {
+readonly name: string;
+readonly description?: string;
+readonly inputSchema?: Record<string, unknown>;
+readonly outputSchema?: Record<string, unknown>;
+}
+export interface McpServerNode {
+readonly id: string;
+readonly name: string;
+readonly transport: McpTransport;
+readonly endpoint: string | null;
+readonly status: 'enabled' | 'disabled';
+readonly lastDiscoveredAt: string | null;
+readonly discoveredTools: readonly McpDiscoveredTool[];
+}
+export interface ScheduleNode {
+readonly id: string;
+readonly agentId: string;
+readonly cron: string;
+readonly timezone: string;
+readonly payload: Record<string, unknown>;
+readonly status: 'enabled' | 'disabled';
+readonly lastRunAt: string | null;
+}
+export type EdgeKind = 'channel_bind' | 'subagent' | 'skill' | 'tool_grant' | 'schedule';
+export interface CanvasEdge {
+readonly id: string;
+readonly kind: EdgeKind;
+readonly source: string;
+readonly target: string;
+}
+export interface AgentGraph {
+readonly agent: AgentNode;
+readonly channels: readonly ChannelNode[];
+readonly subAgents: readonly SubAgentNode[];
+readonly skills: readonly SkillNode[];
+readonly tools: readonly ToolGrantNode[];
+readonly mcpServers: readonly McpServerNode[];
+readonly schedules: readonly ScheduleNode[];
+readonly edges: readonly CanvasEdge[];
+}
+export interface CreateEdgeRequest {
+readonly kind: EdgeKind;
+readonly source: string;
+readonly target: string;
+readonly config?: Record<string, unknown>;
+}
+
+// ===== agentPriorities.d.ts =====
+export declare const AGENT_PRIORITIES_SERVICE_NAME = "agentPriorities";
+export declare const AGENT_PRIORITIES_CAPABILITY = "agentPriorities@1";
+export interface AgentPriorityRecord {
+readonly agentId: string;
+readonly entryExternalId: string;
+readonly action: 'block' | 'boost';
+readonly weight: number;
+readonly reason: string | null;
+readonly updatedAt: string;
+}
+export type AgentPriorityUpsert = Omit<AgentPriorityRecord, 'updatedAt'>;
+export interface AgentPrioritiesStore {
+listForAgent(agentId: string): Promise<readonly AgentPriorityRecord[]>;
+upsert(record: AgentPriorityUpsert): Promise<void>;
+remove(agentId: string, entryExternalId: string): Promise<void>;
+}
+export declare class NoopAgentPrioritiesStore implements AgentPrioritiesStore {
+listForAgent(_agentId: string): Promise<readonly AgentPriorityRecord[]>;
+upsert(_record: AgentPriorityUpsert): Promise<void>;
+remove(_agentId: string, _entryExternalId: string): Promise<void>;
+}
+
+// ===== bulkInconsistency.d.ts =====
+export interface BulkInconsistencyPreview {
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+detectorAvailable: boolean;
+}
+export interface BulkInconsistencyRunOptions {
+limit?: number;
+}
+export interface BulkInconsistencyResult {
+scanned: number;
+checked: number;
+inconsistenciesCreated: number;
+skippedNoEmbedding: number;
+failed: number;
+durationMs: number;
+}
+export interface BulkInconsistencyService {
+preview(): Promise<BulkInconsistencyPreview>;
+run(options?: BulkInconsistencyRunOptions): Promise<BulkInconsistencyResult>;
+}
+export declare const BULK_INCONSISTENCY_SERVICE_NAME = "bulkInconsistencyDetect";
+export declare const BULK_INCONSISTENCY_CAPABILITY = "bulkInconsistencyDetect@1";
+
+// ===== bulkPromotion.d.ts =====
+export interface BulkPromotePreview {
+nullSignificanceCount: number;
+eligibleForPromoteCount: number;
+alreadyPromotedCount: number;
+scorerAvailable: boolean;
+threshold: number;
+}
+export interface BulkPromoteRunOptions {
+scoreLimit?: number;
+promoteLimit?: number;
+threshold?: number;
+}
+export interface BulkScorePhaseResult {
+scanned: number;
+scored: number;
+failed: number;
+}
+export interface BulkPromotePhaseResult {
+scanned: number;
+promoted: number;
+alreadyPromoted: number;
+belowThreshold: number;
+failed: number;
+}
+export interface BulkPromoteRunResult {
+scorePhase: BulkScorePhaseResult;
+promotePhase: BulkPromotePhaseResult;
+durationMs: number;
+}
+export interface BulkPromotionService {
+preview(threshold: number): Promise<BulkPromotePreview>;
+run(options?: BulkPromoteRunOptions): Promise<BulkPromoteRunResult>;
+}
+export declare const BULK_PROMOTION_SERVICE_NAME = "bulkPromotion";
+export declare const BULK_PROMOTION_CAPABILITY = "bulkPromotion@1";
+
+// ===== conductorApproval.d.ts =====
+export interface ApprovalReminder {
+awaitId: string;
+runId: string;
+question: string;
+workflowName: string;
+stepLabel: string;
+stepIndex?: number;
+totalSteps?: number;
+quorum: 'any' | 'all';
+}
+export declare const CONDUCTOR_AWAIT_RESOLVER_SERVICE_NAME = "conductorAwaitResolver";
+export type ConductorAwaitOutcome = 'resumed' | 'recorded' | 'already_resolved' | 'not_a_holder';
+export interface ConductorAwaitResolver {
+resolve(awaitId: string, responderId: string, approved: boolean): Promise<ConductorAwaitOutcome>;
+}
+
+// ===== conversation.d.ts =====
+export interface ConversationTurn {
+userMessage: string;
+assistantAnswer: string;
+at: number;
+}
+
+// ===== embeddingClient.d.ts =====
+export interface EmbeddingClient {
+embed(text: string): Promise<number[]>;
+}
+export interface EmbeddingProviderMetadata {
+readonly modelId: string;
+readonly dimensions: number;
+}
+export interface EmbeddingProvider extends EmbeddingClient, EmbeddingProviderMetadata {
+}
+export declare class EmbeddingError extends Error {
+readonly status?: number | undefined;
+readonly body?: string | undefined;
+constructor(message: string, status?: number | undefined, body?: string | undefined);
+}
+export declare function withConcurrencyLimit<T extends EmbeddingClient>(client: T, max: number): T;
+export declare function readEmbeddingProviderMetadata(client: EmbeddingClient | undefined): EmbeddingProviderMetadata | undefined;
+
+// ===== entityRef.d.ts =====
+export interface EntityRef {
+system: string;
+model: string;
+id: string | number;
+displayName?: string;
+op: 'read' | 'write';
+}
+
+// ===== entityRefBus.d.ts =====
+import type { EntityRef } from './entityRef.js';
+export interface EntityRefBusOptions {
+getCurrentTurnId?: () => string | undefined;
+}
+export declare class EntityRefBus {
+private readonly emitter;
+private readonly getCurrentTurnId;
+constructor(opts?: EntityRefBusOptions);
+publish(ref: EntityRef): void;
+beginCollection(turnId: string): EntityRefCollection;
+}
+export interface EntityRefCollection {
+drain(): EntityRef[];
+}
+
+// ===== excerptMerge.d.ts =====
+export type ExcerptMergeStatus = 'open' | 'resolved' | 'dismissed';
+export type ExcerptMergeResolution =
+'keep_a'
+| 'keep_b'
+| 'not_duplicate';
+export interface ExcerptMergeCandidateNode {
+id: string;
+type: 'ExcerptMergeCandidate';
+props: {
+cosine_sim: number;
+status: ExcerptMergeStatus;
+resolution: ExcerptMergeResolution | null;
+created_at: string;
+resolved_at: string | null;
+resolved_by: string | null;
+};
+duplicateExcerptOf: [string, string];
+}
+export interface ListExcerptMergeCandidatesOptions {
+viewerOmadiaUserId: string;
+status?: ExcerptMergeStatus;
+limit?: number;
+}
+export interface CreateExcerptMergeCandidateInput {
+excerptAExternalId: string;
+excerptBExternalId: string;
+cosineSim: number;
+}
+export interface BulkExcerptMergeDetectPreview {
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+detectorAvailable: boolean;
+}
+export interface BulkExcerptMergeDetectRunOptions {
+limit?: number;
+}
+export interface BulkExcerptMergeDetectResult {
+scanned: number;
+checked: number;
+excerptMergeCandidatesCreated: number;
+skippedNoEmbedding: number;
+failed: number;
+durationMs: number;
+}
+export interface BulkExcerptMergeDetectService {
+preview(): Promise<BulkExcerptMergeDetectPreview>;
+run(options?: BulkExcerptMergeDetectRunOptions): Promise<BulkExcerptMergeDetectResult>;
+}
+export declare const BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME = "bulkExcerptMergeDetect";
+export declare const BULK_EXCERPT_MERGE_DETECT_CAPABILITY = "bulkExcerptMergeDetect@1";
+
+// ===== inconsistency.d.ts =====
+export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
+export type InconsistencyResolution =
+'a_wins'
+| 'b_wins'
+| 'both'
+| 'dismiss';
+export type InconsistencySeverity = 'low' | 'medium' | 'high';
+export interface InconsistencyNode {
+id: string;
+type: 'Inconsistency';
+props: {
+summary: string;
+severity: InconsistencySeverity;
+status: InconsistencyStatus;
+resolution: InconsistencyResolution | null;
+created_at: string;
+resolved_at: string | null;
+resolved_by: string | null;
+};
+conflictsWith: [string, string];
+}
+export interface ListInconsistenciesOptions {
+viewerOmadiaUserId: string;
+status?: InconsistencyStatus;
+limit?: number;
+}
+export interface CreateInconsistencyInput {
+mkAExternalId: string;
+mkBExternalId: string;
+summary: string;
+severity: InconsistencySeverity;
+}
+export interface InconsistencyDetectorService {
+detectFor(memorableKnowledgeNodeId: string): Promise<{
+candidatesScanned: number;
+inconsistenciesCreated: number;
+}>;
+}
+export declare const INCONSISTENCY_DETECTOR_SERVICE_NAME = "inconsistencyDetector";
+export declare const INCONSISTENCY_DETECTOR_CAPABILITY = "inconsistencyDetector@1";
+
+// ===== index.d.ts =====
+export * from './pluginContext.js';
+export * from './pkce.js';
+export * from './conversation.js';
+export * from './limitSignal.js';
+export * from './selfExtend.js';
+export * from './localSubAgentTool.js';
+export * from './piiAnnotation.js';
+export * from './targetRef.js';
+export * from './writeCapabilities.js';
+export * from './agentGraph.js';
+export * from './entityRef.js';
+export * from './entityRefBus.js';
+export * from './knowledgeGraph.js';
+export * from './embeddingClient.js';
+export * from './responseGuard.js';
+export * from './agentPriorities.js';
+export * from './privacyReceipt.js';
+export * from './privacyReceiptFixtures.js';
+export * from './turnReceiptStore.js';
+export * from './privacyMode.js';
+export * from './sessionBriefing.js';
+export * from './processMemory.js';
+export * from './nudge.js';
+export * from './routinesIntegration.js';
+export * from './conductorApproval.js';
+export * from './routineTarget.js';
+export * from './palaiaExcerpt.js';
+export * from './bulkPromotion.js';
+export * from './inconsistency.js';
+export * from './bulkInconsistency.js';
+export * from './mergeCandidate.js';
+export * from './topic.js';
+export * from './excerptMerge.js';
+
+// ===== knowledgeGraph.d.ts =====
+import type { EntityRef } from './entityRef.js';
+import type { CreateInconsistencyInput, InconsistencyNode, InconsistencyResolution, InconsistencyStatus, ListInconsistenciesOptions } from './inconsistency.js';
+import type { CreateMergeCandidateInput, ListMergeCandidatesOptions, MergeCandidateNode, MergeCandidateResolution } from './mergeCandidate.js';
+import type { TopicNamingSource, TopicNode } from './topic.js';
+import type { CreateExcerptMergeCandidateInput, ExcerptMergeCandidateNode, ExcerptMergeResolution, ListExcerptMergeCandidatesOptions } from './excerptMerge.js';
+export interface KnowledgeGraph {
+ingestTurn(turn: TurnIngest): Promise<TurnIngestResult>;
+ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
+ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
+ingestRun(trace: RunTrace): Promise<RunIngestResult>;
+ingestPlan(input: PlanIngest): Promise<PlanIngestResult>;
+upsertPlanStep(input: PlanStepIngest): Promise<PlanStepIngestResult>;
+getPlan(planExternalId: string): Promise<GraphNode | null>;
+getPlanSteps(planExternalId: string): Promise<GraphNode[]>;
+getPlanStepsForPlans(planExternalIds: string[]): Promise<Map<string, GraphNode[]>>;
+setPlanStepStatus(stepExternalId: string, status: PlanStepStatus, opts?: {
+resultSummary?: string;
+}): Promise<void>;
+listPlansForScope(scope: string): Promise<GraphNode[]>;
+deletePlan(planExternalId: string): Promise<PlanDeleteResult>;
+listRecentPlans(opts: {
+userId?: string;
+limit?: number;
+openOnly?: boolean;
+agentScopePrefix?: string;
+}): Promise<GraphNode[]>;
+getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
+getSession(scope: string): Promise<SessionView | null>;
+listSessions(filter?: SessionFilter): Promise<SessionSummary[]>;
+getNeighbors(nodeId: string): Promise<GraphNode[]>;
+stats(): Promise<GraphStats>;
+searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]>;
+findEntityCapturedTurns(opts: EntityCapturedTurnsOptions): Promise<EntityCapturedTurnsHit[]>;
+searchTurnsByEmbedding(opts: SearchTurnsByEmbeddingOptions): Promise<TurnSearchHit[]>;
+findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
+resolveOrCreateChannelIdentity(ingest: ChannelIdentityIngest): Promise<ResolveOrCreateChannelIdentityResult>;
+createMemorableKnowledge(input: MemorableKnowledgeIngest): Promise<MemorableKnowledgeIngestResult>;
+getMemorableKnowledge(memorableKnowledgeNodeId: string, viewerOmadiaUserId?: string): Promise<GraphNode | null>;
+listMemorableKnowledgeFor(omadiaUserId: string, opts?: ListMemorableKnowledgeOptions): Promise<GraphNode[]>;
+addOwner(memorableKnowledgeNodeId: string, omadiaUserIdToAdd: string, actor: AclMutationOptions): Promise<string[]>;
+removeOwner(memorableKnowledgeNodeId: string, omadiaUserIdToRemove: string, actor: AclMutationOptions): Promise<string[]>;
+deleteMemory(memorableKnowledgeNodeId: string, actor: AclMutationOptions): Promise<void>;
+countMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
+count: number;
+}>;
+purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
+deletedNodes: number;
+}>;
+listMemoryAclAudit(memorableKnowledgeNodeId: string, opts?: {
+limit?: number;
+}): Promise<AclAuditEntry[]>;
+updateMemorableKnowledge(memorableKnowledgeNodeId: string, patch: MemorableKnowledgeUpdate, actor: AclMutationOptions): Promise<GraphNode>;
+listExcerptsForMemory(memorableKnowledgeNodeId: string): Promise<PalaiaExcerptNode[]>;
+updateExcerpt(memorableKnowledgeNodeId: string, position: number, patch: PalaiaExcerptUpdate, actor: AclMutationOptions): Promise<PalaiaExcerptNode>;
+deleteExcerpt(memorableKnowledgeNodeId: string, position: number, actor: AclMutationOptions): Promise<void>;
+searchMemorableKnowledgeByEmbedding(opts: MemorableKnowledgeSearchOptions): Promise<MemorableKnowledgeHit[]>;
+searchExcerptsByEmbedding(opts: ExcerptSearchOptions): Promise<PalaiaExcerptHit[]>;
+listInconsistencies(opts: ListInconsistenciesOptions): Promise<InconsistencyNode[]>;
+getInconsistency(inconsistencyExternalId: string, viewerOmadiaUserId: string): Promise<InconsistencyNode | null>;
+createInconsistency(input: CreateInconsistencyInput): Promise<InconsistencyNode | null>;
+resolveInconsistency(inconsistencyExternalId: string, resolution: InconsistencyResolution, actor: AclMutationOptions): Promise<InconsistencyNode>;
+listMemorableKnowledgeIdsForBulkInconsistencyCheck(opts: {
+limit: number;
+}): Promise<string[]>;
+countMemorableKnowledgeInconsistencyCheckBuckets(): Promise<{
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+}>;
+markMemorableKnowledgeInconsistencyChecked(memorableKnowledgeNodeId: string): Promise<void>;
+listMergeCandidates(opts: ListMergeCandidatesOptions): Promise<MergeCandidateNode[]>;
+getMergeCandidate(mergeCandidateExternalId: string, viewerOmadiaUserId: string): Promise<MergeCandidateNode | null>;
+createMergeCandidate(input: CreateMergeCandidateInput): Promise<MergeCandidateNode | null>;
+resolveMergeCandidate(mergeCandidateExternalId: string, resolution: MergeCandidateResolution, actor: AclMutationOptions): Promise<MergeCandidateNode>;
+listMemorableKnowledgeIdsForBulkMergeCheck(opts: {
+limit: number;
+}): Promise<string[]>;
+countMemorableKnowledgeMergeCheckBuckets(): Promise<{
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+}>;
+markMemorableKnowledgeMergeChecked(memorableKnowledgeNodeId: string): Promise<void>;
+listExcerptMergeCandidates(opts: ListExcerptMergeCandidatesOptions): Promise<ExcerptMergeCandidateNode[]>;
+getExcerptMergeCandidate(externalId: string, viewerOmadiaUserId: string): Promise<ExcerptMergeCandidateNode | null>;
+createExcerptMergeCandidate(input: CreateExcerptMergeCandidateInput): Promise<ExcerptMergeCandidateNode | null>;
+resolveExcerptMergeCandidate(externalId: string, resolution: ExcerptMergeResolution, actor: AclMutationOptions): Promise<ExcerptMergeCandidateNode>;
+listPalaiaExcerptIdsForBulkMergeCheck(opts: {
+limit: number;
+}): Promise<string[]>;
+countPalaiaExcerptMergeCheckBuckets(): Promise<{
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+}>;
+markPalaiaExcerptMergeChecked(excerptExternalId: string): Promise<void>;
+listTopics(): Promise<TopicNode[]>;
+getTopic(topicExternalId: string): Promise<TopicNode | null>;
+listTopicMembers(topicExternalId: string): Promise<GraphNode[]>;
+listMemorableKnowledgeWithEmbeddings(): Promise<Array<{
+mk: GraphNode;
+embedding: number[];
+}>>;
+deleteAllTopics(): Promise<number>;
+createTopic(input: {
+name: string;
+description: string;
+namingSource: TopicNamingSource;
+memberMkIds: readonly string[];
+}): Promise<TopicNode>;
+listTopicMembershipEdges(): Promise<Array<{
+from: string;
+to: string;
+}>>;
+listAllIssues(opts?: {
+status?: InconsistencyStatus;
+}): Promise<{
+inconsistencies: InconsistencyNode[];
+mergeCandidates: MergeCandidateNode[];
+excerptMergeCandidates: ExcerptMergeCandidateNode[];
+edges: Array<{
+from: string;
+to: string;
+type: 'CONFLICTS_WITH' | 'DUPLICATE_OF' | 'DUPLICATE_EXCERPT_OF';
+}>;
+}>;
+listMemoriesForScope(scope: string | undefined, opts?: ListMemoriesForScopeOptions): Promise<MemoriesProvenanceView>;
+getMemorableKnowledgeSubgraph(rootExternalIds: string[], opts?: {
+maxHops?: number;
+maxNodes?: number;
+}): Promise<{
+nodes: KgWalkNode[];
+edges: KgWalkEdge[];
+}>;
+ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult>;
+listDatasets(opts: {
+ownerOmadiaUserId: string;
+limit?: number;
+}): Promise<DatasetSummary[]>;
+getDataset(datasetId: string, viewerOmadiaUserId: string): Promise<DatasetSummary | null>;
+queryDatasetRows(datasetId: string, viewerOmadiaUserId: string, opts?: DatasetQueryOptions): Promise<DatasetQueryResult | null>;
+deleteDataset(datasetId: string, actor: AclMutationOptions): Promise<boolean>;
+}
+export interface KgWalkNode {
+id: string;
+label: string;
+kind: string;
+score?: number;
+inserted?: boolean;
+}
+export interface KgWalkEdge {
+from: string;
+to: string;
+type: string;
+hop: number;
+inserted?: boolean;
+}
+export interface KgWalkPayload {
+rootIds: string[];
+nodes: KgWalkNode[];
+edges: KgWalkEdge[];
+}
+export interface MemoryWithAncestors {
+node: GraphNode;
+level1: GraphNode[];
+level2: GraphNode[];
+}
+export interface MemoryProvenanceEdge {
+from: string;
+to: string;
+type: GraphEdgeType;
+}
+export interface MemoriesProvenanceView {
+memories: MemoryWithAncestors[];
+edges: MemoryProvenanceEdge[];
+}
+export interface ListMemoriesForScopeOptions {
+limit?: number;
+includeExcerpts?: boolean;
+}
+export interface MemorableKnowledgeSearchOptions {
+queryEmbedding: number[];
+viewerOmadiaUserId: string;
+limit?: number;
+minSimilarity?: number;
+teamVisibility?: boolean;
+sharedOnly?: boolean;
+viewerAgentSlug?: string;
+manuallyAuthoredOnly?: boolean;
+}
+export interface MemorableKnowledgeHit {
+mk: GraphNode;
+cosineSim: number;
+}
+export interface ExcerptSearchOptions {
+queryEmbedding: number[];
+viewerOmadiaUserId: string;
+limit?: number;
+minSimilarity?: number;
+teamVisibility?: boolean;
+sharedOnly?: boolean;
+viewerAgentSlug?: string;
+}
+export interface PalaiaExcerptHit {
+excerpt: PalaiaExcerptNode;
+parentMkId: string;
+cosineSim: number;
+}
+export interface RecalledPlan {
+planId: string;
+scope: string;
+strategy?: string;
+createdAt?: string;
+openStepGoals: string[];
+completedStepGoals: string[];
+resumeFromInProgress: boolean;
+resumeFromSideEffecting: boolean;
+doneCount: number;
+totalCount: number;
+}
+export interface RecalledProcess {
+id: string;
+title: string;
+scope: string;
+stepCount: number;
+score: number;
+}
+export interface RecalledInsight {
+mkId: string;
+kind: string;
+summary: string;
+score: number;
+durable?: boolean;
+}
+export interface RecalledContext {
+plans: RecalledPlan[];
+processes: RecalledProcess[];
+insights: RecalledInsight[];
+}
+export interface MemorableKnowledgeUpdate {
+kind?: MemorableKind;
+summary?: string;
+rationale?: string | null;
+significance?: number;
+}
+export interface SessionFilter {
+userId?: string;
+}
+export type GraphNodeType = 'Session' | 'Turn' | 'OdooEntity' | 'ConfluencePage'
+| 'PluginEntity'
+| 'User'
+| 'ChannelIdentity' | 'Run' | 'AgentInvocation' | 'ToolCall' | 'Fact'
+| 'MemorableKnowledge'
+| 'PalaiaExcerpt'
+| 'Inconsistency'
+| 'MergeCandidate'
+| 'Topic'
+| 'ExcerptMergeCandidate'
+| 'Plan'
+| 'PlanStep';
+export type GraphEdgeType = 'IN_SESSION' | 'NEXT_TURN' | 'CAPTURED' | 'BELONGS_TO' | 'EXECUTED' | 'INVOKED_AGENT' | 'INVOKED_TOOL' | 'PRODUCED' | 'DERIVED_FROM' | 'MENTIONS'
+| 'IS_IDENTITY_OF'
+| 'INVOLVED'
+| 'REQUIRES'
+| 'EXCERPT_OF'
+| 'CONFLICTS_WITH'
+| 'DUPLICATE_OF'
+| 'HAS_TOPIC'
+| 'DUPLICATE_EXCERPT_OF'
+| 'STEP_OF'
+| 'DEPENDS_ON'
+| 'PLAN_OF';
+export type FactSeverity = 'info' | 'warning' | 'critical';
+export type EntryType = 'memory' | 'process' | 'task';
+export type Visibility = 'private' | 'team' | 'public' | `shared:${string}`;
+export type Tier = 'HOT' | 'WARM' | 'COLD';
+export type TaskStatus = 'open' | 'done';
+export interface GraphNode {
+id: string;
+type: GraphNodeType;
+props: Readonly<Record<string, unknown>>;
+entryType?: EntryType;
+visibility?: Visibility;
+tier?: Tier;
+accessedAt?: string | null;
+accessCount?: number;
+decayScore?: number;
+contentHash?: string | null;
+manuallyAuthored?: boolean;
+taskStatus?: TaskStatus | null;
+significance?: number | null;
+}
+export interface GraphEdge {
+type: GraphEdgeType;
+from: string;
+to: string;
+props?: Readonly<Record<string, unknown>>;
+}
+export interface EntityIngest {
+system: string;
+model: string;
+id: string | number;
+displayName?: string;
+extras?: Record<string, unknown>;
+}
+export interface EntityIngestResult {
+entityIds: string[];
+inserted: number;
+updated: number;
+}
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web';
+export interface ChannelIdentityIngest {
+channelKind: ChannelKind;
+channelUserId: string;
+displayName?: string;
+email?: string;
+emailVerified?: boolean;
+aadObjectId?: string;
+authSubject?: {
+provider: string;
+providerUserId: string;
+};
+internalChannelData?: Record<string, unknown>;
+}
+export interface ResolveOrCreateChannelIdentityResult {
+channelIdentityNodeId: string;
+userNodeId: string;
+omadiaUserId: string;
+isNewIdentity: boolean;
+isNewCluster: boolean;
+clusterAuthSubject?: {
+provider: string;
+providerUserId: string;
+};
+}
+export declare function authSubjectProps(ingest: Pick<ChannelIdentityIngest, 'authSubject'>): Record<string, string>;
+export type MemorableKind = 'decision' | 'insight' | 'preference' | 'reference';
+export interface MemorableKnowledgeIngest {
+kind: MemorableKind;
+summary: string;
+rationale?: string;
+significance?: number;
+createdBy: string;
+involvedOmadiaUserIds?: string[];
+requiredEntityIds?: string[];
+derivedFromTurnIds?: string[];
+aclOwners?: string[];
+visibility?: Visibility;
+originAgent?: string;
+actorOmadiaUserId?: string;
+palaiaExcerpts?: PalaiaExcerptInput;
+manuallyAuthored?: boolean;
+}
+export type ExcerptSource = 'llm' | 'hint' | 'fallback';
+export interface PalaiaExcerptInput {
+texts: readonly string[];
+source: ExcerptSource;
+}
+export interface PalaiaExcerptNode {
+id: string;
+type: 'PalaiaExcerpt';
+props: {
+text: string;
+position: number;
+source: ExcerptSource;
+created_at: string;
+};
+}
+export interface PalaiaExcerptUpdate {
+text?: string;
+source?: ExcerptSource;
+}
+export interface MemorableKnowledgeIngestResult {
+memorableKnowledgeNodeId: string;
+skippedInvolved: number;
+skippedRequired: number;
+skippedDerivedFrom: number;
+}
+export interface ListMemorableKnowledgeOptions {
+limit?: number;
+kind?: MemorableKind;
+}
+export type AclAction = 'create' | 'expand' | 'shrink' | 'delete' | 'edit' | 'edit_excerpt'
+| 'delete_excerpt';
+export interface AclAuditEntry {
+id: string;
+memoryExternalId: string;
+actorOmadiaUserId: string;
+actorChannelIdentityId?: string;
+action: AclAction;
+beforeOwners: string[];
+afterOwners: string[] | null;
+reason?: string;
+createdAt: string;
+}
+export interface AclMutationOptions {
+actorOmadiaUserId: string;
+actorChannelIdentityId?: string;
+reason?: string;
+}
+export interface MemorableKnowledgePurgeFilter {
+tenantId: string;
+originAgent?: string;
+aclOwner?: string;
+}
+export interface FactIngest {
+factId: string;
+sourceTurnId: string;
+subject: string;
+predicate: string;
+object: string;
+confidence?: number;
+severity?: FactSeverity;
+mentionedEntityIds?: string[];
+}
+export interface FactIngestResult {
+factIds: string[];
+inserted: number;
+updated: number;
+}
+export interface TurnIngest {
+scope: string;
+time: string;
+userMessage: string;
+assistantAnswer: string;
+toolCalls?: number;
+iterations?: number;
+entityRefs: EntityRef[];
+userId?: string;
+entryType?: EntryType;
+visibility?: Visibility;
+significance?: number | null;
+}
+export interface TurnIngestResult {
+sessionId: string;
+turnId: string;
+entityNodeIds: string[];
+}
+export interface CaptureDisclosure {
+persisted: boolean;
+reasons: readonly string[];
+entryType: 'memory' | 'process' | 'task' | null;
+visibility: string | null;
+significance: number | null;
+embedded: boolean;
+privacyBlocksStripped: number;
+hintTagsProcessed: number;
+graphRefs?: {
+sessionId: string;
+turnId: string;
+entityNodeIds: readonly string[];
+};
+}
+export type RunStatus = 'success' | 'error';
+export interface RunToolCall {
+callId: string;
+toolName: string;
+durationMs: number;
+isError: boolean;
+agentContext: string;
+producedEntityIds?: string[];
+postcondition?: {
+issues: readonly string[];
+};
+}
+export interface RunAgentInvocation {
+index: number;
+agentName: string;
+agentId?: string;
+durationMs: number;
+subIterations: number;
+status: RunStatus;
+toolCalls: RunToolCall[];
+}
+export interface RunTrace {
+turnId: string;
+scope: string;
+userId?: string;
+startedAt: string;
+finishedAt: string;
+durationMs: number;
+status: RunStatus;
+iterations: number;
+orchestratorToolCalls: RunToolCall[];
+agentInvocations: RunAgentInvocation[];
+error?: string;
+model?: string;
+provider?: string;
+}
+export interface RunIngestResult {
+runId: string;
+agentInvocationIds: string[];
+toolCallIds: string[];
+userNodeId?: string;
+}
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
+export interface PlanIngest {
+planId: string;
+scope: string;
+turnExternalId?: string;
+userId?: string;
+strategy?: string;
+createdBy?: 'gate' | 'manual' | 'process';
+createdAt: string;
+requestSummary?: string;
+}
+export interface PlanIngestResult {
+planExternalId: string;
+}
+export interface PlanDeleteResult {
+deleted: boolean;
+deletedSteps: number;
+}
+export interface PlanStepIngest {
+stepId: string;
+planId: string;
+scope: string;
+goal: string;
+order: number;
+status?: PlanStepStatus;
+exitCondition?: string;
+toolHint?: string;
+dependsOnStepIds?: string[];
+sideEffecting?: boolean;
+resultSummary?: string;
+}
+export interface PlanStepIngestResult {
+stepExternalId: string;
+}
+export interface RunToolCallView {
+node: GraphNode;
+producedEntities: GraphNode[];
+}
+export interface RunAgentInvocationView {
+node: GraphNode;
+toolCalls: RunToolCallView[];
+}
+export interface RunTraceView {
+turn: GraphNode;
+run: GraphNode;
+user?: GraphNode;
+orchestratorToolCalls: RunToolCallView[];
+agentInvocations: RunAgentInvocationView[];
+}
+export interface SessionSummary {
+id: string;
+scope: string;
+turnCount: number;
+firstAt: string;
+lastAt: string;
+}
+export interface SessionView {
+session: GraphNode;
+turns: Array<{
+turn: GraphNode;
+entities: GraphNode[];
+}>;
+user?: GraphNode;
+}
+export interface GraphStats {
+nodes: number;
+edges: number;
+byNodeType: Record<GraphNodeType, number>;
+byEdgeType: Record<GraphEdgeType, number>;
+}
+export interface SearchTurnsOptions {
+query: string;
+userId?: string;
+excludeScope?: string;
+excludeTurnIds?: readonly string[];
+agentScopePrefix?: string;
+limit?: number;
+}
+export interface TurnSearchHit {
+turnId: string;
+scope: string;
+time: string;
+userMessage: string;
+assistantAnswer: string;
+rank: number;
+entryType?: EntryType;
+manuallyAuthored?: boolean;
+}
+export interface SearchTurnsByEmbeddingOptions {
+queryEmbedding: readonly number[];
+userId?: string;
+excludeScope?: string;
+excludeTurnIds?: readonly string[];
+agentScopePrefix?: string;
+limit?: number;
+minSimilarity?: number;
+ftsQuery?: string;
+recallMinScore?: number;
+recallRecencyBoost?: number;
+typeWeights?: Partial<Record<EntryType, number>>;
+entryTypes?: readonly EntryType[];
+includeCold?: boolean;
+}
+export interface EntityCapturedTurnsOptions {
+terms: readonly string[];
+userId?: string;
+excludeScope?: string;
+agentScopePrefix?: string;
+perEntityLimit?: number;
+entityLimit?: number;
+}
+export interface FindEntitiesOptions {
+model: string;
+nameContains?: string;
+limit?: number;
+}
+export interface EntityCapturedTurnsHit {
+entity: GraphNode;
+turns: Array<{
+turnId: string;
+scope: string;
+time: string;
+userMessage: string;
+assistantAnswer: string;
+}>;
+}
+export declare const AGENT_SCOPE_SEP = "::";
+export declare function qualifyScope(agentSlug: string, conversationScope: string): string;
+export declare function agentScopePrefix(agentSlug: string): string;
+export declare function sessionNodeId(scope: string): string;
+export declare function turnNodeId(scope: string, time: string): string;
+export declare function planNodeId(planId: string): string;
+export declare function planStepNodeId(stepId: string): string;
+export declare function entityNodeId(ref: EntityRef): string;
+export declare function userNodeId(omadiaUserId: string): string;
+export declare function channelIdentityNodeId(channelKind: ChannelKind, channelUserId: string): string;
+export declare function memorableKnowledgeNodeId(memorableId: string): string;
+export declare function palaiaExcerptNodeId(excerptId: string): string;
+export declare function inconsistencyNodeId(inconsistencyId: string): string;
+export declare function mergeCandidateNodeId(mergeId: string): string;
+export declare function topicNodeId(topicId: string): string;
+export declare function excerptMergeCandidateNodeId(id: string): string;
+export declare function runNodeId(turnExternalId: string): string;
+export declare function agentInvocationNodeId(turnExternalId: string, agentName: string, index: number): string;
+export declare function toolCallNodeId(turnExternalId: string, callId: string): string;
+export declare function factNodeId(sourceTurnId: string, subject: string, predicate: string, object: string): string;
+export type DatasetColumnType = 'string' | 'number' | 'boolean' | 'date';
+export interface DatasetColumnSchema {
+name: string;
+type: DatasetColumnType;
+sample?: string;
+}
+export interface DatasetIngest {
+ownerOmadiaUserId: string;
+name: string;
+sourceFileName: string;
+sourceStorageKey?: string;
+columns: DatasetColumnSchema[];
+rows: ReadonlyArray<Record<string, unknown>>;
+}
+export interface DatasetIngestResult {
+datasetId: string;
+rowCount: number;
+graphNodeId: string;
+}
+export interface DatasetSummary {
+id: string;
+name: string;
+sourceFileName: string;
+ownerOmadiaUserId: string;
+rowCount: number;
+columns: DatasetColumnSchema[];
+createdAt: string;
+}
+export type DatasetFilterOp = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains';
+export interface DatasetFilter {
+column: string;
+op: DatasetFilterOp;
+value: string | number | boolean;
+}
+export type DatasetAggregateFn = 'count' | 'sum' | 'avg' | 'min' | 'max';
+export interface DatasetAggregate {
+fn: DatasetAggregateFn;
+column?: string;
+}
+export interface DatasetQueryOptions {
+filters?: DatasetFilter[];
+groupBy?: string;
+aggregate?: DatasetAggregate;
+limit?: number;
+offset?: number;
+}
+export interface DatasetQueryResult {
+rows?: Array<Record<string, unknown>>;
+groups?: Array<{
+key: unknown;
+value: number | null;
+}>;
+aggregateValue?: number | null;
+totalMatched: number;
+}
+export declare class DatasetQueryValidationError extends Error {
+readonly code: string;
+constructor(code: string, message: string);
+}
+export interface NormalizedDatasetQuery {
+filters: DatasetFilter[];
+groupBy?: string;
+aggregate?: DatasetAggregate;
+limit: number;
+offset: number;
+}
+export declare function validateDatasetQueryOptions(columns: readonly DatasetColumnSchema[], opts: DatasetQueryOptions | undefined): NormalizedDatasetQuery;
+
+// ===== limitSignal.d.ts =====
+export type LimitSignalKind =
+'row_cap'
+| 'page_truncated'
+| 'unsupported_operation'
+| 'rate_limited'
+| 'missing_capability';
+export interface LimitSignal {
+readonly kind: LimitSignalKind;
+readonly detail: string;
+readonly cap?: number;
+readonly observed?: number;
+readonly hint?: string;
+}
+export declare function makeLimitSignal(kind: LimitSignalKind, detail: string, extra?: {
+cap?: number;
+observed?: number;
+hint?: string;
+}): LimitSignal;
+export declare function formatLimitSignalNote(signal: LimitSignal | undefined): string;
+export declare function appendLimitSignalNote(output: string, signal: LimitSignal | undefined): string;
+
+// ===== localSubAgentTool.d.ts =====
+import type { LimitSignal } from './limitSignal.js';
+import type { ToolPIIField } from './piiAnnotation.js';
+export interface LocalSubAgentToolSpec {
+name: string;
+description: string;
+input_schema: {
+type: 'object';
+properties: Record<string, unknown>;
+required: string[];
+};
+}
+export interface LocalSubAgentToolResult {
+readonly output: string;
+readonly postcondition?: {
+readonly issues: readonly string[];
+};
+readonly structured?: StructuredToolOutput;
+readonly limitSignal?: LimitSignal;
+}
+export interface StructuredToolOutput {
+readonly kind: string;
+readonly data: unknown;
+readonly prose?: string;
+}
+export interface LocalSubAgentTool {
+spec: LocalSubAgentToolSpec;
+handle(input: unknown): Promise<string | LocalSubAgentToolResult>;
+piiFields?: readonly ToolPIIField[];
+}
+
+// ===== mergeCandidate.d.ts =====
+export type MergeCandidateStatus = 'open' | 'resolved' | 'dismissed';
+export type MergeCandidateResolution =
+'keep_a'
+| 'keep_b'
+| 'not_duplicate';
+export interface MergeCandidateNode {
+id: string;
+type: 'MergeCandidate';
+props: {
+cosine_sim: number;
+status: MergeCandidateStatus;
+resolution: MergeCandidateResolution | null;
+created_at: string;
+resolved_at: string | null;
+resolved_by: string | null;
+};
+duplicateOf: [string, string];
+}
+export interface ListMergeCandidatesOptions {
+viewerOmadiaUserId: string;
+status?: MergeCandidateStatus;
+limit?: number;
+}
+export interface CreateMergeCandidateInput {
+mkAExternalId: string;
+mkBExternalId: string;
+cosineSim: number;
+}
+export interface MergeCandidateDetectorService {
+detectFor(memorableKnowledgeNodeId: string): Promise<{
+candidatesScanned: number;
+mergeCandidatesCreated: number;
+}>;
+detectForExcerpt(excerptExternalId: string): Promise<{
+candidatesScanned: number;
+excerptMergeCandidatesCreated: number;
+}>;
+}
+export declare const MERGE_CANDIDATE_DETECTOR_SERVICE_NAME = "mergeCandidateDetector";
+export declare const MERGE_CANDIDATE_DETECTOR_CAPABILITY = "mergeCandidateDetector@1";
+export interface BulkMergeDetectPreview {
+unchecked: number;
+alreadyChecked: number;
+withoutEmbedding: number;
+detectorAvailable: boolean;
+}
+export interface BulkMergeDetectRunOptions {
+limit?: number;
+}
+export interface BulkMergeDetectResult {
+scanned: number;
+checked: number;
+mergeCandidatesCreated: number;
+skippedNoEmbedding: number;
+failed: number;
+durationMs: number;
+}
+export interface BulkMergeDetectService {
+preview(): Promise<BulkMergeDetectPreview>;
+run(options?: BulkMergeDetectRunOptions): Promise<BulkMergeDetectResult>;
+}
+export declare const BULK_MERGE_DETECT_SERVICE_NAME = "bulkMergeDetect";
+export declare const BULK_MERGE_DETECT_CAPABILITY = "bulkMergeDetect@1";
+
+// ===== nudge.d.ts =====
+import type { ProcessMemoryService } from './processMemory.js';
+export declare const NUDGE_REGISTRY_SERVICE_NAME = "nudgeRegistry";
+export declare const NUDGE_REGISTRY_CAPABILITY = "nudgeRegistry@1";
+export declare const NUDGE_STATE_SERVICE_NAME = "nudgeStateStore";
+export declare const NUDGE_STATE_CAPABILITY = "nudgeStateStore@1";
+export declare const NUDGE_PROVIDERS_SERVICE_NAME = "nudgeProviders";
+export declare const NUDGE_PROVIDERS_CAPABILITY = "nudgeProviders@1";
+export interface ParsedNudge {
+readonly id: string;
+readonly text: string;
+readonly cta?: NudgeCta;
+}
+export interface NudgeParseResult {
+readonly cleaned: string;
+readonly nudge: ParsedNudge | null;
+}
+export declare function parseNudge(content: string): NudgeParseResult;
+export declare const NUDGE_PROVIDER_TIMEOUT_MS = 500;
+export declare const NUDGE_MAX_PER_TURN = 3;
+export declare const NUDGE_MAX_PER_TOOL_CALL = 1;
+export declare const NUDGE_SUPPRESS_DEFAULT_DAYS = 7;
+export declare const NUDGE_RETIRE_AFTER_STREAK = 3;
+export declare const NUDGE_REGRESSION_AFTER_MISSES = 3;
+export interface NudgeCta {
+readonly label: string;
+readonly toolCall: {
+readonly name: string;
+readonly arguments: Record<string, unknown>;
+};
+}
+export type NudgeSuccessSignal = {
+readonly kind: 'tool_call_after';
+readonly toolName: string;
+readonly withinTurns: number;
+};
+export interface Nudge {
+readonly id: string;
+readonly text: string;
+readonly cta?: NudgeCta;
+readonly successSignal?: NudgeSuccessSignal;
+readonly workflowHash?: string;
+}
+export interface ReadonlyToolTraceEntry {
+readonly toolName: string;
+readonly args: unknown;
+readonly result: string;
+readonly status: 'ok' | 'error';
+readonly domain?: string;
+readonly durationMs?: number;
+}
+export interface ReadonlyTurnContext {
+readonly turnId: string;
+readonly agentId: string;
+readonly userMessage: string;
+readonly toolTrace: readonly ReadonlyToolTraceEntry[];
+readonly sessionScope: string;
+}
+export interface NudgeStateRecord {
+readonly agentId: string;
+readonly nudgeId: string;
+readonly successStreak: number;
+readonly regressionCount: number;
+readonly suppressedUntil: Date | null;
+readonly retiredAt: Date | null;
+readonly lastEmittedAt: Date | null;
+readonly lastFollowedAt: Date | null;
+}
+export interface NudgeEmissionRecord {
+readonly agentId: string;
+readonly nudgeId: string;
+readonly turnId: string;
+readonly toolName: string;
+readonly hintText: string;
+readonly workflowHash?: string;
+readonly cta?: NudgeCta;
+}
+export interface NudgeStateReader {
+read(agentId: string, nudgeId: string): Promise<NudgeStateRecord | null>;
+}
+export interface NudgeStateStore extends NudgeStateReader {
+recordEmission(record: NudgeEmissionRecord): Promise<void>;
+recordFollow(agentId: string, nudgeId: string, turnId: string): Promise<void>;
+recordRegression(agentId: string, nudgeId: string): Promise<void>;
+suppress(agentId: string, nudgeId: string, until: Date): Promise<void>;
+}
+export interface NudgeEvaluationInput {
+readonly turnId: string;
+readonly toolName: string;
+readonly toolArgs: unknown;
+readonly toolResult: string;
+readonly turnContext: ReadonlyTurnContext;
+readonly nudgeStateStore: NudgeStateReader;
+readonly processMemory?: ProcessMemoryService;
+}
+export interface NudgeProvider {
+readonly id: string;
+readonly priority: number;
+evaluate(input: NudgeEvaluationInput): Promise<Nudge | null>;
+}
+export interface NudgeRegistry {
+register(provider: NudgeProvider): void;
+list(): readonly NudgeProvider[];
+}
+export declare class InMemoryNudgeRegistry implements NudgeRegistry {
+private readonly providers;
+register(provider: NudgeProvider): void;
+list(): readonly NudgeProvider[];
+}
+export declare class NoopNudgeStateStore implements NudgeStateStore {
+read(_agentId: string, _nudgeId: string): Promise<NudgeStateRecord | null>;
+recordEmission(_record: NudgeEmissionRecord): Promise<void>;
+recordFollow(_agentId: string, _nudgeId: string, _turnId: string): Promise<void>;
+recordRegression(_agentId: string, _nudgeId: string): Promise<void>;
+suppress(_agentId: string, _nudgeId: string, _until: Date): Promise<void>;
+}
+
+// ===== palaiaExcerpt.d.ts =====
+import type { EntryType, MemorableKind } from './knowledgeGraph.js';
+export interface PalaiaExcerpt {
+suggestedKind: MemorableKind;
+suggestedSummary: string;
+suggestedRationale?: string;
+excerpts: readonly string[];
+source: 'llm' | 'hint' | 'fallback';
+}
+export interface PalaiaExcerptExtractInput {
+cleanedUserMessage: string;
+cleanedAssistantAnswer: string;
+significance?: number | null;
+entryTypeHint?: EntryType;
+}
+export interface PalaiaExcerptExtractor {
+extract(input: PalaiaExcerptExtractInput): Promise<PalaiaExcerpt | undefined>;
+}
+export declare const PALAIA_EXCERPT_SERVICE_NAME = "palaiaExcerpt";
+export declare const PALAIA_EXCERPT_CAPABILITY = "palaiaExcerpt@1";
+
+// ===== piiAnnotation.d.ts =====
+export type PIIFieldType = 'PERSON' | 'EMAIL' | 'PHONE' | 'IBAN' | 'CARD' | 'ADDRESS' | 'ORG' | 'APIKEY';
+export interface ToolPIIField {
+readonly path: string;
+readonly idPath: string;
+readonly type?: PIIFieldType;
+}
+export interface OdooMany2OneOptions {
+readonly type?: PIIFieldType;
+readonly recordsAt?: string;
+}
+export declare function odooMany2OnePiiField(field: string, options?: OdooMany2OneOptions): ToolPIIField;
+export declare function odooSearchReadPiiFields(fields: Readonly<Record<string, PIIFieldType>>, options?: Pick<OdooMany2OneOptions, 'recordsAt'>): ToolPIIField[];
+
+// ===== pkce.d.ts =====
+export declare function generateCodeVerifier(): string;
+export declare function computeCodeChallenge(verifier: string): string;
+
+// ===== pluginContext.d.ts =====
+import type { Socket } from 'node:net';
+import type { WriteCapability } from './writeCapabilities.js';
+import type { EntityCapturedTurnsHit, EntityCapturedTurnsOptions, EntityIngest, EntityIngestResult, FactIngest, FactIngestResult, GraphNode, GraphStats, SearchTurnsOptions, TurnSearchHit } from './knowledgeGraph.js';
+export interface PluginContext {
+readonly agentId: string;
+readonly domain: string;
+readonly secrets: SecretsAccessor;
+readonly config: ConfigAccessor;
+readonly services: ServicesAccessor;
+readonly smokeMode: boolean;
+readonly scratch?: ScratchDirAccessor;
+readonly http?: HttpAccessor;
+readonly net?: NetAccessor;
+readonly memory?: MemoryAccessor;
+readonly tools: ToolsAccessor;
+readonly routes: RoutesAccessor;
+readonly notifications: NotificationsAccessor;
+readonly uiRoutes: UiRoutesAccessor;
+readonly jobs: JobsAccessor;
+readonly events?: EventsAccessor;
+readonly subAgent?: SubAgentAccessor;
+readonly knowledgeGraph?: KnowledgeGraphAccessor;
+readonly llm?: LlmAccessor;
+readonly mcp?: McpAccessor;
+readonly flows?: FlowsAccessor;
+readonly oauthTokens?: OAuthTokensAccessor;
+readonly operatorAuth?: OperatorAuthAccessor;
+readonly status: StatusAccessor;
+log(...args: unknown[]): void;
+}
+export interface JobSpec {
+readonly name: string;
+readonly schedule: JobSchedule;
+readonly timeoutMs?: number;
+readonly overlap?: 'skip' | 'queue';
+}
+export type JobSchedule = {
+readonly cron: string;
+} | {
+readonly intervalMs: number;
+};
+export declare const JOB_DEFAULT_TIMEOUT_MS = 30000;
+export type JobHandler = (signal: AbortSignal) => Promise<void>;
+export interface JobsAccessor {
+register(spec: JobSpec, handler: JobHandler): () => void;
+}
+export declare class JobValidationError extends Error {
+constructor(message: string);
+}
+export declare class JobAlreadyRegisteredError extends Error {
+constructor(agentId: string, name: string);
+}
+export interface EmitResult {
+eventId: string;
+matchedWorkflows: number;
+startedRuns: Array<{
+workflowSlug: string;
+runId: string;
+}>;
+}
+export interface EventsAccessor {
+emit(id: string, payload: Record<string, unknown>): Promise<EmitResult>;
+}
+export declare class EventNotDeclaredError extends Error {
+constructor(agentId: string, eventId: string);
+}
+export declare class ConductorUnavailableError extends Error {
+constructor();
+}
+export interface CapabilityRef {
+readonly name: string;
+readonly major: number;
+}
+export declare class CapabilityParseError extends Error {
+constructor(raw: string, detail: string);
+}
+export declare function parseCapabilityRef(raw: string): CapabilityRef;
+export declare function capabilitiesMatch(provider: CapabilityRef, consumer: CapabilityRef): boolean;
+export interface ServicesAccessor {
+get<T>(name: string): T | undefined;
+has(name: string): boolean;
+provide<T>(name: string, impl: T): () => void;
+replace<T>(name: string, impl: T): () => void;
+}
+export interface NativeToolSpec {
+readonly name: string;
+readonly description: string;
+readonly input_schema: {
+readonly type: 'object';
+readonly properties: Record<string, unknown>;
+readonly required?: readonly string[];
+};
+readonly domain?: string;
+}
+export declare const PLUGIN_DOMAIN_REGEX: RegExp;
+export declare function validatePluginDomain(value: unknown): {
+ok: true;
+domain: string;
+} | {
+ok: false;
+message: string;
+};
+export type NativeToolHandler = (input: unknown) => Promise<string>;
+export type NativeToolAttachmentSink = () => NativeToolAttachment[] | undefined;
+export interface NativeToolAttachment {
+readonly kind: string;
+readonly payload: unknown;
+}
+export interface ToolsAccessor {
+register(spec: NativeToolSpec, handler: NativeToolHandler, options?: ToolRegistrationOptions): () => void;
+registerHandler(name: string, handler: NativeToolHandler, options?: ToolRegistrationOptions): () => void;
+invoke?(name: string, input: unknown): Promise<string>;
+}
+export interface ToolRegistrationOptions {
+readonly promptDoc?: string;
+readonly attachmentSink?: NativeToolAttachmentSink;
+readonly writeCapabilities?: readonly WriteCapability[];
+}
+export interface RoutesAccessor {
+register(prefix: string, router: unknown): () => void;
+}
+export interface FlowsAccessor {
+publicUrl(relPath: string, opts?: {
+prefix?: string;
+}): string;
+signState(claims: Record<string, unknown>, opts?: {
+ttl?: string;
+}): Promise<string>;
+verifyState(token: string): Promise<Record<string, unknown>>;
+}
+export type PluginActionState = 'ok' | 'needs_action' | 'error';
+export interface PluginActionStatus {
+readonly state: PluginActionState;
+readonly title?: string;
+readonly detail?: string;
+}
+export interface StatusAccessor {
+report(status: PluginActionStatus): void;
+clear(): void;
+}
+export interface OAuthTokensAccessor {
+get(fieldKey: string): Promise<string>;
+}
+export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
+export interface OperatorAuthAccessor {
+hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+}
+export declare class OAuthTokenError extends Error {
+readonly code: OAuthTokenErrorCode;
+constructor(code: OAuthTokenErrorCode, message: string);
+}
+export interface UiRoutesAccessor {
+register(descriptor: UiRouteDescriptorInput): () => void;
+registerNav(entry: UiNavEntryInput): () => void;
+}
+export interface UiRouteDescriptorInput {
+readonly routeId: string;
+readonly path: string;
+readonly title: string;
+readonly description?: string;
+readonly order?: number;
+}
+export interface UiRouteDescriptor extends UiRouteDescriptorInput {
+readonly pluginId: string;
+}
+export interface UiNavEntryInput {
+readonly navId: string;
+readonly href: string;
+readonly cluster?: string;
+readonly order?: number;
+readonly label: Readonly<Record<string, string>>;
+}
+export interface UiNavEntry extends UiNavEntryInput {
+readonly pluginId: string;
+}
+export interface ResolvedUiNavEntry {
+readonly pluginId: string;
+readonly navId: string;
+readonly href: string;
+readonly cluster?: string;
+readonly order: number;
+readonly label: string;
+}
+export interface NotificationsAccessor {
+send(payload: NotificationPayload): Promise<NotificationDispatchResult>;
+registerChannel(channelId: string, handler: ChannelNotificationHandler): () => void;
+}
+export interface NotificationPayload {
+readonly title: string;
+readonly body: string;
+readonly deepLink?: string;
+readonly recipients?: 'broadcast' | readonly string[];
+}
+export interface NotificationDispatchResult {
+readonly delivered: readonly string[];
+readonly failed: readonly {
+readonly channelId: string;
+readonly error: string;
+}[];
+readonly anyHandlerPresent: boolean;
+}
+export type ChannelNotificationHandler = (payload: ResolvedNotificationPayload) => Promise<void>;
+export interface ResolvedNotificationPayload {
+readonly pluginId: string;
+readonly title: string;
+readonly body: string;
+readonly deepLink?: string;
+readonly recipients: 'broadcast' | readonly string[];
+}
+export interface ScratchDirAccessor {
+path(): Promise<string>;
+}
+export interface HttpAccessor {
+fetch(url: string, init?: RequestInit): Promise<Response>;
+}
+export declare class HttpForbiddenError extends Error {
+constructor(agentId: string, host: string);
+}
+export declare class HttpRateLimitError extends Error {
+constructor(agentId: string);
+}
+export interface NetConnectOptions {
+readonly host: string;
+readonly port: number;
+readonly tls?: boolean;
+readonly servername?: string;
+}
+export interface NetAccessor {
+connect(options: NetConnectOptions): Promise<Socket>;
+}
+export declare class NetForbiddenError extends Error {
+constructor(agentId: string, target: string);
+}
+export declare class NetRateLimitError extends Error {
+constructor(agentId: string);
+}
+export interface MemoryAccessor {
+readFile(relPath: string): Promise<string>;
+writeFile(relPath: string, content: string): Promise<void>;
+createFile(relPath: string, content: string): Promise<void>;
+delete(relPath: string): Promise<void>;
+list(relPath: string): Promise<readonly MemoryEntryInfo[]>;
+exists(relPath: string): Promise<boolean>;
+}
+export interface MemoryEntryInfo {
+readonly relPath: string;
+readonly isDirectory: boolean;
+readonly sizeBytes: number;
+}
+export declare class MemoryPathError extends Error {
+constructor(message: string);
+}
+export interface MemoryStore {
+list(virtualPath: string): Promise<MemoryEntry[]>;
+fileExists(virtualPath: string): Promise<boolean>;
+directoryExists(virtualPath: string): Promise<boolean>;
+readFile(virtualPath: string): Promise<string>;
+createFile(virtualPath: string, content: string): Promise<void>;
+writeFile(virtualPath: string, content: string): Promise<void>;
+delete(virtualPath: string): Promise<void>;
+rename(fromVirtualPath: string, toVirtualPath: string): Promise<void>;
+}
+export interface MemoryEntry {
+virtualPath: string;
+isDirectory: boolean;
+sizeBytes: number;
+}
+export interface SecretsAccessor {
+get(key: string): Promise<string | undefined>;
+require(key: string): Promise<string>;
+keys(): Promise<string[]>;
+set?(key: string, value: string): Promise<void>;
+delete?(key: string): Promise<void>;
+}
+export interface SecretsReadWriteAccessor extends SecretsAccessor {
+set(key: string, value: string): Promise<void>;
+delete(key: string): Promise<void>;
+}
+export interface ConfigAccessor {
+get<T = unknown>(key: string): T | undefined;
+require<T = unknown>(key: string): T;
+set?(key: string, value: unknown): Promise<void>;
+}
+export interface SubAgentAccessor {
+ask(targetAgentId: string, question: string): Promise<string>;
+has(targetAgentId: string): boolean;
+list(): readonly string[];
+}
+export declare class UnknownSubAgentError extends Error {
+constructor(callerAgentId: string, targetAgentId: string);
+}
+export declare class SubAgentPermissionDeniedError extends Error {
+constructor(callerAgentId: string, targetAgentId: string);
+}
+export declare class SubAgentRecursionError extends Error {
+constructor(agentId: string);
+}
+export declare class SubAgentBudgetExceededError extends Error {
+constructor(callerAgentId: string, budget: number);
+}
+export interface KnowledgeGraphAccessor {
+ingestEntities(entities: EntityIngest[]): Promise<EntityIngestResult>;
+ingestFacts(facts: FactIngest[]): Promise<FactIngestResult>;
+searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]>;
+findEntityCapturedTurns(opts: EntityCapturedTurnsOptions): Promise<EntityCapturedTurnsHit[]>;
+getNeighbors(nodeId: string): Promise<GraphNode[]>;
+stats(): Promise<GraphStats>;
+readonly entitySystems: readonly string[];
+}
+export declare class KgEntityNamespaceError extends Error {
+constructor(callerAgentId: string, system: string);
+}
+export declare class KgServiceUnavailableError extends Error {
+constructor(callerAgentId: string);
+}
+export interface LlmAccessor {
+complete(req: LlmCompleteRequest): Promise<LlmCompleteResult>;
+readonly modelsAllowed: readonly string[];
+}
+export interface LlmCompleteRequest {
+readonly model: string;
+readonly system?: string;
+readonly messages: ReadonlyArray<{
+readonly role: 'user' | 'assistant';
+readonly content: string;
+}>;
+readonly maxTokens?: number;
+readonly temperature?: number;
+}
+export interface McpAccessorToolDescriptor {
+readonly name: string;
+readonly description?: string;
+readonly inputSchema?: Record<string, unknown>;
+}
+export interface McpAccessor {
+listServers(): Promise<readonly string[]>;
+listTools(serverId: string): Promise<readonly McpAccessorToolDescriptor[]>;
+callTool(serverId: string, toolName: string, args: Record<string, unknown>): Promise<string>;
+}
+export interface LlmCompleteResult {
+readonly text: string;
+readonly model: string;
+readonly inputTokens: number;
+readonly outputTokens: number;
+readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
+readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use';
+}
+export declare class LlmServiceUnavailableError extends Error {
+constructor(callerAgentId: string);
+}
+export declare class LlmModelNotAllowedError extends Error {
+constructor(callerAgentId: string, model: string);
+}
+export declare class LlmBudgetExceededError extends Error {
+constructor(callerAgentId: string, budget: number);
+}
+export interface LlmProvider {
+complete(req: LlmCompleteRequest): Promise<LlmCompleteResult>;
+}
+export declare class MissingSecretError extends Error {
+constructor(agentId: string, key: string);
+}
+export declare class MissingConfigError extends Error {
+constructor(agentId: string, key: string);
+}
+export interface MigrationContext extends Omit<PluginContext, 'secrets'> {
+readonly fromVersion: string;
+readonly toVersion: string;
+readonly previousConfig: Record<string, unknown>;
+readonly secrets: SecretsReadWriteAccessor;
+}
+export interface MigrationResult {
+newConfig: Record<string, unknown>;
+}
+export type MigrationHook = (ctx: MigrationContext) => Promise<MigrationResult>;
+export declare const MIGRATION_TIMEOUT_MS_DEFAULT = 10000;
+export declare class MigrationTimeoutError extends Error {
+constructor(agentId: string, fromVersion: string, toVersion: string, timeoutMs: number);
+}
+export declare class MigrationHookError extends Error {
+readonly migrationCause: unknown;
+constructor(agentId: string, fromVersion: string, toVersion: string, cause: unknown);
+}
+
+// ===== privacyMode.d.ts =====
+export declare const PRIVACY_MODE_CONFIG_KEY = "_privacy_mode";
+export declare const PRIVACY_BYPASS_SCOPES_CONFIG_KEY = "_privacy_bypass_scopes";
+export declare const PRIVACY_FORCE_GUARDED_ENV_VAR = "OMADIA_PRIVACY_FORCE_GUARDED";
+export declare const PRIVACY_MODE_VALUES: readonly ["guarded", "bypass", "per_tool"];
+export type PrivacyMode = (typeof PRIVACY_MODE_VALUES)[number];
+export declare const PRIVACY_MODE_DEFAULT: PrivacyMode;
+export declare function resolveEffectivePrivacyMode(input: {
+readonly storedMode: unknown;
+readonly storedScopes: unknown;
+readonly toolName: string;
+readonly env: NodeJS.ProcessEnv;
+}): 'guarded' | 'bypass';
+export declare function parseScopes(stored: unknown): readonly string[];
+
+// ===== privacyReceipt.d.ts =====
+export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
+export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
+export interface BypassedToolEntry {
+readonly toolName: string;
+readonly pluginId: string;
+readonly reason: 'operator_setting';
+readonly bytes: number;
+}
+export interface StructuredPayloadEntry {
+readonly toolName: string;
+readonly serverName: string;
+readonly bytes: number;
+readonly hasOutputSchema: boolean;
+}
+export interface PrivacyReceipt {
+readonly datasetsInterned: number;
+readonly fieldsMasked: number;
+readonly fieldsCleartext: number;
+readonly verbsExecuted: readonly string[];
+readonly pseudonymProjectionUsed: boolean;
+readonly identityValuesOnWire?: number;
+readonly bypassedTools?: readonly BypassedToolEntry[];
+readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+readonly structuredPayloads?: readonly StructuredPayloadEntry[];
+}
+export interface PrivacyToolResultV4Request {
+readonly sessionId: string;
+readonly turnId: string;
+readonly toolName: string;
+readonly rawResult: string;
+}
+export interface PrivacyToolResultV4Result {
+readonly digestText: string;
+readonly datasetId: string;
+}
+export interface PrivacySubAgentResultV4Request {
+readonly turnId: string;
+readonly narration: string;
+readonly datasetIds: readonly string[];
+}
+export interface PrivacyV4ToolRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly toolName: string;
+readonly input: unknown;
+}
+export interface PrivacyV4ToolSpec {
+readonly name: string;
+readonly description: string;
+readonly input_schema: Record<string, unknown>;
+}
+export interface PrivacyRenderedAnswer {
+readonly text: string;
+readonly maskedValues: readonly string[];
+}
+export interface PrivacyBypassedToolRequest {
+readonly turnId: string;
+readonly toolName: string;
+readonly pluginId: string;
+readonly reason: 'operator_setting';
+readonly bytes: number;
+}
+export interface PrivacyStructuredPayloadRequest {
+readonly turnId: string;
+readonly toolName: string;
+readonly serverName: string;
+readonly bytes: number;
+readonly hasOutputSchema: boolean;
+}
+export interface PrivacyResolvedDataset {
+readonly rowCount: number;
+readonly columns: ReadonlyArray<{
+readonly path: string;
+readonly type: string;
+readonly classification?: 'safe-cleartext' | 'sensitive-masked';
+}>;
+readonly rows: ReadonlyArray<Record<string, unknown>>;
+}
+export interface PromptPiiSpan {
+readonly start: number;
+readonly end: number;
+readonly type: string;
+readonly confidence: number;
+}
+export interface PromptPiiDetector {
+readonly id: string;
+detect(text: string): Promise<readonly PromptPiiSpan[]>;
+}
+export interface PromptMaskedSpanInfo {
+readonly type: string;
+readonly detector: string;
+}
+export interface PrivacyPromptMaskRequest {
+readonly sessionId: string;
+readonly turnId: string;
+readonly text: string;
+}
+export type PrivacyPromptMaskResult = {
+readonly outcome: 'disabled';
+} | {
+readonly outcome: 'masked';
+readonly maskedText: string;
+readonly spans: readonly PromptMaskedSpanInfo[];
+readonly degraded: boolean;
+} | {
+readonly outcome: 'blocked';
+readonly reason: string;
+};
+export interface PrivacyGuardService {
+internToolResultV4(request: PrivacyToolResultV4Request): Promise<PrivacyToolResultV4Result>;
+recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
+recordStructuredPayload?(request: PrivacyStructuredPayloadRequest): Promise<void>;
+runV4Tool(request: PrivacyV4ToolRequest): Promise<{
+readonly resultText: string;
+}>;
+subAgentResultV4(request: PrivacySubAgentResultV4Request): Promise<{
+readonly resultText: string;
+}>;
+takeRenderedAnswerV4(turnId: string): Promise<PrivacyRenderedAnswer | undefined>;
+resolveDatasetForRender?(turnId: string, datasetId: string): PrivacyResolvedDataset | undefined;
+maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskResult>;
+restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
+snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
+v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
+finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
+}
+
+// ===== privacyReceiptFixtures.d.ts =====
+import type { PrivacyReceipt } from './privacyReceipt.js';
+export declare const RECEIPT_FIXTURE_QUIET: PrivacyReceipt;
+export declare const RECEIPT_FIXTURE_RANKED: PrivacyReceipt;
+export declare const RECEIPT_FIXTURE_PSEUDONYM: PrivacyReceipt;
+export declare const ALL_PRIVACY_RECEIPT_FIXTURES: readonly PrivacyReceipt[];
+
+// ===== processMemory.d.ts =====
+export declare const PROCESS_MEMORY_SERVICE_NAME = "processMemory";
+export declare const PROCESS_MEMORY_CAPABILITY = "processMemory@1";
+export declare const PROCESS_TITLE_REGEX: RegExp;
+export declare const PROCESS_DEDUP_DEFAULT_THRESHOLD = 0.9;
+export interface ProcessRecord {
+readonly id: string;
+readonly scope: string;
+readonly title: string;
+readonly steps: readonly string[];
+readonly visibility: string;
+readonly version: number;
+readonly createdAt: string;
+readonly updatedAt: string;
+}
+export interface WriteProcessInput {
+readonly title: string;
+readonly steps: readonly string[];
+readonly scope: string;
+readonly visibility?: string;
+}
+export type WriteProcessResult = {
+ok: true;
+record: ProcessRecord;
+} | {
+ok: false;
+reason: 'invalid-title';
+message: string;
+} | {
+ok: false;
+reason: 'duplicate';
+conflictingId: string;
+conflictingTitle: string;
+similarity: number;
+} | {
+ok: false;
+reason: 'embedding-unavailable';
+message: string;
+};
+export interface EditProcessInput {
+readonly id: string;
+readonly title?: string;
+readonly steps?: readonly string[];
+readonly visibility?: string;
+}
+export type EditProcessResult = {
+ok: true;
+record: ProcessRecord;
+} | {
+ok: false;
+reason: 'not-found';
+} | {
+ok: false;
+reason: 'invalid-title';
+message: string;
+} | {
+ok: false;
+reason: 'embedding-unavailable';
+message: string;
+};
+export interface QueryProcessesInput {
+readonly query: string;
+readonly scope?: string;
+readonly limit?: number;
+}
+export interface ProcessQueryHit {
+readonly record: ProcessRecord;
+readonly score: number;
+}
+export interface ProcessMemoryService {
+write(input: WriteProcessInput): Promise<WriteProcessResult>;
+edit(input: EditProcessInput): Promise<EditProcessResult>;
+query(input: QueryProcessesInput): Promise<readonly ProcessQueryHit[]>;
+get(id: string): Promise<ProcessRecord | null>;
+history(id: string): Promise<readonly ProcessRecord[]>;
+}
+export declare class NoopProcessMemoryService implements ProcessMemoryService {
+write(_input: WriteProcessInput): Promise<WriteProcessResult>;
+edit(_input: EditProcessInput): Promise<EditProcessResult>;
+query(_input: QueryProcessesInput): Promise<readonly ProcessQueryHit[]>;
+get(_id: string): Promise<ProcessRecord | null>;
+history(_id: string): Promise<readonly ProcessRecord[]>;
+}
+export declare function slugifyProcessTitle(title: string): string;
+export declare function buildProcessId(scope: string, title: string): string;
+
+// ===== responseGuard.d.ts =====
+export declare const RESPONSE_GUARD_SERVICE_NAME = "responseGuard";
+export declare const RESPONSE_GUARD_CAPABILITY = "responseGuard@1";
+export type SycophancyLevel = 'off' | 'low' | 'medium' | 'high';
+export type BoundaryPresetId = string;
+export interface ProfileQualityConfig {
+readonly sycophancy?: SycophancyLevel;
+readonly boundaries?: {
+readonly presets?: readonly BoundaryPresetId[];
+readonly custom?: readonly string[];
+};
+}
+export interface ResponseGuardRequest {
+readonly systemPrompt: string;
+readonly messages: ReadonlyArray<{
+readonly role: 'user' | 'assistant' | 'system';
+readonly content: string;
+}>;
+readonly profileQuality?: ProfileQualityConfig;
+readonly agentId?: string;
+}
+export interface ResponseGuardResult {
+readonly prependRules: string;
+}
+export interface ResponseGuardService {
+getRules(input: ResponseGuardRequest): Promise<ResponseGuardResult>;
+}
+
+// ===== routinesIntegration.d.ts =====
+import type { ApprovalReminder } from './conductorApproval.js';
+export declare const ROUTINES_INTEGRATION_SERVICE_NAME = "routinesIntegration";
+export interface RoutineCardAttachment {
+contentType: string;
+content: unknown;
+}
+export interface RoutineListAttachmentInput {
+filter: 'all' | 'active' | 'paused';
+totals: {
+all: number;
+active: number;
+paused: number;
+};
+routines: Array<{
+id: string;
+name: string;
+cron: string;
+prompt: string;
+status: 'active' | 'paused';
+lastRunAt: string | null;
+lastRunStatus: 'ok' | 'error' | 'timeout' | null;
+}>;
+}
+export interface RoutinesIntegration {
+captureRoutineTurn(info: {
+tenant: string;
+userId: string;
+channel: string;
+conversationRef: unknown;
+principalRef?: string;
+canTargetOthers?: boolean;
+}): void;
+updateRoutineConversationRef(routineId: string, conversationRef: unknown): Promise<void>;
+publishProactiveSend(channel: string, send: (conversationRef: unknown, message: {
+text: string;
+cardBody?: readonly unknown[];
+approval?: ApprovalReminder;
+}, routine?: {
+id: string;
+name: string;
+cron: string;
+}) => Promise<void>): void;
+handleRoutineAction(input: {
+action: 'pause' | 'resume' | 'trigger_now' | 'delete';
+id: string;
+}): Promise<string>;
+buildRoutineSmartCardAttachment(input: {
+routine: {
+id: string;
+name: string;
+cron: string;
+};
+body: string;
+bodyItems?: readonly unknown[];
+}): RoutineCardAttachment;
+buildRoutineListSmartCardAttachment(input: RoutineListAttachmentInput): RoutineCardAttachment;
+}
+
+// ===== routineTarget.d.ts =====
+export type RoutineRecipient = {
+readonly by: 'email';
+readonly email: string;
+} | {
+readonly by: 'aadObjectId';
+readonly aadObjectId: string;
+};
+export type RoutineOrchestratorProfile = 'bare' | 'inherit';
+export declare const COLD_START_TARGET_KIND: "coldStart";
+export interface ColdStartTarget {
+readonly kind: typeof COLD_START_TARGET_KIND;
+readonly channel: string;
+readonly recipient: RoutineRecipient;
+readonly orchestratorProfile: RoutineOrchestratorProfile;
+readonly createdBy: {
+readonly tenant: string;
+readonly userId: string;
+};
+}
+export declare function isColdStartTarget(ref: unknown): ref is ColdStartTarget;
+export declare function isRoutineRecipient(value: unknown): value is RoutineRecipient;
+export declare function normaliseRecipientEmail(raw: string): string | null;
+export declare function buildEmailColdStartTarget(input: {
+channel: string;
+email: string;
+createdBy: {
+tenant: string;
+userId: string;
+};
+orchestratorProfile?: RoutineOrchestratorProfile;
+}): ColdStartTarget | null;
+
+// ===== selfExtend.d.ts =====
+import type { PluginContext } from './pluginContext.js';
+export interface ExtensionRequiredSurface {
+readonly graphReads?: readonly string[];
+readonly graphWrites?: readonly string[];
+readonly graphEntitySystems?: readonly string[];
+readonly subAgentCalls?: readonly string[];
+readonly llmModels?: readonly string[];
+readonly networkOutbound?: readonly string[];
+readonly webScanner?: boolean;
+}
+export interface ExtensionTemplate {
+readonly id: string;
+readonly title: string;
+readonly description: string;
+readonly paramsSchema: Record<string, unknown>;
+readonly requires?: ExtensionRequiredSurface;
+}
+export interface ApprovedExtension {
+readonly templateId: string;
+readonly params: Record<string, unknown>;
+}
+export interface SelfExtendContract {
+readonly templates: readonly ExtensionTemplate[];
+apply(approved: ApprovedExtension, ctx: PluginContext): Promise<() => void> | (() => void);
+}
+
+// ===== sessionBriefing.d.ts =====
+export declare const SESSION_BRIEFING_SERVICE_NAME = "sessionBriefing";
+export declare const SESSION_BRIEFING_CAPABILITY = "sessionBriefing@1";
+export interface LoadSessionBriefingInput {
+scope: string;
+userId?: string;
+agentId: string;
+budgetTokens?: number;
+}
+export type BriefingMode = 'resume' | 'briefing' | 'empty';
+export interface SessionBriefingResult {
+text: string;
+mode: BriefingMode;
+stats: {
+resumeTurns: number;
+summaryFound: boolean;
+summaryRegenerated: boolean;
+openTasks: number;
+tokensUsed: number;
+};
+}
+export interface SessionBriefingService {
+loadSessionBriefing(input: LoadSessionBriefingInput): Promise<SessionBriefingResult>;
+}
+
+// ===== targetRef.d.ts =====
+export type TargetRef = {
+kind: 'canvas';
+canvasSessionId: string;
+} | {
+kind: 'container';
+containerId: string;
+}
+| {
+kind: 'element';
+elementId: string;
+} | {
+kind: 'rowField';
+containerId: string;
+rowKey: string;
+fieldKey: string;
+}
+| {
+kind: 'item';
+containerId: string;
+itemKey: string;
+}
+| {
+kind: 'point';
+containerId: string;
+pointKey: string;
+} | {
+kind: 'textRange';
+anchor: TextRangeAnchor;
+}
+| {
+kind: 'region';
+region: BufferRegion;
+}
+| {
+kind: 'buffer';
+primitiveId: string;
+bufferContentHash: string;
+}
+| {
+kind: 'timeRange';
+primitiveId: string;
+bufferContentHash: string;
+start: number;
+end: number;
+unit: 'seconds' | 'samples' | 'frames';
+trackId?: string;
+clipId?: string;
+};
+export interface TextRangeAnchor {
+primitiveId: string;
+contentHash: string;
+start: number;
+end: number;
+fallbackSegment?: {
+before: string;
+selection: string;
+after: string;
+};
+}
+export interface BufferRegion {
+primitiveId: string;
+bufferContentHash: string;
+bbox: {
+x: number;
+y: number;
+w: number;
+h: number;
+};
+shape?: {
+kind: 'rect' | 'polygon' | 'mask';
+points?: Array<[number, number]>;
+maskHash?: string;
+};
+}
+
+// ===== topic.d.ts =====
+import type { GraphNode } from './knowledgeGraph.js';
+export type TopicNamingSource = 'haiku' | 'fallback';
+export interface TopicNode {
+id: string;
+type: 'Topic';
+props: {
+name: string;
+description: string;
+member_count: number;
+created_at: string;
+updated_at: string;
+naming_source: TopicNamingSource;
+};
+}
+export interface TopicDetail extends TopicNode {
+members: GraphNode[];
+}
+export interface TopicClusteringRunOptions {
+similarityThreshold?: number;
+minClusterSize?: number;
+}
+export interface TopicClusteringRunResult {
+totalMemoriesScanned: number;
+memoriesWithEmbedding: number;
+topicsDeleted: number;
+topicsCreated: number;
+unclusteredMemories: number;
+haikuCalls: number;
+durationMs: number;
+}
+export interface TopicClusteringService {
+list(): Promise<TopicNode[]>;
+getWithMembers(topicExternalId: string, viewerOmadiaUserId: string): Promise<TopicDetail | null>;
+recluster(opts?: TopicClusteringRunOptions): Promise<TopicClusteringRunResult>;
+}
+export declare const TOPIC_CLUSTERING_SERVICE_NAME = "topicClustering";
+export declare const TOPIC_CLUSTERING_CAPABILITY = "topicClustering@1";
+
+// ===== turnReceiptStore.d.ts =====
+import type { PrivacyReceipt } from './privacyReceipt.js';
+export declare const TURN_RECEIPT_STORE_SERVICE_NAME = "turnReceiptStore";
+export interface TurnReceiptRecordInput {
+readonly turnId: string;
+readonly sessionScope?: string;
+readonly channel?: string;
+readonly model?: string;
+readonly receipt: PrivacyReceipt;
+}
+export interface TurnReceiptStore {
+record(entry: TurnReceiptRecordInput): Promise<void>;
+}
+
+// ===== writeCapabilities.d.ts =====
+export type WriteOperation = 'update' | 'create' | 'delete' | 'reorder';
+export interface WriteCapabilityField {
+name: string;
+type?: string;
+editable: boolean;
+values?: readonly unknown[];
+pattern?: string;
+min?: number;
+max?: number;
+maxLength?: number;
+}
+export interface WriteCapability {
+dataClass: string;
+operation: WriteOperation;
+targetSchema?: {
+idField?: string;
+fields?: readonly WriteCapabilityField[];
+containerHint?: string;
+requiredFields?: readonly string[];
+orderField?: string;
+};
+}
+export declare function isWriteCapableTool(capabilities: readonly WriteCapability[] | undefined): boolean;
+export interface DerivedMutability {
+canAddItems: boolean;
+canRemoveItems: boolean;
+canReorder: boolean;
+requiredFields: readonly string[];
+editableFields: Record<string, WriteCapabilityField>;
+}
+export declare function deriveMutabilityCapabilities(capabilities: readonly WriteCapability[], dataClass: string): DerivedMutability;
