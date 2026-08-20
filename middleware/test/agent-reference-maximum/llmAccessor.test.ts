@@ -88,6 +88,9 @@ function makeFakeCatalog(plugins: Plugin[]): PluginCatalog {
     manifest: {},
     source_path: `/abs/${plugin.id}/manifest.yaml`,
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   }));
   return {
     list: () => entries,

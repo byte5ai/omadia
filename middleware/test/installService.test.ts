@@ -80,6 +80,7 @@ function makeCatalog(plugins: Partial_Plugin[]): PluginCatalog {
       manifest: unknown;
       source_path: string;
       source_kind: 'manifest-v1';
+      origin: 'installed';
     }
   >();
   for (const p of plugins) {
@@ -88,6 +89,9 @@ function makeCatalog(plugins: Partial_Plugin[]): PluginCatalog {
       manifest: {},
       source_path: `<test>/${p.id}.manifest.yaml`,
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     });
   }
   return {
@@ -450,6 +454,9 @@ describe('extractSetupSchema — multiline flag', () => {
       manifest: { setup: { fields } },
       source_path: '<test>/multiline-test.manifest.yaml',
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     } as unknown as PluginCatalogEntry;
   }
 
@@ -511,6 +518,9 @@ describe('extractSetupSchema — install_hidden flag', () => {
       manifest: { setup: { fields } },
       source_path: '<test>/install-hidden-test.manifest.yaml',
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     } as unknown as PluginCatalogEntry;
   }
 

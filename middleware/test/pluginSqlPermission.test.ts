@@ -230,7 +230,11 @@ describe('#470 C7 — permissions.sql parsing', () => {
 });
 
 describe('#470 C7 — pool-gate decision table', () => {
-  const base = { capability: 'graphPool', legacy: false } as const;
+  const base = {
+    capability: 'graphPool',
+    legacy: false,
+    bundledLegacy: false,
+  } as const;
   const declared = { ledger: LEDGER };
 
   it('graphPool is the gated capability — and the gate set is closed', () => {
@@ -247,6 +251,7 @@ describe('#470 C7 — pool-gate decision table', () => {
         declared: undefined,
         granted: false,
         legacy: false,
+        bundledLegacy: false,
       }),
       'not-pool-shaped',
     );
@@ -293,6 +298,63 @@ describe('#470 C7 — pool-gate decision table', () => {
     // legacy — otherwise the ramp could never be observed to be empty.
     assert.equal(
       classifySqlAccess({ ...base, declared, granted: true, legacy: true }),
+      'allowed',
+    );
+  });
+
+  it('#794 — the BUNDLED ramp covers a plugin that did C2b\'s work correctly', () => {
+    // The #794 shape exactly: `permissions.sql` declared, no operator grant
+    // (nothing in `src/` calls `grant()` yet), and NOT on C2b's list precisely
+    // because its `requires:` is correct. Before the bundled ramp this fell
+    // through to `ungranted` and threw on the boot path.
+    assert.equal(
+      classifySqlAccess({
+        ...base,
+        declared,
+        granted: false,
+        legacy: false,
+        bundledLegacy: true,
+      }),
+      'bundled-legacy',
+    );
+    // Same for a bundled plugin that has not declared yet — the ramp keeps it
+    // booting rather than making the manifest fix a prerequisite for boot.
+    assert.equal(
+      classifySqlAccess({
+        ...base,
+        declared: undefined,
+        granted: false,
+        bundledLegacy: true,
+      }),
+      'bundled-legacy',
+    );
+  });
+
+  it('#794 — the bundled ramp is the reason reported when both ramps apply', () => {
+    // Both true is the normal state for orchestrator/verifier/extras. The
+    // bundled reason is the accurate one and names the right remedy.
+    assert.equal(
+      classifySqlAccess({
+        ...base,
+        declared: undefined,
+        granted: false,
+        legacy: true,
+        bundledLegacy: true,
+      }),
+      'bundled-legacy',
+    );
+  });
+
+  it('#794 — a granted, declared plugin is never reported as bundled-legacy', () => {
+    // Otherwise the ramp could never be observed to be empty, and its
+    // retirement date would be unfalsifiable.
+    assert.equal(
+      classifySqlAccess({
+        ...base,
+        declared,
+        granted: true,
+        bundledLegacy: true,
+      }),
       'allowed',
     );
   });

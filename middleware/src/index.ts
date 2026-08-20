@@ -777,7 +777,15 @@ async function main(): Promise<void> {
 
   const pluginCatalog = new PluginCatalog({
     extraSources: () => [
-      ...builtInPackageStore.list().map((p) => ({ packageRoot: p.path })),
+      // #794 — `bundled` is asserted HERE and nowhere else. These packages
+      // ship inside the middleware image under `middleware/packages/*`, which
+      // is what makes them eligible for the dated built-in SQL ramp in
+      // `platform/pluginSqlGrants.ts`. Uploaded and local-dev packages are
+      // deliberately left at the default `installed`: an upload must never be
+      // able to inherit a bundled plugin's ramp by claiming its id.
+      ...builtInPackageStore
+        .list()
+        .map((p) => ({ packageRoot: p.path, origin: 'bundled' as const })),
       ...uploadedPackageStore.list().map((p) => ({ packageRoot: p.path })),
       ...localDevPackageStore.list().map((p) => ({ packageRoot: p.path })),
     ],

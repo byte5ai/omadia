@@ -57,12 +57,36 @@ const DEFAULT_MANIFEST_DIR =
   process.env['PLUGIN_MANIFEST_DIR'] ??
   path.join(REPO_ROOT, 'docs', 'harness-platform', 'examples');
 
+/**
+ * Where a catalog entry came from — issue #794.
+ *
+ * `bundled` means the package ships INSIDE the middleware image, under
+ * `middleware/packages/*`, and is therefore code this repository controls and
+ * reviews. `installed` means everything else: uploaded zips, local-dev
+ * packages, and the example manifests. The distinction exists because the
+ * dated SQL migration ramp (`LEGACY_SQL_GRANTS_2026_08_20`) may only ever
+ * apply to code we ship — an upload must never be able to reach it.
+ *
+ * It is derived by the LOADER, never read from the manifest. A manifest is
+ * author-supplied data; letting a package declare its own origin would make
+ * the security boundary a self-assessment, which is exactly the bar C7 was
+ * written to raise above.
+ *
+ * Default is `installed` at every construction site: an entry whose origin
+ * nobody asserted is not privileged.
+ */
+export type PluginOrigin = 'bundled' | 'installed';
+
 export interface PluginCatalogOptions {
   manifestDir?: string;
   /** Additional manifest sources (e.g. extracted zip uploads). Each entry
    *  points at a package-root directory that contains a `manifest.yaml`.
-   *  On ID collision with the built-in catalog the uploaded version wins. */
-  extraSources?: () => Array<{ packageRoot: string }>;
+   *  On ID collision with the built-in catalog the uploaded version wins.
+   *
+   *  `origin` is asserted by the CALLER (see the wiring in `index.ts`, which
+   *  is the only place that passes `'bundled'`, and only for the built-in
+   *  package store). Omitting it means `installed`. */
+  extraSources?: () => Array<{ packageRoot: string; origin?: PluginOrigin }>;
 }
 
 export interface PluginCatalogEntry {
@@ -73,6 +97,9 @@ export interface PluginCatalogEntry {
   source_path: string;
   /** Loader that produced this entry. Only manifest-v1 is supported today. */
   source_kind: 'manifest-v1';
+  /** #794 — whether this package ships inside the middleware image. Set by the
+   *  loader from WHERE the manifest was found, never from its content. */
+  origin: PluginOrigin;
 }
 
 export class PluginCatalog {
@@ -91,7 +118,11 @@ export class PluginCatalog {
       const manifestPath = path.join(src.packageRoot, 'manifest.yaml');
       const entry = await loadManifestFromPath(manifestPath);
       if (entry) {
-        next.set(entry.plugin.id, entry);
+        // #794 — the origin the CALLER asserted, not one the package claimed.
+        next.set(entry.plugin.id, {
+          ...entry,
+          origin: src.origin ?? 'installed',
+        });
       } else {
         console.warn(
           `[catalog] skipped uploaded manifest at ${manifestPath}: not a recognised schema-v1 manifest`,
@@ -130,6 +161,10 @@ export async function loadManifestFromPath(
       manifest: doc,
       source_path: absPath,
       source_kind: 'manifest-v1',
+      // #794 — a single manifest read in isolation carries no evidence of
+      // where the package came from, so it gets the unprivileged origin.
+      // `PluginCatalog.load` re-stamps it from the source that asked for it.
+      origin: 'installed',
     };
   } catch (err) {
     console.warn(`[catalog] failed to parse ${absPath}:`, err);
@@ -159,6 +194,11 @@ async function loadManifestV1Entries(
           manifest: doc,
           source_path: fullPath,
           source_kind: 'manifest-v1',
+          // #794 — the example-manifest directory is operator-pointable via
+          // `PLUGIN_MANIFEST_DIR` and carries no package code (so these
+          // entries cannot even be activated: `resolvePackagePath` finds no
+          // package root for them). Unprivileged.
+          origin: 'installed',
         });
       } else {
         console.warn(
