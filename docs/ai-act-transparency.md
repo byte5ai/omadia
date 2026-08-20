@@ -162,10 +162,14 @@ und begründet in #684; jeder Ausfall wird seitdem gezählt und protokolliert.
 Migration `0039`): der PII-freie Privacy-Receipt jedes abgeschlossenen Turns wird auf dem
 Postgres-Backend synchron gespeichert — ohne Graph-Sink, ohne User-Cluster-Vorbedingung —
 und ist unter `/api/v1/operator/receipts` (auth-gated) sowie im Operator-UI abrufbar.
-Fehlschläge werden gezählt und protokolliert, nie still verworfen. Der Receipt ist ein
-*Record*, aber (noch) nicht manipulationssicher: Hash-Verkettung, Signaturen und
-Verifikation sind #758/#761 — bis dahin bleibt „kryptographisch nachweisbar" eine
-Nicht-Zusage.
+Fehlschläge werden gezählt und protokolliert, nie still verworfen. **Seit #758 ist der
+Record hash-verkettet und checkpoint-signiert** (Migration `0041`: `entry_hash` über
+`prev_hash` verkettet, Ed25519-Checkpoints mit Schlüssel außerhalb der DB, optionaler
+externer Anker) — eine nachträgliche Änderung bricht die Kette sichtbar. Was noch fehlt,
+ist die **Verifikations-Fläche** (#761: Verify-Endpoint, signierter Export,
+Offline-Verifier, UI). Bis #761 shipped, bleibt „kryptographisch nachweisbar" öffentlich
+eine Nicht-Zusage — intern ist der Mechanismus da, aber ein Nachweis, den nur wir führen
+können, ist noch kein Nachweis.
 
 **C2PA ist offen.** Im Code existiert keine C2PA-Implementierung. Für Bilder wäre das der
 naheliegende nächste Schritt; heute ist es keine Zusage, sondern ein offener Punkt.

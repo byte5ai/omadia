@@ -31,14 +31,16 @@ function fakePool(
   handler: (sql: string, params: unknown[]) => { rows?: unknown[]; rowCount?: number } | Error,
 ): { pool: Pool; queries: RecordedQuery[] } {
   const queries: RecordedQuery[] = [];
-  const pool = {
-    query: async (sql: string, params: unknown[] = []) => {
-      queries.push({ sql, params });
-      const result = handler(sql, params);
-      if (result instanceof Error) throw result;
-      return { rows: result.rows ?? [], rowCount: result.rowCount ?? (result.rows?.length ?? 0) };
-    },
-  } as unknown as Pool;
+  const query = async (sql: string, params: unknown[] = []) => {
+    queries.push({ sql, params });
+    const result = handler(sql, params);
+    if (result instanceof Error) throw result;
+    return { rows: result.rows ?? [], rowCount: result.rowCount ?? (result.rows?.length ?? 0) };
+  };
+  // #758 — the store's chained append runs on a dedicated client (BEGIN …
+  // COMMIT); route/reaper paths keep using pool.query directly.
+  const client = { query, release: () => undefined };
+  const pool = { query, connect: async () => client } as unknown as Pool;
   return { pool, queries };
 }
 
@@ -62,14 +64,24 @@ describe('#757 PgTurnReceiptStore', () => {
       model: 'claude-test',
       receipt: RECEIPT,
     });
-    assert.equal(queries.length, 1);
-    const q = queries[0]!;
-    assert.match(q.sql, /INSERT INTO turn_receipts/);
+    const q = queries.find((x) => x.sql.includes('INSERT INTO turn_receipts'))!;
+    assert.ok(q, 'a receipt INSERT must run');
     // Idempotence is the SQL's job: a replayed done event must hit the
     // turn_id conflict target, not add a second row.
     assert.match(q.sql, /ON CONFLICT \(turn_id\) DO NOTHING/);
     assert.deepEqual(q.params.slice(0, 4), ['t-1', 'sess-1', 'teams', 'claude-test']);
     assert.deepEqual(JSON.parse(q.params[4] as string), RECEIPT);
+    // #758 — the row joins the hash chain: stream, seq 1 (genesis append),
+    // 32-byte prev/entry hashes, hash version.
+    assert.equal(q.params[5], 'receipts');
+    assert.equal(q.params[6], 1);
+    assert.equal((q.params[7] as Buffer).length, 32);
+    assert.equal((q.params[8] as Buffer).length, 32);
+    assert.equal(q.params[9], 1);
+    assert.ok(
+      queries.some((x) => x.sql.includes('INSERT INTO audit_stream_heads')),
+      'the stream head must advance with the row',
+    );
     assert.equal(turnReceiptCounters().persisted, 1);
     assert.equal(turnReceiptCounters().persistFailures, 0);
   });
@@ -90,15 +102,21 @@ describe('#757 PgTurnReceiptStore', () => {
     resetTurnReceiptCounters();
     const { pool, queries } = fakePool(() => ({ rowCount: 1 }));
     await new PgTurnReceiptStore(pool).record({ turnId: 't-3', receipt: RECEIPT });
-    assert.deepEqual(queries[0]!.params.slice(0, 4), ['t-3', null, null, null]);
+    const q = queries.find((x) => x.sql.includes('INSERT INTO turn_receipts'))!;
+    assert.deepEqual(q.params.slice(0, 4), ['t-3', null, null, null]);
   });
 
-  it('a replayed turn (ON CONFLICT no-op) does not inflate the persisted counter', async () => {
+  it('a replayed turn (ON CONFLICT no-op) rolls back: no counter, no head movement', async () => {
     resetTurnReceiptCounters();
-    const { pool } = fakePool(() => ({ rowCount: 0 }));
+    const { pool, queries } = fakePool((sql) =>
+      sql.includes('INSERT INTO turn_receipts') ? { rowCount: 0 } : { rowCount: 1, rows: [] },
+    );
     await new PgTurnReceiptStore(pool).record({ turnId: 't-4', receipt: RECEIPT });
     assert.equal(turnReceiptCounters().persisted, 0);
     assert.equal(turnReceiptCounters().persistFailures, 0);
+    // #758 — the head must not advance for a row that was never inserted.
+    assert.ok(!queries.some((x) => x.sql.includes('INSERT INTO audit_stream_heads')));
+    assert.ok(queries.some((x) => x.sql.startsWith('ROLLBACK')));
   });
 });
 

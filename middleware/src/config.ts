@@ -288,6 +288,18 @@ const ConfigSchema = z.object({
   // scope are personal-data linkage, so rows are reaped after this many days.
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
 
+  // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
+  // private key (base64 PKCS#8 DER; generate with
+  // scripts/generate-audit-signing-key.mjs) lives HERE — env / secret
+  // manager — never in Postgres: the admin the chain defends against must
+  // not be able to re-sign a rewritten chain. Absent ⇒ the chain still
+  // builds, but no signed checkpoints are produced (logged loudly at boot).
+  AUDIT_SIGNING_KEY: z.string().optional(),
+  AUDIT_CHECKPOINT_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
+  // Optional external anchor: checkpoint JSONL appended OUTSIDE the DB —
+  // point it at storage the DB admin cannot rewrite (WORM/S3 sync).
+  AUDIT_ANCHOR_PATH: z.string().optional(),
+
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are
   // enforced only when explicitly set on the job or repo.
