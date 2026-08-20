@@ -398,6 +398,11 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
   const requires = extractCapabilityList(doc['requires'], id, 'requires');
+  const optionalRequires = extractCapabilityList(
+    doc['optional_requires'],
+    id,
+    'optional_requires',
+  );
   const serviceTypes = extractServiceTypes(doc['service_types'], id);
   const channel =
     kind === 'channel' ? extractChannelBlock(doc['channel']) : undefined;
@@ -505,6 +510,14 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  // Only attached when the manifest actually declares one, mirroring
+  // `service_types` below: `undefined` and `[]` mean the same thing to every
+  // consumer (all of which read it as `?? []`), and omitting the key keeps
+  // the catalog entry byte-identical for the overwhelming majority of
+  // manifests that declare no optional dependency.
+  if (optionalRequires.length > 0) {
+    result = { ...result, optional_requires: optionalRequires };
+  }
   if (oauthProviders.length > 0) {
     result = { ...result, oauth_providers: oauthProviders };
   }
@@ -526,17 +539,19 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
 }
 
 /**
- * Parses a `provides:` or `requires:` array. Each entry must be a non-empty
- * string that {@link parseCapabilityRef} accepts. Malformed entries are
- * dropped with a `console.warn` so that one bad manifest doesn't break
- * catalog-load for the rest; the capability resolver additionally re-parses
- * at activation time and surfaces a hard error if a `requires` has no
- * provider — so dropping here is safe from a correctness standpoint.
+ * Parses a `provides:`, `requires:` or `optional_requires:` array. Each entry
+ * must be a non-empty string that {@link parseCapabilityRef} accepts — the
+ * three fields share one syntax so a capability can be moved between them
+ * without rewriting it. Malformed entries are dropped with a `console.warn`
+ * so that one bad manifest doesn't break catalog-load for the rest; the
+ * capability resolver additionally re-parses at activation time and surfaces
+ * a hard error if a `requires` has no provider — so dropping here is safe
+ * from a correctness standpoint.
  */
 function extractCapabilityList(
   raw: unknown,
   pluginId: string,
-  field: 'provides' | 'requires',
+  field: 'provides' | 'requires' | 'optional_requires',
 ): string[] {
   const arr = asArray(raw);
   const out: string[] = [];
