@@ -16,11 +16,12 @@
  *
  *   node scripts/check-core-decoupling.mjs            # verify against baseline
  *   node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
- *   node scripts/check-core-decoupling.mjs --update   # lower the baseline
+ *   node scripts/check-core-decoupling.mjs --update   # record the count
  *
- * `--update` only ever lowers it. Raising the baseline requires editing the
- * committed value by hand, which is exactly the kind of change that should
- * show up in a diff and be argued for in review.
+ * As of C13 the extraction is complete and the check asserts ZERO outright —
+ * see `EXTRACTION_COMPLETE` below. The baseline file remains committed as the
+ * record of where the count landed, and `--report` still shows per-zone
+ * deltas against it, but it no longer decides pass/fail.
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -35,9 +36,35 @@ const BASELINE_FILE = path.join(
 );
 
 /**
+ * Epic #470 C13 — the extraction is FINISHED and the floor is hard zero.
+ *
+ * While the work was in flight this was a ratchet: a committed count that was
+ * allowed to fall and never rise. That shape was right for a migration in
+ * progress and is wrong now. A ratchet parked at zero still reads its floor
+ * out of a JSON file, and a JSON file is editable — one hand-edit and core can
+ * legally re-acquire a reference again, which is precisely the outcome the
+ * whole epic exists to prevent.
+ *
+ * So the check no longer asks the baseline what "good" means. Any reference at
+ * all fails, whatever `decoupling-baseline.json` says. The baseline file stays
+ * committed as the record of where the count landed and to give `--report` its
+ * per-zone deltas, but it is no longer load-bearing for pass/fail.
+ *
+ * If the Dev Platform ever needs to come BACK into core, that is a real
+ * architectural decision: flip this to `false`, restore a baseline, and argue
+ * for it in review. It must not be reachable by editing a number.
+ */
+const EXTRACTION_COMPLETE = true;
+
+/**
  * Identifiers that only exist because the Dev Platform lives in core.
  * Deliberately literal — a broad `/dev/i` would drown in false positives
  * ("developer", "device", "devDependencies").
+ *
+ * This array is itself 21 matches, which is why `EXCLUDE_GLOBS` below skips
+ * this file: a detector that counts its own detector definitions can never
+ * reach zero, and "zero except for the 27 that are the tool" is not a
+ * property anyone can check at a glance. See the note there.
  */
 const PATTERNS = [
   'devplatform',
@@ -71,6 +98,34 @@ const NOT_DEV_PLATFORM = [
   /DEV_ENDPOINTS_ENABLED/, // core dev-graph endpoints (/api/dev/*)
   /devteam/i, // dashboard onboarding persona
   /salesDev/, // builder persona template
+
+  // ---------------------------------------------------------------------
+  // Epic #470 C13 — the two things that must survive at a permanent zero.
+  //
+  // Both are HISTORICAL RECORD rather than coupling. Core reaching zero means
+  // "no core code path, config key, fixture or comment refers to the Dev
+  // Platform"; it cannot mean "rewrite what already happened", because a
+  // record you are allowed to edit is not a record. Each entry is anchored on
+  // a specific path so it cannot quietly widen into a general amnesty.
+  // ---------------------------------------------------------------------
+
+  // Migrations 0022–0030 created the Dev Platform's nine tables while it lived
+  // in core, so every deployment that ran them has those FILENAMES in its
+  // `schema_migrations` ledger. C11's plugin-side migrator seeds its own ledger
+  // from exactly those donor rows (matched by filename, each guarded by a
+  // schema witness) so the plugin does not re-run DDL that already applied.
+  // Rename or reword one and the handoff stops matching on the installations
+  // that need it most. The DDL body is equally frozen: it names the real table
+  // and column names (`dev_jobs`, `dev_job_events`, …) that exist in those
+  // databases right now.
+  /^middleware\/migrations\/00(?:2[2-9]|30)_[^:]*:/,
+
+  // A published changelog entry for a released version of `@omadia/plugin-api`.
+  // It exists to be FOUND: it spells out the removed exports on one line so a
+  // consumer grepping its own source for `DevJobKind` lands on the entry that
+  // explains where the type went. Rewording it to satisfy this ratchet would
+  // break the one job it has and would misreport what that version shipped.
+  /^middleware\/packages\/plugin-api\/CHANGELOG\.md:/,
 ];
 
 /** Zones that must end up clean. Paths are repo-relative. */
@@ -104,6 +159,20 @@ const EXCLUDE_GLOBS = [
   '!**/*.tsbuildinfo',
   '!**/package-lock.json',
   '!**/*.map',
+
+  // This file. `PATTERNS` above has to spell out the 21 identifiers it hunts
+  // for, and the prose has to explain them, so an unfiltered scan of the
+  // `scripts` zone counted 27 hits against the detector itself. That is not a
+  // coupling — nothing here imports, calls, configures or routes to the Dev
+  // Platform — but it is indistinguishable from one in the total, and it made
+  // the target "27" instead of "0". A ratchet whose floor is a magic number
+  // nobody can verify at a glance is a ratchet people stop reading.
+  //
+  // Self-exclusion is safe precisely because this file is the detector: it has
+  // no runtime, ships in no image, and adding a pattern here can only ever
+  // make the check stricter. The narrower alternative — skipping just the
+  // `PATTERNS` array by line range — would break the moment the array moved.
+  '!**/check-core-decoupling.mjs',
 ];
 
 function rgCount(zone) {
@@ -184,6 +253,16 @@ if (mode === '--report') {
 
 if (mode === '--update') {
   const baseline = loadBaseline();
+  if (EXTRACTION_COMPLETE && result.total > 0) {
+    console.error(
+      `refusing to record a non-zero baseline: ${String(result.total)} reference(s) found.\n` +
+        'The extraction is complete (EXTRACTION_COMPLETE = true), so zero is the\n' +
+        'only baseline this script will write. Remove the references, or make the\n' +
+        'architectural argument for reversing the extraction.\n' +
+        'Run `node scripts/check-core-decoupling.mjs --report` for the breakdown.',
+    );
+    process.exit(1);
+  }
   if (baseline && result.total > baseline.total) {
     console.error(
       `refusing to raise the baseline: ${String(result.total)} > ${String(baseline.total)}.\n` +
@@ -197,6 +276,29 @@ if (mode === '--update') {
     `baseline updated: ${String(baseline?.total ?? 'none')} → ${String(result.total)}`,
   );
   process.exit(0);
+}
+
+if (EXTRACTION_COMPLETE) {
+  if (result.total === 0) {
+    console.log('Core is free of Dev Platform references.');
+    process.exit(0);
+  }
+  const offenders = Object.entries(result.zones)
+    .filter(([, count]) => count > 0)
+    .map(([name, count]) => `  ${name}: ${String(count)}`);
+  console.error(
+    `Core re-acquired Dev Platform references: ${String(result.total)} found, 0 allowed.\n\n` +
+      `${offenders.join('\n')}\n\n` +
+      'The Dev Platform lives in its own repository (epic #470). Core carries no\n' +
+      'code path, config key, i18n key, fixture or comment that names it, and\n' +
+      'that is enforced as an absolute — there is no baseline to raise.\n\n' +
+      'If you are adding a plugin integration point, name it generically: the\n' +
+      'mechanisms are manifest-declared (permissions.public_paths + operator\n' +
+      'grants, the service registry, the UI route catalogue), so core never has\n' +
+      'to name a particular plugin.\n\n' +
+      'Run `node scripts/check-core-decoupling.mjs --report` for the breakdown.',
+  );
+  process.exit(1);
 }
 
 const baseline = loadBaseline();

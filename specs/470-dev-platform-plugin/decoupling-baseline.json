@@ -1,19 +1,19 @@
 {
-  "total": 214,
+  "total": 0,
   "zones": {
-    "middleware/src": 19,
-    "middleware/test": 62,
-    "middleware/packages": 17,
+    "middleware/src": 0,
+    "middleware/test": 0,
+    "middleware/packages": 0,
     "middleware/scripts": 0,
     "middleware/sidecars": 0,
-    "middleware/migrations": 69,
+    "middleware/migrations": 0,
     "middleware/package.json": 0,
-    "middleware/env-example": 1,
-    "web-ui/app": 19,
+    "middleware/env-example": 0,
+    "web-ui/app": 0,
     "web-ui/messages": 0,
     "web-ui/config": 0,
     "ci-workflows": 0,
-    "scripts": 27,
+    "scripts": 0,
     "compose": 0
   }
 }

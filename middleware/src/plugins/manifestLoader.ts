@@ -742,12 +742,12 @@ function extractPermissions(
   const mcpBlock = permissions?.['mcp'];
   const mcpDeclared =
     mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
-  // NOTE: `permissions.devJobs` is no longer parsed — `ctx.devJobs` was deleted
-  // (see specs/470-dev-platform-plugin/dormant-capabilities.md §2). A stale
-  // manifest that still declares it stays installable and activatable: unknown
-  // permission keys are simply ignored here, so the plugin loads unchanged and
-  // just receives no accessor (it never had a working one). Regression-tested
-  // in `test/manifestDevJobsLegacyKey.test.ts`.
+  // NOTE: unknown permission keys are IGNORED here rather than rejected, which
+  // is what makes a permission removable. When a capability is retired its key
+  // stops being parsed and its accessor stops being built; a stale manifest
+  // that still declares the key stays installable and activatable and simply
+  // receives no accessor. Regression-tested in
+  // `test/manifestRetiredPermissionKey.test.ts`.
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),

@@ -1044,7 +1044,7 @@ export interface UiNavEntryInput {
   /** Stable id within the plugin. Combined with pluginId as the key. */
   readonly navId: string;
   /**
-   * Absolute in-app path (e.g. `/admin/dev-platform`). Must start with
+   * Absolute in-app path (e.g. `/admin/my-plugin`). Must start with
    * exactly one `/` — protocol-relative (`//host`) and scheme-bearing
    * values are rejected so a manifest cannot point the nav off-origin.
    */
@@ -1645,23 +1645,24 @@ export interface McpAccessor {
 }
 
 // ---------------------------------------------------------------------------
-// Dev-platform access (`ctx.devJobs`) — REMOVED.
+// A DORMANT CAPABILITY WAS REMOVED HERE.
 //
-// `ctx.devJobs` and its six types (DevJobKind, DevJobStatus, DevJobDescriptor,
-// DevJobCreateRequest, DevJobEventRecord, DevJobsAccessor) used to live here.
-// Nothing ever provided the backing `'devJobs'` host service, so the accessor
-// threw on every invocation, and no manifest in this repo, in the private byte5
-// plugin set, or in any sibling repo ever declared `permissions.devJobs`.
-// Deleted per `specs/470-dev-platform-plugin/dormant-capabilities.md` §2.
+// One accessor and its six types used to sit at this point in the file. The
+// backing host service was never provided by anything, so the accessor threw on
+// every invocation, and no manifest in this repo, in the private byte5 plugin
+// set, or in any sibling repo ever declared its permission. It was surface
+// area that only looked like a contract. The exact names are listed once, in
+// `packages/plugin-api/CHANGELOG.md`, so a consumer grepping its own source for
+// a removed type lands on the entry that explains where it went. Per epic
+// #470 (see the spec set under `specs/`) the subsystem that would have used it
+// now lives in its own repository and defines these types for itself.
 //
-// The descriptor/event view types survive CORE-LOCALLY in
-// `middleware/src/devplatform/devJobTypes.ts` for the chat dev-job surface,
-// which is a host-internal consumer and never crossed this package boundary.
-//
-// Back-compat: a stale manifest that still declares `permissions.devJobs`
-// installs and activates unchanged — unknown permission keys are ignored by
-// `adaptManifestV1` and `ctx.devJobs` is simply absent (it was already
-// unusable). Regression-tested in `test/manifestDevJobsLegacyKey.test.ts`.
+// The reason this is a comment and not just a deletion: a plugin that still
+// declares the retired permission installs and activates UNCHANGED. Unknown
+// permission keys are ignored by `adaptManifestV1` and the accessor is simply
+// absent (it was already unusable). That is the property that makes a
+// capability removable at all, and it is regression-tested in
+// `test/manifestRetiredPermissionKey.test.ts`.
 // ---------------------------------------------------------------------------
 
 export interface LlmCompleteResult {

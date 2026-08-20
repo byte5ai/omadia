@@ -11,9 +11,9 @@ import { parseEntries } from '../navigation';
  */
 
 const ok = {
-  pluginId: 'core:dev-platform',
-  navId: 'devPlatform',
-  href: '/admin/dev-platform',
+  pluginId: 'core:example-plugin',
+  navId: 'examplePlugin',
+  href: '/admin/example-plugin',
   label: 'Dev Platform',
   order: 50,
   cluster: 'adminCluster',
@@ -108,6 +108,6 @@ describe('parseEntries', () => {
   it('keeps the good entries when one is malformed', () => {
     const parsed = parseEntries(wrap(ok, { ...ok, href: '//evil.example' }));
     expect(parsed).toHaveLength(1);
-    expect(parsed[0]?.href).toBe('/admin/dev-platform');
+    expect(parsed[0]?.href).toBe('/admin/example-plugin');
   });
 });

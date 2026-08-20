@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS conductor_webhook_endpoints (
 -- Scoping the key per-endpoint fixes that while keeping the same dedupe semantics: a
 -- redelivery of the SAME endpoint's id is still a no-op; a caller that never sends
 -- the header still gets a server-generated id recorded here (no dedupe, but no
--- silent drop either — mirrors the terminal-outcome ledger `dev_webhook_deliveries`
--- established in Epic #470 W4).
+-- silent drop either — mirrors the terminal-outcome delivery ledger established
+-- for outbound webhooks in Epic #470 W4).
 CREATE TABLE IF NOT EXISTS conductor_webhook_inbound_deliveries (
   delivery_id  TEXT NOT NULL,
   endpoint_id  TEXT NOT NULL,

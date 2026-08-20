@@ -11,7 +11,7 @@ import { getJson, invoke } from './_helpers/httpInvoke.js';
 
 /**
  * `GET /api/v1/ui/navigation` — the shell's dynamic nav source
- * (specs/470-dev-platform-plugin).
+ * (epic #470).
  *
  * Driven through `app.handle` rather than a listening socket: the suite runs
  * files concurrently and port-holding tests make unrelated socket tests flaky
@@ -56,12 +56,12 @@ describe('GET /api/v1/ui/navigation', () => {
   let app: Express;
 
   before(() => {
-    catalog.registerNav('core:dev-platform', {
-      navId: 'devPlatform',
-      href: '/admin/dev-platform',
+    catalog.registerNav('core:example-plugin', {
+      navId: 'examplePlugin',
+      href: '/admin/example-plugin',
       cluster: 'adminCluster',
       order: 50,
-      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
+      label: { en: 'Example Plugin', de: 'Beispiel-Plugin' },
     });
     catalog.registerNav('@plugin/reports', {
       navId: 'reports',
@@ -87,7 +87,7 @@ describe('GET /api/v1/ui/navigation', () => {
     assert.deepEqual(
       body.entries.map((e) => [e.navId, e.label]),
       [
-        ['devPlatform', 'Dev Platform'],
+        ['examplePlugin', 'Example Plugin'],
         ['reports', 'Reports'],
       ],
       'sorted by order (50 before default 100), labels resolved',
@@ -98,8 +98,8 @@ describe('GET /api/v1/ui/navigation', () => {
     const { body } = await getJson<NavBody>(app, '/api/v1/ui/navigation?locale=de');
     assert.equal(body.locale, 'de');
     assert.equal(
-      body.entries.find((e) => e.navId === 'devPlatform')?.label,
-      'Dev-Plattform',
+      body.entries.find((e) => e.navId === 'examplePlugin')?.label,
+      'Beispiel-Plugin',
     );
     assert.equal(
       body.entries.find((e) => e.navId === 'reports')?.label,
@@ -111,7 +111,7 @@ describe('GET /api/v1/ui/navigation', () => {
   it('never leaks the per-locale label map to the browser', async () => {
     const res = await invoke(app, 'GET', '/api/v1/ui/navigation');
     assert.equal(
-      res.text.includes('Dev-Plattform'),
+      res.text.includes('Beispiel-Plugin'),
       false,
       'the de label must not ship in an en response',
     );

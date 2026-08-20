@@ -1,17 +1,23 @@
 /**
- * Backward compatibility for the deleted `ctx.devJobs` surface
- * (specs/470-dev-platform-plugin/dormant-capabilities.md §2).
+ * Backward compatibility for RETIRED permission keys.
  *
- * A plugin published before the deletion may still declare
- * `permissions.devJobs` in its manifest. Such a plugin MUST keep installing and
- * activating exactly as before, with `ctx.devJobs` simply absent — it was
- * already unusable, because nothing ever provided the backing host service and
- * every call threw.
+ * A capability can be removed from the plugin API — its accessor deleted, its
+ * permission key no longer parsed. A plugin published before that removal still
+ * declares the retired key in its manifest, and it MUST keep installing and
+ * activating exactly as before, with the accessor simply absent.
  *
  * Unknown permission keys are silently ignored by `adaptManifestV1` today. That
  * is the entire back-compat guarantee, and it is implicit — nothing in the
  * loader states it. These tests assert it EXPLICITLY, so a future move to
- * strict manifest validation cannot silently start rejecting stale manifests.
+ * strict manifest validation cannot silently start rejecting stale manifests
+ * and bricking installed plugins on upgrade.
+ *
+ * The guarantee is key-AGNOSTIC, so the cases below are too: they exercise the
+ * shapes a retired key arrives in (bare `true`, a block of options, alongside
+ * live keys) rather than one historical name. Which names were retired, and in
+ * which release, is recorded in `packages/plugin-api/CHANGELOG.md` — that is a
+ * changelog's job, and pinning a name here would only make this suite go
+ * stale-but-green the next time a different capability is retired.
  */
 
 import { strict as assert } from 'node:assert';
@@ -29,7 +35,10 @@ import { createPluginContext } from '../src/platform/pluginContext.js';
 import type { CreatePluginContextOptions } from '../src/platform/pluginContext.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 
-const LEGACY_ID = 'de.byte5.integration.legacy-devjobs';
+const LEGACY_ID = 'de.byte5.integration.stale-manifest';
+
+/** Stands in for any permission key the plugin API no longer parses. */
+const RETIRED_KEY = 'retiredCapability';
 
 function manifest(permissions: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -38,51 +47,53 @@ function manifest(permissions: Record<string, unknown>): Record<string, unknown>
       id: LEGACY_ID,
       kind: 'integration',
       domain: 'test',
-      name: 'Legacy devJobs Plugin',
+      name: 'Stale Manifest Plugin',
       version: '1.0.0',
     },
     permissions,
   };
 }
 
-describe('legacy permissions.devJobs manifests stay loadable', () => {
-  it('adapts a manifest declaring `permissions.devJobs: true` without rejecting it', () => {
-    const plugin = adaptManifestV1(manifest({ devJobs: true }));
-    assert.ok(plugin, 'a stale devJobs manifest must still adapt to a Plugin');
+describe('manifests declaring a retired permission key stay loadable', () => {
+  it('adapts a manifest declaring a retired key as `true` without rejecting it', () => {
+    const plugin = adaptManifestV1(manifest({ [RETIRED_KEY]: true }));
+    assert.ok(plugin, 'a stale manifest must still adapt to a Plugin');
     assert.equal(plugin.id, LEGACY_ID);
   });
 
   it('adapts the block form (`{ repos_hint: [...] }`) too', () => {
     const plugin = adaptManifestV1(
-      manifest({ devJobs: { repos_hint: ['omadia/omadia'] } }),
+      manifest({ [RETIRED_KEY]: { some_hint: ['omadia/omadia'] } }),
     );
     assert.ok(plugin);
     assert.equal(plugin.id, LEGACY_ID);
   });
 
-  it('emits no dev_jobs field on permissions_summary — the key is ignored, not mapped', () => {
-    const plugin = adaptManifestV1(manifest({ devJobs: true }));
+  it('surfaces no field for it on permissions_summary — ignored, not mapped', () => {
+    const plugin = adaptManifestV1(
+      manifest({ [RETIRED_KEY]: { some_hint: ['x'] } }),
+    );
     assert.ok(plugin);
     const summary = plugin.permissions_summary;
     assert.equal(
-      Object.hasOwn(summary, 'dev_jobs'),
+      Object.hasOwn(summary, RETIRED_KEY),
       false,
-      'permissions_summary must not carry dev_jobs any more',
+      'a retired key must not reappear on the operator-facing summary',
     );
-    assert.equal(Object.hasOwn(summary, 'dev_jobs_repos_hint'), false);
+    assert.equal(Object.hasOwn(summary, `${RETIRED_KEY}_some_hint`), false);
   });
 
   it('does not disturb the permission keys that ARE still parsed', () => {
     const plugin = adaptManifestV1(
-      manifest({ devJobs: true, flows: true, mcp: true }),
+      manifest({ [RETIRED_KEY]: true, flows: true, mcp: true }),
     );
     assert.ok(plugin);
     assert.equal(plugin.permissions_summary.flows, true);
     assert.equal(plugin.permissions_summary.mcp, true);
   });
 
-  it('builds an activation context with no devJobs accessor', () => {
-    const plugin = adaptManifestV1(manifest({ devJobs: true }));
+  it('builds an activation context with no accessor for the retired key', () => {
+    const plugin = adaptManifestV1(manifest({ [RETIRED_KEY]: true }));
     assert.ok(plugin);
     const ctx = createPluginContext({
       agentId: LEGACY_ID,
@@ -121,9 +132,9 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
       logger: () => {},
     } satisfies CreatePluginContextOptions);
     assert.equal(
-      Object.hasOwn(ctx, 'devJobs'),
+      Object.hasOwn(ctx, RETIRED_KEY),
       false,
-      'ctx.devJobs must be absent for a stale manifest — no throw, no accessor',
+      'the accessor must be absent for a stale manifest — no throw, no accessor',
     );
     // And the rest of the context is intact: the plugin activates normally.
     assert.equal(ctx.agentId, LEGACY_ID);
@@ -135,7 +146,7 @@ describe('legacy permissions.devJobs manifests stay loadable', () => {
     // accessor is unreachable — the gate just says so out loud instead of
     // looking like a missing installation.
     assert.throws(
-      () => ctx.services.get('devJobs'),
+      () => ctx.services.get(RETIRED_KEY),
       ServiceNotDeclaredError,
       'the legacy permission key grants nothing through the service locator either',
     );

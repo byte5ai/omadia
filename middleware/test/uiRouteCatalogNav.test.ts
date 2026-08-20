@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
 
 /**
- * Nav-entry half of the UI catalogue (specs/470-dev-platform-plugin).
+ * Nav-entry half of the UI catalogue (epic #470).
  *
  * The uiRoute-descriptor half is covered by uiRouteCatalog.test.ts. These
  * tests focus on what is new and what is dangerous: nav entries are
@@ -18,8 +18,8 @@ function validEntry(
   overrides: Partial<Parameters<UiRouteCatalog['registerNav']>[1]> = {},
 ): Parameters<UiRouteCatalog['registerNav']>[1] {
   return {
-    navId: 'devPlatform',
-    href: '/admin/dev-platform',
+    navId: 'examplePlugin',
+    href: '/admin/example-plugin',
     label: LABEL,
     ...overrides,
   };
@@ -33,8 +33,8 @@ describe('UiRouteCatalog — nav entries', () => {
     const entries = cat.listNav('en');
     assert.equal(entries.length, 1);
     assert.equal(entries[0]?.pluginId, '@plugin/dev');
-    assert.equal(entries[0]?.navId, 'devPlatform');
-    assert.equal(entries[0]?.href, '/admin/dev-platform');
+    assert.equal(entries[0]?.navId, 'examplePlugin');
+    assert.equal(entries[0]?.href, '/admin/example-plugin');
     assert.equal(entries[0]?.cluster, 'adminCluster');
     assert.equal(entries[0]?.order, 100, 'order defaults to 100');
     assert.equal(entries[0]?.label, 'Dev Platform');
@@ -87,7 +87,7 @@ describe('UiRouteCatalog — nav entries', () => {
       ['/\\evil.example/pwn', 'backslash normalised to // by browsers'],
       ['https://evil.example', 'absolute URL'],
       ['javascript:alert(1)', 'scheme'],
-      ['admin/dev-platform', 'relative path'],
+      ['admin/example-plugin', 'relative path'],
       ['/admin/dev platform', 'whitespace'],
     ];
 
@@ -101,7 +101,7 @@ describe('UiRouteCatalog — nav entries', () => {
     it('accepts a normal in-app path', () => {
       const cat = new UiRouteCatalog();
       assert.doesNotThrow(() =>
-        cat.registerNav('@p/x', validEntry({ href: '/admin/dev-platform' })),
+        cat.registerNav('@p/x', validEntry({ href: '/admin/example-plugin' })),
       );
     });
   });
@@ -240,7 +240,7 @@ describe('UiRouteCatalog — nav entries', () => {
     it('accepts the canonical spelling of a nested path', () => {
       const cat = new UiRouteCatalog();
       assert.doesNotThrow(() =>
-        cat.registerNav('@p/x', validEntry({ href: '/admin/dev-platform' })),
+        cat.registerNav('@p/x', validEntry({ href: '/admin/example-plugin' })),
       );
     });
 
