@@ -18,6 +18,8 @@ export class WorkflowNotPublishedError extends Error {}
 export class AwaitNotPendingError extends Error {}
 /** A responder who is not a current holder tried to resolve an await (authorization gate). */
 export class AwaitResponderNotHolderError extends Error {}
+/** #759 — cancel asked for a run that is already terminal (surfaced as 409). */
+export class RunAlreadyEndedError extends Error {}
 
 export interface PreviewStep {
   stepId: string;
@@ -42,17 +44,21 @@ function asObject(v: JsonValue | undefined): JsonObject {
 
 /**
  * A human response counts as approval unless it is explicitly `{ approved: false }` (the reject
- * button's payload). Fail-open by design: an absent/garbage/missing flag counts as approval, and
+ * button's payload). Fail-open by default: an absent/garbage/missing flag counts as approval, and
  * only a strict boolean `false` is a reject (the inbox sends a typed boolean). A guard step's
  * postcondition can still inspect the raw `responses` map for finer policy.
+ *
+ * #759 — with `strict` (the step's `human.strictApproval` flag) the polarity inverts: only an
+ * explicit `{ approved: true }` approves, everything else — absent field, null, garbage — is a
+ * rejection. For steps that gate irreversible actions.
  */
-function isApproved(response: JsonValue): boolean {
-  return !(
-    typeof response === 'object' &&
-    response !== null &&
-    !Array.isArray(response) &&
-    (response as JsonObject).approved === false
-  );
+function isApproved(response: JsonValue, strict = false): boolean {
+  const obj =
+    typeof response === 'object' && response !== null && !Array.isArray(response)
+      ? (response as JsonObject)
+      : undefined;
+  if (strict) return obj?.approved === true;
+  return obj?.approved !== false;
 }
 
 /** Parse an ISO-8601 duration (PT6H, PT24H, PT30M, P1D, P1DT2H) to milliseconds, or null. */
@@ -86,8 +92,10 @@ export class ConductorRunExecutor {
    *  sites to see `partial`. */
   private readonly resolveRoleHolders: RoleHolderResolver;
   /** Issue #437 — fired once a REAL (non-dry-run) run reaches a terminal status
-   *  ('completed'/'failed'). Feeds the outbound webhook dispatcher; best-effort and
-   *  never awaited inline — a slow/broken subscriber must not stall run driving. */
+   *  ('completed'/'failed', and since #759 'cancelled'). Feeds the outbound webhook
+   *  dispatcher; best-effort and never awaited inline — a slow/broken subscriber must
+   *  not stall run driving. In the narrow expire-vs-cancel race the notification can
+   *  fire twice for one run; subscribers must treat run-ended as at-least-once. */
   private readonly notifyRunEnded?: (run: ConductorRun) => void;
   private readonly log: (msg: string) => void;
 
@@ -168,6 +176,20 @@ export class ConductorRunExecutor {
     try {
       while (currentStepId && seq < MAX_STEPS) {
         const stepId: string = currentStepId;
+        // #759 — honour a pending operator cancel at the step boundary. A
+        // mid-step kill is deliberately not attempted: the at-least-once
+        // effect window stays bounded to one step, exactly like crash
+        // recovery. The synthetic step row is fenced on the lease, so a
+        // superseded driver cannot also record the cancellation.
+        if (await this.runStore.isCancelRequested(runId)) {
+          await this.runStore.recordStepAndAdvance({
+            runId, seq, stepId, actor: { kind: 'operator_cancel' },
+            postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
+            context, status: 'cancelled', claimedBy: lease,
+          });
+          this.log(`[conductor] run ${runId} cancelled at step boundary '${stepId}'`);
+          break;
+        }
         const step = graph.steps.find((s) => s.id === stepId);
         if (!step) {
           await this.runStore.recordStepAndAdvance({
@@ -180,7 +202,17 @@ export class ConductorRunExecutor {
         // Human step → durable await + park; resolveAwait/expireAwait resume the run.
         if (step.kind === 'human') {
           const parked = await this.openHumanAwait(runId, step, context, lease);
-          if (parked) return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+          if (parked) {
+            // #759 — close the cancel-vs-park race: a cancel landing between
+            // the loop-head check and this park would otherwise strand a
+            // 'waiting' run with the flag set — reminders keep pinging and
+            // nothing sweeps it. Re-check after the park (we still own the
+            // lease) and finalize exactly like the waiting-path cancel.
+            if (await this.runStore.isCancelRequested(runId)) {
+              return this.finalizeCancelledWaitingRun(runId, lease);
+            }
+            return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
+          }
           // No reachable holder → don't hang. Take the step's in-graph fallback (FR-024), else fail.
           const fb = step.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId) : undefined;
           await this.runStore.recordStepAndAdvance({
@@ -240,7 +272,13 @@ export class ConductorRunExecutor {
    * branch each call this directly for the same reason.
    */
   private finalizeIfEnded(run: ConductorRun): ConductorRun {
-    if (!run.isDryRun && (run.status === 'completed' || run.status === 'failed')) {
+    // 'cancelled' (#759) is a terminal outcome subscribers care about — a
+    // webhook consumer watching for run end must not wait forever on a run an
+    // operator killed.
+    if (
+      !run.isDryRun &&
+      (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled')
+    ) {
       try {
         this.notifyRunEnded?.(run);
       } catch (err) {
@@ -276,6 +314,58 @@ export class ConductorRunExecutor {
     return this.driveFrom(runId, graph, run.currentStepId, run.context, lease);
   }
 
+  /**
+   * #759 — operator cancel. A 'waiting' run is finalized immediately (its
+   * open awaits close as 'cancelled', a synthetic step records the actor);
+   * a 'running' run gets the cancel flag and its driver honours it at the
+   * next step boundary (`driveFrom`); a terminal run throws
+   * {@link RunAlreadyEndedError} (409 at the route).
+   */
+  async cancelRun(runId: string, requestedBy: string): Promise<ConductorRun> {
+    const flagged = await this.runStore.requestCancel(runId, requestedBy);
+    if (!flagged) {
+      // Either unknown or already terminal — distinguish for the caller.
+      const existing = await this.runStore.get(runId);
+      if (!existing) throw new WorkflowNotFoundError(`run '${runId}' not found`);
+      throw new RunAlreadyEndedError(`run '${runId}' is already ${existing.status}`);
+    }
+    if (flagged.status === 'waiting') {
+      return this.finalizeCancelledWaitingRun(runId);
+    }
+    this.log(`[conductor] run ${runId} cancel requested by '${requestedBy}' — driver will honour at the next step boundary`);
+    return flagged;
+  }
+
+  /**
+   * #759 — finalize a 'waiting' (or just-parked) run whose cancel flag is set:
+   * close its open awaits as 'cancelled', record the synthetic operator step,
+   * fire run-ended. `lease` is passed when the caller still owns the run (the
+   * park-race path inside driveFrom); absent, a fresh lease is acquired (the
+   * route path, where the run is parked with no live driver). `requestedBy`
+   * comes from the persisted flag — the columns are deliberately never
+   * cleared, they are the load-bearing backstop for every cancel race.
+   */
+  private async finalizeCancelledWaitingRun(runId: string, lease?: string): Promise<ConductorRun> {
+    const run = await this.requireRun(runId);
+    const closed = await this.awaitStore.cancelForRun(runId);
+    const l = lease ?? randomUUID();
+    if (!lease) await this.runStore.acquireLease(runId, l);
+    const seq = (await this.runStore.stepsForRun(runId)).length;
+    await this.runStore.recordStepAndAdvance({
+      runId, seq, stepId: run.currentStepId ?? '(cancel)',
+      actor: {
+        kind: 'operator_cancel',
+        ...(run.cancelRequestedBy ? { requestedBy: run.cancelRequestedBy } : {}),
+      },
+      postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
+      context: run.context, status: 'cancelled', claimedBy: l,
+    });
+    this.log(
+      `[conductor] run ${runId} cancelled by '${run.cancelRequestedBy ?? 'operator'}' (${closed} await(s) closed)`,
+    );
+    return this.finalizeIfEnded((await this.runStore.get(runId)) ?? run);
+  }
+
   /** A human responded — resolve the await and resume the run. */
   async resolveAwait(awaitId: string, responderId: string, response: JsonValue): Promise<ConductorRun> {
     const aw = await this.awaitStore.get(awaitId);
@@ -307,10 +397,28 @@ export class ConductorRunExecutor {
 
     await this.awaitStore.recordResponse(awaitId, responder, response);
 
+    // Loaded before quorum aggregation (not only for the resume below) because the step's
+    // #759 `strictApproval` flag changes how responses are interpreted.
+    const { graph, run } = await this.loadRunGraph(aw.runId);
+    const strict = graph.steps.find((s) => s.id === aw.stepId)?.human?.strictApproval === true;
+
     // Quorum: 'any' resumes on the first response (feeding that response on). 'all' records each
     // response and resumes only once EVERY current holder has answered — holders resolved live, so a
     // baton move correctly changes who is required. The aggregate is fed to the engine for 'all'.
-    let stepResult: JsonValue = response;
+    //
+    // #759 strictApproval — the executor NORMALIZES the result it feeds the engine: `approved`
+    // becomes true only for an explicit `{approved:true}`. Postconditions keep reading
+    // `stepResult.approved` unchanged. An object response keeps its other keys; a non-object
+    // response (string/array/number — always a rejection under strict) survives under `raw` so
+    // the step record and run context never lose the payload the decision was made on.
+    let stepResult: JsonValue = strict
+      ? {
+          ...(typeof response === 'object' && response !== null && !Array.isArray(response)
+            ? (response as JsonObject)
+            : { raw: response }),
+          approved: isApproved(response, true),
+        }
+      : response;
     if (aw.quorum === 'all') {
       const responses = await this.awaitStore.listResponses(awaitId);
       const respondedRequired = new Set(
@@ -345,7 +453,7 @@ export class ConductorRunExecutor {
       const counted = responses.filter((r) => requiredSet.has(canonicalizePrincipalId(r.responderId)));
       stepResult = {
         quorum: 'all',
-        approved: counted.every((r) => isApproved(r.response)),
+        approved: counted.every((r) => isApproved(r.response, strict)),
         responses: Object.fromEntries(counted.map((r) => [canonicalizePrincipalId(r.responderId), r.response])),
       };
     }
@@ -353,7 +461,6 @@ export class ConductorRunExecutor {
     const won = await this.awaitStore.close(awaitId, 'resolved');
     if (!won) throw new AwaitNotPendingError(`await '${awaitId}' was already resolved`);
 
-    const { graph, run } = await this.loadRunGraph(aw.runId);
     const lease = randomUUID();
     await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
     const decision = nextStep(graph, aw.stepId, stepResult, run.context);

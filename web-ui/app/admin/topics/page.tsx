@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -17,6 +17,7 @@ const RECLUSTER_CONFIRM_THRESHOLD = 30;
 
 export default function TopicsListPage(): React.ReactElement {
   const t = useTranslations('adminTopics');
+  const format = useFormatter();
   const [items, setItems] = useState<TopicNodeDto[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -215,7 +216,7 @@ export default function TopicsListPage(): React.ReactElement {
                     className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={topic.props.created_at}
                   >
-                    {new Date(topic.props.created_at).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(topic.props.created_at))}
                   </time>
                 </div>
                 <h3 className="text-sm font-semibold text-[color:var(--fg-strong)]">

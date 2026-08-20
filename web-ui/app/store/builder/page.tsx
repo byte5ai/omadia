@@ -174,15 +174,9 @@ export default async function BuilderDashboardPage({
         )}
       </section>
 
-      <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-        <span>
-          {t('footer.phaseLabel')}{' '}
-          <span className="font-mono-num normal-case tracking-normal text-[color:var(--fg-muted)]">
-            B.0 Draft-Store
-          </span>
-        </span>
+      <footer className="mt-20 flex items-center justify-end border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span className="font-mono-num text-[color:var(--fg-muted)]">
-          omadia · Plugin-Builder
+          {t('footerStamp')}
         </span>
       </footer>
     </main>

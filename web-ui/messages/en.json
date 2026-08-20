@@ -469,6 +469,14 @@
     "publishError": "Publish failed",
     "runError": "Run failed",
     "validationHeading": "Graph validation failed",
+    "validationWarningsHeading": "Published with warnings",
+    "cancelRunButton": "Cancel run",
+    "cancelRunBusy": "Cancelling",
+    "cancelRunConfirm": "Cancel this run? A waiting run ends immediately; a running run stops at the next step boundary. This cannot be undone.",
+    "cancelRunFailed": "The run could not be cancelled",
+    "cancelPendingHint": "Cancellation requested — the run stops at the next step boundary.",
+    "strictApprovalLabel": "Strict approval",
+    "strictApprovalHint": "Only an explicit approve advances; a missing or malformed response counts as a rejection. Recommended when this step gates an irreversible action.",
     "designerHeading": "Visual designer",
     "designerHint": "Add steps, drag between them to wire transitions, edit a step in the inspector, then Save. Mark one step as the entry.",
     "chatHeading": "Conversational builder",
@@ -752,7 +760,8 @@
   "layout": {
     "logoAriaLabel": "omadia · Home",
     "metaTitle": "omadia · Management UI",
-    "metaDescription": "Admin UI for the omadia agent platform (local)."
+    "metaDescription": "Admin UI for the omadia agent platform (local).",
+    "tagline": "an Agentic OS"
   },
   "localeSwitcher": {
     "ariaLabel": "Switch language"
@@ -773,6 +782,7 @@
   },
   "login": {
     "title": "Sign in to omadia",
+    "tagline": "an Agentic OS",
     "shellLoading": "Loading login…",
     "loadingProviders": "Loading login…",
     "errorPrefix": "Failed to load login providers:",
@@ -1836,6 +1846,7 @@
       "bulkImport": {
         "dialogLabel": "Tools bulk import",
         "title": "Import tools",
+        "tabOpenApi": "OpenAPI 3 (JSON)",
         "closeModal": "Close modal",
         "inputLabel": "Input",
         "preview": "Preview",
@@ -1886,6 +1897,7 @@
         "booleanNoConstraints": "Boolean — no additional constraints.",
         "objectNestedHint": "Object — edit nested properties below.",
         "allowedValues": "Allowed values",
+        "patternRegexLabel": "pattern (regex)",
         "removeValue": "Remove value {value}",
         "valueEnterPlaceholder": "Value + Enter",
         "itemType": "Item type",
@@ -1933,11 +1945,14 @@
         "send": "Send"
       },
       "liveness": {
+        "streamLive": "Stream live · {elapsed} · model {model}",
+        "iterActivity": "Iter {iteration} · last activity {gap}",
         "likelyStuck": "likely stuck — press Stop?"
       },
       "turnStats": {
         "live": "Turn live",
-        "last": "Last turn"
+        "last": "Last turn",
+        "toolTime": "{seconds} s tool-time"
       },
       "empty": {
         "title": "Tell the builder what you want to start with.",
@@ -2534,6 +2549,7 @@
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# tool} other {# tools}}",
       "noToolsDefined": "No tools defined.",
+      "toolInputSchema": "input schema",
       "sectionDependencies": "Dependencies",
       "sectionDependenciesSubtitle": "depends_on (grants vault scopes)",
       "noDependencies": "No plugin dependencies.",
@@ -2619,9 +2635,7 @@
           "label": "Error",
           "loadFailed": "Drafts could not be loaded."
         },
-        "footer": {
-          "phaseLabel": "Phase"
-        }
+        "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
         "metaTitle": "Workspace · Agent-Builder · omadia",
@@ -2829,6 +2843,7 @@
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
       "installCmd": "npm install -g @anthropic-ai/claude-code",
       "step2": "Log in with your subscription account:",
+      "loginCmd": "{bin} auth login",
       "step3": "Come back here and press Re-check. A logged-in CLI shows a green badge."
     },
     "logout": {
@@ -3066,6 +3081,7 @@
       "installing": "Installing …",
       "confirmInstall": "Confirm installation",
       "errorKicker": "Error",
+      "privacyModeLabel": "Privacy Mode",
       "privacyGuarded": "Guarded (Privacy Shield)",
       "privacyBypass": "Bypass (pass through raw)",
       "privacyPerTool": "Per-tool (whitelist)",
@@ -4133,6 +4149,7 @@
     "notifyOnlyTitle": "Manual update",
     "notifyOnlyBody": "No updater is configured, so this instance can report versions but not apply an update. On Docker Compose, deploy the optional overlay (docker-compose.update.yaml) to enable it. Otherwise update from the host:",
     "notifyOnlyComposeLabel": "Docker Compose",
+    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose up -d",
     "notifyOnlyFlyLabel": "Fly.io",
     "notifyOnlyFlyOrderHint": "Run these in order — the middleware applies the schema migrations at boot, so let it report the new version before you move the admin UI.",
     "notifyOnlyFlyPinHint": "Also update the image line in your fly.toml: --image applies to this deploy only, so a later plain fly deploy would put the app back on the old tag.",
@@ -4720,6 +4737,7 @@
       "summaryPaused": "Paused",
       "errorUnknownLoad": "Unknown error while loading routines.",
       "loadErrorTitle": "Routines unreachable",
+      "columnUserTenant": "User · Tenant",
       "columnLastRun": "Last run",
       "columnActions": "Actions",
       "emptyTitle": "No routines yet.",
@@ -4762,9 +4780,14 @@
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },
     "templateEditor": {
+      "heading": "Output Template",
+      "badgeInactive": "legacy LLM-renders",
       "badgeActive": "active · {format}",
       "description": "JSON schema: <schema>{schemaShape}</schema>. On trigger the server renders all data + static sections itself; the LLM only fills the narrative-slot strings. Empty editor = remove the template, the routine runs on the legacy path again.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"One sentence of introduction.\" } ] }'",
+      "jsonSyntaxLabel": "JSON syntax:",
+      "renderedMarkdownLabel": "rendered markdown ({count} chars)",
+      "renderedAdaptiveCardLabel": "rendered adaptive-card body ({count} items)",
       "saveFailedLabel": "Save failed:",
       "saved": "Saved.",
       "save": "Save",
@@ -4798,6 +4821,7 @@
       "breadcrumbRoutines": "Routines",
       "loadErrorTitle": "Run unreachable",
       "fieldDuration": "Duration",
+      "fieldIterTools": "Iter · Tools",
       "errorLabel": "Error",
       "sectionAnswer": "Answer",
       "sectionTrace": "Call Stack · Run Trace",

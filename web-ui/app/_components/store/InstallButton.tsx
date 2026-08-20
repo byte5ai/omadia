@@ -953,7 +953,7 @@ function PrivacyModePicker({
         className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
       >
         <Shield className="size-3.5" aria-hidden />
-        Privacy Mode
+        {t('privacyModeLabel')}
       </label>
       <select
         id={`privacy-mode-${pluginId}`}

@@ -632,7 +632,10 @@ export function BuilderChatPane({
             }
           >
             <span className="lume-busy-dots" aria-hidden />
-            Stream live · {formatElapsed(turnStartedAt, elapsedNow)} · model {model}
+            {t('liveness.streamLive', {
+              elapsed: formatElapsed(turnStartedAt, elapsedNow),
+              model,
+            })}
             {liveness?.phase ? (
               <span className={phasePillClass(liveness.phase)}>
                 {liveness.phase.replace('_', ' ')}
@@ -654,8 +657,11 @@ export function BuilderChatPane({
             ) : null}
             {liveness ? (
               <span>
-                · Iter {liveness.iteration} · last activity{' '}
-                {formatLivenessGap(liveness.sinceLastActivityMs)}
+                ·{' '}
+                {t('liveness.iterActivity', {
+                  iteration: liveness.iteration,
+                  gap: formatLivenessGap(liveness.sinceLastActivityMs),
+                })}
                 {liveness.toolCallsThisIter > 0
                   ? ` · ${String(liveness.toolCallsThisIter)} tools this iter`
                   : ''}
@@ -707,7 +713,9 @@ function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
         {stats.isLive ? t('turnStats.live') : t('turnStats.last')}: {toolsLabel}
       </span>
       <span className="text-[color:var(--fg-muted)]">
-        {(stats.totalLatencyMs / 1000).toFixed(2)} s tool-time
+        {t('turnStats.toolTime', {
+          seconds: (stats.totalLatencyMs / 1000).toFixed(2),
+        })}
       </span>
     </div>
   );

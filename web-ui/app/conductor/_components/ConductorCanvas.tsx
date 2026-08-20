@@ -37,6 +37,7 @@ import {
   getConductorWorkflowGraph,
   previewConductorWorkflow,
   publishConductorWorkflow,
+  type ConductorValidationWarning,
   startConductorRun,
   type ConductorPreviewResult,
   type ConductorRunResult,
@@ -65,6 +66,8 @@ interface StepNodeData extends Record<string, unknown> {
     reminderInterval: string;
     deadline: string;
     quorum: 'any' | 'all';
+    /** #759 — only an explicit {approved:true} approves. */
+    strictApproval: boolean;
   };
   postcondition: string; // JSON string, optional
   fallbackTransitionId: string;
@@ -120,6 +123,7 @@ function emptyData(kind: StepKind, n: number): StepNodeData {
       reminderInterval: '',
       deadline: '',
       quorum: 'any',
+      strictApproval: false,
     },
     postcondition: '',
     fallbackTransitionId: '',
@@ -231,6 +235,8 @@ function CanvasInner({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  // #759 — non-blocking warnings from a SUCCESSFUL publish (amber, not red).
+  const [validationWarnings, setValidationWarnings] = useState<ConductorValidationWarning[]>([]);
   const [runResult, setRunResult] = useState<ConductorRunResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewResult, setPreviewResult] = useState<ConductorPreviewResult | null>(null);
@@ -321,6 +327,7 @@ function CanvasInner({
           ...(d.human.reminderInterval.trim() ? { reminderInterval: d.human.reminderInterval } : {}),
           ...(d.human.deadline.trim() ? { deadline: d.human.deadline } : {}),
           quorum: d.human.quorum,
+          ...(d.human.strictApproval ? { strictApproval: true } : {}),
         };
       }
       if (d.postcondition.trim()) s.postcondition = JSON.parse(d.postcondition);
@@ -356,7 +363,9 @@ function CanvasInner({
       return;
     }
     try {
-      await publishConductorWorkflow({ slug, name, graph, enable: publishEnable.current });
+      const out = await publishConductorWorkflow({ slug, name, graph, enable: publishEnable.current });
+      // #759 — surface non-blocking validator warnings on a successful publish.
+      setValidationWarnings(out.warnings ?? []);
       onSaved();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -412,6 +421,7 @@ function CanvasInner({
               reminderInterval: String(human.reminderInterval ?? ''),
               deadline: String(human.deadline ?? ''),
               quorum: (human.quorum as 'any' | 'all') ?? 'any',
+              strictApproval: human.strictApproval === true,
             },
             postcondition: step.postcondition !== undefined ? JSON.stringify(step.postcondition, null, 2) : '',
             fallbackTransitionId: String(step.fallbackTransitionId ?? ''),
@@ -619,6 +629,18 @@ function CanvasInner({
           </ul>
         </div>
       )}
+      {validationWarnings.length > 0 && (
+        <div className="rounded-md border border-[color:var(--warning,#f5a623)] p-3">
+          <div className="mb-1 text-[13px] font-semibold text-[color:var(--warning,#f5a623)]">{t('validationWarningsHeading')}</div>
+          <ul className="list-inside list-disc text-[13px] text-[color:var(--fg-muted)]">
+            {validationWarnings.map((v, i) => (
+              <li key={i}>
+                <span className="font-mono">{v.code}</span>: {v.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Palette */}
       <div className="flex flex-wrap gap-2">
@@ -780,6 +802,21 @@ function CanvasInner({
                     value={sel.data.human.quorum}
                     onChange={(q) => patchNode(sel.id, { human: { ...sel.data.human, quorum: q } })}
                   />
+                  {/* #759 — strict approval: only an explicit approve advances. */}
+                  <label className="flex items-start gap-2 text-[12px] text-[color:var(--fg-muted)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={sel.data.human.strictApproval}
+                      onChange={(e) =>
+                        patchNode(sel.id, { human: { ...sel.data.human, strictApproval: e.target.checked } })
+                      }
+                    />
+                    <span>
+                      {t('strictApprovalLabel')}
+                      <span className="block text-[11px]">{t('strictApprovalHint')}</span>
+                    </span>
+                  </label>
                 </>
               )}
               <ConditionBuilder

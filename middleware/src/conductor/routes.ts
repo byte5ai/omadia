@@ -17,6 +17,7 @@ import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
   AwaitResponderNotHolderError,
+  RunAlreadyEndedError,
   WorkflowDisabledError,
   WorkflowNotFoundError,
   WorkflowNotPublishedError,
@@ -86,6 +87,21 @@ export interface ConductorRouterDeps {
    *  `window.location.origin` client-side — in the standard local dev setup those
    *  resolve to the Next.js dev server, which does not proxy `/api/hooks/*`. */
   webhookInboundBaseUrl?: string;
+  /**
+   * #759 — audit sink for role-holder changes. Every add/remove of a baton
+   * holder is a security-relevant event (any operator can make themselves an
+   * approver — a single-role system has no finer permission today), so it
+   * must land in the admin audit trail. Optional so tests and hosts without
+   * an audit log keep working; best-effort at the call site (an audit-write
+   * failure must not fail the mutation, but it is logged loudly).
+   */
+  auditRoleChange?: (entry: {
+    actor: string;
+    roleKey: string;
+    action: 'add' | 'remove';
+    holderId: string;
+    holdersAfter: string[];
+  }) => Promise<void>;
 }
 
 /**
@@ -144,6 +160,10 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(201).json({
         workflow: out.workflow,
         version: { id: out.version.id, version: out.version.version },
+        // #759 — non-blocking findings (timeout_equals_approval,
+        // approval_fail_open): the publish stands, but the designer must SEE
+        // a legal-but-dangerous shape to keep it consciously.
+        ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
       });
     } catch (err) {
       console.error('[conductor] publish failed:', err);
@@ -295,7 +315,24 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const key = paramStr(req.params.key);
       if (action === 'remove') await deps.roleStore.removeHolder(key, holderId);
       else await deps.roleStore.addHolder(key, holderId);
-      res.status(200).json({ holders: await deps.roleStore.resolve(key) });
+      const holders = await deps.roleStore.resolve(key);
+      // #759 — baton moves decide who may approve; they belong in the audit
+      // trail. Best-effort: the mutation stands even if the audit write fails,
+      // but the failure is loud, never silent.
+      if (deps.auditRoleChange) {
+        try {
+          await deps.auditRoleChange({
+            actor: req.session?.sub ?? 'operator',
+            roleKey: key,
+            action,
+            holderId,
+            holdersAfter: holders,
+          });
+        } catch (auditErr) {
+          console.error('[conductor] role-holder audit write failed:', auditErr);
+        }
+      }
+      res.status(200).json({ holders });
     } catch (err) {
       res.status(500).json({ code: 'conductor.role_assign_failed', message: errMsg(err) });
     }
@@ -425,6 +462,27 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ runs: await deps.runStore.listForVersion(wf.activeVersionId) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_runs_failed', message: errMsg(err) });
+    }
+  });
+
+  // #759 — cancel a run. 'waiting' finalizes immediately (awaits close as
+  // 'cancelled'); 'running' flags the driver, honoured at the next step
+  // boundary; terminal runs answer 409.
+  router.post('/:slug/runs/:runId/cancel', async (req: Request, res: Response): Promise<void> => {
+    const runId = paramStr(req.params.runId);
+    const requestedBy = req.session?.sub ?? 'operator';
+    try {
+      const run = await deps.executor.cancelRun(runId, requestedBy);
+      res.json({ run });
+    } catch (err) {
+      if (err instanceof WorkflowNotFoundError) {
+        res.status(404).json({ code: 'conductor.not_found', message: err.message });
+      } else if (err instanceof RunAlreadyEndedError) {
+        res.status(409).json({ code: 'conductor.run_already_ended', message: err.message });
+      } else {
+        console.error('[conductor] cancel failed:', err);
+        res.status(500).json({ code: 'conductor.cancel_failed', message: errMsg(err) });
+      }
     }
   });
 

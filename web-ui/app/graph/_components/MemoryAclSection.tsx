@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import type { GraphNode } from './graphTypes';
@@ -42,6 +42,7 @@ export default function MemoryAclSection({
   onDeleted,
 }: Props): React.ReactElement {
   const t = useTranslations('graph.acl');
+  const format = useFormatter();
   const memoryId = memory.id;
   const ownersFromProps = Array.isArray(memory.props['acl_owners'])
     ? (memory.props['acl_owners'] as string[])
@@ -342,7 +343,7 @@ export default function MemoryAclSection({
                       {e.action}
                     </span>
                     <span className="text-[color:var(--fg-subtle)]">
-                      {new Date(e.createdAt).toLocaleString()}
+                      {format.dateTime(new Date(e.createdAt))}
                     </span>
                   </div>
                   <div className="mt-1 font-mono text-[10px] text-[color:var(--fg-muted)]">

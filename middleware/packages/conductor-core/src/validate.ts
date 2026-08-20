@@ -6,6 +6,7 @@ import type {
   Transition,
   ValidationError,
   ValidationResult,
+  ValidationWarning,
   WorkflowGraph,
 } from './types.js';
 import { validateGraphShape } from './schema.js';
@@ -94,6 +95,7 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
   }
 
   const errors: ValidationError[] = [];
+  const warnings: ValidationWarning[] = [];
   const steps = graph.steps;
   const transitions = graph.transitions;
 
@@ -169,6 +171,45 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
       });
     }
 
+    // #759 warnings — legal-but-dangerous shapes the designer should keep consciously.
+    if (s.kind === 'human') {
+      const outgoing = transitions.filter((t) => t.source === s.id);
+      const fb = s.fallbackTransitionId ? txById.get(s.fallbackTransitionId) : undefined;
+      // (a) The deadline fallback lands on the same step as a normal outgoing
+      // transition. The validator cannot tell from guards which path is the
+      // approval one, so the message names the colliding transition and asks
+      // the designer to verify — if that shared target IS the approval path,
+      // a timeout silently approves. Legitimate for "no answer = proceed" (or
+      // timeout-equals-REJECTION) flows, but it must be a conscious choice.
+      if (fb) {
+        const colliding = outgoing.find((t) => t.id !== fb.id && t.target === fb.target);
+        if (colliding) {
+          warnings.push({
+            code: 'timeout_equals_approval',
+            message: `human step '${s.id}': deadline fallback '${fb.id}' lands on the same step as transition '${colliding.id}' — a timeout takes that shared path; if '${colliding.id}' is the approval path, a timeout silently approves`,
+            nodeIds: [s.id, fb.id, colliding.id],
+          });
+        }
+      }
+      // (b) Fail-open approval directly gating an action step: without
+      // strictApproval only an explicit {approved:false} rejects, so a
+      // malformed response would run the action. Warn so the designer either
+      // sets strictApproval or accepts the semantics knowingly.
+      if (s.human && s.human.strictApproval !== true) {
+        const gatesAction = outgoing.some((t) => {
+          if (fb && t.id === fb.id) return false;
+          return stepById.get(t.target)?.kind === 'action';
+        });
+        if (gatesAction) {
+          warnings.push({
+            code: 'approval_fail_open',
+            message: `human step '${s.id}' gates an action step without strictApproval — an absent/garbage response counts as approval; set human.strictApproval to require an explicit {approved:true}`,
+            nodeIds: [s.id],
+          });
+        }
+      }
+    }
+
     if (knownRefs?.agentIds && s.kind === 'agent' && s.agentId && !knownRefs.agentIds.includes(s.agentId)) {
       errors.push({ code: 'unknown_agent_ref', message: `step '${s.id}' references unknown agent '${s.agentId}'`, nodeIds: [s.id] });
     }
@@ -212,5 +253,9 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     errors.push({ code: 'unguarded_cycle', message: `unguarded cycle: ${cycle.join(' -> ')}`, nodeIds: unique(cycle) });
   }
 
-  return { ok: errors.length === 0, errors };
+  return {
+    ok: errors.length === 0,
+    errors,
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
 }
