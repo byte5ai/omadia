@@ -40,7 +40,7 @@
  *     repoPath:   "/abs/path/to/checkout",
  *     baseSha:    "<sha>",                  // every branch is cut from this
  *     baseBranch: "main",
- *     manifestPath: "docs/dev-platform/w0-manifest.json",
+ *     manifestPath: "docs/<epic>/w0-manifest.json",
  *     manifest:   { wave, specUrl, verifyCommand, hubFiles, units: [...] },
  *     maxUnits:   12,                       // hard-clamped to 16
  *     onlyUnits:  ["w0-schema"],            // optional: implement a subset
@@ -294,7 +294,7 @@ function auditPrompt(unit, branch) {
     `- No \`git push\` anywhere in the runner path. The middleware applies the reviewed diff server-side.`,
     `- No \`--force\`. No token with merge or admin scope, ever.`,
     `- The runner token is stored only as a hash; comparison is timing-safe.`,
-    `- Terminal transitions go through finalizeDevJob, not through the store directly.`,
+    `- Terminal state transitions go through the subsystem's single finalizer, not through the store directly.`,
     `- Untrusted input (ticket text, repo content) is framed as data and never used as authorization.`,
     `- Policy (env, egress allowlist, token scope) is derived server-side, never taken from a caller.`,
     ``,

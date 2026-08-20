@@ -44,10 +44,6 @@ on:
 permissions:
   contents: read
   packages: write
-  # Keyless cosign signing of the dev-runner release image (spec §10) mints its
-  # certificate from the workflow's ambient GitHub OIDC token — no key material.
-  # This is the ceiling; the caller job (auto-release.yml) must also grant it.
-  id-token: write
 
 jobs:
   build:
@@ -83,36 +79,13 @@ jobs:
             image: ghcr.io/byte5ai/omadia-updater
             context: ./middleware/sidecars/updater
             dockerfile: ./middleware/sidecars/updater/Dockerfile
-          # Dev-platform images (epic #470 W1). Both ride THIS workflow so they
-          # stay version-locked to the middleware release under ghcr.io/byte5ai.
-          # `sha_on_release: true` also stamps an immutable :sha-<gitsha> on the
-          # release build so the runner daemon can pin the launch image by digest
-          # (middleware/web-ui keep sha on the edge build only — unchanged).
-          - name: dev-runner
-            image: ghcr.io/byte5ai/omadia-dev-runner
-            # Repo-root context: the shim it bundles is a workspace package under
-            # middleware/packages/, compiled inside the Dockerfile's build stage.
-            context: .
-            dockerfile: ./middleware/sidecars/dev-runner/Dockerfile
-            sha_on_release: 'true'
-          - name: dev-runner-daemon
-            image: ghcr.io/byte5ai/omadia-dev-runner-daemon
-            # One image, two entrypoints (daemon.mjs / proxy.mjs) — covers both
-            # the dev-runner-daemon and dev-egress-proxy compose services.
-            # The Dockerfile is created by the w1-daemon-service-api unit; the
-            # build step below is guarded so this workflow stays valid until it
-            # lands. Align the context here if that unit chooses a wider one.
-            context: ./middleware/sidecars/dev-runner-daemon
-            dockerfile: ./middleware/sidecars/dev-runner-daemon/Dockerfile
-            sha_on_release: 'true'
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
-      # Guard: skip a matrix image whose Dockerfile is not in the tree yet (the
-      # dev-runner-daemon Dockerfile ships in a later W1 unit). The job still
-      # goes green — nothing is published for that image until its Dockerfile
-      # lands, at which point the same run picks it up automatically.
+      # Guard: skip a matrix image whose Dockerfile is not in the tree yet. The
+      # job still goes green — nothing is published for that image until its
+      # Dockerfile lands, at which point the same run picks it up automatically.
       - name: Resolve build inputs
         id: guard
         run: |
@@ -171,37 +144,3 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
-      # ── Runner image supply chain: SBOM + keyless signature + attestation ────
-      # Only the dev-runner image, and only on a RELEASE build (a version tag, not
-      # edge/PR). The W1 runner daemon runs `cosign verify` against this exact
-      # digest at boot (spec §10), so the signature has to be produced here for a
-      # real release. Keyless cosign uses the workflow's ambient GitHub OIDC
-      # identity — the signed subject is the immutable digest build-push emitted
-      # (steps.build.outputs.digest), never a floating tag. syft (anchore action)
-      # produces the SPDX-JSON SBOM that cosign attests against the same digest.
-      # These are no-ops on the edge path (inputs.version == '') and on every
-      # non-runner matrix image.
-      - name: Install cosign
-        if: steps.guard.outputs.build == 'true' && matrix.name == 'dev-runner' && inputs.version != ''
-        uses: sigstore/cosign-installer@v3
-      - name: Generate SBOM (syft → SPDX-JSON)
-        if: steps.guard.outputs.build == 'true' && matrix.name == 'dev-runner' && inputs.version != ''
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-      - name: Sign + attest the runner image (keyless, digest-pinned)
-        if: steps.guard.outputs.build == 'true' && matrix.name == 'dev-runner' && inputs.version != ''
-        env:
-          # cosign reads COSIGN_YES to skip the interactive transparency-log
-          # confirmation in CI (equivalent to `--yes`).
-          COSIGN_YES: 'true'
-          IMAGE_DIGEST: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          # Keyless: the OIDC identity pinned at VERIFY time (daemon) is this
-          # workflow's ref under byte5ai/omadia; here we just sign with the
-          # ambient token. Fulcio issues the short-lived cert; Rekor logs it.
-          cosign sign --yes "$IMAGE_DIGEST"
-          cosign attest --yes --predicate sbom.spdx.json --type spdxjson "$IMAGE_DIGEST"
