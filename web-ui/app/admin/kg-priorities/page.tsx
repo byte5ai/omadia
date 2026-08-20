@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -39,6 +39,7 @@ const DEFAULT_AGENT = 'orchestrator-default';
 
 export default function KgPrioritiesPage(): React.ReactElement {
   const t = useTranslations('adminKgPriorities');
+  const format = useFormatter();
   const [agentId, setAgentId] = useState<string>(DEFAULT_AGENT);
   const [records, setRecords] = useState<AgentPriorityRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -286,7 +287,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                     {r.reason ?? '—'}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-[color:var(--fg-muted)]">
-                    {new Date(r.updatedAt).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(r.updatedAt))}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Button

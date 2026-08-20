@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import Link from 'next/link';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -39,6 +39,7 @@ const BULK_HARD_CAP = 500;
 
 export default function DuplicatesListPage(): React.ReactElement {
   const t = useTranslations('adminDuplicates.list');
+  const format = useFormatter();
   const [tab, setTab] = useState<TabKey>('memories');
   const [statusFilter, setStatusFilter] = useState<MergeCandidateStatus | 'all'>(
     'open',
@@ -426,7 +427,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                     className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={mc.props.created_at}
                   >
-                    {new Date(mc.props.created_at).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(mc.props.created_at))}
                   </time>
                 </div>
                 <p className="text-sm text-[color:var(--fg-strong)]">
@@ -638,7 +639,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                         className="font-mono text-[color:var(--fg-muted)]"
                         dateTime={mc.props.created_at}
                       >
-                        {new Date(mc.props.created_at).toLocaleString('de-DE')}
+                        {format.dateTime(new Date(mc.props.created_at))}
                       </time>
                     </div>
                     <p className="text-sm text-[color:var(--fg-strong)]">
