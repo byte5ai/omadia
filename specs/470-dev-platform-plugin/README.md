@@ -107,6 +107,47 @@ it at all.
 - Unknown `permissions.*` keys now warn instead of vanishing silently (`implementation.md`
   §2.5). Ratchet unchanged at 3296.
 
+### C6 — G2 route auth + G3 raw body (shipped)
+
+- **`auth: 'session' | 'public' | 'custom'` on `ctx.routes.register`, composed INSIDE the
+  disposed guard.** The order is the feature: `[disposed guard] → [auth] → [body] → router`,
+  so a deactivated plugin's route answers **404 before any auth logic runs** rather than 401.
+  The pinned-order test asserts exactly that, and a counter-proof rebuilds the pre-C6
+  composition (auth outside the guard) to show the same request coming back 401.
+- **The auth middleware is bound once per route, at registration** — the resolver is called
+  by `register()`, never per request. No global mutable map decides a live route's posture,
+  so there is no window in which it can change underneath it. Registering `auth:'session'`
+  before `createRequireAuth` has run **throws**; it does not quietly serve.
+- **`'session'` is defence-in-depth under `/api` and a genuinely new gate outside it.**
+  `plan.md` §3's trap holds — the blanket `app.use('/api', requireAuth, …)` already covers
+  every `/api` plugin router — but `/diagrams`, `/documents` and `/p/…` were never covered by
+  it. CSRF posture is core's own (`SameSite=Lax`, no token layer) because it is the same
+  `requireAuth` instance, not an equivalent one.
+- **`'public'`/`'custom'` need a manifest declaration, checked at registration.** The gate
+  lives in `pluginContext.ts` (the only layer that knows the manifest) and requires the
+  **registered prefix** to lie inside a **declared** `permissions.public_paths` entry — never
+  the inverse. The inverse would let a declaration for one webhook open the plugin's whole
+  admin surface. Declaration is necessary, not sufficient: being served without a session
+  still needs C4's exclusive ownership plus operator consent.
+- **`body: 'raw' | 'json' | 'none'`, and the raw parse happens before the global JSON
+  parser.** A route-local `express.raw()` alone does not work: body-parser marks the request
+  `_body` and every later parser short-circuits, so a webhook posted as `application/json`
+  reaches the plugin as an object and every HMAC fails. `pluginRawBodyMount.ts` is a new slot
+  ahead of `express.json` that runs only the parser of a live, raw-registered prefix and then
+  `next()`s. It never routes, never authenticates, never answers — no reachable surface is
+  added. **Not** `express.json`'s `verify` hook (`plan.md` §3 G3).
+- **Raw default limit is 512 KB, not the global 10 MB.** A raw body is necessarily buffered
+  before authentication, so the default is the one the hand-rolled GitHub receiver already
+  chose for the same reason; `bodyLimit` raises it visibly.
+- **Exit condition met:** a fixture plugin registers `POST /webhook` with
+  `auth:'custom', body:'raw'` under a granted prefix and verifies `X-Hub-Signature-256` with
+  `crypto.timingSafeEqual` over `req.rawBody` — valid signature 200, tampered body 401, after
+  deactivate 404 (from C4's terminating mount, not the authenticated stack), and a
+  `body:'json'` sibling still gets parsed JSON.
+- `@omadia/plugin-api` gains `RouteAuthMode`, `RouteBodyMode`, `RouteRegisterOptions`;
+  golden snapshot regenerated and the package bumped `0.1.0 → 0.2.0` per C1's rule.
+  Ratchet unchanged at 3296.
+
 ### Still held back
 
 - **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover

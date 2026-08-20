@@ -107,14 +107,22 @@ export type PluginRouteAuth = 'session' | 'public' | 'custom';
  * How the request body reaches the plugin router.
  *
  *  - `'json'` (default) — parsed JSON at the same limit core's global parser
- *    uses. In production the global `express.json` has usually already run, so
- *    the route-local parser is a no-op pass-through; it exists so a router
- *    behaves identically when the registry is mounted on an app that has no
- *    global parser.
+ *    uses. In production the global `express.json` has already run by the time
+ *    the plugin router is reached, so the route-local parser is a pass-through;
+ *    it exists so a router behaves identically when the registry is mounted on
+ *    an app with no global parser (tests, embedded harnesses).
  *  - `'raw'` — untouched bytes as a `Buffer`, on `req.body` AND `req.rawBody`,
- *    at a 512 KB default limit. See {@link PLUGIN_RAW_BODY_LIMIT}.
- *  - `'none'` — nothing is parsed; the stream is left for the plugin (uploads,
- *    proxying, streaming).
+ *    at a 512 KB default limit. See {@link PLUGIN_RAW_BODY_LIMIT}. This is the
+ *    ONLY mode that changes what happens before the global parser.
+ *  - `'none'` — the kernel mounts no route-local parser and leaves the stream
+ *    to the plugin (uploads, proxying, streaming).
+ *
+ *    **It does not un-mount core's global `express.json`.** A request with
+ *    `Content-Type: application/json` under a `'none'` route has already been
+ *    read and parsed upstream, exactly as it was before C6. `'none'` means
+ *    "the kernel adds nothing here", not "nothing has touched this request".
+ *    If you need the bytes as they arrived, `'raw'` is the mode that guarantees
+ *    it — that is the whole reason it needs its own pre-parser mount.
  */
 export type PluginRouteBody = 'json' | 'raw' | 'none';
 
@@ -123,9 +131,19 @@ export interface PluginRouteOptions {
   readonly auth?: PluginRouteAuth;
   /** Default `'json'`. See {@link PluginRouteBody}. */
   readonly body?: PluginRouteBody;
-  /** Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to
-   *  {@link CORE_JSON_BODY_LIMIT} for `'json'` and {@link PLUGIN_RAW_BODY_LIMIT}
-   *  for `'raw'`. Ignored for `'none'`. */
+  /**
+   * Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to
+   * {@link CORE_JSON_BODY_LIMIT} for `'json'` and {@link PLUGIN_RAW_BODY_LIMIT}
+   * for `'raw'`. Ignored for `'none'`.
+   *
+   * **Reach differs by mode, and the difference is not cosmetic.** On `'raw'`
+   * this is the real, effective limit: the parse happens in the pre-`json`
+   * mount, so nothing has read the stream first. On `'json'` core's global
+   * parser has already run and already enforced its own 10 MB, so a larger
+   * value here cannot raise the effective ceiling — the route-local parser
+   * finds the body parsed and returns. Treat it as meaningful for `'raw'` and
+   * as a standalone-mount convenience for `'json'`.
+   */
   readonly bodyLimit?: string;
 }
 

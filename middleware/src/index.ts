@@ -574,9 +574,9 @@ async function main(): Promise<void> {
   // below — so every `auth: 'session'` route binds the real middleware. If that
   // ordering is ever broken, `register()` throws rather than quietly serving a
   // route with no gate.
-  let kernelRequireAuth: RequestHandler | undefined;
+  const kernelRequireAuthRef: { current?: RequestHandler } = {};
   const pluginRouteRegistry = new PluginRouteRegistry({
-    sessionAuth: () => kernelRequireAuth,
+    sessionAuth: () => kernelRequireAuthRef.current,
   });
   // Epic #470 C4 / H1 — who owns which unauthenticated URL prefix, and which of
   // those the operator has consented to. The registry decides routing; the
@@ -1604,7 +1604,7 @@ async function main(): Promise<void> {
   // operator session is — including the `publicPaths` short-circuit above.
   // Two `createRequireAuth` calls with drifting options is exactly the class of
   // bug `auth/requireAuth.ts` extracted `evaluateSessionToken` to prevent.
-  kernelRequireAuth = requireAuth;
+  kernelRequireAuthRef.current = requireAuth;
 
   // ContextRetriever + FactExtractor construction moved to AFTER
   // `toolPluginRuntime.activateAllInstalled()` below — they consume

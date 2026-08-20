@@ -118,8 +118,8 @@ files is the easy part.
 | # | Gap | Status |
 |---|---|---|
 | **G1** | **No plugin could contribute a navigation entry.** `Nav.tsx` was a frozen `const NAV` literal; nothing in the frontend read plugin state to build menus. | **Closed** — see §5 |
-| **G2** | **A plugin cannot opt a route prefix *out* of authentication.** See below — this is the inverse of what it first appears to be. | Open |
-| **G3** | **A plugin router cannot receive a raw request body.** The GitHub webhook receiver needs untouched bytes for HMAC and is mounted *before* `express.json` on purpose. Plugin routers mount at boot flush, after it. | Open |
+| **G2** | **A plugin cannot opt a route prefix *out* of authentication.** See below — this is the inverse of what it first appears to be. | **Closed** — see `README.md` § C6 |
+| **G3** | **A plugin router cannot receive a raw request body.** The GitHub webhook receiver needs untouched bytes for HMAC and is mounted *before* `express.json` on purpose. Plugin routers mount at boot flush, after it. | **Closed** — see `README.md` § C6 |
 | **G4** | **No kernel mechanism for plugin-owned SQL.** `onMigrate` is *config* migration only. | Open (softer than it looks) |
 | **G5** | **No plugin-declared external services.** No `services:`/`image:` in the manifest; sidecars are operator-managed compose overlays. | Won't fix — see below |
 | **G6** | **`publicPaths` is a frozen literal.** A plugin cannot contribute an auth exemption, and core cannot revoke one on uninstall. Needs prefix ownership too, not just a grant. | Open — **hard blocker** (H1) |

@@ -626,8 +626,10 @@ export type RouteAuthMode = 'session' | 'public' | 'custom';
  *    `req.rawBody`, at a 512 KB default limit. The kernel parses these ahead
  *    of its global JSON parser, so the bytes an HMAC is computed over are the
  *    bytes that arrived. Do NOT re-serialise `req.body` to verify a signature.
- *  - `'none'` — nothing is parsed; the plugin owns the stream (uploads,
- *    proxying, streaming responses).
+ *  - `'none'` — the kernel mounts no parser for this route; the plugin owns the
+ *    stream (uploads, proxying, streaming responses). It does NOT disable the
+ *    kernel's global JSON parser: an `application/json` request has still been
+ *    read upstream. Use `'raw'` when you need the bytes as they arrived.
  */
 export type RouteBodyMode = 'json' | 'raw' | 'none';
 
@@ -639,10 +641,13 @@ export interface RouteRegisterOptions {
   /** Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to 10 MB
    *  for `'json'` and 512 KB for `'raw'`. Ignored for `'none'`.
    *
-   *  Raising it on a `'raw'` route raises how much an ANONYMOUS caller can make
-   *  the kernel buffer before authentication runs — raw bodies must be captured
-   *  before the global parser, which is before the session gate. State a bigger
-   *  number only when the payload genuinely needs it. */
+   *  Only `'raw'` gives it a real effect. Raw bodies are captured before the
+   *  kernel's global parser (they have to be), which is also before the session
+   *  gate — so raising it raises how much an ANONYMOUS caller can make the
+   *  kernel buffer. State a bigger number only when the payload needs it.
+   *
+   *  On `'json'` the kernel's global 10 MB parser has already run, so a larger
+   *  value here cannot raise the effective ceiling. */
   readonly bodyLimit?: string;
 }
 
