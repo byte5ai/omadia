@@ -73,15 +73,16 @@ export const POOL_SHAPED_CAPABILITIES: ReadonlySet<string> = new Set([
  * nothing that can terminate an identifier or start a statement.
  */
 export const LEDGER_NAME_RE = /^[a-z][a-z0-9_]{2,62}$/;
+export const PLUGIN_LEDGER_NAMESPACE = 'plg_';
 
 /**
- * The prefix a plugin's ledger must start with, derived from the kernel-known
- * plugin id — never from anything the plugin sends at runtime.
+ * The folded plugin-id segment that sits INSIDE the kernel-owned
+ * `plg_<sanitized-plugin-id>_<suffix>` namespace.
  *
- * `@omadia/verifier` → `omadia_verifier`. The full id is folded, not just its
+ * `@omadia/verifier` → `omadia_verifier`. The full id is folded, not just the
  * last segment: `@omadia/verifier` and `@acme/verifier` must not derive the
- * same prefix, or the syntactic half of the ownership check would be blind to
- * exactly the collision it exists to catch.
+ * same middle segment, or the syntactic half of the ownership check would be
+ * blind to exactly the collision it exists to catch.
  */
 export function sanitizedPluginPrefix(pluginId: string): string {
   const folded = pluginId
@@ -96,31 +97,65 @@ export function sanitizedPluginPrefix(pluginId: string): string {
   return /^[a-z]/.test(folded) ? folded : `p_${folded}`;
 }
 
+function ownedLedgerPrefix(pluginId: string): string {
+  return `${PLUGIN_LEDGER_NAMESPACE}${sanitizedPluginPrefix(pluginId)}_`;
+}
+
 /**
  * Validate a ledger name for one plugin. Returns the name on success so call
  * sites can write `const ledger = assertLedgerName(id, raw)` and never hold an
  * unvalidated copy alongside a validated one.
  *
+ * Tightening the rule to the reserved `plg_..._` namespace is free TODAY:
+ * `plugin_sql_grants` still has no shipped grant surface — nothing in `src/`
+ * calls `grant()` — so no deployment can already contain persisted rows under
+ * the looser rule. This is the last point where the kernel can make the
+ * namespace mandatory without carrying a data migration forever.
+ *
  * NOTE the prefix rule is necessary but NOT sufficient for ownership — for
- * plugins `acme_tool` and `acme_tool_extra` the name `acme_tool_extra_mig`
- * carries both prefixes. Exclusive ownership is enforced by `UNIQUE (ledger)`
- * in `plugin_sql_grants` (migration 0045); this check is the cheap, offline
- * half that rejects the obvious cases before a grant is ever requested.
+ * plugins `acme_tool` and `acme_tool_extra` the name
+ * `plg_acme_tool_extra_mig` carries both per-plugin prefixes. Exclusive
+ * ownership is enforced by `UNIQUE (ledger)` in `plugin_sql_grants`
+ * (migration 0045); this check is the cheap, offline half that rejects the
+ * obvious cases before a grant is ever requested.
  */
 export function assertLedgerName(pluginId: string, ledger: string): string {
+  const prefix = ownedLedgerPrefix(pluginId);
+  const maxSuffixLength = 63 - prefix.length;
+  if (maxSuffixLength < 1) {
+    throw new LedgerNameError(
+      pluginId,
+      ledger,
+      `plugin id '${pluginId}' is too long for a plugin SQL ledger: mandatory prefix '${prefix}' uses ${String(prefix.length)} of Postgres' 63-char identifier limit and leaves no room for the required suffix`,
+    );
+  }
+  if (!ledger.startsWith(prefix)) {
+    throw new LedgerNameError(
+      pluginId,
+      ledger,
+      `must start with this plugin's reserved prefix '${prefix}' — the kernel owns the 'plg_' namespace so no core table can ever live there, and a ledger outside it may belong to another plugin or core`,
+    );
+  }
+  const suffix = ledger.slice(prefix.length);
+  if (suffix.length === 0) {
+    throw new LedgerNameError(
+      pluginId,
+      ledger,
+      `must start with '${prefix}' and end with a non-empty suffix — bare per-plugin namespaces are not valid ledger table names`,
+    );
+  }
+  if (ledger.length > 63) {
+    throw new LedgerNameError(
+      pluginId,
+      ledger,
+      `is too long for this plugin's reserved namespace: prefix '${prefix}' leaves room for at most ${String(maxSuffixLength)} suffix character${maxSuffixLength === 1 ? '' : 's'}, got ${String(suffix.length)}`,
+    );
+  }
   if (!LEDGER_NAME_RE.test(ledger)) {
     throw new LedgerNameError(
       pluginId,
       ledger,
       `must match ${String(LEDGER_NAME_RE)} — lowercase letters, digits and underscores, 3-63 chars, starting with a letter`,
-    );
-  }
-  const prefix = sanitizedPluginPrefix(pluginId);
-  if (!ledger.startsWith(prefix)) {
-    throw new LedgerNameError(
-      pluginId,
-      ledger,
-      `must start with this plugin's own prefix '${prefix}' — a ledger outside it may belong to another plugin, and forging another plugin's migration history would suppress its schema changes at the next boot`,
     );
   }
   return ledger;
@@ -162,10 +197,16 @@ export function parseSqlPermission(
     );
     return undefined;
   }
-  if (!isValidLedgerName(pluginId, ledger)) {
+  try {
+    assertLedgerName(pluginId, ledger);
+  } catch (err) {
+    const detail =
+      err instanceof LedgerNameError
+        ? err.message
+        : `must match ${String(LEDGER_NAME_RE)} and stay inside '${ownedLedgerPrefix(pluginId)}<suffix>'`;
     warn(
       `[catalog] plugin '${pluginId}': permissions.sql.ledger '${ledger}' is not a name this plugin may own ` +
-        `(must match ${String(LEDGER_NAME_RE)} and start with '${sanitizedPluginPrefix(pluginId)}') — permissions.sql ignored`,
+        `(${detail}) — permissions.sql ignored`,
     );
     return undefined;
   }

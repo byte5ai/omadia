@@ -338,15 +338,49 @@ describe('services.provide — per-caller factories are kernel-attributed', () =
 describe('services.get — dated legacy allowlist (2026-08-20)', () => {
   const LEGACY_ID = '@omadia/orchestrator';
 
+  it('hands the pool over BORROWED — a plugin cannot end core\'s database', () => {
+    // The wiring half of the #665 guard. `borrowedPool.test.ts` proves the
+    // wrapper refuses `end()`; this proves the wrapper is actually ON the
+    // object a plugin receives from `services.get`. Without this, removing the
+    // `borrowPool(...)` call in `pluginContext.ts` would leave every unit test
+    // green while handing plugins the raw pool again.
+    //
+    // Asserted on the LEGACY path deliberately: grandfathered plugins are the
+    // ones most likely to contain an old `pool.end()` in their teardown, so
+    // they are exactly who must not be exempt from the guard.
+    const catalog = catalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
+    const { ctx, registry } = makeCtx(LEGACY_ID, catalog);
+    let ended = false;
+    registry.provide('graphPool', {
+      pool: true,
+      end: () => {
+        ended = true;
+      },
+    });
+
+    const borrowed = ctx.services.get<{ end: () => void }>('graphPool');
+    assert.throws(
+      () => borrowed?.end(),
+      /borrowed rather than owned/,
+      'services.get must not hand a plugin a pool it can tear down',
+    );
+    assert.equal(ended, false, 'the underlying pool must be untouched');
+  });
+
   it('warns exactly once per capability and then allows', () => {
     const catalog = catalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
     const { ctx, registry, logs } = makeCtx(LEGACY_ID, catalog);
     const pool = { pool: true };
     registry.provide('graphPool', pool);
 
-    assert.equal(ctx.services.get('graphPool'), pool);
-    assert.equal(ctx.services.get('graphPool'), pool);
-    assert.equal(ctx.services.get('graphPool'), pool);
+    // Read-through rather than reference equality: since #470 C7 a pool-shaped
+    // capability is handed to a plugin through `borrowPool`, so what comes back
+    // is a lifecycle-guarded Proxy over `pool`, not `pool` itself. The identity
+    // check was never this case's point — the warn-once behaviour below is —
+    // and asserting through the Proxy keeps it testing that.
+    assert.equal(ctx.services.get<typeof pool>('graphPool')?.pool, true);
+    assert.equal(ctx.services.get<typeof pool>('graphPool')?.pool, true);
+    assert.equal(ctx.services.get<typeof pool>('graphPool')?.pool, true);
 
     const warnings = logs.filter((l) => l.includes("resolved 'graphPool'"));
     assert.equal(

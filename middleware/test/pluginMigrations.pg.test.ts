@@ -33,6 +33,7 @@ import { probePgTest } from './_helpers/pgTestDb.js';
 
 import {
   PLUGIN_MIGRATION_LOCK_WAIT_MS,
+  PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS,
   runPluginMigrations,
 } from '../src/platform/pluginMigrations.js';
 import {
@@ -79,7 +80,7 @@ describe('#470 C7 runPluginMigrations', { skip: !pgAvailable }, () => {
   beforeEach(async () => {
     const mark = randomUUID().replace(/-/g, '').slice(0, 10);
     pluginId = `@omadia/t${mark}`;
-    ledger = `omadia_t${mark}_migrations`;
+    ledger = `plg_omadia_t${mark}_migrations`;
     dir = await mkdtemp(join(tmpdir(), 'c7-mig-'));
   });
 
@@ -335,11 +336,107 @@ describe('#470 C7 runPluginMigrations', { skip: !pgAvailable }, () => {
     await cleanup(`${ledger}_data`);
   });
 
-  it('the lock wait budget stays inside the 10s activate() cap', () => {
-    // Asserted rather than trusted in a comment: this number is what keeps a
-    // contended migration from turning into an activate timeout.
+  it('the two server-side budgets are ordered: lock wait << statement budget', () => {
+    // Asserted rather than trusted in a comment.
+    //
+    // This test used to claim the lock budget "stays inside the 10s activate()
+    // cap". That was never true of the wiring: `runMigrations()` is awaited
+    // BEFORE `withTimeout(activateFn(ctx), 10_000, ...)` in
+    // `toolPluginRuntime.ts`, so the activate cap never covered it. The test
+    // passed anyway because it only ever compared one constant against a
+    // literal — it asserted a relationship between two numbers that were not
+    // actually related. The runner is now bounded by its own
+    // `MIGRATION_TIMEOUT_MS`, and what is worth pinning here is the ordering
+    // of the two budgets that DO interact.
+    //
+    // Waiting on a peer replica must give up fast; a statement that already
+    // holds its locks is legitimately slower. If these ever crossed, a
+    // contended migration would be cancelled as a runaway statement and the
+    // operator would be sent to debug the package instead of the contention.
     assert.ok(PLUGIN_MIGRATION_LOCK_WAIT_MS > 0);
-    assert.ok(PLUGIN_MIGRATION_LOCK_WAIT_MS <= 5_000);
+    assert.ok(PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS > 0);
+    assert.ok(
+      PLUGIN_MIGRATION_LOCK_WAIT_MS < PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS,
+      'the lock wait must be the tighter of the two budgets',
+    );
+  });
+
+  it('sets BOTH a lock_timeout and a statement_timeout on the migration txn', async () => {
+    // `lock_timeout` alone bounds only lock ACQUISITION. A migration that
+    // acquires its locks and then runs forever would hold the advisory lock
+    // indefinitely and block boot for every replica, so the statement budget
+    // is the half that actually caps execution. Read back from the live
+    // transaction rather than grepped out of the source: what matters is that
+    // Postgres received them, in the transaction that applies the files.
+    await writeFile(
+      join(dir, '001_probe.sql'),
+      // Recorded in milliseconds, not as the raw setting string: Postgres
+      // normalises '2000ms' to '2s', so a text comparison would be asserting
+      // the display format rather than the budget.
+      `CREATE TABLE ${ledger}_probe (
+         lock_budget_ms      INTEGER NOT NULL,
+         statement_budget_ms INTEGER NOT NULL
+       );
+       INSERT INTO ${ledger}_probe (lock_budget_ms, statement_budget_ms)
+       SELECT EXTRACT(EPOCH FROM current_setting('lock_timeout')::interval) * 1000,
+              EXTRACT(EPOCH FROM current_setting('statement_timeout')::interval) * 1000;`,
+      'utf8',
+    );
+
+    await runPluginMigrations({ pool, pluginId, ledger, dir });
+
+    const seen = await pool.query<{
+      lock_budget_ms: number;
+      statement_budget_ms: number;
+    }>(`SELECT lock_budget_ms, statement_budget_ms FROM ${ledger}_probe`);
+
+    assert.equal(seen.rows.length, 1);
+    assert.equal(
+      Number(seen.rows[0]?.lock_budget_ms),
+      PLUGIN_MIGRATION_LOCK_WAIT_MS,
+    );
+    assert.equal(
+      Number(seen.rows[0]?.statement_budget_ms),
+      PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS,
+    );
+    await cleanup(`${ledger}_probe`);
+  });
+
+  it('reports a statement that blows the budget as a typed SqlMigrationError', async () => {
+    // The runner re-throws most pg errors verbatim — a syntax error in a
+    // plugin's own SQL is most useful raw. The two TIMEOUT conditions are the
+    // exception: they are properties of the operator's environment, not of the
+    // package, and surfacing a bare `57014` in an activation log sends whoever
+    // reads it to the wrong place entirely.
+    await writeFile(
+      join(dir, '001_too_slow.sql'),
+      `SET LOCAL statement_timeout = '50ms'; SELECT pg_sleep(1);`,
+      'utf8',
+    );
+
+    await assert.rejects(
+      runPluginMigrations({ pool, pluginId, ledger, dir }),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof SqlMigrationError,
+          `expected SqlMigrationError, got ${String((err as Error)?.name)}`,
+        );
+        assert.match(err.message, /per-statement budget/);
+        return true;
+      },
+    );
+
+    // And the batch left nothing behind. The ledger table is itself created
+    // inside the batch transaction, so a first-run failure rolls back even
+    // that — `to_regclass` is the check that works whether or not the table
+    // survived. Either way no ledger row exists, which is what stops the next
+    // boot from skipping a migration that never actually ran.
+    const ledgerExists = await pool.query<{ reg: string | null }>(
+      `SELECT to_regclass($1) AS reg`,
+      [ledger],
+    );
+    assert.equal(ledgerExists.rows[0]?.reg, null);
+    await cleanup();
   });
 
   // ── The counter-proof case ────────────────────────────────────────────────
@@ -419,7 +516,7 @@ describe('#470 C7 runPluginMigrations', { skip: !pgAvailable }, () => {
     // every plugin's schema through one lock.
     const otherMark = randomUUID().replace(/-/g, '').slice(0, 10);
     const otherId = `@omadia/t${otherMark}`;
-    const otherLedger = `omadia_t${otherMark}_migrations`;
+    const otherLedger = `plg_omadia_t${otherMark}_migrations`;
     const otherDir = await mkdtemp(join(tmpdir(), 'c7-mig-b-'));
     await writeFile(
       join(dir, '0001.sql'),
@@ -467,7 +564,7 @@ describe('#470 C7 PostgresPluginSqlGrantStore', { skip: !pgAvailable }, () => {
   const mark = randomUUID().replace(/-/g, '').slice(0, 10);
   const pluginA = `@omadia/g${mark}a`;
   const pluginB = `@omadia/g${mark}b`;
-  const ledgerA = `omadia_g${mark}a_migrations`;
+  const ledgerA = `plg_omadia_g${mark}a_migrations`;
 
   before(async () => {
     pool = new Pool({ connectionString: PG_URL, max: 4 });

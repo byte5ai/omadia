@@ -141,6 +141,23 @@ export interface ToolPluginRuntimeDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * Wall-clock cap on a plugin's boot-time migration batch.
+ *
+ * Larger than the 10s `activate()` cap because applying schema is a different
+ * kind of work: an index build or a backfill on a real table is legitimately
+ * slower than wiring up a plugin's handlers. It is still a cap — the point is
+ * that a hung migration fails this ONE activation through the existing
+ * circuit-breaker instead of hanging middleware boot for everyone.
+ *
+ * Sits above `PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS` (30s) on purpose: the
+ * server-side budget should be what cancels a runaway statement, because it
+ * cancels it *in Postgres* and rolls the batch back cleanly. This one is the
+ * outer net for the case Postgres cannot see — a connection that never
+ * answers at all.
+ */
+const MIGRATION_TIMEOUT_MS = 60_000;
+
 export class ToolPluginRuntime {
   private readonly active = new Map<string, ActiveEntry>();
 
@@ -338,7 +355,21 @@ export class ToolPluginRuntime {
     // nobody chose. The circuit-breaker in `activateAllInstalled` treats it
     // like any other activate failure.
     if (declaredSql?.migrations && ctx.sql) {
-      const report = await ctx.sql.runMigrations();
+      // Bounded with the SAME helper that caps `activate()`, and for the same
+      // reason. `runPluginMigrations` sets `lock_timeout` and
+      // `statement_timeout` server-side, but neither covers a connection that
+      // never answers — a pool exhausted by another plugin, a database that
+      // accepted the TCP connection and then went away. This await sits on the
+      // boot path ahead of `activate()`, so an unbounded one hangs the whole
+      // middleware rather than just this plugin. The budget is its own
+      // constant because migrating schema is legitimately slower than
+      // activating, and folding it into the 10s activate cap would either
+      // starve real migrations or loosen the activate bound.
+      const report = await withTimeout(
+        ctx.sql.runMigrations(),
+        MIGRATION_TIMEOUT_MS,
+        `runMigrations(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
       if (report.applied.length > 0) {
         log(
           `[tool-runtime] ${agentId}: applied ${String(report.applied.length)} migration(s) to ledger '${report.ledger}' in ${String(report.durationMs)}ms (${report.applied.join(', ')})`,

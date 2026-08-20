@@ -104,8 +104,10 @@ import {
 import {
   createSqlGate,
   DEFAULT_MIGRATIONS_DIR,
+  POOL_SHAPED_CAPABILITIES,
   sqlPermissionOf,
 } from './pluginSqlGrants.js';
+import { borrowPool } from './borrowedPool.js';
 import { runPluginMigrations } from './pluginMigrations.js';
 
 /**
@@ -200,6 +202,12 @@ export interface CreatePluginContextOptions {
    * Absent → ungranted. Test and migration contexts that omit it get no
    * database access, which is the correct default for a context that was never
    * meant to have any.
+   *
+   * The corollary, stated plainly because it is security-relevant: since this
+   * is resolved ONCE, revoking the operator's grant does not disarm a plugin
+   * that is already running. It stops the next activation. An operator who
+   * needs the access gone immediately must deactivate/reactivate the plugin.
+   * See `PluginSqlGrantStore.revoke`.
    */
   sqlGranted?: boolean;
   /**
@@ -308,7 +316,15 @@ export function createPluginContext(
       // declared neither should hear about the manifest line it is missing
       // before it hears about a grant it could not have obtained anyway.
       assertSqlAccess(name);
-      return serviceRegistry.get<T>(name, serviceCaller);
+      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
+      // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
+      // tears down the connection pool core writes user data through. Applied
+      // here, at the plugin-facing seam, so core's own
+      // `serviceRegistry.get('graphPool')` keeps the real object.
+      return resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)
+        ? (borrowPool(resolved as Pool, agentId) as T)
+        : resolved;
     },
     has(name: string): boolean {
       return serviceRegistry.has(name);

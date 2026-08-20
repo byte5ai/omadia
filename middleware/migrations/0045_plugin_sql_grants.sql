@@ -16,13 +16,14 @@
 --
 -- `UNIQUE (ledger)` — one ledger belongs to at most one plugin, FOREVER. This
 -- is the actual anti-hijack enforcement. `platform/pluginSqlGrants.ts` also
--- requires the ledger name to start with the plugin's sanitized id, but that
--- prefix rule is defence-in-depth and not airtight on its own: for plugins
--- `acme_tool` and `acme_tool_extra`, a name like `acme_tool_extra_mig` carries
--- BOTH prefixes, so the syntactic check alone would let the first plugin claim
--- the second one's ledger. A database-level uniqueness constraint has no such
--- edge: whoever is granted the name first holds it, and the second grant fails
--- loudly instead of silently sharing a migration history.
+-- requires the ledger name to live inside the kernel-owned
+-- `plg_<sanitized-plugin-id>_<suffix>` namespace, but that prefix rule is
+-- defence-in-depth and not airtight on its own: for plugins `acme_tool` and
+-- `acme_tool_extra`, a name like `plg_acme_tool_extra_mig` carries BOTH
+-- per-plugin prefixes, so the syntactic check alone would let the first plugin
+-- claim the second one's ledger. A database-level uniqueness constraint has no
+-- such edge: whoever is granted the name first holds it, and the second grant
+-- fails loudly instead of silently sharing a migration history.
 --
 -- `ledger` is stored verbatim as declared and is re-validated against the
 -- charset allowlist on every use before it is quoted into DDL — the table is a

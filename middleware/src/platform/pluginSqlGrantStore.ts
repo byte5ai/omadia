@@ -46,7 +46,24 @@ export interface PluginSqlGrantStore {
   /** Idempotent for the same (plugin, ledger) — re-granting refreshes who and
    *  when. Rejects when another plugin already owns `ledger`. */
   grant(pluginId: string, ledger: string, grantedBy: string): Promise<void>;
-  /** Returns true when a row was actually removed. */
+  /**
+   * Returns true when a row was actually removed.
+   *
+   * REVOCATION TAKES EFFECT AT THE NEXT ACTIVATION, NOT IMMEDIATELY.
+   *
+   * The grant is read once, before the plugin's context is built, because
+   * `ctx.services.get` is synchronous and cannot await a lookup (see
+   * `CreatePluginContextOptions.sqlGranted`). A plugin that is already live
+   * therefore keeps the `ctx.sql` accessor and the pool it resolved for the
+   * rest of the process — deleting this row does not reach into it.
+   *
+   * So `revoke()` stops the NEXT activation, and an operator who needs access
+   * to stop now must deactivate and reactivate the plugin (or restart the
+   * middleware). This is a real property of the design and not an oversight;
+   * it is documented here rather than in a design note because this method is
+   * where an operator-facing caller meets it. `pluginSqlPermission.test.ts`
+   * pins the behaviour so a change to it has to be deliberate.
+   */
   revoke(pluginId: string): Promise<boolean>;
 }
 

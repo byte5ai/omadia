@@ -18,6 +18,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin SQL ledgers now live in a core-proof namespace
+
+- `permissions.sql.ledger` is now kernel-validated as
+  `plg_<sanitized-plugin-id>_<suffix>`, closing the hole where a plugin whose
+  folded id matched a real core table name could adopt that table as its
+  migration ledger. The validator now also fails loudly when the mandatory
+  namespace leaves too little room inside Postgres' 63-byte identifier limit,
+  instead of relying on later DDL truncation behavior.
+
 ### Added — provenance verification surface: verify API, signed export, offline verifier (#761)
 
 - **`GET /api/v1/operator/provenance/verify`** walks the stored chain,

@@ -78,6 +78,35 @@ export const PLUGIN_MIGRATION_LOCK_NS = 4_420;
  */
 export const PLUGIN_MIGRATION_LOCK_WAIT_MS = 2_000;
 
+/**
+ * How long any ONE statement inside a plugin's migration batch may run.
+ *
+ * `lock_timeout` bounds only how long we wait to ACQUIRE a lock; it says
+ * nothing about how long a statement that already holds its locks may execute.
+ * Without this, a migration containing a slow backfill — or a plugin that
+ * simply ships `SELECT pg_sleep(...)` — blocks middleware boot indefinitely,
+ * because this runner is awaited before the plugin's `activate()` is even
+ * called.
+ *
+ * 30s rather than the lock's 2s: waiting on a peer replica should give up
+ * fast, but a genuine `CREATE INDEX` or a backfill over a real table is
+ * legitimately slower than that, and a bound that fails honest schema work
+ * would just push authors to migrate outside the runner where nothing is
+ * serialised. Exported so a test asserts the budget instead of trusting this
+ * comment.
+ */
+export const PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * Postgres SQLSTATEs for the two budgets above, mapped so a contention or
+ * runaway-statement condition reaches the caller as a typed
+ * {@link SqlMigrationError} rather than a bare `pg` error. Blaming the plugin
+ * for "55P03" in an activation log sends the operator to the wrong place: the
+ * usual cause is another replica holding the lock, which is not a fault at all.
+ */
+const LOCK_TIMEOUT_SQLSTATE = '55P03';
+const STATEMENT_TIMEOUT_SQLSTATE = '57014';
+
 /** Extensions the runner will execute, in the order `sort()` puts them —
  *  which is filename order, not extension order. */
 const MIGRATION_EXTENSIONS = ['.sql', '.js', '.mjs'] as const;
@@ -162,6 +191,13 @@ export async function runPluginMigrations(
       await client.query(
         `SET LOCAL lock_timeout = '${String(PLUGIN_MIGRATION_LOCK_WAIT_MS)}ms'`,
       );
+      // `lock_timeout` bounds only lock ACQUISITION. Without a statement
+      // budget as well, a migration that acquires its locks and then runs
+      // forever holds the advisory lock for as long as it likes and blocks
+      // boot — for this replica and, through the lock, for every other one.
+      await client.query(
+        `SET LOCAL statement_timeout = '${String(PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS)}ms'`,
+      );
       await client.query(
         'SELECT pg_advisory_xact_lock($1::int, hashtext($2)::int)',
         [PLUGIN_MIGRATION_LOCK_NS, ledger],
@@ -209,7 +245,7 @@ export async function runPluginMigrations(
       // this uses the xact-scoped variant. Its own failure must not replace
       // the error that caused the rollback.
       await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
+      throw asMigrationError(err, pluginId, ledger);
     }
   } finally {
     client.release();
@@ -309,6 +345,42 @@ function ledgerDdl(ledger: string): string {
  */
 function quoteIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Re-type the two timeout conditions; pass everything else through untouched.
+ *
+ * Deliberately narrow. A blanket "wrap every pg error as SqlMigrationError"
+ * would erase the distinction between a plugin shipping invalid SQL (its
+ * author's problem, and the raw syntax error is the most useful thing we can
+ * show) and the two conditions here, which are the operator's environment
+ * rather than the package. Only the latter get re-typed.
+ */
+function asMigrationError(
+  err: unknown,
+  pluginId: string,
+  ledger: string,
+): unknown {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === LOCK_TIMEOUT_SQLSTATE) {
+    return new SqlMigrationError(
+      pluginId,
+      ledger,
+      `timed out after ${String(PLUGIN_MIGRATION_LOCK_WAIT_MS)}ms waiting for the migration lock on ledger '${ledger}' — ` +
+        'another replica is most likely applying the same batch. This is contention, not a defect in the package; ' +
+        'the next activation attempt will find the work already done and skip it',
+    );
+  }
+  if (code === STATEMENT_TIMEOUT_SQLSTATE) {
+    return new SqlMigrationError(
+      pluginId,
+      ledger,
+      `a migration statement exceeded the ${String(PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS)}ms per-statement budget and was cancelled — ` +
+        'the whole batch rolled back. Split the long-running step (a backfill, an index build over a large table) ' +
+        'out of the boot-time migration path',
+    );
+  }
+  return err;
 }
 
 function sha256(text: string): string {
