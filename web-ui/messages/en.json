@@ -428,6 +428,7 @@
     "graph": "Graph",
     "routines": "Routines",
     "conductor": "Conductor",
+    "receipts": "Receipts",
     "privacyReports": "Privacy reports",
     "admin": "Admin",
     "system": "System",
@@ -721,6 +722,20 @@
     "resolve": "Resolve",
     "resolving": "Resolving",
     "resolveFailed": "Resolving the report failed"
+  },
+  "operatorReceipts": {
+    "metaTitle": "Receipts · omadia",
+    "title": "Privacy receipts",
+    "subtitle": "Every completed turn writes its PII-free privacy receipt here — what the shield interned, masked, and passed through. The record survives the chat view; retention is bounded by the middleware's RECEIPT_RETENTION_DAYS.",
+    "loadError": "Failed to load receipts",
+    "empty": "No receipts recorded yet. Receipts appear here as soon as a turn with privacy-shield activity completes.",
+    "scopeLabel": "Scope",
+    "channelLabel": "Channel",
+    "modelLabel": "Model",
+    "turnIdLabel": "Turn",
+    "summaryCounts": "{masked} masked · {datasets} datasets",
+    "loadMore": "Load more",
+    "loadingMore": "Loading…"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",

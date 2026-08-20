@@ -50,6 +50,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   block lands (exponential cases are caught at vet time by the digit/letter/
   unicode probe escalation).
 
+### Added — persistent per-turn privacy receipts (#757)
+
+- **`turn_receipts` (migration `0039`).** The per-turn `PrivacyReceipt` is no
+  longer ephemeral UI state: every completed turn writes its PII-free receipt
+  (counts + routing metadata, never a value) synchronously to Postgres — no
+  optional graph sink, no user-cluster precondition. Failures are counted and
+  logged, never silent. Schema note: `turn_id` unique (idempotent on replayed
+  `done` events); retention bounded by the new `RECEIPT_RETENTION_DAYS`
+  (default 90) via an unref'd reaper anchored on the DB clock.
+- **Operator surface.** Auth-gated `GET /api/v1/operator/receipts` (+
+  `/:turnId`) with composite-keyset pagination, and a web-ui page under
+  `/operator/receipts` rendering the exact receipt card the user saw.
+- Not yet tamper-evident — hash chaining, signatures, and verification are
+  #758/#761; `docs/ai-act-transparency.md` §6 keeps "cryptographically
+  verifiable" a non-claim until they ship.
+
 ### Added — a command policy that reads what a command actually does
 
 - **Shell-normalizing command policy (#580).** Command gating is not

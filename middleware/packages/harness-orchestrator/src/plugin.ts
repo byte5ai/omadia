@@ -52,7 +52,9 @@ import type { MemoryStore, PluginContext } from '@omadia/plugin-api';
 import {
   PRIVACY_REDACT_SERVICE_NAME,
   RESPONSE_GUARD_SERVICE_NAME,
+  TURN_RECEIPT_STORE_SERVICE_NAME,
   type PrivacyGuardService,
+  type TurnReceiptStore,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 
@@ -587,6 +589,12 @@ export async function activate(
   const privacyGuardGetter = (): PrivacyGuardService | undefined =>
     ctx.services.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
 
+  // #757 — persistent per-turn receipt store, published by the kernel once
+  // its pg pool resolves (in-memory backend: never provided, receipts stay
+  // ephemeral). Same late-bound shape as the two getters above.
+  const turnReceiptStoreGetter = (): TurnReceiptStore | undefined =>
+    ctx.services.get<TurnReceiptStore>(TURN_RECEIPT_STORE_SERVICE_NAME);
+
   // Slice 2.5 — cross-plugin runtime-config reader for the privacy
   // bypass resolver. Published by the kernel at boot
   // (`middleware/src/index.ts:installedPluginConfigReader`). When absent
@@ -829,6 +837,7 @@ export async function activate(
     nudgeRegistry,
     responseGuard: responseGuardGetter,
     privacyGuard: privacyGuardGetter,
+    turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
     ...(contextRetriever ? { contextRetriever } : {}),

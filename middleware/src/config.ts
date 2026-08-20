@@ -283,6 +283,11 @@ const ConfigSchema = z.object({
   // origin in dev, while the webhook route only ever lives on the middleware).
   CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
+  // #757 — bounded retention for persisted per-turn privacy receipts
+  // (`turn_receipts`). The payload is PII-free (counts only) but turn_id +
+  // scope are personal-data linkage, so rows are reaped after this many days.
+  RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+
   // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
   // job nor its repo sets one (spec §5). Token budgets have NO default: they are
   // enforced only when explicitly set on the job or repo.
