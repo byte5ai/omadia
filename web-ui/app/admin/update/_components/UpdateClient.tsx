@@ -291,7 +291,9 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
             {t('notifyOnlyComposeLabel')}
           </p>
           <pre className="mt-1 overflow-x-auto rounded bg-[color:var(--bg)] p-3 font-mono text-xs">
-            {`OMADIA_VERSION=${target.length > 0 ? target : 'vX.Y.Z'} docker compose up -d`}
+            {t('notifyOnlyComposeCmd', {
+              version: target.length > 0 ? target : 'vX.Y.Z',
+            })}
           </pre>
           <p className="mt-3 text-[11px] tracking-wider text-[color:var(--fg-muted)] uppercase">
             {t('notifyOnlyFlyLabel')}
