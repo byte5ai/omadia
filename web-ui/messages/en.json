@@ -1236,6 +1236,7 @@
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
+    "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
     "intro": {
       "kicker": "What is this chat?",
       "body": "This is the operator debug chat — a direct line to your orchestrators for testing prompts and inspecting tool calls, plans, and knowledge-graph walks as they happen. It's not the end-user experience; it's built for debugging."
@@ -3071,7 +3072,7 @@
       "migrationNeeded": "Migration needed",
       "configRequired": "Configuration required",
       "errored": "Activation failed",
-      "readyVerified": "Active · verified {time}",
+      "readyVerified": "Active · configured {time}",
       "missingFields": "Missing: {fields}"
     },
     "workaroundBadge": {

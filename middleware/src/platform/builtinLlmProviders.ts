@@ -25,9 +25,15 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Anthropic',
     wireFormat: 'anthropic',
     baseURL: 'https://api.anthropic.com',
-    // Preserves the previous hard-coded behaviour (`provider !== 'anthropic'`):
-    // the AVV third-party disclosure is suppressed for Anthropic.
-    policy: { requiresAvvDisclosure: false },
+    // The AVV disclosure used to be suppressed here ("preserves the previous
+    // hard-coded behaviour: provider !== 'anthropic'"). That legacy carve-out
+    // was backwards: Anthropic is the DEFAULT provider, and prompt data sent
+    // to api.anthropic.com is third-party processing under DSGVO Art. 28 like
+    // any other API provider — a German-market customer explicitly praised
+    // this disclosure in the first field test (OM-10) and it must not vanish
+    // exactly on the stock configuration. Omitting the flag lets the
+    // catalogue default (`requiresAvvDisclosure ?? true`) apply.
+    policy: {},
     models: [
       {
         id: 'anthropic:claude-opus-4-8',
