@@ -332,3 +332,29 @@ export {
   resolveCapabilities,
   type GrantStore,
 } from './grants.js';
+
+// #578 Phase 1 — the credential keychain's data model: encrypted, fingerprinted
+// credentials owned by a principal, and the grants (audience scope, once vs
+// standing, purpose, expiry, revocation) that let someone use one. See
+// `credentials.ts` for why this is a dedicated store rather than a second
+// `GrantStore`.
+export {
+  CREDENTIAL_GRANT_MODES,
+  CREDENTIAL_KINDS,
+  fingerprintSecret,
+  InMemoryCredentialStore,
+  isGrantActive,
+  validateNewGrantInput,
+  type Credential,
+  type CredentialBrokerDeclaration,
+  type CredentialGrant,
+  type CredentialGrantId,
+  type CredentialGrantMode,
+  type CredentialId,
+  type CredentialInjectionScheme,
+  type CredentialKind,
+  type CredentialStore,
+  type EncryptedSecretMaterial,
+  type NewCredentialGrantInput,
+  type NewCredentialInput,
+} from './credentials.js';
