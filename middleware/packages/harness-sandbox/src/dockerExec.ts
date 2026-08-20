@@ -27,8 +27,8 @@ export interface DockerExecResult {
 
 export type DockerExec = (ctx: DockerExecContext) => Promise<DockerExecResult>;
 
-/** Real `docker` CLI spawn. Node builtins only, same constraint as
- *  `dev-runner-shim` — no dependency may enter this seam. */
+/** Real `docker` CLI spawn. Node builtins only — no dependency may enter
+ *  this seam. */
 export const execDockerViaSpawn: DockerExec = (ctx) => {
   return new Promise((resolve) => {
     let stdoutBuf: Buffer = Buffer.alloc(0);
