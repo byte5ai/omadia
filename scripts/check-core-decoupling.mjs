@@ -160,19 +160,26 @@ const EXCLUDE_GLOBS = [
   '!**/package-lock.json',
   '!**/*.map',
 
-  // This file. `PATTERNS` above has to spell out the 21 identifiers it hunts
-  // for, and the prose has to explain them, so an unfiltered scan of the
-  // `scripts` zone counted 27 hits against the detector itself. That is not a
-  // coupling — nothing here imports, calls, configures or routes to the Dev
-  // Platform — but it is indistinguishable from one in the total, and it made
-  // the target "27" instead of "0". A ratchet whose floor is a magic number
-  // nobody can verify at a glance is a ratchet people stop reading.
+  // This file, anchored to its EXACT repo-relative path. `PATTERNS` above has
+  // to spell out the 21 identifiers it hunts for, and the prose has to explain
+  // them, so an unfiltered scan of the `scripts` zone counted 27 hits against
+  // the detector itself. That is not a coupling — nothing here imports, calls,
+  // configures or routes to the Dev Platform — but it is indistinguishable
+  // from one in the total, and it made the target "27" instead of "0". A
+  // ratchet whose floor is a magic number nobody can verify at a glance is a
+  // ratchet people stop reading.
+  //
+  // The path anchor matters. A basename wildcard also hides ANY other file of
+  // this name dropped anywhere under a scanned zone, which turns
+  // "self-exclusion" into a silent amnesty for same-named files inside core —
+  // a probe under `middleware/src/` carrying real identifiers scanned as
+  // clean. Only the one real detector file is meant to be excluded.
   //
   // Self-exclusion is safe precisely because this file is the detector: it has
   // no runtime, ships in no image, and adding a pattern here can only ever
   // make the check stricter. The narrower alternative — skipping just the
   // `PATTERNS` array by line range — would break the moment the array moved.
-  '!**/check-core-decoupling.mjs',
+  '!scripts/check-core-decoupling.mjs',
 ];
 
 function rgCount(zone) {

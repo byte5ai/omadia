@@ -12,7 +12,7 @@ import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
  * supplies is treated as untrusted input.
  */
 
-const LABEL = { en: 'Dev Platform', de: 'Dev-Plattform' } as const;
+const LABEL = { en: 'Example Plugin', de: 'Beispiel-Plugin' } as const;
 
 function validEntry(
   overrides: Partial<Parameters<UiRouteCatalog['registerNav']>[1]> = {},
@@ -37,7 +37,7 @@ describe('UiRouteCatalog — nav entries', () => {
     assert.equal(entries[0]?.href, '/admin/example-plugin');
     assert.equal(entries[0]?.cluster, 'adminCluster');
     assert.equal(entries[0]?.order, 100, 'order defaults to 100');
-    assert.equal(entries[0]?.label, 'Dev Platform');
+    assert.equal(entries[0]?.label, 'Example Plugin');
   });
 
   it('omits cluster entirely when not supplied (top-level entry)', () => {
@@ -50,7 +50,7 @@ describe('UiRouteCatalog — nav entries', () => {
     it('resolves the exact locale when present', () => {
       const cat = new UiRouteCatalog();
       cat.registerNav('@plugin/dev', validEntry());
-      assert.equal(cat.listNav('de')[0]?.label, 'Dev-Plattform');
+      assert.equal(cat.listNav('de')[0]?.label, 'Beispiel-Plugin');
     });
 
     it('falls back to the base language for a regional locale', () => {
@@ -58,7 +58,7 @@ describe('UiRouteCatalog — nav entries', () => {
       cat.registerNav('@plugin/dev', validEntry());
       assert.equal(
         cat.listNav('de-AT')[0]?.label,
-        'Dev-Plattform',
+        'Beispiel-Plugin',
         'de-AT should fall back to de, not to en',
       );
     });
@@ -66,7 +66,7 @@ describe('UiRouteCatalog — nav entries', () => {
     it('falls back to en for an untranslated locale', () => {
       const cat = new UiRouteCatalog();
       cat.registerNav('@plugin/dev', validEntry());
-      assert.equal(cat.listNav('fr')[0]?.label, 'Dev Platform');
+      assert.equal(cat.listNav('fr')[0]?.label, 'Example Plugin');
     });
 
     it('requires an en label as the guaranteed fallback', () => {

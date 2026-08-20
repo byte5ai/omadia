@@ -66,12 +66,12 @@ describe('mergeNav', () => {
   it('uses the plugin-supplied label verbatim, not a catalogue lookup', () => {
     const merged = mergeNav(
       STATIC,
-      [entry({ cluster: 'adminCluster', label: 'Dev-Plattform' })],
+      [entry({ cluster: 'adminCluster', label: 'Beispiel-Plugin' })],
       translate,
     );
     const cluster = merged.find((i) => i.kind === 'cluster');
     expect(cluster?.kind === 'cluster' && cluster.children.at(-1)?.label).toBe(
-      'Dev-Plattform',
+      'Beispiel-Plugin',
     );
   });
 

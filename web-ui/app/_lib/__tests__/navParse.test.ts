@@ -14,7 +14,7 @@ const ok = {
   pluginId: 'core:example-plugin',
   navId: 'examplePlugin',
   href: '/admin/example-plugin',
-  label: 'Dev Platform',
+  label: 'Example Plugin',
   order: 50,
   cluster: 'adminCluster',
 };

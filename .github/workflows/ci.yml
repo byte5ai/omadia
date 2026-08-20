@@ -85,6 +85,19 @@ jobs:
           node scripts/check-core-decoupling.mjs --report | tee /tmp/decoupling.txt
           grep -qE '^  TOTAL 0( |$)' /tmp/decoupling.txt
 
+      - name: Test the detector itself
+        # The guard above only earns its required-check status if the detector
+        # it runs actually detects. `check-core-decoupling.test.mjs` plants a
+        # probe file under `middleware/src/` and asserts the checker goes red —
+        # it is the mutation test, committed.
+        #
+        # It is wired HERE deliberately. `scripts/` has no package.json and no
+        # other job globs `*.test.mjs`, so a test file sitting there would
+        # never execute: green because nothing ran it, which this job's own
+        # timeout comment above already names as the same failure family as a
+        # permanently-green guard-skip. A test nobody runs is not a test.
+        run: node --test scripts/check-core-decoupling.test.mjs
+
   # ------------------------------------------------------------------
   # Middleware: lint + typecheck + node:test against tsx
   # ------------------------------------------------------------------

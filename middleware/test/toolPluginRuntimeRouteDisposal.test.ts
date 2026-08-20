@@ -123,7 +123,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     catalog.registerNav('@plugin/dev', {
       navId: 'examplePlugin',
       href: '/admin/example-plugin',
-      label: { en: 'Dev Platform' },
+      label: { en: 'Example Plugin' },
     });
     seedActive(runtime, '@plugin/dev');
 
