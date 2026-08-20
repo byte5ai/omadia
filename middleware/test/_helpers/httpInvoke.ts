@@ -27,15 +27,32 @@ export interface InvokeResult {
 
 type EndArgs = readonly unknown[];
 
+export interface InvokeOptions {
+  /**
+   * Request headers, lower-cased on the way in. Needed by any test that
+   * asserts conditional-request behaviour (`If-None-Match` → 304): without
+   * them the handler only ever sees an unconditional GET, and a test that
+   * expects a 304 would pass or fail for the wrong reason.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
 export function invoke(
   app: Express,
   method: string,
   url: string,
+  options: InvokeOptions = {},
 ): Promise<InvokeResult> {
   const socket = new Socket();
   const req = new IncomingMessage(socket);
   req.method = method;
   req.url = url;
+  for (const [name, value] of Object.entries(options.headers ?? {})) {
+    // `IncomingMessage.headers` is the object Express reads; populate both it
+    // and `rawHeaders` so anything reaching for either sees the same request.
+    req.headers[name.toLowerCase()] = value;
+    req.rawHeaders.push(name, value);
+  }
 
   const res = new ServerResponse(req);
   const chunks: Buffer[] = [];

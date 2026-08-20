@@ -88,6 +88,37 @@ interface RuntimeDeps {
   publicPathGrants?: PublicPathGrantRegistry;
 }
 
+/**
+ * Epic #470 C4 / H1 — put the routing registry back in step with the consent
+ * table after a failed consent write.
+ *
+ * Called only from the PUT error path. The registry, not the table, decides
+ * whether a URL skips authentication, so it must never be left describing
+ * consent the table no longer records. If the re-read itself fails there is no
+ * trustworthy answer available, and the only safe assumption is that nothing is
+ * consented: that costs the plugin's public route and costs nothing in
+ * security.
+ */
+async function resyncPublicPathGrants(
+  deps: Pick<RuntimeDeps, 'publicPathGrantStore' | 'publicPathGrants'>,
+  pluginId: string,
+): Promise<void> {
+  const registry = deps.publicPathGrants;
+  if (!registry) return;
+  try {
+    const truth =
+      (await deps.publicPathGrantStore?.listForPlugin(pluginId)) ??
+      new Set<string>();
+    registry.setGranted(pluginId, new Set(truth));
+  } catch (err) {
+    registry.setGranted(pluginId, new Set<string>());
+    console.warn(
+      `[public-paths] could not re-read consent for '${pluginId}' after a failed update — closing every granted prefix:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
   const router = Router();
 
@@ -412,19 +443,41 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
     const next = new Set(requested as string[]);
     try {
       const current = await deps.publicPathGrantStore.listForPlugin(id);
-      // Revoke first. If the write half-fails, the surviving state is the more
-      // restrictive one.
-      for (const path of current) {
-        if (!next.has(path)) await deps.publicPathGrantStore.revoke(id, path);
+      const revoked = [...current].filter((path) => !next.has(path));
+
+      // NARROW THE REGISTRY BEFORE THE TABLE.
+      //
+      // The in-memory registry — not `plugin_public_path_grants` — is what the
+      // terminating mount consults on every request. So "revoke the row first"
+      // is the wrong thing to reason about: a revoke that reaches the database
+      // but not the registry is a prefix that keeps answering WITHOUT A SESSION
+      // until the process restarts. Closing it in the registry first means the
+      // surface is already shut no matter which write below fails, and the
+      // worst case becomes a row that outlives its routing effect — the
+      // restrictive direction.
+      if (revoked.length > 0) {
+        deps.publicPathGrants?.setGranted(
+          id,
+          new Set([...current].filter((path) => next.has(path))),
+        );
+      }
+
+      for (const path of revoked) {
+        await deps.publicPathGrantStore.revoke(id, path);
       }
       for (const path of next) {
         await deps.publicPathGrantStore.grant(id, path, actor);
       }
-      // Apply live so revoking closes the surface immediately rather than on
-      // next boot — the direction that matters for an unauthenticated route.
+      // Apply live so granting takes effect immediately rather than at next
+      // boot. Revocations already took effect above.
       deps.publicPathGrants?.setGranted(id, next);
       res.json({ id, paths: [...next] });
     } catch (err) {
+      // A half-written update leaves the registry describing a state the table
+      // does not agree with, and the registry is the one that decides whether a
+      // URL needs a session. Re-sync from the table so it can never keep
+      // serving a prefix whose row is already gone.
+      await resyncPublicPathGrants(deps, id);
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'runtime.update_failed', message });
     }

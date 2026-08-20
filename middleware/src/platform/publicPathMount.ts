@@ -79,9 +79,16 @@ export function createPublicPathMount(
     res: Response,
     next: NextFunction,
   ): void {
-    // `req.path` excludes the query string and Express has already decoded it,
-    // which is why the declaration validator forbids percent-encoding: there is
-    // no second representation of the same path for a grant to disagree about.
+    // `req.path` excludes the query string but is NOT decoded — it is the raw
+    // pathname (`parseurl(req).pathname`), so `/x/%68i` stays `/x/%68i` here.
+    // The grant match is therefore a raw byte-prefix comparison, and that is
+    // why the declaration validator forbids percent-encoding: an encoded
+    // declaration could never match a raw request path, so banning it removes
+    // the second representation instead of trusting a decode that never
+    // happens. An encoded REQUEST path simply fails to match and falls through
+    // to `requireAuth` — the fail-closed direction. Containment of anything
+    // exotic that does match (dot segments, `..;/`, doubled slashes) comes from
+    // TERMINATION below, never from normalisation.
     const match = opts.grants.resolve(req.path);
     if (!match) {
       next();

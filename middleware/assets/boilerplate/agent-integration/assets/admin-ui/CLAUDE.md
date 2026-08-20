@@ -3,8 +3,10 @@
 Dieses Dokument beschreibt die **harten Constraints** und das gewünschte
 Pattern für den `admin-ui-body`-Slot in `assets/admin-ui/index.html`.
 Quelle der Wahrheit für das Baseline-Stylesheet:
-`middleware/src/admin-ui/harness-admin-css.ts` (im Browser served via
-`/bot-api/_harness/admin-ui.css`).
+`web-ui/scripts/build-plugin-ui-css.mjs`, das nach
+`middleware/assets/plugin-ui/plugin-ui.css` baut und im Browser unter
+`/bot-api/_harness/plugin-ui.css` ausgeliefert wird
+(`admin-ui.css` bleibt als Alias auf dieselben Bytes bestehen).
 
 ## Wann dieser Guide greift
 

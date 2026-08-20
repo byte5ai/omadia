@@ -18,6 +18,13 @@ import {
 } from '../src/platform/publicPathGrants.js';
 import { createPublicPathMount } from '../src/platform/publicPathMount.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
+import { createRuntimeRouter } from '../src/routes/runtime.js';
+import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import type {
+  PluginCatalog,
+  PluginCatalogEntry,
+} from '../src/plugins/manifestLoader.js';
+import type { PublicPathGrantStore } from '../src/platform/publicPathGrantStore.js';
 
 /**
  * Epic #470 C4 / H1 — manifest-declared, operator-consented public paths.
@@ -114,7 +121,7 @@ describe('#470 C4/H1 — public-path declaration validation', () => {
     );
   });
 
-  it('rejects percent-encoded traversal — Express decodes before matching', () => {
+  it('rejects percent-encoded traversal — the raw path has no second form', () => {
     const result = validateDeclaredPublicPath('/api/plugins/%2e%2e/admin', CTX);
     assert.equal(result.ok, false);
   });
@@ -449,5 +456,242 @@ describe('#470 C4/H1 — COUNTER-PROOF: termination is load-bearing', () => {
       401,
       'termination OFF lets the request escape into the authenticated stack',
     );
+  });
+});
+
+
+// ── Consent writes: the registry is the authority, not the table ───────────
+//
+// `PUT /installed/:id/public-paths` writes rows AND updates the in-memory
+// `PublicPathGrantRegistry`. Only the registry is consulted per request, so a
+// half-applied update that leaves the registry more permissive than the table
+// is a prefix still answering without a session. These tests drive the real
+// endpoint and then probe the real public surface, sharing ONE registry
+// instance between the two mounts exactly as the process does.
+
+const ACME = 'de.byte5.agent.acme';
+const P_ONE = '/api/plugins/acme/one';
+const P_TWO = '/api/plugins/acme/two';
+
+interface StoreState {
+  rows: Set<string>;
+  /** Reject `grant()` for this path, simulating a write that dies partway. */
+  failGrantFor?: string;
+  /** Reject `listForPlugin()` from this call number on (1-based), so the
+   *  error-path re-read can be failed without failing the first read. */
+  failListFromCall?: number;
+  listCalls: number;
+}
+
+function stubStore(state: StoreState): PublicPathGrantStore {
+  return {
+    listForPlugin: () => {
+      state.listCalls += 1;
+      if (
+        state.failListFromCall !== undefined &&
+        state.listCalls >= state.failListFromCall
+      ) {
+        return Promise.reject(new Error('grant table unreadable'));
+      }
+      return Promise.resolve(new Set(state.rows));
+    },
+    listAll: () => Promise.resolve([]),
+    grant: (_id: string, path: string) => {
+      if (state.failGrantFor === path) {
+        return Promise.reject(new Error(`grant write failed for ${path}`));
+      }
+      state.rows.add(path);
+      return Promise.resolve();
+    },
+    revoke: (_id: string, path: string) =>
+      Promise.resolve(state.rows.delete(path)),
+    revokeAllForPlugin: () => Promise.resolve(0),
+  };
+}
+
+interface ConsentHarness {
+  publicUrl: string;
+  consentUrl: string;
+  close(): void;
+}
+
+async function makeConsentHarness(opts: {
+  granted: readonly string[];
+  store: PublicPathGrantStore;
+}): Promise<ConsentHarness> {
+  const routes = newTestRouteRegistry();
+  routes.register(P_ONE, pluginRouter(), ACME);
+  routes.register(P_TWO, pluginRouter(), ACME);
+
+  const grants = new PublicPathGrantRegistry();
+  grants.claim(ACME, [P_ONE, P_TWO], {
+    corePublicPaths: publicPaths(),
+    ownRoutePrefixes: [P_ONE, P_TWO],
+    grantedPrefixes: new Set(opts.granted),
+  });
+
+  const pub = await buildApp({ routes, grants });
+
+  const installed = new InMemoryInstalledRegistry();
+  await installed.register({
+    id: ACME,
+    installed_version: '0.1.0',
+    installed_at: new Date().toISOString(),
+    status: 'active',
+    config: {},
+  });
+  const entry = {
+    plugin: {
+      id: ACME,
+      name: 'Acme',
+      version: '0.1.0',
+      permissions_summary: { public_paths: [P_ONE, P_TWO] },
+    },
+    manifest: {},
+    source_path: '<test>',
+    source_kind: 'manifest-v1',
+  } as unknown as PluginCatalogEntry;
+  const catalog = {
+    get: (id: string): PluginCatalogEntry | undefined =>
+      id === ACME ? entry : undefined,
+  } as unknown as PluginCatalog;
+  const stub = { names: () => [], counts: () => ({}) };
+
+  const consentApp = express();
+  consentApp.use(express.json());
+  consentApp.use(
+    '/api/v1/admin/runtime',
+    createRuntimeRouter({
+      installedRegistry: installed,
+      serviceRegistry: stub as never,
+      turnHookRegistry: stub as never,
+      backgroundJobRegistry: stub as never,
+      chatAgentWrapRegistry: { labels: () => [], count: () => 0 } as never,
+      promptContributionRegistry: { labels: () => [], count: () => 0 } as never,
+      catalog,
+      publicPathGrantStore: opts.store,
+      // THE SAME registry the public mount above reads.
+      publicPathGrants: grants,
+    }),
+  );
+  const consentServer = await listenLoopback(consentApp);
+  const { port } = consentServer.address() as AddressInfo;
+
+  return {
+    publicUrl: pub.baseUrl,
+    consentUrl: `http://127.0.0.1:${String(port)}/api/v1/admin/runtime/installed/${ACME}/public-paths`,
+    close: () => {
+      pub.server.close();
+      consentServer.close();
+    },
+  };
+}
+
+function putPaths(url: string, paths: readonly string[]): Promise<Response> {
+  return fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  });
+}
+
+describe('#470 C4/H1 — consent writes close the live surface', () => {
+  it('closes a revoked prefix even when a later grant write fails', async () => {
+    // Both consented. The operator drops P_ONE and keeps P_TWO — and the
+    // re-grant of P_TWO dies after P_ONE's row is already gone.
+    const state: StoreState = {
+      rows: new Set([P_ONE, P_TWO]),
+      failGrantFor: P_TWO,
+      listCalls: 0,
+    };
+    const h = await makeConsentHarness({
+      granted: [P_ONE, P_TWO],
+      store: stubStore(state),
+    });
+    try {
+      const before = await fetch(`${h.publicUrl}${P_ONE}/ping`);
+      assert.equal(before.status, 200, 'precondition: P_ONE served publicly');
+
+      const res = await putPaths(h.consentUrl, [P_TWO]);
+      assert.equal(res.status, 500, 'the failed write must surface as a 500');
+
+      // The whole point. Before the fix the registry still carried
+      // granted=true for P_ONE, so this answered 200 from the plugin with no
+      // session — a revoked prefix serving unauthenticated until restart.
+      const after = await fetch(`${h.publicUrl}${P_ONE}/ping`);
+      assert.equal(
+        after.status,
+        401,
+        'a revoked prefix must stop serving even when the update failed',
+      );
+    } finally {
+      h.close();
+    }
+  });
+
+  it('applies a successful consent update to the live surface', async () => {
+    const state: StoreState = {
+      rows: new Set([P_ONE, P_TWO]),
+      listCalls: 0,
+    };
+    const h = await makeConsentHarness({
+      granted: [P_ONE, P_TWO],
+      store: stubStore(state),
+    });
+    try {
+      const res = await putPaths(h.consentUrl, [P_TWO]);
+      assert.equal(res.status, 200);
+      assert.deepEqual((await res.json()) as unknown, {
+        id: ACME,
+        paths: [P_TWO],
+      });
+
+      assert.equal(
+        (await fetch(`${h.publicUrl}${P_ONE}/ping`)).status,
+        401,
+        'the revoked prefix is closed',
+      );
+      assert.equal(
+        (await fetch(`${h.publicUrl}${P_TWO}/ping`)).status,
+        200,
+        'the still-consented prefix keeps serving',
+      );
+      assert.deepEqual([...state.rows], [P_TWO], 'the table agrees');
+    } finally {
+      h.close();
+    }
+  });
+
+  it('grants nothing when the error-path re-read also fails', async () => {
+    // The write fails AND the registry cannot be re-synced from the table.
+    // With no trustworthy answer available the only safe state is "nothing is
+    // public" — never "keep whatever was there".
+    const state: StoreState = {
+      rows: new Set([P_ONE, P_TWO]),
+      failGrantFor: P_TWO,
+      failListFromCall: 2,
+      listCalls: 0,
+    };
+    const h = await makeConsentHarness({
+      granted: [P_ONE, P_TWO],
+      store: stubStore(state),
+    });
+    try {
+      const res = await putPaths(h.consentUrl, [P_TWO]);
+      assert.equal(res.status, 500);
+
+      assert.equal(
+        (await fetch(`${h.publicUrl}${P_ONE}/ping`)).status,
+        401,
+        'revoked prefix closed',
+      );
+      assert.equal(
+        (await fetch(`${h.publicUrl}${P_TWO}/ping`)).status,
+        401,
+        'unreadable consent must close every prefix, not preserve the old set',
+      );
+    } finally {
+      h.close();
+    }
   });
 });

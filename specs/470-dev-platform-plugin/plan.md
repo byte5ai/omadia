@@ -243,8 +243,14 @@ exactly one consumer; extracting a package for one consumer is speculative gener
 
 ### 4.2 What stays in core
 
-- `DevJob*` types in `@omadia/plugin-api` — a published, versioned contract that
-  third-party plugins consume via `ctx.devJobs`.
+- ~~`DevJob*` types in `@omadia/plugin-api` — a published, versioned contract that
+  third-party plugins consume via `ctx.devJobs`.~~ **Superseded — §4.1 wins.**
+  `implementation.md` §2.5 recorded that §4.1 and §4.2 contradicted each other on this
+  point and that the plugin-owned answer is the correct one; C2a (#555) then deleted the
+  accessor outright and C2b removed the types from the package. They are core-local in
+  `middleware/src/` today and leave with the extraction. There were never any third-party
+  consumers — nothing ever provided the backing host service, so every call threw
+  (`dormant-capabilities.md` §2).
 - `DevJobStepPort` / `devJobStepEffect.ts` — core-owned conductor port interfaces, already
   devplatform-free by design.
 - `mintAppJwt` — moves **out** of devplatform into `src/platform/githubAppJwt.ts`, closing
@@ -291,6 +297,21 @@ page) is exactly one hand-written HTML file.
 | **E. Publish the pages as an npm package web-ui optionally installs** | Keeps React and removes the *source* from core, but core's build must still know the package exists. Weakens constraint 2 to "no source, but a build-time hook". Fallback if B proves too costly. |
 
 ### 4.3a Plugins use Tailwind — so they ship no CSS at all
+
+> **Status: SHIPPED (C8).** Built as described, with three corrections the
+> implementation forced. (1) The artifact is **11.8 KB gzip**, not 7.7 — the probe's
+> vocabulary was too narrow for a real SPA, and the shipped sheet also absorbs the
+> baseline element styling and the `.harness-*` helpers that `harness-admin-css.ts`
+> used to serve separately. (2) "Reject `[` in class attributes at package ingest" was
+> under-specified, as §2.5 already noted: ingest sees compiled Vite JS, so the check is
+> a two-pattern textual scan over `ui/**/*.js` with its false-positive and
+> false-negative limits written down (`tailwindArbitraryValueScan.ts`). (3) The font
+> problem is worse than "the plugin renders in the fallback stack": `theme.css`
+> composes `--font-sans: var(--font-geist), …`, and an undefined var invalidates the
+> whole declaration, so the plugin drops to the browser's serif default. The generated
+> sheet therefore always binds those three variables. The contract is documented in
+> `plugin-ui-vocabulary.md`.
+
 
 The `.css` gap above is real but it is the **wrong thing to fix**. web-ui is a Tailwind v4
 project; if plugin markup is required to use Tailwind utilities, a plugin never needs to
