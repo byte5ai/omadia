@@ -101,7 +101,7 @@ describe('#578 resolveCredentialMasterKey', () => {
 
   it('refuses to fall back to a dev key file when productionMode is true', async () => {
     await assert.rejects(() => resolveCredentialMasterKey(dir, true));
-    const files = await fsp.readdir(dir).catch(() => []);
+    const files = await fsp.readdir(dir).catch((): string[] => []);
     assert.ok(!files.includes('.dev-credential-keychain.key'), 'must not create a dev key in production mode');
   });
 });
