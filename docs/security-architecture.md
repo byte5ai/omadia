@@ -429,6 +429,19 @@ entry meaningful.
 Telegram, Omadia UI) — no second, parallel response path — so
 privacy-guard's prompt masking and receipt behavior apply identically.
 
+**Operator deny-lists and the miss-report queue (#760).** Operators can add
+literal terms and vetted regex patterns (`custom_terms` / `custom_patterns`
+on the privacy plugin) to the masking layer; operator regexes are vetted at
+config time (syntax + escalating pathological probes over letters, digits,
+mixed and unicode input) AND bounded at runtime — a pattern that blows its
+per-turn budget throws, which the service converts into a BLOCKED turn
+(fail-closed; no auto-disable, because skipping the pattern on later turns
+would be fail-open for exactly the values it protects). Values a detector
+missed have a human path back: `privacy_miss_reports` stores the reported
+term **as the reporter typed it** — a deliberate act on an auth-gated
+operator surface, disclosed in the intake UI, and exactly what the reviewer
+needs to build the deny-list rule.
+
 ## 10. Operator surfaces vs. dev endpoints (`/api/dev`, issue #669)
 
 Everything under `/api` is gated by one line in `middleware/src/index.ts`:
