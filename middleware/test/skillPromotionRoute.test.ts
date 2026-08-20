@@ -43,7 +43,7 @@ class FakeSkillLifecycleStore {
       throw new Error(`skill ${skillId} is not published (status: draft) — only a published skill may be promoted`);
     }
     if (this.behavior === 'automation-blocked') {
-      throw new SkillAutomationWriteBlocked({ kind: 'system', origin: 'cron', id: 'x' } as ScopeId);
+      throw new SkillAutomationWriteBlocked({ kind: 'system', origin: 'schedule', id: 'x' });
     }
     return {
       id: skillId,
@@ -69,7 +69,14 @@ function buildApp(store: FakeSkillLifecycleStore, deps: Partial<SkillPromotionRo
     // router — a query flag lets individual tests exercise the "no session"
     // (401) path without a second app instance.
     if (req.query['noSession'] !== '1') {
-      withSession.session = { omadia_user_id: 'op-1' };
+      withSession.session = {
+        sub: 'sub-op-1',
+        email: 'op@example.com',
+        display_name: 'Operator One',
+        provider: 'local',
+        role: 'admin',
+        omadia_user_id: 'op-1',
+      };
     }
     next();
   });
