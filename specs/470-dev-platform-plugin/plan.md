@@ -361,6 +361,142 @@ parent.
 allowlisted, so a compiled SPA can ship today; what is missing is a static-asset serving
 path from the plugin's router. That is a much smaller problem than a styling story.
 
+### 4.3a addendum — the iframe trust model (C8b)
+
+> **Status: DECIDED and SHIPPED (C8b).** The frame is **sandboxed but same-origin**:
+> `sandbox="allow-same-origin allow-scripts allow-forms"`.
+
+C8 shipped the frame as `allow-scripts allow-forms allow-popups`, deliberately without
+`allow-same-origin`, with a comment saying the bundle is third-party code and this keeps it
+out of the operator's cookies, and that a plugin needing authenticated calls "does them from
+its own backend router, which is where its authentication lives anyway."
+
+The first half was sound. The second half does not follow, and it made the feature
+non-functional. A sandbox without `allow-same-origin` gives the document an **opaque
+origin**. The plugin's own backend router is still reached over HTTP *from inside that
+document*, so:
+
+- every `fetch('/bot-api/v1/...')` leaves with `Origin: null` and is a cross-site request;
+- our session cookie is `SameSite=Lax`, so it is **not attached**;
+- `EventSource(url, { withCredentials: true })` — the live job-event tail — fails identically;
+- `localStorage` throws outright.
+
+The first plugin to port a real SPA (`byte5ai/omadia-dev-platform`) is entirely
+data-driven: all four screens open with a `GET`. The host page therefore rendered a
+correctly-styled, correctly-themed, correctly-translated shell showing an **error state on
+every screen**. Neither repo's suite caught it, because both stub `fetch` and a stub has no
+origin. This is a property of the browser, not of the client.
+
+#### The decision
+
+**Grant `allow-same-origin`.** Four arguments, in order of weight.
+
+1. **The plugin grant model is real, and the frame walks around it.** The server-side plugin
+   contract is deliberately deny-by-default: `pluginServiceGrants.ts` throws
+   `ServiceNotDeclaredError` for undeclared services; `pluginContext.ts` gates `ctx.http`,
+   `ctx.net`, `ctx.secrets`, `ctx.memory`, `ctx.llm`, `ctx.subAgent`, `ctx.knowledgeGraph`,
+   `ctx.mcp`, `ctx.events.emit` and `ctx.flows` on manifest-declared permissions; and
+   `publicPathGrants.ts` reserves `/api/v1/admin` away from plugins even with operator
+   consent. A same-origin UI riding the operator's `Path=/` session reaches that surface
+   anyway, so saying it gains "no new privilege" is false as written.
+2. **What makes the decision acceptable today is narrower and simpler:** the plugin's server
+   half is loaded by a bare in-process dynamic import
+   (`toolPluginRuntime.ts: const mod = (await import(pathToFileURL(entryAbs).href)) ...`).
+   There is no `vm`, worker, child process or Node permission wall around that load. The
+   plugin shares `globalThis` and `process.env`, which includes the session-signing key.
+   Against a malicious plugin author the grant model was never a security boundary at all; it
+   is a consent-and-contract boundary. Such an author can already own the process and forge a
+   session outright. Withholding same-origin from the UI defended nothing against that actor
+   while breaking every honest plugin.
+3. **The threat model the sandbox implied is not the one we have.** Denying same-origin only
+   helps if the UI bundle is less trusted than the server code. That is only true for a
+   browser-only compromise: an XSS in the plugin UI or a compromised frontend dependency
+   controls the bundle but not the server half. That is the real delta this change accepts,
+   and it is why the distinct-origin upgrade path below remains recorded.
+4. **What actually confines the bundle is the response, not ingest.** Core serves it under
+   `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'
+   data:; font-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none';
+   frame-ancestors 'self'`, from an extension allowlist with no `.css` in it. The ingest scan
+   touching the UI bundle is narrower: `PackageUploadService` reads `.js` / `.mjs` only for
+   arbitrary Tailwind values, bounded at 200 files / 8 MB, and built-in / local-dev catalog
+   packages do not traverse that ingest path at all. Inline `<script>`, inline `onclick=`,
+   `javascript:` URLs and `<base>` are blocked at runtime by the CSP, not by ingest.
+
+`allow-popups` is **dropped**: nothing in a plugin UI opens a window, and a granted
+capability nothing uses is only a surface.
+
+The familiar objection — "`allow-scripts` plus `allow-same-origin` lets the frame remove its
+own sandbox attribute" — is true, and it means the attribute is not an enforceable boundary
+here. A same-origin bundle can reach `window.frameElement`, strip `sandbox`, reload, and
+regain top-level navigation, downloads, modals, pointer lock and presentation. The attribute
+is still worth keeping as an intent marker for a non-adversarial bundle, but the rationale
+must not pretend it enforces isolation once same-origin is granted.
+
+#### The residual exposure
+
+The honest cost is the browser-only attacker. A compromised plugin frontend now reaches the
+operator's full same-origin admin surface, including `/bot-api/v1/admin/*` (core
+`/api/v1/admin/*`), can mint a durable API key from that surface, and can write to
+`window.top.document` for UI-redress / credential-phishing attacks in the real operator
+chrome. The plugin's server half does **not** get that route through the declared contract:
+`CORE_RESERVED_ROOTS` refuses `/api/v1/admin` to plugins even on consent, and there is no
+CSRF layer anywhere in the product to stop a same-origin document from riding the cookie.
+
+The accepted mitigation is the recorded distinct-origin upgrade path. It is optional while
+plugin server code is loaded unsandboxed in-process, because the malicious-author threat
+already owns the process. The moment plugin server code is actually sandboxed — a hardening
+pass `pluginContext.ts` already records as planned — that upgrade path becomes mandatory and
+this same-origin decision must be reopened.
+
+#### The two alternatives, and why not
+
+| Alternative | Why rejected |
+|---|---|
+| **Keep the opaque origin; core proxies the plugin's API under the frame's own path with permissive CORS** | `Access-Control-Allow-Origin: null` matches *every* opaque origin on the internet, not just ours — a weaker boundary than the one it replaces, plus a real proxy to build and maintain. The other route to the same place, loosening the session cookie to `SameSite=None; Secure`, weakens authentication **product-wide** to serve one iframe. |
+| **Serve plugin bundles from a distinct origin and treat plugins as genuinely third-party** | The clean answer, and the recorded upgrade path. It needs a second hostname, its own TLS and a cross-origin auth story on *every* install target — Docker Compose, Fly, Render, bare VM. Disproportionate while plugins are operator-installed from a curated hub. Revisit if plugins ever become genuinely untrusted third-party code. |
+
+#### What is machine-checked
+
+- `web-ui/app/plugin-ui/[pluginId]/_components/__tests__/PluginUiFrame.test.tsx` pins the
+  sandbox attribute to its **exact** string, so both dropping `allow-same-origin` again and
+  re-adding `allow-popups` go red; it also pins the `src` to core's own origin, since
+  same-origin is a property of the URL as much as of the attribute. The "withholds top-level
+  navigation..." test is explicitly documented as intent, not enforcement.
+- `middleware/test/pluginUiFrameCredentials.test.ts` asserts the posture the decision rests
+  on: the session cookie is `SameSite=Lax; Path=/; HttpOnly` and **not** `SameSite=None`; a
+  same-origin request replaying it authenticates while the same request without it 401s; and
+  the served document still carries `connect-src 'self'`, `frame-ancestors 'self'`,
+  `base-uri 'none'` and `form-action 'none'`.
+- `middleware/test/pluginUiTrustModel.test.ts` is the tripwire for the premise itself: it
+  source-pins the bare in-process plugin load, asserts `/api/v1/admin` stays in
+  `CORE_RESERVED_ROOTS` with the accepted-exposure comment next to it, exercises the real
+  `ServiceNotDeclaredError` gate for undeclared services, and pins the session JWT's
+  `role: 'admin'` plus `Path=/`. If any of those stop being true, the same-origin decision's
+  rationale has changed and the spec must be revisited.
+- `middleware/test/pluginUiStaticServing.test.ts` now table-drives **every** entry in
+  `CONTENT_TYPES`, asserting `Content-Type`, `X-Content-Type-Options: nosniff`, a non-empty
+  CSP, the SVG-specific sandboxing policy, the standard policy for every other extension, and
+  that the CSP survives the 304 branch.
+
+#### Two other C8 defects fixed alongside (C8b)
+
+- **The host page rejected every scoped plugin id.** Its regex claimed to mirror
+  `manifestLoader.ts` and omitted the optional `@scope/`, so `/plugin-ui/@omadia/dev-platform`
+  — the id of the plugin the route was built for, and the shape of *every* omadia plugin id —
+  called `notFound()`. The gate now lives in `web-ui/app/_lib/pluginId.ts` and a test reads
+  `manifestLoader.ts` and asserts the two definitions are character-identical, turning the
+  "mirrors" comment into a check.
+- **Three vocabulary declarations emitted nothing.** `@source inline()` expands braces; a
+  top-level comma is not a list separator, so `@source inline("border,border-{0,2,4}")` asked
+  Tailwind for a class literally named `border,border-0` and produced no CSS. `border`,
+  `divide-*` and `transition*` were all absent from the artifact while
+  `plugin-ui-vocabulary.md` listed them. Worse than a missing utility: Tailwind's reset is
+  `border: 0 solid`, so `class="border border-border"` set a colour on a zero-width edge and
+  rendered invisible. Fixed at source, artifact regenerated (69,559 → 72,659 B raw; 12,105 →
+  12,486 B gzip), and `web-ui/scripts/__tests__/pluginUiVocabulary.test.ts` now checks parity
+  in both directions — every class the source declares and every class the document promises
+  must exist in the committed sheet.
+
 ### Back to the option table
 
 **Recommendation: B**, now materially cheaper than when first written — with §4.3a it is

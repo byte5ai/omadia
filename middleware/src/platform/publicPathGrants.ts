@@ -59,7 +59,10 @@ export const PLUGIN_PUBLIC_PATH_ROOT = '/api/plugins/';
  * a plugin may never *claim*, granted or not. `/api/v1/admin` is not in
  * `publicPaths()` (it is firmly behind the gate) and precisely for that reason
  * it must never become claimable: an operator clicking through a consent
- * dialog should not be able to hand a plugin the admin surface.
+ * dialog should not be able to hand a plugin the admin surface. A same-origin
+ * plugin UI riding the operator cookie can reach that surface anyway; that is
+ * the known, accepted exposure of the current iframe trust model, not a route
+ * the plugin contract may ever claim.
  */
 const CORE_RESERVED_ROOTS: readonly string[] = [
   '/api/auth',

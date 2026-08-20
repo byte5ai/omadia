@@ -89,6 +89,12 @@ Canonical source is `web-ui/scripts/plugin-ui.source.css`; this table is the
 human-readable form of it. Brace ranges expand — `p-{0..12}` means `p-0`
 through `p-12`.
 
+**This section is machine-checked.** `web-ui/scripts/__tests__/pluginUiVocabulary.test.ts`
+expands every pattern below and fails if the generated sheet does not contain
+the class, so a promise made here cannot quietly go unkept. That check is why
+notation must stay expandable: write the alternatives out rather than eliding
+them with `…`, or the test refuses the pattern instead of skipping it.
+
 ### Layout
 
 | Group | Classes |
@@ -98,7 +104,7 @@ through `p-12`.
 | Alignment | `items-{start,center,end,baseline,stretch}` · `justify-{start,center,end,between,around,evenly}` · `self-{auto,start,center,end,stretch}` |
 | Grid | `grid-cols-{1..6}` · `col-span-{1..6}` |
 | Gap | `gap-{0..8}` `gap-x-{0..8}` `gap-y-{0..8}` |
-| Size | `w-/h-{full,auto,fit,screen}` · `w-/h-{0,1,2,3,4,5,6,8,10,12,16,20,24,32}` · `min-w-/min-h-{0,full}` · `max-w-{none,full,xs…7xl}` |
+| Size | `w-/h-{full,auto,fit,screen}` · `w-/h-{0,1,2,3,4,5,6,8,10,12,16,20,24,32}` · `min-w-/min-h-{0,full}` · `max-w-{none,full,xs,sm,md,lg,xl,2xl,3xl,4xl,5xl,6xl,7xl}` |
 | Overflow | `overflow-{auto,hidden,visible,x-auto,y-auto}` |
 | Position | `relative` `absolute` `fixed` `sticky` `static` · `inset-/top-/right-/bottom-/left-{0,auto}` · `z-{0,10,20,30,40,50}` |
 | Centering | `mx-auto` |
@@ -158,11 +164,13 @@ roles, each wired to the runtime CSS variable:
 
 ### Responsive
 
-Breakpoints `sm:` `md:` `lg:` `xl:` are available on:
-`flex` `grid` `block` `inline-block` `hidden` · `grid-cols-{1..4}` ·
-`flex-{row,col}` (sm/md/lg) · `p-/px-/py-{0,2,4,6,8}` (sm/md/lg) ·
-`text-{sm,base,lg,xl,2xl}` (sm/md/lg) ·
-`max-w-{sm,md,lg,xl,2xl,4xl}` (sm/md/lg)
+Breakpoint prefixes are pre-generated per utility group, not universally —
+`xl:` exists on the display utilities and nowhere else.
+
+| Breakpoints | Available on |
+|---|---|
+| `sm:` `md:` `lg:` `xl:` | `{flex,grid,block,inline-block,hidden}` · `grid-cols-{1..4}` |
+| `sm:` `md:` `lg:` | `flex-{row,col}` · `{p,px,py}-{0,2,4,6,8}` · `text-{sm,base,lg,xl,2xl}` · `max-w-{sm,md,lg,xl,2xl,4xl}` |
 
 ### Baseline element styling
 
@@ -261,6 +269,15 @@ is a promise to plugin authors and a cost in bytes on every plugin UI load.
 2. `cd web-ui && npm run plugin-ui:css`.
 3. Commit the regenerated `middleware/assets/plugin-ui/plugin-ui.css`.
 4. Update this document.
+5. `npm test` — the parity test above proves steps 1-4 actually agree.
+
+**The trap in step 1.** `@source inline()` expands BRACES; a top-level comma is
+not a list separator. `@source inline("border,border-{0,2,4}")` asks Tailwind
+for a class literally named `border,border-0` and therefore emits **nothing** —
+no error, no warning. Three declarations shipped that way in C8 and cost every
+ported page its borders, because Tailwind's reset is `border: 0 solid`, so
+`class="border border-border"` set a colour on a zero-width edge. Always use
+the brace form: `border{,-0,-2,-4}`, `divide-{y,x}`, `transition{,-none,-all}`.
 
 CI regenerates and diffs (`npm run plugin-ui:css:check`, inside the existing
 web-ui job), so an edit to the source, the tokens or the bridge that was not
