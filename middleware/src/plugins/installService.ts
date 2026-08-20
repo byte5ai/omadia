@@ -295,10 +295,32 @@ export class InstallService {
         try {
           await this.deps.onInstalled(job.plugin_id);
         } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
           console.error(
             `[install] onInstalled hook failed for ${job.plugin_id}:`,
-            err instanceof Error ? err.message : err,
+            message,
           );
+          // The registry was written `status: 'active'` a few lines above —
+          // BEFORE the hook that does the activating. Swallowing the hook's
+          // failure there left the entry claiming `active` while the plugin's
+          // own `undo()` had rolled back every route, tool and nav entry it
+          // registered: a green status over a plugin serving nothing, with the
+          // only trace a console line. Correct it here.
+          //
+          // Two writes, because they answer different questions.
+          // `markActivationFailed` records WHY and feeds
+          // `bootstrap.retryErroredPlugins`. It does not flip the status on its
+          // own — `CIRCUIT_BREAKER_THRESHOLD` is 3, which is right for a boot
+          // loop retrying a transient failure and wrong here: an install-time
+          // activation failure is a single definitive event an operator is
+          // watching, not the first of three strikes. So the status is set
+          // explicitly, and only when the entry still reads `active` (the
+          // threshold may already have done it).
+          await this.deps.registry.markActivationFailed(job.plugin_id, message);
+          const entry = this.deps.registry.get(job.plugin_id);
+          if (entry && entry.status === 'active') {
+            await this.deps.registry.register({ ...entry, status: 'errored' });
+          }
         }
       }
     } catch (err) {
