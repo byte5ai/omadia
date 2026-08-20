@@ -43,26 +43,31 @@
  *     expressions drop out).
  *   - FALSE NEGATIVES are possible too, and they are the safer direction. A
  *     bundle that assembles a class at runtime (`'w-[' + n + 'px]'`) defeats
- *     any static check. Nothing here claims otherwise: the vocabulary is the
- *     contract, this is the cheap enforcement of it, and a plugin determined
- *     to route around it merely ends up with an unstyled element.
+ *     any static check, and so do unicode/hex-escaped brackets
+ *     (`"w-\u005b10px\u005d"`). Nothing here claims otherwise: the vocabulary
+ *     is the contract, this is the cheap enforcement of it, and a plugin
+ *     determined to route around it merely ends up with an unstyled element.
  *   - Only files the caller passes are examined. The caller scans
  *     `ui/**\/*.js`; a plugin that puts its bundle elsewhere is not covered
  *     by this gate (nor is it served by `pluginUiStatic.ts`).
  */
 
 /**
- * `w-[137px]`, `md:hover:bg-[#abc]`.
+ * `w-[137px]`, `md:hover:bg-[#abc]`, `group-hover:w-[137px]`,
+ * `data-[state=open]:!w-[137px]`, `lg:-mt-[3px]`.
  *
- *   (?<![\w:$-])          not in the middle of an identifier or a chain we
- *                         already consumed
- *   (?:[a-z][a-z0-9]*:)*  optional variant prefixes (`md:`, `hover:`)
+ *   (?<![\w$])            not in the middle of an identifier
+ *   (?:...:)*             optional variant prefixes, including dashed forms
+ *                         (`group-hover:`), digit-led forms (`2xl:`), and
+ *                         Tailwind's arbitrary-prefix shape
+ *                         (`data-[state=open]:`, `min-[320px]:`)
+ *   !? -?                 optional important modifier and negative utility
  *   [a-z][a-z0-9]*        utility head
  *   (?:-[a-z0-9]+)*       dashed continuation (`grid-cols`, `max-w`)
- *   -\[ [^\]\s"'`]+ \]    the arbitrary value, no whitespace or quotes
+ *   -\[ [^\]\s"'`]+ \]    the arbitrary value, still no whitespace or quotes
  */
 const ARBITRARY_VALUE =
-  /(?<![\w:$-])((?:[a-z][a-z0-9]*:)*[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\[[^\]\s"'`]+\])/g;
+  /(?<![\w$])((?:(?:[a-z0-9][a-z0-9-]*(?:-\[[^\]\s"'`]+\])?):)*!?-?[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\[[^\]\s"'`]+\])/g;
 
 /** `[&>tr]:border`, `[&_p]:mt-2` — arbitrary variants. */
 const ARBITRARY_VARIANT = /(\[&[^\]\s"'`]*\](?::[a-z0-9[\]&_>-]+)?)/g;

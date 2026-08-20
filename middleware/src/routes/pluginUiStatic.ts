@@ -75,10 +75,11 @@ const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable';
 const REVALIDATE_CACHE = 'no-cache';
 
 /**
- * `name-<hash>.ext` where the hash is at least 8 hex/base36-ish characters.
- * Vite and Rollup both emit this shape; anything else is treated as mutable.
+ * `name-<hash>.ext` where the candidate hash is 8+ base36-ish characters and
+ * contains at least one digit. The safe failure direction is "revalidate" for
+ * an unusual hash, not "freeze an ordinary dashed filename for a year".
  */
-const HASHED_BASENAME = /-[A-Za-z0-9_]{8,}\.[A-Za-z0-9]+$/;
+const HASHED_BASENAME = /-(?=[A-Za-z0-9_]{8,}\.[A-Za-z0-9]+$)(?=[A-Za-z0-9_]*\d)[A-Za-z0-9_]+\.[A-Za-z0-9]+$/;
 
 const CSP = [
   "default-src 'none'",
@@ -91,6 +92,13 @@ const CSP = [
   "base-uri 'none'",
   "frame-ancestors 'self'",
 ].join('; ');
+
+/**
+ * SVG is served as an image asset, not as an interactive document. A stricter
+ * policy than the HTML shell is therefore correct, and the safe failure
+ * direction is to make a directly navigated SVG inert rather than same-origin.
+ */
+const IMAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 export interface PluginUiStaticOptions {
   /**
@@ -183,15 +191,14 @@ async function serve(
 
   const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
   const hashed = HASHED_BASENAME.test(path.basename(abs));
+  const responseCsp = ext === '.svg' ? IMAGE_CSP : CSP;
 
   res.set('Content-Type', contentType);
   res.set('X-Content-Type-Options', 'nosniff');
   res.set('Referrer-Policy', 'no-referrer');
   res.set('Cache-Control', hashed ? IMMUTABLE_CACHE : REVALIDATE_CACHE);
   res.set('ETag', etag);
-  if (ext === '.html') {
-    res.set('Content-Security-Policy', CSP);
-  }
+  res.set('Content-Security-Policy', responseCsp);
 
   if (req.headers['if-none-match'] === etag) {
     res.status(304).end();

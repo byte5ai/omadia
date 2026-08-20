@@ -44,6 +44,31 @@ describe('scanForArbitraryTailwindValues — rejects', () => {
     assert.equal(found[0]?.token, 'md:hover:w-[42rem]');
   });
 
+  it('a dashed variant prefix form', () => {
+    const found = scan('"group-hover:w-[137px]"');
+    assert.equal(found[0]?.token, 'group-hover:w-[137px]');
+  });
+
+  it('a peer variant prefix form', () => {
+    const found = scan('"peer-focus:bg-[#abc]"');
+    assert.equal(found[0]?.token, 'peer-focus:bg-[#abc]');
+  });
+
+  it('a numeric breakpoint prefix form', () => {
+    const found = scan('"2xl:w-[137px]"');
+    assert.equal(found[0]?.token, '2xl:w-[137px]');
+  });
+
+  it('a negative utility', () => {
+    const found = scan('"-mt-[3px]"');
+    assert.equal(found[0]?.token, '-mt-[3px]');
+  });
+
+  it('a negative utility behind a variant prefix', () => {
+    const found = scan('"lg:-mt-[3px]"');
+    assert.equal(found[0]?.token, 'lg:-mt-[3px]');
+  });
+
   it('an arbitrary variant', () => {
     const found = scan('"[&>tr]:border-border"');
     assert.equal(found.length, 1);
@@ -110,6 +135,10 @@ describe('formatArbitraryValueOffenders', () => {
 describe('documented limits — pinned so the next reader is not misled', () => {
   it('cannot see a class assembled at runtime (accepted false negative)', () => {
     assert.deepEqual(scan('const c = "w-[" + n + "px]";'), []);
+  });
+
+  it('cannot see unicode-escaped brackets (accepted false negative)', () => {
+    assert.deepEqual(scan('const c = "w-\\u005b10px\\u005d";'), []);
   });
 
   it('matches bracket text that is not a class (accepted false positive)', () => {

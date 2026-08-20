@@ -38,7 +38,10 @@ before(async () => {
   await fs.mkdir(path.join(ui, 'empty-dir'), { recursive: true });
   await fs.writeFile(path.join(ui, 'index.html'), '<!doctype html><p class="p-4">hi</p>');
   await fs.writeFile(path.join(ui, 'assets', 'app-7c1f4b2e.js'), 'export const x = 1;');
+  await fs.writeFile(path.join(ui, 'assets', 'main-B2kf9Xz1.js'), 'export const z = 3;');
   await fs.writeFile(path.join(ui, 'assets', 'app.js'), 'export const y = 2;');
+  await fs.writeFile(path.join(ui, 'assets', 'app-bootstrap.js'), 'export const boot = true;');
+  await fs.writeFile(path.join(ui, 'assets', 'vendor-polyfills.js'), 'export const polyfills = true;');
   await fs.writeFile(path.join(ui, 'assets', 'logo.svg'), '<svg/>');
   await fs.writeFile(path.join(ui, 'assets', 'notes.css'), 'body{color:red}');
   // A secret NEXT to the bundle: the thing traversal would be aiming at.
@@ -112,15 +115,39 @@ describe('plugin UI static serving — caching', () => {
     assert.equal(res.headers['cache-control'], 'no-cache');
   });
 
+  it('does NOT freeze app-bootstrap.js for a year — the trailing word is not a hash', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/app-bootstrap.js`);
+    assert.equal(res.headers['cache-control'], 'no-cache');
+  });
+
+  it('does NOT freeze vendor-polyfills.js for a year — ordinary bundle names must revalidate', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/vendor-polyfills.js`);
+    assert.equal(res.headers['cache-control'], 'no-cache');
+  });
+
   it('never marks index.html immutable', async () => {
     const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/index.html`);
     assert.equal(res.headers['cache-control'], 'no-cache');
+  });
+
+  it('keeps a hex-style content hash immutable', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/app-7c1f4b2e.js`);
+    assert.equal(res.headers['cache-control'], 'public, max-age=31536000, immutable');
+  });
+
+  it('keeps a base36-style content hash immutable', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/main-B2kf9Xz1.js`);
+    assert.equal(res.headers['cache-control'], 'public, max-age=31536000, immutable');
   });
 
   it('answers 304 for a matching ETag', async () => {
     const first = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/index.html`);
     const etag = first.headers['etag'];
     assert.ok(typeof etag === 'string' && etag.length > 2);
+    const second = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/index.html`, {
+      headers: { 'if-none-match': etag },
+    });
+    assert.equal(second.status, 304);
   });
 });
 
@@ -185,6 +212,19 @@ describe('plugin UI static serving — the security boundary', () => {
     assert.match(csp, /frame-ancestors 'self'/);
     assert.match(csp, /base-uri 'none'/);
     assert.ok(!csp.includes("script-src 'unsafe-inline'"));
+  });
+
+  it('sets a sandboxing CSP on SVG so direct navigation cannot execute in origin', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/logo.svg`);
+    const csp = String(res.headers['content-security-policy'] ?? '');
+    assert.match(csp, /default-src 'none'/);
+    assert.match(csp, /\bsandbox\b/);
+  });
+
+  it('also sends CSP on JS assets so the handler cannot regress by branch omission', async () => {
+    const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/assets/app-7c1f4b2e.js`);
+    const csp = String(res.headers['content-security-policy'] ?? '');
+    assert.match(csp, /default-src 'none'/);
   });
 
   it('does not leak the referrer to plugin-side navigations', async () => {
