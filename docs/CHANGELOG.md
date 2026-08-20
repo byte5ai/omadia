@@ -18,6 +18,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — tamper-evident receipt chain: hash chaining + signed checkpoints (#758)
+
+- **Hash chain (migration `0041`).** Every persisted receipt row now joins a
+  per-stream chain: `entry_hash = sha256(stream ‖ seq ‖ prev_hash ‖
+  canonical(payload))`, appends serialized through a `FOR UPDATE`-locked
+  stream head so concurrent turns form one linear chain. Editing row *n*
+  breaks the copy of its hash stored in row *n+1* — visible to every later
+  entry. Replayed turns roll the whole transaction back (no phantom head
+  movement). UPDATE on `turn_receipts` is trigger-forbidden (defence in
+  depth; the chain is the proof); DELETE stays legal for retention, and
+  deletions show as seq gaps.
+- **Ed25519 checkpoints.** On an interval (`AUDIT_CHECKPOINT_INTERVAL_MINUTES`,
+  default 60) the stream head is signed with a key held ONLY in
+  env/secret-manager (`AUDIT_SIGNING_KEY` — never in Postgres, or the admin
+  the chain defends against could re-sign a rewritten chain). Optional
+  external anchor file (`AUDIT_ANCHOR_PATH`, JSONL) for WORM storage.
+  Keygen: `node scripts/generate-audit-signing-key.mjs`. Public key +
+  fingerprint served at `GET /api/v1/operator/provenance/public-key`.
+- **Verification foundation** (`verifyChainSegment`) ships with tamper tests
+  (edit → `hash_mismatch` at the exact seq; delete → `seq_gap`; forged
+  suffix → `link_mismatch`); the operator-facing verify surface (endpoint,
+  signed export, offline verifier, UI) is #761 — until it ships,
+  "cryptographically verifiable" remains a non-claim
+  (`docs/ai-act-transparency.md`).
+- Known limitations, stated: detection not prevention; per-row time is
+  anchored by checkpoint cadence, not per-row (`created_at` is outside the
+  hash); pre-chain rows carry NULL chain columns ("pre-chain era").
+
 ### Added — persistent per-turn privacy receipts (#757)
 
 - **`turn_receipts` (migration `0039`).** The per-turn `PrivacyReceipt` is no

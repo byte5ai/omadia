@@ -197,6 +197,23 @@ the connection. A subscription URL is also checked at creation time
 (`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
 than only discovering the block on the first delivery attempt.
 
+## 7b. Tamper-evident receipt chain (#758)
+
+The per-turn receipt record (`turn_receipts`, #757) is hash-chained: each
+row's `entry_hash` covers its canonical payload plus the previous row's
+hash, appends serialized through a locked stream head. Editing a row breaks
+the copy of its hash stored in the next row — the chain visibly breaks for
+every later entry. Periodic Ed25519 checkpoints sign the head with a key
+held **only** in env/secret-manager (`AUDIT_SIGNING_KEY`) — never in
+Postgres, or the DB admin the chain defends against could re-sign a
+rewritten chain — optionally anchored to an external append-only file
+(`AUDIT_ANCHOR_PATH`) for WORM storage. Threat model: **detection, not
+prevention** — wholesale destruction shows as sequence gaps and orphaned
+checkpoints; per-row timestamps are anchored by checkpoint cadence, not
+per-row. UPDATE on the table is trigger-forbidden as defence in depth;
+DELETE stays legal for bounded retention. The operator verify surface
+(endpoint, signed export, offline verifier) is #761.
+
 ## 8. What lives in the vault
 
 At a minimum, your deployment vault holds:

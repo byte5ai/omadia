@@ -1118,6 +1118,22 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
 
+### Receipt-Hash-Kette + signierte Checkpoints (#758)
+
+`turn_receipts` ist seit Migration `0041` hash-verkettet: `entry_hash =
+sha256(stream ‖ seq ‖ prev_hash ‖ canonical(payload))`, Appends serialisiert
+über `audit_stream_heads` (FOR UPDATE — eine lineare Kette, keine Forks);
+Replay ⇒ kompletter Rollback. UPDATE per Trigger verboten, DELETE bleibt für
+Retention erlaubt (Lücken sind detektierbar). Ed25519-Checkpoints
+(`src/receipts/checkpoints.ts`): Key NUR in Env (`AUDIT_SIGNING_KEY`,
+Keygen `scripts/generate-audit-signing-key.mjs`), Intervall
+`AUDIT_CHECKPOINT_INTERVAL_MINUTES` (60), externer Anker `AUDIT_ANCHOR_PATH`
+(JSONL). Public Key: **`GET /api/v1/operator/provenance/public-key`**.
+Verify-Grundstein `verifyChainSegment` in `src/receipts/chain.ts` (Tamper-
+Tests in `test/receiptHashChain.test.ts`); die Operator-Verify-Fläche ist
+#761. Zeitanker: Checkpoint-Kadenz, nicht pro Zeile (`created_at` ist
+außerhalb des Hashes — bewusst, Doku im Migration-Header).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

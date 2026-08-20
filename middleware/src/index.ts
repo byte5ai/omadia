@@ -34,6 +34,7 @@ import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, Cond
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
+import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
@@ -3504,6 +3505,33 @@ async function main(): Promise<void> {
     console.log(
       `[middleware] turn receipts wired at /api/v1/operator/receipts (auth-gated, retention ${config.RECEIPT_RETENTION_DAYS}d)`,
     );
+
+    // #758 — signed checkpoints over the receipt hash chain. The chain
+    // itself always builds (the store appends chained rows unconditionally);
+    // signing is the layer that needs the operator-held key. Absent key ⇒
+    // loud boot log, not a silent no-op.
+    if (config.AUDIT_SIGNING_KEY) {
+      const signer = loadCheckpointSigner(config.AUDIT_SIGNING_KEY);
+      startCheckpointWorker(graphPool, signer, {
+        intervalMs: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES * 60_000,
+        ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
+      });
+      app.get('/api/v1/operator/provenance/public-key', requireAuth, (_req, res) => {
+        res.json({
+          publicKeyPem: signer.publicKeyPem,
+          fingerprint: signer.publicKeyFingerprint,
+          checkpointIntervalMinutes: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES,
+          anchorConfigured: Boolean(config.AUDIT_ANCHOR_PATH),
+        });
+      });
+      console.log(
+        `[middleware] audit checkpoints wired (every ${config.AUDIT_CHECKPOINT_INTERVAL_MINUTES}min, fingerprint ${signer.publicKeyFingerprint.slice(0, 16)}…${config.AUDIT_ANCHOR_PATH ? ', external anchor on' : ''})`,
+      );
+    } else {
+      console.warn(
+        '[middleware] AUDIT_SIGNING_KEY not set — receipt chain builds WITHOUT signed checkpoints; generate a key with scripts/generate-audit-signing-key.mjs (#758)',
+      );
+    }
 
     const userStore = new UserStore(graphPool);
 
