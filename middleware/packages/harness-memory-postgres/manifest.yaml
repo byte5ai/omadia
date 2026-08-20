@@ -56,6 +56,26 @@ playbook:
     gleichzeitig installiert sein.
 
 permissions:
+  # Epic #470 C7 / issue #794 — this plugin holds the operator's Postgres pool
+  # (the shared `graphPool`) and owns its own tables (`memory_files`), so it
+  # must declare that intent here. Without this block the C7 gate refuses
+  # `ctx.services.get('graphPool')` and the middleware does not boot.
+  #
+  # NOTE the ledger is DECLARED BUT CURRENTLY UNUSED. `ledger` names the
+  # bookkeeping table the KERNEL's migration runner (`ctx.sql.runMigrations()`)
+  # would use. This plugin predates that runner and ships its own migrator
+  # (`src/migrator.ts`), which tracks applied files in its own
+  # `_memory_migrations` table under an advisory lock. So:
+  #   * `migrations:` is deliberately OMITTED — declaring it would tell the
+  #     kernel to scan a migrations directory this package does not ship, and
+  #     would be a false claim about who applies the schema.
+  #   * the ledger name is reserved so that the eventual cutover to core-run
+  #     migrations does not have to re-ask the operator for a different one.
+  # Moving `_memory_migrations` onto the kernel runner is follow-up work, not
+  # part of this hotfix: it is a data migration on live deployments and has no
+  # business riding along with a boot fix.
+  sql:
+    ledger: "plg_omadia_memory_postgres_migrations"
   memory:
     reads: []
     writes: []

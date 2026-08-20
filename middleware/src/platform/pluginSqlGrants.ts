@@ -46,6 +46,78 @@ import {
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 
 /**
+ * The C7 ramp for BUNDLED plugins — issue #794. Dated, closed, and keyed on a
+ * question C2b's list does not answer.
+ *
+ * WHY THIS LIST HAD TO EXIST SEPARATELY
+ * ------------------------------------
+ * C7 originally borrowed `LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20` as its
+ * ramp. That list means "this plugin did not declare the SERVICE"; C7's gate
+ * asks "this plugin did not declare `permissions.sql`". For a plugin that has
+ * done C2b's work the two sets are DISJOINT, so borrowing the list produced a
+ * rule with a perverse shape: doing the C2b migration correctly is what
+ * removed a plugin from C7's ramp. `@omadia/memory-postgres` had done exactly
+ * that, and the middleware stopped booting.
+ *
+ * The fix is not a wider gate — it is a ramp keyed on the right question. This
+ * list covers EVERY bundled `graphPool` consumer, including the four that
+ * happen to be covered by C2b's list today. That redundancy is the point: when
+ * one of them finishes its C2b migration and drops off C2b's list, it must not
+ * fall through into a boot failure the way memory-postgres did. The trap is
+ * disarmed for the whole class, not just for the plugin that sprang it.
+ *
+ * TWO PROPERTIES, BOTH LOAD-BEARING
+ * ---------------------------------
+ *  1. Consulted ONLY for `origin === 'bundled'` (see {@link
+ *     bundledSqlRampCapabilities}). An uploaded package that names itself
+ *     `@omadia/memory-postgres` inherits nothing — origin is derived by the
+ *     loader from where the package was found, never from the manifest.
+ *  2. CLOSED SET. Adding a row means a bundled plugin regressed and needs a
+ *     manifest fix plus an operator grant, not a wider gate. It retires when
+ *     the operator grant surface ships and these plugins have been granted —
+ *     `plugin_sql_grants` still has no caller of `grant()` in `src/`, which is
+ *     why `granted` cannot yet be true for anyone, which is why a ramp is
+ *     needed at all.
+ *
+ * `@omadia/channel-teams` is deliberately ABSENT: it left this repository for
+ * `byte5ai/omadia-channel-teams` and is no longer bundled, so it arrives as an
+ * installed package and stays on C2b's list. Adding it here would be a grant
+ * this repo cannot honour and a claim it cannot audit.
+ */
+export const LEGACY_SQL_GRANTS_2026_08_20: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  // Declares `permissions.sql` and `requires: graphPool@^1`, runs its own
+  // migrator (`_memory_migrations`). The one whose absence was a hard startup
+  // error — see issue #794.
+  '@omadia/memory-postgres': Object.freeze(['graphPool']),
+  // The remaining bundled pool consumers. All four are on C2b's list TODAY,
+  // so they are not currently reachable through this branch; they are listed
+  // so that finishing their C2b migration cannot break boot.
+  '@omadia/orchestrator': Object.freeze(['graphPool']),
+  '@omadia/orchestrator-extras': Object.freeze(['graphPool']),
+  '@omadia/verifier': Object.freeze(['graphPool']),
+});
+
+/**
+ * The ramp capabilities in force for one plugin — empty unless the catalog
+ * says the package is bundled.
+ *
+ * Reads `origin` from the CATALOG rather than taking a boolean parameter on
+ * purpose: a parameter is one more thing a call site can get wrong, and the
+ * catalog is where the loader already recorded the answer. A plugin the
+ * catalog cannot resolve gets no ramp — the same fail-closed reading
+ * `sqlPermissionOf` uses.
+ */
+export function bundledSqlRampCapabilities(
+  agentId: string,
+  catalog: PluginCatalog,
+): readonly string[] {
+  if (catalog.get(agentId)?.origin !== 'bundled') return [];
+  return LEGACY_SQL_GRANTS_2026_08_20[agentId] ?? [];
+}
+
+/**
  * Capabilities that hand over a raw Postgres pool.
  *
  * A CLOSED set, deliberately. The alternative — a heuristic on the name, or on
@@ -230,6 +302,7 @@ export type SqlAccessOutcome =
   | 'not-pool-shaped'
   | 'allowed'
   | 'legacy-allowlist'
+  | 'bundled-legacy'
   | 'undeclared'
   | 'ungranted';
 
@@ -243,6 +316,14 @@ export interface SqlAccessInput {
   /** True when C2b's dated legacy allowlist already covers this exact
    *  (plugin, capability) pair. */
   readonly legacy: boolean;
+  /** #794 — true when C7's OWN dated ramp covers this pair AND the catalog
+   *  says the package is bundled. Required, not optional: an optional flag
+   *  here would let a new call site inherit a default it never considered,
+   *  and every call site in this subsystem is a place where "may this plugin
+   *  touch the operator's database?" is being answered. Compute it with
+   *  {@link bundledSqlRampCapabilities}, which is the only thing that reads
+   *  the origin. */
+  readonly bundledLegacy: boolean;
 }
 
 /**
@@ -253,12 +334,18 @@ export interface SqlAccessInput {
 export function classifySqlAccess(input: SqlAccessInput): SqlAccessOutcome {
   if (!POOL_SHAPED_CAPABILITIES.has(input.capability)) return 'not-pool-shaped';
   if (input.declared && input.granted) return 'allowed';
-  // The legacy ramp is checked only AFTER the clean path fails, so a plugin
-  // that has done the work is never reported as legacy. It is checked before
-  // the denials because C2b's audit found these pairs consuming the pool
-  // today: turning them off in this PR would break shipped Hub plugins that
-  // this PR cannot edit. It expires with C2b's allowlist, not separately —
-  // one retirement date for one migration ramp.
+  // Both ramps are checked only AFTER the clean path fails, so a plugin that
+  // has done the work is never reported as legacy — otherwise a ramp could
+  // never be observed to be empty.
+  //
+  // #794: the BUNDLED ramp is checked first, because when both apply it is
+  // the more specific and more accurate reason — the plugin ships in this
+  // image, which is a stronger statement than "C2b found it undeclared", and
+  // it is the one whose warning names the right remedy.
+  if (input.bundledLegacy) return 'bundled-legacy';
+  // C2b's ramp. Checked before the denials because C2b's audit found these
+  // pairs consuming the pool today: turning them off would break shipped Hub
+  // plugins this repo cannot edit. It expires with C2b's allowlist.
   if (input.legacy) return 'legacy-allowlist';
   return input.declared ? 'ungranted' : 'undeclared';
 }
@@ -290,6 +377,10 @@ export function createSqlGate(
 ): (capability: string) => void {
   const { agentId, catalog, granted, legacyCapabilities, log } = opts;
   const declared = sqlPermissionOf(agentId, catalog);
+  // #794 — resolved from the catalog, once, at context-build time. Read here
+  // rather than threaded in as an option so there is exactly one place that
+  // decides what "bundled" means, and no call site that can assert it.
+  const bundledRamp = bundledSqlRampCapabilities(agentId, catalog);
   const warned = new Set<string>();
 
   return function assertSqlAccess(capability: string): void {
@@ -298,9 +389,19 @@ export function createSqlGate(
       declared,
       granted,
       legacy: legacyCapabilities.includes(capability),
+      bundledLegacy: bundledRamp.includes(capability),
     });
     if (outcome === 'undeclared' || outcome === 'ungranted') {
       throw new SqlPermissionError(agentId, capability, outcome);
+    }
+    if (outcome === 'bundled-legacy' && !warned.has(capability)) {
+      warned.add(capability);
+      log(
+        `[sql] bundled plugin '${agentId}' resolved the database capability '${capability}' without an operator grant — ` +
+          'allowed by the dated built-in ramp (LEGACY_SQL_GRANTS_2026_08_20). It ships inside this middleware image, so ' +
+          'installing the middleware is the consent; the ramp retires once the operator grant surface ships and these ' +
+          'plugins have been granted. A ramp is not a permission.',
+      );
     }
     if (outcome === 'legacy-allowlist' && !warned.has(capability)) {
       warned.add(capability);
