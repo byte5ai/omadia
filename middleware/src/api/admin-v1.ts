@@ -7,6 +7,14 @@
 // the canonical file to a shared package.
 // ===========================================================================
 
+// Epic #470 C7 / G4 — `permissions.sql` is part of the plugin CONTRACT, so its
+// shape is defined once on the plugin-api surface and re-exported here rather
+// than restated. A second declaration would drift from the one plugin authors
+// actually compile against.
+import type { SqlPermission } from '@omadia/plugin-api';
+
+export type { SqlPermission };
+
 export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
@@ -210,6 +218,13 @@ export interface OAuthProviderDescriptor {
 }
 
 export interface PluginPermissionsSummary {
+  /** Epic #470 C7 / G4 — the plugin asks to hold a Postgres pool and own its
+   *  own tables (`permissions.sql`). Present only when the manifest declares a
+   *  well-formed block whose `ledger` this plugin is allowed to own; the
+   *  loader drops a malformed one with a warning. Declaration is half the
+   *  gate — `platform/pluginSqlGrants.ts` additionally requires an operator
+   *  grant row before `graphPool` resolves or `ctx.sql` is built. */
+  sql?: SqlPermission;
   memory_reads: string[];
   memory_writes: string[];
   graph_reads: EntityURI[];
@@ -279,6 +294,21 @@ export interface PluginPermissionsSummary {
    *  refresh tokens never reach plugin code). Surfaced as a store-detail chip.
    *  Loader defaults to `false`. */
   acquires_oauth?: boolean;
+  /**
+   * Epic #470 C4 / H1 (`permissions.public_paths`): URL prefixes the plugin
+   * asks to serve WITHOUT an operator session.
+   *
+   * This is a REQUEST, not a capability — declaring it grants nothing. The
+   * prefix is claimed exclusively at activation (first plugin wins, a second
+   * one overlapping it fails to activate), and it is only served publicly once
+   * the operator has consented and a row exists in `plugin_public_path_grants`.
+   * Until then the prefix stays behind `requireAuth` like everything else.
+   *
+   * The single most consequential thing a plugin can ask for, so it is
+   * surfaced on its own in the store consent block rather than folded in with
+   * the network/memory chips. Loader defaults to `[]`.
+   */
+  public_paths?: string[];
 }
 
 export type PluginInstallState =

@@ -533,5 +533,10 @@ function emptyPermissionsSummary(): PluginPermissionsSummary {
     graph_reads: [],
     graph_writes: [],
     network_outbound: [],
+    // Epic #470 C4 / H1 — the empty summary must claim NO public paths. This
+    // is the fallback used when a package has no readable manifest, and a
+    // fallback that invented an unauthenticated prefix would be the worst
+    // possible default.
+    public_paths: [],
   };
 }

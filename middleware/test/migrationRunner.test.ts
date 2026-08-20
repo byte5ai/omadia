@@ -13,7 +13,7 @@ import { JobScheduler } from '../src/plugins/jobScheduler.js';
 import { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { MigrationRunner } from '../src/plugins/migrationRunner.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
-import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { NativeToolRegistry } from '@omadia/orchestrator';
 import { InMemorySecretVault } from '../src/secrets/vault.js';
@@ -69,7 +69,7 @@ async function buildFixture(): Promise<Fixture> {
     catalog,
     serviceRegistry,
     nativeToolRegistry: new NativeToolRegistry(),
-    pluginRouteRegistry: new PluginRouteRegistry(),
+    pluginRouteRegistry: newTestRouteRegistry(),
     jobScheduler: new JobScheduler({ log: () => {} }),
     log: () => {},
   });
@@ -152,7 +152,7 @@ describe('MigrationRunner', () => {
       catalog: fx.catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });
@@ -193,7 +193,7 @@ describe('MigrationRunner', () => {
       catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });
@@ -234,7 +234,7 @@ describe('MigrationRunner', () => {
       catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });
@@ -274,7 +274,7 @@ describe('MigrationRunner', () => {
       catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });
@@ -312,7 +312,7 @@ describe('MigrationRunner', () => {
       catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });
@@ -364,7 +364,7 @@ describe('MigrationRunner', () => {
       catalog,
       serviceRegistry: new ServiceRegistry(),
       nativeToolRegistry: new NativeToolRegistry(),
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       jobScheduler: new JobScheduler({ log: () => {} }),
       log: () => {},
     });

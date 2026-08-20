@@ -118,6 +118,12 @@ export interface PluginPermissionsSummary {
   secrets_runtime_write?: boolean;
   /** Spec 004 — plugin runs credential-acquisition flows on its own routes. */
   flows?: boolean;
+  /** Epic #470 C4 / H1 — URL prefixes the plugin ASKS to serve without an
+   *  operator session (`permissions.public_paths`). A declaration is a
+   *  request, never a grant: the prefix stays behind the session gate until
+   *  the operator consents and the middleware records the grant. Optional:
+   *  absent on store payloads from a pre-#470-C4 core. */
+  public_paths?: string[];
   /** Spec 005 — plugin acquires standard authorization-code credentials via
    *  the kernel OAuth broker (tokens stored + refreshed kernel-side). */
   acquires_oauth?: boolean;

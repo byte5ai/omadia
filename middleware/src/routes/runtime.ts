@@ -19,6 +19,10 @@ import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
 import type { PatternViolation } from '../plugins/setupFieldPattern.js';
 import { extractFromJsonFile } from '../plugins/setupJsonFile.js';
 import type { JsonFileFailureCode, JsonFileFieldSpec } from '../plugins/setupJsonFile.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import { validateDeclaredPublicPath } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
+import { publicPaths } from '../auth/publicPaths.js';
 import type { SecretVault } from '../secrets/vault.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
@@ -74,6 +78,45 @@ interface RuntimeDeps {
       input: unknown,
     ): Promise<unknown>;
   };
+  /** Epic #470 C4 / H1 — durable operator consent for unauthenticated plugin
+   *  path prefixes. Optional so existing test wiring keeps compiling; the
+   *  public-path endpoints 503 when absent. */
+  publicPathGrantStore?: PublicPathGrantStore;
+  /** The live ownership registry, so a consent change takes effect without a
+   *  restart. Optional for the same reason — without it, a grant is persisted
+   *  and applies on the plugin's next activation. */
+  publicPathGrants?: PublicPathGrantRegistry;
+}
+
+/**
+ * Epic #470 C4 / H1 — put the routing registry back in step with the consent
+ * table after a failed consent write.
+ *
+ * Called only from the PUT error path. The registry, not the table, decides
+ * whether a URL skips authentication, so it must never be left describing
+ * consent the table no longer records. If the re-read itself fails there is no
+ * trustworthy answer available, and the only safe assumption is that nothing is
+ * consented: that costs the plugin's public route and costs nothing in
+ * security.
+ */
+async function resyncPublicPathGrants(
+  deps: Pick<RuntimeDeps, 'publicPathGrantStore' | 'publicPathGrants'>,
+  pluginId: string,
+): Promise<void> {
+  const registry = deps.publicPathGrants;
+  if (!registry) return;
+  try {
+    const truth =
+      (await deps.publicPathGrantStore?.listForPlugin(pluginId)) ??
+      new Set<string>();
+    registry.setGranted(pluginId, new Set(truth));
+  } catch (err) {
+    registry.setGranted(pluginId, new Set<string>());
+    console.warn(
+      `[public-paths] could not re-read consent for '${pluginId}' after a failed update — closing every granted prefix:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -287,6 +330,158 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       }
     },
   );
+
+  // ── Epic #470 C4 / H1 — public-path consent ──────────────────────────────
+  //
+  // GET  /installed/:id/public-paths        what the manifest asks for, and
+  //                                         which of those the operator granted
+  // PUT  /installed/:id/public-paths        { paths: string[] } — the complete
+  //                                         consented set (grants what is new,
+  //                                         revokes what is missing)
+  //
+  // PUT takes the FULL set rather than a single path on purpose: consent to an
+  // unauthenticated surface should be reviewed as a whole. "Add one more" and
+  // "here is the complete list I agree to" are different operator intents, and
+  // only the second one is safe to build a UI on.
+  router.get('/installed/:id/public-paths', async (req: Request, res: Response) => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : undefined;
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    if (!deps.publicPathGrantStore) {
+      res.status(503).json({
+        code: 'runtime.public_paths_unavailable',
+        message: 'public-path grants require a database — none is configured',
+      });
+      return;
+    }
+    const declared =
+      deps.catalog?.get(id)?.plugin.permissions_summary?.public_paths ?? [];
+    const granted = await deps.publicPathGrantStore.listForPlugin(id);
+    res.json({
+      id,
+      declared,
+      // Reported per declared path rather than as a bare list, so the UI can
+      // render "asked for, not granted" — the state that matters — without
+      // having to diff two arrays and get the semantics wrong.
+      paths: declared.map((path) => ({ path, granted: granted.has(path) })),
+      // A grant whose declaration disappeared (plugin downgraded, manifest
+      // edited). Surfaced rather than hidden: it grants nothing today, but an
+      // operator should be able to see and clear it.
+      orphaned: [...granted].filter((path) => !declared.includes(path)),
+    });
+  });
+
+  router.put('/installed/:id/public-paths', async (req: Request, res: Response) => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : undefined;
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    if (!deps.publicPathGrantStore) {
+      res.status(503).json({
+        code: 'runtime.public_paths_unavailable',
+        message: 'public-path grants require a database — none is configured',
+      });
+      return;
+    }
+    const body = req.body as { paths?: unknown } | null;
+    const requested = body?.paths;
+    if (!Array.isArray(requested) || requested.some((p) => typeof p !== 'string')) {
+      res.status(400).json({
+        code: 'runtime.invalid_public_paths',
+        message: 'body.paths must be an array of strings',
+      });
+      return;
+    }
+    const installed = deps.installedRegistry.get(id);
+    if (!installed) {
+      res.status(404).json({
+        code: 'runtime.not_installed',
+        message: `agent '${id}' is not installed`,
+      });
+      return;
+    }
+    const declared =
+      deps.catalog?.get(id)?.plugin.permissions_summary?.public_paths ?? [];
+
+    // An operator may only consent to what the plugin actually ASKED for.
+    // Without this check the consent endpoint would itself be a way to make an
+    // arbitrary URL public — a bigger hole than the one this epic closes.
+    const undeclared = (requested as string[]).filter((p) => !declared.includes(p));
+    if (undeclared.length > 0) {
+      res.status(400).json({
+        code: 'runtime.public_path_not_declared',
+        message:
+          `agent '${id}' does not declare ${undeclared.join(', ')} in ` +
+          'permissions.public_paths — consent cannot exceed the declaration',
+      });
+      return;
+    }
+
+    // Re-run the syntactic gate at consent time too. The catalog entry could
+    // have been produced by an older core, and this is the last point before a
+    // prefix becomes unauthenticated. `ownRoutePrefixes` is intentionally the
+    // declaration itself: cross-plugin exclusivity and the "must actually
+    // serve it" rule are activation-time concerns and are re-checked there.
+    for (const path of requested as string[]) {
+      const check = validateDeclaredPublicPath(path, {
+        corePublicPaths: publicPaths(),
+        ownRoutePrefixes: declared,
+      });
+      if (!check.ok) {
+        res.status(400).json({
+          code: 'runtime.invalid_public_path',
+          message: `'${check.path}' ${check.reason}`,
+        });
+        return;
+      }
+    }
+
+    const actor = req.session?.email ?? req.session?.sub ?? 'unknown';
+    const next = new Set(requested as string[]);
+    try {
+      const current = await deps.publicPathGrantStore.listForPlugin(id);
+      const revoked = [...current].filter((path) => !next.has(path));
+
+      // NARROW THE REGISTRY BEFORE THE TABLE.
+      //
+      // The in-memory registry — not `plugin_public_path_grants` — is what the
+      // terminating mount consults on every request. So "revoke the row first"
+      // is the wrong thing to reason about: a revoke that reaches the database
+      // but not the registry is a prefix that keeps answering WITHOUT A SESSION
+      // until the process restarts. Closing it in the registry first means the
+      // surface is already shut no matter which write below fails, and the
+      // worst case becomes a row that outlives its routing effect — the
+      // restrictive direction.
+      if (revoked.length > 0) {
+        deps.publicPathGrants?.setGranted(
+          id,
+          new Set([...current].filter((path) => next.has(path))),
+        );
+      }
+
+      for (const path of revoked) {
+        await deps.publicPathGrantStore.revoke(id, path);
+      }
+      for (const path of next) {
+        await deps.publicPathGrantStore.grant(id, path, actor);
+      }
+      // Apply live so granting takes effect immediately rather than at next
+      // boot. Revocations already took effect above.
+      deps.publicPathGrants?.setGranted(id, next);
+      res.json({ id, paths: [...next] });
+    } catch (err) {
+      // A half-written update leaves the registry describing a state the table
+      // does not agree with, and the registry is the one that decides whether a
+      // URL needs a session. Re-sync from the table so it can never keep
+      // serving a prefix whose row is already gone.
+      await resyncPublicPathGrants(deps, id);
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'runtime.update_failed', message });
+    }
+  });
 
   // PATCH /installed/:id/audit-mode — #91 operator mode switch for an
   // audit/scanner plugin. Body: { mode: 'single-host'|'allowlist'|'public-web' }.

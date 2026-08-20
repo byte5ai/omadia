@@ -86,6 +86,117 @@ it at all.
   contract still holds, so a snapshot updated without a bump is the same silent break C1 exists
   to stop. Full table in `middleware/packages/plugin-api/README.md`.
 
+### C4 / H1 — public-path grants (shipped)
+
+- **Manifest-declared, operator-consented public-path grants + exclusive prefix ownership +
+  the terminating early mount.** Closes G6. `permissions.public_paths` is a REQUEST; three
+  gates must all hold before a prefix is served without a session: declaration (zod-validated
+  shape), exclusive ownership (claimed at activation, first plugin wins, released on
+  deactivate), and operator consent (`plugin_public_path_grants`, migration `0046`).
+- **`auth/publicPaths.ts` stays a frozen literal, and both static exemptions stay** — they
+  leave in C12, not here. Making that list dynamic was rejected in `implementation.md` §1:
+  `requireAuth` runs before routing and cannot know who will answer, so a grant there says
+  "this URL needs no session" without saying "and only plugin A may answer it".
+- **The mount terminates.** An unhandled path under a granted prefix is answered 404 and does
+  NOT fall through into the authenticated stack. A counter-proof test disables termination
+  and shows the request escaping to `requireAuth`, so the guarantee is evidenced rather than
+  asserted. Two mutation checks confirm the suite fails when termination or the consent gate
+  is removed.
+- **Fail-closed:** no grants, no store, no registry, no live plugin — each is a `next()` into
+  `requireAuth`. No failure mode of the new machinery yields less authentication than a build
+  without it.
+- Unknown `permissions.*` keys now warn instead of vanishing silently (`implementation.md`
+  §2.5). Ratchet unchanged at 3296.
+
+### C6 — G2 route auth + G3 raw body (shipped)
+
+- **`auth: 'session' | 'public' | 'custom'` on `ctx.routes.register`, composed INSIDE the
+  disposed guard.** The order is the feature: `[disposed guard] → [auth] → [body] → router`,
+  so a deactivated plugin's route answers **404 before any auth logic runs** rather than 401.
+  The pinned-order test asserts exactly that, and a counter-proof rebuilds the pre-C6
+  composition (auth outside the guard) to show the same request coming back 401.
+- **The auth middleware is bound once per route, at registration** — the resolver is called
+  by `register()`, never per request. No global mutable map decides a live route's posture,
+  so there is no window in which it can change underneath it. Registering `auth:'session'`
+  before `createRequireAuth` has run **throws**; it does not quietly serve.
+- **`'session'` is defence-in-depth under `/api` and a genuinely new gate outside it.**
+  `plan.md` §3's trap holds — the blanket `app.use('/api', requireAuth, …)` already covers
+  every `/api` plugin router — but `/diagrams`, `/documents` and `/p/…` were never covered by
+  it. CSRF posture is core's own (`SameSite=Lax`, no token layer) because it is the same
+  `requireAuth` instance, not an equivalent one.
+- **`'public'`/`'custom'` need a manifest declaration, checked at registration.** The gate
+  lives in `pluginContext.ts` (the only layer that knows the manifest) and requires the
+  **registered prefix** to lie inside a **declared** `permissions.public_paths` entry — never
+  the inverse. The inverse would let a declaration for one webhook open the plugin's whole
+  admin surface. Declaration is necessary, not sufficient: being served without a session
+  still needs C4's exclusive ownership plus operator consent.
+- **Consent is load-bearing, not decorative: `'public'`/`'custom'` entries are never mounted
+  ambiently.** They are reachable exclusively through C4's terminating public-path mount,
+  which re-checks the grant per request. Mounting them on the app as well would leave a
+  non-session stack (no auth handler by construction) answering with neither session nor
+  grant — masked under `/api` by the blanket gate, wide open outside it, where C4's
+  `ownRoutePrefixes` branch legitimately permits prefixes like `/diagrams/…`. Two tests pin
+  it: declared-but-ungranted is not served, and revoking a standing grant closes a live
+  `'custom'` route. A third pins the converse — a granted prefix does **not** launder an
+  `auth:'session'` route into a public one; anonymous still gets 401.
+- **`body: 'raw' | 'json' | 'none'`, and the raw parse happens before the global JSON
+  parser.** A route-local `express.raw()` alone does not work: body-parser marks the request
+  `_body` and every later parser short-circuits, so a webhook posted as `application/json`
+  reaches the plugin as an object and every HMAC fails. `pluginRawBodyMount.ts` is a new slot
+  ahead of `express.json` that runs only the parser of a live, raw-registered prefix and then
+  `next()`s. It never routes, never authenticates, never answers — no reachable surface is
+  added. **Not** `express.json`'s `verify` hook (`plan.md` §3 G3).
+- **Raw default limit is 512 KB, not the global 10 MB.** A raw body is necessarily buffered
+  before authentication, so the default is the one the hand-rolled GitHub receiver already
+  chose for the same reason; `bodyLimit` raises it visibly.
+- **`body: 'raw'` goes through the same manifest declaration gate as `auth: 'public'`.** The
+  raw parser runs in a GLOBAL mount ahead of `express.json` and ahead of authentication, so
+  an unbounded raw prefix is not a local concern: `/` or `/api` would buffer every request in
+  the process pre-auth at the raw limit and hand core routers a `Buffer` where they expect
+  parsed JSON. Routing raw through C4's declaration schema (which forbids one-segment paths,
+  core-reserved roots and core-`publicPaths` collisions) makes that unregisterable, and the
+  registry keeps an independent `>= 2`-segment floor so a call site bypassing the manifest
+  layer cannot claim one either.
+- **The raw slot follows ownership, then rawness.** `resolveRawBodyRoute` takes the longest
+  live prefix covering the path and only then asks whether it is raw. Picking the longest
+  *raw* prefix instead let a shorter raw entry outrank a longer `body:'json'` entry that
+  actually owns the path, and the json router silently received a `Buffer`. Pinned by a
+  parent/child test — the pre-existing sibling test only covered disjoint prefixes.
+- **Exit condition met:** a fixture plugin registers `POST /webhook` with
+  `auth:'custom', body:'raw'` under a granted prefix and verifies `X-Hub-Signature-256` with
+  `crypto.timingSafeEqual` over `req.rawBody` — valid signature 200, tampered body 401, after
+  deactivate 404 (from C4's terminating mount, not the authenticated stack), and a
+  `body:'json'` sibling still gets parsed JSON.
+- `@omadia/plugin-api` gains `RouteAuthMode`, `RouteBodyMode`, `RouteRegisterOptions`;
+  golden snapshot regenerated and the package bumped `1.0.0 → 1.1.0` per C1's rule.
+  Decoupling ratchet unchanged — 3300, the baseline as it stands on `main` after
+  C8 and the publish primitive; C6 adds no dev-platform reference.
+
+### C7 / G4 — plugin-owned SQL schema (this PR, stacked on C2b #783)
+
+- **`permissions.sql` is now a declaration the operator can see and refuse.** Manifest shape
+  `{ migrations?: string, ledger: string }`; the ledger is charset-validated
+  (`^[a-z][a-z0-9_]{2,62}$`) and must start with the plugin's sanitized id. Unknown
+  `permissions.*` keys warn instead of vanishing silently — same implementation and same
+  `KNOWN_PERMISSION_KEYS` shape C4 (#782) introduced, so the two merge as a one-line union.
+- **`graphPool` is gated twice.** C2b's `requires:` check answers "did the author declare
+  this?"; C7 adds "may this plugin touch the operator's database?" — `permissions.sql`
+  **and** an operator grant row (`plugin_sql_grants`, migration **0047**). The two denial
+  reasons stay distinct because `undeclared` is the author's to fix and `ungranted` is the
+  operator's. C2b's dated legacy allowlist governs both gates and retires once, not twice.
+- **One shared `runPluginMigrations`.** Advisory-locked (`pg_advisory_xact_lock`, plugin-only
+  namespace 4420, `SET LOCAL lock_timeout` instead of a poll loop), one transaction per
+  batch, sha256 per file, `.sql` + `.js`/`.mjs` in one filename order, empty-dir and
+  checksum-drift both throw. B3 recorded core migrators racing on multi-replica boot; handing
+  plugin authors a pattern to copy would have multiplied that bug into code the operator
+  cannot patch.
+- **Ownership is enforced by `UNIQUE (ledger)`, not by the prefix rule.** The prefix check
+  cannot separate `acme_tool` from `acme_tool_extra` — a name carrying both prefixes would
+  pass for either plugin. The database constraint has no such edge, so the prefix rule is
+  documented as defence-in-depth rather than as the boundary.
+- **Ratchet held at 3300** — no raise. The one line that moved it (+1, `middleware/src`) was a
+  new comment naming the retired permission key, and it was reworded rather than excused.
+
 ### C8 — the abandonment checkpoint (G7 / P3b)
 
 **Shipped.** The plugin UI mechanism, end to end. Everything before this point was

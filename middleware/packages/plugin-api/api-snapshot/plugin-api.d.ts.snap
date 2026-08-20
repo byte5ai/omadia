@@ -1385,6 +1385,7 @@ readonly domain: string;
 readonly secrets: SecretsAccessor;
 readonly config: ConfigAccessor;
 readonly services: ServicesAccessor;
+readonly sql?: SqlAccessor;
 readonly smokeMode: boolean;
 readonly scratch?: ScratchDirAccessor;
 readonly http?: HttpAccessor;
@@ -1511,8 +1512,15 @@ readonly promptDoc?: string;
 readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
 }
+export type RouteAuthMode = 'session' | 'public' | 'custom';
+export type RouteBodyMode = 'json' | 'raw' | 'none';
+export interface RouteRegisterOptions {
+readonly auth?: RouteAuthMode;
+readonly body?: RouteBodyMode;
+readonly bodyLimit?: string;
+}
 export interface RoutesAccessor {
-register(prefix: string, router: unknown): () => void;
+register(prefix: string, router: unknown, options?: RouteRegisterOptions): () => void;
 }
 export interface FlowsAccessor {
 publicUrl(relPath: string, opts?: {
@@ -1775,6 +1783,40 @@ constructor(agentId: string, fromVersion: string, toVersion: string, timeoutMs: 
 export declare class MigrationHookError extends Error {
 readonly migrationCause: unknown;
 constructor(agentId: string, fromVersion: string, toVersion: string, cause: unknown);
+}
+export interface SqlPermission {
+readonly migrations?: string;
+readonly ledger: string;
+}
+export interface MigrationReport {
+readonly applied: readonly string[];
+readonly skipped: readonly string[];
+readonly ledger: string;
+readonly durationMs: number;
+}
+export interface RunMigrationsOptions {
+readonly dir?: string;
+readonly allowChecksumDrift?: boolean;
+}
+export interface SqlAccessor {
+readonly ledger: string;
+runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+}
+export declare class SqlPermissionError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+readonly reason: 'undeclared' | 'ungranted';
+constructor(pluginId: string, capability: string, reason: 'undeclared' | 'ungranted');
+}
+export declare class LedgerNameError extends Error {
+readonly pluginId: string;
+readonly ledger: string;
+constructor(pluginId: string, ledger: string, why: string);
+}
+export declare class SqlMigrationError extends Error {
+readonly pluginId: string;
+readonly ledger: string;
+constructor(pluginId: string, ledger: string, why: string);
 }
 export {};
 
