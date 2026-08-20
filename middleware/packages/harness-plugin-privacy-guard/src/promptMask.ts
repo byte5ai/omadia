@@ -120,6 +120,36 @@ const C0_PATTERNS: readonly C0Pattern[] = [
     re: /(?:[€$£]|\b(?:EUR|USD|GBP|CHF)\b)\s?\d{1,3}(?:[ \u00a0\u202f.,]\d{3})*(?:[.,]\d{1,2})?|\b\d{1,3}(?:[ \u00a0\u202f.,]\d{3})*(?:[.,]\d{1,2})?\s?(?:[€$£]|(?:EUR|USD|GBP|CHF)\b)/g,
   },
   {
+    // #760 — national identity numbers with a DISTINCTIVE format. Previously
+    // `idnum` was measured "informationally only and never gated"
+    // (validation/README) with no pattern at all — a known false-negative
+    // channel. Covered here (locale-blind, like everything in C0):
+    //   DE Steuer-ID   11 digits, spoken "12 345 678 901" or bare
+    //   DE USt-IdNr.   DE + 9 digits
+    //   ES NIE / DNI   [XYZ]1234567L / 12345678Z
+    //   IT Cod.Fiscale RSSMRA85T10A562S (6L 2D 1L 2D 1L 3D 1L)
+    //   UK NINO        QQ 12 34 56 C
+    //   FR n° sécu     1 85 05 78 006 084 (36) — 13 digits + optional key
+    // Deliberately NOT covered: NL BSN — 9 bare digits with no distinguishing
+    // shape; a global 9-digit pattern would mask half the numeric universe.
+    // That gap stays recorded in validation/README.md.
+    type: 'idnum',
+    re: new RegExp(
+      String.raw`\b(?:DE\s?\d{9}` + // USt-IdNr.
+        String.raw`|\d{2}\s\d{3}\s\d{3}\s\d{3}` + // Steuer-ID (grouped)
+        String.raw`|\d{11}` + // Steuer-ID (bare 11 digits)
+        String.raw`|[XYZ]\s?-?\d{7}\s?-?[A-Z]` + // NIE
+        String.raw`|\d{8}\s?-?[A-Z]` + // DNI
+        String.raw`|[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]` + // Codice Fiscale
+        // NINO — [A-Z]{2} on purpose (over-match beats a leak; the official
+        // example prefix 'QQ' uses a letter the real allocation forbids).
+        String.raw`|[A-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]` + // NINO
+        String.raw`|[12]\s?\d{2}\s?(?:0[1-9]|1[0-2])\s?(?:\d{2}|2A|2B)\s?\d{3}\s?\d{3}(?:\s?\(?\d{2}\)?)?` + // FR sécu
+        String.raw`)\b`,
+    'g',
+    ),
+  },
+  {
     // DOB-style dates: numeric "24.12.1987" / "24/12/1987" / "24-12-1987"
     // (dot, slash, or Dutch dash separator), ISO "1987-12-24", and
     // written-out "17 septembre 1984" (month names across the six shipped
@@ -155,6 +185,187 @@ export function createBaselineDetector(): PromptPiiDetector {
         }
       }
       return spans;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// #760 — operator-defined deny-list (custom terms + patterns).
+// ---------------------------------------------------------------------------
+
+/** Time budget for validating ONE custom regex against the probe corpus. JS
+ *  RegExp is not RE2 — a pathological pattern can backtrack exponentially, and
+ *  this detector runs on every turn. Validation happens once at detector
+ *  construction (i.e. config-read time), never per turn. */
+const CUSTOM_PATTERN_PROBE_BUDGET_MS = 50;
+
+/** Adversarial probe corpus for the timeout guard. Ordered by ESCALATING
+ *  pathological size: a catastrophic pattern like `(a+)+$` or `(\d+)+$`
+ *  explodes on a homogeneous run followed by a MISMATCH, and its cost
+ *  doubles per added character — so the small probes catch it within the
+ *  budget before the larger ones could hang the thread for real. The budget
+ *  check runs after EVERY probe; a linear pattern breezes through all.
+ *
+ *  Character coverage matters as much as shape (review H1): a letter-only
+ *  corpus waves `(\d+)+$` straight through — so the escalation runs over
+ *  letters AND digits, plus mixed-alphanumeric, unicode-letter, and
+ *  punctuation-heavy long probes. Construction-time vetting still cannot be
+ *  sound against every input-dependent blowup — that is what the RUNTIME
+ *  backstop in `detect()` below is for. */
+const PROBE_ESCALATION_SIZES = [18, 22, 26];
+const PROBE_TEXTS = [
+  ...PROBE_ESCALATION_SIZES.map((n) => `${'a'.repeat(n)}b`),
+  ...PROBE_ESCALATION_SIZES.map((n) => `${'1'.repeat(n)}x`),
+  ...PROBE_ESCALATION_SIZES.map((n) => `${'a1'.repeat(Math.ceil(n / 2))}!`),
+  'a'.repeat(2_000),
+  '1'.repeat(2_000),
+  `${'ab'.repeat(1_000)}!`,
+  `${'12'.repeat(1_000)}x`,
+  `${'ä'.repeat(500)}!`,
+  `${'x '.repeat(1_000)}y`,
+  `${'1.'.repeat(1_000)}x`,
+];
+
+/** Runtime backstop budget for ONE custom pattern over ONE text. The
+ *  construction probe bounds what we can foresee; this bounds what we
+ *  cannot: a pattern whose blowup is keyed on input the probes don't
+ *  contain. Exceeding it disables the pattern process-wide (loudly) and
+ *  throws — the service's tier-2 catch turns that into a BLOCKED turn,
+ *  never an unmasked pass-through. */
+const RUNTIME_PATTERN_BUDGET_MS = 100;
+
+export interface CustomTermsConfig {
+  /** Literal terms, matched case-insensitively on word boundaries. */
+  readonly terms: readonly string[];
+  /** Operator-supplied regex sources (no flags; compiled with 'giu'). */
+  readonly patterns: readonly string[];
+  /** Test seam: override the per-pattern runtime budget (ms). */
+  readonly runtimeBudgetMs?: number;
+}
+
+/** Thrown when a custom pattern blew its RUNTIME budget mid-turn. The
+ *  service's tier-2 catch converts this into a blocked turn (fail-closed);
+ *  the offending pattern is disabled process-wide so subsequent turns run
+ *  without it (loudly logged at disable time). */
+export class CustomPatternRuntimeError extends Error {
+  constructor(public readonly source: string, elapsedMs: number) {
+    super(
+      `custom pattern ${JSON.stringify(source)} exceeded its runtime budget (${String(Math.round(elapsedMs))}ms) and was disabled`,
+    );
+    this.name = 'CustomPatternRuntimeError';
+  }
+}
+
+export interface RejectedCustomPattern {
+  readonly source: string;
+  readonly reason: 'syntax' | 'too_slow';
+}
+
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Compile + vet one operator regex: syntax first, then a wall-clock probe
+ *  against the adversarial corpus. Rejected patterns are reported, never
+ *  silently dropped — an operator who typed a protection deserves to know it
+ *  is not active. */
+function vetPattern(source: string): { re: RegExp } | { rejected: RejectedCustomPattern } {
+  let re: RegExp;
+  try {
+    re = new RegExp(source, 'giu');
+  } catch {
+    try {
+      // 'u' rejects some legacy-valid patterns; retry without it before failing.
+      re = new RegExp(source, 'gi');
+    } catch {
+      return { rejected: { source, reason: 'syntax' } };
+    }
+  }
+  const startedAt = Date.now();
+  for (const probe of PROBE_TEXTS) {
+    re.lastIndex = 0;
+    re.test(probe);
+    if (Date.now() - startedAt > CUSTOM_PATTERN_PROBE_BUDGET_MS) {
+      return { rejected: { source, reason: 'too_slow' } };
+    }
+  }
+  re.lastIndex = 0;
+  return { re };
+}
+
+/**
+ * #760 — operator-defined deny-list detector. Literal `terms` (project code
+ * names, customer names, internal identifiers) are matched case-insensitively
+ * on word boundaries; `patterns` are operator regexes vetted at construction
+ * (syntax + a backtracking time budget). Every span reports type 'custom'
+ * with confidence 1 and flows through the same surrogate + fail-closed
+ * machinery as the built-in C0 patterns — `findIdentityLeaks` covers custom
+ * values automatically.
+ */
+export function createCustomTermsDetector(config: CustomTermsConfig): {
+  detector: PromptPiiDetector | undefined;
+  rejected: readonly RejectedCustomPattern[];
+} {
+  const rejected: RejectedCustomPattern[] = [];
+  const compiled: Array<{ re: RegExp; source: string; operatorPattern: boolean }> = [];
+  const runtimeBudgetMs = config.runtimeBudgetMs ?? RUNTIME_PATTERN_BUDGET_MS;
+
+  const terms = config.terms.map((t) => t.trim()).filter((t) => t.length > 0);
+  if (terms.length > 0) {
+    const alternation = terms
+      .sort((a, b) => b.length - a.length) // longest-first alternation
+      .map(escapeRegExp)
+      .join('|');
+    // Unicode-aware boundaries: plain \b misclassifies umlauts under 'u'.
+    // Escaped-literal alternation is linear — exempt from the runtime budget
+    // (throwing here could only ever be load, never pathology).
+    compiled.push({
+      re: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternation})(?![\\p{L}\\p{N}_])`, 'giu'),
+      source: '(custom terms)',
+      operatorPattern: false,
+    });
+  }
+  for (const source of config.patterns.map((p) => p.trim()).filter((p) => p.length > 0)) {
+    const vetted = vetPattern(source);
+    if ('rejected' in vetted) rejected.push(vetted.rejected);
+    else compiled.push({ re: vetted.re, source, operatorPattern: true });
+  }
+
+  if (compiled.length === 0) return { detector: undefined, rejected };
+  return {
+    rejected,
+    detector: {
+      id: 'custom-terms',
+      async detect(text: string): Promise<readonly PromptPiiSpan[]> {
+        const spans: PromptPiiSpan[] = [];
+        for (const { re, source, operatorPattern } of compiled) {
+          const startedAt = Date.now();
+          const pattern = new RegExp(re.source, re.flags); // fresh lastIndex
+          for (const match of text.matchAll(pattern)) {
+            if (match.index === undefined || match[0].length === 0) continue;
+            spans.push({
+              start: match.index,
+              end: match.index + match[0].length,
+              type: 'custom',
+              confidence: 1,
+            });
+          }
+          // Runtime backstop (review H1): the construction probes cannot
+          // foresee input-dependent blowup. Over budget ⇒ throw — the
+          // service's tier-2 catch BLOCKS the turn (fail-closed). No
+          // auto-disable: skipping the pattern on later turns would be
+          // fail-OPEN for exactly the values it was meant to protect. The
+          // operator sees the greppable log and removes/fixes the pattern.
+          const elapsedMs = Date.now() - startedAt;
+          if (operatorPattern && elapsedMs > runtimeBudgetMs) {
+            console.error(
+              `[privacy-guard v4] customPatternRuntimeExceeded pattern=${JSON.stringify(source)} elapsedMs=${String(Math.round(elapsedMs))} — turn will be blocked; remove or fix this pattern`,
+            );
+            throw new CustomPatternRuntimeError(source, elapsedMs);
+          }
+        }
+        return spans;
+      },
     },
   };
 }

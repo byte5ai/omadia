@@ -1103,6 +1103,21 @@ Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
 
 ---
 
+### Privacy Shield: Deny-Lists, Miss-Queue, idnum, Eval-Gate (#760)
+
+Operator-Deny-List: Setup-Felder `custom_terms` (Literale, ';'/Zeilen-getrennt)
++ `custom_patterns` (Regex, eine pro Zeile) am Privacy-Plugin; Vetting beim
+Config-Wechsel (Syntax + Escalating-Probe-Zeitbudget gegen katastrophales
+Backtracking), abgelehnte Patterns loggen `customPatternRejected` laut.
+Detector-Id `custom-terms`, Span-Typ `custom`, gleiche Fail-Closed-Maschinerie.
+Miss-Report-Queue: **`POST/GET /api/v1/operator/privacy/miss-reports`** (+
+`/:id/resolve`), Tabelle `privacy_miss_reports` (Migration `0040`), Intake auf
+der PrivacyReceiptCard, Review-UI `/operator/privacy-reports`. `idnum` ist
+seit #760 gated (DE/ES/IT/UK/FR-Patterns in C0; NL BSN bewusst ungepattern —
+9 nackte Ziffern). CI-Gate: `promptDetectorEval.ts --check` gegen
+`validation/ci-baseline.json` (per-Locale-Floors, leerer Lauf = rot). Tests:
+`test/privacyCustomTermsAndIdnum.test.ts`, `test/privacyMissReports.test.ts`.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
@@ -1139,6 +1154,25 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 `/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+### Receipt-Hash-Kette + signierte Checkpoints (#758)
+
+`turn_receipts` ist seit Migration `0041` hash-verkettet: `entry_hash =
+sha256(stream ‖ seq ‖ prev_hash ‖ canonical(payload))`, Appends serialisiert
+über `audit_stream_heads` (FOR UPDATE — eine lineare Kette, keine Forks);
+Replay ⇒ kompletter Rollback. UPDATE per Trigger verboten, DELETE bleibt für
+Retention erlaubt (Lücken sind detektierbar). Ed25519-Checkpoints
+(`src/receipts/checkpoints.ts`): Key NUR in Env (`AUDIT_SIGNING_KEY`,
+Keygen `scripts/generate-audit-signing-key.mjs`), Intervall
+`AUDIT_CHECKPOINT_INTERVAL_MINUTES` (60), externer Anker `AUDIT_ANCHOR_PATH`
+(JSONL). Public Key: **`GET /api/v1/operator/provenance/public-key`**.
+Verify-Grundstein `verifyChainSegment` in `src/receipts/chain.ts` (Tamper-
+Tests in `test/receiptHashChain.test.ts`); die Operator-Verify-Fläche ist
+#761. Zeitanker: Checkpoint-Kadenz, nicht pro Zeile (`created_at` ist
+außerhalb des Hashes — bewusst, begründet in `src/receipts/chain.ts` +
+`receiptChainPayload` in `store.ts`). ⚠️ #761-Pflicht: Retention-Lücken
+gegen die Checkpoint-Zeitachse prüfen (Backdating-Laundering-Kanal, s.
+security-architecture §7b).
 
 ## 4. Migration Managed Agents → Lokal
 

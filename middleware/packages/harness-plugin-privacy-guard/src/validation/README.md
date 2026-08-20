@@ -54,11 +54,18 @@ thrown timeouts.
 | Precision proxy (spans flagged on PII-free negatives) | ≥ 0.85 |
 | Added latency, p95 per prompt | ≤ 400 ms |
 
-`idnum` spans (locale ID numbers: Steuer-ID, NINO, NIE/DNI, codice fiscale,
-BSN, n° de sécurité sociale) are measured **informationally only and never
-gated in v1**: C0 has no patterns for them and C1's calibrated label set is
-`person`/`address`. If a run shows Critical-tier `idnum` leaks in practice,
-locale ID regexes are the recorded fast-follow.
+`idnum` spans (locale ID numbers) are **gated since #760**: C0 carries
+patterns for DE Steuer-ID (grouped + bare 11 digits) and USt-IdNr., ES
+NIE/DNI, IT Codice Fiscale, UK NINO, and FR n° de sécurité sociale. The one
+deliberately unpatterned form is the **NL BSN** — 9 bare digits with no
+distinguishing shape; a global 9-digit pattern would mask half the numeric
+universe. It stays a recorded miss inside nl's aggregate (see
+`ci-baseline.json`, whose nl floor reflects it) rather than an ungated type.
+
+**CI gate (#760):** `promptDetectorEval.ts --check` runs the deterministic
+C0-only set in CI on every PR and compares each locale against the committed
+per-locale floors in `ci-baseline.json` — a detection regression is a red
+check, and an empty evaluation fails rather than reporting green.
 
 **Flag policy (unchanged):** `mask_user_prompt` may be enabled only for
 locales whose fixture set passes ALL gates with the shipped detector set,

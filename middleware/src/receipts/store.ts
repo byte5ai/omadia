@@ -20,6 +20,13 @@ import type {
   TurnReceiptStore,
 } from '@omadia/plugin-api';
 
+import {
+  HASH_VERSION,
+  RECEIPT_STREAM_ID,
+  computeEntryHash,
+  genesisHash,
+} from './chain.js';
+
 /** Process-wide failure counters, exported for /health-style introspection
  *  and asserted in tests. Mirrors `runTraceObservability.ts`'s "count what
  *  would otherwise be silently incomplete" obligation. */
@@ -40,16 +47,59 @@ export function resetTurnReceiptCounters(): void {
   counters.persistFailures = 0;
 }
 
+/** #758 — the canonical hash payload of a receipt row. NEVER includes
+ *  DB-generated values (created_at): time is anchored by checkpoint cadence,
+ *  not per-row. Exported so the #761 verifier recomputes the identical shape.
+ *
+ *  The JSON round-trip is load-bearing (review M3): the verifier recomputes
+ *  from the stored JSONB, which honored `toJSON` at write time — hashing the
+ *  live object would canonicalize e.g. a Date to `{}` while the row stores
+ *  its ISO string, a guaranteed spurious mismatch. Round-tripping here makes
+ *  hash input and stored row see the identical plain-JSON value. */
+export function receiptChainPayload(entry: TurnReceiptRecordInput): unknown {
+  return JSON.parse(
+    JSON.stringify({
+      turnId: entry.turnId,
+      sessionScope: entry.sessionScope ?? null,
+      channel: entry.channel ?? null,
+      model: entry.model ?? null,
+      receipt: entry.receipt,
+    }),
+  );
+}
+
 export class PgTurnReceiptStore implements TurnReceiptStore {
   constructor(private readonly pool: Pool) {}
 
   async record(entry: TurnReceiptRecordInput): Promise<void> {
+    const client = await this.pool.connect();
     try {
-      // Idempotent on turn_id: a replayed `done` event (retry, double flush)
-      // must not duplicate the row; first write wins.
-      const result = await this.pool.query(
-        `INSERT INTO turn_receipts (turn_id, session_scope, channel, model, receipt)
-         VALUES ($1, $2, $3, $4, $5::jsonb)
+      // #758 — chained append. One transaction: lock the stream head
+      // (FOR UPDATE serializes concurrent appends into a single linear
+      // chain — no forks), compute seq/prev, insert, advance the head.
+      // Idempotence on turn_id is preserved: a replayed `done` event hits
+      // DO NOTHING, and then the head must NOT advance — the transaction
+      // rolls back to keep head and rows consistent.
+      await client.query('BEGIN');
+      const headRes = await client.query<{ head_seq: string; head_hash: Buffer }>(
+        `SELECT head_seq, head_hash FROM audit_stream_heads
+          WHERE stream_id = $1 FOR UPDATE`,
+        [RECEIPT_STREAM_ID],
+      );
+      const head = headRes.rows[0];
+      const prevHash = head ? head.head_hash : genesisHash(RECEIPT_STREAM_ID);
+      const seq = head ? Number(head.head_seq) + 1 : 1;
+      const entryHash = computeEntryHash({
+        streamId: RECEIPT_STREAM_ID,
+        seq,
+        prevHash,
+        payload: receiptChainPayload(entry),
+      });
+      const inserted = await client.query(
+        `INSERT INTO turn_receipts
+           (turn_id, session_scope, channel, model, receipt,
+            stream_id, seq, prev_hash, entry_hash, hash_version)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
          ON CONFLICT (turn_id) DO NOTHING`,
         [
           entry.turnId,
@@ -57,16 +107,37 @@ export class PgTurnReceiptStore implements TurnReceiptStore {
           entry.channel ?? null,
           entry.model ?? null,
           JSON.stringify(entry.receipt),
+          RECEIPT_STREAM_ID,
+          seq,
+          prevHash,
+          entryHash,
+          HASH_VERSION,
         ],
       );
-      // A replayed turn hits DO NOTHING (rowCount 0) — that is not a
-      // persist, and the counter must not overstate the record.
-      if ((result.rowCount ?? 0) > 0) {
-        counters.persisted += 1;
+      if ((inserted.rowCount ?? 0) === 0) {
+        // Replayed turn: no row, no head movement, no counter.
+        await client.query('ROLLBACK');
+        return;
       }
+      await client.query(
+        `INSERT INTO audit_stream_heads (stream_id, head_seq, head_hash, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (stream_id)
+         DO UPDATE SET head_seq = EXCLUDED.head_seq, head_hash = EXCLUDED.head_hash, updated_at = NOW()`,
+        [RECEIPT_STREAM_ID, seq, entryHash],
+      );
+      await client.query('COMMIT');
+      counters.persisted += 1;
     } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* connection-level failure — nothing further to roll back */
+      }
       counters.persistFailures += 1;
       throw err;
+    } finally {
+      client.release();
     }
   }
 }
