@@ -185,3 +185,17 @@ export function isHardClaim(claim: Claim): claim is HardClaim {
 export function isSoftClaim(claim: Claim): claim is SoftClaim {
   return claim.type === 'name' || claim.type === 'qualitative';
 }
+
+/**
+ * #129 — a claim is *anchored* when it names a concrete Odoo record
+ * (`odooRecord.id` or `.ref`) with `expectedSource: 'odoo'`. Whether that
+ * record EXISTS is checkable deterministically no matter how the extractor
+ * typed the claim — Haiku types "INV/2026/0099 ist verbucht" as `id` in
+ * some samples and `qualitative` in others. Pure predicate; no I/O.
+ */
+export function hasOdooRecordAnchor(claim: Claim): boolean {
+  if (claim.expectedSource !== 'odoo') return false;
+  const ref = claim.odooRecord;
+  if (!ref || typeof ref.model !== 'string' || ref.model.length === 0) return false;
+  return typeof ref.id === 'number' || (typeof ref.ref === 'string' && ref.ref.length > 0);
+}

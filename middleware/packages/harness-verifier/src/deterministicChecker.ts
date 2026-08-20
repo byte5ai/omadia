@@ -123,6 +123,28 @@ export class DeterministicChecker {
     return Promise.all(claims.map((c) => this.check(c)));
   }
 
+  /**
+   * #129 — existence check for ANY claim anchored on an Odoo record
+   * (`hasOdooRecordAnchor`), independent of `claim.type`. The extractor
+   * is an LLM and types "INV/2026/0099 ist verbucht" as `id` in some
+   * samples and `qualitative` in others; the record either exists or it
+   * doesn't either way. Same transport as the `id` path: `read` by id,
+   * `search` by `name = ref`. Always resolves — never throws.
+   */
+  async checkRecordExists(claim: Claim): Promise<ClaimVerdict> {
+    if (claim.expectedSource !== 'odoo') {
+      return unverified(claim, `existence check needs odoo source, got ${claim.expectedSource}`);
+    }
+    if (!this.odoo) return unverified(claim, 'no odoo reader configured');
+    try {
+      return await this.checkOdooId(claim, claim.odooRecord);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`[verifier/deterministic] FAIL exists claim=${claim.id} err=${msg}`);
+      return unverified(claim, `re-query error: ${msg}`);
+    }
+  }
+
   // --- Odoo ---------------------------------------------------------------
 
   private async checkOdoo(claim: HardClaim): Promise<ClaimVerdict> {
@@ -250,8 +272,10 @@ export class DeterministicChecker {
     return verified(claim, 'odoo');
   }
 
+  /** Record-existence check — shared by the `id` path and
+   *  {@link checkRecordExists}, hence typed on `Claim` not `HardClaim`. */
   private async checkOdooId(
-    claim: HardClaim,
+    claim: Claim,
     ref: OdooRecordRef | undefined,
   ): Promise<ClaimVerdict> {
     if (!ref) return unverified(claim, 'id claim without odoo model');

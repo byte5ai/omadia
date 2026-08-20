@@ -6,7 +6,7 @@ import type {
   VerifierInput,
   VerifierVerdict,
 } from './claimTypes.js';
-import { isHardClaim, isSoftClaim } from './claimTypes.js';
+import { hasOdooRecordAnchor, isHardClaim, isSoftClaim } from './claimTypes.js';
 import type { ClaimExtractor } from './claimExtractor.js';
 import type { DeterministicChecker } from './deterministicChecker.js';
 import type { EvidenceJudge } from './evidenceJudge.js';
@@ -18,7 +18,11 @@ import { shouldTriggerVerifier } from './triggerRouter.js';
  *
  *   answer → triggerRouter → claimExtractor → classify
  *                            ├─► DeterministicChecker (hard claims, parallel)
- *                            └─► EvidenceJudge        (soft claims, parallel)
+ *                            ├─► DeterministicChecker.checkRecordExists
+ *                            │     (soft claims anchored on an Odoo record —
+ *                            │      #129: a missing record blocks before any
+ *                            │      judge call, whatever the extractor typed)
+ *                            └─► EvidenceJudge        (remaining soft claims)
  *                            → aggregate → VerifierVerdict
  *
  * Never throws. On any failure below the API level the pipeline returns
@@ -131,7 +135,7 @@ export class VerifierPipeline {
     // own — we never need to wait on one to start the other.
     const [hardVerdicts, softVerdicts] = await Promise.all([
       this.deterministic.checkAll(hardToActuallyCheck),
-      this.judge.checkAll(soft),
+      this.checkSoftClaims(soft),
     ]);
 
     const all: ClaimVerdict[] = [
@@ -141,6 +145,31 @@ export class VerifierPipeline {
       ...softVerdicts,
     ];
     return aggregate(all, started);
+  }
+
+  /**
+   * #129 — soft claims anchored on an Odoo record get a deterministic
+   * existence check first. A record that does not exist is a contradiction
+   * no judge can talk away, so those claims never reach the judge; claims
+   * whose record exists (or could not be checked) go to the judge unchanged.
+   */
+  private async checkSoftClaims(soft: SoftClaim[]): Promise<ClaimVerdict[]> {
+    const anchored = soft.filter(hasOdooRecordAnchor);
+    if (anchored.length === 0) return this.judge.checkAll(soft);
+
+    const existence = await Promise.all(
+      anchored.map((c) => this.deterministic.checkRecordExists(c)),
+    );
+    const contradicted = existence.filter((v) => v.status === 'contradicted');
+    const blockedIds = new Set(contradicted.map((v) => v.claim.id));
+    if (blockedIds.size > 0) {
+      this.log(
+        `[verifier/pipeline] anchored soft claim(s) refuted by record re-query: ${[...blockedIds].join(',')}`,
+      );
+    }
+    const forJudge = soft.filter((c) => !blockedIds.has(c.id));
+    const judged = await this.judge.checkAll(forJudge);
+    return [...contradicted, ...judged];
   }
 }
 

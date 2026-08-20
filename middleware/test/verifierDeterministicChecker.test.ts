@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   DeterministicChecker,
+  type Claim,
   type GraphReader,
   type HardClaim,
   type OdooReader,
@@ -324,5 +325,71 @@ describe('verifier/deterministicChecker - error handling', () => {
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /timeout/);
     }
+  });
+});
+
+// #129 golden flake — the extractor sometimes types an invoice-reference claim
+// as `qualitative` instead of `id` while still populating `odooRecord.ref`.
+// Record existence is checkable regardless of claim type.
+describe('verifier/deterministicChecker - checkRecordExists (any claim type)', () => {
+  function anchoredQualitative(overrides: Partial<Claim> = {}): Claim {
+    return {
+      id: 'c_q',
+      text: 'die Rechnung INV/2026/0099 ist verbucht und abgeschlossen',
+      type: 'qualitative',
+      expectedSource: 'odoo',
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+      relatedEntities: [],
+      ...overrides,
+    };
+  }
+
+  it('contradicts a qualitative claim whose anchored ref does not exist', async () => {
+    const calls: OdooCall[] = [];
+    const odoo = stubOdoo(() => [], calls);
+    const checker = new DeterministicChecker({ odoo });
+    const verdict = await checker.checkRecordExists(anchoredQualitative());
+    assert.equal(verdict.status, 'contradicted');
+    assert.equal(calls[0]!.method, 'search');
+    assert.deepEqual(calls[0]!.positionalArgs, [[['name', '=', 'INV/2026/0099']]]);
+  });
+
+  it('verifies a qualitative claim whose anchored id exists', async () => {
+    const odoo = stubOdoo(() => [{ id: 42 }]);
+    const checker = new DeterministicChecker({ odoo });
+    const verdict = await checker.checkRecordExists(
+      anchoredQualitative({ odooRecord: { model: 'account.move', id: 42 } }),
+    );
+    assert.equal(verdict.status, 'verified');
+  });
+
+  it('returns unverified (never throws) when the reader fails or is missing', async () => {
+    const throwing = new DeterministicChecker({
+      odoo: stubOdoo(() => {
+        throw new Error('boom');
+      }),
+      log: () => undefined,
+    });
+    assert.equal(
+      (await throwing.checkRecordExists(anchoredQualitative())).status,
+      'unverified',
+    );
+    const none = new DeterministicChecker({});
+    assert.equal(
+      (await none.checkRecordExists(anchoredQualitative())).status,
+      'unverified',
+    );
+  });
+
+  it('returns unverified for a non-odoo or unanchored claim', async () => {
+    const checker = new DeterministicChecker({ odoo: stubOdoo(() => [1]) });
+    assert.equal(
+      (await checker.checkRecordExists(anchoredQualitative({ expectedSource: 'graph' }))).status,
+      'unverified',
+    );
+    assert.equal(
+      (await checker.checkRecordExists(anchoredQualitative({ odooRecord: undefined }))).status,
+      'unverified',
+    );
   });
 });
