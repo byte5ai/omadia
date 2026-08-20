@@ -44,6 +44,7 @@ export function loadCheckpointSigner(privateKeyBase64: string): CheckpointSigner
   } catch (err) {
     throw new Error(
       `AUDIT_SIGNING_KEY is not a base64 PKCS#8 Ed25519 private key (generate one with scripts/generate-audit-signing-key.mjs): ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     );
   }
   if (privateKey.asymmetricKeyType !== 'ed25519') {
