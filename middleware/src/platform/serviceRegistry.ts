@@ -26,7 +26,27 @@
  * may only read graph scopes tagged with its own agentId or `public`. The
  * scope wrapping happens in `createPluginContext`, not here. This registry is
  * a naked service-locator; enforcement lives at the consumer seam.
+ *
+ * That seam now exists (epic #470, B1): `pluginServiceGrants.ts`, called from
+ * `createPluginContext`. `ctx.services.get` resolves only capabilities the
+ * plugin's manifest declares. This class stays deliberately unenforcing — core
+ * resolves its own services through it, and a registry that policed its own
+ * callers could not serve both.
  */
+
+import {
+  isPerCallerService,
+  resolvePerCallerService,
+  type ServiceCaller,
+} from '@omadia/plugin-api';
+
+/** Attribution used when core resolves a service for itself rather than on
+ *  behalf of a plugin. A per-caller factory can branch on it to hand the
+ *  kernel an unscoped implementation. */
+export const KERNEL_SERVICE_CALLER: ServiceCaller = Object.freeze({
+  agentId: '@omadia/core',
+  pluginId: '@omadia/core',
+});
 
 /** The known well-known service names. An open string union so future
  *  additions (e.g. 'diagrams', 'attachments', 'memory') don't require a
@@ -109,8 +129,22 @@ export class ServiceRegistry {
     return this.track(owner, name, dispose);
   }
 
-  get<T>(name: ServiceName): T | undefined {
-    return this.providers.get(name) as T | undefined;
+  /**
+   * Resolve a provider.
+   *
+   * When the registration is a {@link perCallerService} factory, it is
+   * invoked with `caller` and the result is returned — so a provider that
+   * needs to know who is asking gets the id from the kernel rather than from
+   * an argument the consumer supplied (epic #470 §2.2).
+   *
+   * `caller` defaults to {@link KERNEL_SERVICE_CALLER}: core's own direct
+   * `.get()` call sites keep working unchanged and are attributed to the
+   * kernel, not to whichever plugin happens to be on the stack.
+   */
+  get<T>(name: ServiceName, caller: ServiceCaller = KERNEL_SERVICE_CALLER): T | undefined {
+    const raw = this.providers.get(name);
+    if (isPerCallerService<T>(raw)) return resolvePerCallerService(raw, caller);
+    return raw as T | undefined;
   }
 
   has(name: ServiceName): boolean {

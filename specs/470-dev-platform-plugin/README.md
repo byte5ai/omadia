@@ -164,7 +164,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **3,288**. It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **3,300**. It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
@@ -188,6 +188,18 @@ dev-platform dependency. All of it deletes at extraction. Everything else is a
 regression. That has happened three
 times (PR #529, then #537's embedding work): the guard fires, the raise is hand-edited, and the
 reason is recorded in the commit. A rise is only wrong when *core* re-acquires a dependency.
+
+**C2b is a third kind of rise, and the smallest: +5, all documentation of a removal.**
+`middleware/packages` 84 → 89, from the new `packages/plugin-api/CHANGELOG.md`. A changelog
+recording that the `DevJob*` types were deleted has to name them, or a consumer grepping its
+own source for `DevJobDescriptor` finds nothing and the record is worthless. Three of the five
+lines are literal strings that cannot be reworded at all — a spec path, a test filename, and
+the future package name `@omadia/dev-platform-plugin-api`; the other two are the removal
+heading and the six type names, deliberately collapsed onto one line each. The count was
+first +31: the example capability in the new gate tests and a `perCallerService` docblock both
+used `devJobs` gratuitously, and both were reworded to a neutral name rather than excused —
+`middleware/test` is back at its baseline of 1,030, unchanged. Nothing in core references the
+dev platform as a result of this PR; the residue is prose *about* code that left.
 
 **Definition of done:** ratchet reads `0`, every row of `acceptance.md` §2 passes, and the
 install/uninstall criteria in `acceptance.md` §3 pass.

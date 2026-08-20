@@ -18,6 +18,13 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — service-grant gate covers legacy rows, plugin-facing callers, and per-plugin factories (#470 C2b, PR #783)
+
+- Filled the dated `ctx.services.get` legacy allowlist with the currently-real built-in and hub-plugin rows the first audit missed: some service names are hidden behind exported constants (`PROCESS_MEMORY_SERVICE_NAME`, `PLUGIN_CAPABILITIES_SERVICE`, `CHANNEL_RESOLVER_SERVICE`, …) and some channel repos resolve them through shared `@omadia/channel-sdk` helpers rather than a literal string in the plugin's own file. The boot-breaking orchestrator/orchestrator-extras gaps are now grandfathered explicitly until their manifests catch up.
+- Added `test/pluginServiceGrantCoverage.test.ts`, which derives service reads from every built-in `middleware/packages/*/manifest.yaml` plus its `src/**/*.ts` call sites and fails loud on undeclared or stale legacy rows instead of trusting a hand-maintained snapshot.
+- Threaded the plugin's `ServiceCaller` through plugin-facing accessors that resolved services outside `ctx.services.get` (`ctx.memory`, the knowledge-graph accessor, `ctx.mcp`, `ctx.subAgents`, `ctx.llm`, `ctx.events`) so `perCallerService(...)` providers see the consuming plugin instead of the kernel.
+- Made `perCallerService(...)` truthful to its docs: one implementation is now memoized per consuming plugin and per factory object, so repeat reads by the same plugin reuse the same instance while a replaced provider starts cold automatically.
+
 ### Fixed — verifier: hallucinated record references no longer pass with a disclaimer (#129, PR #781)
 
 - **Behaviour change (blocking).** A qualitative answer that names a concrete
