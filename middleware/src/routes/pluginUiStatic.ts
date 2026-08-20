@@ -54,7 +54,7 @@ import { Router, type Request, type Response } from 'express';
  */
 
 /** Extension → Content-Type. Deliberately no `.css` — see the header. */
-const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
+export const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.mjs', 'text/javascript; charset=utf-8'],

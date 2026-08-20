@@ -2,6 +2,8 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 
+import { isValidPluginId } from '@/app/_lib/pluginId';
+
 import { PluginUiFrame } from './_components/PluginUiFrame';
 
 /**
@@ -26,9 +28,6 @@ import { PluginUiFrame } from './_components/PluginUiFrame';
  * reachable from a nav contribution while `//evil.example` is not.
  */
 
-/** Mirrors the plugin-id charset gate in `manifestLoader`. */
-const PLUGIN_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
-
 export async function generateMetadata({
   params,
 }: {
@@ -48,7 +47,15 @@ export default async function PluginUiPage({
   // Rejected here rather than passed on: an id outside the charset can never
   // resolve to a package, and refusing it keeps a malformed value out of the
   // iframe URL entirely.
-  if (!PLUGIN_ID.test(pluginId)) notFound();
+  //
+  // The gate lives in `_lib/pluginId.ts` and is pinned by test to the
+  // middleware definition it claims to mirror. The version that shipped with
+  // C8 declared the same intention in a comment and then omitted the optional
+  // `@scope/`, so `@omadia/example-ui` — the id of the very plugin this
+  // route was built for, and the shape of every omadia plugin id — was
+  // rejected here. Next hands us the DECODED segment, so the value compared is
+  // `@omadia/example-ui`, not its percent-encoded form.
+  if (!isValidPluginId(pluginId)) notFound();
 
   const t = await getTranslations('pluginUi');
 
