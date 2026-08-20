@@ -31,7 +31,7 @@ import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -149,7 +149,6 @@ import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
 import { createGitHubDeviceProvider } from './issues/githubOAuthProvider.js';
-import { DeviceFlowStore } from './issues/deviceFlowStore.js';
 import { createIssuesRouter } from './issues/issuesRouter.js';
 import { GitHubAppTokenProvider } from './plugins/builder/githubAppAuth.js';
 import { UserChoiceCoordinator } from './plugins/builder/userChoiceCoordinator.js';
@@ -203,27 +202,11 @@ import {
 } from '@omadia/plugin-api';
 import { createRequireAuth } from './auth/requireAuth.js';
 import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
-import { assembleDevPlatform, mountDevPlatform } from './devplatform/wireDevPlatform.js';
-import { createChatDevJobOrchestratorTools } from './devplatform/chatDevJobToolWiring.js';
-import { isPermittedLauncher } from './devplatform/routes/devPlatformShared.js';
-import { createDevWebhooksRouter, type DevWebhooksRouterDeps } from './devplatform/routes/devWebhooks.js';
-import { WebhookDeliveryStore } from './devplatform/triggers/webhookDeliveryStore.js';
-import { DevGithubAppStore } from './devplatform/githubApp/appStore.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
 } from './routes/conductorWebhooksInbound.js';
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
-import { DevJobStore as DevJobStoreForWebhooks } from './devplatform/devJobStore.js';
-import { DevRepoStore as DevRepoStoreForWebhooks } from './devplatform/devRepoStore.js';
-import { DevJobGateStore as DevJobGateStoreForWebhooks } from './devplatform/pipeline/gateStore.js';
-import {
-  createTriggerJob as createDevTriggerJob,
-  hasActiveTriggerJob as hasActiveDevTriggerJob,
-} from './devplatform/triggers/triggerJobService.js';
-import { mintRunnerToken as mintDevRunnerToken } from './devplatform/jobToken.js';
-import { DevRetentionRunner } from './devplatform/retention.js';
-import { ManifestFlowStore } from './devplatform/githubApp/manifestFlow.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -277,7 +260,6 @@ import { FileInstalledRegistry } from './plugins/fileInstalledRegistry.js';
 import { InstallService } from './plugins/installService.js';
 import { registerInstalledPluginTemplates } from './plugins/pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './plugins/pluginTemplates.js';
-import { createDevPlatformGithubAppRouter } from './devplatform/routes/devPlatformGithubApp.js';
 import {
   OAuthBrokerService,
   PendingFlowStore,
@@ -2557,84 +2539,14 @@ async function main(): Promise<void> {
   // (PayloadTooLargeError in the log). 10mb is well below the
   // turn-loop's risk profile (the agent's own per-tool input is bounded
   // by Anthropic-SDK token limits) but gives slot-heavy clones room.
-  // Epic #470 W4 — inbound GitHub webhook trigger (POST /api/webhooks/github).
-  // MOUNTED BEFORE express.json ON PURPOSE: HMAC verification needs the RAW request
-  // bytes, and the global express.json below would parse + re-serialise the body,
-  // destroying the signature. The router attaches its OWN route-level express.raw
-  // parser, so it consumes ONLY its one path and calls next() for everything else
-  // (which then reaches express.json normally). Gated on the same DEV_PLATFORM /
-  // graphPool preconditions as the platform assembly, plus the DEV_WEBHOOKS_ENABLED
-  // kill switch. The webhook stores are pool/vault-backed and stateless, so building
-  // them here (before the full platform assembly) is safe and keeps the mount order
-  // correct; the worker (assembled later) claims the created jobs from the DB.
-  if (config.devPlatform.enabled && graphPool && config.devPlatform.webhooks.enabled) {
-    const webhookAppStore = new DevGithubAppStore(graphPool, secretVault);
-    const webhookRepoStore = new DevRepoStoreForWebhooks(graphPool);
-    const webhookJobStore = new DevJobStoreForWebhooks(graphPool);
-    const webhookGateStore = new DevJobGateStoreForWebhooks(graphPool);
-    const webhookDeliveries = new WebhookDeliveryStore(graphPool);
-
-    // SECURITY (Forge W4): cache the registered Apps' webhook secrets with a short
-    // TTL so an unauthenticated flood of deliveries cannot amplify into a Vault
-    // round-trip per request. 30s is short enough that a newly-registered App's
-    // secret starts verifying within one TTL.
-    const WEBHOOK_SECRETS_TTL_MS = 30_000;
-    let cachedWebhookSecrets: readonly string[] | null = null;
-    let cachedWebhookSecretsAt = 0;
-    const listWebhookSecrets = async (): Promise<readonly string[]> => {
-      const nowMs = Date.now();
-      if (cachedWebhookSecrets && nowMs - cachedWebhookSecretsAt < WEBHOOK_SECRETS_TTL_MS) {
-        return cachedWebhookSecrets;
-      }
-      const apps = await webhookAppStore.listApps();
-      const secrets: string[] = [];
-      for (const app of apps) {
-        const s = await webhookAppStore.getSecrets(app.appId);
-        if (s?.webhookSecret) secrets.push(s.webhookSecret);
-      }
-      cachedWebhookSecrets = secrets;
-      cachedWebhookSecretsAt = nowMs;
-      return secrets;
-    };
-
-    // Webhook jobs run on the non-local default backend: Fly when a runner app is
-    // configured, else the docker shipping path. `local` is structurally refused by
-    // the trigger job service, so it is never selected here.
-    const webhookBackend = config.devPlatform.fly?.runnerApp ? ('fly' as const) : ('docker' as const);
-
-    const webhookDeps: DevWebhooksRouterDeps = {
-      listWebhookSecrets,
-      repos: {
-        getByFullName: async (fullName) =>
-          (await webhookRepoStore.listRepos()).find((r) => `${r.owner}/${r.name}` === fullName) ?? null,
-      },
-      deliveries: webhookDeliveries,
-      hasActiveWebhookJob: (repoId, sourceRef) =>
-        hasActiveDevTriggerJob(graphPool, repoId, sourceRef, 'webhook'),
-      createTriggerJob: (input) =>
-        createDevTriggerJob(
-          { jobStore: webhookJobStore, gateStore: webhookGateStore, log: (msg) => console.log(msg) },
-          input,
-        ),
-      mintRunnerToken: () => mintDevRunnerToken(),
-      webhookBackend,
-      webhooksEnabled: config.devPlatform.webhooks.enabled,
-      maxJobsPerRepoHour: config.devPlatform.webhooks.maxJobsPerRepoHour,
-      maxJobsPerSenderHour: config.devPlatform.webhooks.maxJobsPerSenderHour,
-      log: (msg) => console.log(msg),
-    };
-    app.use(createDevWebhooksRouter(webhookDeps));
-    console.log('[middleware] dev-platform GitHub webhook router mounted at /api/webhooks/github (raw-body, before express.json)');
-  }
-
   // ── Epic #470 C6 / G3 — plugin raw-body slot ─────────────────────────────
   //
   // THE POSITION OF THIS LINE IS THE FEATURE, for the same reason C4's mount
   // further down says so: it is the last place a plugin route can still see
   // untouched request bytes.
   //
-  // The two hand-rolled raw routers above (`/api/webhooks/github`,
-  // `/api/hooks/:endpointId`) exist here precisely because a router mounted
+  // The hand-rolled raw router just below (`/api/hooks/:endpointId`) sits in
+  // this same window precisely because a router mounted
   // after `express.json` cannot recover the bytes it needs — body-parser marks
   // the request `_body` and every later parser, including a route-local
   // `express.raw()`, short-circuits. This mount generalises that placement: a
@@ -2649,21 +2561,6 @@ async function main(): Promise<void> {
   // for why `express.json`'s `verify` hook is NOT the mechanism.
   app.use(createPluginRawBodyMount({ routes: pluginRouteRegistry }));
 
-  // The LLM proxy (`/api/v1/dev-runner/llm/*`, mounted later at `mountDevPlatform`)
-  // owns its own route-level `express.raw()` so it can canonicalise the exact bytes
-  // it validates before forwarding (see llmProxy.ts). A global body parser that runs
-  // BEFORE that route is reached would drain the request stream first: body-parser's
-  // `read()` bails out via `onFinished.isFinished(req)` on an already-consumed stream
-  // and never touches `req.body` again, so the route's own raw() would then see a
-  // pre-parsed object instead of a Buffer. Skip this one path here, mirroring the
-  // GitHub-webhook router's raw-body-before-json pattern above.
-  app.use((req, res, next) => {
-    if (req.path.startsWith('/api/v1/dev-runner/llm/')) {
-      next();
-      return;
-    }
-    express.json({ limit: '10mb', verify: recordRawBodyBytes })(req, res, next);
-  });
   // Issue #437 — Conductor's generic inbound webhook route. Mounted unconditionally
   // (mirrors the forward-reference pattern, not the `if (graphPool)` gate above): on
   // the in-memory backend `conductorWebhookInboundDepsRef` never gets assigned, so the
@@ -3450,159 +3347,6 @@ async function main(): Promise<void> {
       '[middleware] usage cost endpoint skipped — no graphPool (in-memory KG backend)',
     );
   }
-
-  // Dev platform (epic #470 W0) — isolated per-job code runners. DARK BY
-  // DEFAULT: with DEV_PLATFORM_ENABLED unset, nothing below runs — no router
-  // mounts and no worker starts. It also needs the Postgres graphPool (the job
-  // spine + repo/artifact tables live there); in-memory mode has nowhere to
-  // persist a durable queue. The two safety-critical modes (subscription auth,
-  // unsafe-local backend) already refused boot in config.ts if misconfigured.
-  if (config.devPlatform.enabled && graphPool) {
-    const devPlatformGithubDeviceProvider = createGitHubDeviceProvider(
-      config.devPlatform.githubClientId,
-    );
-    const shimEntry = fileURLToPath(
-      new URL('../packages/dev-runner-shim/dist/src/index.js', import.meta.url),
-    );
-    // W2: role-principal gates resolve their live holder set against the same
-    // conductor role store the conductor await gate uses.
-    const devPlatformRoleStore = new ConductorRoleStore(graphPool);
-    // Epic #470 C3: ONE namespaced config object, built in config.ts. Everything
-    // operator-settable — the runner image fallback, the on-/off-Fly selection,
-    // the comma-separated lists — is resolved behind that boundary or inside the
-    // assembly, so no `DEV_*` env name appears at this call site any more.
-    const wiredDevPlatform = assembleDevPlatform({
-      pool: graphPool,
-      vault: secretVault,
-      config: config.devPlatform,
-      resolveRoleHolders: (key) => devPlatformRoleStore.resolve(key),
-      shimEntry,
-      ...(devPlatformGithubDeviceProvider
-        ? {
-            deviceFlow: {
-              provider: devPlatformGithubDeviceProvider,
-              store: new DeviceFlowStore(),
-            },
-          }
-        : {}),
-      log: (msg) => console.log(msg),
-    });
-    mountDevPlatform(app, requireAuth, wiredDevPlatform, (msg) => console.log(msg));
-
-    const devPlatformGithubAppStore = new DevGithubAppStore(graphPool, secretVault);
-    const devPlatformGithubAppRouter = createDevPlatformGithubAppRouter({
-      flowStore: new ManifestFlowStore(),
-      appStore: devPlatformGithubAppStore,
-      bindRepoCredential: async (repoId, binding): Promise<void> => {
-        const boundRepo = await wiredDevPlatform.repoStore.updateRepo(repoId, {
-          credentialKind: 'github_app',
-          credentialRef: `github_app:${binding.appRowId}:${binding.installationId}`,
-        });
-        if (!boundRepo) {
-          throw new Error(`dev-platform repo not found while binding GitHub App credential: ${repoId}`);
-        }
-      },
-      getRepo: async (repoId): Promise<{ owner: string; name: string } | null> => {
-        const repo = await wiredDevPlatform.repoStore.getRepo(repoId);
-        return repo ? { owner: repo.owner, name: repo.name } : null;
-      },
-      publicBaseUrl: config.PUBLIC_BASE_URL,
-      log: (msg) => console.log(msg),
-    });
-    app.use('/api/v1/admin/dev-platform', requireAuth, devPlatformGithubAppRouter.admin);
-    console.log('[dev-platform] github-app admin router mounted at /api/v1/admin/dev-platform (requireAuth)');
-    app.use('/api/v1/dev-platform', devPlatformGithubAppRouter.public);
-    console.log('[dev-platform] github-app public router mounted at /api/v1/dev-platform (state-token auth only, no session guard)');
-
-    // Epic #470 W3 — register the chat orchestrator dev-job tools globally on
-    // the native-tool registry (mirrors `requestSelfExtensionTool`). ONE global
-    // registration; the caller is resolved PER CALL from `turnContext.userId`
-    // (the human driving the turn) — no `userId` ⇒ fail closed. The launch
-    // envelope is the operator's own launchable repos (the `isPermittedLauncher`
-    // gate), matching the admin `POST /jobs` contract. Gate resolution is
-    // deliberately NOT a tool (spec §4 — human-session-attributable only); the
-    // chat job card calls the W2 gate API directly.
-    {
-      const chatDevJobTools = createChatDevJobOrchestratorTools({
-        repoStore: wiredDevPlatform.repoStore,
-        jobStore: wiredDevPlatform.jobStore,
-        isPermittedLauncher,
-        defaultBackend: config.devPlatform.backend,
-        getCallerUserId: () => turnContext.current()?.userId,
-      });
-      for (const reg of chatDevJobTools.registrations) {
-        nativeToolRegistry.register(reg.name, {
-          handler: reg.handler,
-          spec: reg.spec,
-          promptDoc: reg.promptDoc,
-        });
-      }
-      console.log(
-        '[middleware] dev-platform chat orchestrator tools registered (dev_job_start / dev_job_status / dev_job_list)',
-      );
-    }
-
-    // Start the claim/enforce/reap/apply loop; stop it cleanly on shutdown.
-    // Re-adopt the docker jobs this process was running before it restarted, so
-    // reap() can still see a job whose container the daemon has since lost. The
-    // daemon rebuilds its own view from docker labels; ours lives only in memory.
-    await wiredDevPlatform.start();
-    // `stop()` halts BOTH the claim worker and the W2 gate-deadline worker (and
-    // awaits an in-flight deadline tick — a fire-and-forget on the signal handler).
-    const stopDevPlatformWorker = (): void => {
-      void wiredDevPlatform.stop();
-    };
-    process.once('SIGTERM', stopDevPlatformWorker);
-    process.once('SIGINT', stopDevPlatformWorker);
-    console.log(
-      `[middleware] dev platform ENABLED — worker running (max ${String(config.devPlatform.maxConcurrentJobs)} concurrent, ${String(wiredDevPlatform.backends.length)} backend(s))`,
-    );
-
-    // Contribute the operator menu entry instead of hardcoding it in the
-    // web-ui shell. This is the first consumer of the nav catalogue and the
-    // reason it exists: dev-platform is being extracted into a plugin
-    // (specs/470-dev-platform-plugin/plan.md), and its menu entry has to
-    // travel with it. Registering from here — still core, still inside the
-    // DEV_PLATFORM_ENABLED gate — proves the whole loop before any code
-    // moves. When the plugin package lands, this call becomes
-    // `ctx.uiRoutes.registerNav(...)` inside its activate() and nothing
-    // else about the shell changes.
-    //
-    // The `core:` prefix marks a kernel-registered source; a real plugin's
-    // entries are keyed by its plugin id, which the kernel injects.
-    uiRouteCatalog.registerNav('core:dev-platform', {
-      navId: 'devPlatform',
-      href: '/admin/dev-platform',
-      cluster: 'adminCluster',
-      order: 50,
-      label: { en: 'Dev Platform', de: 'Dev-Plattform' },
-    });
-
-    // W5 data lifecycle — the daily retention sweep (two-tier event prune). The
-    // per-job event cap + artifact ceiling are enforced inline at write time; this
-    // cron only prunes aged rows. Terminal-job purge stays operator-driven via
-    // `scripts/dev-transcript.ts purge`. `overlap:'skip'` so a slow run never stacks.
-    const devRetention = new DevRetentionRunner(graphPool, {
-      eventRetentionDays: config.devPlatform.retention.eventRetentionDays,
-      auditRetentionDays: config.devPlatform.retention.auditRetentionDays,
-    });
-    jobScheduler.register(
-      'dev-platform',
-      { name: 'dev-retention', schedule: { cron: '17 3 * * *' }, overlap: 'skip' },
-      async () => {
-        const r = await devRetention.run();
-        console.log(
-          `[middleware] dev-retention swept: ${String(r.lowValueEventsDeleted)} low-value + ${String(r.expiredEventsDeleted)} expired events pruned`,
-        );
-      },
-    );
-    console.log('[middleware] dev-retention cron registered (17 3 * * *)');
-  } else if (config.devPlatform.enabled) {
-    console.warn(
-      '[middleware] DEV_PLATFORM_ENABLED=true but no graphPool (in-memory KG backend) — dev platform NOT started; set DATABASE_URL to enable',
-    );
-  }
-
 
   // ── OB-49 — provider-aware auth bootstrap ────────────────────────────────
   // graphPool is resolved above (line ~595). Auth schema + UserStore +

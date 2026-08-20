@@ -5,10 +5,6 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
-// TYPE-ONLY (erased at build): core builds the dev platform's config namespace but
-// does not otherwise depend on the subsystem. When the dev platform is extracted,
-// this import and `buildDevPlatformConfig` below are the only things to delete.
-import type { DevPlatformConfig } from './devplatform/config.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -248,21 +244,9 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
 
-  // Epic #470 W4 — GitHub webhook trigger controls (spec §3). The global kill
-  // switch defaults ON (a per-repo `webhook_enabled` and an empty sender allowlist
-  // already keep it off until an operator opts a repo in). The two rate limits cap
-  // how many jobs a single repo / single sender can spawn per rolling hour.
-  DEV_WEBHOOKS_ENABLED: z
-    .enum(['true', 'false'])
-    .transform((v) => v === 'true')
-    .default(true),
-  DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
-  DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
-
   // Issue #437 — Conductor's generic inbound webhook route (`POST /api/hooks/:endpointId`).
   // Per-endpoint secrets already gate every request (Vault-backed, see webhookEndpointStore.ts);
-  // this is the same operator-facing global kill switch DEV_WEBHOOKS_ENABLED is for the
-  // dev-platform's GitHub route, kept separate because the two features are unrelated.
+  // this is the operator-facing global kill switch over that route.
   CONDUCTOR_WEBHOOKS_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
@@ -299,11 +283,6 @@ const ConfigSchema = z.object({
   // Optional external anchor: checkpoint JSONL appended OUTSIDE the DB —
   // point it at storage the DB admin cannot rewrite (WORM/S3 sync).
   AUDIT_ANCHOR_PATH: z.string().optional(),
-
-  // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
-  // job nor its repo sets one (spec §5). Token budgets have NO default: they are
-  // enforced only when explicitly set on the job or repo.
-  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(100),
 
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
@@ -603,253 +582,12 @@ const ConfigSchema = z.object({
   // install whose allowlisted tools provably carry no personal data.
   PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING: devFlag(),
 
-  // --- Dev platform (epic #470 W0) ----------------------------------------
-  // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).
-  // The whole subsystem is dark by default: DEV_PLATFORM_ENABLED=false mounts
-  // no router and starts no worker. See src/devplatform/ and the wire unit.
-  DEV_PLATFORM_ENABLED: devFlag(),
-  // The W0 walking-skeleton LocalProcessBackend runs the agent under a dedicated
-  // unprivileged uid with an allowlist-built env and NO dependency-install / test
-  // execution. It is an unsafe skeleton by construction, so it stays off unless
-  // the operator explicitly acknowledges it — and boot REFUSES the flag without a
-  // uid (loadConfig, below), never runs the agent as root.
-  DEV_PLATFORM_UNSAFE_LOCAL: devFlag(),
-  DEV_PLATFORM_LOCAL_UID: optionalNonEmpty(z.coerce.number().int().positive()),
-  DEV_PLATFORM_WORKSPACE_DIR: z
-    .string()
-    .min(1)
-    .default(() => path.join(os.tmpdir(), 'omadia-dev-jobs')),
-  // Where the runner phones home. Defaults to loopback + PORT in loadConfig.
-  DEV_PLATFORM_RUNNER_BASE_URL: optionalNonEmpty(z.string().url()),
-  // W2-2 (issue #543) — comma-separated sub-agent tool names (`ask_<slug>`) that
-  // ALSO get the non-blocking `<name>_start`/`_status`/`_list` triple, so a slow
-  // sub-agent stops blocking the chat turn it was delegated from. The blocking
-  // `ask_<slug>` tool stays registered either way; empty (the default) means every
-  // sub-agent keeps today's inline behaviour exactly.
-  LONG_RUNNING_SUBAGENT_TOOLS: z.string().default(''),
-  // Orphan windows for the long-running task seam: a live task silent this long
-  // is failed as abandoned, and a finished task is retained this long so a
-  // following turn can still collect its result.
-  LONG_RUNNING_TASK_STALE_MS: z.coerce.number().int().positive().default(900_000),
-  LONG_RUNNING_TASK_RETAIN_MS: z.coerce.number().int().positive().default(3_600_000),
-  DEV_PLATFORM_CLI_BIN: z.string().min(1).default('claude'),
-  DEV_PLATFORM_JOB_WALL_CLOCK_MS: z.coerce.number().int().positive().default(1_800_000),
-  DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-  DEV_PLATFORM_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
-  DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
-  DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
-  DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
-  // Epic #470 W5 — data lifecycle (spec §7). Two-tier event retention: low-value
-  // telemetry (heartbeat/log) is pruned at EVENT_RETENTION_DAYS above; audit-grade
-  // events (status/tool/gate/token/approval/egress/phase) are kept until this outer
-  // bound. The daily retention job also purges terminal jobs older than it.
-  DEV_PLATFORM_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
-  // Per-job event cap: once a job holds this many events, the append path drops
-  // further low-value telemetry (keeps audit-grade events) and records one
-  // `events_truncated` status event. Bounds a runaway agent's event stream.
-  DEV_JOB_MAX_EVENTS: z.coerce.number().int().positive().default(50_000),
-  // Artifact ceiling: inline content larger than this is offloaded to object
-  // storage (when wired) or marked and refused inline (default 5 MiB).
-  DEV_ARTIFACT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
-  // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
-  // login, so the credential is IN the runner. It is off by default and boot
-  // REFUSES the flag unless the operator also sets the explicit acknowledgment
-  // string (loadConfig, below) — a boot-time refusal, not a warning.
-  DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
-  DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
-  // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
-  // The daemon's shared bearer for the internal job-policy endpoint AND the
-  // DockerBackend's control-plane calls. Absent ⇒ the job-policy endpoint 503s
-  // and the DockerBackend is NOT registered.
-  DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
-  // The daemon control-plane origin the middleware calls (spec §4/§5). Absent ⇒
-  // the DockerBackend is not registered even under DEV_PLATFORM_BACKEND=docker.
-  DEV_RUNNER_DAEMON_URL: optionalNonEmpty(z.string().url()),
-  // Which runner backend the operator ships (spec §5): `docker` registers the
-  // container backend as the shipping path; `local` keeps the W0 skeleton (which
-  // ALSO requires DEV_PLATFORM_UNSAFE_LOCAL). Default `docker` — the local
-  // backend never becomes the permanent crutch the epic warns against, and it
-  // stays inert until its own acknowledgment flag is set anyway.
-  DEV_PLATFORM_BACKEND: z.enum(['docker', 'local']).default('docker'),
-  // Lease TTL a docker job requests + renews at ~TTL/3 (spec §7/§8). Bounded to
-  // the daemon's [30, 3600] window in the backend.
-  DEV_JOB_LEASE_TTL_SEC: z.coerce.number().int().positive().default(180),
-  // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
-  DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
-  // Operator egress default, comma-separated bare hostnames (validated in
-  // deriveJobPolicy). Absent ⇒ empty base allowlist.
-  DEV_EGRESS_BASE_ALLOWLIST: optionalNonEmpty(z.string().min(1)),
-  // Hostname the job container reaches the middleware on; defaults to the
-  // RUNNER_BASE_URL host in the wire layer when unset.
-  DEV_PLATFORM_MIDDLEWARE_HOST: optionalNonEmpty(z.string().min(1)),
-  // LLM proxy (spec §6b): upstream origin + exact model allowlist. The proxy is
-  // always mounted; an empty allowlist ⇒ it answers 500 "no LLM policy".
-  DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
-  DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
-  DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
-
-  // Epic #470 W4 — LLM budget hard-enforcement ceiling (spec §5, Forge W4 #2).
-  // The proxy clamps a job's `max_tokens` to this so the buffered enforcement path
-  // can never overshoot the budget by an unbounded single response.
-  DEV_JOB_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
-
-  // Epic #470 W4 — FlyMachinesBackend (spec §2): one ephemeral Fly Machine per job
-  // in a DEDICATED runner app (NEVER odoo-bot-middleware). The backend is registered
-  // ONLY when DEV_FLY_RUNNER_APP is set (absent ⇒ not registered, like the docker
-  // backend keys on the daemon url). The operator MUST have run
-  // `flyctl apps create <app> --org <org>` and stored a deploy token in Vault at
-  // `core:dev-platform` key `fly/deploy_token` — the wiring logs a hint at boot.
-  DEV_FLY_RUNNER_APP: optionalNonEmpty(z.string().min(1)),
-  // Fly-injected env; presence is the on-Fly detector (picks the internal Machines
-  // API + `.internal` phone-home address). Absent off-Fly ⇒ public endpoints.
-  FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
-  // Digest-pinned runner image for Fly machines. Falls back to
-  // DEV_RUNNER_DEFAULT_IMAGE when unset (both must be digest-pinned, never a tag).
-  DEV_RUNNER_IMAGE: optionalNonEmpty(z.string().min(1)),
-  // Operator override for the shim phone-home URL. Default: on-Fly
-  // `http://$FLY_APP_NAME.internal:8080`, else PUBLIC_BASE_URL.
-  DEV_FLY_PHONE_HOME_URL: optionalNonEmpty(z.string().min(1)),
-  // Guest ceilings — a per-job request over these is CLAMPED, never honored.
-  DEV_FLY_MAX_CPUS: z.coerce.number().int().positive().default(4),
-  DEV_FLY_MAX_MEMORY_MB: z.coerce.number().int().positive().default(8192),
-  // Default guest size a Fly machine boots with (clamped to the ceilings above).
-  DEV_FLY_GUEST_CPUS: z.coerce.number().int().positive().default(1),
-  DEV_FLY_GUEST_MEMORY_MB: z.coerce.number().int().positive().default(1024),
-  // Optional Fly region placement (Fly picks one when unset).
-  DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
 });
-
-/**
- * Schema keys that begin `DEV_`/`FLY_` but are core, NOT dev-platform. Everything
- * else with those prefixes is collapsed out of the top-level `Config` and served
- * only through `config.devPlatform` (epic #470 C3).
- *
- *   - `DEV_ENDPOINTS_ENABLED` — the core dev-graph endpoints (`/api/dev/*`).
- *   - `DEV_ENDPOINTS_LOOPBACK_ONLY` — the #669 address gate over the same surface.
- *   - `FLY_APP_NAME`          — Fly-injected identity of THIS app. The dev platform
- *                               reads its value (copied into `devPlatform.fly`),
- *                               but the key describes the host, not the feature, so
- *                               it must survive the extraction.
- *
- * A third lookalike needs no entry here because it does not carry either prefix:
- * `PLUGIN_DEV_DIR`, the plugin author's local-dev source directory.
- *
- * Stating the EXCEPTIONS rather than enumerating the 40 members is deliberate: a
- * new `DEV_PLATFORM_*` key added to the schema lands in the namespace on its own,
- * with no second list to forget. A new *core* key with those prefixes must be
- * added here — and that is the change that deserves the review attention.
- */
-const CORE_DEV_PREFIXED_KEYS = [
-  'DEV_ENDPOINTS_ENABLED',
-  'DEV_ENDPOINTS_LOOPBACK_ONLY',
-  'FLY_APP_NAME',
-] as const;
-type CoreDevPrefixedKey = (typeof CORE_DEV_PREFIXED_KEYS)[number];
 
 type ParsedConfig = z.infer<typeof ConfigSchema>;
 
-/** Every schema key the dev platform owns: prefix-matched, minus the exceptions. */
-type DevPlatformEnvKey = Exclude<
-  Extract<keyof ParsedConfig, `DEV_${string}` | `FLY_${string}`>,
-  CoreDevPrefixedKey
->;
-
-/** Runtime half of `DevPlatformEnvKey` — same rule, applied to actual key strings. */
-function isDevPlatformEnvKey(key: string): boolean {
-  if ((CORE_DEV_PREFIXED_KEYS as readonly string[]).includes(key)) return false;
-  return key.startsWith('DEV_') || key.startsWith('FLY_');
-}
-
-/**
- * The core config: everything the schema parses EXCEPT the dev-platform keys,
- * which are reachable only via `config.devPlatform`. Collapsing them out of the
- * top level is what makes the later extraction mechanical — when the subsystem
- * leaves, one property and one builder disappear instead of 40 call sites.
- */
-export type Config = Omit<ParsedConfig, DevPlatformEnvKey> & {
-  devPlatform: DevPlatformConfig;
-};
-
-/** Comma-separated env list → trimmed non-empty entries (egress allowlist, model
- *  allowlist). Entry-level validation happens in the consumer (deriveJobPolicy). */
-function csvList(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-/**
- * Build the dev-platform namespace from the parsed env. The ONLY place that maps
- * `DEV_*`/`FLY_*` env names onto the subsystem's own vocabulary — everything
- * downstream takes the object. Post-processing that used to be scattered lives
- * here: the runner base-URL default from `PORT`, `resolvePath` on the workspace
- * dir, the `DEV_RUNNER_IMAGE ?? DEV_RUNNER_DEFAULT_IMAGE` fallback, the
- * `DEV_PLATFORM_GITHUB_CLIENT_ID ?? GITHUB_OAUTH_CLIENT_ID` fallback, and the two
- * comma-separated list splits.
- */
-function buildDevPlatformConfig(parsed: ParsedConfig): DevPlatformConfig {
-  return {
-    enabled: parsed.DEV_PLATFORM_ENABLED,
-    // Runner phone-home base URL: explicit override, else loopback + PORT.
-    baseUrl:
-      parsed.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.PORT)}`,
-    cliBin: parsed.DEV_PLATFORM_CLI_BIN,
-    wallClockMs: parsed.DEV_PLATFORM_JOB_WALL_CLOCK_MS,
-    heartbeatTimeoutMs: parsed.DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS,
-    maxConcurrentJobs: parsed.DEV_PLATFORM_MAX_CONCURRENT_JOBS,
-    commitAuthor: parsed.DEV_PLATFORM_COMMIT_AUTHOR,
-    subscriptionModeEnabled: parsed.DEV_PLATFORM_SUBSCRIPTION_MODE,
-    subscriptionAck: parsed.DEV_PLATFORM_SUBSCRIPTION_ACK,
-    workspaceDir: resolvePath(parsed.DEV_PLATFORM_WORKSPACE_DIR),
-    unsafeLocal: parsed.DEV_PLATFORM_UNSAFE_LOCAL,
-    localUid: parsed.DEV_PLATFORM_LOCAL_UID,
-    githubClientId: parsed.DEV_PLATFORM_GITHUB_CLIENT_ID ?? parsed.GITHUB_OAUTH_CLIENT_ID,
-    daemonToken: parsed.DEV_RUNNER_DAEMON_TOKEN,
-    daemonUrl: parsed.DEV_RUNNER_DAEMON_URL,
-    backend: parsed.DEV_PLATFORM_BACKEND,
-    leaseTtlSec: parsed.DEV_JOB_LEASE_TTL_SEC,
-    // `DEV_RUNNER_IMAGE` wins when set (the daemon's own allowlist config uses
-    // that name too, so one operator-set var keeps every side in agreement);
-    // `DEV_RUNNER_DEFAULT_IMAGE` is the fallback.
-    runnerImage: parsed.DEV_RUNNER_IMAGE ?? parsed.DEV_RUNNER_DEFAULT_IMAGE,
-    egressBaseAllowlist: parsed.DEV_EGRESS_BASE_ALLOWLIST
-      ? csvList(parsed.DEV_EGRESS_BASE_ALLOWLIST)
-      : undefined,
-    middlewareHost: parsed.DEV_PLATFORM_MIDDLEWARE_HOST,
-    llm: {
-      provider: parsed.DEV_PLATFORM_LLM_PROVIDER,
-      upstreamBaseUrl: parsed.DEV_PLATFORM_LLM_UPSTREAM_BASE_URL,
-      allowedModels: parsed.DEV_PLATFORM_LLM_ALLOWED_MODELS
-        ? csvList(parsed.DEV_PLATFORM_LLM_ALLOWED_MODELS)
-        : [],
-      defaultBudgetCostUsd: parsed.DEV_JOB_DEFAULT_BUDGET_USD,
-      maxOutputTokens: parsed.DEV_JOB_MAX_OUTPUT_TOKENS,
-    },
-    fly: {
-      runnerApp: parsed.DEV_FLY_RUNNER_APP,
-      hostAppName: parsed.FLY_APP_NAME,
-      phoneHomeUrl: parsed.DEV_FLY_PHONE_HOME_URL,
-      publicBaseUrl: parsed.PUBLIC_BASE_URL,
-      maxCpus: parsed.DEV_FLY_MAX_CPUS,
-      maxMemoryMb: parsed.DEV_FLY_MAX_MEMORY_MB,
-      guestCpus: parsed.DEV_FLY_GUEST_CPUS,
-      guestMemoryMb: parsed.DEV_FLY_GUEST_MEMORY_MB,
-      region: parsed.DEV_FLY_REGION,
-    },
-    webhooks: {
-      enabled: parsed.DEV_WEBHOOKS_ENABLED,
-      maxJobsPerRepoHour: parsed.DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR,
-      maxJobsPerSenderHour: parsed.DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR,
-    },
-    retention: {
-      eventRetentionDays: parsed.DEV_PLATFORM_EVENT_RETENTION_DAYS,
-      auditRetentionDays: parsed.DEV_PLATFORM_AUDIT_RETENTION_DAYS,
-      maxEventsPerJob: parsed.DEV_JOB_MAX_EVENTS,
-      artifactMaxBytes: parsed.DEV_ARTIFACT_MAX_BYTES,
-    },
-  };
-}
+/** The core config: exactly what the schema parses. */
+export type Config = ParsedConfig;
 
 // Relative path-like settings are resolved against the middleware root so the server
 // works regardless of the CWD (local dev, Docker, Fly machine, tests).
@@ -886,35 +624,6 @@ export function resolveStateDir(
   return resolvePath(zodDefaultResolved);
 }
 
-/**
- * Boot-time refusals for the dev platform's two credential-exposing modes
- * (epic #470 W0). These are hard refusals, NOT warnings: an operator who turns
- * on subscription mode or the unsafe local backend without the paired safety
- * variable must not boot. Pure + exported so the wire unit's test can drive it
- * without importing the whole config module.
- */
-export function devPlatformBootRefusals(cfg: {
-  subscriptionMode: boolean;
-  subscriptionAck: string | undefined;
-  unsafeLocal: boolean;
-  localUid: number | undefined;
-}): string[] {
-  const refusals: string[] = [];
-  if (cfg.subscriptionMode && !cfg.subscriptionAck) {
-    refusals.push(
-      'DEV_PLATFORM_SUBSCRIPTION_MODE=true requires DEV_PLATFORM_SUBSCRIPTION_ACK to be set ' +
-        '(the operator must acknowledge that subscription jobs run the CLI credential inside the runner)',
-    );
-  }
-  if (cfg.unsafeLocal && cfg.localUid === undefined) {
-    refusals.push(
-      'DEV_PLATFORM_UNSAFE_LOCAL=true requires DEV_PLATFORM_LOCAL_UID ' +
-        '(the jailed shim must run as a dedicated unprivileged uid, never root)',
-    );
-  }
-  return refusals;
-}
-
 function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse(process.env);
   if (!parsed.success) {
@@ -922,15 +631,6 @@ function loadConfig(): Config {
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
       .join('\n');
     throw new Error(`Invalid configuration:\n${issues}`);
-  }
-  const refusals = devPlatformBootRefusals({
-    subscriptionMode: parsed.data.DEV_PLATFORM_SUBSCRIPTION_MODE,
-    subscriptionAck: parsed.data.DEV_PLATFORM_SUBSCRIPTION_ACK,
-    unsafeLocal: parsed.data.DEV_PLATFORM_UNSAFE_LOCAL,
-    localUid: parsed.data.DEV_PLATFORM_LOCAL_UID,
-  });
-  if (refusals.length > 0) {
-    throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
   }
   // #432 — an updater URL without its shared secret would leave the kernel
   // calling an endpoint that can replace every container in the stack with no
@@ -944,16 +644,8 @@ function loadConfig(): Config {
       'Invalid configuration:\n  - OMADIA_UPDATER_TOKEN: required whenever OMADIA_UPDATER_URL is set',
     );
   }
-  // The dev-platform keys are lifted out of the top level and served only through
-  // `devPlatform`. Deleting them from the returned object (rather than merely
-  // hiding them in the type) means there is no second, stale way to read them.
-  const core: Record<string, unknown> = { ...parsed.data };
-  for (const key of Object.keys(core)) {
-    if (isDevPlatformEnvKey(key)) delete core[key];
-  }
-
   return {
-    ...(core as Omit<ParsedConfig, DevPlatformEnvKey>),
+    ...parsed.data,
     MEMORY_SEED_DIR: resolvePath(parsed.data.MEMORY_SEED_DIR),
     SKILLS_DIR: resolvePath(parsed.data.SKILLS_DIR),
     UPLOADED_PACKAGES_DIR: resolveStateDir(
@@ -964,7 +656,6 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
-    devPlatform: buildDevPlatformConfig(parsed.data),
   };
 }
 
