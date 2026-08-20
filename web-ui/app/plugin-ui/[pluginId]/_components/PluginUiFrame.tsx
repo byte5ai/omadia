@@ -25,11 +25,43 @@ import { useLocale, useTranslations } from 'next-intl';
  * MutationObserver re-reads it, so flipping the appearance in the header
  * updates the embedded UI without a reload.
  *
- * SANDBOX. `allow-scripts allow-forms allow-popups` and NOT
- * `allow-same-origin`: the bundle is third-party code and this keeps it out
- * of the operator's cookies and localStorage on our origin. A plugin needing
- * authenticated calls does them from its own backend router, which is where
- * its authentication lives anyway.
+ * SANDBOX — `allow-same-origin allow-scripts allow-forms`. This is a trust-
+ * model decision, not a default; the reasoning is recorded in
+ * `plan.md` §4.3a addendum in the epic #470 spec directory. In short:
+ *
+ *   - WITHOUT `allow-same-origin` the document gets an OPAQUE origin. Every
+ *     `fetch('/bot-api/...')` then leaves with `Origin: null` and is a
+ *     cross-site request, so the `SameSite=Lax` session cookie is not
+ *     attached, `EventSource(..., { withCredentials: true })` fails the same
+ *     way, and `localStorage` throws. A data-driven plugin UI opens every
+ *     screen with a GET, so the sandbox did not isolate the plugin — it broke
+ *     it, silently, into a correctly-themed error state.
+ *   - The plugin grant model is REAL and deny-by-default: `ctx.services`,
+ *     `ctx.http`, `ctx.secrets`, `ctx.llm`, `ctx.mcp`, `ctx.memory`, public
+ *     paths and the rest are all manifest-declared and operator-consented.
+ *     The UI frame walks around that model once it rides the operator's
+ *     `Path=/` admin session. What makes this acceptable today is not that the
+ *     frame already had that grant, but that the plugin's SERVER half is
+ *     loaded by a bare in-process dynamic import with the host's `globalThis`
+ *     and `process.env`. Against a malicious plugin author the grant model is
+ *     a consent-and-contract seam, not a Node isolation boundary. The honest
+ *     residual exposure is different: a compromised browser-only dependency or
+ *     XSS in the plugin UI now inherits the operator's admin surface.
+ *   - What still constrains the bundle is the RESPONSE, not the attribute:
+ *     core serves it under a tight runtime CSP (`default-src 'none'`,
+ *     `script-src 'self'`, `connect-src 'self'`, `frame-ancestors 'self'`,
+ *     `base-uri 'none'`, `form-action 'none'`). Ingest scanning of the UI
+ *     bundle is narrower: it reads `.js` / `.mjs` only for arbitrary Tailwind
+ *     values; inline script, `javascript:` URLs and `<base>` are blocked at
+ *     runtime by that CSP, and the extension allowlist has no `.css`.
+ *
+ * The sandbox attribute itself is not an enforceable boundary once
+ * `allow-same-origin` is granted: a same-origin bundle can reach
+ * `window.frameElement`, strip `sandbox`, and reload. It remains as an intent
+ * marker for a non-adversarial bundle, not as a claim of isolation.
+ *
+ * `allow-popups` is deliberately GONE: nothing in a plugin UI opens a window,
+ * and a capability nothing uses is only a surface.
  */
 
 type Theme = 'light' | 'dark';
@@ -98,7 +130,7 @@ export function PluginUiFrame({ pluginId }: { pluginId: string }): React.ReactEl
       src={src}
       title={t('frameTitle', { pluginId })}
       className="h-full w-full rounded-md border border-border bg-bg"
-      sandbox="allow-scripts allow-forms allow-popups"
+      sandbox="allow-same-origin allow-scripts allow-forms"
       referrerPolicy="no-referrer"
       loading="lazy"
     />

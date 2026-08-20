@@ -19,16 +19,49 @@ import path from 'node:path';
 import express, { type Express } from 'express';
 
 import {
+  CONTENT_TYPES,
   createPluginUiStaticRouter,
   safeRelativePath,
 } from '../src/routes/pluginUiStatic.js';
 import { invoke } from './_helpers/httpInvoke.js';
 
 const PLUGIN_ID = 'proof-plugin';
+const CONTENT_TYPE_FIXTURE_PREFIX = 'content-type-probe';
 
 let root: string;
 let packageRoot: string;
 let app: Express;
+
+function fixtureBodyForExtension(ext: string): string | Uint8Array {
+  switch (ext) {
+    case '.html':
+      return '<!doctype html><title>probe</title><p>probe</p>';
+    case '.js':
+    case '.mjs':
+      return 'export const probe = true;';
+    case '.map':
+      return '{"version":3,"file":"probe.js","sources":[],"names":[],"mappings":""}';
+    case '.json':
+      return '{"probe":true}';
+    case '.svg':
+      return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>';
+    case '.png':
+      return Buffer.from('png-probe');
+    case '.jpg':
+    case '.jpeg':
+      return Buffer.from('jpeg-probe');
+    case '.woff2':
+      return Buffer.from('woff2-probe');
+    case '.txt':
+      return 'probe';
+    default:
+      throw new Error(`Unhandled fixture extension: ${ext}`);
+  }
+}
+
+function fixtureRequestPath(ext: string): string {
+  return `/p/${PLUGIN_ID}/ui/assets/${CONTENT_TYPE_FIXTURE_PREFIX}${ext}`;
+}
 
 before(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'plugin-ui-static-'));
@@ -44,6 +77,12 @@ before(async () => {
   await fs.writeFile(path.join(ui, 'assets', 'vendor-polyfills.js'), 'export const polyfills = true;');
   await fs.writeFile(path.join(ui, 'assets', 'logo.svg'), '<svg/>');
   await fs.writeFile(path.join(ui, 'assets', 'notes.css'), 'body{color:red}');
+  for (const [ext] of CONTENT_TYPES) {
+    await fs.writeFile(
+      path.join(ui, 'assets', `${CONTENT_TYPE_FIXTURE_PREFIX}${ext}`),
+      fixtureBodyForExtension(ext),
+    );
+  }
   // A secret NEXT to the bundle: the thing traversal would be aiming at.
   await fs.writeFile(path.join(packageRoot, 'manifest.yaml'), 'schema_version: "1"\n');
 
@@ -230,6 +269,91 @@ describe('plugin UI static serving — the security boundary', () => {
   it('does not leak the referrer to plugin-side navigations', async () => {
     const res = await invoke(app, 'GET', `/p/${PLUGIN_ID}/ui/index.html`);
     assert.equal(res.headers['referrer-policy'], 'no-referrer');
+  });
+});
+
+describe('plugin UI static serving — CONTENT_TYPES coverage', () => {
+  for (const [ext, contentType] of CONTENT_TYPES) {
+    it(`serves ${ext} with the mapped Content-Type, nosniff and the expected CSP`, async () => {
+      const res = await invoke(app, 'GET', fixtureRequestPath(ext));
+      assert.equal(
+        res.status,
+        200,
+        `pluginUiStatic.ts should serve ${ext} fixtures from CONTENT_TYPES; revisit middleware/src/routes/pluginUiStatic.ts if ${ext} stopped resolving`,
+      );
+      assert.equal(
+        res.headers['content-type'],
+        contentType,
+        `pluginUiStatic.ts no longer serves ${ext} with the CONTENT_TYPES mapping exported from middleware/src/routes/pluginUiStatic.ts`,
+      );
+      assert.equal(
+        res.headers['x-content-type-options'],
+        'nosniff',
+        `pluginUiStatic.ts must keep nosniff on ${ext}; revisit middleware/src/routes/pluginUiStatic.ts if that header regressed`,
+      );
+
+      const csp = String(res.headers['content-security-policy'] ?? '');
+      assert.ok(
+        csp.length > 0,
+        `pluginUiStatic.ts stopped sending Content-Security-Policy on ${ext}; revisit the serve() tail in middleware/src/routes/pluginUiStatic.ts`,
+      );
+      if (ext === '.svg') {
+        assert.match(
+          csp,
+          /default-src 'none'/,
+          'pluginUiStatic.ts must keep the SVG-specific confinement policy on .svg assets; revisit middleware/src/routes/pluginUiStatic.ts if that branch changed',
+        );
+        assert.match(
+          csp,
+          /\bsandbox\b/,
+          'pluginUiStatic.ts must keep the SVG sandbox directive on .svg assets; revisit middleware/src/routes/pluginUiStatic.ts if that branch changed',
+        );
+      } else {
+        assert.match(
+          csp,
+          /script-src 'self'/,
+          `pluginUiStatic.ts must keep the standard CSP on ${ext}; revisit middleware/src/routes/pluginUiStatic.ts if non-SVG assets lost script-src 'self'`,
+        );
+        assert.match(
+          csp,
+          /frame-ancestors 'self'/,
+          `pluginUiStatic.ts must keep the standard CSP on ${ext}; revisit middleware/src/routes/pluginUiStatic.ts if non-SVG assets lost frame-ancestors 'self'`,
+        );
+        assert.ok(
+          !/\bsandbox\b/.test(csp),
+          `pluginUiStatic.ts should not send the SVG sandbox directive on ${ext}; revisit middleware/src/routes/pluginUiStatic.ts if the CSP branches collapsed`,
+        );
+      }
+    });
+  }
+
+  it('keeps CSP and nosniff on the 304 revalidation branch', async () => {
+    const first = await invoke(app, 'GET', fixtureRequestPath('.json'));
+    const etag = first.headers['etag'];
+    assert.ok(
+      typeof etag === 'string' && etag.length > 2,
+      'pluginUiStatic.ts should emit an ETag before the 304 branch can be exercised; revisit middleware/src/routes/pluginUiStatic.ts if revalidation changed',
+    );
+
+    const second = await invoke(app, 'GET', fixtureRequestPath('.json'), {
+      headers: { 'if-none-match': etag },
+    });
+    assert.equal(second.status, 304);
+    assert.equal(
+      second.headers['x-content-type-options'],
+      'nosniff',
+      'pluginUiStatic.ts must keep X-Content-Type-Options on 304 responses; revisit the serve() tail in middleware/src/routes/pluginUiStatic.ts if the branch moved ahead of header-setting',
+    );
+    const csp = String(second.headers['content-security-policy'] ?? '');
+    assert.ok(
+      csp.length > 0,
+      'pluginUiStatic.ts must keep Content-Security-Policy on 304 responses; revisit the serve() tail in middleware/src/routes/pluginUiStatic.ts if the branch moved ahead of header-setting',
+    );
+    assert.match(
+      csp,
+      /script-src 'self'/,
+      'pluginUiStatic.ts must keep the standard CSP on 304 responses for non-SVG assets; revisit middleware/src/routes/pluginUiStatic.ts if the response lost it',
+    );
   });
 });
 

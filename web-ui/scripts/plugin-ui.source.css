@@ -332,25 +332,25 @@
    No Tailwind palette, no arbitrary hexes. This is what makes "plugins
    inherit the design system by construction" true rather than aspirational. */
 @source inline("{hover:,focus:,}bg-{bg,bg-soft,bg-elevated,surface,accent,accent-hover,accent-subtle,danger,success,warning}");
-@source inline("bg-transparent");
+@source inline("{hover:,focus:,}bg-transparent");
 @source inline("{hover:,focus:,}text-{fg,fg-strong,fg-muted,fg-subtle,accent,accent-hover,danger,success,warning,bg}");
 @source inline("{hover:,focus:,}border-{border,border-strong,accent,danger,success,warning,transparent}");
 @source inline("{hover:,}decoration-{accent,fg-muted}");
 
 /* --- Borders / shape ---------------------------------------------------- */
-@source inline("border,border-{0,2,4}");
+@source inline("border{,-0,-2,-4}");
 @source inline("border-{t,r,b,l}");
 @source inline("border-{solid,dashed,dotted,none}");
 @source inline("rounded{,-none,-sm,-md,-lg,-xl,-full}");
 @source inline("shadow{,-none,-sm,-md,-lg}");
-@source inline("divide-y,divide-x");
+@source inline("divide-{y,x}");
 
 /* --- Interaction / state ------------------------------------------------ */
 @source inline("{hover:,focus:,}opacity-{0,25,50,60,75,100}");
 @source inline("cursor-{pointer,default,not-allowed,wait,text}");
 @source inline("select-{none,text,all}");
 @source inline("pointer-events-{none,auto}");
-@source inline("transition,transition-{none,all,colors,opacity,transform}");
+@source inline("transition{,-none,-all,-colors,-opacity,-transform}");
 @source inline("duration-{75,100,150,200,300,500}");
 @source inline("ease-{linear,in,out,in-out}");
 @source inline("animate-{none,spin,pulse}");

@@ -17,7 +17,11 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
-    include: ['app/**/*.{test,spec}.{ts,tsx}'],
+    // `scripts/` is in scope for the generated-artifact parity checks (epic
+    // #470 C8b): the plugin UI stylesheet's source lives there, and the test
+    // that pins it to the committed artifact and to the vocabulary document
+    // belongs next to it rather than inside `app/`.
+    include: ['app/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.{ts,tsx}'],
     globals: true,
     // vitest's default is 5000ms, which sits BELOW the honest runtime of the
     // heavier React Testing Library suites here — the template-proposal and
