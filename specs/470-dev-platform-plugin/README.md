@@ -249,7 +249,7 @@ replaces the separately-served `admin-ui.css`.
   red: the backend tree, its 58 test files, the runner shim, three sidecars, the
   compose topology, the operator SPA, the CI image matrix and its supply chain, the
   43 config keys, and the whole `index.ts` assembly block.
-- **Ratchet 3,300 → 214.** Nine of fourteen zones read CLEAN. Everything left is
+- **Ratchet 3,300 → 211.** Nine of fourteen zones read CLEAN. Everything left is
   scheduled: migrations `0022`–`0030` (69) are **C11**, the two `publicPaths`
   exemptions (6) are **C12**, and the remainder is **C13** residue — comments,
   fixture strings, the `plugin-api` CHANGELOG that records the removal, and the
@@ -309,7 +309,7 @@ node scripts/check-core-decoupling.mjs --update   # lower the baseline
 ```
 
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **214** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
+rises, per zone**. Baseline **211** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
