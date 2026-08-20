@@ -17,12 +17,15 @@ import { computeSkillHash } from '@omadia/orchestrator';
 import { formatSessionScope, parseSessionScope, type ScopeId } from '@omadia/channel-sdk';
 
 import {
+  assertHumanActor,
   canonicalSkillManifest,
   isSkillOwnerScope,
   requiredCapabilitiesFromFrontmatter,
+  signSkillManifest,
   transitionSkillLifecycle,
   type SkillLifecycleStatus,
   type SkillLifecycleTransitionResult,
+  type SkillOwnerScope,
 } from './skillLifecycle.js';
 
 export interface SkillOwnershipLifecycleRow {
@@ -102,13 +105,22 @@ export class PgSkillOwnershipLifecycleStore {
   /**
    * Assign a PERSONAL owner to a still-unowned draft skill. This is the ONLY
    * direct-assignment path: #577 Kernkonzept #5 forbids creating a skill
-   * directly in team/org scope — those homes are reached only through the
-   * admin-gated promotion route (P3). Refuses to reassign an already-owned
-   * skill (call the — not-yet-built — promotion path for that) and refuses a
+   * directly in team/org scope — those homes are reached only through
+   * {@link promoteSkillOwnerScope} (admin-gated, P3). Refuses to reassign an
+   * already-owned skill (call `promoteSkillOwnerScope` for that) and refuses a
    * non-draft target (ownership must be settled before review begins, since
    * `ownerScope` is part of what gets signed).
+   *
+   * `actorScope` is who is performing the write — checked by
+   * {@link assertHumanActor} (#577 Kernkonzept #6) BEFORE any query runs, so
+   * an automation actor never even reaches the database.
    */
-  async assignPersonalOwner(skillId: string, owner: Extract<ScopeId, { kind: 'personal' }>): Promise<void> {
+  async assignPersonalOwner(
+    skillId: string,
+    owner: Extract<ScopeId, { kind: 'personal' }>,
+    actorScope: ScopeId,
+  ): Promise<void> {
+    assertHumanActor(actorScope);
     const result = await this.pool.query(
       `UPDATE skills SET owner_scope = $2, updated_at = now()
          WHERE id = $1 AND owner_scope IS NULL AND lifecycle_status = 'draft'`,
@@ -127,13 +139,15 @@ export class PgSkillOwnershipLifecycleStore {
   /**
    * Move a skill's lifecycle status, re-signing its manifest on success.
    * Throws `SkillLifecycleTransitionRejected` for every rejected move — never
-   * returns a "false-ish" result a caller could accidentally ignore.
+   * returns a "false-ish" result a caller could accidentally ignore. Checks
+   * {@link assertHumanActor} first, same as every other mutating method here.
    */
   async transition(
     skillId: string,
     targetStatus: SkillLifecycleStatus,
-    opts: { readonly granted: ReadonlySet<string>; readonly signingKey: string },
+    opts: { readonly granted: ReadonlySet<string>; readonly signingKey: string; readonly actorScope: ScopeId },
   ): Promise<SkillOwnershipLifecycleRow> {
+    assertHumanActor(opts.actorScope);
     const row = await this.getSkill(skillId);
     if (!row) throw new Error(`skill ${skillId} not found`);
     if (row.ownerScope === null) {
@@ -161,6 +175,66 @@ export class PgSkillOwnershipLifecycleStore {
       [skillId, result.status, result.signature, result.signedAt],
     );
     if (!updated.rows[0]) throw new Error(`skill ${skillId} vanished during transition`);
+    return mapRow(updated.rows[0]);
+  }
+
+  /**
+   * Admin-gated promotion: move an ALREADY-PUBLISHED skill to a team (`group`)
+   * or org home. This is the only way a skill ever reaches team/org
+   * ownership — #577 Kernkonzept #5 forbids creating one there directly, and
+   * `assignPersonalOwner` above only ever assigns `personal`. Callers are
+   * responsible for the "admin-gated" half (an authenticated-session check at
+   * the route layer, P3/P4 — this method has no notion of roles); what it
+   * enforces itself is:
+   *
+   *  - {@link assertHumanActor} — a cron may not promote a skill, same as it
+   *    may not do anything else to one (#577 Kernkonzept #6);
+   *  - the skill must currently be `published` — an unreviewed draft has no
+   *    business reaching a wider audience, and archiving/promoting are not
+   *    composable (an archived skill must be republished first, if that ever
+   *    becomes a supported path);
+   *  - the manifest is re-signed at the NEW `ownerScope`, same `published`
+   *    status — `ownerScope` is a signed field (#577 P1), so a promotion IS a
+   *    signature-changing event, not just a column update.
+   */
+  async promoteSkillOwnerScope(
+    skillId: string,
+    targetScope: Extract<SkillOwnerScope, { kind: 'group' | 'org' }>,
+    opts: { readonly actorScope: ScopeId; readonly signingKey: string },
+  ): Promise<SkillOwnershipLifecycleRow> {
+    assertHumanActor(opts.actorScope);
+    const row = await this.getSkill(skillId);
+    if (!row) throw new Error(`skill ${skillId} not found`);
+    if (row.ownerScope === null) {
+      throw new Error(`skill ${skillId} has no owner scope yet — assign one before promoting`);
+    }
+    if (row.lifecycleStatus !== 'published') {
+      throw new Error(`skill ${skillId} is not published (status: ${row.lifecycleStatus}) — only a published skill may be promoted`);
+    }
+
+    const newOwnerScope = formatSessionScope(targetScope);
+    const contentHash = computeSkillHash(row.frontmatter, row.body);
+    const requiredCapabilities = requiredCapabilitiesFromFrontmatter(row.frontmatter);
+    const signature = signSkillManifest(
+      {
+        slug: row.slug,
+        name: row.name,
+        ownerScope: newOwnerScope,
+        status: row.lifecycleStatus,
+        contentHash,
+        requiredCapabilities,
+      },
+      opts.signingKey,
+    );
+
+    const updated = await this.pool.query<SkillOwnershipLifecycleDbRow>(
+      `UPDATE skills SET owner_scope = $2, manifest_signature = $3, manifest_signed_at = now(), updated_at = now()
+         WHERE id = $1
+         RETURNING id, slug, name, frontmatter, body, owner_scope, lifecycle_status,
+                   manifest_signature, manifest_signed_at`,
+      [skillId, newOwnerScope, signature],
+    );
+    if (!updated.rows[0]) throw new Error(`skill ${skillId} vanished during promotion`);
     return mapRow(updated.rows[0]);
   }
 }
