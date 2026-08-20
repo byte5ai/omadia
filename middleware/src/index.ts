@@ -31,6 +31,7 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore } from './conductor/index.js';
+import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
@@ -3498,6 +3499,17 @@ async function main(): Promise<void> {
       log: (m) => console.log(m),
     });
     console.log('[middleware] conductor wired at /api/v1/operator/conductors/* (auth-gated)');
+
+    // #760 — privacy miss-report review queue (the catch basin for
+    // prompt-masking non-detection). Postgres-only, auth-gated like every
+    // operator surface; the table is created by the numbered-migration runner
+    // at plugin activation.
+    app.use(
+      '/api/v1/operator/privacy/miss-reports',
+      requireAuth,
+      createMissReportRoutes(graphPool),
+    );
+    console.log('[middleware] privacy miss-report queue wired at /api/v1/operator/privacy/miss-reports (auth-gated)');
 
     // #757 — persistent per-turn privacy receipts. The store is published as
     // a service the orchestrator resolves late-bound at turn end (same shape

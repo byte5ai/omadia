@@ -46,6 +46,38 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   anchored by checkpoint cadence, not per-row (`created_at` is outside the
   hash); pre-chain rows carry NULL chain columns ("pre-chain era").
 
+### Added — Privacy Shield: operator deny-lists, miss-report queue, idnum coverage, eval CI gate (#760)
+
+- **Operator deny-list.** Two new privacy-plugin setup fields: `custom_terms`
+  (literal terms — project code names, customer names — ';'/newline-separated,
+  word-boundary + case-insensitive) and `custom_patterns` (advanced regexes,
+  one per newline). Patterns are vetted at config change: invalid syntax and
+  catastrophic-backtracking candidates (escalating-probe time budget) are
+  rejected with a loud `customPatternRejected` log, never silently dropped.
+  Spans report type `custom` in the receipt and ride the same fail-closed
+  surrogate machinery as the built-in patterns.
+- **Miss-report catch basin.** Fail-closed guards execution, not
+  non-detection — so a value the detectors miss now has a human path back:
+  "report a missed value" on the privacy receipt card files into
+  `privacy_miss_reports` (migration `0040`), reviewed at
+  `/operator/privacy-reports` (copy term → add to `custom_terms` → resolve).
+- **`idnum` promoted from informational to gated.** C0 now detects DE
+  Steuer-ID/USt-IdNr., ES NIE/DNI, IT Codice Fiscale, UK NINO, FR n° sécu.
+  Deliberately unpatterned: NL BSN (9 bare digits, no distinguishing shape) —
+  a recorded miss, not an ungated type.
+- **Detection quality is now a CI gate.** `promptDetectorEval.ts --check`
+  (deterministic C0 set) runs on every PR against committed per-locale floors
+  (`validation/ci-baseline.json`); an empty evaluation fails rather than
+  reporting green.
+- Open, deliberately: surrogate-TYPE assertions in the eval fixtures (the
+  #727 bug class stays invisible to span-coverage scoring), fixture
+  auto-export from resolved reports, the `mask_user_prompt` default (product
+  decision), setup-time feedback for rejected custom patterns (today the
+  rejection is server-log-only), and the residual runtime risk that a
+  polynomial pattern's FIRST over-budget turn is slow before the fail-closed
+  block lands (exponential cases are caught at vet time by the digit/letter/
+  unicode probe escalation).
+
 ### Added — Conductor run cancellation + approval hardening (#759)
 
 - **Run cancel.** `POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`

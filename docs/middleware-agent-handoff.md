@@ -1103,6 +1103,21 @@ Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
 
 ---
 
+### Privacy Shield: Deny-Lists, Miss-Queue, idnum, Eval-Gate (#760)
+
+Operator-Deny-List: Setup-Felder `custom_terms` (Literale, ';'/Zeilen-getrennt)
++ `custom_patterns` (Regex, eine pro Zeile) am Privacy-Plugin; Vetting beim
+Config-Wechsel (Syntax + Escalating-Probe-Zeitbudget gegen katastrophales
+Backtracking), abgelehnte Patterns loggen `customPatternRejected` laut.
+Detector-Id `custom-terms`, Span-Typ `custom`, gleiche Fail-Closed-Maschinerie.
+Miss-Report-Queue: **`POST/GET /api/v1/operator/privacy/miss-reports`** (+
+`/:id/resolve`), Tabelle `privacy_miss_reports` (Migration `0040`), Intake auf
+der PrivacyReceiptCard, Review-UI `/operator/privacy-reports`. `idnum` ist
+seit #760 gated (DE/ES/IT/UK/FR-Patterns in C0; NL BSN bewusst ungepattern —
+9 nackte Ziffern). CI-Gate: `promptDetectorEval.ts --check` gegen
+`validation/ci-baseline.json` (per-Locale-Floors, leerer Lauf = rot). Tests:
+`test/privacyCustomTermsAndIdnum.test.ts`, `test/privacyMissReports.test.ts`.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
