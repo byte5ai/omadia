@@ -1,0 +1,31 @@
+{
+  "name": "@omadia/publish",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "@omadia/sandbox": "*",
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "publish primitive (issue #581, qm competitive analysis): turns a directory in an agent's #576 sandbox into an immutably-versioned, rollback-capable running web app, served from its own origin — never the admin/portal origin. Version store (Postgres-backed, in-memory for tests), a Docker runtime for materializing/serving a version, and an origin-isolating HTTP gateway. No native tool or route lives here — see #778/#581 P2 for that wiring.",
+  "license": "MIT"
+}
