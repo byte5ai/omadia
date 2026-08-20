@@ -2605,7 +2605,8 @@
         "error": {
           "label": "Error",
           "loadFailed": "Drafts could not be loaded."
-        }
+        },
+        "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
         "metaTitle": "Workspace · Agent-Builder · omadia",

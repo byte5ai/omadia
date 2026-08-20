@@ -176,7 +176,7 @@ export default async function BuilderDashboardPage({
 
       <footer className="mt-20 flex items-center justify-end border-t border-[color:var(--divider)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
         <span className="font-mono-num text-[color:var(--fg-muted)]">
-          omadia · Plugin-Builder
+          {t('footerStamp')}
         </span>
       </footer>
     </main>

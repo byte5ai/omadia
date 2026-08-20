@@ -31,6 +31,7 @@
     "operatorChannels.routesTo": "glossary",
     "layout.metaTitle": "brand",
     "builder.drafts.list.metaTitle": "brand",
+    "builder.drafts.list.footerStamp": "brand",
     "builder.drafts.detail.metaTitle": "brand",
     "adminKgLifecycle.lastRuns.hotToWarm": "diagnostic",
     "adminKgLifecycle.lastRuns.warmToCold": "diagnostic",
