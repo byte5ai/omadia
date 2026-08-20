@@ -19,6 +19,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
+  "peerDependencies": {
+    "pg": "^8.13.0"
+  },
   "engines": {
     "node": ">=20"
   },
