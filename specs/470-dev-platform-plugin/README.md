@@ -64,6 +64,28 @@ it at all.
   an unbounded `pg_advisory_lock` inside a 10s `activate()` budget, and a retry that never
   read `pg_advisory_unlock`'s return value.
 
+### Phase A — C1 shipped
+
+- **Golden `.d.ts` snapshot for `@omadia/plugin-api`.** The contract is now machine-checked:
+  `packages/plugin-api/api-snapshot/plugin-api.d.ts.snap` holds every emitted declaration
+  (comments stripped, whitespace normalized, files in sorted path order), and
+  `packages/plugin-api/test/apiSnapshot.test.ts` fails the middleware suite on any drift. The
+  package stays `private: true` — nothing is published (D1 stands).
+
+  Regenerating is deliberate, and a regeneration is not the whole job:
+
+  ```bash
+  npm run api:check  -w packages/plugin-api   # what CI runs
+  npm run api:update -w packages/plugin-api   # accept the new surface
+  ```
+
+  **The snapshot and the version move together.** A removed or renamed symbol, an added
+  parameter, a narrowed type, or an optional field made required is a **MAJOR** bump; an added
+  symbol, a widened type, or a required field made optional is a **MINOR** one. After the split
+  that version number is the only signal an out-of-repo plugin gets about whether its pinned
+  contract still holds, so a snapshot updated without a bump is the same silent break C1 exists
+  to stop. Full table in `middleware/packages/plugin-api/README.md`.
+
 ### C8 — the abandonment checkpoint (G7 / P3b)
 
 **Shipped.** The plugin UI mechanism, end to end. Everything before this point was

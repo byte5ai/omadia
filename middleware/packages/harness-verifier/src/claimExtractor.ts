@@ -91,7 +91,7 @@ const toolSpec: ToolSpec = {
               type: 'string',
               enum: [...CLAIM_TYPES],
               description:
-                'amount=money/number+unit; id=record reference; date=calendar date; name=person/customer with context; aggregate=sum/count/avg over a set (especially HR leave totals); qualitative=non-numeric claim about an entity.',
+                'amount=money/number+unit; id=record reference (invoice/order/document number such as "INV/2026/0042", or a numeric record id) — ALWAYS emit a separate id claim for every record reference, even when the sentence also makes a qualitative statement about that record; date=calendar date; name=person/customer with context; aggregate=sum/count/avg over a set (especially HR leave totals); qualitative=non-numeric claim about an entity.',
             },
             expected_source: {
               type: 'string',
@@ -188,6 +188,7 @@ Strict rules:
 - Do NOT extract the user's question, instructions, or meta-commentary.
 - Do NOT invent claims that are "implied" but not stated.
 - When in doubt, skip the claim rather than invent one.
+- A record reference (invoice, order or document number, numeric record id) is ALWAYS its own claim of type "id" with odoo_record.model and odoo_record.ref/id set — in addition to any qualitative claim about the same record.
 - Return at most ${String(this.opts.maxClaims)} claims via the ${TOOL_NAME} tool.`;
 
     const user = `USER MESSAGE:
