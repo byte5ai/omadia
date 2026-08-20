@@ -63,6 +63,31 @@ it at all.
   an unbounded `pg_advisory_lock` inside a 10s `activate()` budget, and a retry that never
   read `pg_advisory_unlock`'s return value.
 
+### C7 / G4 — plugin-owned SQL schema (this PR, stacked on C2b #783)
+
+- **`permissions.sql` is now a declaration the operator can see and refuse.** Manifest shape
+  `{ migrations?: string, ledger: string }`; the ledger is charset-validated
+  (`^[a-z][a-z0-9_]{2,62}$`) and must start with the plugin's sanitized id. Unknown
+  `permissions.*` keys warn instead of vanishing silently — same implementation and same
+  `KNOWN_PERMISSION_KEYS` shape C4 (#782) introduced, so the two merge as a one-line union.
+- **`graphPool` is gated twice.** C2b's `requires:` check answers "did the author declare
+  this?"; C7 adds "may this plugin touch the operator's database?" — `permissions.sql`
+  **and** an operator grant row (`plugin_sql_grants`, migration **0045**). The two denial
+  reasons stay distinct because `undeclared` is the author's to fix and `ungranted` is the
+  operator's. C2b's dated legacy allowlist governs both gates and retires once, not twice.
+- **One shared `runPluginMigrations`.** Advisory-locked (`pg_advisory_xact_lock`, plugin-only
+  namespace 4420, `SET LOCAL lock_timeout` instead of a poll loop), one transaction per
+  batch, sha256 per file, `.sql` + `.js`/`.mjs` in one filename order, empty-dir and
+  checksum-drift both throw. B3 recorded core migrators racing on multi-replica boot; handing
+  plugin authors a pattern to copy would have multiplied that bug into code the operator
+  cannot patch.
+- **Ownership is enforced by `UNIQUE (ledger)`, not by the prefix rule.** The prefix check
+  cannot separate `acme_tool` from `acme_tool_extra` — a name carrying both prefixes would
+  pass for either plugin. The database constraint has no such edge, so the prefix rule is
+  documented as defence-in-depth rather than as the boundary.
+- **Ratchet held at 3300** — no raise. The one line that moved it (+1, `middleware/src`) was a
+  new comment naming the retired permission key, and it was reworded rather than excused.
+
 ### Still held back
 
 - **DynamicAgentRuntime rollback** — two attempts rejected. The current one does not cover
