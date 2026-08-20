@@ -1454,11 +1454,28 @@ constructor(raw: string, detail: string);
 }
 export declare function parseCapabilityRef(raw: string): CapabilityRef;
 export declare function capabilitiesMatch(provider: CapabilityRef, consumer: CapabilityRef): boolean;
+export interface ServiceCaller {
+readonly agentId: string;
+readonly pluginId: string;
+}
+declare const PER_CALLER_FACTORY: unique symbol;
+export interface PerCallerFactory<T> {
+readonly [PER_CALLER_FACTORY]: (caller: ServiceCaller) => T;
+}
+export declare function perCallerService<T>(factory: (caller: ServiceCaller) => T): PerCallerFactory<T>;
+export declare function isPerCallerService<T = unknown>(value: unknown): value is PerCallerFactory<T>;
+export declare function resolvePerCallerService<T>(factory: PerCallerFactory<T>, caller: ServiceCaller): T;
+export declare class ServiceNotDeclaredError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+readonly manifestField = "requires";
+constructor(pluginId: string, capability: string);
+}
 export interface ServicesAccessor {
 get<T>(name: string): T | undefined;
 has(name: string): boolean;
-provide<T>(name: string, impl: T): () => void;
-replace<T>(name: string, impl: T): () => void;
+provide<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
+replace<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
 }
 export interface NativeToolSpec {
 readonly name: string;
@@ -1759,6 +1776,7 @@ export declare class MigrationHookError extends Error {
 readonly migrationCause: unknown;
 constructor(agentId: string, fromVersion: string, toVersion: string, cause: unknown);
 }
+export {};
 
 // ===== privacyMode.d.ts =====
 export declare const PRIVACY_MODE_CONFIG_KEY = "_privacy_mode";
