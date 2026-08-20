@@ -1,0 +1,20 @@
+{
+  // The build project (`tsconfig.json`) has `rootDir: src`, so the test tree is
+  // outside it and `npm run typecheck` never sees it. Without this project a
+  // type error in a test file would only surface when tsx hits that line at
+  // runtime — the same blind spot `scripts/check-test-typecheck.mjs` exists to
+  // close for the middleware root trees.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    // `composite`/`declaration` are build-project concerns and conflict with
+    // `noEmit`; this project only ever typechecks.
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
