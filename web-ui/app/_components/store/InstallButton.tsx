@@ -39,6 +39,7 @@ import { RequiresWizard } from './RequiresWizard';
 import {
   FieldRow,
   extractValues,
+  uploadCoveredKeys,
   type SetupFieldError,
 } from './setupForm';
 import { Markdown } from '../Markdown';
@@ -659,6 +660,9 @@ function InstallDrawer({
   const fields = (jobFromPhase?.setup_schema?.fields ?? []).filter(
     (f) => !f.install_hidden,
   );
+  // #603 — fields a json_file upload supplies; their native `required` is off
+  // so the browser cannot silently refuse a submit that has the file attached.
+  const coveredByUpload = uploadCoveredKeys(fields);
   const submitting = phase.kind === 'submitting';
 
   // Portal to <body> so the drawer escapes the store sidebar's
@@ -772,6 +776,7 @@ function InstallDrawer({
                       key={field.key}
                       field={field}
                       error={fieldErrors[field.key]}
+                      coveredByUpload={coveredByUpload.has(field.key)}
                     />
                   ))}
                 </div>
