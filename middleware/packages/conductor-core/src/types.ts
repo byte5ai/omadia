@@ -85,7 +85,16 @@ export interface EvalScope {
 // Workflow graph
 // ---------------------------------------------------------------------------
 
-export type StepKind = 'agent' | 'action' | 'human';
+export type StepKind = 'agent' | 'action' | 'human' | 'timer';
+
+/** kind='timer' (#330 C3): park the run for `duration`, then fire the step's
+ *  `fallbackTransitionId` (the on-expiry edge). The deterministic tick that
+ *  makes bounded assess/nudge loops possible — a guarded cycle through a
+ *  timer step is legal, an unguarded one stays a validation error. */
+export interface TimerStepConfig {
+  /** ISO-8601 duration (e.g. "PT1H"). */
+  duration: string;
+}
 
 export type PrincipalKind = 'user' | 'role';
 
@@ -141,6 +150,8 @@ export interface Step {
   input?: JsonObject;
   /** required when kind='human'. */
   human?: HumanStepConfig;
+  /** required when kind='timer' (#330 C3). */
+  timer?: TimerStepConfig;
   /** the step's exit postcondition; absent ≡ always met. */
   postcondition?: Predicate;
   /** id of the transition fired when the postcondition is unmet, or when no happy-path
@@ -200,6 +211,8 @@ export type ValidationCode =
   | 'unreachable_step'
   | 'unguarded_cycle'
   | 'deadline_without_fallback'
+  | 'timer_step_invalid_duration'
+  | 'timer_requires_fallback'
   | 'quorum_all_requires_deadline_fallback'
   | 'agent_step_missing_agent'
   | 'action_step_missing_action'

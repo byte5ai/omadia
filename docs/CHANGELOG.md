@@ -18,6 +18,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — the observed-invite index survives restarts (#330 follow-up)
+
+- Migration `0048_observed_invites.sql` (core series, `middleware/migrations/`): new table
+  `observed_conversation_invites` as write-through backing store for the kernel-side invite
+  index (#330 C2a) — the deny-by-default scope guard for plugin auto-binds. Until now the
+  index was in-memory only, so every deploy/restart forced operators to remove and re-invite
+  the bot before a facilitation could start.
+- The in-memory map stays the hot path: writes are fire-and-forget (log-only on failure),
+  boot hydration is TTL-filtered, capped at the in-memory limit, keyed off the table's key
+  COLUMNS (a JSONB payload disagreeing with its columns is dropped — defense in depth for a
+  security guard), and wrapped so a missing table degrades to the old re-invite behaviour
+  instead of failing the boot. Live events observed before hydration win.
+
 ### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
 
 - **The updater sidecar reports structured progress.** `GET /status` gains
@@ -36,11 +49,46 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `localStorage`, so the dialog resumes after the admin UI container itself is
   replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
 
+### Added — timer steps, machine-checkable DoD loops and conversation-addressed nudges (#330 C3)
+
+- New Conductor step kind **`timer`** (migration `0011_timer_awaits.sql` widens the await principal-kind CHECK): parks the run via the existing await machinery and follows its `fallbackTransitionId` (the on-expiry edge) when the deadline poll fires — guarded cycles through a timer are legal, unguarded ones stay a validation error (`timer_step_invalid_duration` / `timer_requires_fallback` gate the shape). Preview simulates timers instantly; the run trace records an honest `{kind:'timer', ticked:true}` actor.
+- Deterministic loop budget: the executor maintains `ctx.stepAttempts[stepId]` (bumped on every step entry), so a transition guard like `lt ctx.stepAttempts.moderate 24` bounds an assess loop without trusting the model to count — on top of the ephemeral TTL and MAX_STEPS.
+- Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
+- `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
+- New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
+
+
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 
 - Three new plugin-facing, deny-by-default kernel services remove the manual Facilitator setup: `agentProvisioning` (`ensureAgent` — idempotently creates a top-level Agent, seeds its persona create-only via the Wave-8 `agent_persona_skills` path with the skill slug namespaced under the agent, and attaches the calling plugin; an existing agent — and an existing operator-configured `agent_plugins` row — is never touched, the `fallback` slug never managed), `conversationBindings` (`bind` only for conversations the KERNEL itself observed a group `bot_added` for, via a hub-direct invite index keyed by channel type + conversation; `unbind` is equally guarded to the caller's own ephemeral attachments, so operator bindings are out of reach and the `channel_bindings` PK plus guard close the steal path; both mutations land in the new `channel.binding_change` audit action), and `conductorRoleAssignments` (role writes hard-confined to the `facilitation-` namespace, every holder mutation audited through the #759 `conductor.role_holders_change` sink).
 - Migration `0010_ephemeral_attachments.sql`: auto-provisioned bindings/roles are recorded per facilitation and live exactly as long as its ephemeral workflow. Both reap paths (terminal-state hook + TTL reaper) dispose of them through one shared cleanup, and rows only disappear AFTER a successful cleanup — an attachment sweep retries expired `pending` (invite never became a facilitation) and expired `attached` (reap-time cleanup failed or ran before the kernel stores were up) rows. A pre-existing operator binding is never adopted into this self-disposing lifecycle.
 - `configStore`/`orchestratorRegistry` are resolved lazily per call (the orchestrator plugin publishes them at its own activation), so the seam is independent of plugin boot order.
+
+### Added — `transcription@1` capability + batch recording ingestion (#584 WS T+I)
+
+- **Speech-to-text is a Core capability.** New provider-swappable
+  `transcription@1` seam in `@omadia/plugin-api` (`transcribeFile` batch +
+  `transcribeStream` realtime, provider-neutral types, keyword/language/context
+  hint carrier) with day-one cost guardrails: per-call duration cap, per-agent
+  minute quota (in-memory spend brake) and minute metering, mirroring the
+  conductor's #818 guardrails. Contract `@omadia/plugin-api` → 1.8.0 (additive).
+- **First provider: `@omadia/transcription-adapter-openai`.** `gpt-transcribe`
+  (batch, `POST /v1/audio/transcriptions`, $0.0045/min) ships ungated;
+  `gpt-live-transcribe` (Realtime WebSocket, $0.017/min) ships behind
+  `TRANSCRIPTION_REALTIME_EXPERIMENTAL` until its consumer (#584 WS S,
+  AudioMeetingSource) lands. Vault-backed BYO key; injectable socket/fetch
+  seams keep the whole wire protocol unit-tested without credentials.
+- **`transcribe_recording` native tool (Workstream I).** Transcribes an
+  uploaded recording and ingests it into the SAME artifact substrate as a live
+  chat session — speaker-attributed session-log entries, per-utterance KG
+  turns (new additive `speaker`/`time` fields on `SessionLogEntry` /
+  `TurnIngest`), briefing availability. Transcript text re-enters as a tool
+  result, so it rides the standard per-turn privacy choke points.
+- **Admin → Transcription provider panel** (`/admin/transcription-provider` +
+  `/api/v1/admin/transcription-provider`): live provider switch with verified
+  rollback (embeddings-route mechanics minus the corpus machinery) — and the
+  operator-facing consent surface: an active provider sends raw audio to its
+  external endpoint.
 
 ### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
 

@@ -273,14 +273,17 @@ async function parseManifest(
   }
 
   const requires = asStringArray(parsed['requires'], manifestPath, 'requires');
-  const provides = asStringArray(parsed['provides'], manifestPath, 'provides');
+  // #795 (re-mirrored for #584) — an optional dependency is still a
+  // DECLARATION; the runtime's `declaredServiceNames()` counts it, so this
+  // static mirror must too or the two gates contradict each other.
   const optionalRequires = asStringArray(
     parsed['optional_requires'],
     manifestPath,
     'optional_requires',
   );
+  const provides = asStringArray(parsed['provides'], manifestPath, 'provides');
   const declaredNames = new Set<string>();
-  for (const rawCapability of [...requires, ...provides, ...optionalRequires]) {
+  for (const rawCapability of [...requires, ...optionalRequires, ...provides]) {
     declaredNames.add(parseCapabilityRef(rawCapability).name);
   }
 
@@ -549,9 +552,9 @@ function asString(value: unknown): string | undefined {
 function asStringArray(
   value: unknown,
   manifestPath: string,
-  // #788 added `optional_requires` — a capability-ref list with exactly the
-  // same shape and the same failure modes as the other two.
-  field: 'requires' | 'provides' | 'optional_requires',
+  // All three are capability-ref lists with the same shape and the same
+  // failure modes, so they parse through one path.
+  field: 'requires' | 'optional_requires' | 'provides',
 ): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
