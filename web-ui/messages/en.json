@@ -2906,7 +2906,14 @@
     "refreshed": "Updated just now",
     "install": {
       "heading": "Install the CLI",
-      "intro": "This CLI is not present on this server. Install it there, then log in — afterwards the in-app login becomes available here."
+      "intro": "This CLI is not present on this server. Install it there, then log in — afterwards the in-app login becomes available here.",
+      "autoIntro": "This CLI is not present on this server. You can install it from here — it is fetched from the public npm registry into the server's persistent data directory.",
+      "button": "Install now",
+      "installing": "Installing… this can take a few minutes.",
+      "failed": "Installation failed.",
+      "conflict": "Another CLI install is already running on this server. Wait for it to finish, then try again.",
+      "retry": "Try again",
+      "manualSummary": "Prefer to install manually?"
     }
   },
   "createIssue": {

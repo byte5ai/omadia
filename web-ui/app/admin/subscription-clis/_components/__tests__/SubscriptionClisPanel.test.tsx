@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../../_lib/test-utils';
@@ -18,8 +18,10 @@ import type { CliBackendStatus } from '../../../../_lib/api';
  * the wire and had zero render sites.
  */
 
-const { mockGetCliBackends } = vi.hoisted(() => ({
+const { mockGetCliBackends, mockStartCliInstall, mockGetCliInstallStatus } = vi.hoisted(() => ({
   mockGetCliBackends: vi.fn(),
+  mockStartCliInstall: vi.fn(),
+  mockGetCliInstallStatus: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', () => ({
@@ -28,6 +30,9 @@ vi.mock('../../../../_lib/api', () => ({
   submitCliLoginCode: vi.fn(),
   cancelCliLogin: vi.fn(),
   cliLogout: vi.fn(),
+  startCliInstall: mockStartCliInstall,
+  getCliInstallStatus: mockGetCliInstallStatus,
+  ApiError: class MockApiError extends Error {},
 }));
 
 function backend(over: Partial<CliBackendStatus> = {}): CliBackendStatus {
@@ -109,5 +114,42 @@ describe('<SubscriptionClisPanel />', () => {
     expect(
       screen.getByText(/npm install -g @anthropic-ai\/claude-code/),
     ).toBeTruthy();
+  });
+
+  it('an uninstalled installable CLI offers the in-app install button (manual steps collapsed)', async () => {
+    mockGetCliBackends.mockResolvedValue({
+      backends: [backend({ installed: false, installable: true })],
+      generatedAt: Date.now(),
+    });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    const button = await screen.findByRole('button', { name: /Jetzt installieren/ });
+    expect(button).toBeTruthy();
+    // The terminal path stays available, one click away.
+    expect(screen.getByText(/Lieber manuell installieren\?/)).toBeTruthy();
+  });
+
+  it('clicking install triggers the backend job and shows progress', async () => {
+    mockGetCliBackends.mockResolvedValue({
+      backends: [backend({ installed: false, installable: true })],
+      generatedAt: Date.now(),
+    });
+    mockStartCliInstall.mockResolvedValue({ status: 'started' });
+    mockGetCliInstallStatus.mockResolvedValue({ cliId: 'claude', status: 'running' });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    const button = await screen.findByRole('button', { name: /Jetzt installieren/ });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(mockStartCliInstall).toHaveBeenCalledWith('claude');
+    });
+    expect(await screen.findByTestId('cli-install-running')).toBeTruthy();
   });
 });
