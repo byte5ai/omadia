@@ -18,11 +18,30 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — runtime install of subscription CLIs from the admin UI (#309 extension, enabler for #294)
+
+- **The Subscription-CLIs page can now install a missing vendor CLI in-app.**
+  The public image deliberately does not bundle the Claude/Codex/Gemini CLIs
+  (redistribution needs legal review); previously a missing CLI dead-ended in
+  manual shell steps. A new "Install now" button triggers an operator-side
+  `npm install` from the public registry into `CLI_TOOLS_DIR` (defaults to
+  `<PLATFORM_DATA_DIR>/cli-tools` on the persisted volume, so installs survive
+  restarts). Detection and the in-app login prefer that directory over PATH.
+- **New routes** (auth-required, same router as the existing login flow):
+  `POST /api/v1/admin/cli-backends/:id/install` (202 accepted / 200 already
+  installed / 409 while another install runs / 400 unknown id or non-semver
+  version) and `GET /api/v1/admin/cli-backends/:id/install/status`.
+- **Hardening:** package names only from a fixed allowlist, optional version
+  strictly semver-validated, `execFile` without a shell, bounded time/output,
+  host-global single-flight. New env vars documented in `middleware/.env.example`:
+  `CLI_TOOLS_DIR`, `CODEX_HOME`.
+
 ### Fixed — core-decoupling zero floor no longer hides same-named files (#470 C13 review)
 
 - `scripts/check-core-decoupling.mjs` now excludes only the exact detector path `scripts/check-core-decoupling.mjs` instead of any basename match, closing the hole where a same-named file dropped under `middleware/src/` could hide Dev Platform identifiers from the permanent zero floor. A colocated regression test proves the detector stays self-excluded while a probe file at `middleware/src/__probe/check-core-decoupling.mjs` is counted.
 - The remaining human-readable fixture labels left behind by the C13 identifier rename now use the neutral example-plugin naming too (`Example Plugin` / `Beispiel-Plugin`), so the tests assert against the strings their fixtures actually define and no permanently-green "old assertion, new fixture" trap remains.
 - `middleware/test/auth/staticPublicPathsClosedSet.test.ts` still skips the loopback-listener half in restrictive local sandboxes, but if `CI` is set the same bind failure now throws with a clear message instead of silently skipping the five 401 assertions.
+
 ### Added — migration handoff: a plugin can adopt an existing installation's schema (#470 C11)
 
 - **Plugins extracted out of core no longer re-apply core's migrations.**

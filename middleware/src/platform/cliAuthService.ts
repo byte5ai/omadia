@@ -25,7 +25,12 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
-import { scrubbedEnv, detectCliBackends, __resetCliBackendCache } from './cliBackendDetector.js';
+import {
+  scrubbedEnv,
+  detectCliBackends,
+  resolveCliBin,
+  __resetCliBackendCache,
+} from './cliBackendDetector.js';
 
 export type CliLoginStatus = 'pending' | 'authorized' | 'invalid' | 'expired' | 'error';
 
@@ -108,7 +113,9 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
 
   disposeActive();
 
-  const child = spawn(backend.bin, ['auth', 'login', '--claudeai'], {
+  // Resolve through the runtime install dir so a CLI installed in-app is
+  // spawnable even when it is not on PATH.
+  const child = spawn(resolveCliBin(backend.bin), ['auth', 'login', '--claudeai'], {
     env: scrubbedEnv(),
     windowsHide: true,
   });
@@ -243,7 +250,7 @@ export async function cliLogout(cliId: string): Promise<{ ok: boolean }> {
   const backend = snap.backends.find((b) => b.id === cliId);
   if (!backend?.installed) return { ok: true };
   await new Promise<void>((resolve) => {
-    const c = spawn(backend.bin, ['auth', 'logout'], { env: scrubbedEnv(), windowsHide: true });
+    const c = spawn(resolveCliBin(backend.bin), ['auth', 'logout'], { env: scrubbedEnv(), windowsHide: true });
     c.on('error', () => resolve());
     c.on('exit', () => resolve());
     setTimeout(() => {
