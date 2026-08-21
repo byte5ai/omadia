@@ -119,8 +119,14 @@ export class RealStepEffects implements StepEffects {
       `agent step '${step.id}'`,
     );
 
+    // #330 C3 — structured verdicts: mirror of the action-step's `data` field.
+    // A fenced ```json block in the agent's answer becomes `result.data`, so
+    // transition guards can branch on `stepResult.data.…` deterministically.
+    // Tolerant by design: missing/broken JSON just means no `data` — a guard
+    // like `ne stepResult.data.dodMet true` then keeps the bounded loop going.
+    const data = extractFencedJson(answer.text);
     return {
-      result: { text: answer.text },
+      result: { text: answer.text, ...(data !== undefined ? { data } : {}) },
       actor: { kind: 'agent', agentSlug: slug },
     };
   }
@@ -147,5 +153,19 @@ export class RealStepEffects implements StepEffects {
       result: { text: out, data },
       actor: { kind: 'action', actionId: toolId },
     };
+  }
+}
+
+/** #330 C3 — the LAST fenced ```json block in an agent answer, parsed. Size-
+ *  capped and tolerant: anything malformed or oversized yields undefined
+ *  (guards then treat the verdict as absent — bounded loops, never a crash). */
+export function extractFencedJson(text: string, maxBytes = 16_384): JsonValue | undefined {
+  const matches = [...text.matchAll(/```json\s*\n([\s\S]*?)```/g)];
+  const last = matches[matches.length - 1]?.[1];
+  if (!last || Buffer.byteLength(last, 'utf8') > maxBytes) return undefined;
+  try {
+    return JSON.parse(last) as JsonValue;
+  } catch {
+    return undefined;
   }
 }

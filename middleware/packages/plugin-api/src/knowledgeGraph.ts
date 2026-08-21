@@ -1587,6 +1587,14 @@ export interface TurnIngest {
    */
   userId?: string;
   /**
+   * #584 WS I — human speaker of `userMessage` for transcript-ingest turns
+   * (speaker-attributed utterances from a transcribed recording). Optional and
+   * additive: backends that store it gain a queryable turn property, backends
+   * that ignore it stay correct — the markdown transcript carries the
+   * attribution either way.
+   */
+  speaker?: string;
+  /**
    * Palaia (OB-71) — optional Capture-Pipeline classification result. When
    * the orchestrator-extras `CaptureFilter` runs ahead of the write, it
    * routes its `CaptureFilterDecision` through these fields. Backends MUST

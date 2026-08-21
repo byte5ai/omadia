@@ -94,6 +94,27 @@ function pluginOf(
 const rawManifestByPlugin = new WeakMap<Plugin, unknown>();
 
 function catalogOf(...plugins: Plugin[]): PluginCatalog {
+  return catalogWithOrigin('installed', plugins);
+}
+
+/**
+ * #789 — the same fixture, with the catalog's `origin` under the test's
+ * control, plus the `isBundledId` set the real loader maintains.
+ *
+ * `bundledIds` is deliberately independent of `origin` because the case that
+ * matters most is exactly where the two disagree: an INSTALLED package sitting
+ * on an id the image ships. `PluginCatalog` resolves that collision in the
+ * upload's favour, so `get(id).origin` reads `'installed'` while
+ * `isBundledId(id)` still says `true` — and a fixture that derived one from the
+ * other could not express the attack at all.
+ */
+function catalogWithOrigin(
+  origin: 'bundled' | 'installed',
+  plugins: Plugin[],
+  bundledIds: readonly string[] = origin === 'bundled'
+    ? plugins.map((p) => p.id)
+    : [],
+): PluginCatalog {
   const entries = new Map(
     plugins.map((plugin) => [
       plugin.id,
@@ -102,15 +123,17 @@ function catalogOf(...plugins: Plugin[]): PluginCatalog {
         manifest: rawManifestByPlugin.get(plugin) ?? {},
         source_path: 'test',
         source_kind: 'manifest-v1',
-        // #794 — test fixtures are unprivileged: only the built-in package
-        // store may assert 'bundled'.
-        origin: 'installed',
+        // #794 — test fixtures are unprivileged by default: only the built-in
+        // package store may assert 'bundled'.
+        origin,
       },
     ]),
   );
+  const bundled = new Set(bundledIds);
   return {
     get: (id: string) => entries.get(id),
     list: () => [...entries.values()],
+    isBundledId: (id: string) => bundled.has(id),
   } as unknown as PluginCatalog;
 }
 
@@ -223,7 +246,7 @@ describe('services.get — declared capabilities resolve', () => {
     const catalog = catalogOf(
       pluginOf('@test/provider', [], ['memoryStore@1']),
     );
-    const { ctx } = makeCtx('@test/provider', catalog);
+    const { ctx, registry } = makeCtx('@test/provider', catalog);
     ctx.services.provide('memoryStore', { own: true });
     assert.deepEqual(ctx.services.get('memoryStore'), { own: true });
     assert.equal(
@@ -232,6 +255,7 @@ describe('services.get — declared capabilities resolve', () => {
         'memoryStore',
         declaredServiceNames('@test/provider', catalog),
         catalog,
+        (name) => registry.providedBy('@test/provider', name),
       ),
       'self-provided',
     );
@@ -477,6 +501,15 @@ describe('plugin-facing accessors keep per-caller attribution', () => {
 describe('services.get — dated legacy allowlist (2026-08-20)', () => {
   const LEGACY_ID = '@omadia/orchestrator';
 
+  /**
+   * #789 — the allowlist is reachable only for a BUNDLED package now, so every
+   * case in this block that expects the ramp to fire has to say so. Before the
+   * fix the origin was irrelevant and `catalogOf` (installed) was enough; that
+   * indifference was the bug.
+   */
+  const bundledCatalogOf = (...plugins: Plugin[]): PluginCatalog =>
+    catalogWithOrigin('bundled', plugins);
+
   it('hands the pool over BORROWED — a plugin cannot end core\'s database', () => {
     // The wiring half of the #665 guard. `borrowedPool.test.ts` proves the
     // wrapper refuses `end()`; this proves the wrapper is actually ON the
@@ -487,7 +520,7 @@ describe('services.get — dated legacy allowlist (2026-08-20)', () => {
     // Asserted on the LEGACY path deliberately: grandfathered plugins are the
     // ones most likely to contain an old `pool.end()` in their teardown, so
     // they are exactly who must not be exempt from the guard.
-    const catalog = catalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
+    const catalog = bundledCatalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
     const { ctx, registry } = makeCtx(LEGACY_ID, catalog);
     let ended = false;
     registry.provide('graphPool', {
@@ -507,7 +540,7 @@ describe('services.get — dated legacy allowlist (2026-08-20)', () => {
   });
 
   it('warns exactly once per capability and then allows', () => {
-    const catalog = catalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
+    const catalog = bundledCatalogOf(pluginOf(LEGACY_ID, ['knowledgeGraph@^1']));
     const { ctx, registry, logs } = makeCtx(LEGACY_ID, catalog);
     const pool = { pool: true };
     registry.provide('graphPool', pool);
@@ -543,7 +576,7 @@ describe('services.get — dated legacy allowlist (2026-08-20)', () => {
   });
 
   it('is closed: an allowlisted plugin asking for a NEW name still throws', () => {
-    const catalog = catalogOf(pluginOf(LEGACY_ID, []));
+    const catalog = bundledCatalogOf(pluginOf(LEGACY_ID, []));
     const { ctx, registry } = makeCtx(LEGACY_ID, catalog);
     registry.provide('somethingNew', { x: 1 });
     assert.throws(() => ctx.services.get('somethingNew'), ServiceNotDeclaredError);
@@ -552,13 +585,14 @@ describe('services.get — dated legacy allowlist (2026-08-20)', () => {
   it('classifies a declared name as declared even when it is also allowlisted', () => {
     // `@omadia/orchestrator` is allowlisted for `graphPool`; once the manifest
     // declares it, the row is dead weight and the classification says so.
-    const catalog = catalogOf(pluginOf(LEGACY_ID, ['graphPool@^1']));
+    const catalog = bundledCatalogOf(pluginOf(LEGACY_ID, ['graphPool@^1']));
     assert.equal(
       classifyServiceGrant(
         LEGACY_ID,
         'graphPool',
         declaredServiceNames(LEGACY_ID, catalog),
         catalog,
+        () => false,
       ),
       'declared',
     );

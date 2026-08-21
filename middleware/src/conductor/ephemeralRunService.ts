@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import type { JsonObject, TemplateMissingSlot, TemplateSlotMapping } from '@omadia/conductor-core';
 import { applyTemplateSlots, missingSlotMappings, resolveLocalizedText } from '@omadia/conductor-core';
 
+import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorEphemeralStore } from './ephemeralStore.js';
 import type { PatternCatalog } from './patternCatalog.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
@@ -91,11 +92,28 @@ export class ConductorEphemeralRunService {
       workflowStore: ConductorWorkflowStore;
       ephemeralStore: ConductorEphemeralStore;
       executor: ConductorRunExecutor;
+      /** #330 C3 — backs poke(): early-expire a run's open timer tick. */
+      awaitStore: ConductorAwaitStore;
       limits: EphemeralRunLimits;
       now?: () => Date;
       log?: (msg: string) => void;
     },
   ) {}
+
+  /**
+   * #330 C3 — early-fire the run's open timer await ("the group is done, do
+   * not wait out the interval"). No-op when nothing is parked on a timer.
+   */
+  async poke(runId: string): Promise<{ poked: boolean }> {
+    if (typeof runId !== 'string' || runId.trim().length === 0) {
+      throw new EphemeralInvalidInputError('runId is required');
+    }
+    const open = await this.deps.awaitStore.openTimerAwaitForRun(runId.trim());
+    if (!open) return { poked: false };
+    await this.deps.executor.expireAwait(open.id);
+    this.deps.log?.(`[conductor] ephemeral run ${runId} poked — timer '${open.stepId}' fired early`);
+    return { poked: true };
+  }
 
   async createEphemeralRun(input: CreateEphemeralRunInput): Promise<EphemeralRunHandle> {
     // Boundary validation — callers are plugins, the input is untrusted.
@@ -151,13 +169,18 @@ export class ConductorEphemeralRunService {
       origin: 'ephemeral',
       expiresAt,
       createdByAgent: agentId,
-      publishedBy: `agent:${agentId}`,
+      // conductor_workflow_versions.published_by is a UUID column reserved for
+      // human operators; the agent handle lives in created_by_agent (TEXT).
+      publishedBy: null,
     });
 
     try {
+      // Reserved context keys are executor-owned: a caller-seeded
+      // `stepAttempts` would stretch loop budgets, `steps` would fake history.
+      const { stepAttempts: _ignoredAttempts, steps: _ignoredSteps, ...payload } = input.payload ?? {};
       const run = await this.deps.executor.startRun({
         slug,
-        payload: input.payload ?? {},
+        payload,
         triggerKind: 'agent',
         triggerSource: { agentId, patternId: input.patternId },
       });

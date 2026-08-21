@@ -1143,6 +1143,25 @@ Respond-Route 500 statt 409 — Ergebnis korrekt (Run cancelled), Oberfläche
 hässlich. Die Cancel-Flag-Spalten werden absichtlich NIE gelöscht — sie sind
 der tragende Backstop aller Cancel-Races.
 
+### Conductor-Workflow-Delete (PR #836)
+
+Neu: **`DELETE /api/v1/operator/conductors/:slug`** — löscht einen manuellen
+Workflow mit den zwei Removal-Shapes des #330-Reapers: **hard** (physischer
+DELETE, wenn kein Run irgendeine Version referenziert; Versions/Drafts/
+Schedules kaskadieren) oder **soft** (`status='disabled'` + `reaped_at`-Stempel;
+Run-Historie bleibt als Audit-Trace). Aktive Runs ⇒ 409
+`conductor.has_active_runs` (erst per #759-Route canceln); `eph-`-Namespace ⇒
+400 (Ephemeral-Lifecycle). Response `{deleted, mode: 'hard'|'soft'}`.
+Resurrection-Guards: `list()` filtert `reaped_at IS NULL` (Library **und**
+Event-Router), `removeLogical` disabled Workflow + Cron-Schedules atomar (eine
+CTE), `setStatus` und der Publish-Upsert verweigern reaped Rows (Publish auf
+gelöschten Slug ⇒ 409 `conductor.slug_exists`), `GET /:slug` ⇒ 404, FK-Race
+23503 im Hard-Pfad fällt auf soft zurück. Store-Methoden: `hasActiveRuns`,
+`removeLogical`, `hardDeleteUnreferenced` (workflowStore.ts, Spiegel von
+ephemeralStore). Web-UI: Delete-Button + ConfirmDialog auf `/conductor`,
+`deleteConductorWorkflow` in `api.ts`, i18n `conductor.delete*` en+de.
+Tests: `test/conductorWorkflowDelete.test.ts`.
+
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
 Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
@@ -1280,7 +1299,16 @@ das Gate, kein Katalogeintrag):
   Kernel selbst ein Gruppen-`bot_added` beobachtet hat
   (`src/platform/observedConversationInvites.ts` — subscribed DIREKT am
   ConversationEventHub, vor jedem Plugin; Key channelType::conversationId,
-  TTL 24h). Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
+  TTL 24h). Der Index **überlebt Restarts** (#330 follow-up): Write-through in
+  `observed_conversation_invites` (Migration `0048`, Core-Serie;
+  `src/platform/observedInvitePersistence.ts`) — Map bleibt der Hot Path,
+  Writes fire-and-forget (log-only), Boot-Hydration TTL-gefiltert, auf
+  MAX_ENTRIES gecappt, Key aus den Tabellen-SPALTEN (JSONB≠Spalten ⇒ Row wird
+  verworfen), try/catch um `hydrate()` (fehlende Tabelle ⇒ altes
+  Re-Invite-Verhalten, nie Boot-Abbruch). Live-Events vor der Hydration
+  gewinnen. Achtung: zwei Instanzen auf EINER DATABASE_URL teilen sich den
+  Index (Annahme: eine Deployment == eine DB).
+  Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
   `unbind()` ist gleich hart geguarded: nur eigene Ephemeral-Attachment-Rows
   — Operator-Bindings sind von dieser Fläche aus unerreichbar, und ein
   vorbestehendes Operator-Binding wird NIE in den Ephemeral-Lifecycle
@@ -1306,6 +1334,59 @@ Reap-Cleanup). Tests: `test/agentSetupService.test.ts`,
 `test/observedConversationInvites.test.ts`,
 `test/conductorScopedRoleAssignments.test.ts`,
 `test/conductorEphemeralAttachments.test.ts`.
+### Transcription-Capability + Recording-Ingestion (#584 WS T+I)
+
+Speech-to-Text ist eine Core-Capability nach ADR-0003: Registry-Key
+`'transcription'` (bare), Manifest-Form `'transcription@1'` — Twin-Konstanten
+in `packages/plugin-api/src/transcription.ts` (sessionBriefing-Konvention).
+Interface provider-neutral: `transcribeFile` (Batch) + `transcribeStream`
+(Realtime, `AsyncIterable<TranscriptDelta>`), Hint-Carrier
+(`languageHints`/`keywordHints`/`context`) für die #584-Hint-Synergie.
+Guardrails als Decorator `withTranscriptionGuardrails` (per-Call-Cap,
+per-Agent-Minuten-Quota In-Memory, Metering; Attribution via
+`turnContext.currentAgentSlug()` zur Call-Zeit, VOR dem ersten yield
+gecaptured — ALS überlebt Generator-yields nicht).
+
+Erster Provider: `packages/transcription-adapter-openai/` (Plugin, provides
+`transcription@1`, Vault-Key; `gpt-transcribe` Batch ungated,
+`gpt-live-transcribe` hinter `TRANSCRIPTION_REALTIME_EXPERIMENTAL`).
+Provider-Switch mit verifiziertem Rollback:
+`/api/v1/admin/transcription-provider` (`src/routes/adminTranscriptionProvider.ts`,
+schlankes Spiegelbild der Embedding-Route ohne Corpus/Gate) + web-ui-Panel
+`/admin/transcription-provider` (Consent-Surface: „Roh-Audio verlässt die
+Installation", i18n en+de).
+
+Workstream I: Native-Tool `transcribe_recording`
+(`packages/harness-orchestrator/src/tools/transcribeRecordingTool.ts`,
+Registrierung in `plugin.ts` mit late-bound Service-Resolve). Ingestiert
+Aufnahmen in dieselbe Artefakt-Substanz wie Live-Chat: ein `SessionLogEntry`
+pro Utterance (additive Felder `speaker?`/`time?`; `TurnIngest.speaker` in
+beiden KG-Backends), Markdown-Transkript + KG-Turns + Briefing. Transkript
+gilt als untrusted Input und läuft als Tool-Result durch die bestehenden
+Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
+`test/sessionLoggerSpeaker.test.ts`, `test/adminTranscriptionProviderRoute.test.ts`,
+`packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
+`packages/transcription-adapter-openai/test/`.
+
+### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
+Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
+`0011`): Deadline-Poll → `expireAwait` → On-Expiry-Fallback — derselbe
+Mechanismus wie Human-Deadlines. Guarded Cycles durch einen Timer sind
+validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
+`ctx.stepAttempts[stepId]` (Executor bumpt bei jedem Step-Entry; Guard z.B.
+`lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
+Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
+Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
+tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+`conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
+`registerConversationSendProvider`, Kernel `src/channels/
+conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
+Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
+`test/conversationSendService.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -1671,6 +1752,12 @@ ODOO_INSECURE_TLS=false             # true nur lokal bei Private-CA
 CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN, CONFLUENCE_BASE_URL
 CONFLUENCE_SPACE_KEY=HOME
 CONFLUENCE_PROXY_MAX_BYTES=200000
+# Transcription (#584 — transcription@1 capability)
+TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-Pfad
+                                        # (transcribeStream); Batch (gpt-transcribe)
+                                        # läuft ohne Gate, sobald der Adapter
+                                        # @omadia/transcription-adapter-openai
+                                        # installiert + mit API-Key versorgt ist
 # Optional endpoints
 ADMIN_TOKEN                         # mount /api/admin (mutating memory)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)

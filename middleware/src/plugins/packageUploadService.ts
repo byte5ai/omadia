@@ -108,6 +108,27 @@ export interface PackageUploadServiceDeps {
   log?: (msg: string) => void;
 }
 
+/**
+ * #789 — the operator's explicit opt-out from the bundled-id refusal.
+ *
+ * An env var rather than a request flag on purpose: the refusal protects the
+ * host from the package, so the permission has to come from the person who
+ * runs the host, not from whoever is holding the zip. A request parameter
+ * would let the uploader authorise their own override, which is the shape of
+ * the bug this closes rather than a fix for it.
+ *
+ * Read per call rather than captured at module load, so a test — or an
+ * operator restarting with the flag set — does not depend on import order.
+ */
+const BUNDLED_ID_OVERRIDE_ENV = 'PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE';
+
+/** Exactly `'1'`. A bare `true`/`yes` does not count: one spelling means one
+ *  thing to grep for during an incident, and no near-miss silently disarms
+ *  the gate. */
+function allowBundledIdOverride(): boolean {
+  return process.env[BUNDLED_ID_OVERRIDE_ENV] === '1';
+}
+
 export class PackageUploadService {
   constructor(private readonly deps: PackageUploadServiceDeps) {}
 
@@ -265,6 +286,38 @@ export class PackageUploadService {
       // --- 9. ID-Konflikt-Check --------------------------------------------
       const existingUploaded = this.deps.store.get(plugin.id);
       const catalogEntry = this.deps.catalog.get(plugin.id);
+
+      // #789 — a package claiming an id this image SHIPS is refused, and this
+      // check is deliberately not conditioned on `existingUploaded`.
+      //
+      // The check below it is `catalogEntry && !existingUploaded`. That is
+      // right for an ordinary collision (re-uploading your own plugin must
+      // keep working) but wrong for a bundled id, because it opens once and
+      // stays open: an id can be uploaded while it is not yet bundled and
+      // become bundled in a later release, and from then on `existingUploaded`
+      // is truthy and every subsequent zip for that id sails past. The catalog
+      // erodes the same way — once an upload wins the collision the entry
+      // under that key reads `origin: 'installed'`, so an origin test against
+      // `catalogEntry` would be asking the shadow about the thing it hides.
+      // `isBundledId` is asked instead: it records what the loader was OFFERED
+      // as bundled, before the collision resolved.
+      //
+      // What is protected is not the id but what the id inherits.
+      // `LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20` is keyed by plugin id,
+      // and `@omadia/orchestrator`'s row alone carries nineteen capabilities,
+      // `graphPool` and `tigrisStore` among them. The grant gate already
+      // refuses those to a shadowing package (`legacyServiceGrantsFor`); this
+      // is the second lock — on the door rather than on the safe.
+      if (this.deps.catalog.isBundledId(plugin.id) && !allowBundledIdOverride()) {
+        return fail(
+          'package.id_conflict_bundled',
+          `Plugin-ID "${plugin.id}" gehört zu einem mitgelieferten (bundled) Plugin dieser Installation. ` +
+            'Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. ' +
+            `Wenn der Override bewusst gewollt ist, setze ${BUNDLED_ID_OVERRIDE_ENV}=1 in der Middleware-Umgebung.`,
+          { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
+        );
+      }
+
       if (catalogEntry && !existingUploaded) {
         return fail(
           'package.id_conflict_builtin',

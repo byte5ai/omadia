@@ -101,7 +101,7 @@ import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
-  LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20,
+  legacyServiceGrantsFor,
 } from './pluginServiceGrants.js';
 import {
   createSqlGate,
@@ -287,7 +287,17 @@ export function createPluginContext(
   // exist. `get` resolves only capabilities this plugin's manifest declares;
   // everything else throws `ServiceNotDeclaredError`. Built once per context:
   // a manifest cannot change under a live plugin.
-  const assertServiceGranted = createServiceGrantGate({ agentId, catalog, log });
+  const assertServiceGranted = createServiceGrantGate({
+    agentId,
+    catalog,
+    // #788 — the registry, not the manifest, answers whether this plugin has
+    // actually provided the name. `agentId` is the kernel-known id, so the
+    // plugin cannot claim somebody else's registration; and the closure is
+    // evaluated per `get`, because at the moment this context is built the
+    // plugin's `activate()` has not run and it has provided nothing yet.
+    isRegisteredByPlugin: (name) => serviceRegistry.providedBy(agentId, name),
+    log,
+  });
 
   // Epic #470 (C7 / G4) — the SECOND gate, for pool-shaped capabilities only.
   // `assertServiceGranted` answers "did the author declare this?"; this answers
@@ -302,8 +312,11 @@ export function createPluginContext(
     granted: opts.sqlGranted ?? false,
     // One migration ramp, not two: the pool gate honours exactly the pairs
     // C2b's dated allowlist already grandfathered, and retires with it.
-    legacyCapabilities:
-      LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20[agentId] ?? [],
+    // Read through the same origin-aware accessor (#789) — reaching for the
+    // raw table here would have handed an upload shadowing a bundled id the
+    // operator's Postgres pool through the second gate after the first one
+    // stopped granting it.
+    legacyCapabilities: legacyServiceGrantsFor(agentId, catalog),
     log,
   });
 
@@ -349,10 +362,32 @@ export function createPluginContext(
     // Owner attribution comes from the kernel-known `agentId`, never from
     // the caller — it is what lets `disposeBySource(agentId)` unregister a
     // plugin's services on deactivate.
+    //
+    // `provide` is deliberately NOT gated on a declaration: it cannot take a
+    // name away from anyone. `ServiceRegistry.provide` throws
+    // duplicate-provider when the name is already live, so the worst a plugin
+    // can do is claim a name nobody holds — and claiming it is what
+    // `provides:` is for.
     provide<T>(name: string, impl: T): () => void {
       return serviceRegistry.provide(name, impl, agentId);
     },
+    // #788 (follow-up) — `replace` IS gated, because it is the one verb that
+    // takes a live name away from its owner. It only works when a provider
+    // already exists, so an ungated `replace` let any activated plugin swap
+    // out core's `graphPool`/`anthropicClient` — or another plugin's service —
+    // for an implementation of its own, which every later consumer in the
+    // process then resolves. It also minted the very fact the #788 gate reads:
+    // `ServiceRegistry.track` counts a `replace` as a live registration, so an
+    // undeclared `replace` turned a bare `provides:` claim into a
+    // 'self-provided' grant.
+    //
+    // Same gate as `get` on purpose: a name a plugin may not read is a name it
+    // may not redefine. The legal wrapping pattern is unaffected — a decorator
+    // declares the name it wraps under `requires:`/`optional_requires:`
+    // (`@omadia/orchestrator-extras` declares `knowledgeGraph@^1`), and a
+    // plugin re-wrapping its OWN registration is already 'self-provided'.
     replace<T>(name: string, impl: T): () => void {
+      assertServiceGranted(name, 'replace');
       return serviceRegistry.replace(name, impl, agentId);
     },
   };

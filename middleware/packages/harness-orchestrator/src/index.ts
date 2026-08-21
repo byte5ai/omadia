@@ -544,6 +544,13 @@ export {
   readAttachmentToolSpec,
 } from './tools/readAttachmentTool.js';
 export type { AttachmentReader } from './tools/readAttachmentTool.js';
+// #584 WS I — batch ingestion of recorded audio via transcription@1.
+export {
+  TRANSCRIBE_RECORDING_TOOL_NAME,
+  TranscribeRecordingTool,
+  transcribeRecordingToolSpec,
+} from './tools/transcribeRecordingTool.js';
+export type { TranscribeRecordingToolDeps } from './tools/transcribeRecordingTool.js';
 export { createAttachmentReader } from './attachmentReaderFactory.js';
 export type { AttachmentByteStore } from './attachmentReaderFactory.js';
 // #575 — the handle→room binding contract. Exported so the kernel can supply a
