@@ -1135,6 +1135,10 @@
         "what": "The credentials could not be written to the vault.",
         "next": "Save again once the vault is reachable."
       },
+      "grants_in_flight": {
+        "what": "Another permission change for this plugin is still being applied, so this one was not.",
+        "next": "Wait for the other change to finish, reload the page to see the current grants, and apply again."
+      },
       "invalid_grants": {
         "what": "The permission request was malformed and nothing was changed.",
         "next": "Reload the page and try again. If it keeps happening, the browser and the server are out of step — report it with the detail below."

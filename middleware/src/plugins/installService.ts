@@ -459,22 +459,31 @@ export class InstallService {
         );
       }
     }
-    if (this.deps.onInstalled) {
-      try {
-        await this.deps.onInstalled(agentId);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(
-          `[install] reactivate.onInstalled hook failed for ${agentId}:`,
-          message,
-        );
-        await this.deps.registry.markActivationFailed(agentId, message);
-        const failed = this.deps.registry.get(agentId);
-        if (failed && failed.status === 'active') {
-          await this.deps.registry.register({ ...failed, status: 'errored' });
-        }
-        return this.deps.registry.get(agentId)?.status;
+    if (!this.deps.onInstalled) {
+      // NO HOOK MEANS NOTHING WAS ACTIVATED, SO THERE IS NO SUCCESS TO RECORD.
+      //
+      // Falling through to the success writes below would run
+      // `clearActivationError`, which lifts `errored` → `active` and deletes
+      // `last_activation_error` / `unresolved_requires` — over a plugin this
+      // call never started. That is the #799 bug in its mirror image, and worse
+      // in one respect: the registry would also forget WHY the plugin was
+      // errored, so the next operator has neither the status nor the reason.
+      return this.deps.registry.get(agentId)?.status;
+    }
+    try {
+      await this.deps.onInstalled(agentId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[install] reactivate.onInstalled hook failed for ${agentId}:`,
+        message,
+      );
+      await this.deps.registry.markActivationFailed(agentId, message);
+      const failed = this.deps.registry.get(agentId);
+      if (failed && failed.status === 'active') {
+        await this.deps.registry.register({ ...failed, status: 'errored' });
       }
+      return this.deps.registry.get(agentId)?.status;
     }
     // Success. `markActivationSucceeded` clears the failure fields but
     // deliberately does not lift `errored` — that is `clearActivationError`'s

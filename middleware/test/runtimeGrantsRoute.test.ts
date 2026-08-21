@@ -747,6 +747,83 @@ void describe('#470 C16 / B6 — uninstall clears both grant tables', () => {
 
 // ── the view ───────────────────────────────────────────────────────────────
 
+void describe('#470 C16 — one consent change per plugin at a time', () => {
+  void it('refuses a second overlapping PUT with 409 instead of interleaving', async () => {
+    // `applyGrants` is a read-modify-write across two stores AND the in-memory
+    // routing registry, and it is not a transaction. Interleaved, one request's
+    // revoke can delete a row while the other's `setGranted` puts that prefix
+    // back into the registry — a prefix answering WITHOUT A SESSION whose
+    // consent row is gone. The refusal is what makes that unreachable.
+    //
+    // The overlap is forced with a store whose `grant` blocks until this test
+    // lets it finish; a race that depends on timing would prove nothing.
+    let releaseFirst = (): void => {};
+    const blocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const sqlState: SqlStoreState = { rows: new Map() };
+    const inner = makeSqlStore(sqlState);
+    let firstGrantStarted = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      firstGrantStarted = resolve;
+    });
+    const slowStore: PluginSqlGrantStore = {
+      ...inner,
+      grant: async (pluginId, ledger, grantedBy) => {
+        firstGrantStarted();
+        await blocked;
+        await inner.grant(pluginId, ledger, grantedBy);
+      },
+    };
+
+    const h = await makeHarness({ sqlStore: slowStore });
+    try {
+      const first = putGrants(h, { sql: true });
+      await started;
+      const second = await putGrants(h, { sql: false });
+
+      assert.equal(second.status, 409);
+      const body = (await second.json()) as { code: string };
+      assert.equal(body.code, 'runtime.grants_in_flight');
+      // The refused request wrote NOTHING — not even the revoke it asked for.
+      assert.equal(sqlState.rows.size, 0);
+
+      releaseFirst();
+      const firstRes = await first;
+      assert.equal(firstRes.status, 200);
+      assert.equal(sqlState.rows.get(PLUGIN)?.ledger, LEDGER);
+
+      // And the exclusion is RELEASED, not leaked: the next request goes
+      // through. A guard that never clears would turn one slow re-activation
+      // into a permanently unusable consent surface.
+      const third = await putGrants(h, { sql: false });
+      assert.equal(third.status, 200);
+      assert.equal(sqlState.rows.size, 0);
+    } finally {
+      releaseFirst();
+      await h.close();
+    }
+  });
+
+  void it('releases the exclusion when the write throws', async () => {
+    const sqlState: SqlStoreState = {
+      rows: new Map(),
+      failGrant: new Error('pool is gone'),
+    };
+    const h = await makeHarness({ sqlStore: makeSqlStore(sqlState) });
+    try {
+      const failed = await putGrants(h, { sql: true });
+      assert.equal(failed.status, 500);
+      // Not 409 — the previous request's failure must not leave the plugin
+      // locked out of its own consent surface.
+      const after = await putGrants(h, { sql: false });
+      assert.equal(after.status, 200);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 void describe('#470 C16 — GET /grants describes the whole ask', () => {
   void it('reports declaration, consent, state and what is missing', async () => {
     const h = await makeHarness({

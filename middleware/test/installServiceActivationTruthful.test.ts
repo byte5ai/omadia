@@ -42,7 +42,7 @@ const MANIFEST = {
   setup: { fields: [] },
 };
 
-function makeService(onInstalled: (id: string) => Promise<void>) {
+function makeService(onInstalled?: (id: string) => Promise<void>) {
   const plugin = adaptManifestV1(MANIFEST)!;
   const entry = {
     plugin,
@@ -63,7 +63,12 @@ function makeService(onInstalled: (id: string) => Promise<void>) {
     purge: async () => {},
   } as unknown as SecretVault;
 
-  const service = new InstallService({ catalog, registry, vault, onInstalled });
+  const service = new InstallService({
+    catalog,
+    registry,
+    vault,
+    ...(onInstalled ? { onInstalled } : {}),
+  });
   return { service, registry, pluginId: plugin.id };
 }
 
@@ -110,6 +115,45 @@ void describe('install reports activation truthfully (#470 P5)', () => {
       entry.last_activation_error,
       undefined,
       'a clean install must carry no activation error',
+    );
+  });
+
+  void it('reactivate records nothing when there is no activation hook', async () => {
+    // The mirror image of the bug above, on the path #470 C16 added a caller
+    // for. `reactivate` ends by clearing the activation error and stamping a
+    // success — which lifts `errored` → `active` and DELETES
+    // `last_activation_error`. Running that when no hook exists lays a green
+    // status over a plugin this call never started, and loses the reason it was
+    // errored in the first place.
+    const { service, registry, pluginId } = makeService(async () => {
+      throw new Error('activation exploded');
+    });
+    await install(service, pluginId);
+    assert.equal(registry.get(pluginId)?.status, 'errored', 'precondition');
+
+    // Same registry entry, a service with NO onInstalled.
+    const hookless = new InstallService({
+      catalog: { get: () => undefined, list: () => [] } as unknown as PluginCatalog,
+      registry,
+      vault: {
+        get: async () => undefined,
+        setMany: async () => {},
+        purge: async () => {},
+      } as unknown as SecretVault,
+    });
+    const status = await hookless.reactivate(pluginId);
+
+    assert.equal(status, 'errored', 'reactivate must report what it found');
+    const entry = registry.get(pluginId);
+    assert.equal(
+      entry?.status,
+      'errored',
+      'no hook ran, so there was no success to record',
+    );
+    assert.match(
+      String(entry?.last_activation_error),
+      /activation exploded/,
+      'the reason must survive a reactivate that activated nothing',
     );
   });
 

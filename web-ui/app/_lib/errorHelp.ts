@@ -69,6 +69,10 @@ export const ERROR_HELP_CODES = [
   // runtime.ts
   'runtime.agent_inactive',
   'runtime.empty_secrets_patch',
+  // #470 C16 (#817) — a second consent change arrived for a plugin whose first
+  // one is still being applied. Refused rather than queued; see
+  // `consentInFlight` in middleware/src/routes/runtimeGrants.ts.
+  'runtime.grants_in_flight',
   'runtime.invalid_audit_mode',
   'runtime.invalid_config',
   // #470 C16 (#817) — the unified grant-consent route. `sql_not_declared`

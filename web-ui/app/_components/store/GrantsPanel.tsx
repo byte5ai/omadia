@@ -71,10 +71,17 @@ export function GrantsPanel({
     try {
       const next = await setPluginGrants(pluginId, {
         ...(selection.sql === undefined ? {} : { sql: selection.sql }),
-        // Omitted entirely when the manifest declares no public path: sending
-        // `[]` would mean "revoke everything", which is a different statement
-        // from "this plugin has none".
-        ...(view.declared.public_paths.length > 0
+        // Omitted when the plugin has no public-path story at all: sending `[]`
+        // would mean "revoke everything", which is a different statement from
+        // "this plugin has none".
+        //
+        // NOT omitted when a grant is on record for a prefix the manifest no
+        // longer declares. There `[]` is exactly the right statement, and it is
+        // the only way the panel can honour what the `orphaned` line promises —
+        // that applying this form clears them. A message that names a remedy the
+        // UI cannot perform is the same class of lie C16 exists to remove.
+        ...(view.declared.public_paths.length > 0 ||
+        view.orphaned_public_paths.length > 0
           ? { public_paths: selection.publicPaths }
           : {}),
       });
@@ -113,14 +120,20 @@ export function GrantsPanel({
   // one thing left worth reading about a plugin that asks for no permissions.
   // Returning early on both would have hidden them exactly where they are the
   // whole content of the panel.
-  if (view.declared.sql === null && view.declared.public_paths.length === 0) {
+  // Orphaned consent is deliberately NOT part of this condition: a plugin that
+  // declares nothing today but still has a grant on record has something for the
+  // operator to DO, and the branch below has no Apply button to do it with.
+  if (
+    view.declared.sql === null &&
+    view.declared.public_paths.length === 0 &&
+    view.orphaned_public_paths.length === 0
+  ) {
     return (
       <div className="flex flex-col gap-3" data-testid="grants-panel">
         <p className="text-[12px] text-[color:var(--fg-muted)]">
           {t('nothingDeclared')}
         </p>
-        {view.declared.optional_requires.length > 0 ||
-        view.orphaned_public_paths.length > 0 ? (
+        {view.declared.optional_requires.length > 0 ? (
           <GrantChecklist
             view={view}
             selection={selection}

@@ -432,10 +432,60 @@ function isGrantError(value: GrantRequest | GrantError): value is GrantError {
 }
 
 /**
+ * Plugin ids with a consent change in flight.
+ *
+ * ONE CONSENT CHANGE PER PLUGIN AT A TIME, and a second one is REFUSED rather
+ * than queued.
+ *
+ * {@link applyGrants} is a read-modify-write across two stores and the in-memory
+ * routing registry, and it is not a transaction. Two overlapping PUTs for the
+ * same plugin can interleave so that one request's `revoke` deletes a row while
+ * the other's `setGranted` puts that same prefix back into the registry — which
+ * is the exact state the write-order comment above exists to prevent: a prefix
+ * answering WITHOUT A SESSION whose consent row is gone. The re-activation that
+ * follows re-reads the table and converges, so the window is short; on a surface
+ * whose entire job is to decide what answers unauthenticated, short is not the
+ * same as closed.
+ *
+ * Refusing beats queueing. A queue makes every waiting request inherit the
+ * duration of a re-activation that has no timeout, and it answers 200 to an
+ * operator whose form was already overwritten by the other tab. 409 tells them
+ * what actually happened, and the panel re-reads the state either way.
+ */
+const consentInFlight = new Set<string>();
+
+/**
  * Run the write, the re-activation and the read-back that every consent path
  * shares. Returns the resulting view, or answers the response itself on error.
  */
 export async function commitGrants(
+  deps: GrantRouteDeps,
+  id: string,
+  request: GrantRequest,
+  req: Request,
+  res: Response,
+): Promise<GrantsView | null> {
+  if (consentInFlight.has(id)) {
+    res.status(409).json({
+      code: 'runtime.grants_in_flight',
+      message:
+        `another consent change for '${id}' is still being applied — ` +
+        'wait for it to finish, re-read the current grants, and try again',
+    });
+    return null;
+  }
+  consentInFlight.add(id);
+  try {
+    return await commitGrantsExclusively(deps, id, request, req, res);
+  } finally {
+    consentInFlight.delete(id);
+  }
+}
+
+/** The body of {@link commitGrants}, with the per-plugin exclusion already
+ *  held. Split out so the `finally` that releases it cannot be skipped by one
+ *  of the many early returns below. */
+async function commitGrantsExclusively(
   deps: GrantRouteDeps,
   id: string,
   request: GrantRequest,

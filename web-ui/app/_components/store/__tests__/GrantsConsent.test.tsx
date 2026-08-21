@@ -331,6 +331,41 @@ describe('#470 C16 — plugin detail grants panel', () => {
     });
   });
 
+  it('offers an Apply that clears a grant the manifest no longer asks for', async () => {
+    // The `orphaned` line promises that applying this form clears them. When
+    // the plugin declares no public path at all, the panel used to take the
+    // "nothing to consent to" branch — no Apply button — and `save()` omitted
+    // `public_paths` anyway, so the promise was false in exactly the case that
+    // produces orphans most often: a plugin that DROPPED its declaration.
+    const orphaned = view({
+      declared: { sql: null, public_paths: [], optional_requires: [] },
+      granted: { sql: false, sql_ledger: null, public_paths: [] },
+      orphaned_public_paths: [P_ONE],
+      missing: [],
+      state: 'active',
+    });
+    mockGet.mockResolvedValue(orphaned);
+    mockSet.mockResolvedValue({ ...orphaned, orphaned_public_paths: [] });
+    renderWithIntl(<GrantsPanel pluginId={PLUGIN} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('grants-panel')).toBeTruthy();
+    });
+    // The orphan is named, and there is something to press.
+    expect(
+      screen.getByText(
+        en.store.grants.orphaned.replace('{paths}', P_ONE),
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: en.store.grants.apply }));
+
+    // `[]` is the whole point: it is the statement "nothing is consented",
+    // which is the only thing that clears the leftover row.
+    await waitFor(() => {
+      expect(mockSet).toHaveBeenCalledWith(PLUGIN, { public_paths: [] });
+    });
+  });
+
   it('says so plainly when the plugin asks for nothing', async () => {
     mockGet.mockResolvedValue(
       view({
