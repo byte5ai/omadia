@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Removed — the core-decoupling ratchet is retired (#470 C14)
+
+- `scripts/check-core-decoupling.mjs`, its colocated detector test
+  `scripts/check-core-decoupling.test.mjs`, `specs/470-dev-platform-plugin/decoupling-baseline.json`
+  and the CI job `core decoupling ratchet (#470)` are removed. The guard ran from 2026-07-30
+  (#539) to 2026-08-21, peaked at **3,448** counted Dev Platform references in core, fell to
+  214 at C10 and reached **0** at C13, where the floor was pinned permanently.
+- It was scaffolding for a migration in flight: it made a file inventory's staleness
+  survivable, because a checklist goes stale on contact and a count does not. The extraction
+  is finished and the Dev Platform lives in `byte5ai/omadia-dev-platform`, so the guard has
+  nothing left to guard — keeping it would cost a CI job and leave an editable number behind.
+  Reintroducing that coupling is now an ordinary architectural decision, argued for in review.
+- No behaviour change: the job is not among `main`'s required status checks and no other job
+  declared `needs: decoupling`, so removing it cannot leave a branch waiting on a check that
+  will never report. (The job's own comment claimed required-check status; branch protection
+  says otherwise — worth knowing before trusting a comment about CI over the API.) The specs
+  under `specs/470-dev-platform-plugin/` keep a closing note in place of the live baseline rows.
+
 ### Fixed — core-decoupling zero floor no longer hides same-named files (#470 C13 review)
 
 - `scripts/check-core-decoupling.mjs` now excludes only the exact detector path `scripts/check-core-decoupling.mjs` instead of any basename match, closing the hole where a same-named file dropped under `middleware/src/` could hide Dev Platform identifiers from the permanent zero floor. A colocated regression test proves the detector stays self-excluded while a probe file at `middleware/src/__probe/check-core-decoupling.mjs` is counted.

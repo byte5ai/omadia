@@ -17,7 +17,8 @@
  *
  * The trees carry a large pre-existing type-error debt (intentional partial
  * mocks, drifted fixtures, a few real bugs). Fixing all of it in one PR is a
- * 130-file diff. So — exactly like `scripts/check-core-decoupling.mjs` — this
+ * 130-file diff. So — exactly like the #470 core-decoupling ratchet did, until
+ * it was retired at C14 — this
  * counts errors per file against a committed baseline and refuses to let any
  * file's count rise. New test type errors fail CI immediately; the debt burns
  * down over time and the baseline only ever falls.
