@@ -277,6 +277,50 @@ export function InstallButton({
     if (wasPermissions) router.refresh();
   }
 
+  /**
+   * #825 — decide what the operator sees after an install that reached the
+   * registry, for both `active` and `errored`.
+   *
+   * The order matters and is the point of the issue. A grant the manifest asks
+   * for is the ONE thing the operator can act on from this dialog, so it is
+   * offered first, whether or not the plugin managed to come up without it.
+   * Only when there is no grant to ask for does the outcome split:
+   *
+   *   * `active`  → success, as before.
+   *   * `errored` → an error naming the activation failure. Never the success
+   *     toast: the plugin is installed and not running, and #825 exists
+   *     precisely because that state was being reported as a win.
+   *
+   * A FAILED grants read is not fatal for `active` — the plugin IS installed
+   * and the detail page's grants panel asks the same question, so falling
+   * through to `success` is the honest degradation. For `errored` there is
+   * nothing honest to fall through to, so the activation error is shown
+   * instead.
+   */
+  async function settleInstalled(job: InstallJob): Promise<void> {
+    const grants = await getPluginGrants(job.plugin_id).catch(() => null);
+    if (grants && hasGrantsToAsk(grants)) {
+      setPhase({ kind: 'permissions', grants });
+      return;
+    }
+    if (job.state === 'errored') {
+      setPhase({
+        kind: 'error',
+        job,
+        message: t('activationFailed', {
+          message: job.activation_state?.error ?? t('unknownError'),
+        }),
+      });
+      return;
+    }
+    setPhase({ kind: 'success' });
+    // Give the user a moment to see the confirmation, then close + refresh.
+    window.setTimeout(() => {
+      setPhase({ kind: 'idle' });
+      router.refresh();
+    }, 900);
+  }
+
   async function handleSubmit(
     values: Record<string, unknown>,
     jsonFiles?: Record<string, string>,
@@ -288,25 +332,13 @@ export function InstallButton({
     setFieldErrors({});
     try {
       const resp = await configureInstallJob(job.id, values, jsonFiles);
-      if (resp.job.state === 'active') {
-        // #470 C16 — the manifest may still be asking for something only a
-        // human can answer. Read the declaration before declaring victory.
-        //
-        // A FAILED read is not fatal: the plugin IS installed, and the grants
-        // panel on the detail page asks the same question. Falling through to
-        // `success` is the honest degradation; blocking the install dialog on a
-        // diagnostic fetch would not be.
-        const grants = await getPluginGrants(job.plugin_id).catch(() => null);
-        if (grants && hasGrantsToAsk(grants)) {
-          setPhase({ kind: 'permissions', grants });
-          return;
-        }
-        setPhase({ kind: 'success' });
-        // Give the user a moment to see the confirmation, then close + refresh.
-        window.setTimeout(() => {
-          setPhase({ kind: 'idle' });
-          router.refresh();
-        }, 900);
+      // #825 — `active` and `errored` both mean INSTALLED; they differ only in
+      // whether the plugin came up. Both land here, because the next screen is
+      // decided by what the manifest still wants, not by which word the job
+      // used. Before #825 the server could only say `active`, so this branch
+      // also covers a middleware older than the fix.
+      if (resp.job.state === 'active' || resp.job.state === 'errored') {
+        await settleInstalled(resp.job);
       } else if (resp.job.state === 'failed' && resp.job.error) {
         applyServerErrors(resp.job.error);
         setPhase({ kind: 'form', job: resp.job });

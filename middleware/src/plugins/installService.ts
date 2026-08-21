@@ -12,6 +12,7 @@ import type { TemplateManifest } from '@omadia/conductor-core';
 
 import type {
   ApiError,
+  InstallActivationState,
   InstallJob,
   InstallJobState,
   InstallSetupField,
@@ -28,6 +29,7 @@ import type {
   InstalledAgent,
   InstalledRegistry,
 } from './installedRegistry.js';
+import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
@@ -84,14 +86,31 @@ export interface InstallServiceDeps {
 }
 
 /**
+ * #825 — terminal states in which the plugin IS installed.
+ *
+ * `active` and `errored` differ in whether the plugin came up, not in whether
+ * it is installed, so every guard that asks "is this job done and the plugin on
+ * disk?" must accept both. Written as one predicate because the two call sites
+ * that ask (`cancel`, `uninstall`) got it wrong in opposite directions when the
+ * check was an inline `=== 'active'`.
+ */
+function isInstalledTerminal(state: InstallJobState): boolean {
+  return state === 'active' || state === 'errored';
+}
+
+/**
  * Service layer for the install flow. HTTP routes delegate to this; the
  * business logic (validation, vault/registry writes, state transitions)
  * lives here, so we can call it from tests or future CLIs without touching
  * Express.
  *
  * Slice 1.2a scope: synchronous jobs with two meaningful states —
- * `awaiting_config` after creation, `active` after successful configure.
+ * `awaiting_config` after creation, and a terminal state after configure.
  * SSE progress, persistent jobs, and self-test hooks arrive in 1.2b.
+ *
+ * #825 — that terminal state is `active` or `errored` depending on whether the
+ * plugin ACTIVATED, not merely on whether the writes landed. See
+ * `finishInstall`.
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
@@ -195,6 +214,7 @@ export class InstallService {
       current_step: 'Warte auf Konfiguration',
       error: null,
       setup_schema: setupSchema,
+      activation_state: null,
       created_at: now,
       updated_at: now,
     };
@@ -330,6 +350,12 @@ export class InstallService {
       templateManifests = loaded.manifests;
     }
 
+    // #825 — the activation hook's verdict, captured where it happens. The
+    // hook's failure is swallowed (the install itself completed and must not be
+    // rolled back over it), so without this the only surviving trace inside
+    // this function would be a console line.
+    let hookError: string | undefined;
+
     try {
       if (Object.keys(secrets).length > 0) {
         await this.deps.vault.setMany(job.plugin_id, secrets);
@@ -341,7 +367,14 @@ export class InstallService {
         status: 'active',
         config,
       });
-      this.transition(job, 'active', 'Installation abgeschlossen');
+      // #825 — NOT `active` yet. The registry row above says `active` because
+      // that is what an install intends; whether the plugin actually comes up
+      // is decided by the `onInstalled` hook a few lines down, and the job's
+      // terminal word is now derived from that outcome in `finishInstall`
+      // rather than written optimistically here. Writing `active` at this point
+      // is the whole of #825: it made the job disagree with the registry (and
+      // with `GET …/grants`) for every install whose activation failed.
+      this.transition(job, 'configuring', 'Aktiviere Plugin');
 
       // #478 — register the gated template manifests as read-only 'plugin'
       // catalog entries. Registration is in-memory; boot re-registers via
@@ -362,6 +395,9 @@ export class InstallService {
           await this.deps.onInstalled(job.plugin_id);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          // #825 — remember the throw. This is the FIRST-HAND observation of
+          // whether the plugin came up; everything below is the recording of it.
+          hookError = message;
           console.error(
             `[install] onInstalled hook failed for ${job.plugin_id}:`,
             message,
@@ -389,6 +425,11 @@ export class InstallService {
           }
         }
       }
+
+      // #825 — the job's terminal word, derived from the activation outcome.
+      // Deliberately AFTER the catch above, so it sees both the hook's verdict
+      // and the corrected registry status rather than the optimistic one.
+      await this.finishInstall(job, hookError);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.fail(job, {
@@ -398,6 +439,107 @@ export class InstallService {
     }
 
     return job;
+  }
+
+  /**
+   * #825 — settle a completed install into `active` or `errored`, and attach
+   * the machine-readable reason.
+   *
+   * The plugin IS installed by the time this runs: the vault and registry
+   * writes landed, and `uninstall` is the only way back out. So neither outcome
+   * here is `failed` — that word belongs to installs that never got that far,
+   * and a client that retried the form on an activation failure would be
+   * answering the wrong question. What it needs is a GRANT.
+   */
+  private async finishInstall(
+    job: InstallJob,
+    hookError: string | undefined,
+  ): Promise<void> {
+    const activation = await this.buildActivationState(job.plugin_id, hookError);
+    job.activation_state = activation;
+    if (activation.ok) {
+      this.transition(job, 'active', 'Installation abgeschlossen');
+      return;
+    }
+    this.transition(
+      job,
+      'errored',
+      activation.missing.length > 0
+        ? 'Installiert — Berechtigungen fehlen'
+        : 'Installiert — Aktivierung fehlgeschlagen',
+    );
+  }
+
+  /**
+   * Read the activation outcome for an installed plugin: whether it came up,
+   * why not, and which declared permissions it was never granted.
+   *
+   * WHAT COUNTS AS FAILURE, AND WHY IT IS NOT "the registry did not say active"
+   * --------------------------------------------------------------------------
+   * There are two sources here and they are not interchangeable:
+   *
+   *   * `hookError` — the first-hand observation. `onInstalled` threw, so the
+   *     plugin did not come up. Nothing beats this.
+   *   * the registry status — the RECORDING of that fact (#799
+   *     `markActivationFailed` plus the explicit flip), which also carries
+   *     failures this call did not cause: a circuit breaker that had already
+   *     tripped, or a boot-path verdict written by `toolPluginRuntime`.
+   *
+   * So failure is `hookError` OR an explicit `errored` on record. Anything else
+   * is success — INCLUDING a registry that reports no status at all.
+   *
+   * That last clause is load-bearing and was got wrong once already. Treating
+   * "no status" as failure sounds pleasingly fail-closed and is simply untrue:
+   * a registry implementation that does not track a status field is not
+   * claiming the plugin is broken, it is saying nothing, and inventing an
+   * `errored` from silence would break every install on such a core — which is
+   * exactly what it did, across three existing test suites, before this was
+   * corrected. Absence of a claim is not a claim. A failure must be OBSERVED
+   * (the hook threw) or RECORDED (the status literally reads `errored`).
+   *
+   * The grant-gap read is wrapped: it touches two optional stores, and a
+   * database hiccup while reading a DIAGNOSTIC must not turn a completed
+   * install into `install.write_failed`. An empty `missing` on a plugin that is
+   * genuinely missing grants is a less-informative answer to a question the
+   * grants panel also answers; a spurious failure would be a wrong one.
+   */
+  private async buildActivationState(
+    pluginId: string,
+    hookError: string | undefined,
+  ): Promise<InstallActivationState> {
+    const entry = this.deps.registry.get(pluginId);
+    const recordedStatus = entry?.status;
+    const failed = hookError !== undefined || recordedStatus === 'errored';
+
+    // Start with the registry's word when it has one, so this field and
+    // `GET …/grants` read identically. Fall back to the observation only when
+    // the registry tracks no status — silence is not failure.
+    const recorded: InstallActivationState['state'] =
+      recordedStatus ?? (failed ? 'errored' : 'active');
+    // The hook throw is first-hand observation. If that says the plugin did
+    // not come up, a stale recorded `active` may not overrule it.
+    const state: InstallActivationState['state'] =
+      failed && recorded === 'active' ? 'errored' : recorded;
+
+    let missing: InstallActivationState['missing'] = [];
+    try {
+      const gap = await readGrantGap(this.deps, pluginId);
+      missing = [...gap.missing];
+    } catch (err) {
+      console.error(
+        `[install] grant-gap read failed for ${pluginId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    return {
+      state,
+      ok: state === 'active',
+      // Prefer what the registry recorded (it is what the grants panel shows);
+      // fall back to the throw we saw, for registries that record nothing.
+      error: entry?.last_activation_error ?? hookError ?? null,
+      missing,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -468,6 +610,7 @@ export class InstallService {
       // call never started. That is the #799 bug in its mirror image, and worse
       // in one respect: the registry would also forget WHY the plugin was
       // errored, so the next operator has neither the status nor the reason.
+      await this.refreshInstalledJobs(agentId, undefined);
       return this.deps.registry.get(agentId)?.status;
     }
     try {
@@ -483,6 +626,7 @@ export class InstallService {
       if (failed && failed.status === 'active') {
         await this.deps.registry.register({ ...failed, status: 'errored' });
       }
+      await this.refreshInstalledJobs(agentId, message);
       return this.deps.registry.get(agentId)?.status;
     }
     // Success. `markActivationSucceeded` clears the failure fields but
@@ -493,6 +637,7 @@ export class InstallService {
     // consent flow would appear not to have worked.
     await this.deps.registry.clearActivationError(agentId);
     await this.deps.registry.markActivationSucceeded(agentId);
+    await this.refreshInstalledJobs(agentId, undefined);
     return this.deps.registry.get(agentId)?.status;
   }
 
@@ -514,9 +659,16 @@ export class InstallService {
       );
     }
 
-    // Remove from all open jobs so the re-install path is clean.
+    // Remove from all open jobs so the re-install path is clean. Jobs that
+    // already reached a terminal INSTALLED state are kept, so a client still
+    // polling one keeps getting its final answer instead of a 404.
+    //
+    // #825 — `errored` is such a state: the install completed and the plugin
+    // was installed, it just did not come up. Testing `!== 'active'` alone
+    // would have deleted exactly the jobs whose outcome a caller most needs to
+    // read back.
     for (const [jobId, job] of this.jobs) {
-      if (job.plugin_id === agentId && job.state !== 'active') {
+      if (job.plugin_id === agentId && !isInstalledTerminal(job.state)) {
         this.jobs.delete(jobId);
       }
     }
@@ -596,13 +748,50 @@ export class InstallService {
     return dependents;
   }
 
+  /**
+   * #825 — keep every completed install job in sync with the plugin's current
+   * activation outcome, not just the registry row.
+   *
+   * The install route already settled jobs through `buildActivationState` →
+   * `finishInstall`. Re-activation must reuse that SAME derivation, or the job
+   * and `GET …/grants` drift apart again as soon as a later grant changes the
+   * truth. Only terminal installed jobs are refreshed: `failed`/`cancelled`
+   * describe a different lifecycle, and in-flight jobs are answering work that
+   * is still happening.
+   *
+   * Errors are logged with the job + plugin id and swallowed. `reactivate()` is
+   * called from config-save and consent paths that must not fail because a
+   * stale job object could not be re-derived.
+   */
+  private async refreshInstalledJobs(
+    agentId: string,
+    hookError: string | undefined,
+  ): Promise<void> {
+    for (const job of this.jobs.values()) {
+      if (job.plugin_id !== agentId || !isInstalledTerminal(job.state)) continue;
+      try {
+        await this.finishInstall(job, hookError);
+      } catch (err) {
+        console.error(
+          `[install] failed to refresh install job '${job.id}' for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Cancel
   // -------------------------------------------------------------------------
 
   cancel(jobId: string): InstallJob {
     const job = this.get(jobId);
-    if (job.state === 'active' || job.state === 'cancelled') {
+    // #825 — `errored` is as un-cancellable as `active`: both mean the plugin
+    // is installed. Stamping `cancelled` over one would tell the operator the
+    // install was called off while the plugin sits in the registry — the same
+    // class of untruth this issue removed from `active`. Uninstall is the way
+    // back out of both.
+    if (isInstalledTerminal(job.state) || job.state === 'cancelled') {
       return job;
     }
     this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen');

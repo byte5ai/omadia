@@ -2,6 +2,8 @@ import type { Request, Response, Router } from 'express';
 
 import type { SqlPermission } from '@omadia/plugin-api';
 
+import type { MissingGrant } from '../api/admin-v1.js';
+import { declaredPublicPathsOf, declaredSqlOf, readGrantGap } from '../plugins/grantGap.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import { LedgerAlreadyOwnedError } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
@@ -75,10 +77,12 @@ export interface GrantRouteDeps {
   reactivate?: (agentId: string) => Promise<unknown>;
 }
 
-/** One thing the manifest asked for that the operator has not granted. */
-export type MissingGrant =
-  | { readonly kind: 'sql'; readonly ledger: string }
-  | { readonly kind: 'public_path'; readonly path: string };
+/** One thing the manifest asked for that the operator has not granted.
+ *
+ *  #825 — re-exported from the DTO module rather than declared here, because
+ *  the install job's `activation_state.missing` now carries the same list and
+ *  the two must not be able to drift into two shapes. */
+export type { MissingGrant };
 
 export interface GrantsView {
   readonly id: string;
@@ -119,19 +123,9 @@ export interface GrantRequest {
   readonly publicPaths?: readonly string[];
 }
 
-export function declaredSqlOf(
-  deps: GrantRouteDeps,
-  id: string,
-): SqlPermission | null {
-  return deps.catalog?.get(id)?.plugin.permissions_summary?.sql ?? null;
-}
-
-export function declaredPublicPathsOf(
-  deps: GrantRouteDeps,
-  id: string,
-): readonly string[] {
-  return deps.catalog?.get(id)?.plugin.permissions_summary?.public_paths ?? [];
-}
+/** #825 — re-exported from `plugins/grantGap.ts`, which owns the manifest reads
+ *  so the install job and this panel cannot disagree about what was declared. */
+export { declaredPublicPathsOf, declaredSqlOf };
 
 /**
  * Read everything the consent surface shows, from the manifest, the two grant
@@ -146,28 +140,20 @@ export async function buildGrantsView(
   id: string,
 ): Promise<GrantsView> {
   const entry = deps.installedRegistry.get(id);
-  const declaredSql = declaredSqlOf(deps, id);
-  const declaredPaths = declaredPublicPathsOf(deps, id);
   const optionalRequires =
     deps.catalog?.get(id)?.plugin.optional_requires ?? [];
 
-  const sqlRow = deps.sqlGrantStore
-    ? await deps.sqlGrantStore.get(id)
-    : undefined;
-  const grantedPaths = deps.publicPathGrantStore
-    ? await deps.publicPathGrantStore.listForPlugin(id)
-    : new Set<string>();
-
-  const sqlEffective =
-    declaredSql !== null && sqlRow?.ledger === declaredSql.ledger;
-
-  const missing: MissingGrant[] = [];
-  if (declaredSql && !sqlEffective) {
-    missing.push({ kind: 'sql', ledger: declaredSql.ledger });
-  }
-  for (const path of declaredPaths) {
-    if (!grantedPaths.has(path)) missing.push({ kind: 'public_path', path });
-  }
+  // #825 — the manifest reads, the store reads and the missing-grant rule all
+  // come from `readGrantGap`, which the install job's `activation_state` calls
+  // too. One derivation, so the panel and the job cannot answer differently.
+  const {
+    declaredSql,
+    declaredPaths,
+    grantedPaths,
+    sqlLedger,
+    sqlEffective,
+    missing,
+  } = await readGrantGap(deps, id);
 
   return {
     id,
@@ -178,11 +164,11 @@ export async function buildGrantsView(
     },
     granted: {
       sql: sqlEffective,
-      sql_ledger: sqlRow?.ledger ?? null,
+      sql_ledger: sqlLedger,
       public_paths: declaredPaths.filter((path) => grantedPaths.has(path)),
     },
     state: entry?.status ?? 'inactive',
-    missing,
+    missing: [...missing],
     orphaned_public_paths: [...grantedPaths].filter(
       (path) => !declaredPaths.includes(path),
     ),

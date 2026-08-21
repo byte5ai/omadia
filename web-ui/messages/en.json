@@ -3180,6 +3180,7 @@
       "installNow": "Install now",
       "unknownError": "Unknown error.",
       "unexpectedJobState": "Unexpected job state: {state}",
+      "activationFailed": "Installed, but the plugin did not start: {message}",
       "updateAvailable": "Update available",
       "updating": "Updating …",
       "update": "Update",
