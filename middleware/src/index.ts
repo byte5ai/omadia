@@ -238,7 +238,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog } from './auth/adminAuditLog.js';
+import { AdminAuditLog, roleChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -3424,13 +3424,10 @@ async function main(): Promise<void> {
       // instance: `adminAudit` is constructed further down this block, and the
       // route handler only dereferences it at request time.
       auditRoleChange: async (entry) => {
-        await adminAudit?.record({
-          actor: { id: entry.actor },
-          action: 'conductor.role_holders_change',
-          target: `conductor-role:${entry.roleKey}`,
-          before: { action: entry.action, holderId: entry.holderId },
-          after: { holders: entry.holdersAfter },
-        });
+        // #775 — the mapping lives in roleChangeAuditEntry so it is testable:
+        // the previous inline version put an EMAIL into the uuid actor_id
+        // column and every audit write failed.
+        await adminAudit?.record(roleChangeAuditEntry(entry));
       },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
       webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
