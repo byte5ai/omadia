@@ -3430,6 +3430,14 @@ async function main(): Promise<void> {
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      // #330 — guardrails for agent-generated ephemeral workflows (env-tunable).
+      ephemeral: {
+        defaultTtlMs: config.CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS,
+        maxTtlMs: config.CONDUCTOR_EPHEMERAL_MAX_TTL_MS,
+        maxActivePerAgent: config.CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT,
+        maxCreatesPerHour: config.CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR,
+        reaperIntervalMs: config.CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS,
+      },
       webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
       // Review finding — the operator UI must display an inbound endpoint URL it can
       // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
@@ -3466,6 +3474,10 @@ async function main(): Promise<void> {
         }
       },
     });
+    // #330 — agent-facing create+start seam for ephemeral (JIT) workflows.
+    // Deny-by-default like every kernel service: a plugin only reaches it after
+    // declaring the service name in its manifest (pluginServiceGrants catalog).
+    serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
     // #478 — plugin-borne workflow templates: hand the composite catalog's
     // registrar to the install service (runtime installs/uninstalls) and
     // re-register templates of already-installed plugins (registrations are
