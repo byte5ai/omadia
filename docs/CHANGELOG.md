@@ -24,6 +24,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - Migration `0010_ephemeral_attachments.sql`: auto-provisioned bindings/roles are recorded per facilitation and live exactly as long as its ephemeral workflow. Both reap paths (terminal-state hook + TTL reaper) dispose of them through one shared cleanup, and rows only disappear AFTER a successful cleanup — an attachment sweep retries expired `pending` (invite never became a facilitation) and expired `attached` (reap-time cleanup failed or ran before the kernel stores were up) rows. A pre-existing operator binding is never adopted into this self-disposing lifecycle.
 - `configStore`/`orchestratorRegistry` are resolved lazily per call (the orchestrator plugin publishes them at its own activation), so the seam is independent of plugin boot order.
 
+### Added — `transcription@1` capability + batch recording ingestion (#584 WS T+I)
+
+- **Speech-to-text is a Core capability.** New provider-swappable
+  `transcription@1` seam in `@omadia/plugin-api` (`transcribeFile` batch +
+  `transcribeStream` realtime, provider-neutral types, keyword/language/context
+  hint carrier) with day-one cost guardrails: per-call duration cap, per-agent
+  minute quota (in-memory spend brake) and minute metering, mirroring the
+  conductor's #818 guardrails. Contract `@omadia/plugin-api` → 1.8.0 (additive).
+- **First provider: `@omadia/transcription-adapter-openai`.** `gpt-transcribe`
+  (batch, `POST /v1/audio/transcriptions`, $0.0045/min) ships ungated;
+  `gpt-live-transcribe` (Realtime WebSocket, $0.017/min) ships behind
+  `TRANSCRIPTION_REALTIME_EXPERIMENTAL` until its consumer (#584 WS S,
+  AudioMeetingSource) lands. Vault-backed BYO key; injectable socket/fetch
+  seams keep the whole wire protocol unit-tested without credentials.
+- **`transcribe_recording` native tool (Workstream I).** Transcribes an
+  uploaded recording and ingests it into the SAME artifact substrate as a live
+  chat session — speaker-attributed session-log entries, per-utterance KG
+  turns (new additive `speaker`/`time` fields on `SessionLogEntry` /
+  `TurnIngest`), briefing availability. Transcript text re-enters as a tool
+  result, so it rides the standard per-turn privacy choke points.
+- **Admin → Transcription provider panel** (`/admin/transcription-provider` +
+  `/api/v1/admin/transcription-provider`): live provider switch with verified
+  rollback (embeddings-route mechanics minus the corpus machinery) — and the
+  operator-facing consent surface: an active provider sends raw audio to its
+  external endpoint.
+
 ### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
 
 - **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**

@@ -160,3 +160,10 @@ export * from './excerptMerge.js';
 // service): how an agent plugin DMs a user or fans a report out to a role's
 // current holders. Optional service; plugins must feature-detect.
 export * from './targetedSend.js';
+
+// #584 WS T — `transcription@1`: provider-swappable speech-to-text capability
+// (batch + realtime), plus the day-one cost guardrails (per-call cap,
+// per-agent minute quota, metering). Adapter plugins publish the service;
+// consumers resolve it lazily and degrade when absent.
+export * from './transcription.js';
+export * from './transcriptionGuardrails.js';

@@ -4140,6 +4140,62 @@ export async function switchEmbeddingProvider(
 }
 
 // -----------------------------------------------------------------------------
+// Transcription provider (#584 WS T) — the lean sibling of the embedding
+// section above: /api/v1/admin/transcription-provider, surfaced to the browser
+// as /bot-api/v1/admin/transcription-provider. A transcription-provider switch
+// destroys nothing (no corpus, no gate), so there is no confirmation step.
+//   - GET  /       → installed providers, the active one, live-published state
+//   - POST /switch → deactivate current, activate target, verified rollback
+// -----------------------------------------------------------------------------
+
+export interface TranscriptionProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+}
+
+export interface TranscriptionProviderState {
+  providers: TranscriptionProviderOption[];
+  activeProviderId: string | null;
+  /** Is a `transcription@1` service actually published right now? False with
+   *  an active-but-unconfigured adapter (no API key in the vault). */
+  capabilityPublished: boolean;
+  /** Provider self-description (e.g. `openai:gpt-transcribe`), `null` while
+   *  nothing is published. */
+  activeProvider: string | null;
+}
+
+export interface SwitchTranscriptionProviderResult
+  extends TranscriptionProviderState {
+  ok: true;
+  switchedTo: string;
+}
+
+/** Read the current transcription-provider picture. Safe to poll. */
+export async function getTranscriptionProvider(): Promise<TranscriptionProviderState> {
+  return getJson<TranscriptionProviderState>('/v1/admin/transcription-provider');
+}
+
+/**
+ * Switch the active transcription provider, live. Inline-surfaceable
+ * failures: 400 `transcriptionProvider.unknown_target`, 409
+ * `transcriptionProvider.already_active`, 409
+ * `transcriptionProvider.target_unavailable` (the target published nothing —
+ * missing API key; `details.restoredProviderId` names the provider verified
+ * live again, or `null` when nothing could be restored) and 409
+ * `transcriptionProvider.switch_in_progress`.
+ */
+export async function switchTranscriptionProvider(
+  pluginId: string,
+): Promise<SwitchTranscriptionProviderResult> {
+  return postJson<SwitchTranscriptionProviderResult>(
+    '/v1/admin/transcription-provider/switch',
+    { pluginId },
+  );
+}
+
+// -----------------------------------------------------------------------------
 // Mid-turn steering (2026-06-06).
 // -----------------------------------------------------------------------------
 

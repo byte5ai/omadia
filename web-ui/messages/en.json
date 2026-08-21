@@ -179,6 +179,10 @@
           "title": "Usage & Cost",
           "description": "Track token usage and cost per model, source and time, with cache-hit rate across every call."
         },
+        "transcriptionProvider": {
+          "title": "Transcription Provider",
+          "description": "Switch the active speech-to-text adapter live — no restart. An active provider sends raw audio to its external endpoint."
+        },
         "providers": {
           "title": "Providers",
           "description": "Connect providers and assign a provider plus model per agent; keys stay encrypted in the vault."
@@ -4305,6 +4309,29 @@
     "dbUrlRequiredError": "Postgres requires DATABASE_URL (Neon KG/graphPool). Set DATABASE_URL and restart before switching to Postgres.",
     "forbiddenError": "Not authorized (403) — switching the backend requires admin rights.",
     "noProviderError": "No memory provider registered (409) — the choice cannot be saved."
+  },
+  "adminTranscriptionProvider": {
+    "title": "Transcription · Provider",
+    "intro": "Switches the active transcription@1 provider live — without a restart. The middleware deactivates the current adapter, activates the target and verifies it actually publishes a service; when the target is unconfigured (no API key in the vault), the previous provider is restored and verified live again.",
+    "privacyNote": "Consent notice: with an active provider, raw meeting and recording audio leaves this deployment for the provider's external endpoint. Transcripts re-enter the system as untrusted input and pass the standard privacy masking before any model reads them.",
+    "loading": "loading…",
+    "loadFailed": "Loading failed: {message}",
+    "currentStateTitle": "Current state",
+    "activeProviderLabel": "Active provider",
+    "noneActive": "none",
+    "publishedLabel": "Service published",
+    "publishedYes": "yes — {provider}",
+    "publishedNo": "no",
+    "capabilityMissing": "The active adapter publishes no service — it is running but not configured (missing API key).",
+    "providersTitle": "Installed providers",
+    "noProviders": "No transcription@1 adapter is installed. Install one (e.g. \"Transcription (OpenAI)\") from the plugin store first.",
+    "activeBadge": "active",
+    "switchTo": "Activate",
+    "switching": "switching…",
+    "switchFailed": "Switch failed: {message}",
+    "switchTargetUnavailable": "The target adapter activated but published no service (missing API key) — the previous provider was restored where possible.",
+    "switchInProgress": "Another switch is still running — the state below was re-read; retry when it settles.",
+    "switchAlreadyActive": "That provider is already active."
   },
   "adminEmbeddingProvider": {
     "title": "Embeddings · Provider",

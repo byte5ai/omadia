@@ -39,6 +39,22 @@ export interface SessionLogEntry {
    * turn id and calls ingestRun alongside ingestTurn.
    */
   runTrace?: RunTracePayload;
+  /**
+   * #584 WS I — human speaker of `userMessage` for transcript-ingest turns
+   * (one entry per attributed utterance). Rendered as the markdown speaker
+   * label in place of the literal `**User:**` and passed through to the graph
+   * turn as a queryable property. Absent for ordinary Q&A turns — every
+   * existing caller renders byte-identically.
+   */
+  speaker?: string;
+  /**
+   * #584 WS I — override for the turn timestamp (ISO). Batch transcript
+   * ingestion writes many entries in one tick; `turnNodeId(scope, time)` is
+   * millisecond-keyed, so same-ms entries would silently upsert into ONE
+   * graph turn. Callers ingesting a recording derive per-utterance times from
+   * the segment offsets instead. Absent → `new Date()` exactly as before.
+   */
+  time?: string;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -91,7 +107,14 @@ export class SessionLogger {
   ) {}
 
   async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
-    const now = new Date();
+    // An unparseable `time` override falls back to the clock rather than
+    // throwing out of `toISOString()` — this field is public plugin-api
+    // surface now, and a bad timestamp must not lose the turn.
+    const override = entry.time !== undefined ? new Date(entry.time) : undefined;
+    const now =
+      override !== undefined && !Number.isNaN(override.getTime())
+        ? override
+        : new Date();
     const iso = now.toISOString();
     const day = iso.slice(0, 10);
     // Millisecond-precision time so back-to-back turns have unique ids. Trade
@@ -117,6 +140,7 @@ export class SessionLogger {
         toolCalls: entry.toolCalls,
         iterations: entry.iterations,
         entityRefs,
+        ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
       });
 
       const previous = (await this.store.fileExists(virtualPath))
@@ -177,6 +201,7 @@ export class SessionLogger {
           iterations: entry.iterations,
           entityRefs,
           ...(entry.userId ? { userId: entry.userId } : {}),
+          ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
         });
       } catch (err) {
         console.error(
@@ -296,6 +321,7 @@ function renderTurn(args: {
   toolCalls?: number;
   iterations?: number;
   entityRefs: EntityRef[];
+  speaker?: string;
 }): string {
   const telemetry =
     args.toolCalls !== undefined || args.iterations !== undefined
@@ -311,7 +337,7 @@ function renderTurn(args: {
   return [
     `### ${args.time}Z`,
     '',
-    '**User:**',
+    `**${args.speaker ?? 'User'}:**`,
     '',
     args.userMessage,
     '',
