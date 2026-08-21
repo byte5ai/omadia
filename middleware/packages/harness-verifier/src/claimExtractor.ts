@@ -189,6 +189,7 @@ Strict rules:
 - Do NOT invent claims that are "implied" but not stated.
 - When in doubt, skip the claim rather than invent one.
 - A record reference (invoice, order or document number, numeric record id) is ALWAYS its own claim of type "id" with odoo_record.model and odoo_record.ref/id set — in addition to any qualitative claim about the same record.
+- A qualitative claim must be a self-contained statement: include the subject it is about in the verbatim span ("Anna Müller wechselte in die IT-Abteilung"), never a bare fragment ("in die IT-Abteilung"). An independent reviewer will judge the claim WITHOUT seeing the answer.
 - Return at most ${String(this.opts.maxClaims)} claims via the ${TOOL_NAME} tool.`;
 
     const user = `USER MESSAGE:
@@ -274,6 +275,56 @@ function readToolClaims(response: LlmResponse): unknown[] | null {
  * meet minimum invariants (known type, known source, text is verbatim,
  * text length sane). Returns null when the claim should be dropped.
  */
+const MAX_CONTEXT_CHARS = 400;
+
+/**
+ * #129 — the sentence of `answer` that contains `text` (case-insensitive),
+ * or `undefined` when `text` is absent or already spans the whole sentence.
+ *
+ * Sentence boundaries are `.`, `!`, `?` followed by whitespace/end, or a
+ * newline — so "01.03.2023" and "z.B." stay intact. Pure string work, no
+ * LLM: the extractor sometimes emits a subject-less fragment ("in die
+ * IT-Abteilung") and the judge, which never sees the answer, needs the
+ * enclosing sentence to know *who* moved where.
+ */
+export function claimContext(text: string, answer: string): string | undefined {
+  const needle = text.trim().toLowerCase();
+  if (needle.length === 0) return undefined;
+  const hay = answer.toLowerCase();
+  const at = hay.indexOf(needle);
+  if (at < 0) return undefined;
+
+  let start = at;
+  while (start > 0 && !isSentenceBoundaryBefore(answer, start)) start -= 1;
+  let end = at + needle.length;
+  while (end < answer.length && !isSentenceBoundaryAfter(answer, end)) end += 1;
+
+  if (end - start > MAX_CONTEXT_CHARS) {
+    // Over-long sentence: keep a window around the span, not its head.
+    const room = Math.floor((MAX_CONTEXT_CHARS - needle.length) / 2);
+    start = Math.max(start, at - room);
+    end = Math.min(end, at + needle.length + room);
+  }
+  const sentence = answer.slice(start, end).trim();
+  if (sentence.length === 0 || sentence.toLowerCase() === needle) return undefined;
+  return sentence;
+}
+
+/** True when position `i` starts a new sentence (previous char ends one). */
+function isSentenceBoundaryBefore(s: string, i: number): boolean {
+  const prev = s[i - 1];
+  if (prev === '\n') return true;
+  return (prev === '.' || prev === '!' || prev === '?') && /\s/.test(s[i] ?? ' ');
+}
+
+/** True when position `i` (exclusive end) closes a sentence — `i` is the
+ *  index just past the terminator. */
+function isSentenceBoundaryAfter(s: string, i: number): boolean {
+  const ch = s[i - 1];
+  if (s[i] === '\n') return true;
+  return (ch === '.' || ch === '!' || ch === '?') && (i >= s.length || /\s/.test(s[i] ?? ''));
+}
+
 function normaliseClaim(raw: unknown, idx: number, answer: string): Claim | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as RawClaim;
@@ -309,6 +360,9 @@ function normaliseClaim(raw: unknown, idx: number, answer: string): Claim | null
 
   const odoo = asOdooRecord(r.odoo_record);
   if (odoo) claim.odooRecord = odoo;
+
+  const context = claimContext(text, answer);
+  if (context) claim.context = context;
 
   return claim;
 }

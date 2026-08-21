@@ -175,7 +175,8 @@ Rules:
 - verdict = "verified": evidence directly states the claim.
 - verdict = "unverified": evidence is silent, ambiguous, or only tangentially related. This is the DEFAULT when unsure.
 - verdict = "contradicted": evidence explicitly says something incompatible with the claim. Requires evidence_node_id.
-- Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.`;
+- Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
+- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense, date); judge the CLAIM as meant in that sentence, not the rest of the context.`;
 
     const evidenceBlock = evidence
       .map(
@@ -184,7 +185,11 @@ Rules:
       )
       .join('\n\n');
 
-    const user = `CLAIM: ${claim.text}
+    const context =
+      claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
+        ? `\nCONTEXT: ${truncate(claim.context, 400)}`
+        : '';
+    const user = `CLAIM: ${claim.text}${context}
 CLAIM TYPE: ${claim.type}
 RELATED: ${claim.relatedEntities.join(', ') || '(none)'}
 

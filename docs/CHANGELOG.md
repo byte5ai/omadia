@@ -18,6 +18,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — verifier: judge sees the sentence a fragment claim was cut from (#129 follow-up)
+
+- The claim extractor sometimes emits a subject-less fragment ("in die
+  IT-Abteilung") as the qualitative claim. The evidence judge deliberately
+  never sees the answer, so it could not know *who* moved where and returned
+  `unverified` — `golden-eval.yml` flaked on `blocked_contradiction_role`.
+- `Claim.context` now carries the enclosing sentence, cut deterministically
+  (no LLM) at `.`/`!`/`?`+whitespace or newline, so dates like `01.03.2023`
+  stay intact; capped at 400 chars around the span. The judge gets it as a
+  `CONTEXT:` line for disambiguation only. Extractor prompt additionally asks
+  for self-contained qualitative claims. The contradiction double-check is
+  unchanged.
+
 ### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
 
 - **The updater sidecar reports structured progress.** `GET /status` gains

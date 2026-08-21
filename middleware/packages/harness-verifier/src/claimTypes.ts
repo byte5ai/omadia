@@ -51,6 +51,12 @@ export type Aggregation = 'sum' | 'count' | 'avg' | 'max' | 'min';
 export interface Claim {
   id: string;                           // local: "c_001"
   text: string;                         // verbatim snippet from the answer
+  /** #129 — the sentence of the answer that contains `text`, cut
+   *  deterministically by the extractor (no LLM). Present only when it adds
+   *  something beyond `text`, i.e. the claim is a fragment ("in die
+   *  IT-Abteilung") whose subject lives elsewhere in the sentence. The judge
+   *  reads it for disambiguation; it never sees the whole answer. */
+  context?: string;
   type: ClaimType;
   expectedSource: ClaimSource;
   value?: number | string;              // parsed numeric or normalised literal
