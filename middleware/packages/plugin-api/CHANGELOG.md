@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.4.0 — 2026-08-20
+## 1.5.0 — 2026-08-21
 
 > **Why 1.4.0 and not 1.3.0.** This change was written against a tree where
 > `1.3.0` was free. #802 (epic #470 C9) landed on `main` first and took it, so
@@ -53,7 +53,8 @@ rows present, tables ABSENT — a restore from an older snapshot, a version-skew
 rollback, an operator who dropped a table during an incident. The plugin
 activates green and every request 500s, nine steps away from the cause. So the
 donor ledger is corroboration and the witness is the decision.
-## 1.4.0
+
+## 1.4.0 — 2026-08-20
 
 - MINOR: `PluginActionStatus` gains an optional, kernel-stamped `checked_at`
   ISO timestamp, and `ctx.status.report({ state: 'ok', title })` is now stored
