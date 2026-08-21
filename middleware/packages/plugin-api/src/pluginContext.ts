@@ -535,7 +535,8 @@ export class ServiceNotDeclaredError extends Error {
   constructor(pluginId: string, capability: string) {
     super(
       `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
-        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`provides:\` if this plugin is the provider)`,
+        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
+        `or \`provides:\` if this plugin is the provider)`,
     );
     this.name = 'ServiceNotDeclaredError';
     this.pluginId = pluginId;
@@ -580,6 +581,31 @@ export interface ServicesAccessor {
    *  not declare `name` — that is a manifest bug, not a missing provider, and
    *  the two must not be reported the same way. */
   get<T>(name: string): T | undefined;
+  /**
+   * Resolve a capability the plugin declared as OPTIONAL
+   * (`optional_requires:` in the manifest), where "no provider installed"
+   * is a supported steady state rather than a misconfiguration.
+   *
+   * Declaration-gated on exactly the same terms as {@link get}: a name in
+   * neither `requires:`, `optional_requires:` nor `provides:` throws
+   * {@link ServiceNotDeclaredError}, because a typo must not silently
+   * become `undefined`.
+   *
+   * The difference from {@link get} is the contract it advertises, not the
+   * lookup. `get` is paired with `requires:`, which the installer and the
+   * boot loop both treat as a hard prerequisite — so a `get` that returns
+   * `undefined` normally means something upstream failed. `getOptional` is
+   * paired with `optional_requires:`, which neither gate enforces, so
+   * `undefined` here is an expected answer and the caller is expected to
+   * carry a degradation path for it.
+   *
+   * Note the ordering caveat that comes with optionality: an optional
+   * dependency contributes no activation edge, so a provider that IS
+   * installed may not have activated yet when the consumer's `activate()`
+   * runs. Resolve optional services lazily (at first use) rather than
+   * caching the result of a single call during activation.
+   */
+  getOptional<T>(name: string): T | undefined;
   /** Whether a provider is currently registered. Ungated — see the interface
    *  doc. */
   has(name: string): boolean;
@@ -909,6 +935,14 @@ export interface PluginActionStatus {
   readonly title?: string;
   /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
   readonly detail?: string;
+  /**
+   * ISO timestamp of when this status was reported — STAMPED BY THE KERNEL at
+   * `report()` time, never trusted from the plugin, so "geprüft um <Zeit>"
+   * cannot lie about when the check actually ran. Field-test follow-up
+   * (OM-16/24/33): a connection verdict without a time reads as a permanent
+   * fact; with one it reads as what it is — the result of the last probe.
+   */
+  readonly checked_at?: string;
 }
 
 /**
@@ -917,6 +951,12 @@ export interface PluginActionStatus {
  * and `clear()` once everything is fine. The kernel keeps only the latest
  * value per plugin; there is no history. Reporting another plugin's status is
  * impossible — the accessor is bound to the calling plugin's id.
+ *
+ * `state: 'ok'` semantics: a BARE ok (no `title`) is equivalent to `clear()`
+ * and renders nothing — existing callers keep their behaviour. An ok WITH a
+ * `title` (e.g. "Verbunden") is stored and rendered as a positive badge with
+ * the kernel-stamped `checked_at`, so an integration can surface "connection
+ * verified at <time>" instead of silence.
  */
 export interface StatusAccessor {
   report(status: PluginActionStatus): void;
@@ -1001,6 +1041,12 @@ export interface UiRoutesAccessor {
    * web-ui pages (a built-in package) has a nav entry and no uiRoute;
    * a plugin serving its own HTML has both.
    *
+   * Supply either a literal `href` (validated as a canonical in-app path)
+   * or `pluginUi: true`, which asks the kernel to render the canonical
+   * path to this plugin's own bundled UI — the only way a scoped plugin
+   * id can express a nav destination, since that path must be
+   * percent-encoded and a literal href may not be.
+   *
    * Returns a dispose handle the plugin MUST call from its `close()`.
    * The kernel additionally drops every entry by source on deactivate,
    * so a leaked handle cannot outlive the plugin.
@@ -1044,11 +1090,32 @@ export interface UiNavEntryInput {
   /** Stable id within the plugin. Combined with pluginId as the key. */
   readonly navId: string;
   /**
-   * Absolute in-app path (e.g. `/admin/my-plugin`). Must start with
-   * exactly one `/` — protocol-relative (`//host`) and scheme-bearing
-   * values are rejected so a manifest cannot point the nav off-origin.
+   * Absolute in-app path (e.g. `/admin/reports`). Must start with exactly
+   * one `/` — protocol-relative (`//host`) and scheme-bearing values are
+   * rejected so a manifest cannot point the nav off-origin. Segments are
+   * confined to the RFC 3986 unreserved set: no query, no fragment, no
+   * percent-encoding, no dot-segments.
+   *
+   * Mutually exclusive with {@link pluginUi}; exactly one of the two must
+   * be supplied.
    */
-  readonly href: string;
+  readonly href?: string;
+  /**
+   * Point the entry at THIS plugin's own bundled UI instead of a literal
+   * path, and let the kernel spell the URL.
+   *
+   * A plugin that ships a compiled SPA is served at `/p/<pluginId>/ui/`
+   * and embedded by the shell's host page at `/plugin-ui/<pluginId>`. For
+   * a scoped id like `@acme/widget` the only URL that resolves is the
+   * percent-encoded one (`%40acme%2Fwidget`) — and percent-encoding is
+   * exactly what the `href` validator refuses, deliberately, because a
+   * literal href has to be comparable to a core path by string equality.
+   *
+   * So the plugin states the intent and the kernel renders the canonical
+   * encoded path from the id it already knows. A plugin never hand-builds
+   * an encoded href, and the literal-href rule stays strict.
+   */
+  readonly pluginUi?: true;
   /**
    * Optional cluster to nest under (e.g. `adminCluster`). Rendered as a
    * top-level entry when omitted, or when the shell has no cluster by
@@ -1064,9 +1131,15 @@ export interface UiNavEntryInput {
   readonly label: Readonly<Record<string, string>>;
 }
 
-/** Catalogue-resolved nav entry — pluginId injected by the kernel. */
-export interface UiNavEntry extends UiNavEntryInput {
+/**
+ * Catalogue-resolved nav entry — `pluginId` injected by the kernel, and
+ * `href` no longer optional: a `pluginUi: true` input is resolved to the
+ * canonical host-page path at registration, so every stored entry carries
+ * a concrete destination.
+ */
+export interface UiNavEntry extends Omit<UiNavEntryInput, 'href'> {
   readonly pluginId: string;
+  readonly href: string;
 }
 
 /**
@@ -1081,6 +1154,14 @@ export interface ResolvedUiNavEntry {
   readonly cluster?: string;
   readonly order: number;
   readonly label: string;
+  /**
+   * Present iff the entry was registered with `pluginUi: true`. The shell
+   * uses it to re-derive `href` from `pluginId` locally instead of
+   * trusting the transmitted string — the middleware is a separate
+   * deployable, and a percent-encoded href is the one shape the shell's
+   * own defensive href rule cannot check character by character.
+   */
+  readonly pluginUi?: true;
 }
 
 /**
@@ -1645,24 +1726,23 @@ export interface McpAccessor {
 }
 
 // ---------------------------------------------------------------------------
-// A DORMANT CAPABILITY WAS REMOVED HERE.
+// Dev-platform access (`ctx.devJobs`) — REMOVED.
 //
-// One accessor and its six types used to sit at this point in the file. The
-// backing host service was never provided by anything, so the accessor threw on
-// every invocation, and no manifest in this repo, in the private byte5 plugin
-// set, or in any sibling repo ever declared its permission. It was surface
-// area that only looked like a contract. The exact names are listed once, in
-// `packages/plugin-api/CHANGELOG.md`, so a consumer grepping its own source for
-// a removed type lands on the entry that explains where it went. Per epic
-// #470 (see the spec set under `specs/`) the subsystem that would have used it
-// now lives in its own repository and defines these types for itself.
+// `ctx.devJobs` and its six types (DevJobKind, DevJobStatus, DevJobDescriptor,
+// DevJobCreateRequest, DevJobEventRecord, DevJobsAccessor) used to live here.
+// Nothing ever provided the backing `'devJobs'` host service, so the accessor
+// threw on every invocation, and no manifest in this repo, in the private byte5
+// plugin set, or in any sibling repo ever declared `permissions.devJobs`.
+// Deleted per `specs/470-dev-platform-plugin/dormant-capabilities.md` §2.
 //
-// The reason this is a comment and not just a deletion: a plugin that still
-// declares the retired permission installs and activates UNCHANGED. Unknown
-// permission keys are ignored by `adaptManifestV1` and the accessor is simply
-// absent (it was already unusable). That is the property that makes a
-// capability removable at all, and it is regression-tested in
-// `test/manifestRetiredPermissionKey.test.ts`.
+// The descriptor/event view types survive CORE-LOCALLY in
+// `middleware/src/devplatform/devJobTypes.ts` for the chat dev-job surface,
+// which is a host-internal consumer and never crossed this package boundary.
+//
+// Back-compat: a stale manifest that still declares `permissions.devJobs`
+// installs and activates unchanged — unknown permission keys are ignored by
+// `adaptManifestV1` and `ctx.devJobs` is simply absent (it was already
+// unusable). Regression-tested in `test/manifestDevJobsLegacyKey.test.ts`.
 // ---------------------------------------------------------------------------
 
 export interface LlmCompleteResult {
@@ -1892,6 +1972,80 @@ export interface RunMigrationsOptions {
   readonly allowChecksumDrift?: boolean;
 }
 
+// ── Migration handoff (epic #470 C11) ───────────────────────────────────────
+//
+// A plugin extracted from core inherits installations whose schema core
+// already created, recorded in a CORE ledger the plugin cannot see. Its own
+// ledger is empty, so its migration runner would re-apply every file.
+//
+// The naive fix — copy the core rows and skip those files — destroys an
+// installation in one case, silently: rows present, tables ABSENT (a restore,
+// a version-skewed rollback, an operator who dropped a table during an
+// incident). The plugin activates green and every request 500s.
+//
+// So the core ledger is corroboration, never authority. Each file carries a
+// WITNESS: one query against the live catalog that is true only if the schema
+// object that file creates is actually there. The witness decides; the core
+// row is reported so the DISAGREEMENT between the two is visible before
+// anything is written.
+
+/** One file's claim on the core ledger, and the proof that backs it. */
+export interface LedgerSeedEntry {
+  /** The plugin's OWN migration filename, exactly as it ships. Matched against
+   *  the core ledger by stem, so `0022_x.js` adopts core's `0022_x.sql`. */
+  readonly filename: string;
+  /**
+   * A single-row, single-column boolean SELECT that is true only when this
+   * file's schema object exists.
+   *
+   * SQL text rather than a callback on purpose. A callback cannot be printed,
+   * and the whole value of `dryRun` is that an operator reads the plan — WHICH
+   * query proved WHICH file — before a production handoff writes anything.
+   *
+   * It must be safe against a database where the objects are missing, which is
+   * the case it exists to detect: `to_regclass('public.t') IS NOT NULL` is
+   * safe, `'public.t'::regclass` throws. Prefer catalog lookups over casts.
+   */
+  readonly witnessSql: string;
+}
+
+/** Options for one `ctx.sql.seedLedger()` call. */
+export interface SeedLedgerOptions {
+  /** The files to consider. A file absent from this list is never seeded. */
+  readonly entries: readonly LedgerSeedEntry[];
+  /** Compute and report the plan; write nothing. Defaults to false. */
+  readonly dryRun?: boolean;
+  /** Override the manifest's migrations directory, as `runMigrations` does. */
+  readonly dir?: string;
+}
+
+/** What one `seedLedger` pass did, or — under `dryRun` — would have done. */
+export interface LedgerSeedReport {
+  /** Written into this plugin's ledger by this pass. */
+  readonly seeded: readonly string[];
+  /** Everything `runMigrations` still has to apply afterwards. Superset of
+   *  {@link LedgerSeedReport.skippedNoWitness}. */
+  readonly applied: readonly string[];
+  /** The subset that should worry you: the core ledger records these, but
+   *  their witness says the schema object is not there. Empty on a healthy
+   *  installation; non-empty means a restore or a rollback, and the migration
+   *  runner is about to repair it. */
+  readonly skippedNoWitness: readonly string[];
+  /** Already in this plugin's ledger before the pass — a re-run, or a peer
+   *  replica that got there first. */
+  readonly alreadySeeded: readonly string[];
+  /** Which requested files the core ledger actually records. Reported, not
+   *  obeyed. */
+  readonly donorRecorded: readonly string[];
+  /** This plugin's ledger table. */
+  readonly ledger: string;
+  /** The core ledger the rows were read from. Core-supplied — a plugin does
+   *  not name it and cannot choose it. */
+  readonly donorLedger: string;
+  readonly dryRun: boolean;
+  readonly durationMs: number;
+}
+
 /** Plugin-facing migration runner. See {@link PluginContext.sql}. */
 export interface SqlAccessor {
   /** The ledger table this plugin owns, as resolved from its manifest. */
@@ -1912,6 +2066,25 @@ export interface SqlAccessor {
    * continuing quietly is worse than failing loudly.
    */
   runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+  /**
+   * Adopt an existing installation's schema: record files as applied when a
+   * witness proves the schema object they create is already there.
+   *
+   * Call this BEFORE {@link SqlAccessor.runMigrations}, and guard it — the
+   * method was added in plugin-api 1.3.0 and is `undefined` on an older core,
+   * where the correct behaviour is simply to let `runMigrations` apply the
+   * (idempotent) files:
+   *
+   * ```ts
+   * await ctx.sql.seedLedger?.({ entries: HANDOFF_ENTRIES });
+   * await ctx.sql.runMigrations();
+   * ```
+   *
+   * Never deletes anything from the core ledger. Those rows are the rollback
+   * path: while core still ships the same files, removing them would make
+   * core's own migrator re-run them on the next boot.
+   */
+  seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
 }
 
 /**

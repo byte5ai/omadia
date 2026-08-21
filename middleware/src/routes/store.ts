@@ -502,6 +502,9 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     version: ver.version,
     latest_version: entry.latest_version,
     description: entry.description,
+    ...(entry.description_localized
+      ? { description_localized: entry.description_localized }
+      : {}),
     authors: entry.authors,
     license: entry.license,
     icon_url: entry.icon_url,
@@ -518,6 +521,13 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     jobs: [],
     provides: Array.isArray(summary.provides) ? summary.provides : [],
     requires: Array.isArray(summary.requires) ? summary.requires : [],
+    // #795 — optional prerequisites travel with the teaser so the consent UI
+    // can list them as "optional" rather than silently omitting them. Same
+    // defensive shape as the two above: an untrusted registry payload that
+    // sends a non-array is treated as "declared none".
+    ...(Array.isArray(summary.optional_requires)
+      ? { optional_requires: summary.optional_requires }
+      : {}),
     multi_instance: true,
     privacy_class: 'default',
     ...(setupGuide ? { setup_guide: setupGuide } : {}),

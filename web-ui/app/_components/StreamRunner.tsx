@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { applyStreamEvent, type ChatStreamEvent } from '../_lib/chatStreamEvents';
-import { humanizeProviderError } from '../_lib/providerErrorMessage';
+import { resolveProviderErrorMessage } from '../_lib/providerErrorMessage';
 import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import {
   type ClaimedRequest,
@@ -105,7 +105,13 @@ export async function runOneTurn(
     // keep the raw text in the console for debugging.
     let outgoing = event;
     if (event.type === 'error') {
-      const clean = humanizeProviderError(event.message, t('errorProviderGeneric'));
+      // OM-26 follow-up (retest 2026-08-20): a rejected API key used to reach
+      // the bubble as the provider's raw English sentence ("API key is
+      // invalid.") — no German, no next step. Credential rejection is the one
+      // provider failure the user can fix, so it gets its own localized copy
+      // pointing at Admin → LLM access; everything else keeps the extracted
+      // provider sentence (better than a generic shrug for e.g. rate limits).
+      const clean = resolveProviderErrorMessage(event.message, t);
       // #641 — a failed turn used to reach the user with nothing they could act
       // on: no code, no id, nothing to hand to support. The detail was logged
       // server-side, so the information existed and simply never arrived. The
@@ -207,7 +213,11 @@ export async function runOneTurn(
         msg = fallback || `HTTP ${String(res.status)}`;
       }
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
+      store.finish(
+        sessionId,
+        'error',
+        resolveProviderErrorMessage(msg, t),
+      );
       finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);
       return;
     }
@@ -254,7 +264,11 @@ export async function runOneTurn(
       const { t } = depsRef.current;
       const msg = err instanceof Error ? err.message : String(err);
       applyEvent({ type: 'error', message: msg });
-      store.finish(sessionId, 'error', humanizeProviderError(msg, t('errorProviderGeneric')));
+      store.finish(
+        sessionId,
+        'error',
+        resolveProviderErrorMessage(msg, t),
+      );
     }
   } finally {
     finalizePending(depsRef.current.sessions, sessionId, pendingMessageId);

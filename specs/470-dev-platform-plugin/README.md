@@ -245,11 +245,17 @@ replaces the separately-served `admin-ui.css`.
 **Shipped.** The Dev Platform is gone from core. It lives in
 `byte5ai/omadia-dev-platform` and installs via the Hub (or a ZIP upload).
 
+- **~49k LOC / 213 files deleted in one PR**, because a partial delete leaves `tsc`
+  red: the backend tree, its 58 test files, the runner shim, three sidecars, the
+  compose topology, the operator SPA, the CI image matrix and its supply chain, the
+  43 config keys, and the whole `index.ts` assembly block.
+- **Ratchet 3,300 → 214.** Nine of fourteen zones read CLEAN. Everything left is
 - **~49k LOC / 217 files deleted in one PR**, because a partial delete leaves `tsc`
   red: the backend tree, its 58 test files, the runner shim, three sidecars, the
   compose topology, the operator SPA, the CI image matrix and its supply chain, the
   43 config keys, and the whole `index.ts` assembly block.
 - **Ratchet 3,300 → 214.** Nine of fourteen zones read CLEAN. Everything left is
+- **Ratchet 3,300 → 211.** Nine of fourteen zones read CLEAN. Everything left is
   scheduled: migrations `0022`–`0030` (69) are **C11**, the two `publicPaths`
   exemptions (6) are **C12**, and the remainder is **C13** residue — comments,
   fixture strings, the `plugin-api` CHANGELOG that records the removal, and the
@@ -272,6 +278,83 @@ replaces the separately-served `admin-ui.css`.
   carve-out sat ahead of the conductor's inbound webhook router, whose route-level
   `express.raw()` body-parser then short-circuited. Deleting the carve-out restores
   the order the surrounding comments already promised.
+
+### C11 — the migration handoff (this PR)
+
+**Shipped.** Migrations `0022`–`0030` stay in core's ledger; the plugin adopts them
+without re-running them and without being able to lie about it.
+
+- **`ctx.sql.seedLedger({ entries, dryRun })`** (plugin-api **1.3.0**, additive and
+  optional). The plugin supplies its filenames and a witness per file; **core**
+  supplies the donor ledger (`_multi_orchestrator_migrations` — the migrator that
+  owns `middleware/migrations/`). A plugin has no field for the donor table, which
+  is what keeps one plugin out of another plugin's migration history.
+- **The witness decides, the donor row corroborates.** Rows present + objects absent
+  is the case that kills an installation silently, and it is the only case the naive
+  seed gets wrong. `skippedNoWitness` is the number to read: core says these ran, the
+  catalog says they did not.
+- **Filenames match by STEM.** The plugin ships `0022_dev_platform.js` (codegen'd);
+  core recorded `0022_dev_platform.sql`. Matching on the full name would find nothing
+  and report "no donor rows", which looks exactly like a fresh install.
+- **Row shape is shared, not re-spelled.** `pluginLedgerDdl` and `migrationChecksum`
+  are exported from `pluginMigrations.ts` and used by the seeder, so a seeded row is
+  byte-identical to one the runner would have written. Get the checksum wrong and the
+  drift guard turns a successful handoff into a hard activation failure one boot later
+   — which is why the tests always run the migrator after the seed.
+- **`dryRun` writes nothing**, including the `CREATE TABLE IF NOT EXISTS` for the
+  ledger and any side effect a witness might have: the whole pass runs in one
+  transaction that is rolled back.
+- **Donor rows are never deleted.** That is the rollback path — see below.
+- **Operator CLI:** `node middleware/scripts/plugin-ledger-handoff.mjs --plan <plan.json>`
+  (dry run by default; `--apply` writes). Deliberately generic and named generically:
+  core's ratchet requires that no core file name the extracted plugin, and the next
+  plugin to leave core wants this tool unchanged.
+
+#### The nine witnesses
+
+One per file, each proving the **last** schema object that file creates — the last
+one, because a core migration file ran in a single transaction, so the last object
+is present exactly when the whole file was applied. These live in the plugin repo
+(`packages/plugin/src/ledgerHandoff.ts`); they are reproduced here because core may
+not name them and this is the document that has to survive the extraction.
+
+| File | Last object it creates | Witness |
+|---|---|---|
+| `0022_dev_platform.js` | table `dev_job_artifacts` | `SELECT to_regclass('public.dev_job_artifacts') IS NOT NULL` |
+| `0023_dev_platform_pipeline.js` | table `dev_github_app_installations` | `SELECT to_regclass('public.dev_github_app_installations') IS NOT NULL` |
+| `0024_dev_platform_w3.js` | column `dev_jobs.conductor_await_id` | `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dev_jobs' AND column_name='conductor_await_id')` |
+| `0025_dev_jobs_source_plugin.js` | constraint `dev_jobs_source_check` **containing `'plugin'`** | `SELECT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND t.relname='dev_jobs' AND c.conname='dev_jobs_source_check' AND pg_get_constraintdef(c.oid) LIKE '%''plugin''%')` |
+| `0026_dev_job_gate_kind.js` | column `dev_job_gates.gate_kind` | `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dev_job_gates' AND column_name='gate_kind')` |
+| `0027_dev_platform_triggers.js` | column `dev_jobs.usage_estimated` | `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dev_jobs' AND column_name='usage_estimated')` |
+| `0028_dev_jobs_webhook_one_active.js` | index `dev_jobs_webhook_one_active` | `SELECT to_regclass('public.dev_jobs_webhook_one_active') IS NOT NULL` |
+| `0029_dev_platform_retention.js` | index `dev_jobs_terminal_ended_idx` | `SELECT to_regclass('public.dev_jobs_terminal_ended_idx') IS NOT NULL` |
+| `0030_dev_job_events_truncated_marker.js` | index `dev_job_events_truncated_once_idx` | `SELECT to_regclass('public.dev_job_events_truncated_once_idx') IS NOT NULL` |
+
+**Two traps a witness author walks into.** `'public.dev_jobs'::regclass` THROWS on a
+missing table — the exact case the witness exists to detect — so use `to_regclass`
+or a catalog join, never a cast. And `SELECT count(*) FROM t` is not a witness: it is
+`1` for a table that exists, `0` for one that exists and is empty, and a throw for
+one that does not. The kernel enforces the shape rather than guessing: exactly one
+row, exactly one column, a real boolean.
+
+#### Rollback
+
+Uninstalling the plugin and reverting C10 leaves core's migrator **consistent**,
+because nothing in the handoff writes to core's ledger:
+
+1. The donor rows in `_multi_orchestrator_migrations` are untouched — a test asserts
+   the table is byte-for-byte identical after a seed. Revert C10 and core's migrator
+   finds its ledger exactly as it left it, applies nothing, and boots.
+2. The plugin's ledger (`plg_omadia_dev_platform_migrations`) is a table only the
+   plugin reads. An uninstall may drop it or orphan it (D3: orphan by default); either
+   way core never looks at it.
+3. The `dev_*` tables themselves are never dropped by the handoff. C10 kept the
+   migrations in core for exactly this reason: for one release both sides can apply
+   them, and the files are idempotent.
+
+The one irreversible act in this area would be **deleting** the donor rows, which is
+why the module does not contain a `DELETE` at all: with the rows gone and core still
+shipping the files, core's own migrator would re-run all nine on the next boot.
 
 ### Still held back
 
@@ -335,6 +418,9 @@ image, and adding a pattern there can only make the check stricter.
 `services/githubAppJwt.ts` **stays in core** and is deliberately not allowlisted: it carries
 no matching identifier because it is generic GitHub App auth. Moving it into the plugin
 repository would recreate the reverse dependency across a repo boundary.
+The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
+rises, per zone**. Baseline **206** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
+a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
 contact, but the count does not.

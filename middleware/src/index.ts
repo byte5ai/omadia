@@ -212,6 +212,7 @@ import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
 import { resolveSessionSigningKey } from './auth/sessionSigningKey.js';
 import { runAuthMigrations } from './auth/migrator.js';
+import { runCoreMigrations } from './platform/coreMigrations.js';
 import { runProfileStorageMigrations } from './profileStorage/migrator.js';
 import { LiveProfileStorageService } from './profileStorage/liveProfileStorageService.js';
 import { runProfileSnapshotMigrations } from './profileSnapshots/migrator.js';
@@ -758,7 +759,15 @@ async function main(): Promise<void> {
 
   const pluginCatalog = new PluginCatalog({
     extraSources: () => [
-      ...builtInPackageStore.list().map((p) => ({ packageRoot: p.path })),
+      // #794 — `bundled` is asserted HERE and nowhere else. These packages
+      // ship inside the middleware image under `middleware/packages/*`, which
+      // is what makes them eligible for the dated built-in SQL ramp in
+      // `platform/pluginSqlGrants.ts`. Uploaded and local-dev packages are
+      // deliberately left at the default `installed`: an upload must never be
+      // able to inherit a bundled plugin's ramp by claiming its id.
+      ...builtInPackageStore
+        .list()
+        .map((p) => ({ packageRoot: p.path, origin: 'bundled' as const })),
       ...uploadedPackageStore.list().map((p) => ({ packageRoot: p.path })),
       ...localDevPackageStore.list().map((p) => ({ packageRoot: p.path })),
     ],
@@ -1680,6 +1689,30 @@ async function main(): Promise<void> {
   // consumer left them.
   const ms365IntegrationId = 'de.byte5.integration.microsoft365';
   const calendarAgentId = 'de.byte5.agent.calendar';
+
+  // #796 (epic #470 C9 / G3) — core's own base schema, applied by core,
+  // BEFORE any plugin activates and independent of every provider key.
+  //
+  // This used to be a side effect of the harness-orchestrator plugin
+  // activating, which returns early when no LLM provider is configured — so a
+  // deployment without an Anthropic key had no `_multi_orchestrator_migrations`
+  // ledger, no `plugin_public_path_grants` and no `plugin_sql_grants`, and
+  // therefore no way to record either operator consent. Nothing logged it,
+  // because no migration was ever attempted.
+  //
+  // Ordering is load-bearing, not tidiness: `ToolPluginRuntime` reads a plugin's
+  // SQL-grant row while building its context, so the grant tables have to exist
+  // by the time the line below runs. See `platform/coreMigrations.ts` for why it
+  // opens its own connection instead of waiting for `graphPool`.
+  const coreMigrations = await runCoreMigrations({
+    databaseUrl: process.env['DATABASE_URL'],
+    log: (m) => { console.log(m); },
+  });
+  console.log(
+    coreMigrations === 'no-database'
+      ? '[middleware] core migrations SKIPPED — no DATABASE_URL (in-memory backend)'
+      : '[middleware] core migrations applied (middleware/migrations)',
+  );
 
   // Activate tool / extension / integration plugins FIRST. Their
   // activate() populates nativeToolRegistry + pluginRouteRegistry +

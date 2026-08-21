@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog } from 'electron';
+import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
 import { registerIpc } from './ipc';
@@ -138,6 +139,9 @@ function startWizard(): void {
 }
 
 async function onReady(): Promise<void> {
+  // OM-41 — replace Electron's default menu (which shipped a second
+  // fullscreen item and a DevTools accelerator into customer builds).
+  installApplicationMenu();
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
 

@@ -23,6 +23,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - `scripts/check-core-decoupling.mjs` now excludes only the exact detector path `scripts/check-core-decoupling.mjs` instead of any basename match, closing the hole where a same-named file dropped under `middleware/src/` could hide Dev Platform identifiers from the permanent zero floor. A colocated regression test proves the detector stays self-excluded while a probe file at `middleware/src/__probe/check-core-decoupling.mjs` is counted.
 - The remaining human-readable fixture labels left behind by the C13 identifier rename now use the neutral example-plugin naming too (`Example Plugin` / `Beispiel-Plugin`), so the tests assert against the strings their fixtures actually define and no permanently-green "old assertion, new fixture" trap remains.
 - `middleware/test/auth/staticPublicPathsClosedSet.test.ts` still skips the loopback-listener half in restrictive local sandboxes, but if `CI` is set the same bind failure now throws with a clear message instead of silently skipping the five 401 assertions.
+### Added — migration handoff: a plugin can adopt an existing installation's schema (#470 C11)
+
+- **Plugins extracted out of core no longer re-apply core's migrations.**
+  `ctx.sql.seedLedger({ entries, dryRun })` records a plugin's migration files as
+  already applied — but only where a per-file **witness** (a catalog query such as
+  `SELECT to_regclass('public.<table>') IS NOT NULL`) proves the schema object that
+  file creates is actually present. The core ledger is corroboration; the witness is
+  the decision.
+- **This is the failure it prevents.** The obvious handoff copies core's ledger rows
+  and skips those files. On a database where the rows are present but the tables are
+  **absent** — a restore from an older snapshot, a version-skewed rollback, an
+  operator who dropped a table during an incident — that seed activates the plugin
+  green and makes every request 500, nine steps behind the cause. With witnesses the
+  plugin's migration runner simply applies the files, which is the repair.
+- **Core's rows are never deleted.** They are the rollback path: while core still
+  ships the same files, removing them would make core's own migrator re-run them on
+  the next boot. Uninstalling the plugin and reverting the extraction leaves core's
+  migrator exactly as it was.
+- **Operator CLI, dry-run by default.**
+  `node middleware/scripts/plugin-ledger-handoff.mjs --plan <plan.json>` prints the
+  plan against `$DATABASE_URL` and writes nothing; `--apply` is the only way to
+  write. It highlights the one number worth reading — the files core recorded whose
+  witness is false. Running it against production before installing the plugin is
+  the cheapest de-risking of this step there is.
+- `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
+  a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
+  `SeedLedgerOptions`, `LedgerSeedReport`.
+
 
 ### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
 

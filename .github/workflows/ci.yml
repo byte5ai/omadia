@@ -267,7 +267,11 @@ jobs:
         env:
           GRAPH_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
           MEMORY_PG_TEST_URL: postgres://omadia:omadia-ci@localhost:5432/omadia
-          PG_TEST_FLOOR: '269'
+          # 269 → 252 with epic #470 C10: the Postgres suites of the extracted
+          # subsystem left core together with the code they covered (their
+          # successors run in the plugin repository). Measured on the C10
+          # head, not estimated. 252 → 279 with C11 (27 ledger-handoff pg tests).
+          PG_TEST_FLOOR: '279'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

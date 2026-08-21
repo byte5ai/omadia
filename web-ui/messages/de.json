@@ -1248,6 +1248,9 @@
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
+    "errorProviderAuth": "Der KI-Anbieter hat den hinterlegten API-Schlüssel abgelehnt. Prüfe ihn unter Admin → LLM-Zugang mit „Schlüssel testen“ und hinterlege ggf. einen neuen.",
+    "errorProviderRateLimit": "Der KI-Anbieter bremst gerade die Anfragen (Rate-Limit). Kurz warten und erneut versuchen — an den Einstellungen muss nichts geändert werden.",
+    "errorProviderOverloaded": "Der KI-Anbieter ist gerade überlastet. Das legt sich von selbst — versuch es gleich noch einmal.",
     "intro": {
       "kicker": "Wofür ist dieser Chat?",
       "body": "Das ist der Debug-Chat für Operatoren — eine direkte Leitung zu deinen Orchestratoren zum Testen von Prompts und zum Beobachten von Tool-Aufrufen, Plänen und Knowledge-Graph-Walks in Echtzeit. Das ist nicht die Endnutzer-Erfahrung, sondern zum Debuggen gedacht."
@@ -2832,7 +2835,8 @@
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
-      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
+      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
     },
     "status": {
       "saving": "speichert …",
@@ -3019,6 +3023,8 @@
       "sectionSelfExtension": "Selbst-Erweiterung",
       "sectionPermissions": "Berechtigungen",
       "sectionCapabilities": "Capabilities",
+      "sectionForDevelopers": "Für Entwickler",
+      "sectionForDevelopersHint": "Service-Verträge und Integrationsziele",
       "capabilitiesMeta": "{provides} liefert · {requires} benötigt",
       "sectionIntegrations": "Integrationen",
       "categories": "Kategorien",
@@ -3073,7 +3079,7 @@
       "migrationNeeded": "Migration nötig",
       "configRequired": "Konfiguration erforderlich",
       "errored": "Aktivierung fehlgeschlagen",
-      "readyVerified": "Aktiv · geprüft {time}",
+      "readyVerified": "Aktiv · konfiguriert {time}",
       "missingFields": "Fehlt: {fields}"
     },
     "workaroundBadge": {

@@ -507,7 +507,14 @@ function oauthPluginEntry(pluginId: string): PluginCatalogEntry {
       ],
     },
   })!;
-  return { plugin, manifest: {}, source_path: '/dev/null', source_kind: 'manifest-v1' };
+  // #794 — an unprivileged fixture: only the built-in package store asserts 'bundled'.
+  return {
+    plugin,
+    manifest: {},
+    source_path: '/dev/null',
+    source_kind: 'manifest-v1',
+    origin: 'installed',
+  };
 }
 
 describe('Orchestrator — issue #474 round 5: automatic OAuth-connection signal', () => {

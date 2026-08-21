@@ -55,6 +55,8 @@ import {
   type ServiceCaller,
   type SqlAccessor,
   type MigrationReport,
+  type LedgerSeedReport,
+  type SeedLedgerOptions,
   SqlMigrationError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
@@ -109,6 +111,10 @@ import {
 } from './pluginSqlGrants.js';
 import { borrowPool } from './borrowedPool.js';
 import { runPluginMigrations } from './pluginMigrations.js';
+import {
+  CORE_MIGRATION_DONOR_LEDGER,
+  seedPluginLedgerFromDonor,
+} from './pluginMigrationHandoff.js';
 
 /**
  * The plugin-facing types (PluginContext, SecretsAccessor, ConfigAccessor,
@@ -325,6 +331,17 @@ export function createPluginContext(
       return resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)
         ? (borrowPool(resolved as Pool, agentId) as T)
         : resolved;
+    },
+    // #795 — the accessor an `optional_requires:` entry is consumed
+    // through. Same gates in the same order as `get`: a name the manifest
+    // declares nowhere is still a manifest bug and still throws, because a
+    // typo that quietly became `undefined` is precisely the failure the
+    // declaration gate exists to prevent. What differs is the contract the
+    // caller signs up to — `undefined` is an answer here, not a symptom —
+    // and the fact that the kernel never held the plugin's activation back
+    // waiting for a provider.
+    getOptional<T>(name: string): T | undefined {
+      return services.get<T>(name);
     },
     has(name: string): boolean {
       return serviceRegistry.has(name);
@@ -788,8 +805,10 @@ export function createPluginContext(
   // Status accessor (spec 004): the plugin pushes its operator-facing action
   // status to the kernel registry. Self-scoped to this plugin id — a plugin
   // cannot report another's status. No-op when no registry was threaded
-  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
-  // no badge; the value is normalized to guard against malformed input.
+  // (migration/test contexts). `clear()` and a BARE `report({state:'ok'})`
+  // both leave no badge; an ok WITH a title renders as a positive
+  // "connection verified" badge. Values are normalized against malformed
+  // input and `checked_at` is kernel-stamped.
   const statusRegistry = opts.pluginStatusRegistry;
   const status: StatusAccessor = {
     report(next) {
@@ -802,8 +821,14 @@ export function createPluginContext(
         state,
         ...(typeof next?.title === 'string' ? { title: next.title } : {}),
         ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+        // Kernel-stamped, never taken from the caller: the time a status
+        // claims to have been checked must be the time it was reported.
+        checked_at: new Date().toISOString(),
       };
-      if (state === 'ok') {
+      if (state === 'ok' && normalized.title === undefined) {
+        // Bare ok stays the clear() synonym (previewRuntime's synthetic
+        // markers and every pre-existing caller rely on it). An ok WITH a
+        // title is a deliberate, renderable "connection verified" signal.
         statusRegistry.clear(agentId);
         return;
       }
@@ -1026,8 +1051,98 @@ function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
         log,
       });
     },
+
+    async seedLedger(seedOpts): Promise<LedgerSeedReport> {
+      const pool = opts.serviceRegistry.get<Pool>(
+        'graphPool',
+        opts.serviceCaller,
+      );
+      if (!pool) {
+        throw new SqlMigrationError(
+          agentId,
+          ledger,
+          "no 'graphPool' is registered - the operator granted permissions.sql but the middleware is running without a database",
+        );
+      }
+      const entries = validateSeedEntries(agentId, ledger, seedOpts);
+      return seedPluginLedgerFromDonor({
+        pool,
+        pluginId: agentId,
+        ledger,
+        dir: resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          seedOpts.dir ?? defaultDir,
+        ),
+        // Core's ledger, named by CORE. The plugin supplies its filenames and
+        // its witnesses - the two things only the plugin knows - and never
+        // gets to say which table those rows are read from, which is what
+        // keeps one plugin out of another's migration history.
+        donor: {
+          ledgerTable: CORE_MIGRATION_DONOR_LEDGER,
+          filenames: entries.map((e) => e.filename),
+        },
+        witnesses: Object.fromEntries(entries.map((e) => [e.filename, e.witnessSql])),
+        dryRun: seedOpts.dryRun ?? false,
+        log,
+      });
+    },
   };
 }
+
+/**
+ * Reject a malformed entry list before a connection is taken.
+ *
+ * `entries` crosses the plugin boundary as plain data, so none of its shape is
+ * guaranteed by the type system at runtime. Duplicates matter in particular: a
+ * filename listed twice with two different witnesses would make the outcome
+ * depend on iteration order, and `Object.fromEntries` would silently keep the
+ * last one.
+ */
+function validateSeedEntries(
+  agentId: string,
+  ledger: string,
+  seedOpts: SeedLedgerOptions,
+): readonly { filename: string; witnessSql: string }[] {
+  const entries = seedOpts.entries;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new SqlMigrationError(
+      agentId,
+      ledger,
+      'seedLedger requires a non-empty `entries` list - a handoff that claims nothing is a caller bug, not a no-op',
+    );
+  }
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    const filename: unknown = entry?.filename;
+    const witnessSql: unknown = entry?.witnessSql;
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        'every seedLedger entry needs a non-empty `filename`',
+      );
+    }
+    if (typeof witnessSql !== 'string' || witnessSql.trim().length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' has no witnessSql - a file with no proof is never seeded, so an empty witness is a mistake rather than a way to force one`,
+      );
+    }
+    if (seen.has(filename)) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' is listed twice - two witnesses for one file makes the outcome depend on iteration order`,
+      );
+    }
+    seen.add(filename);
+    return { filename, witnessSql };
+  });
+}
+
 
 /**
  * Resolve a migrations directory inside the package root, and prove it stayed

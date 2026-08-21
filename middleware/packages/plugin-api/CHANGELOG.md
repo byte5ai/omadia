@@ -8,6 +8,110 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.5.0 — 2026-08-21
+
+> **Why 1.4.0 and not 1.3.0.** This change was written against a tree where
+> `1.3.0` was free. #802 (epic #470 C9) landed on `main` first and took it, so
+> the number moved rather than the meaning: everything below is the same
+> additive surface, and `1.3.0` on `main` is C9's. Two open PRs claiming one
+> version is a merge-order accident, not a semantic one — but a duplicate
+> version is indistinguishable from a silently-changed contract to anything
+> that resolves by version, so it gets its own.
+
+Additive. A plugin that was extracted out of core can now ADOPT an existing
+installation's schema instead of re-applying it — and does so on proof rather
+than on trust (epic #470, C11 — the migration handoff). Every existing consumer
+keeps compiling: `seedLedger` is optional on `SqlAccessor`, so a plugin built
+against 1.4.0 still activates on an older core, where the accessor is
+`undefined` and the (idempotent) migrations simply run.
+
+### Added
+
+- **`SqlAccessor.seedLedger(opts)`** — optional. Records the plugin's own
+  migration files as applied, one file at a time, when a witness proves the
+  schema object that file creates already exists. Core supplies the donor
+  ledger; the plugin supplies its filenames and its witnesses. Never deletes a
+  donor row — those are the rollback path.
+- **`LedgerSeedEntry`** — `{ filename, witnessSql }`. The filename is the
+  plugin's own, matched to the donor ledger by STEM, so a codegen'd
+  `0022_x.js` adopts core's `0022_x.sql`.
+- **`SeedLedgerOptions`** — `{ entries, dryRun?, dir? }`. `dryRun` computes the
+  plan against the live database inside a transaction that is rolled back:
+  nothing is written, including anything a witness touched.
+- **`LedgerSeedReport`** — `{ seeded, applied, skippedNoWitness, alreadySeeded,
+  donorRecorded, ledger, donorLedger, dryRun, durationMs }`.
+  `skippedNoWitness` is the one to read: the donor says these ran, the catalog
+  says their objects are absent. On a healthy installation it is empty; a
+  non-empty list is a restore or a rollback, and the migration runner is about
+  to repair it.
+
+### Why the witness and not the donor row
+
+The naive handoff copies the donor ledger's rows and skips those files. That is
+correct on a healthy database and silently destroys one specific installation:
+rows present, tables ABSENT — a restore from an older snapshot, a version-skewed
+rollback, an operator who dropped a table during an incident. The plugin
+activates green and every request 500s, nine steps away from the cause. So the
+donor ledger is corroboration and the witness is the decision.
+
+## 1.4.0 — 2026-08-20
+
+- MINOR: `PluginActionStatus` gains an optional, kernel-stamped `checked_at`
+  ISO timestamp, and `ctx.status.report({ state: 'ok', title })` is now stored
+  and rendered as a positive "connection verified" badge instead of being
+  normalized to `clear()`. A BARE `{ state: 'ok' }` keeps its clear() synonym
+  semantics — no existing caller changes behaviour. (Field-test OM-16/24/33:
+  integrations can now surface "Verbunden · geprüft <Zeit>" on the store card.)
+
+## 1.3.0 — 2026-08-20
+
+Additive. Two shapes a plugin could not express before, both found by the
+epic #470 P5 acceptance run against a real core: a dependency it can survive
+the absence of, and a nav entry pointing at its own bundled UI when its id is
+scoped. Every existing consumer keeps compiling — the new members are optional
+or additive, and no existing member changed meaning.
+
+### Added
+
+- **`ctx.services.getOptional(name)`** (`<T>(name: string) => T | undefined`)
+  — the accessor for a capability declared under the new manifest field
+  `optional_requires:` (#795). Declaration-gated exactly like `get`, so an
+  undeclared name still throws `ServiceNotDeclaredError` and a typo cannot
+  quietly become `undefined`; what it adds is a call site that says absence is
+  survivable. `optional_requires:` entries use the same capability-ref syntax
+  as `requires:` and satisfy the same declaration gate, but are NOT an
+  activation dependency: the installer raises no
+  `install.missing_capability`, and the capability resolver neither demands
+  nor orders a provider for them.
+
+  The ordering consequence is part of the contract: with no activation edge,
+  an optional provider that IS installed may activate after its consumer.
+  Resolve optional services lazily, at first use, rather than caching the
+  result of one call during `activate()`.
+
+- **`UiNavEntryInput.pluginUi`** (`true | undefined`) — ask the kernel to
+  render the canonical path to this plugin's own bundled UI instead of
+  supplying a literal `href` (#798). A scoped plugin id resolves only
+  percent-encoded (`/plugin-ui/%40acme%2Fwidget`), and percent-encoding is
+  precisely what the literal-`href` validator refuses — so a scoped plugin
+  previously had no spelling that both validated and worked. Supply exactly
+  one of `href` or `pluginUi: true`; supplying both, or neither, throws.
+
+- **`ResolvedUiNavEntry.pluginUi`** (`true | undefined`) — set on entries
+  registered that way, so the web UI re-derives the href from `pluginId`
+  locally instead of trusting a percent-encoded string across a deployment
+  boundary.
+
+### Changed
+
+- **`UiNavEntryInput.href`** is now optional (`string | undefined`), because
+  a `pluginUi: true` entry supplies none. Widening an input field: every
+  plugin that passes an `href` today is unaffected.
+- **`UiNavEntry.href`** stays required — the kernel resolves `pluginUi` to a
+  concrete path at registration, so a catalogued entry always has one.
+- **`ServiceNotDeclaredError`**'s message now names `optional_requires:` as a
+  fix alongside `requires:` and `provides:`.
+
 ## 1.2.0 — 2026-08-20
 
 Additive. A plugin may now be handed a Postgres pool and own tables in the

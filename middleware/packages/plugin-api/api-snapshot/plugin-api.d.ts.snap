@@ -1474,6 +1474,7 @@ constructor(pluginId: string, capability: string);
 }
 export interface ServicesAccessor {
 get<T>(name: string): T | undefined;
+getOptional<T>(name: string): T | undefined;
 has(name: string): boolean;
 provide<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
 replace<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
@@ -1536,6 +1537,7 @@ export interface PluginActionStatus {
 readonly state: PluginActionState;
 readonly title?: string;
 readonly detail?: string;
+readonly checked_at?: string;
 }
 export interface StatusAccessor {
 report(status: PluginActionStatus): void;
@@ -1568,13 +1570,15 @@ readonly pluginId: string;
 }
 export interface UiNavEntryInput {
 readonly navId: string;
-readonly href: string;
+readonly href?: string;
+readonly pluginUi?: true;
 readonly cluster?: string;
 readonly order?: number;
 readonly label: Readonly<Record<string, string>>;
 }
-export interface UiNavEntry extends UiNavEntryInput {
+export interface UiNavEntry extends Omit<UiNavEntryInput, 'href'> {
 readonly pluginId: string;
+readonly href: string;
 }
 export interface ResolvedUiNavEntry {
 readonly pluginId: string;
@@ -1583,6 +1587,7 @@ readonly href: string;
 readonly cluster?: string;
 readonly order: number;
 readonly label: string;
+readonly pluginUi?: true;
 }
 export interface NotificationsAccessor {
 send(payload: NotificationPayload): Promise<NotificationDispatchResult>;
@@ -1798,9 +1803,30 @@ export interface RunMigrationsOptions {
 readonly dir?: string;
 readonly allowChecksumDrift?: boolean;
 }
+export interface LedgerSeedEntry {
+readonly filename: string;
+readonly witnessSql: string;
+}
+export interface SeedLedgerOptions {
+readonly entries: readonly LedgerSeedEntry[];
+readonly dryRun?: boolean;
+readonly dir?: string;
+}
+export interface LedgerSeedReport {
+readonly seeded: readonly string[];
+readonly applied: readonly string[];
+readonly skippedNoWitness: readonly string[];
+readonly alreadySeeded: readonly string[];
+readonly donorRecorded: readonly string[];
+readonly ledger: string;
+readonly donorLedger: string;
+readonly dryRun: boolean;
+readonly durationMs: number;
+}
 export interface SqlAccessor {
 readonly ledger: string;
 runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
 }
 export declare class SqlPermissionError extends Error {
 readonly pluginId: string;
