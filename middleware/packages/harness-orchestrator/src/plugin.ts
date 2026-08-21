@@ -53,8 +53,10 @@ import type { MemoryStore, PluginContext } from '@omadia/plugin-api';
 import {
   PRIVACY_REDACT_SERVICE_NAME,
   RESPONSE_GUARD_SERVICE_NAME,
+  TRANSCRIPTION_SERVICE_NAME,
   TURN_RECEIPT_STORE_SERVICE_NAME,
   type PrivacyGuardService,
+  type TranscriptionService,
   type TurnReceiptStore,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
@@ -91,7 +93,12 @@ import { runMultiOrchestratorMigrations } from './registry/migrator.js';
 import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
-import type { SessionLogger } from './sessionLogger.js';
+import { SessionLogger } from './sessionLogger.js';
+import {
+  TRANSCRIBE_RECORDING_TOOL_NAME,
+  TranscribeRecordingTool,
+  transcribeRecordingToolSpec,
+} from './tools/transcribeRecordingTool.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
   PROCESS_MEMORY_SYSTEM_PROMPT_DOC,
@@ -949,6 +956,35 @@ export async function activate(
     ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
   }
 
+  // #584 WS I — `transcribe_recording` native tool: batch ingestion of
+  // recorded audio through the `transcription@1` capability. Registered
+  // UNCONDITIONALLY with a late-bound service getter: the transcription
+  // provider is an operator-installed plugin that may (de)activate any time
+  // after this activate ran, so availability is decided per dispatch — an
+  // install without a provider gets a clear, model-readable error string,
+  // the same graceful-degrade posture read_attachment takes for a missing
+  // byte store. The per-call SessionLogger factory keys the KG partition on
+  // the CURRENT turn's agent slug (same qualification chat turns get); the
+  // markdown transcript path is shared, exactly like `buildOrchestrator`'s
+  // logger (decision A3a).
+  const transcribeRecordingTool = new TranscribeRecordingTool({
+    reader: attachmentReader,
+    getTranscription: (): TranscriptionService | undefined =>
+      ctx.services.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+    makeSessionLogger: (agentSlug): SessionLogger =>
+      new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug),
+  });
+  const disposeTranscribeTool = nativeToolRegistry.register(
+    TRANSCRIBE_RECORDING_TOOL_NAME,
+    {
+      handler: (input): Promise<string> => transcribeRecordingTool.handle(input),
+      spec: transcribeRecordingToolSpec,
+    },
+  );
+  ctx.log(
+    '[harness-orchestrator] registered transcribe_recording native tool (transcription@1 resolved per dispatch)',
+  );
+
   // US3 — per-Agent Orchestrator construction. The orchestrator plugin
   // builds the single "default" Agent; the multi-orchestrator registry
   // (US4) calls the same factory once per configured Agent against the
@@ -1254,6 +1290,11 @@ export async function activate(
         } catch {
           // best-effort
         }
+      }
+      try {
+        disposeTranscribeTool();
+      } catch {
+        // best-effort
       }
       // Release published services (chatAgent@1, orchestratorRegistry@1,
       // configStore, channelResolver) so a subsequent reactivate can re-publish

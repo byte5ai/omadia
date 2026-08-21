@@ -40,6 +40,8 @@ import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
+import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
 import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
@@ -128,6 +130,7 @@ import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
@@ -4365,6 +4368,29 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
+  );
+
+  // #584 WS T — operator surface for the `transcription@1` capability: list
+  // installed providers, show the live one, switch with verified rollback.
+  // The lean sibling of the embedding-provider router above — a transcription
+  // switch destroys no corpus, so there is no confirm/discard step and no
+  // gate re-evaluation. This page doubles as the consent surface: an active
+  // provider means raw audio leaves the deployment for the configured
+  // external endpoint.
+  app.use(
+    '/api/v1/admin/transcription-provider',
+    requireAuth,
+    createAdminTranscriptionProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getTranscription: () =>
+        serviceRegistry.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] transcription-provider switch ready at /api/v1/admin/transcription-provider (auth: required)',
   );
 
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
