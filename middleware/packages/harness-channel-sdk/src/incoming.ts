@@ -30,6 +30,13 @@ export interface IncomingTurn {
   channelKey?: string;
   /** channel-native user ref */
   userRef: ChannelUserRef;
+  /**
+   * Whether this turn arrived in a group conversation or a 1:1 (#330 B1).
+   * Additive: classic adapters never set it; absent = unknown, and consumers
+   * treat unknown as 'direct' — no group semantics without a positive
+   * statement (see `isGroupConversation`).
+   */
+  conversationType?: 'direct' | 'group';
   /** user's message as plain text (mentions resolved, markup stripped) */
   text: string;
   attachments?: IncomingAttachment[];

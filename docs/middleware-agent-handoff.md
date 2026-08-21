@@ -1224,6 +1224,42 @@ Agent. Tests: `test/conductorEphemeral*.test.ts`,
 "still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
 CI-unbewiesen.
 
+### Group-Conversation-Primitives im Channel-SDK (#330 Workstream B1)
+
+Strikt additive SDK-Erweiterung (Teams 0.12.7 / Telegram 0.2.0 laufen
+unverändert): `IncomingTurn.conversationType` (`'direct'|'group'`, absent =
+unknown → wie direct behandelt, Helper `isGroupConversation`),
+`ConversationRoster` (+`partial`-Lower-Bound-Semantik wie
+`roleHolderSource.ts`), typisierte `ConversationMembershipEvent`s
+(`bot_added` inkl. `addedBy` — der Facilitator-Handshake-Trigger,
+`members_added`/`members_removed`) und `TargetedSendProvider` (liefert immer
+nur an EINEN bereits aufgelösten User).
+
+Drei neue **optionale** `CoreApi`-Methoden nach dem
+`registerWebSocket`-Feature-Detect-Muster: `registerRosterProvider`,
+`registerTargetedSendProvider`, `emitConversationEvent` — nur definiert, wenn
+der Kernel die jeweilige Registry verdrahtet hat
+(`src/channels/{rosterRegistry,targetedSendRegistry,conversationEventHub}.ts`);
+`channelRegistry.deactivate` räumt die Beiträge des Channels ab.
+
+**Principal-Auflösung ist Kernel-Sache** (`targetedDeliveryService.ts`,
+Service `targetedSend`, deny-by-default): `user:<id>` → 1 Delivery;
+`role:<key>` → late-bound Fan-out an ALLE aktuellen Holder (Notification, eine
+Delivery pro Holder, KEIN Quorum — anders als Decision-Awaits). Leere Rolle →
+`role_has_no_holders`, Partial-Liste → `role_resolution_partial` (Deliveries
+an bekannte Holder laufen trotzdem), unreachable Holder →
+per-Holder-Diagnostic; nie silent drop, nie Throw. Ohne Postgres degradieren
+role-Sends zu `role_resolution_unavailable`, user-Sends funktionieren.
+Rollen-Auflösung nutzt eine zweite `buildRoleHolderRegistry`-Instanz über
+`conductorWiring.roleStore` (TODO #330: Conductor exponiert seine Registry),
+Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
+
+`@omadia/plugin-api` **1.7.0**: `TARGETED_SEND_SERVICE_NAME` + Shapes
+(plugin-api-eigen, da Dependency-Richtung sdk→plugin-api) — Workstream C
+(Facilitator) konsumiert das. Tests: `test/conversationRoster.test.ts`,
+`test/conversationEventHub.test.ts`, `test/targetedDelivery.test.ts`,
+`test/coreApiOptionalCapabilities.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

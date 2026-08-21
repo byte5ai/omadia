@@ -390,6 +390,7 @@ export * from './bulkInconsistency.js';
 export * from './mergeCandidate.js';
 export * from './topic.js';
 export * from './excerptMerge.js';
+export * from './targetedSend.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -2329,6 +2330,45 @@ kind: 'rect' | 'polygon' | 'mask';
 points?: Array<[number, number]>;
 maskHash?: string;
 };
+}
+
+// ===== targetedSend.d.ts =====
+export declare const TARGETED_SEND_SERVICE_NAME = "targetedSend";
+export interface TargetedSendRequest {
+channelType: string;
+principal: string;
+message: {
+text: string;
+};
+}
+export type TargetedSendDeliveryOutcome = {
+outcome: 'delivered';
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+};
+export interface TargetedSendResultDiagnostic {
+code: string;
+message: string;
+principalId?: string;
+}
+export interface TargetedSendResult {
+resolution: {
+kind: 'single-user';
+} | {
+kind: 'role';
+holders: readonly string[];
+partial: boolean;
+};
+deliveries: readonly {
+principalId: string;
+outcome: TargetedSendDeliveryOutcome;
+}[];
+diagnostics: readonly TargetedSendResultDiagnostic[];
+}
+export interface TargetedSendService {
+sendToPrincipal(request: TargetedSendRequest): Promise<TargetedSendResult>;
 }
 
 // ===== topic.d.ts =====

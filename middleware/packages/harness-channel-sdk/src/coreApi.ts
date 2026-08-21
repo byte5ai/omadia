@@ -2,6 +2,9 @@ import type { RequestHandler, Router } from 'express';
 
 import type { IncomingTurn, ChannelUserRef, PlatformIdentity } from './incoming.js';
 import type { ChatStreamEvent } from './streamEvent.js';
+import type { ConversationRosterProvider } from './conversationRoster.js';
+import type { ConversationMembershipEvent } from './membershipEvent.js';
+import type { TargetedSendProvider } from './targetedSend.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 
@@ -121,4 +124,31 @@ export interface CoreApi {
     path: string,
     handler: ChannelSocketHandler,
   ): void;
+
+  /**
+   * Register the channel's participant-roster capability (#330 B1). Optional:
+   * present only when the kernel wired a roster registry into `createCoreApi`.
+   * Channels MUST feature-detect
+   * (`typeof core.registerRosterProvider === 'function'`) before using it.
+   * Same active-flag lifecycle as routes: the kernel drops the provider when
+   * the channel deactivates.
+   */
+  registerRosterProvider?(channelId: string, provider: ConversationRosterProvider): void;
+
+  /**
+   * Register the channel's targeted-send (DM one participant) capability
+   * (#330 B3). Optional — same feature-detect + deactivate lifecycle as
+   * {@link registerRosterProvider}. Principal→user resolution (incl. role
+   * fan-out) happens in the kernel; the provider only ever delivers to one
+   * already-resolved user.
+   */
+  registerTargetedSendProvider?(channelId: string, provider: TargetedSendProvider): void;
+
+  /**
+   * Emit a conversation-membership event (#330 B2): the agent was invited,
+   * members joined/left. Optional — feature-detect. Fire-and-forget from the
+   * adapter's perspective; the kernel fans it out to subscribers (e.g. a
+   * Facilitator waiting for its `bot_added` handshake trigger).
+   */
+  emitConversationEvent?(event: ConversationMembershipEvent): void;
 }
