@@ -1280,7 +1280,16 @@ das Gate, kein Katalogeintrag):
   Kernel selbst ein Gruppen-`bot_added` beobachtet hat
   (`src/platform/observedConversationInvites.ts` — subscribed DIREKT am
   ConversationEventHub, vor jedem Plugin; Key channelType::conversationId,
-  TTL 24h). Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
+  TTL 24h). Der Index **überlebt Restarts** (#330 follow-up): Write-through in
+  `observed_conversation_invites` (Migration `0048`, Core-Serie;
+  `src/platform/observedInvitePersistence.ts`) — Map bleibt der Hot Path,
+  Writes fire-and-forget (log-only), Boot-Hydration TTL-gefiltert, auf
+  MAX_ENTRIES gecappt, Key aus den Tabellen-SPALTEN (JSONB≠Spalten ⇒ Row wird
+  verworfen), try/catch um `hydrate()` (fehlende Tabelle ⇒ altes
+  Re-Invite-Verhalten, nie Boot-Abbruch). Live-Events vor der Hydration
+  gewinnen. Achtung: zwei Instanzen auf EINER DATABASE_URL teilen sich den
+  Index (Annahme: eine Deployment == eine DB).
+  Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
   `unbind()` ist gleich hart geguarded: nur eigene Ephemeral-Attachment-Rows
   — Operator-Bindings sind von dieser Fläche aus unerreichbar, und ein
   vorbestehendes Operator-Binding wird NIE in den Ephemeral-Lifecycle

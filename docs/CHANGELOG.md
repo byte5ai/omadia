@@ -18,6 +18,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — the observed-invite index survives restarts (#330 follow-up)
+
+- Migration `0048_observed_invites.sql` (core series, `middleware/migrations/`): new table
+  `observed_conversation_invites` as write-through backing store for the kernel-side invite
+  index (#330 C2a) — the deny-by-default scope guard for plugin auto-binds. Until now the
+  index was in-memory only, so every deploy/restart forced operators to remove and re-invite
+  the bot before a facilitation could start.
+- The in-memory map stays the hot path: writes are fire-and-forget (log-only on failure),
+  boot hydration is TTL-filtered, capped at the in-memory limit, keyed off the table's key
+  COLUMNS (a JSONB payload disagreeing with its columns is dropped — defense in depth for a
+  security guard), and wrapped so a missing table degrades to the old re-invite behaviour
+  instead of failing the boot. Live events observed before hydration win.
+
 ### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
 
 - **The updater sidecar reports structured progress.** `GET /status` gains
