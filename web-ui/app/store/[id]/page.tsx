@@ -33,6 +33,7 @@ import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
+import { GrantsPanel } from '../../_components/store/GrantsPanel';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
 import { SelfExtensionPanel } from '../../_components/store/SelfExtensionPanel';
 import { InstallButton } from '../../_components/store/InstallButton';
@@ -254,6 +255,28 @@ export default async function PluginDetailPage({
                 pluginId={plugin.id}
                 setupFields={plugin.setup_fields}
               />
+            </Section>
+          ) : null}
+
+          {/* Epic #470 C16 (#817) — operator consent for `permissions.sql` and
+              `permissions.public_paths`.
+
+              Rendered for every INSTALLED plugin, not only for one that
+              declares a grant today: the panel is also where an operator
+              confirms that a plugin asks for NOTHING, and a section that
+              silently disappears cannot answer that question. The panel itself
+              says so when the manifest declares neither.
+
+              `id="grants"` is the deep-link target the install wizard and the
+              activation error message both point at. */}
+          {plugin.install_state === 'installed' ||
+          plugin.install_state === 'update-available' ? (
+            <Section
+              label={t('sectionGrants')}
+              id="grants"
+              icon={<ShieldCheck className="size-4" aria-hidden />}
+            >
+              <GrantsPanel pluginId={plugin.id} />
             </Section>
           ) : null}
 

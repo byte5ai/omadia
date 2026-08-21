@@ -24,7 +24,9 @@ import {
   uninstallPlugin,
   updateInstalledPluginConfig,
   ApiError,
+  getPluginGrants,
 } from '../../_lib/api';
+import type { PluginGrantsView } from '../../_lib/api';
 import type {
   InstallChainResolution,
   InstallJob,
@@ -34,6 +36,7 @@ import type {
   PluginReadiness,
 } from '../../_lib/storeTypes';
 import { PostInstallNextSteps } from './PostInstallNextSteps';
+import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
 import {
@@ -79,6 +82,11 @@ type Phase =
   | { kind: 'submitting'; job: InstallJob; values: Record<string, unknown> }
   | { kind: 'error'; job: InstallJob | null; message: string }
   | { kind: 'wizard'; resolution: InstallChainResolution }
+  /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
+   *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
+   *  never quietly left in the state issue #817 describes: installed, asking
+   *  for the operator's database, with no surface that could answer. */
+  | { kind: 'permissions'; grants: PluginGrantsView }
   | { kind: 'success' };
 
 export function InstallButton({
@@ -109,6 +117,7 @@ export function InstallButton({
     phase.kind === 'form' ||
     phase.kind === 'submitting' ||
     phase.kind === 'error' ||
+    phase.kind === 'permissions' ||
     phase.kind === 'creating';
 
   // --- visual dispatch -----------------------------------------------------
@@ -258,8 +267,14 @@ export function InstallButton({
   }
 
   function handleClose(): void {
+    const wasPermissions = phase.kind === 'permissions';
     setPhase({ kind: 'idle' });
     setFieldErrors({});
+    // #470 C16 — closing the permissions step ends a flow that just changed the
+    // plugin's install state on the server. Without the refresh the page keeps
+    // showing the state from before the grant, which is the same class of lie
+    // this whole item exists to remove.
+    if (wasPermissions) router.refresh();
   }
 
   async function handleSubmit(
@@ -274,6 +289,18 @@ export function InstallButton({
     try {
       const resp = await configureInstallJob(job.id, values, jsonFiles);
       if (resp.job.state === 'active') {
+        // #470 C16 — the manifest may still be asking for something only a
+        // human can answer. Read the declaration before declaring victory.
+        //
+        // A FAILED read is not fatal: the plugin IS installed, and the grants
+        // panel on the detail page asks the same question. Falling through to
+        // `success` is the honest degradation; blocking the install dialog on a
+        // diagnostic fetch would not be.
+        const grants = await getPluginGrants(job.plugin_id).catch(() => null);
+        if (grants && hasGrantsToAsk(grants)) {
+          setPhase({ kind: 'permissions', grants });
+          return;
+        }
         setPhase({ kind: 'success' });
         // Give the user a moment to see the confirmation, then close + refresh.
         window.setTimeout(() => {
@@ -722,6 +749,14 @@ function InstallDrawer({
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-[color:var(--muted-ink)]">
             <span className="lume-busy-dots" aria-hidden />
             <span className="text-sm">{t('creatingJob')}</span>
+          </div>
+        ) : phase.kind === 'permissions' ? (
+          /* #470 C16 — the install is done; this step is the manifest's
+             remaining question. Rendered INSTEAD of the setup form, not below
+             it: the credentials are already committed and re-showing them
+             would invite an edit the wizard can no longer apply. */
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <PermissionsStep grants={phase.grants} onFinish={onClose} />
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">

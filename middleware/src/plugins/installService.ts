@@ -17,12 +17,17 @@ import type {
   InstallSetupField,
   InstallSetupSchema,
 } from '../api/admin-v1.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import {
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
-import type { InstalledRegistry } from './installedRegistry.js';
+import type {
+  InstalledAgent,
+  InstalledRegistry,
+} from './installedRegistry.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
@@ -53,6 +58,29 @@ export interface InstallServiceDeps {
    *  only the catalog registration is skipped when no registrar is wired
    *  (boot re-registers via registerInstalledPluginTemplates). */
   conductorTemplates?: () => PluginTemplateRegistrar | undefined;
+  /**
+   * Epic #470 C16 / B6 — operator consent that must not outlive the plugin.
+   *
+   * B6 in the epic's design notes: the per-plugin grant tables were never
+   * cleaned on uninstall, so a plugin that re-claimed a used id silently
+   * inherited the previous one's consent. For `plugin_public_path_grants` that
+   * means inheriting an UNAUTHENTICATED surface; for `plugin_sql_grants` it
+   * means inheriting the operator's database and a ledger table full of another
+   * package's migration history. Neither is something the operator agreed to.
+   *
+   * Both are optional so existing wiring (and every test) keeps compiling; a
+   * deployment without a database has no rows to clean either way. Failures are
+   * logged and swallowed for the same reason `vault.purge` failures are: the
+   * uninstall itself must complete, and a surviving row is visible in the
+   * grants panel where a half-uninstalled plugin would not be.
+   *
+   * `plugin_mcp_grants` (migration 0012) is deliberately absent: nothing in
+   * `src/` reads or writes that table today, so there is no store to call and
+   * no consent that could be inherited through it. It joins this list the day
+   * it gets a reader.
+   */
+  publicPathGrantStore?: PublicPathGrantStore;
+  sqlGrantStore?: PluginSqlGrantStore;
 }
 
 /**
@@ -398,9 +426,29 @@ export class InstallService {
    * No-op if the plugin is not installed. Hook errors are logged but not
    * re-thrown: a stuck old instance is better than a hard failure that
    * blocks the operator from saving config.
+   *
+   * NOT RE-THROWING IS NOT THE SAME AS NOT RECORDING (epic #470 C16).
+   *
+   * `completeInstall` learned this in #799: swallowing the activation hook's
+   * failure left the registry claiming `active` over a plugin whose `undo()`
+   * had already rolled everything back. This path had exactly the same bug for
+   * exactly the same reason, and it matters more here than there — the grant
+   * consent flow (C16) re-activates a plugin precisely to find out whether the
+   * grant took, and answering "fine" out of a swallowed catch would make the
+   * whole consent surface a liar.
+   *
+   * So the hook failure is still not re-thrown (the operator's config save must
+   * not fail over a stuck plugin) and is now WRITTEN DOWN: `markActivationFailed`
+   * records why, and the status is flipped explicitly rather than waiting for
+   * `CIRCUIT_BREAKER_THRESHOLD` — a re-activation the operator triggered and is
+   * watching is a single definitive event, not the first of three strikes.
+   *
+   * @returns the registry status after the attempt, or `undefined` when the
+   *          plugin is not installed. Reading it is optional; every existing
+   *          caller ignores it.
    */
-  async reactivate(agentId: string): Promise<void> {
-    if (!this.deps.registry.has(agentId)) return;
+  async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
+    if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {
         await this.deps.onUninstall(agentId);
@@ -411,16 +459,41 @@ export class InstallService {
         );
       }
     }
-    if (this.deps.onInstalled) {
-      try {
-        await this.deps.onInstalled(agentId);
-      } catch (err) {
-        console.error(
-          `[install] reactivate.onInstalled hook failed for ${agentId}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+    if (!this.deps.onInstalled) {
+      // NO HOOK MEANS NOTHING WAS ACTIVATED, SO THERE IS NO SUCCESS TO RECORD.
+      //
+      // Falling through to the success writes below would run
+      // `clearActivationError`, which lifts `errored` → `active` and deletes
+      // `last_activation_error` / `unresolved_requires` — over a plugin this
+      // call never started. That is the #799 bug in its mirror image, and worse
+      // in one respect: the registry would also forget WHY the plugin was
+      // errored, so the next operator has neither the status nor the reason.
+      return this.deps.registry.get(agentId)?.status;
     }
+    try {
+      await this.deps.onInstalled(agentId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[install] reactivate.onInstalled hook failed for ${agentId}:`,
+        message,
+      );
+      await this.deps.registry.markActivationFailed(agentId, message);
+      const failed = this.deps.registry.get(agentId);
+      if (failed && failed.status === 'active') {
+        await this.deps.registry.register({ ...failed, status: 'errored' });
+      }
+      return this.deps.registry.get(agentId)?.status;
+    }
+    // Success. `markActivationSucceeded` clears the failure fields but
+    // deliberately does not lift `errored` — that is `clearActivationError`'s
+    // job — so both run, in that order: lift the circuit breaker, then stamp
+    // `last_activated_at`. A plugin that comes back up after the operator
+    // granted the missing permission must stop reading `errored`, or the
+    // consent flow would appear not to have worked.
+    await this.deps.registry.clearActivationError(agentId);
+    await this.deps.registry.markActivationSucceeded(agentId);
+    return this.deps.registry.get(agentId)?.status;
   }
 
   async uninstall(agentId: string): Promise<void> {
@@ -467,9 +540,47 @@ export class InstallService {
         err instanceof Error ? err.message : err,
       );
     }
+    // Epic #470 C16 / B6 — operator consent leaves with the plugin, in the same
+    // breath as its secrets. A reinstall under the same id must start
+    // un-granted; anything else is consent the operator gave to a package that
+    // is no longer there.
+    await this.purgeGrants(agentId);
     // #478 — contributed workflow templates leave the catalog with the plugin.
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
+  }
+
+  /**
+   * Drop every operator grant recorded for one plugin. Best-effort per table:
+   * one store being unreachable must not stop the other from being cleaned, and
+   * neither may stop the uninstall.
+   */
+  private async purgeGrants(agentId: string): Promise<void> {
+    try {
+      const removed =
+        await this.deps.publicPathGrantStore?.revokeAllForPlugin(agentId);
+      if (removed) {
+        console.log(
+          `[install] removed ${String(removed)} public-path grant(s) for ${agentId}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[install] public-path grant purge failed for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    try {
+      const removed = await this.deps.sqlGrantStore?.revoke(agentId);
+      if (removed) {
+        console.log(`[install] removed the SQL grant for ${agentId}`);
+      }
+    } catch (err) {
+      console.error(
+        `[install] SQL grant purge failed for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   private findDependents(parentId: string): string[] {

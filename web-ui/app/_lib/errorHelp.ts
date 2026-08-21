@@ -73,8 +73,17 @@ export const ERROR_HELP_CODES = [
   // runtime.ts
   'runtime.agent_inactive',
   'runtime.empty_secrets_patch',
+  // #470 C16 (#817) — a second consent change arrived for a plugin whose first
+  // one is still being applied. Refused rather than queued; see
+  // `consentInFlight` in middleware/src/routes/runtimeGrants.ts.
+  'runtime.grants_in_flight',
   'runtime.invalid_audit_mode',
   'runtime.invalid_config',
+  // #470 C16 (#817) — the unified grant-consent route. `sql_not_declared`
+  // and `public_path_not_declared` are the same rule stated twice, once per
+  // grant: consent is capped by what the manifest asks for, so this surface
+  // can never itself be used to hand a plugin something it did not request.
+  'runtime.invalid_grants',
   'runtime.invalid_id',
   // #603 (OM-17) — the `json_file` upload path. The `json_file_*` codes mirror
   // `JsonFileFailure` in `middleware/src/plugins/setupJsonFile.ts`; the two
@@ -89,6 +98,7 @@ export const ERROR_HELP_CODES = [
   // than quietly granted.
   'runtime.invalid_public_path',
   'runtime.invalid_public_paths',
+  'runtime.ledger_already_owned',
   'runtime.invalid_secrets_body',
   'runtime.json_file_bad_extract_path',
   'runtime.json_file_invalid_spec',
@@ -107,6 +117,8 @@ export const ERROR_HELP_CODES = [
   'runtime.options_unavailable',
   'runtime.public_path_not_declared',
   'runtime.public_paths_unavailable',
+  'runtime.sql_grants_unavailable',
+  'runtime.sql_not_declared',
   'runtime.setup_field_invalid',
   'runtime.update_failed',
   'runtime.value_not_offered',

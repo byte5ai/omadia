@@ -42,6 +42,11 @@ const MESSAGES_DIR = path.resolve(HERE, '..', '..', '..', 'messages');
 const COVERED_ROUTE_FILES = [
   'install.ts',
   'runtime.ts',
+  // #470 C16 (#817) — the grant-consent handlers were split out of runtime.ts
+  // into their own module. Adding the file here rather than letting the split
+  // shrink the guard's reach: a refactor that quietly narrows what a coverage
+  // guard covers is worse than no guard, because the green stays.
+  'runtimeGrants.ts',
   'adminProviders.ts',
   'store.ts',
   'adminSettings.ts',
@@ -129,6 +134,23 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
     {
       expr: 'code: JSON_FILE_ERROR_CODES[outcome.failure.code]',
       why: '#603 json_file extraction failure — followed via FORWARDED_CODE_SOURCES',
+    },
+  ],
+  'runtimeGrants.ts': [
+    {
+      expr: 'code: string;',
+      why: "type annotation on GrantError, the module's internal refusal shape",
+    },
+    {
+      expr: 'code: refusal.code',
+      why:
+        'the single response site for a GrantError built by checkGrantRequest ' +
+        'or parseGrantBody — both live in THIS file, so every literal it can ' +
+        'carry is already in the scan above',
+    },
+    {
+      expr: 'code: parsed.code',
+      why: 'the same GrantError shape, answered from the PUT handler',
     },
   ],
 };

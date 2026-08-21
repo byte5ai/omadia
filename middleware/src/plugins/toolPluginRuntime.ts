@@ -535,10 +535,23 @@ export class ToolPluginRuntime {
             grantedPrefixes: granted,
           });
           const ungranted = declared.filter((p) => !granted.has(p));
+          // Epic #470 C16 (#817) — name the remedy, not just the state.
+          //
+          // An ungranted prefix is deliberately NOT an activation failure: the
+          // claim holds (nobody else can take the prefix) and the route simply
+          // falls through to `requireAuth`, which is the fail-closed direction
+          // and the behaviour every already-installed plugin depends on. But
+          // "declared-but-awaiting-consent" told an operator what was wrong
+          // without telling them where to fix it, and the answer used to be
+          // "there is no UI" — which is precisely what C16 changes.
           log(
             `[tool-runtime] public paths for ${agentId}: ${String(granted.size)} granted, ` +
               `${String(ungranted.length)} declared-but-awaiting-consent` +
-              (ungranted.length > 0 ? ` (${ungranted.join(', ')})` : ''),
+              (ungranted.length > 0
+                ? ` (${ungranted.join(', ')}) — these prefixes stay behind requireAuth until an operator consents ` +
+                  `in the admin UI under Plugins \u2192 ${agentId} \u2192 Permissions, or with ` +
+                  `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
+                : ''),
           );
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);

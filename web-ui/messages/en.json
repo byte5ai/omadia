@@ -1154,6 +1154,26 @@
       "vault_write_failed": {
         "what": "The credentials could not be written to the vault.",
         "next": "Save again once the vault is reachable."
+      },
+      "grants_in_flight": {
+        "what": "Another permission change for this plugin is still being applied, so this one was not.",
+        "next": "Wait for the other change to finish, reload the page to see the current grants, and apply again."
+      },
+      "invalid_grants": {
+        "what": "The permission request was malformed and nothing was changed.",
+        "next": "Reload the page and try again. If it keeps happening, the browser and the server are out of step — report it with the detail below."
+      },
+      "sql_not_declared": {
+        "what": "This plugin does not ask for database access, so there is nothing to grant.",
+        "next": "No action needed. If the plugin does need a database, its manifest is missing a `permissions.sql` block — that is the plugin author's to fix."
+      },
+      "sql_grants_unavailable": {
+        "what": "Database permissions need a database, and none is configured.",
+        "next": "Set DATABASE_URL and install a Postgres knowledge-graph plugin, then grant the permission again."
+      },
+      "ledger_already_owned": {
+        "what": "Another plugin already owns the table this plugin wants to migrate.",
+        "next": "One table belongs to exactly one plugin. Uninstall the plugin that holds it, or ask this plugin's author to choose a different table name."
       }
     },
     "settings": {
@@ -3096,7 +3116,8 @@
         "noneDeclared": "No capabilities declared.",
         "noRequirements": "No prerequisites.",
         "installHint": "During install the middleware checks these prerequisites transitively. If a provider is missing, a wizard opens with the matching plugins from the catalog."
-      }
+      },
+      "sectionGrants": "Permissions"
     },
     "card": {
       "updateTitle": "Update available",
@@ -3287,6 +3308,37 @@
     },
     "adminUi": {
       "iframeTitle": "{plugin} admin UI"
+    },
+    "grants": {
+      "stepTitle": "Permissions",
+      "stepIntro": "This plugin asks for access that only you can grant. Nothing below is implied by installing it, and every grant can be withdrawn later from the plugin page.",
+      "sqlTitle": "Own database tables",
+      "sqlBody": "The plugin receives a connection to your database and owns its own tables — it creates and migrates them itself. It cannot read or write tables belonging to omadia or to another plugin.",
+      "sqlLedger": "Migration ledger: {ledger}",
+      "sqlLedgerDrift": "A grant is on record for a different table ({ledger}). The plugin has since changed the table it asks for, so the old grant no longer counts — tick the box to grant the new one.",
+      "publicPathsIntro": "These paths answer without an omadia login, because the caller has none to present. Each one is still authenticated by the plugin itself.",
+      "publicPathBody": "Served without a session. If you do not grant it, the path stays behind the login and returns 401.",
+      "orphaned": "Also granted, but no longer requested by the plugin: {paths}. These serve nothing; applying the form below clears them.",
+      "optionalRequiresIntro": "Optional prerequisites. The plugin works without them, with reduced functionality — these are not permissions and there is nothing to grant here.",
+      "currentGranted": "Currently granted",
+      "currentNotGranted": "Currently not granted",
+      "grantAndActivate": "Grant & activate",
+      "skip": "Skip",
+      "skippedBody": "Nothing was granted. You can grant it at any time on the plugin page under Permissions — the plugin does not need to be reinstalled.",
+      "apply": "Apply",
+      "close": "Close",
+      "openPanel": "Open the permissions panel",
+      "saving": "Saving and re-activating…",
+      "saved": "Saved",
+      "loading": "Loading permissions…",
+      "loadFailed": "The permissions for this plugin could not be loaded.",
+      "grantFailed": "The permissions could not be saved.",
+      "nothingDeclared": "This plugin asks for no special permissions.",
+      "state": {
+        "active": "Active — the plugin is running with the permissions granted.",
+        "errored": "Not running. The plugin failed to start after the last change.",
+        "inactive": "Not active."
+      }
     }
   },
   "adminAuth": {

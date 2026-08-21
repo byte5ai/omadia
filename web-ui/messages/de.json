@@ -1154,6 +1154,26 @@
       "vault_write_failed": {
         "what": "Die Zugangsdaten konnten nicht in den Vault geschrieben werden.",
         "next": "Speichere erneut, sobald der Vault erreichbar ist."
+      },
+      "grants_in_flight": {
+        "what": "Eine andere Berechtigungsänderung für dieses Plugin wird gerade noch angewendet, diese daher nicht.",
+        "next": "Warten Sie, bis die andere Änderung abgeschlossen ist, laden Sie die Seite neu, um den aktuellen Stand zu sehen, und übernehmen Sie erneut."
+      },
+      "invalid_grants": {
+        "what": "Die Berechtigungsanfrage war fehlerhaft, es wurde nichts geändert.",
+        "next": "Laden Sie die Seite neu und versuchen Sie es erneut. Tritt der Fehler weiterhin auf, passen Browser und Server nicht zusammen — melden Sie ihn mit den Details unten."
+      },
+      "sql_not_declared": {
+        "what": "Dieses Plugin fragt keinen Datenbankzugriff an, es gibt also nichts freizugeben.",
+        "next": "Hier ist nichts zu tun. Benötigt das Plugin doch eine Datenbank, fehlt in seinem Manifest der Block `permissions.sql` — das muss der Plugin-Autor beheben."
+      },
+      "sql_grants_unavailable": {
+        "what": "Datenbank-Berechtigungen brauchen eine Datenbank, es ist aber keine konfiguriert.",
+        "next": "Setzen Sie DATABASE_URL, installieren Sie ein Postgres-Knowledge-Graph-Plugin und erteilen Sie die Freigabe danach erneut."
+      },
+      "ledger_already_owned": {
+        "what": "Ein anderes Plugin besitzt bereits die Tabelle, die dieses Plugin migrieren möchte.",
+        "next": "Eine Tabelle gehört genau einem Plugin. Deinstallieren Sie das Plugin, das sie hält, oder bitten Sie den Autor dieses Plugins um einen anderen Tabellennamen."
       }
     },
     "settings": {
@@ -3096,7 +3116,8 @@
         "noneDeclared": "Keine Capabilities deklariert.",
         "noRequirements": "Keine Voraussetzungen.",
         "installHint": "Beim Install prüft die Middleware diese Voraussetzungen transitiv. Fehlt ein Provider, öffnet sich ein Wizard mit den passenden Plugins aus dem Katalog."
-      }
+      },
+      "sectionGrants": "Berechtigungen"
     },
     "card": {
       "updateTitle": "Update verfügbar",
@@ -3287,6 +3308,37 @@
     },
     "adminUi": {
       "iframeTitle": "{plugin} Admin-UI"
+    },
+    "grants": {
+      "stepTitle": "Berechtigungen",
+      "stepIntro": "Dieses Plugin bittet um Zugriffe, die nur Sie erteilen können. Nichts davon ist durch die Installation bereits erteilt, und jede Freigabe lässt sich später auf der Plugin-Seite wieder zurücknehmen.",
+      "sqlTitle": "Eigene Datenbanktabellen",
+      "sqlBody": "Das Plugin erhält eine Verbindung zu Ihrer Datenbank und besitzt eigene Tabellen — es legt sie selbst an und migriert sie selbst. Auf Tabellen von omadia oder anderen Plugins kann es weder lesend noch schreibend zugreifen.",
+      "sqlLedger": "Migrations-Ledger: {ledger}",
+      "sqlLedgerDrift": "Es liegt eine Freigabe für eine andere Tabelle vor ({ledger}). Das Plugin fragt inzwischen eine andere Tabelle an, die alte Freigabe zählt deshalb nicht mehr — setzen Sie den Haken, um die neue zu erteilen.",
+      "publicPathsIntro": "Diese Pfade antworten ohne omadia-Login, weil der Aufrufer keinen vorweisen kann. Authentifiziert wird trotzdem — vom Plugin selbst.",
+      "publicPathBody": "Wird ohne Session ausgeliefert. Ohne Freigabe bleibt der Pfad hinter dem Login und antwortet mit 401.",
+      "orphaned": "Ebenfalls freigegeben, wird vom Plugin aber nicht mehr angefragt: {paths}. Diese Freigaben bewirken nichts; ein Speichern des Formulars unten entfernt sie.",
+      "optionalRequiresIntro": "Optionale Voraussetzungen. Das Plugin funktioniert auch ohne sie, mit eingeschränktem Funktionsumfang — es handelt sich nicht um Berechtigungen, hier ist nichts freizugeben.",
+      "currentGranted": "Aktuell freigegeben",
+      "currentNotGranted": "Aktuell nicht freigegeben",
+      "grantAndActivate": "Freigeben & aktivieren",
+      "skip": "Überspringen",
+      "skippedBody": "Es wurde nichts freigegeben. Sie können die Freigabe jederzeit auf der Plugin-Seite unter „Berechtigungen“ nachholen — eine Neuinstallation ist dafür nicht nötig.",
+      "apply": "Übernehmen",
+      "close": "Schließen",
+      "openPanel": "Berechtigungen öffnen",
+      "saving": "Wird gespeichert und neu aktiviert…",
+      "saved": "Gespeichert",
+      "loading": "Berechtigungen werden geladen…",
+      "loadFailed": "Die Berechtigungen dieses Plugins konnten nicht geladen werden.",
+      "grantFailed": "Die Berechtigungen konnten nicht gespeichert werden.",
+      "nothingDeclared": "Dieses Plugin fragt keine besonderen Berechtigungen an.",
+      "state": {
+        "active": "Aktiv — das Plugin läuft mit den erteilten Berechtigungen.",
+        "errored": "Läuft nicht. Das Plugin konnte nach der letzten Änderung nicht starten.",
+        "inactive": "Nicht aktiv."
+      }
     }
   },
   "adminAuth": {
