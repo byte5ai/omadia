@@ -32,7 +32,7 @@ function toDottedQuad(host: string): string {
 }
 
 /** Sync host classification against internal/loopback/metadata ranges. Exported
- *  so the dev-platform job-policy derivation (epic #470 W1) rejects the same
+ *  so the dev platform plugin's job-policy derivation rejects the same
  *  internal targets — a clone_url or egress entry pointing at RFC1918 space, the
  *  cloud-metadata endpoint, or an `.internal`/`localhost` name — with the ONE
  *  predicate the egress guard uses, so the two can never drift. */

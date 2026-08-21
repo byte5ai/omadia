@@ -8,7 +8,8 @@ Two questions the other two documents do **not** answer:
 
 This file is the functional contract: every capability the Dev Platform provides today,
 who owns it after extraction, and **how you check it still works**. Extraction is done when
-every row passes *and* the decoupling ratchet reads zero.
+every row passes *and* the decoupling check reads zero. **It reads zero as of C13** — which
+settles the automated half only; §2 and §3 below are still the parts a human has to walk.
 
 ---
 
@@ -16,8 +17,9 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **206** across **14** zones, per-zone regression check (C10 dropped it from 3,300; the survivors are C11's migrations, C12's `publicPaths` exemptions and C13's residue) |
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core carries **no** Dev Platform reference — code path, config key, i18n key, fixture string or comment | **DONE. Baseline 0**, all **14** zones CLEAN (3,300 → 214 at C10 → 0 at C13). No longer a ratchet: `EXTRACTION_COMPLETE` makes the check assert `0` outright, so there is no baseline to raise. Allowlisted as historical record, path-anchored: migrations `00{22..30}_*` (C11's ledger handoff matches on those filenames) and `plugin-api/CHANGELOG.md` (a published entry for a released version). The script self-excludes its own `PATTERNS` array — 27 hits that were the detector, not a coupling. |
 | `middleware/test/devplatform/**` (58 files) | The behaviour itself, at unit/integration level. These **moved with the plugin** and must stay green in the new repo | **Moved** — deleted from core in C10; `byte5ai/omadia-dev-platform` owns them |
+| `middleware/test/auth/staticPublicPathsClosedSet.test.ts` | `STATIC_PUBLIC_PATHS` is a closed, core-owned set — core exempts nothing from the session gate on a plugin's behalf, and a path off the list 401s before routing | **In place (C12).** Mutation-checked: restoring either deleted exemption fails the suite and names it |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
 
@@ -26,10 +28,10 @@ Run the ratchet:
 ```bash
 node scripts/check-core-decoupling.mjs            # verify (CI runs this)
 node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
-node scripts/check-core-decoupling.mjs --update   # lower the baseline (never raises)
+node scripts/check-core-decoupling.mjs --update   # record the count (refuses non-zero)
 ```
 
-The count may only fall, **per zone** — an aggregate-only check would pass while one zone
+The floor is zero and absolute. Historically the count could only fall, **per zone** — an aggregate-only check would pass while one zone
 fell and another rose, which is what a half-finished move looks like. Raising a baseline
 requires hand-editing the committed file, so a new coupling shows up in review.
 

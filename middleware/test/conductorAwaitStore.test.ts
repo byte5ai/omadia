@@ -80,9 +80,9 @@ describe('ConductorAwaitStore.listWaiting — the operator inbox', () => {
       awaitRow('a2', 'telegram'),
       awaitRow('a3', 'web'),
       // The literal this query used to exclude. Without a row carrying it, the
-      // test cannot detect `AND channel_type <> 'dev_job'` being restored — it
+      // test cannot detect a `channel_type` exclusion filter being restored — it
       // would stay green against the exact regression it exists to catch.
-      awaitRow('a4', 'dev_job'),
+      awaitRow('a4', 'machine'),
     ]);
     const store = new ConductorAwaitStore(pool as never);
 
@@ -93,7 +93,7 @@ describe('ConductorAwaitStore.listWaiting — the operator inbox', () => {
     assert.equal(inbox.length, 4);
     assert.deepEqual(
       inbox.map((a) => a.channelType).sort(),
-      ['dev_job', 'teams', 'telegram', 'web'],
+      ['machine', 'teams', 'telegram', 'web'],
     );
   });
 

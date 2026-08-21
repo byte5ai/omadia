@@ -5,7 +5,7 @@ import type { NavEntryDto } from '../navigation';
 
 /**
  * Merge of the shell's static nav with plugin-contributed entries
- * (specs/470-dev-platform-plugin). Pure logic — no DOM.
+ * (epic #470). Pure logic — no DOM.
  */
 
 type StaticItem = Parameters<typeof mergeNav>[0][number];
@@ -28,9 +28,9 @@ const translate = (key: string): string => `T:${key}`;
 function entry(over: Partial<NavEntryDto> = {}): NavEntryDto {
   return {
     pluginId: '@plugin/dev',
-    navId: 'devPlatform',
-    href: '/admin/dev-platform',
-    label: 'Dev Platform',
+    navId: 'examplePlugin',
+    href: '/admin/example-plugin',
+    label: 'Example Plugin',
     order: 100,
     ...over,
   };
@@ -59,19 +59,19 @@ describe('mergeNav', () => {
     expect(cluster?.kind === 'cluster' && cluster.children).toEqual([
       { href: '/admin', label: 'T:admin' },
       { href: '/system', label: 'T:system' },
-      { href: '/admin/dev-platform', label: 'Dev Platform' },
+      { href: '/admin/example-plugin', label: 'Example Plugin' },
     ]);
   });
 
   it('uses the plugin-supplied label verbatim, not a catalogue lookup', () => {
     const merged = mergeNav(
       STATIC,
-      [entry({ cluster: 'adminCluster', label: 'Dev-Plattform' })],
+      [entry({ cluster: 'adminCluster', label: 'Beispiel-Plugin' })],
       translate,
     );
     const cluster = merged.find((i) => i.kind === 'cluster');
     expect(cluster?.kind === 'cluster' && cluster.children.at(-1)?.label).toBe(
-      'Dev-Plattform',
+      'Beispiel-Plugin',
     );
   });
 
@@ -93,8 +93,8 @@ describe('mergeNav', () => {
     );
     expect(merged.at(-1)).toEqual({
       kind: 'link',
-      href: '/admin/dev-platform',
-      label: 'Dev Platform',
+      href: '/admin/example-plugin',
+      label: 'Example Plugin',
     });
   });
 
@@ -183,7 +183,7 @@ describe('bestPrefixMatch', () => {
   const leaves = [
     { href: '/', label: 'Dashboard' },
     { href: '/admin', label: 'Admin' },
-    { href: '/admin/dev-platform', label: 'Dev Platform' },
+    { href: '/admin/example-plugin', label: 'Example Plugin' },
   ];
 
   it('matches the root exactly, never as a prefix', () => {
@@ -192,8 +192,8 @@ describe('bestPrefixMatch', () => {
   });
 
   it('prefers the longest matching prefix, including a plugin leaf', () => {
-    expect(bestPrefixMatch('/admin/dev-platform/jobs/42', leaves)).toBe(
-      '/admin/dev-platform',
+    expect(bestPrefixMatch('/admin/example-plugin/jobs/42', leaves)).toBe(
+      '/admin/example-plugin',
     );
   });
 
@@ -201,7 +201,7 @@ describe('bestPrefixMatch', () => {
     // A bare startsWith would light up /admin while on /administrator, and
     // let a plugin leaf /reports claim /reports-old.
     expect(bestPrefixMatch('/administrator', leaves)).toBe('');
-    expect(bestPrefixMatch('/admin/dev-platform-old', leaves)).toBe('/admin');
+    expect(bestPrefixMatch('/admin/example-plugin-old', leaves)).toBe('/admin');
   });
 
   it('returns empty for an unmatched path and for a null pathname', () => {
@@ -210,8 +210,8 @@ describe('bestPrefixMatch', () => {
   });
 
   it('stops highlighting a plugin leaf once the plugin is gone', () => {
-    const withoutPlugin = leaves.filter((l) => l.href !== '/admin/dev-platform');
-    expect(bestPrefixMatch('/admin/dev-platform/jobs/42', withoutPlugin)).toBe(
+    const withoutPlugin = leaves.filter((l) => l.href !== '/admin/example-plugin');
+    expect(bestPrefixMatch('/admin/example-plugin/jobs/42', withoutPlugin)).toBe(
       '/admin',
     );
   });

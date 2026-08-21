@@ -29,7 +29,7 @@ type CardDef = {
    * Marks a card as belonging to an optional feature: it renders only when
    * *this specific* plugin has contributed a nav entry for this href. Keeps
    * the grid honest about what is actually installed instead of linking to
-   * a page that would answer 403 — see specs/470-dev-platform-plugin.
+   * a page that would answer 403 — see the epic #470 spec set.
    *
    * Matching on the contributing plugin id, not just the href, so an
    * unrelated plugin cannot resurrect a core card by claiming the path.

@@ -31,12 +31,14 @@ permissions:
 
 jobs:
   # ------------------------------------------------------------------
-  # Core-decoupling ratchet (epic #470). The Dev Platform is being
-  # extracted into its own repository; this fails if core re-acquires
-  # references to it. The count may fall freely and never rise without
-  # a hand-edited baseline, so the extraction cannot silently regress
-  # while it is in flight — and "finished" is machine-checked (count 0)
-  # rather than asserted.
+  # Core-decoupling check (epic #470). The Dev Platform lives in its own
+  # repository; this fails if core re-acquires ANY reference to it.
+  #
+  # This was a ratchet — a committed count allowed to fall and never rise —
+  # for as long as the extraction was in flight. C13 finished the job and the
+  # floor is now hard zero: the script asserts 0 outright instead of reading
+  # a baseline, because a baseline is a number and numbers get edited. The
+  # job name is kept for continuity as a required check.
   # ------------------------------------------------------------------
   decoupling:
     name: core decoupling ratchet (#470)
@@ -66,8 +68,35 @@ jobs:
               || (sudo apt-get update && sudo apt-get install -y ripgrep)
           fi
 
-      - name: Check core is not re-coupling to the Dev Platform
-        run: node scripts/check-core-decoupling.mjs
+      - name: Assert core has ZERO Dev Platform references
+        # C13 pinned the count at 0 permanently. The script asserts that
+        # outright (`EXTRACTION_COMPLETE`) rather than comparing against
+        # `decoupling-baseline.json`, so a single reintroduced reference —
+        # code path, config key, i18n key, fixture string or comment — fails
+        # this job, and there is no number anyone can edit to make it pass.
+        #
+        # Belt and braces on top of the script's own exit code: assert the
+        # report literally says zero. If a future refactor ever made the
+        # script exit 0 while still counting hits (a `--report`-style path
+        # slipping into the default mode, an early `process.exit(0)`), this
+        # step still fails. A guard that can only fail loudly is the point.
+        run: |
+          node scripts/check-core-decoupling.mjs
+          node scripts/check-core-decoupling.mjs --report | tee /tmp/decoupling.txt
+          grep -qE '^  TOTAL 0( |$)' /tmp/decoupling.txt
+
+      - name: Test the detector itself
+        # The guard above only earns its required-check status if the detector
+        # it runs actually detects. `check-core-decoupling.test.mjs` plants a
+        # probe file under `middleware/src/` and asserts the checker goes red —
+        # it is the mutation test, committed.
+        #
+        # It is wired HERE deliberately. `scripts/` has no package.json and no
+        # other job globs `*.test.mjs`, so a test file sitting there would
+        # never execute: green because nothing ran it, which this job's own
+        # timeout comment above already names as the same failure family as a
+        # permanently-green guard-skip. A test nobody runs is not a test.
+        run: node --test scripts/check-core-decoupling.test.mjs
 
   # ------------------------------------------------------------------
   # Middleware: lint + typecheck + node:test against tsx

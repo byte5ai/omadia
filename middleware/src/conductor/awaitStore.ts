@@ -118,10 +118,10 @@ export class ConductorAwaitStore {
    *
    * Every await IS a human await by construction: `openHumanAwait` is the single caller of
    * {@link create}, and it always writes a human principal and a human channel. An earlier
-   * `AND channel_type <> 'dev_job'` filter hid the never-built dev-job step's synthetic awaits;
-   * that step was deleted with its writer, so the excluded set is now empty and the filter is
-   * gone rather than kept as a generic one — a filter whose complement no member can enter is
-   * an invariant asserted in the wrong place, and a future non-human await kind would have to
+   * `channel_type` exclusion filter hid a machine step's synthetic awaits; that step was
+   * deleted with its writer, so the excluded set is now empty and the filter is gone rather
+   * than kept as a generic one — a filter whose complement no member can enter is an
+   * invariant asserted in the wrong place, and a future non-human await kind would have to
    * remember to add itself to survive it. If such a kind ever lands, it names itself here.
    */
   async listWaiting(limit = 100): Promise<ConductorAwait[]> {

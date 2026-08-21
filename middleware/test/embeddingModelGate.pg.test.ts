@@ -24,7 +24,7 @@ import {
  * leaves the corpus in the state the resume path expects.
  *
  * Self-skips when no Postgres is reachable, same convention as
- * test/devplatform/*.pg.test.ts — never fails the suite on a machine without
+ * every other *.pg.test.ts — never fails the suite on a machine without
  * a database.
  */
 
