@@ -394,6 +394,8 @@ import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
+import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
+import { createConversationSendService } from './channels/conversationSendService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
 import { createAgentSetupServices } from './platform/agentSetupService.js';
 import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
@@ -633,6 +635,7 @@ async function main(): Promise<void> {
   // reference them; wired into createCoreApi + the channel registry there.
   const conversationRosterRegistry = new ConversationRosterRegistry(registryLog);
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
+  const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
   // any plugin) and is the scope guard for plugin auto-binds. A plugin can only
@@ -3456,6 +3459,10 @@ async function main(): Promise<void> {
   // 'role_resolution_unavailable' diagnostic while user sends keep working.
   let targetedRoleResolver: ((roleKey: string) => Promise<AggregateHolderLookup>) | undefined;
   let targetedBindingLookup: ((principalIds: string[], channelType: string) => Promise<Map<string, unknown>>) | undefined;
+  // #330 C3b (review H1) — conversationSend scope authority: an agent may only
+  // post into conversations it holds an ephemeral attachment for. Stays
+  // undefined without Postgres → the service fails closed.
+  let conversationSendScope: ((agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>) | undefined;
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -3528,6 +3535,10 @@ async function main(): Promise<void> {
         agentSlug: attachment.agentSlug,
       }).catch(() => undefined);
       console.log(`[conductor] disposed ephemeral attachment ${attachment.channelType}/${attachment.channelKey}${attachment.roleKey ? ` (role ${attachment.roleKey})` : ''} by ${actor}`);
+    };
+    conversationSendScope = async (agentSlug, channelType, conversationId) => {
+      const row = await ephemeralAttachmentsStore.getByConversation(channelType, conversationId);
+      return row !== undefined && row.agentSlug === agentSlug;
     };
     const onEphemeralReaped = async (workflow: { id: string; slug: string }): Promise<void> => {
       const rows = await ephemeralAttachmentsStore.getByWorkflow(workflow.id);
@@ -5205,6 +5216,15 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   serviceRegistry.provide('targetedSend', targetedDeliveryService);
+  // #330 C3b — conversation-addressed proactive send (Facilitator group nudges).
+  serviceRegistry.provide(
+    'conversationSend',
+    createConversationSendService({
+      providers: conversationSendRegistry,
+      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
+      log: (m) => console.log(m),
+    }),
+  );
 
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
@@ -5213,6 +5233,7 @@ async function main(): Promise<void> {
     rosterRegistry: conversationRosterRegistry,
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
+    conversationSends: conversationSendRegistry,
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
@@ -5253,6 +5274,7 @@ async function main(): Promise<void> {
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
     targetedSends: targetedSendRegistry,
+    conversationSends: conversationSendRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();

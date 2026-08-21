@@ -1340,6 +1340,26 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
+### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
+Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
+`0011`): Deadline-Poll → `expireAwait` → On-Expiry-Fallback — derselbe
+Mechanismus wie Human-Deadlines. Guarded Cycles durch einen Timer sind
+validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
+`ctx.stepAttempts[stepId]` (Executor bumpt bei jedem Step-Entry; Guard z.B.
+`lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
+Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
+Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
+tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+`conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
+`registerConversationSendProvider`, Kernel `src/channels/
+conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
+Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
+`test/conversationSendService.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

@@ -167,3 +167,7 @@ export * from './targetedSend.js';
 // consumers resolve it lazily and degrade when absent.
 export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
+
+// #330 C3b — conversation-addressed proactive send ('conversationSend'):
+// post INTO a group conversation (the Facilitator's stall-nudges).
+export * from './conversationSend.js';

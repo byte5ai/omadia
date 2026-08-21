@@ -285,6 +285,16 @@ explicit here so a deployment can reason about them:
   Facilitator's `bot_added` handshake trigger) stays a channel-adapter
   privilege on the CoreApi, so a granted agent plugin cannot spoof an
   invitation.
+- **Proactive group posting is conversation-scoped (#330 C3b).** The
+  `conversationSend` service (deny-by-default) lets a granted agent plugin
+  post INTO a group — but only into conversations the calling agent holds an
+  ephemeral attachment for (its own auto-bound facilitation, the same rows
+  the reaper disposes of). Everything else — foreign conversations, guessed
+  thread ids, operator-bound chats — is a named `not_permitted` outcome, and
+  without a database the scope authority is absent and the service **fails
+  closed**. The channel-side provider registries enforce first-registrant
+  ownership per channel type, so a second plugin can neither hijack the
+  delivery path nor speak through another channel's identity.
 
 ## 8. What lives in the vault
 

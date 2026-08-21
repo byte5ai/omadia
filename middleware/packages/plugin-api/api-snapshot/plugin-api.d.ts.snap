@@ -218,6 +218,27 @@ assistantAnswer: string;
 at: number;
 }
 
+// ===== conversationSend.d.ts =====
+export declare const CONVERSATION_SEND_SERVICE_NAME = "conversationSend";
+export interface ConversationSendRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+message: {
+text: string;
+};
+}
+export type ConversationSendOutcome = {
+outcome: 'delivered';
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+};
+export interface ConversationSendService {
+sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOutcome>;
+}
+
 // ===== embeddingClient.d.ts =====
 export interface EmbeddingClient {
 embed(text: string): Promise<number[]>;
@@ -393,6 +414,7 @@ export * from './excerptMerge.js';
 export * from './targetedSend.js';
 export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
+export * from './conversationSend.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
