@@ -704,10 +704,24 @@ export interface ServicesAccessor {
    * the dispose handle restores it on plugin deactivate. Throws if no
    * provider exists yet — use `provide` for the first registration.
    *
-   * Intentionally privileged: only call when this plugin is the canonical
-   * decorator for the named capability (e.g. `harness-orchestrator-extras`
-   * wrapping `knowledgeGraph` with the capture-filter). Treat the swap as
-   * a coordinated handoff, not a competing provider.
+   * Intentionally privileged, and ENFORCED as such: `replace` is
+   * declaration-gated on exactly the same terms as {@link get}. It throws
+   * {@link ServiceNotDeclaredError} with `operation: 'replace'` when the
+   * manifest declares `name` nowhere, and when it declares `name` only under
+   * `provides:` without this plugin holding a live registration for it — in
+   * that case the live provider belongs to somebody else, and taking it would
+   * hand every other consumer in the process an implementation they never
+   * asked for.
+   *
+   * So the canonical decorator declares the capability it wraps under
+   * `requires:`/`optional_requires:` (e.g. `harness-orchestrator-extras`
+   * declares `knowledgeGraph@^1` and wraps it with the capture-filter), and a
+   * plugin re-wrapping its OWN registration is already permitted. Treat the
+   * swap as a coordinated handoff, not a competing provider.
+   *
+   * Note the asymmetry with `provide`, which is NOT gated: `provide` cannot
+   * displace anyone (it throws duplicate-provider instead), whereas `replace`
+   * only succeeds when there is an owner to displace.
    *
    * Accepts a {@link perCallerService} wrapper on the same terms as
    * `provide`.
