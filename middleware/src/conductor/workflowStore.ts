@@ -15,6 +15,17 @@ export interface ConductorWorkflow {
    *  workflow was not instantiated from a template. */
   templateId?: string | null;
   templateVersion?: number | null;
+  /** #330 — 'manual' = user-authored library entry, 'ephemeral' = agent-generated
+   *  JIT instance of a curated pattern. Optional so pre-#330 fakes/fixtures keep
+   *  typechecking; absent reads as 'manual'. */
+  origin?: 'manual' | 'ephemeral';
+  /** #330 — mandatory TTL for ephemeral workflows (CHECK-enforced); null on manual. */
+  expiresAt?: Date | null;
+  /** #330 — the agent that generated an ephemeral workflow; null on manual. */
+  createdByAgent?: string | null;
+  /** #330 — set when the reaper logically removed the definition (disabled +
+   *  hidden). The run history and version graph are retained as audit trace. */
+  reapedAt?: Date | null;
 }
 
 export interface ConductorVersion {
@@ -33,6 +44,10 @@ interface WorkflowRow {
   active_version_id: string | null;
   template_id: string | null;
   template_version: number | null;
+  origin: 'manual' | 'ephemeral';
+  expires_at: Date | null;
+  created_by_agent: string | null;
+  reaped_at: Date | null;
 }
 
 interface VersionRow {
@@ -62,10 +77,14 @@ function toWorkflow(r: WorkflowRow): ConductorWorkflow {
     activeVersionId: r.active_version_id,
     templateId: r.template_id,
     templateVersion: r.template_version,
+    origin: r.origin,
+    expiresAt: r.expires_at,
+    createdByAgent: r.created_by_agent,
+    reapedAt: r.reaped_at,
   };
 }
 
-const WORKFLOW_COLS = 'id, slug, name, description, status, active_version_id, template_id, template_version';
+const WORKFLOW_COLS = 'id, slug, name, description, status, active_version_id, template_id, template_version, origin, expires_at, created_by_agent, reaped_at';
 
 /**
  * Persistence for workflow headers + immutable versions. A publish snapshots the
@@ -92,8 +111,14 @@ export class ConductorWorkflowStore {
   }
 
   async list(): Promise<ConductorWorkflow[]> {
+    // #330 — the library is the user-authored surface: ephemeral (agent-generated)
+    // workflows never appear here, whatever their lifecycle state. Filtering in the
+    // store covers both consumers at once — the library route stays clutter-free AND
+    // the event router never event-triggers an ephemeral workflow: those are
+    // run-scoped (exactly one run, started by createEphemeralRun), not standing
+    // event subscribers.
     const r = await this.pool.query<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows ORDER BY created_at DESC`,
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE origin = 'manual' ORDER BY created_at DESC`,
     );
     return r.rows.map(toWorkflow);
   }
@@ -124,6 +149,12 @@ export class ConductorWorkflowStore {
      *  "create new" contract). Atomic -- the INSERT's conflict clause decides, not a
      *  racy SELECT-then-INSERT. Default (absent/false) keeps the idempotent upsert. */
     expectNew?: boolean;
+    /** #330 — create-time provenance for ephemeral (agent-generated) workflows. Only
+     *  honoured on first create (the conflict branch never rewrites origin); callers
+     *  passing origin 'ephemeral' must pass expiresAt too (schema CHECK). */
+    origin?: 'manual' | 'ephemeral';
+    expiresAt?: Date | null;
+    createdByAgent?: string | null;
     /** Runs inside the publish transaction after the version is set active — used to reconcile cron
      *  schedules atomically with the publish (a throw rolls the whole publish back, so a failed
      *  reconcile never leaves stale schedules behind). */
@@ -143,11 +174,19 @@ export class ConductorWorkflowStore {
         : `ON CONFLICT (slug) DO UPDATE
            SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()`;
       const upserted = await client.query<{ id: string }>(
-        `INSERT INTO conductor_workflows (slug, name, description, status)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO conductor_workflows (slug, name, description, status, origin, expires_at, created_by_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ${conflictClause}
          RETURNING id`,
-        [input.slug, input.name, input.description ?? null, input.enable ? 'enabled' : 'disabled'],
+        [
+          input.slug,
+          input.name,
+          input.description ?? null,
+          input.enable ? 'enabled' : 'disabled',
+          input.origin ?? 'manual',
+          input.expiresAt ?? null,
+          input.createdByAgent ?? null,
+        ],
       );
       const workflowId = upserted.rows[0]?.id;
       if (workflowId === undefined) throw new WorkflowSlugExistsError(input.slug);
