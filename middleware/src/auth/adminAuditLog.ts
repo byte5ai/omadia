@@ -26,7 +26,11 @@ export type AuditAction =
   // #759 — Conductor role-holder (baton) changes: who may approve is a
   // security decision and belongs in the trail (any operator can assign
   // themselves — the single-role system has no finer permission today).
-  | 'conductor.role_holders_change';
+  | 'conductor.role_holders_change'
+  // #330 C2a — plugin-driven conversation bind/unbind: a binding decides
+  // which Agent answers a group, so the auto-bind lifecycle belongs in the
+  // same trail as the role batons.
+  | 'channel.binding_change';
 
 export interface AuditActor {
   id?: string;

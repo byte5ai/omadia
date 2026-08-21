@@ -1263,6 +1263,50 @@ Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
 `test/conversationEventHub.test.ts`, `test/targetedDelivery.test.ts`,
 `test/coreApiOptionalCapabilities.test.ts`.
 
+### Zero-Touch-Facilitator-Setup (#330 C2a)
+
+Drei neue deny-by-default Kernel-Services (Manifest-`optional_requires` ist
+das Gate, kein Katalogeintrag):
+
+- **`agentProvisioning`** (`src/platform/agentSetupService.ts`):
+  `ensureAgent({slug, name, description, pluginId, personaSkill?})` —
+  idempotent; Persona via `skills`-Upsert + `agent_persona_skills`-Link
+  (Wave 8 — Agents haben KEINE instructions-Spalte); attached nur das
+  aufrufende Plugin; `fallback`-Slug verboten; bestehende Agenten werden nie
+  mutiert. `configStore`/`orchestratorRegistry` werden **lazy pro Call**
+  aufgelöst (das Orchestrator-Plugin published sie erst bei seiner eigenen
+  Aktivierung).
+- **`conversationBindings`**: `bind()` nur für Conversations, für die der
+  Kernel selbst ein Gruppen-`bot_added` beobachtet hat
+  (`src/platform/observedConversationInvites.ts` — subscribed DIREKT am
+  ConversationEventHub, vor jedem Plugin; Key channelType::conversationId,
+  TTL 24h). Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
+  `unbind()` ist gleich hart geguarded: nur eigene Ephemeral-Attachment-Rows
+  — Operator-Bindings sind von dieser Fläche aus unerreichbar, und ein
+  vorbestehendes Operator-Binding wird NIE in den Ephemeral-Lifecycle
+  adoptiert. bind/unbind laufen als `channel.binding_change` ins admin_audit.
+  `attachWorkflow()` (guarded: nur eigene pending-Row) koppelt das Binding an
+  den Facilitation-Run.
+- **`conductorRoleAssignments`** (`src/conductor/scopedRoleAssignments.ts`):
+  Rollen-Writes hart auf Präfix `facilitation-` beschränkt; jede
+  Holder-Mutation läuft durch den #759-Audit-Sink
+  (`conductor.role_holders_change`, actor = Plugin bzw. Reaper).
+
+**Ephemere Kopplung:** Migration `0010_ephemeral_attachments.sql` +
+`ephemeralAttachmentsStore.ts`. Beide Reap-Pfade (Terminal-Hook in
+`wireConductor.reapIfEphemeral` + `ephemeralReaper.onReaped`) rufen EINEN
+gemeinsamen, in `src/index.ts` VOR wireConductor konstruierten
+Cleanup-Pfad (`disposeEphemeralAttachment`): Binding entfernen,
+Rollen-Holder schließen (auditiert), erst DANN Row löschen. Retry-Wahrheit:
+schlägt das Cleanup fehl (oder läuft der Reaper-Boot-Tick, bevor
+configStore/orchestratorRegistry published sind), bleibt die Row stehen und
+der **Attachment-Sweep** räumt sie nach Ablauf ab — expired `pending`
+(Invite ohne Facilitation) UND expired `attached` (verpasstes
+Reap-Cleanup). Tests: `test/agentSetupService.test.ts`,
+`test/observedConversationInvites.test.ts`,
+`test/conductorScopedRoleAssignments.test.ts`,
+`test/conductorEphemeralAttachments.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
