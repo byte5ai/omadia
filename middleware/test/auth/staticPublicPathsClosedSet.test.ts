@@ -25,8 +25,8 @@ import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
  * WHY THIS SUITE DOES NOT NAME THE TWO DELETED PATHS
  * -------------------------------------------------
  * Naming them would write a plugin's wire paths back into core — the exact
- * coupling this epic removes, and the thing `scripts/check-core-decoupling.mjs`
- * counts on its way to a permanent zero. A test that hardcodes a plugin's URLs
+ * coupling this epic removed, and the thing the #470 decoupling ratchet counted
+ * on its way to zero before it was retired at C14. A test that hardcodes a plugin's URLs
  * is a reference to that plugin whichever direction it asserts in, and it goes
  * stale-but-green the day the plugin renames them.
  *

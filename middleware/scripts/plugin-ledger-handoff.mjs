@@ -29,10 +29,9 @@
  *
  * DELIBERATELY GENERIC. It names no plugin and no table: the plan file
  * supplies the plugin id, the ledger, the migrations directory and the
- * entries, and core supplies the donor ledger. That is not tidiness — core's
- * decoupling ratchet (`scripts/check-core-decoupling.mjs`) requires that no
- * core file name the extracted plugin, and the next plugin to leave core will
- * want this tool unchanged.
+ * entries, and core supplies the donor ledger. That is not tidiness — the
+ * extraction rule (epic #470) was that no core file names the extracted
+ * plugin, and the next plugin to leave core will want this tool unchanged.
  *
  * PLAN FILE
  * ---------

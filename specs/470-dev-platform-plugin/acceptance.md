@@ -17,49 +17,28 @@ settles the automated half only; §2 and §3 below are still the parts a human h
 
 | Guard | What it proves | Status |
 |---|---|---|
-| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core carries **no** Dev Platform reference — code path, config key, i18n key, fixture string or comment | **DONE. Baseline 0**, all **14** zones CLEAN (3,300 → 214 at C10 → 0 at C13). No longer a ratchet: `EXTRACTION_COMPLETE` makes the check assert `0` outright, so there is no baseline to raise. Allowlisted as historical record, path-anchored: migrations `00{22..30}_*` (C11's ledger handoff matches on those filenames) and `plugin-api/CHANGELOG.md` (a published entry for a released version). The script self-excludes its own `PATTERNS` array — 27 hits that were the detector, not a coupling. |
+| ~~core-decoupling ratchet (#470)~~ | Core carries **no** Dev Platform reference — code path, config key, i18n key, fixture string or comment | **DONE, then RETIRED.** All **14** zones reached CLEAN: peak 3,448 → 214 at C10 → **0** at C13. C14 removed the script, its detector test, the baseline file and the CI job — see the closing note below. |
 | `middleware/test/devplatform/**` (58 files) | The behaviour itself, at unit/integration level. These **moved with the plugin** and must stay green in the new repo | **Moved** — deleted from core in C10; `byte5ai/omadia-dev-platform` owns them |
 | `middleware/test/auth/staticPublicPathsClosedSet.test.ts` | `STATIC_PUBLIC_PATHS` is a closed, core-owned set — core exempts nothing from the session gate on a plugin's behalf, and a path off the list 401s before routing | **In place (C12).** Mutation-checked: restoring either deleted exemption fails the suite and names it |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |
 | §3 install/uninstall | The result is genuinely installable | **Not yet built** — needs P3/P4 |
 
-Run the ratchet:
+### Closing note on the ratchet (retired at C14)
 
-```bash
-node scripts/check-core-decoupling.mjs            # verify (CI runs this)
-node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
-node scripts/check-core-decoupling.mjs --update   # record the count (refuses non-zero)
-```
+The counter ran from 2026-07-30 (#539) to 2026-08-21 (C14). It peaked at **3,448**
+references, fell to 214 at C10 and hit **0** at C13, where the floor was pinned permanently.
+C14 deleted `scripts/check-core-decoupling.mjs`, its colocated detector test,
+`decoupling-baseline.json` and the CI job: the extraction is complete, the plugin lives at
+`byte5ai/omadia-dev-platform`, and a guard with nothing left to guard is maintenance rather
+than safety.
 
-The floor is zero and absolute. Historically the count could only fall, **per zone** — an aggregate-only check would pass while one zone
-fell and another rose, which is what a half-finished move looks like. Raising a baseline
-requires hand-editing the committed file, so a new coupling shows up in review.
-
-### What the ratchet does NOT prove — corrected after review
-
-The earlier claim that "zero is a machine-checked definition of completion" was too strong.
-Two flaws were found and fixed, and one limitation is inherent:
-
-- **Fixed — a zone gap.** `middleware/.env.example` (19 references) was covered by no zone,
-  so the count could have read 0 while it still documented `DEV_*` keys. Two more zones
-  added; baseline moved 3,171 → 3,181.
-- **Fixed — overlapping zones.** A root-config zone rescanned the whole `web-ui` tree and
-  double-counted `web-ui/app`. Overlapping zones make the total meaningless; all zones are
-  now depth-bounded and disjoint.
-- **Inherent — it counts identifiers, not behaviour.** Zero means "core names nothing
-  dev-platform-shaped". It does **not** mean the plugin works, that nothing was lost, or
-  that a coupling expressed without a matching identifier is gone. §2 and §3 are what
-  cover those, and neither is automated yet.
-- **Inherent — it counts prose as well as code.** C2b raised `middleware/packages` 84 → 89
-  (baseline 3,296 → 3,300) purely for `packages/plugin-api/CHANGELOG.md`, which has to name
-  the `DevJob*` types in order to record that they were removed. Three of those five lines
-  are unrewordable literals (a spec path, a test filename, the future
-  `@omadia/dev-platform-plugin-api` package name). The first measurement was +31; the
-  avoidable 26 were reworded away rather than excused, leaving `middleware/test` at its
-  1,030 baseline. Documenting a removal counts the same as performing one — worth knowing
-  before reading a raise as a regression.
-
-So: the ratchet is a necessary condition for done, not a sufficient one.
+What it was, and what it never was: a per-zone count that could only fall — aggregate-only
+would have passed while one zone fell and another rose, which is what a half-finished move
+looks like. It counted **identifiers, not behaviour**: zero meant "core names nothing
+dev-platform-shaped", never "the plugin works" or "nothing was lost". It also counted prose
+as well as code, so documenting a removal cost the same as performing one. Zero was always a
+necessary condition for done, not a sufficient one — §2 and §3 below are what cover the rest,
+and neither is automated.
 
 ---
 
@@ -197,7 +176,9 @@ None of this is built yet. It is the definition of "installable" and belongs in 
 2. `GET /api/v1/admin/dev-platform/jobs` → 404.
 3. `GET /api/v1/ui/navigation` contains no dev-platform entry; `/admin` shows no card.
 4. No `dev_*` table is required for boot.
-5. `node scripts/check-core-decoupling.mjs` → **0**.
+5. Core names nothing dev-platform-shaped — no import, route, config key, i18n key or
+   fixture string. (Machine-checked at 0 by the ratchet through C13; a review question
+   since C14 retired it.)
 
 **Install**
 6. Install from the plugin repo's artifact; setup fields render from the manifest.
@@ -227,8 +208,10 @@ None of this is built yet. It is the definition of "installable" and belongs in 
    smoke suite in the plugin repo that walks §2.1–§2.4 against a running stack; until then
    completeness depends on someone working the table.
 2. **§3 does not exist yet.** Install/uninstall cannot be tested before P3 and P4.
-3. **The inventory came from one sweep.** The ratchet compensates: even if a reference was
-   missed here, it is counted there, and the count cannot reach zero while it survives.
+3. **The inventory came from one sweep.** The ratchet compensated while it ran: a reference
+   missed here was still counted there, and the count could not reach zero while it
+   survived. That is exactly what it was for, and it is why the count reaching zero at C13
+   is the evidence the sweep was complete — not the checklist.
 4. **Cross-repo drift has no guard.** Once the plugin leaves, nothing in this repo verifies
    the plugin still satisfies §2 — that becomes the plugin repo's CI, against a published
    core contract.

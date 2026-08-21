@@ -659,7 +659,7 @@ single irreversible step moved last.
 | **P3b** | **G7** (§4.3a): extract the `@theme inline` bridge out of `globals.css`; build the plugin Tailwind subset from it and serve it — replacing the 345 hand-written lines of `harness-admin-css.ts`; add a static-asset serving path for plugin SPA bundles; reject arbitrary-value classes at ingest. | Any plugin can ship a real UI in the house design system — the platform's weakest extension point today |
 | **P4** | ✅ Stood up as `byte5ai/omadia-dev-platform`; ~49k LOC moved; UI ported; the repo owns its GHCR + SBOM + signing pipeline. Core's side is **C10** (this flip). The `publicPaths` exemptions deliberately survive it — they leave in **C12**, alone, in a single revertible commit. | Dev Platform installs and uninstalls from its own repo |
 | **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |
-| **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | `node scripts/check-core-decoupling.mjs --report` reads **0**, and every row of `acceptance.md` §2 and §3 passes |
+| **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | The decoupling count read **0** (reached at C13), and every row of `acceptance.md` §2 and §3 passes |
 
 ### How we know it is actually complete
 
@@ -670,12 +670,14 @@ Three documents, three different jobs — a file inventory alone cannot answer e
 |---|---|---|
 | `core-decoupling-checklist.md` | *What is still coupled?* (276 items, file-level) | Snapshot — goes stale on contact |
 | `acceptance.md` | *Did every capability survive, and does it install?* (34 endpoints, 3 tools, 4 loops, 4 screens + install/uninstall) | Review checklist today; wants a smoke suite in the plugin repo |
-| `scripts/check-core-decoupling.mjs` | *Is core still coupled at all?* | **Automated** — CI job `core decoupling ratchet (#470)`, baseline **3,171**, may only fall |
+| ~~core-decoupling ratchet (#470)~~ | *Is core still coupled at all?* | **Was automated; retired at C14.** Peak 3,448 → 0 at C13, then the script, its detector test, the baseline and the CI job were removed |
 
-The ratchet is what makes the checklist's staleness survivable: even if the sweep missed a
-reference, the count still sees it, and the count cannot reach zero while it survives. It
-also stops core re-acquiring a dependency mid-extraction, which is the realistic failure
-mode for a multi-week epic touching ~200 files.
+The ratchet was what made the checklist's staleness survivable: even if the sweep missed a
+reference, the count still saw it, and the count could not reach zero while it survived. It
+also stopped core re-acquiring a dependency mid-extraction, which is the realistic failure
+mode for a multi-week epic touching ~200 files. Both jobs are done — the extraction landed
+and the plugin lives at `byte5ai/omadia-dev-platform` — so C14 removed the guard rather than
+leave a permanently-green job and an editable number behind.
 
 **Config is not 41 `setup.fields`.** The keys are four different things and only one
 belongs in a manifest form: platform-injected env (`FLY_APP_NAME` is a probe, not a
