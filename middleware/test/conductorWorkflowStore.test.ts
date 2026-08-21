@@ -120,6 +120,6 @@ describe('ConductorWorkflowStore.list', () => {
 
     await new ConductorWorkflowStore(pool).list();
     assert.equal(issued.length, 1);
-    assert.ok(issued[0]!.includes("WHERE origin = 'manual'"), issued[0]);
+    assert.ok(issued[0]!.includes("WHERE origin = 'manual'"));
   });
 });
