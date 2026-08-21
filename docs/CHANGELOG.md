@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — migration handoff: a plugin can adopt an existing installation's schema (#470 C11)
+
+- **Plugins extracted out of core no longer re-apply core's migrations.**
+  `ctx.sql.seedLedger({ entries, dryRun })` records a plugin's migration files as
+  already applied — but only where a per-file **witness** (a catalog query such as
+  `SELECT to_regclass('public.<table>') IS NOT NULL`) proves the schema object that
+  file creates is actually present. The core ledger is corroboration; the witness is
+  the decision.
+- **This is the failure it prevents.** The obvious handoff copies core's ledger rows
+  and skips those files. On a database where the rows are present but the tables are
+  **absent** — a restore from an older snapshot, a version-skewed rollback, an
+  operator who dropped a table during an incident — that seed activates the plugin
+  green and makes every request 500, nine steps behind the cause. With witnesses the
+  plugin's migration runner simply applies the files, which is the repair.
+- **Core's rows are never deleted.** They are the rollback path: while core still
+  ships the same files, removing them would make core's own migrator re-run them on
+  the next boot. Uninstalling the plugin and reverting the extraction leaves core's
+  migrator exactly as it was.
+- **Operator CLI, dry-run by default.**
+  `node middleware/scripts/plugin-ledger-handoff.mjs --plan <plan.json>` prints the
+  plan against `$DATABASE_URL` and writes nothing; `--apply` is the only way to
+  write. It highlights the one number worth reading — the files core recorded whose
+  witness is false. Running it against production before installing the plugin is
+  the cheapest de-risking of this step there is.
+- `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
+  a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
+  `SeedLedgerOptions`, `LedgerSeedReport`.
+
+
 ### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
 
 - **BREAKING for operators who ran it.** The Dev Platform — isolated per-job code

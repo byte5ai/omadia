@@ -16,6 +16,7 @@ every row passes *and* the decoupling ratchet reads zero.
 
 | Guard | What it proves | Status |
 |---|---|---|
+| `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **214** across **14** zones, per-zone regression check (C10 dropped it from 3,300; the survivors are C11's migrations, C12's `publicPaths` exemptions and C13's residue) |
 | `scripts/check-core-decoupling.mjs` + CI job `core decoupling ratchet (#470)` | Core does not re-acquire Dev Platform references while the extraction is in flight | **In place.** Baseline **211** across **14** zones, per-zone regression check (C10 dropped it from 3,300; the survivors are C11's migrations, C12's `publicPaths` exemptions and C13's residue) |
 | `middleware/test/devplatform/**` (58 files) | The behaviour itself, at unit/integration level. These **moved with the plugin** and must stay green in the new repo | **Moved** — deleted from core in C10; `byte5ai/omadia-dev-platform` owns them |
 | §2 capability matrix below | Nothing is silently dropped in the move | **Written here; not yet automated** |

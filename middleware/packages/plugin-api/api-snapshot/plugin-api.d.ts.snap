@@ -1803,9 +1803,30 @@ export interface RunMigrationsOptions {
 readonly dir?: string;
 readonly allowChecksumDrift?: boolean;
 }
+export interface LedgerSeedEntry {
+readonly filename: string;
+readonly witnessSql: string;
+}
+export interface SeedLedgerOptions {
+readonly entries: readonly LedgerSeedEntry[];
+readonly dryRun?: boolean;
+readonly dir?: string;
+}
+export interface LedgerSeedReport {
+readonly seeded: readonly string[];
+readonly applied: readonly string[];
+readonly skippedNoWitness: readonly string[];
+readonly alreadySeeded: readonly string[];
+readonly donorRecorded: readonly string[];
+readonly ledger: string;
+readonly donorLedger: string;
+readonly dryRun: boolean;
+readonly durationMs: number;
+}
 export interface SqlAccessor {
 readonly ledger: string;
 runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
 }
 export declare class SqlPermissionError extends Error {
 readonly pluginId: string;
