@@ -2906,7 +2906,14 @@
     "refreshed": "Gerade aktualisiert",
     "install": {
       "heading": "CLI installieren",
-      "intro": "Diese CLI ist auf diesem Server nicht vorhanden. Dort installieren und anmelden — danach steht die Anmeldung auch hier zur Verfügung."
+      "intro": "Diese CLI ist auf diesem Server nicht vorhanden. Dort installieren und anmelden — danach steht die Anmeldung auch hier zur Verfügung.",
+      "autoIntro": "Diese CLI ist auf diesem Server nicht vorhanden. Sie kann direkt von hier installiert werden — aus der öffentlichen npm-Registry in das persistente Datenverzeichnis des Servers.",
+      "button": "Jetzt installieren",
+      "installing": "Wird installiert … das kann einige Minuten dauern.",
+      "failed": "Installation fehlgeschlagen.",
+      "conflict": "Auf diesem Server läuft bereits eine CLI-Installation. Bitte warten, bis sie abgeschlossen ist, und dann erneut versuchen.",
+      "retry": "Erneut versuchen",
+      "manualSummary": "Lieber manuell installieren?"
     }
   },
   "createIssue": {

@@ -477,6 +477,8 @@ export interface CliBackendStatus {
   account?: string;
   billing: CliBillingPosture;
   detail: string;
+  installable: boolean;
+  installedVia?: 'runtime' | 'path';
 }
 
 export interface CliBackendsResponse {
@@ -529,6 +531,30 @@ export async function cancelCliLogin(id: string): Promise<{ ok: boolean }> {
 /** Log the CLI out (clears the stored subscription session). */
 export async function cliLogout(id: string): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/logout`, {});
+}
+
+export type CliInstallState = 'idle' | 'running' | 'succeeded' | 'failed';
+
+export interface CliInstallStatus {
+  cliId: string;
+  status: CliInstallState;
+  error?: string;
+  logTail?: string;
+}
+
+/** Trigger the runtime install of a backend's CLI (202 = started, poll status). */
+export async function startCliInstall(id: string): Promise<{ status: string; alreadyInstalled?: boolean }> {
+  return postJson<{ status: string; alreadyInstalled?: boolean }>(
+    `/v1/admin/cli-backends/${encodeURIComponent(id)}/install`,
+    {},
+  );
+}
+
+/** Poll the state of a running (or finished) runtime install. */
+export async function getCliInstallStatus(id: string): Promise<CliInstallStatus> {
+  return getJson<CliInstallStatus>(
+    `/v1/admin/cli-backends/${encodeURIComponent(id)}/install/status`,
+  );
 }
 
 // -----------------------------------------------------------------------------
