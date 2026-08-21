@@ -46,10 +46,41 @@ export {
 export {
   legacyProviderApiKeyVaultKey,
   providerApiKeyVaultKey,
+  providerOAuthVaultKeys,
   readProviderApiKey,
+  readProviderOAuthTokens,
+  readProviderOAuthUpdatedAt,
+  writeProviderOAuthTokens,
 } from './providerCredentials.js';
 
+// ---- Runtime: OAuth token store (process-wide, rotation-safe) ----
+export {
+  getProviderOAuthBearer,
+  isProviderOAuthReconnectRequired,
+  primeProviderOAuthTokens,
+  registerProviderOAuthStoreBinding,
+  __resetProviderOAuthTokenStore,
+  type ProviderOAuthDeps,
+  type ProviderOAuthStoreBinding,
+} from './providerOAuthTokenStore.js';
+
 // ---- Runtime: provider resolution (registry lookup) ----
+export {
+  OPENAI_CODEX_OAUTH,
+  OAuthReconnectRequiredError,
+  exchangeAuthorizationCode,
+  isAccessTokenExpired,
+  jwtExpiryMs,
+  pollDeviceToken,
+  refreshAccessToken,
+  requestUserCode,
+  type FetchLike,
+  type OAuthClientConfig,
+  type OAuthTokens,
+  type PollResult,
+  type UserCodeGrant,
+} from './oauthDeviceFlow.js';
+
 export {
   knownProviderBaseUrl,
   resolveLlmProvider,

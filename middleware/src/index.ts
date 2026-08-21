@@ -8,11 +8,17 @@ import {
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
 import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
+import { registerOpenAiResponsesAdapter } from '@omadia/llm-adapter-openai-responses';
 import {
   defaultLlmAdapters,
   LlmProviderCatalog,
   readProviderApiKey,
+  readProviderOAuthTokens,
+  readProviderOAuthUpdatedAt,
+  registerProviderOAuthStoreBinding,
   resolveLlmProvider,
+  writeProviderOAuthTokens,
+  type OAuthTokens,
 } from '@omadia/llm-provider';
 import express from 'express';
 import type { RequestHandler } from 'express';
@@ -518,6 +524,10 @@ async function main(): Promise<void> {
   // another register*Adapter call here (or a plugin registering at activate).
   registerAnthropicAdapter(defaultLlmAdapters);
   registerOpenAiAdapter(defaultLlmAdapters);
+  // #294 — the OpenAI Responses (SSE) wire the ChatGPT/Codex subscription
+  // backend speaks (experimental "Sign in with ChatGPT"). Registered
+  // unconditionally (cheap, SDK-free); the PROVIDER that uses it is env-gated.
+  registerOpenAiResponsesAdapter(defaultLlmAdapters);
   // #309 Shape 2 — the local `claude` CLI as a keyless, tool-less completion
   // provider on the operator's subscription (not an HTTP wire format).
   registerClaudeCliAdapter(defaultLlmAdapters);
@@ -532,7 +542,9 @@ async function main(): Promise<void> {
   // overlay HERE — before plugin activation and before the builder/orchestrator
   // resolve a model — so a fresh install is functional out of the box. Installed
   // provider PLUGINS (e.g. MiniMax) register additionally, further below.
-  registerBuiltinLlmProviders(llmProviderCatalog);
+  registerBuiltinLlmProviders(llmProviderCatalog, {
+    includeExperimental: config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL,
+  });
   console.log(
     `[middleware] ${String(llmProviderCatalog.list().length)} built-in LLM provider(s) registered: ${llmProviderCatalog
       .list()
@@ -4146,6 +4158,51 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // #294 — bind the process-wide OAuth token store for the ChatGPT provider to
+  // the vault: `load` reads every LLM-plugin scope newest-wins (rotation makes
+  // divergent copies dangerous), `persist` fans a refreshed/rotated token back
+  // out to all scopes with one shared stamp. Only wired when the experimental
+  // provider is on; harmless otherwise (no provider resolves the bearer).
+  if (config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL) {
+    const oauthVault = secretVault;
+    const OAUTH_PROVIDER = 'openai-chatgpt';
+    const LLM_SCOPES = [
+      '@omadia/orchestrator',
+      '@omadia/verifier',
+      '@omadia/orchestrator-extras',
+    ] as const;
+    registerProviderOAuthStoreBinding(OAUTH_PROVIDER, {
+      load: async () => {
+        const copies: Array<{ tokens: OAuthTokens; updatedAt: number }> = [];
+        for (const scope of LLM_SCOPES) {
+          const tokens = await readProviderOAuthTokens(
+            (k) => oauthVault.get(scope, k),
+            OAUTH_PROVIDER,
+          );
+          if (tokens !== undefined) {
+            const updatedAt = await readProviderOAuthUpdatedAt(
+              (k) => oauthVault.get(scope, k),
+              OAUTH_PROVIDER,
+            );
+            copies.push({ tokens, updatedAt });
+          }
+        }
+        return copies;
+      },
+      persist: async (tokens, updatedAtMs) => {
+        for (const scope of LLM_SCOPES) {
+          await writeProviderOAuthTokens(
+            (k, v) => oauthVault.setMany(scope, { [k]: v }),
+            OAUTH_PROVIDER,
+            tokens,
+            updatedAtMs,
+          );
+        }
+      },
+    });
+    console.log('[middleware] ChatGPT-subscription OAuth token store bound (experimental)');
+  }
 
   // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
   // adapter is active, LIVE. Unlike the memory-backend router next door this

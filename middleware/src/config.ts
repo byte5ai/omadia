@@ -613,6 +613,12 @@ const ConfigSchema = z.object({
   // though the extracted Fly runner backend was its only reader.
   FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
 
+  // #294 — "Sign in with ChatGPT" (experimental). Registers the `openai-chatgpt`
+  // subscription provider (OAuth device flow → the ChatGPT/Codex Responses
+  // backend). OFF by default: it drives programmatic calls through a consumer
+  // ChatGPT subscription, a ToS grey area — the operator must opt in explicitly.
+  CHATGPT_SUBSCRIPTION_EXPERIMENTAL: devFlag(),
+
 });
 
 type ParsedConfig = z.infer<typeof ConfigSchema>;

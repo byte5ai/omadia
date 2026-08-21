@@ -29,13 +29,26 @@
  * dependent on the provider being up.
  */
 import {
+  exchangeAuthorizationCode,
+  isProviderOAuthReconnectRequired,
   legacyProviderApiKeyVaultKey,
   listModels,
   listModelsByProvider,
+  OPENAI_CODEX_OAUTH,
+  pollDeviceToken,
+  primeProviderOAuthTokens,
   providerApiKeyVaultKey,
+  readProviderOAuthTokens,
+  requestUserCode,
   resolveModelRef,
+  writeProviderOAuthTokens,
+  type OAuthClientConfig,
+  type OAuthTokens,
   type ProviderId,
+  type UserCodeGrant,
 } from '@omadia/llm-provider';
+import { randomUUID } from 'node:crypto';
+
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
@@ -72,9 +85,15 @@ export interface AdminProvidersDeps {
             readonly requiresApiKey?: boolean;
             readonly subscriptionNotice?: boolean;
           };
+          readonly oauth?: { readonly kind: 'device' };
         }
       | undefined;
   };
+  /** OAuth client config for the device flow. Defaults to the OpenAI Codex
+   *  client; a test injects a fake pointing at a mock issuer. */
+  readonly oauthConfig?: OAuthClientConfig;
+  /** Injected fetch for the device-flow HTTP calls (test seam). */
+  readonly oauthFetch?: typeof fetch;
 }
 
 /** The subset of a catalog descriptor the credential probe needs. */
@@ -170,6 +189,52 @@ async function findProviderKey(
     }
   }
   return undefined;
+}
+
+/** True when any LLM-plugin scope holds an OAuth access token for the provider
+ *  (#294). "Connected via Sign in with ChatGPT" is exactly this. */
+async function isProviderOAuthConnected(
+  vault: SecretVault | undefined,
+  provider: ProviderId,
+): Promise<boolean> {
+  if (!vault) return false;
+  for (const desc of LLM_PLUGINS) {
+    const tokens = await readProviderOAuthTokens(
+      (k) => vault.get(desc.id, k),
+      provider,
+    );
+    if (tokens !== undefined) return true;
+  }
+  return false;
+}
+
+/** Fan a provider's OAuth tokens out to EVERY LLM-plugin scope with one shared
+ *  `updatedAt` stamp (newest-wins hydration relies on the stamp), then reactivate
+ *  the installed ones so they re-read. Refresh-token rotation makes divergent
+ *  per-scope copies dangerous — this keeps them identical. */
+async function fanOutProviderOAuthTokens(
+  deps: AdminProvidersDeps,
+  provider: ProviderId,
+  tokens: OAuthTokens,
+): Promise<void> {
+  const vault = deps.vault;
+  if (!vault) return;
+  const updatedAt = Date.now();
+  for (const desc of LLM_PLUGINS) {
+    await writeProviderOAuthTokens(
+      (k, v) => vault.setMany(desc.id, { [k]: v }),
+      provider,
+      tokens,
+      updatedAt,
+    );
+  }
+  if (deps.reactivate) {
+    for (const desc of LLM_PLUGINS) {
+      if (deps.installedRegistry.has(desc.id)) {
+        await deps.reactivate(desc.id).catch(() => undefined);
+      }
+    }
+  }
 }
 
 /**
@@ -271,6 +336,9 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       const providerRows = await Promise.all(
         providerIds.map(async (id) => {
           const descriptor = deps.llmProviderCatalog?.get(id);
+          // #294: an OAuth provider is "connected" when device-flow tokens are
+          // stored — the login IS the credential, so there is no key to probe.
+          const oauthConnect = descriptor?.oauth !== undefined;
           // #309: a CLI-backed provider is keyless — its "does it work" probe is
           // the CLI login check above, not a credential probe.
           const verification: ProviderVerification =
@@ -278,7 +346,16 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
               ? cliConnected('claude')
                 ? { status: 'verified' }
                 : { status: 'no_key' }
-              : await resolveStatus(deps.vault, id, descriptor);
+              : oauthConnect
+                ? // A dead grant (terminal refresh failure) leaves stale tokens
+                  // in the vault; the process-wide latch is the truth. Report
+                  // `no_key` so the row shows "Reconnect" instead of a green
+                  // chip that lies while every call throws.
+                  isProviderOAuthReconnectRequired(id) ||
+                  !(await isProviderOAuthConnected(deps.vault, id))
+                  ? { status: 'no_key' }
+                  : { status: 'verified' }
+                : await resolveStatus(deps.vault, id, descriptor);
           return {
           id,
           label: descriptor?.label ?? providerLabel(id),
@@ -331,6 +408,9 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // exist for them, which the operator must know BEFORE routing
           // personal data through such an agent (field-test OM-10 family).
           subscriptionNotice: descriptor?.policy?.subscriptionNotice ?? false,
+          // #294: the provider connects via an OAuth device flow, so the UI
+          // renders a "Sign in with ChatGPT" button instead of a key field.
+          oauthConnect,
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,
@@ -543,6 +623,124 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       return;
     }
     res.json({ ok: true, pluginId, provider, model: storeModel });
+  });
+
+  // -------------------------------------------------------------------------
+  // #294 — "Sign in with ChatGPT" device-flow connect. The device-auth id +
+  // user code (the poll secret) never leave the server; the browser only ever
+  // holds a random flowId. Single-operator, single-process → an in-memory map
+  // mirrors the plugin OAuth broker's pendingFlows pattern.
+  // -------------------------------------------------------------------------
+  interface PendingFlow {
+    readonly providerId: ProviderId;
+    readonly grant: UserCodeGrant;
+    readonly deadlineMs: number;
+  }
+  const pendingFlows = new Map<string, PendingFlow>();
+  const FLOW_CAP_MS = 15 * 60_000;
+  const MAX_PENDING_FLOWS = 32;
+  const oauthConfig = deps.oauthConfig ?? OPENAI_CODEX_OAUTH;
+
+  /** Drop expired flows so an operator closing the modal (or StrictMode's
+   *  double-mount) can't leak entries forever. */
+  const sweepExpiredFlows = (): void => {
+    const now = Date.now();
+    for (const [id, flow] of pendingFlows) {
+      if (now > flow.deadlineMs) pendingFlows.delete(id);
+    }
+  };
+
+  const resolveOAuthProvider = (raw: unknown): ProviderId | undefined => {
+    const id = typeof raw === 'string' && raw.length > 0 ? raw : 'openai-chatgpt';
+    return deps.llmProviderCatalog?.get(id)?.oauth !== undefined
+      ? (id as ProviderId)
+      : undefined;
+  };
+
+  router.post('/oauth/start', async (req: Request, res: Response) => {
+    const providerId = resolveOAuthProvider(
+      (req.body as { provider?: unknown } | null)?.provider,
+    );
+    if (providerId === undefined) {
+      res.status(400).json({
+        code: 'providers.oauth_unsupported',
+        message: 'This provider does not support OAuth device login.',
+      });
+      return;
+    }
+    sweepExpiredFlows();
+    if (pendingFlows.size >= MAX_PENDING_FLOWS) {
+      res.status(429).json({
+        code: 'providers.oauth_too_many_flows',
+        message: 'Too many login attempts in flight. Try again shortly.',
+      });
+      return;
+    }
+    try {
+      const fetchImpl = deps.oauthFetch ?? fetch;
+      const grant = await requestUserCode(
+        (url, init) => fetchImpl(url, init),
+        oauthConfig,
+      );
+      const flowId = randomUUID();
+      pendingFlows.set(flowId, {
+        providerId,
+        grant,
+        deadlineMs: Date.now() + FLOW_CAP_MS,
+      });
+      res.json({
+        flowId,
+        userCode: grant.userCode,
+        verificationUri: grant.verificationUri,
+        interval: grant.interval,
+      });
+    } catch (err) {
+      res.status(502).json({
+        code: 'providers.oauth_start_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  router.post('/oauth/poll', async (req: Request, res: Response) => {
+    const flowId = (req.body as { flowId?: unknown } | null)?.flowId;
+    const flow = typeof flowId === 'string' ? pendingFlows.get(flowId) : undefined;
+    if (flow === undefined) {
+      res.status(404).json({ status: 'expired' });
+      return;
+    }
+    if (Date.now() > flow.deadlineMs) {
+      pendingFlows.delete(flowId as string);
+      res.json({ status: 'expired' });
+      return;
+    }
+    try {
+      const fetchImpl = deps.oauthFetch ?? fetch;
+      const wrapped = (url: string, init: Parameters<typeof fetchImpl>[1]) =>
+        fetchImpl(url, init);
+      const poll = await pollDeviceToken(wrapped, oauthConfig, flow.grant);
+      if (poll.status === 'pending') {
+        res.json({ status: 'pending' });
+        return;
+      }
+      // Approved → exchange for tokens, fan out to every scope, prime the store.
+      const tokens = await exchangeAuthorizationCode(
+        wrapped,
+        oauthConfig,
+        { authorizationCode: poll.authorizationCode, codeVerifier: poll.codeVerifier },
+        Date.now,
+      );
+      await fanOutProviderOAuthTokens(deps, flow.providerId, tokens);
+      primeProviderOAuthTokens(flow.providerId, tokens);
+      pendingFlows.delete(flowId as string);
+      res.json({ status: 'complete' });
+    } catch (err) {
+      res.status(502).json({
+        status: 'error',
+        code: 'providers.oauth_poll_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   return router;

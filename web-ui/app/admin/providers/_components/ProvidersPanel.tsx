@@ -6,6 +6,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import { ChatGptConnectModal } from './ChatGptConnectModal';
 import {
   assignProvider,
   getProviders,
@@ -245,6 +246,8 @@ function ProviderRow({
   // string the server produced per key) or the thrown ApiError itself.
   const [saveError, setSaveError] = useState<unknown>(undefined);
   const [verifying, setVerifying] = useState(false);
+  // #294 — device-flow connect modal for an OAuth provider ("Sign in with ChatGPT").
+  const [oauthOpen, setOauthOpen] = useState(false);
   const envKey = providerKeyEnv(p.id);
   const inputId = `provider-key-${p.id}`;
   // OM-11 — the CLI this provider needs is not on this server. `undefined`
@@ -329,8 +332,9 @@ function ProviderRow({
         <span className="flex items-center gap-3">
           <ConnectionChip provider={p} t={t} />
           {/* Explicit re-probe. Only offered where there is a credential to
-              probe — the CLI provider authenticates on the Subscriptions tab. */}
-          {!p.toolLess && p.status !== 'no_key' && (
+              probe — the CLI provider authenticates on the Subscriptions tab,
+              and an OAuth provider has no key to probe. */}
+          {!p.toolLess && !p.oauthConnect && p.status !== 'no_key' && (
             // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
             <button
               type="button"
@@ -341,7 +345,18 @@ function ProviderRow({
               {verifying ? t('providers.testing') : t('providers.testKey')}
             </button>
           )}
-          {p.toolLess ? (
+          {p.oauthConnect ? (
+            // #294 — "Sign in with ChatGPT". No vault key: the login IS the
+            // credential, driven by a device-code modal on this same tab.
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
+            <button
+              type="button"
+              onClick={() => setOauthOpen(true)}
+              className="text-[13px] font-medium text-[color:var(--accent)]"
+            >
+              {(p.connected ? t('providers.oauthReconnect') : t('providers.oauthConnect'))} →
+            </button>
+          ) : p.toolLess ? (
             // Subscription CLI: connect/manage via the in-app login on the
             // Subscriptions tab, not a vault key — switch tabs in place.
             //
@@ -488,6 +503,19 @@ function ProviderRow({
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
       {!p.toolLess && !editing && <SaveError error={saveError} />}
+
+      {/* #294 — the device-code modal for an OAuth provider connect. */}
+      {oauthOpen && (
+        <ChatGptConnectModal
+          providerId={p.id}
+          t={t}
+          onClose={() => setOauthOpen(false)}
+          onConnected={() => {
+            setOauthOpen(false);
+            void onReload();
+          }}
+        />
+      )}
     </li>
   );
 }

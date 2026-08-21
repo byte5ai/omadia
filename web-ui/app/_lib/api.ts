@@ -395,6 +395,10 @@ export interface AdminProvider {
    *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
    *  pre-OM-11 middleware — treat `undefined` as installed. */
   installed?: boolean;
+  /** #294 — the provider connects via an OAuth device flow ("Sign in with
+   *  ChatGPT"), so the UI renders a connect button + device-code modal instead
+   *  of a vault key field. Absent on pre-#294 middleware payloads. */
+  oauthConnect?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -456,6 +460,48 @@ export async function verifyProvider(
     `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
     {},
   );
+}
+
+// -----------------------------------------------------------------------------
+// #294 — "Sign in with ChatGPT" OAuth device flow. `start` returns a user code
+// the operator types at the verification URL; `poll` is called on `interval`
+// until it reports complete/expired.
+// -----------------------------------------------------------------------------
+
+export interface ProviderOAuthStart {
+  flowId: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+}
+
+export type ProviderOAuthPollStatus = 'pending' | 'complete' | 'expired' | 'error';
+
+export interface ProviderOAuthPoll {
+  status: ProviderOAuthPollStatus;
+}
+
+/** Begin the device flow for an OAuth provider (defaults to `openai-chatgpt`). */
+export async function startProviderOAuth(
+  provider: string,
+): Promise<ProviderOAuthStart> {
+  return postJson<ProviderOAuthStart>('/v1/admin/providers/oauth/start', { provider });
+}
+
+/** Poll a running device flow once. The server answers a stale/expired flow
+ *  with 404 `{status:'expired'}` and a backend error with 502 `{status:'error'}`;
+ *  both are terminal poll states, so map the thrown ApiError back to them
+ *  instead of surfacing a generic failure. */
+export async function pollProviderOAuth(flowId: string): Promise<ProviderOAuthPoll> {
+  try {
+    return await postJson<ProviderOAuthPoll>('/v1/admin/providers/oauth/poll', { flowId });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.status === 404) return { status: 'expired' };
+      if (err.status === 502) return { status: 'error' };
+    }
+    throw err;
+  }
 }
 
 // -----------------------------------------------------------------------------
