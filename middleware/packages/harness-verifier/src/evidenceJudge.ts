@@ -1,6 +1,7 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
 import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
+import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't
@@ -176,7 +177,7 @@ Rules:
 - verdict = "unverified": evidence is silent, ambiguous, or only tangentially related. This is the DEFAULT when unsure.
 - verdict = "contradicted": evidence explicitly says something incompatible with the claim. Requires evidence_node_id.
 - Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
-- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense, date); judge the CLAIM as meant in that sentence, not the rest of the context.`;
+- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.`;
 
     const evidenceBlock = evidence
       .map(
@@ -187,7 +188,7 @@ Rules:
 
     const context =
       claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
-        ? `\nCONTEXT: ${truncate(claim.context, 400)}`
+        ? `\nCONTEXT: ${truncate(claim.context, MAX_CONTEXT_CHARS)}`
         : '';
     const user = `CLAIM: ${claim.text}${context}
 CLAIM TYPE: ${claim.type}
