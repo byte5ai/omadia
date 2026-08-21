@@ -247,10 +247,14 @@ example path.
 
 ## Baseline raises
 
-`scripts/check-core-decoupling.mjs` only ever lowers its baseline automatically.
-A raise is hand-edited, and each one is argued for here. A raise is legitimate
-only when the added references **leave core with the extraction**; a raise that
-absorbs new *core* coupling is the ratchet failing at its job.
+> **Historical.** The ratchet was retired at C14 (2026-08-21) after the count
+> reached 0 — the script, its detector test and `decoupling-baseline.json` are
+> gone. The log below is kept as the record of how the count moved.
+
+The checker only ever lowered its baseline automatically. A raise was
+hand-edited, and each one is argued for here. A raise was legitimate only when
+the added references **left core with the extraction**; a raise that absorbed
+new *core* coupling was the ratchet failing at its job.
 
 ### 3306 -> 3441 - W2-2 long-running task seam
 

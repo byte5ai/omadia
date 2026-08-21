@@ -21,7 +21,7 @@ it at all.
 | **`acceptance.md`** | *Did every capability survive, and does it install?* 35 endpoints, 3 chat tools, 3 live background loops, 4 UI screens, CLI — each with a probe, plus FIVE capabilities marked unreachable. Plus install/uninstall/upgrade criteria | Before claiming a phase is done |
 | **`plugin-tailwind-subset.probe.css`** | *Can a distributed plugin ship a UI without shipping CSS?* Measured reference artifact (7.7 KB gzip) — not built, not shipped. **Superseded by the real build in C8**; kept as the sizing reference it was | For the sizing argument only |
 | **`plugin-ui-vocabulary.md`** | *What may a plugin UI actually use?* The shipped C8 contract: the utility vocabulary, the no-arbitrary-values rule and its enforcement, the ZIP layout, the iframe boundary | Before writing or reviewing any plugin UI |
-| **`decoupling-baseline.json`** | The committed reference count the CI ratchet enforces | Never by hand — use `--update` |
+| ~~`decoupling-baseline.json`~~ | The committed reference count the CI ratchet enforced | **Gone.** Retired with the ratchet at C14 — see "How we knew it was complete" |
 
 ---
 
@@ -381,89 +381,36 @@ registry, G2/G3/G4), which everything else waits on.
 
 ---
 
-## How we know it is complete
+## How we knew it was complete — and why the guard is gone
 
-Three different jobs; none of them is sufficient alone.
+**The decoupling ratchet is retired.** `scripts/check-core-decoupling.mjs` and its committed
+`decoupling-baseline.json` counted Dev Platform references across 14 disjoint zones from
+2026-07-30 (#539) to 2026-08-21 (C14). It peaked at **3,448**, fell to 214 at C10 and reached
+**0** at C13, where it was pinned permanently. C14 removed the script, its colocated detector
+test, the baseline file and the CI job.
 
-```bash
-node scripts/check-core-decoupling.mjs            # verify (CI runs this)
-node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
-node scripts/check-core-decoupling.mjs --update   # record the count
-```
+It was removed because it had won. A ratchet is scaffolding for a migration in flight: it
+makes a stale file inventory survivable, because a checklist goes stale on contact and a
+count does not. Once the count is zero and the extraction is finished, the guard has nothing
+left to guard — it only costs a CI job and a number for someone to edit. Bringing the Dev
+Platform back into core is now an ordinary architectural decision, argued for in review.
 
-The check counts Dev Platform references across 14 disjoint zones. Baseline **0** — every
-zone CLEAN, pinned there permanently by C13 (3,300 → 214 at C10 → 0 at C13).
+Two facts outlive the guard:
 
-**It is no longer a ratchet.** While the extraction was in flight the committed count was
-allowed to fall and never rise, which was the right shape for a migration in progress and is
-the wrong shape now: a ratchet parked at zero still reads its floor out of a JSON file, and a
-JSON file is editable. So `EXTRACTION_COMPLETE` in the script makes the check assert `0`
-outright and ignore the baseline for pass/fail. Any reference fails CI, and `--update`
-refuses to write a non-zero baseline. Bringing the Dev Platform back into core is a real
-architectural decision that has to be argued for in review — not a number someone edits.
+- **It counted identifiers, not behaviour, and never the English name.** Prose may still say
+  "the dev platform plugin"; what could not survive was an identifier-shaped reference — an
+  import, a route, a config key, an i18n key, a fixture string, a
+  `devPlatform`/`dev-runner`/`DEV_JOB` token. Zero was always a necessary condition for done,
+  never a sufficient one: §2 and §3 of `acceptance.md` cover the rest, and neither is
+  automated.
+- **`services/githubAppJwt.ts` stays in core.** It carries no dev-platform identifier because
+  it is generic GitHub App auth. Moving it into the plugin repository would recreate the
+  reverse dependency across a repo boundary.
 
-Two things are allowlisted, both historical record rather than coupling, each anchored on an
-exact path so the exemption cannot widen:
+The plugin lives at `byte5ai/omadia-dev-platform`.
 
-| Allowlisted | Why it cannot be reworded |
-|---|---|
-| `middleware/migrations/00{22..30}_*` | Every deployment that ran them has these FILENAMES in its `schema_migrations` ledger, and C11's plugin-side migrator seeds its own ledger from exactly those donor rows. Rename one and the handoff stops matching on the installations that need it most. The DDL body names the real tables and columns that exist in those databases right now. |
-| `middleware/packages/plugin-api/CHANGELOG.md` | A published entry for a released version. It exists to be FOUND — it spells out the removed exports so a consumer grepping their own source lands on the entry explaining where the type went. Rewording it would misreport what that version shipped. |
-
-The script also excludes **itself**: `PATTERNS` has to spell out the 21 identifiers it hunts
-for, so an unfiltered scan counted 27 hits against the detector and made the target `27`
-instead of `0`. Self-exclusion is safe precisely because it is the detector — no runtime, no
-image, and adding a pattern there can only make the check stricter.
-
-`services/githubAppJwt.ts` **stays in core** and is deliberately not allowlisted: it carries
-no matching identifier because it is generic GitHub App auth. Moving it into the plugin
-repository would recreate the reverse dependency across a repo boundary.
-The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
-rises, per zone**. Baseline **206** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
-a new coupling shows up in review instead of slipping in.
-
-That is what makes the checklist's staleness survivable — a file inventory goes stale on
-contact, but the count does not.
-
-**Zero counts identifiers, not the English name.** A comment may still say "the dev platform
-plugin"; what cannot survive is an identifier-shaped reference — an import, a route, a config
-key, an i18n key, a fixture string, a `devPlatform`/`dev-runner`/`DEV_JOB` token. That is the
-line the patterns draw, and it is the right one: prose describes history, identifiers create
-coupling.
-
-But it counts IDENTIFIERS, NOT BEHAVIOUR: zero is a necessary condition for done, not a
-sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither is automated.
-
-**The baseline rises for two reasons, and only two.** (1) main legitimately adds dev-platform
-code. (2) A refactor concentrates coupling into a namespace whose own name matches the
-pattern — C3 is the one instance: collapsing 41 flat config keys into `config.devPlatform`
-added a mapping layer that names each key a second time (+48 in config.ts, +36 in the new
-type file, against −33 in index.ts). The net is **+62** — `middleware/src` +29 and
-`middleware/test` +33 — and it measured identically against three successive mains (before
-#554, after #554, after #555), which is what shows it is C3's own concentration and not
-drift picked up from elsewhere. The test half is the same effect — a shared
-`devPlatformConfig.harness.ts` plus the moved routers' new `src/devplatform/routes/…` import
-paths. **Every one of the 212 added matching lines in the test zone sits inside
-`middleware/test/devplatform/`; none is outside it**, so no core test acquired a
-dev-platform dependency. All of it deletes at extraction. Everything else is a
-regression. That has happened three
-times (PR #529, then #537's embedding work): the guard fires, the raise is hand-edited, and the
-reason is recorded in the commit. A rise is only wrong when *core* re-acquires a dependency.
-
-**C2b is a third kind of rise, and the smallest: +5, all documentation of a removal.**
-`middleware/packages` 84 → 89, from the new `packages/plugin-api/CHANGELOG.md`. A changelog
-recording that the `DevJob*` types were deleted has to name them, or a consumer grepping its
-own source for `DevJobDescriptor` finds nothing and the record is worthless. Three of the five
-lines are literal strings that cannot be reworded at all — a spec path, a test filename, and
-the future package name `@omadia/dev-platform-plugin-api`; the other two are the removal
-heading and the six type names, deliberately collapsed onto one line each. The count was
-first +31: the example capability in the new gate tests and a `perCallerService` docblock both
-used `devJobs` gratuitously, and both were reworded to a neutral name rather than excused —
-`middleware/test` is back at its baseline of 1,030, unchanged. Nothing in core references the
-dev platform as a result of this PR; the residue is prose *about* code that left.
-
-**Definition of done:** ratchet reads `0`, every row of `acceptance.md` §2 passes, and the
-install/uninstall criteria in `acceptance.md` §3 pass.
+**Definition of done:** every row of `acceptance.md` §2 passes, and the install/uninstall
+criteria in `acceptance.md` §3 pass.
 
 ---
 

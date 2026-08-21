@@ -13,9 +13,9 @@
  *   - `pg_advisory_xact_lock` really serialises two concurrent seeders.
  *   - `ROLLBACK` really un-does the dry run, including the ledger DDL.
  *
- * NAMES ARE DELIBERATELY NEUTRAL. This suite lives in core, and core's
- * decoupling ratchet (`scripts/check-core-decoupling.mjs`) counts every one of
- * the extracted plugin's identifiers in `middleware/test`. The mechanism is
+ * NAMES ARE DELIBERATELY NEUTRAL. This suite lives in core, and the epic #470
+ * extraction rule kept every one of the extracted plugin's identifiers out of
+ * `middleware/test` (the ratchet that enforced it was retired in C14). The mechanism is
  * generic — any plugin adopting any core ledger — so the fixture is generic
  * too. The nine REAL witnesses are documented in the epic README under
  * `specs/470-dev-…-plugin/README.md` and shipped by the plugin repo, which

@@ -12,7 +12,8 @@
  *
  * WHY A FRACTION AND NOT A COMMITTED BASELINE
  * -------------------------------------------
- * The repo's other ratchets (core-decoupling, test-typecheck, PG_TEST_FLOOR)
+ * The repo's other ratchets (test-typecheck, PG_TEST_FLOOR, and the #470
+ * core-decoupling ratchet until it was retired at C14)
  * commit an absolute number, because they count things that do not vary by
  * machine. Durations do: the same suite measured 36.5 s locally on 16 cores
  * and 172 s on a 4-vCPU CI runner — a 4.7x spread. An absolute ms baseline
