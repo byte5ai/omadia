@@ -188,3 +188,52 @@ describe('verifier/evidenceJudge', () => {
     }
   });
 });
+
+// #129 golden flake `blocked_contradiction_role`: the extractor sometimes
+// emits a subject-less fragment ("in die IT-Abteilung") as the qualitative
+// claim. The judge deliberately never sees the answer, so it cannot know who
+// moved where → `unverified`. `claim.context` (the enclosing sentence, cut
+// deterministically by the extractor) restores the subject without leaking
+// the whole answer.
+describe('verifier/evidenceJudge - claim context', () => {
+  function capturingProvider(v: RecordedVerdict): { llm: unknown; prompts: string[] } {
+    const prompts: string[] = [];
+    const provider = {
+      complete(req: { messages: Array<{ content: unknown }> }): Promise<{ content: unknown[] }> {
+        const first = req.messages[0]?.content;
+        const text = Array.isArray(first)
+          ? first.map((p) => (p as { text?: string }).text ?? '').join('')
+          : String(first);
+        prompts.push(text);
+        return Promise.resolve({
+          content: [{ type: 'tool_call', name: 'record_verdict', id: 'toolu_x', input: v }],
+        });
+      },
+    };
+    return { llm: provider, prompts };
+  }
+
+  it('passes the enclosing sentence as CONTEXT when the claim carries one', async () => {
+    const { llm, prompts } = capturingProvider({ verdict: 'unverified' });
+    const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([SNIPPET]) });
+    await judge.check(
+      makeSoftClaim({
+        text: 'in die IT-Abteilung',
+        context: 'Anna Müller wechselte am 01.03.2023 in die IT-Abteilung.',
+      }),
+    );
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0]!, /CLAIM: in die IT-Abteilung/);
+    assert.match(prompts[0]!, /CONTEXT: Anna Müller wechselte am 01\.03\.2023 in die IT-Abteilung\./);
+  });
+
+  it('omits CONTEXT when the claim has none or it equals the claim text', async () => {
+    const { llm, prompts } = capturingProvider({ verdict: 'unverified' });
+    const judge = new EvidenceJudge({ llm: llm as never, fetcher: stubFetcher([SNIPPET]) });
+    await judge.check(makeSoftClaim());
+    await judge.check(makeSoftClaim({ context: 'John Doe ist Senior Developer bei byte5' }));
+    assert.equal(prompts.length, 2);
+    assert.doesNotMatch(prompts[0]!, /CONTEXT:/);
+    assert.doesNotMatch(prompts[1]!, /CONTEXT:/);
+  });
+});

@@ -18,6 +18,22 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — verifier: judge sees the sentence a fragment claim was cut from (#129 follow-up)
+
+- The claim extractor sometimes emits a subject-less fragment ("in die
+  IT-Abteilung") as the qualitative claim. The evidence judge deliberately
+  never sees the answer, so it could not know *who* moved where and returned
+  `unverified` — `golden-eval.yml` flaked on `blocked_contradiction_role`.
+- `Claim.context` now carries the enclosing sentence, cut deterministically
+  (no LLM) at `.`/`!`/`?`+whitespace or newline; a dot after a number or a
+  known abbreviation (`01.03.2023`, `1. März`, `z.B.`, `Dr.`) is not a
+  boundary; capped at 400 chars around the span. No context is attached when
+  the span occurs in more than one sentence (no guessing the subject) or
+  when it already is the whole sentence. The judge gets it as a `CONTEXT:`
+  line for disambiguation only and may not base a verdict on facts that
+  appear only there. Extractor prompt additionally asks for self-contained
+  qualitative claims. The contradiction double-check is unchanged.
+
 ### Added — Conductor workflows can be deleted from the library
 
 - **`DELETE /api/v1/operator/conductors/:slug`** removes a workflow with the
