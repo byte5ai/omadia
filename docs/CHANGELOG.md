@@ -18,6 +18,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Conductor workflows can be deleted from the library
+
+- **`DELETE /api/v1/operator/conductors/:slug`** removes a workflow with the
+  #330 reaper's two shapes, extended to manual workflows: physical DELETE when
+  no run references any version (versions, drafts and schedules cascade),
+  logical removal otherwise (`disabled` + `reaped_at` — run history retained
+  as audit trace, hidden from the library and never event- or cron-triggered
+  again). Active (running/waiting) runs answer `409 conductor.has_active_runs`;
+  the `eph-` namespace stays owned by the ephemeral lifecycle (`400`).
+- **Conductor page grows a "Delete" action** per workflow, gated by the shared
+  ConfirmDialog (en+de).
+
 ### Changed — the observed-invite index survives restarts (#330 follow-up)
 
 - Migration `0048_observed_invites.sql` (core series, `middleware/migrations/`): new table
