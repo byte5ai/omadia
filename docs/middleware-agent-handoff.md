@@ -1186,6 +1186,44 @@ Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
 Tamper-Demo: `docs/provenance-verification.md`. Tests:
 `test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
 
+### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
+
+Agent-generierte, run-scoped Workflows: `conductor_workflows.origin`
+(`manual` | `ephemeral`, Migration `0009_ephemeral_workflows.sql` — plus
+`expires_at`, `created_by_agent`, `reaped_at`). Ephemere Workflows entstehen
+NUR über den Kernel-Service **`conductorEphemeralRuns`**
+(`createEphemeralRun({ agentId, patternId, slots, payload, ttlMs })`,
+provided in `src/index.ts` neben `conductorAwaitResolver`; deny-by-default —
+kein `pluginServiceGrants`-Eintrag, den liefert erst das Facilitator-Plugin).
+Der Graph kommt aus dem kuratierten **Pattern-Katalog**
+`src/conductor/patterns/` (`patternCatalog.ts`, Patterns = TemplateManifests,
+Slot-Fill über die bestehende Template-Maschinerie — Agents können keine
+freien Graphen einreichen; erstes Pattern: `facilitation`). Create+Start in
+einem Call: `createOrPublish({ origin:'ephemeral', expectNew, enable })` →
+`startRun({ triggerKind:'agent' })` (erste Call-Site dieses TriggerKinds).
+
+Namespace: Slug-Präfix **`eph-`** ist reserviert — `POST /`,
+Template-Instantiate, `POST /:slug/status` und `POST /:slug/runs` lehnen es
+mit `conductor.reserved_slug_prefix` ab (Status/Runs: der Reaper owned den
+Lifecycle, sonst Zombie-Risiko). `workflowStore.list()` filtert auf
+`origin='manual'` — Library-UI UND EventRouter sehen ephemere Workflows nie
+(run-scoped, nicht event-triggerbar).
+
+Lifecycle („discard the scaffold, never the minutes"): bei terminalem
+Run-State (Hook in `notifyRunEnded`) oder TTL-Ablauf
+(`ephemeralReaper.ts`, scheduleWorker-Muster) wird die Definition disabled +
+`reaped_at` gestempelt; abgelaufene aktive Runs bekommen den #759
+Cancel-Request; physisches DELETE nur für referenzlose Definitionen
+(`hardDeleteUnreferenced`, NOT-EXISTS-Guard; FK conductor_runs →
+versions blockt ohnehin). Run-Historie + Version-Graph bleiben als
+Audit-Trace. Guardrails env-tunable (`CONDUCTOR_EPHEMERAL_*`, §10): Pflicht-TTL
+mit Clamp (Default 24h, Max 7d), max. 3 concurrent Runs + 10 Creates/h pro
+Agent. Tests: `test/conductorEphemeral*.test.ts`,
+`test/conductorPatternCatalog.test.ts`. Achtung: das Schema-CI-Gate re-applied
+`src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
+"still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
+CI-unbewiesen.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1564,6 +1602,12 @@ BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
+# Conductor ephemeral/JIT workflows (#330 Workstream A) — Guardrails für createEphemeralRun
+CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS=86400000      # 24h Default-TTL
+CONDUCTOR_EPHEMERAL_MAX_TTL_MS=604800000         # 7d Obergrenze (Requests werden geclampt)
+CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT=3       # concurrent ephemeral Runs pro Agent
+CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR=10      # Create-Rate pro Agent
+CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS=60000     # Reaper-Poll
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional

@@ -28,6 +28,11 @@ import { RealStepEffects } from './realStepEffects.js';
 import { ConductorBuilderAgent } from './builderAgent.js';
 import { createCompositeTemplateCatalog, loadTemplateCatalog } from './templateCatalog.js';
 import type { CompositeTemplateCatalog } from './templateCatalog.js';
+import { loadPatternCatalog } from './patternCatalog.js';
+import type { PatternCatalog } from './patternCatalog.js';
+import { ConductorEphemeralStore } from './ephemeralStore.js';
+import { ConductorEphemeralRunService } from './ephemeralRunService.js';
+import { ConductorEphemeralReaper } from './ephemeralReaper.js';
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
@@ -89,6 +94,20 @@ export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
 export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
+export { loadPatternCatalog } from './patternCatalog.js';
+export type { PatternCatalog } from './patternCatalog.js';
+export { ConductorEphemeralStore } from './ephemeralStore.js';
+export type { ReapableWorkflow } from './ephemeralStore.js';
+export {
+  ConductorEphemeralRunService,
+  EPHEMERAL_SLUG_PREFIX,
+  PatternNotFoundError,
+  EphemeralSlotsMissingError,
+  EphemeralQuotaExceededError,
+  EphemeralInvalidInputError,
+} from './ephemeralRunService.js';
+export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits } from './ephemeralRunService.js';
+export { ConductorEphemeralReaper } from './ephemeralReaper.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -113,6 +132,12 @@ export interface ConductorWiring {
   webhookSubscriptions: ConductorWebhookSubscriptionStore;
   webhookDispatcher: ConductorWebhookDispatcher;
   webhookRetryWorker: ConductorWebhookRetryWorker;
+  /** #330 — curated patterns + create/start seam + lifecycle for agent-generated
+   *  JIT workflows; the service is what `conductorEphemeralRuns` exposes to plugins. */
+  patternCatalog: PatternCatalog;
+  ephemeralStore: ConductorEphemeralStore;
+  ephemeralRunService: ConductorEphemeralRunService;
+  ephemeralReaper: ConductorEphemeralReaper;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -162,6 +187,16 @@ export async function wireConductor(deps: {
     holderId: string;
     holdersAfter: string[];
   }) => Promise<void>;
+  /** #330 — guardrails for agent-generated ephemeral workflows. Every field
+   *  optional; defaults: TTL 24h (max 7d), 3 concurrent runs + 10 creates/hour
+   *  per agent, 60s reaper poll. */
+  ephemeral?: {
+    defaultTtlMs?: number;
+    maxTtlMs?: number;
+    maxActivePerAgent?: number;
+    maxCreatesPerHour?: number;
+    reaperIntervalMs?: number;
+  };
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -232,6 +267,19 @@ export async function wireConductor(deps: {
   });
   webhookRetryWorker.start();
 
+  // #330 — ephemeral lifecycle store, built before the executor so the terminal
+  // hook below can dispose of an agent-generated workflow the moment its run ends
+  // (the reaper's TTL poll is the safety net, not the primary path).
+  const ephemeralStore = new ConductorEphemeralStore(deps.pool);
+  const reapIfEphemeral = async (workflowVersionId: string): Promise<void> => {
+    const version = await workflowStore.getVersion(workflowVersionId);
+    const workflow = version ? await workflowStore.getById(version.workflowId) : null;
+    if (workflow?.origin !== 'ephemeral' || workflow.reapedAt) return;
+    await ephemeralStore.markReaped(workflow.id);
+    await ephemeralStore.hardDeleteUnreferenced(workflow.id);
+    log(`[conductor] ephemeral '${workflow.slug}' reaped on terminal run state (audit trace retained)`);
+  };
+
   const executor = new ConductorRunExecutor({
     workflowStore,
     runStore,
@@ -256,6 +304,12 @@ export async function wireConductor(deps: {
         await webhookDispatcher.deliverEvent(event, payload);
       })().catch((err: unknown) => {
         log(`[conductor] webhook dispatch for run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      // #330 — an ephemeral workflow is disposed of the moment its run reaches a
+      // terminal state. Best-effort like the webhook dispatch: a miss here is
+      // recovered by the reaper's poll, never lost.
+      void reapIfEphemeral(run.workflowVersionId).catch((err: unknown) => {
+        log(`[conductor] ephemeral reap after run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     },
     log,
@@ -312,6 +366,29 @@ export async function wireConductor(deps: {
   // Schedule worker — fires workflows on their cron triggers (US4 cron).
   const scheduleWorker = new ConductorScheduleWorker({ scheduleStore, executor, log });
   scheduleWorker.start();
+
+  // #330 — curated pattern catalog + the create/start seam agents get via the
+  // `conductorEphemeralRuns` service, plus the TTL reaper (scheduleWorker discipline).
+  const patternCatalog = loadPatternCatalog({ log });
+  const ephemeralRunService = new ConductorEphemeralRunService({
+    patterns: patternCatalog,
+    workflowStore,
+    ephemeralStore,
+    executor,
+    limits: {
+      defaultTtlMs: deps.ephemeral?.defaultTtlMs ?? 24 * 60 * 60 * 1000,
+      maxTtlMs: deps.ephemeral?.maxTtlMs ?? 7 * 24 * 60 * 60 * 1000,
+      maxActivePerAgent: deps.ephemeral?.maxActivePerAgent ?? 3,
+      maxCreatesPerHour: deps.ephemeral?.maxCreatesPerHour ?? 10,
+    },
+    log,
+  });
+  const ephemeralReaper = new ConductorEphemeralReaper({
+    store: ephemeralStore,
+    ...(deps.ephemeral?.reaperIntervalMs !== undefined ? { intervalMs: deps.ephemeral.reaperIntervalMs } : {}),
+    log,
+  });
+  ephemeralReaper.start();
 
   // Event router — a domain event starts every subscribed workflow's run (US4).
   const eventRouter = new ConductorEventRouter({ workflowStore, executor, log });
@@ -398,5 +475,6 @@ export async function wireConductor(deps: {
     workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker,
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
+    patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper,
   };
 }

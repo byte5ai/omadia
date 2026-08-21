@@ -21,6 +21,7 @@ import {
 } from '@omadia/conductor-core';
 import type { JsonObject, LocalizedText, TemplateManifest, TemplateSlotMapping, WorkflowGraph } from '@omadia/conductor-core';
 
+import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
 import { WorkflowSlugExistsError } from './workflowStore.js';
 import { TemplateIdExistsError, TemplateInvalidError } from './templateStore.js';
 import type { TemplateSummary } from './templateCatalog.js';
@@ -352,6 +353,12 @@ export function registerTemplateRoutes(router: Router, deps: ConductorRouterDeps
     const slug = typeof body.slug === 'string' ? body.slug.trim() : '';
     if (!slug) {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'slug is required' });
+      return;
+    }
+    // #330 — same reservation as 'POST /': the 'eph-' namespace belongs to
+    // agent-generated ephemeral workflows and their reaper.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
       return;
     }
     try {

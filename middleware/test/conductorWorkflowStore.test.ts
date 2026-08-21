@@ -86,4 +86,40 @@ describe('ConductorWorkflowStore.createOrPublish expectNew', () => {
     assert.ok(!insert?.includes('DO NOTHING'), insert);
     assert.ok(sqlOf(queries).includes('COMMIT'));
   });
+
+  // #330 — ephemeral provenance flows through the same INSERT; absent input
+  // defaults to the manual namespace so every pre-#330 caller is unchanged.
+  it('persists origin/expiresAt/createdByAgent on create and defaults them to manual', async () => {
+    const expiresAt = new Date('2026-08-22T10:00:00.000Z');
+    const { pool, queries } = fakePool({ slugTaken: false });
+    await new ConductorWorkflowStore(pool).createOrPublish({
+      slug: 'eph-demo-1', name: 'Demo', graph: GRAPH, expectNew: true,
+      origin: 'ephemeral', expiresAt, createdByAgent: 'agent-1',
+    });
+    const insert = queries.find((q) => q.sql.replace(/\s+/g, ' ').trim().startsWith('INSERT INTO conductor_workflows '));
+    assert.deepEqual(insert?.params.slice(4), ['ephemeral', expiresAt, 'agent-1']);
+
+    const plain = fakePool({ slugTaken: false });
+    await new ConductorWorkflowStore(plain.pool).createOrPublish({ slug: 'plain', name: 'Plain', graph: GRAPH });
+    const plainInsert = plain.queries.find((q) => q.sql.replace(/\s+/g, ' ').trim().startsWith('INSERT INTO conductor_workflows '));
+    assert.deepEqual(plainInsert?.params.slice(4), ['manual', null, null]);
+  });
+});
+
+// #330 — the library list is the user-authored surface: the manual-origin
+// filter lives in the store so every list consumer is clutter-free at once.
+describe('ConductorWorkflowStore.list', () => {
+  it("emits the origin = 'manual' filter", async () => {
+    const issued: string[] = [];
+    const pool = {
+      query: async (sql: string): Promise<{ rows: unknown[] }> => {
+        issued.push(sql.replace(/\s+/g, ' ').trim());
+        return { rows: [] };
+      },
+    } as unknown as Pool;
+
+    await new ConductorWorkflowStore(pool).list();
+    assert.equal(issued.length, 1);
+    assert.ok(issued[0]!.includes("WHERE origin = 'manual'"), issued[0]);
+  });
 });
