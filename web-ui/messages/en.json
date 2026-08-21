@@ -4169,6 +4169,7 @@
     "loadError": "Loading failed: {message}",
     "empty": "No datasets imported yet.",
     "listCapped": "Showing the {cap} most recent datasets — the endpoint returns no more than that, so older ones may exist without appearing here.",
+    "listRange": "Showing {from}–{to} of {total} datasets",
     "meta": "{rows} rows · {columns} columns · imported {created}",
     "showDetails": "Schema & rows",
     "hideDetails": "Close",
@@ -4186,12 +4187,13 @@
     "previousPage": "Back",
     "nextPage": "Next",
     "errors": {
-      "tooLarge": "The file exceeds the 25 MB upload limit.",
+      "tooLarge": "The file exceeds the {maxMb} MB upload limit.",
       "notCsv": "Only CSV files are supported so far.",
       "noFile": "No file arrived — pick a CSV first.",
       "importFailed": "The CSV could not be imported. {detail}",
       "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
-      "generic": "The request failed (HTTP {status})."
+      "generic": "The request failed (HTTP {status}).",
+      "unexpected": "The request failed. {detail}"
     }
   },
   "adminMemoryBackend": {

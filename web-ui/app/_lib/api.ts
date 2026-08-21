@@ -3578,9 +3578,33 @@ export interface DatasetUploadResponse {
   truncation: { truncatedCellCount: number; truncatedColumns: string[] };
 }
 
-export async function listDatasets(): Promise<DatasetSummary[]> {
-  const res = await getJson<{ items: DatasetSummary[] }>('/v1/datasets');
-  return expectArray<DatasetSummary>(res.items, '/v1/datasets', 'items');
+/**
+ * `GET /` — one page of the caller's datasets. `totalMatched` mirrors the
+ * rows endpoint (count before limit/offset); it is absent only when the
+ * middleware's graph implementation predates the optional `countDatasets`
+ * (#532 pagination follow-up to #430).
+ */
+export interface DatasetListPage {
+  items: DatasetSummary[];
+  totalMatched?: number;
+}
+
+export async function listDatasets(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetListPage> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await getJson<{ items: DatasetSummary[]; totalMatched?: number }>(
+    `/v1/datasets${suffix}`,
+  );
+  return {
+    items: expectArray<DatasetSummary>(res.items, '/v1/datasets', 'items'),
+    ...(typeof res.totalMatched === 'number'
+      ? { totalMatched: res.totalMatched }
+      : {}),
+  };
 }
 
 export async function getDataset(id: string): Promise<DatasetSummary> {

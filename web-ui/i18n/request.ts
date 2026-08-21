@@ -99,5 +99,12 @@ export default getRequestConfig(async () => {
 
 async function loadConfig(locale: Locale) {
   const messages = (await import(`../messages/${locale}.json`)).default;
-  return { locale, messages };
+  // Explicit timeZone: without it next-intl logs an ENVIRONMENT_FALLBACK
+  // IntlError for every `format.dateTime` call (one per rendered table row on
+  // /admin/datasets). The host's zone is what the fallback resolved to anyway.
+  return {
+    locale,
+    messages,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
 }

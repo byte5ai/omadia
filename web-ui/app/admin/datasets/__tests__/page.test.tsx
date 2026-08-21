@@ -86,7 +86,7 @@ function rowPage(offset: number) {
 }
 
 beforeEach(() => {
-  mockListDatasets.mockResolvedValue([DATASET]);
+  mockListDatasets.mockResolvedValue({ items: [DATASET], totalMatched: 1 });
   mockGetDataset.mockResolvedValue(DATASET);
   mockGetDatasetRows.mockImplementation((_id: string, opts: { offset?: number }) =>
     Promise.resolve(rowPage(opts.offset ?? 0)),
@@ -109,7 +109,7 @@ describe('<AdminDatasetsPage />', () => {
   });
 
   it('renders the empty state when the account has imported nothing', async () => {
-    mockListDatasets.mockResolvedValue([]);
+    mockListDatasets.mockResolvedValue({ items: [], totalMatched: 0 });
     renderWithIntl(<AdminDatasetsPage />);
 
     expect(await screen.findByText('No datasets imported yet.')).toBeTruthy();
@@ -170,24 +170,102 @@ describe('<AdminDatasetsPage />', () => {
     expect(mockGetDataset).toHaveBeenCalledTimes(1);
   });
 
-  it('says so when the listing hits the endpoint cap instead of ending silently', async () => {
-    mockListDatasets.mockResolvedValue(
-      Array.from({ length: 50 }, (_, i) => ({
+  it('pages the dataset LIST server-side and shows the real total (#532 must-fix 1)', async () => {
+    // 60 datasets — more than one page. The pre-pagination page served the
+    // newest 50 with no hint that 10 more existed and no way to delete them.
+    const user = userEvent.setup();
+    const all = Array.from({ length: 60 }, (_, i) => ({
+      ...DATASET,
+      id: `ds-${String(i)}`,
+      name: `Dataset ${String(i)}`,
+    }));
+    mockListDatasets.mockImplementation(
+      (opts: { limit?: number; offset?: number } = {}) => {
+        const offset = opts.offset ?? 0;
+        return Promise.resolve({
+          items: all.slice(offset, offset + (opts.limit ?? 50)),
+          totalMatched: 60,
+        });
+      },
+    );
+    renderWithIntl(<AdminDatasetsPage />);
+
+    expect(await screen.findByText('Showing 1–50 of 60 datasets')).toBeTruthy();
+    expect(mockListDatasets).toHaveBeenCalledWith({ limit: 50, offset: 0 });
+    expect(
+      (screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+
+    expect(await screen.findByText('Showing 51–60 of 60 datasets')).toBeTruthy();
+    expect(mockListDatasets).toHaveBeenLastCalledWith({ limit: 50, offset: 50 });
+    // The formerly unreachable 51st dataset is now listed — and deletable.
+    expect(screen.getByText('Dataset 50')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it('hides the pager when one page holds everything', async () => {
+    renderWithIntl(<AdminDatasetsPage />);
+
+    await screen.findByText('Q3 orders');
+    expect(screen.queryByText(/of 1 datasets/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+  });
+
+  it('steps back a page when the last dataset of the last page is deleted', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    let deleted = false;
+    const all = Array.from({ length: 51 }, (_, i) => ({
+      ...DATASET,
+      id: `ds-${String(i)}`,
+      name: `Dataset ${String(i)}`,
+    }));
+    mockListDatasets.mockImplementation(
+      (opts: { limit?: number; offset?: number } = {}) => {
+        const remaining = deleted ? all.slice(0, 50) : all;
+        const offset = opts.offset ?? 0;
+        return Promise.resolve({
+          items: remaining.slice(offset, offset + (opts.limit ?? 50)),
+          totalMatched: remaining.length,
+        });
+      },
+    );
+    mockDeleteDataset.mockImplementation(() => {
+      deleted = true;
+      return Promise.resolve(undefined);
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+
+    await screen.findByText('Showing 1–50 of 51 datasets');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByText('Showing 51–51 of 51 datasets');
+
+    // Page 2 holds exactly one dataset — delete it.
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    // The now-empty page 2 is not rendered as "no datasets"; the page steps
+    // back and shows the (single, pager-less) remaining page.
+    expect(await screen.findByText('Dataset 0')).toBeTruthy();
+    expect(mockListDatasets).toHaveBeenLastCalledWith({ limit: 50, offset: 0 });
+    expect(screen.queryByText('No datasets imported yet.')).toBeNull();
+  });
+
+  it('falls back to an explicit cap warning when the backend cannot count', async () => {
+    // A graph implementation predating `countDatasets` sends no totalMatched.
+    mockListDatasets.mockResolvedValue({
+      items: Array.from({ length: 50 }, (_, i) => ({
         ...DATASET,
         id: `ds-${String(i)}`,
         name: `Dataset ${String(i)}`,
       })),
-    );
+    });
     renderWithIntl(<AdminDatasetsPage />);
 
     expect(await screen.findByText(/Showing the 50 most recent datasets/)).toBeTruthy();
-  });
-
-  it('stays quiet about the cap when the listing is short', async () => {
-    renderWithIntl(<AdminDatasetsPage />);
-
-    await screen.findByText('Q3 orders');
-    expect(screen.queryByText(/most recent datasets/)).toBeNull();
   });
 
   it('reports the privacy-scan counts after an import', async () => {
@@ -285,6 +363,72 @@ describe('<AdminDatasetsPage />', () => {
 
     await waitFor(() => expect(mockDeleteDataset).toHaveBeenCalledWith('ds-1'));
     expect(mockListDatasets).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed delete in its own error slot and resyncs the list', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    mockDeleteDataset.mockRejectedValue(
+      new MockApiError(500, 'boom', JSON.stringify({ code: 'dataset.internal_error' })),
+    );
+    renderWithIntl(<AdminDatasetsPage />);
+
+    await screen.findByText('Q3 orders');
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    // The delete failure is NOT dressed up as a list-load failure (#598
+    // review must-fix 3) — the list stays rendered next to the error.
+    expect(await screen.findByText('The request failed (HTTP 500).')).toBeTruthy();
+    expect(screen.getByText('Q3 orders')).toBeTruthy();
+    expect(screen.queryByText(/Loading failed/)).toBeNull();
+    // And the list is re-read: the server may have deleted the row despite
+    // the error, and a stale row invites a second delete.
+    expect(mockListDatasets).toHaveBeenCalledTimes(2);
+  });
+
+  it('never renders one dataset’s rows under another’s schema (#598 must-fix 2)', async () => {
+    // Open A (slow rows fetch), then switch to B (fast). A's response lands
+    // LAST — without the request guard it would overwrite B's panel.
+    const user = userEvent.setup();
+    const datasetB = {
+      ...DATASET,
+      id: 'ds-2',
+      name: 'Suppliers',
+      sourceFileName: 'suppliers.csv',
+      columns: [{ name: 'supplier', type: 'string' as const, sample: 'ACME' }],
+    };
+    mockListDatasets.mockResolvedValue({
+      items: [DATASET, datasetB],
+      totalMatched: 2,
+    });
+    mockGetDataset.mockImplementation((id: string) =>
+      Promise.resolve(id === 'ds-1' ? DATASET : datasetB),
+    );
+    let resolveA!: (page: ReturnType<typeof rowPage>) => void;
+    mockGetDatasetRows.mockImplementation((id: string) => {
+      if (id === 'ds-1') {
+        return new Promise((resolve) => {
+          resolveA = resolve;
+        });
+      }
+      return Promise.resolve({
+        rows: [{ supplier: 'ACME Corp' }],
+        totalMatched: 1,
+      });
+    });
+    renderWithIntl(<AdminDatasetsPage />);
+    await screen.findByText('Suppliers');
+
+    const toggles = screen.getAllByRole('button', { name: 'Schema & rows' });
+    await user.click(toggles[0]!); // A — its rows promise stays pending
+    await user.click(toggles[1]!); // B — resolves immediately
+    await screen.findByText('ACME Corp');
+
+    resolveA(rowPage(0)); // A's stale response lands after B is open
+    // Let A's promise chain fully flush before asserting it changed nothing.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText('SO-2000')).toBeNull();
+    expect(screen.getByText('ACME Corp')).toBeTruthy();
   });
 
   it('translates a dataset.* error code rather than showing the raw message', async () => {

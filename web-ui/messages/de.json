@@ -4169,6 +4169,7 @@
     "loadError": "Laden fehlgeschlagen: {message}",
     "empty": "Noch keine Datensätze importiert.",
     "listCapped": "Es werden die {cap} neuesten Datensätze angezeigt — mehr liefert der Endpunkt nicht zurück, ältere können also existieren, ohne hier aufzutauchen.",
+    "listRange": "Zeige {from}–{to} von {total} Datensätzen",
     "meta": "{rows} Zeilen · {columns} Spalten · importiert {created}",
     "showDetails": "Schema & Zeilen",
     "hideDetails": "Schließen",
@@ -4186,12 +4187,13 @@
     "previousPage": "Zurück",
     "nextPage": "Weiter",
     "errors": {
-      "tooLarge": "Die Datei überschreitet das Upload-Limit von 25 MB.",
+      "tooLarge": "Die Datei überschreitet das Upload-Limit von {maxMb} MB.",
       "notCsv": "Bisher werden ausschließlich CSV-Dateien unterstützt.",
       "noFile": "Es kam keine Datei an — bitte zuerst eine CSV auswählen.",
       "importFailed": "Die CSV konnte nicht importiert werden. {detail}",
       "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
-      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
+      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
+      "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"
     }
   },
   "adminMemoryBackend": {
