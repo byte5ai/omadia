@@ -41,6 +41,15 @@ requires:
   - "factExtractor@^1"
   - "verifier@^1"
 
+# #584 WS I — transcription@1 backs the transcribe_recording native tool.
+# OPTIONAL by design: the provider is an operator-installed adapter plugin
+# that may (de)activate any time after this plugin ran, so the tool resolves
+# the service per dispatch and answers with a clear error string when no
+# provider is live. Listing it as a hard require would block chat entirely
+# on installs that never transcribe.
+optional_requires:
+  - "transcription@1"
+
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
 # (which late-resolves bundle.raw to wire `attachOrchestrator` per uploaded
