@@ -535,7 +535,8 @@ export class ServiceNotDeclaredError extends Error {
   constructor(pluginId: string, capability: string) {
     super(
       `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
-        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`provides:\` if this plugin is the provider)`,
+        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
+        `or \`provides:\` if this plugin is the provider)`,
     );
     this.name = 'ServiceNotDeclaredError';
     this.pluginId = pluginId;
@@ -580,6 +581,31 @@ export interface ServicesAccessor {
    *  not declare `name` — that is a manifest bug, not a missing provider, and
    *  the two must not be reported the same way. */
   get<T>(name: string): T | undefined;
+  /**
+   * Resolve a capability the plugin declared as OPTIONAL
+   * (`optional_requires:` in the manifest), where "no provider installed"
+   * is a supported steady state rather than a misconfiguration.
+   *
+   * Declaration-gated on exactly the same terms as {@link get}: a name in
+   * neither `requires:`, `optional_requires:` nor `provides:` throws
+   * {@link ServiceNotDeclaredError}, because a typo must not silently
+   * become `undefined`.
+   *
+   * The difference from {@link get} is the contract it advertises, not the
+   * lookup. `get` is paired with `requires:`, which the installer and the
+   * boot loop both treat as a hard prerequisite — so a `get` that returns
+   * `undefined` normally means something upstream failed. `getOptional` is
+   * paired with `optional_requires:`, which neither gate enforces, so
+   * `undefined` here is an expected answer and the caller is expected to
+   * carry a degradation path for it.
+   *
+   * Note the ordering caveat that comes with optionality: an optional
+   * dependency contributes no activation edge, so a provider that IS
+   * installed may not have activated yet when the consumer's `activate()`
+   * runs. Resolve optional services lazily (at first use) rather than
+   * caching the result of a single call during activation.
+   */
+  getOptional<T>(name: string): T | undefined;
   /** Whether a provider is currently registered. Ungated — see the interface
    *  doc. */
   has(name: string): boolean;
@@ -909,6 +935,14 @@ export interface PluginActionStatus {
   readonly title?: string;
   /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
   readonly detail?: string;
+  /**
+   * ISO timestamp of when this status was reported — STAMPED BY THE KERNEL at
+   * `report()` time, never trusted from the plugin, so "geprüft um <Zeit>"
+   * cannot lie about when the check actually ran. Field-test follow-up
+   * (OM-16/24/33): a connection verdict without a time reads as a permanent
+   * fact; with one it reads as what it is — the result of the last probe.
+   */
+  readonly checked_at?: string;
 }
 
 /**
@@ -917,6 +951,12 @@ export interface PluginActionStatus {
  * and `clear()` once everything is fine. The kernel keeps only the latest
  * value per plugin; there is no history. Reporting another plugin's status is
  * impossible — the accessor is bound to the calling plugin's id.
+ *
+ * `state: 'ok'` semantics: a BARE ok (no `title`) is equivalent to `clear()`
+ * and renders nothing — existing callers keep their behaviour. An ok WITH a
+ * `title` (e.g. "Verbunden") is stored and rendered as a positive badge with
+ * the kernel-stamped `checked_at`, so an integration can surface "connection
+ * verified at <time>" instead of silence.
  */
 export interface StatusAccessor {
   report(status: PluginActionStatus): void;
@@ -1001,6 +1041,12 @@ export interface UiRoutesAccessor {
    * web-ui pages (a built-in package) has a nav entry and no uiRoute;
    * a plugin serving its own HTML has both.
    *
+   * Supply either a literal `href` (validated as a canonical in-app path)
+   * or `pluginUi: true`, which asks the kernel to render the canonical
+   * path to this plugin's own bundled UI — the only way a scoped plugin
+   * id can express a nav destination, since that path must be
+   * percent-encoded and a literal href may not be.
+   *
    * Returns a dispose handle the plugin MUST call from its `close()`.
    * The kernel additionally drops every entry by source on deactivate,
    * so a leaked handle cannot outlive the plugin.
@@ -1044,11 +1090,32 @@ export interface UiNavEntryInput {
   /** Stable id within the plugin. Combined with pluginId as the key. */
   readonly navId: string;
   /**
-   * Absolute in-app path (e.g. `/admin/dev-platform`). Must start with
-   * exactly one `/` — protocol-relative (`//host`) and scheme-bearing
-   * values are rejected so a manifest cannot point the nav off-origin.
+   * Absolute in-app path (e.g. `/admin/reports`). Must start with exactly
+   * one `/` — protocol-relative (`//host`) and scheme-bearing values are
+   * rejected so a manifest cannot point the nav off-origin. Segments are
+   * confined to the RFC 3986 unreserved set: no query, no fragment, no
+   * percent-encoding, no dot-segments.
+   *
+   * Mutually exclusive with {@link pluginUi}; exactly one of the two must
+   * be supplied.
    */
-  readonly href: string;
+  readonly href?: string;
+  /**
+   * Point the entry at THIS plugin's own bundled UI instead of a literal
+   * path, and let the kernel spell the URL.
+   *
+   * A plugin that ships a compiled SPA is served at `/p/<pluginId>/ui/`
+   * and embedded by the shell's host page at `/plugin-ui/<pluginId>`. For
+   * a scoped id like `@acme/widget` the only URL that resolves is the
+   * percent-encoded one (`%40acme%2Fwidget`) — and percent-encoding is
+   * exactly what the `href` validator refuses, deliberately, because a
+   * literal href has to be comparable to a core path by string equality.
+   *
+   * So the plugin states the intent and the kernel renders the canonical
+   * encoded path from the id it already knows. A plugin never hand-builds
+   * an encoded href, and the literal-href rule stays strict.
+   */
+  readonly pluginUi?: true;
   /**
    * Optional cluster to nest under (e.g. `adminCluster`). Rendered as a
    * top-level entry when omitted, or when the shell has no cluster by
@@ -1064,9 +1131,15 @@ export interface UiNavEntryInput {
   readonly label: Readonly<Record<string, string>>;
 }
 
-/** Catalogue-resolved nav entry — pluginId injected by the kernel. */
-export interface UiNavEntry extends UiNavEntryInput {
+/**
+ * Catalogue-resolved nav entry — `pluginId` injected by the kernel, and
+ * `href` no longer optional: a `pluginUi: true` input is resolved to the
+ * canonical host-page path at registration, so every stored entry carries
+ * a concrete destination.
+ */
+export interface UiNavEntry extends Omit<UiNavEntryInput, 'href'> {
   readonly pluginId: string;
+  readonly href: string;
 }
 
 /**
@@ -1081,6 +1154,14 @@ export interface ResolvedUiNavEntry {
   readonly cluster?: string;
   readonly order: number;
   readonly label: string;
+  /**
+   * Present iff the entry was registered with `pluginUi: true`. The shell
+   * uses it to re-derive `href` from `pluginId` locally instead of
+   * trusting the transmitted string — the middleware is a separate
+   * deployable, and a percent-encoded href is the one shape the shell's
+   * own defensive href rule cannot check character by character.
+   */
+  readonly pluginUi?: true;
 }
 
 /**

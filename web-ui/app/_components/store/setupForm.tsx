@@ -35,14 +35,25 @@ export function FieldRow({
   field,
   error,
   idPrefix = 'install-field',
+  coveredByUpload = false,
 }: {
   field: InstallSetupField;
   error?: SetupFieldError;
   idPrefix?: string;
+  /**
+   * #603 (OM-17) — true when a `json_file` field in the same form declares
+   * this field as an `extracts` target. The browser's NATIVE `required` check
+   * then must not fire: it would refuse the submit silently (a native tooltip
+   * the app cannot localize) while the operator has attached the file that
+   * supplies the value. Requiredness is still enforced — by the server, AFTER
+   * it merged the extracted values — so nothing is lost, only the false stop.
+   */
+  coveredByUpload?: boolean;
 }): React.ReactElement {
   const t = useTranslations('store.setupForm');
   const locale = useLocale();
   const id = `${idPrefix}-${field.key}`;
+  const nativeRequired = field.required && !coveredByUpload;
   const patternHint = pickLocalized(field.pattern_hint, locale);
   // #602 (OM-17) — label/help are localized maps; resolve them at the active
   // locale. A missing label falls back to the field key (never blank).
@@ -125,7 +136,7 @@ export function FieldRow({
           <select
             id={id}
             name={field.key}
-            required={field.required}
+            required={nativeRequired}
             defaultValue={typeof field.default === 'string' ? field.default : ''}
             className={common}
           >
@@ -144,7 +155,7 @@ export function FieldRow({
             name={field.key}
             type="number"
             step={1}
-            required={field.required}
+            required={nativeRequired}
             defaultValue={
               typeof field.default === 'number' ? String(field.default) : ''
             }
@@ -156,7 +167,7 @@ export function FieldRow({
             id={id}
             name={field.key}
             rows={6}
-            required={field.required}
+            required={nativeRequired}
             placeholder={
               field.type === 'secret' ? secretPlaceholder : field.placeholder
             }
@@ -178,7 +189,7 @@ export function FieldRow({
                   ? 'url'
                   : 'text'
             }
-            required={field.required}
+            required={nativeRequired}
             // OM-17 — client-side mirror of the server's `pattern` check. The
             // server is the load-bearing half (it owns the vault write); this
             // makes the browser refuse the submit before the round trip.
@@ -288,4 +299,18 @@ export function extractValues(
     values[field.key] = raw;
   }
   return values;
+}
+
+
+/**
+ * #603 (OM-17) — keys supplied by at least one `json_file` field's `extracts`
+ * in this form. Used to drop the native `required` attribute on those inputs.
+ */
+export function uploadCoveredKeys(fields: InstallSetupField[]): Set<string> {
+  const covered = new Set<string>();
+  for (const f of fields) {
+    if (f.type !== 'json_file' || !f.extracts) continue;
+    for (const target of Object.keys(f.extracts)) covered.add(target);
+  }
+  return covered;
 }

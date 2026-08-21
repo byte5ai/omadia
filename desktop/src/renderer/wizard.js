@@ -7,6 +7,11 @@
 // it → "Identifier 'omadia' has already been declared", which aborts the whole
 // script so no handlers bind and the wizard freezes. Use a distinct name.
 const bridge = window.omadia;
+// Locale overlay (wizard-i18n.js, loaded first). `wt(key, fallback)` returns
+// the German string when the OS locale is German, else the fallback — so every
+// call site keeps its English text readable inline.
+const wt = window.wizardT || ((_k, fallback) => fallback);
+if (window.applyWizardLocale) window.applyWizardLocale();
 const LAST_STEP = 4;
 
 const state = {
@@ -29,8 +34,10 @@ const stepSections = () => Array.from(document.querySelectorAll('.step[data-step
 function bridgeOk() {
   if (bridge) return true;
   const el = $('#testResult') || document.body;
-  el.textContent =
-    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).';
+  el.textContent = wt(
+    'js.bridgeMissing',
+    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).',
+  );
   if (el.className !== undefined) el.className = 'test-result err';
   return false;
 }
@@ -65,7 +72,7 @@ function renderRail() {
 
 function renderNav() {
   $('#back').disabled = state.step === 0;
-  $('#next').textContent = state.step === LAST_STEP ? 'Finish & start omadia' : 'Continue';
+  $('#next').textContent = state.step === LAST_STEP ? wt('nav.finish', 'Finish & start omadia') : wt('nav.continue', 'Continue');
 }
 
 function goto(step) {
@@ -91,7 +98,7 @@ function validateCurrent() {
     if (!state.keyVerified && !state.unverifiedAcknowledged) {
       state.unverifiedAcknowledged = true;
       flashTest(
-        'This key has not been verified yet. Press "Test key" to check it — or press Continue again to set it up unverified.',
+        wt('js.unverifiedHint', 'This key has not been verified yet. Press "Test key" to check it — or press Continue again to set it up unverified.'),
         false,
       );
       return false;
@@ -154,7 +161,10 @@ async function provision() {
   const unsubProgress = bridge.onBootProgress((p) => {
     const pct = PHASE_PCT[p.phase] ?? 10;
     $('#barFill').style.width = pct + '%';
-    $('#progressMsg').textContent = p.message + (p.detail ? ' — ' + p.detail : '');
+    // Localized by PHASE (typed contract), supervisor message as fallback —
+    // a new phase never renders blank, it just renders English.
+    const phaseText = wt('boot.' + p.phase, p.message);
+    $('#progressMsg').textContent = phaseText + (p.detail ? ' — ' + p.detail : '');
     if (p.phase === 'error') $('#barFill').style.background = 'var(--err)';
   });
   // Live, granular log (kernel migrations, plugin activation, DB readiness …).
@@ -166,7 +176,7 @@ async function provision() {
   try {
     res = await bridge.complete(collectConfig());
   } catch (err) {
-    res = { ok: false, error: (err && err.message) || 'Setup crashed unexpectedly.' };
+    res = { ok: false, error: (err && err.message) || wt('js.setupCrashed', 'Setup crashed unexpectedly.') };
   } finally {
     clearInterval(ticker);
     unsubProgress();
@@ -175,7 +185,7 @@ async function provision() {
 
   if (!res.ok) {
     const err = $('#provisionError');
-    err.textContent = res.error || 'Setup failed. Check the logs (tray → Open Logs).';
+    err.textContent = res.error || wt('js.setupFailed', 'Setup failed. Check the logs (tray → Open Logs).');
     err.classList.remove('hidden');
     appendBootLog('ERROR', res.error || 'Setup failed.');
     // Allow another attempt.
@@ -208,20 +218,20 @@ $('#testKey').addEventListener('click', async () => {
   const provider = $('#provider').value;
   const apiKey = $('#apiKey').value.trim();
   if (apiKey.length < 8) {
-    flashTest('Key looks too short.', false);
+    flashTest(wt('js.keyTooShort', 'Key looks too short.'), false);
     return;
   }
   const btn = $('#testKey');
   btn.disabled = true;
-  flashTest('Testing…', true);
+  flashTest(wt('js.testing', 'Testing…'), true);
   try {
     const res = await bridge.testLlmKey({ provider, apiKey });
     state.keyVerified = res.ok;
-    flashTest(res.ok ? 'Key works.' : res.error || 'Key check failed.', res.ok);
+    flashTest(res.ok ? wt('js.keyWorks', 'Key works.') : res.error || wt('js.keyCheckFailed', 'Key check failed.'), res.ok);
   } catch (err) {
     // Never leave the user stuck on "Testing…" — surface the failure.
     state.keyVerified = false;
-    flashTest((err && err.message) || 'Key check failed (internal error).', false);
+    flashTest((err && err.message) || wt('js.keyCheckFailedInternal', 'Key check failed (internal error).'), false);
   } finally {
     btn.disabled = false;
   }
@@ -238,7 +248,10 @@ $('#chooseDir').addEventListener('click', async () => {
     }
   } catch (err) {
     $('#dataDirHint').textContent =
-      'Could not open the folder picker: ' + ((err && err.message) || 'internal error') + '. The default folder will be used.';
+      wt(
+        'js.pickerFailed',
+        'Could not open the folder picker: {msg}. The default folder will be used.',
+      ).replace('{msg}', (err && err.message) || 'internal error');
   }
 });
 

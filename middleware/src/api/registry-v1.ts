@@ -44,6 +44,10 @@ export interface RegistryVersionEntry {
 export interface RegistryManifestSummary {
   provides?: string[];
   requires?: string[];
+  /** Capabilities the plugin can run without (#795). Same capability-ref
+   *  syntax as `requires`, but never a reason to refuse an install — the
+   *  consent UI renders these as optional prerequisites. */
+  optional_requires?: string[];
   depends_on?: string[];
   /** Setup fields the operator must fill at install-time. Mirrors
    *  `PluginSetupField` but kept loose here to avoid a hard schema coupling. */
@@ -68,6 +72,9 @@ export interface RegistryPluginEntry {
   kind: PluginKind;
   domain: string;
   description: string;
+  /** OM-28 (#602) — optional localized description map mirrored from the
+   *  manifest; `description` stays the English string. */
+  description_localized?: Record<string, string>;
   categories: string[];
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;

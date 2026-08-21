@@ -122,7 +122,7 @@ jobs:
             latest=auto
           tags: |
             type=edge,branch=main,enable=${{ inputs.version == '' }}
-            type=sha,prefix=sha-,enable=${{ inputs.version == '' || matrix.sha_on_release == 'true' }}
+            type=sha,prefix=sha-,enable=${{ inputs.version == '' }}
             type=semver,pattern={{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
             type=semver,pattern=v{{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}

@@ -35,7 +35,7 @@ interface Harness {
 
 async function harness(
   over: Partial<ConductorWebhookInboundDeps> = {},
-  opts: { rateLimit?: number } = {},
+  opts: { rateLimit?: number; jsonParserFirst?: boolean } = {},
 ): Promise<Harness> {
   // Keyed `${endpointId}::${deliveryId}` — mirrors the store's composite PK scoping
   // (finding: a global key would misread endpoint B's id '1' as a dupe of A's).
@@ -74,6 +74,13 @@ async function harness(
   };
 
   const app = express();
+  // Mount order is load-bearing, not incidental. body-parser stamps the request
+  // `_body` once it reads the stream, and every later parser — including this
+  // router's own route-level `express.raw()` — then short-circuits, so the handler
+  // sees a parsed object instead of a Buffer and HMACs an EMPTY buffer.
+  // `jsonParserFirst` reproduces that broken order on purpose; production
+  // (`src/index.ts`) mounts this router BEFORE the global parser.
+  if (opts.jsonParserFirst === true) app.use(express.json({ limit: '10mb' }));
   app.use(createConductorWebhooksInboundRouter(() => deps));
   const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
@@ -236,6 +243,43 @@ describe('conductor webhook inbound route', () => {
       assert.equal(second.status, 200);
       assert.equal(second.json['outcome'], 'duplicate'); // not rate_limited
       assert.equal(h.emitCalls.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// Epic #470 C10 — extracting the subsystem removed the LLM-proxy path carve-out that
+// used to wrap the global `express.json`. That wrapper sat ABOVE this
+// router, so on the pre-C10 tree a correctly-signed delivery reached the handler with
+// `req.body` already parsed and the HMAC was computed over `Buffer.alloc(0)` — every
+// signed webhook 401'd. The router now sits before the only global parser.
+//
+// The suite above cannot catch a regression here: it mounts the router alone on a bare
+// app, which passes under BOTH orders. These two tests make the ordering itself the
+// thing under test; `778RouteMounts.wiring.test.ts` pins the real order in `src/index.ts`.
+describe('conductor webhook inbound route — raw-body mount order (#470 C10)', () => {
+  it('verifies a correct signature when mounted before the global JSON parser', async () => {
+    const h = await harness();
+    try {
+      const res = await post(h.base, JSON.stringify({ hello: 'world' }), { deliveryId: 'd-order-ok' });
+      assert.equal(res.status, 202);
+      assert.equal(res.json['outcome'], 'started');
+      assert.equal(h.emitCalls.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('rejects the SAME correct signature when a JSON parser runs first (401, raw body lost)', async () => {
+    const h = await harness({}, { jsonParserFirst: true });
+    try {
+      const res = await post(h.base, JSON.stringify({ hello: 'world' }), { deliveryId: 'd-order-broken' });
+      // Byte-identical request to the test above; only the mount order differs.
+      assert.equal(res.status, 401);
+      // Signature verification failed, so nothing was ever claimed or emitted.
+      assert.equal(h.emitCalls.length, 0);
+      assert.equal(h.outcomes.size, 0);
     } finally {
       await h.close();
     }

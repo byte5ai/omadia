@@ -43,6 +43,12 @@ export interface ProviderPolicy {
    *  factory builds the provider with an empty key instead of treating the
    *  missing key as "not connected". Default (omitted) = true. */
   readonly requiresApiKey?: boolean;
+  /** Provider runs on a PERSONAL consumer subscription (e.g. a Claude Pro/Max
+   *  CLI login). No data-processing agreement (AVV / DPA) can exist on such a
+   *  plan — a STRONGER caveat than the ordinary third-party disclosure, so the
+   *  assignment UI shows a dedicated warning instead. Default (omitted) =
+   *  false. */
+  readonly subscriptionNotice?: boolean;
 }
 
 /** A plugin-contributed (or bundled built-in) provider. `quirks` only apply to

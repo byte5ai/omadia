@@ -25,9 +25,15 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Anthropic',
     wireFormat: 'anthropic',
     baseURL: 'https://api.anthropic.com',
-    // Preserves the previous hard-coded behaviour (`provider !== 'anthropic'`):
-    // the AVV third-party disclosure is suppressed for Anthropic.
-    policy: { requiresAvvDisclosure: false },
+    // The AVV disclosure used to be suppressed here ("preserves the previous
+    // hard-coded behaviour: provider !== 'anthropic'"). That legacy carve-out
+    // was backwards: Anthropic is the DEFAULT provider, and prompt data sent
+    // to api.anthropic.com is third-party processing under DSGVO Art. 28 like
+    // any other API provider — a German-market customer explicitly praised
+    // this disclosure in the first field test (OM-10) and it must not vanish
+    // exactly on the stock configuration. Omitting the flag lets the
+    // catalogue default (`requiresAvvDisclosure ?? true`) apply.
+    policy: {},
     models: [
       {
         id: 'anthropic:claude-opus-4-8',
@@ -126,7 +132,16 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Claude (subscription CLI)',
     wireFormat: 'claude-cli',
     baseURL: '',
-    policy: { requiresApiKey: false, requiresAvvDisclosure: false },
+    // `requiresAvvDisclosure: false` is NOT a privacy carve-out here — the
+    // Art. 28 AVV framing simply does not fit: a consumer Claude subscription
+    // offers no data-processing agreement at all. That is a STRONGER caveat,
+    // not a weaker one, and `subscriptionNotice` surfaces exactly that in the
+    // assignment UI (field-test follow-up, OM-10 family).
+    policy: {
+      requiresApiKey: false,
+      requiresAvvDisclosure: false,
+      subscriptionNotice: true,
+    },
     models: [
       // modelId is suffixed `-cli` so it never collides with another provider's
       // alias (the registry requires globally-unique aliases and id ==

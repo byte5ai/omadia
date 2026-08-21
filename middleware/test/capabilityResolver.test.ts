@@ -73,6 +73,9 @@ function makeCatalog(plugins: Partial_Plugin[]): PluginCatalog {
       manifest: {},
       source_path: `<test>/${p.id}.manifest.yaml`,
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     });
   }
   // Cast to the public interface — we exercise `get(id)` and `list()`,

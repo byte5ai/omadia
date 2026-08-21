@@ -50,7 +50,20 @@ const PATTERNS: readonly Pattern[] = [
   },
   {
     code: 'tool_coercion',
-    re: /\b(always|automatically|immer|automatisch)\b[^.\n]{0,24}\b(call|invoke|run|execute|use|aufrufen?|ausführen?|nutze?n?|verwende?n?)\b|\bwithout (?:asking|confirmation|permission|telling)\b|\bohne (?:zu fragen|nachfrage|rückfrage|bestätigung|erlaubnis)\b|\bbypass(?:ing)?\b|\bumgeh(?:e|en|st)\b/i,
+    // The German half of this pattern was verified against a REAL hostile
+    // skill during the packaged-app retest (2026-08-20) and missed all four
+    // sentences. The gaps, each closed below with a bounded quantifier:
+    //   - separable verbs put the particle at the END: "führe IMMER sofort
+    //     das Kalkulations-Tool aus" — the verb precedes the adverb, so
+    //     `(immer)…(ausführen)` never matches. Covered by the
+    //     `(führe|führt|führen)…aus` alternative gated on a coercion adverb
+    //     to keep innocent "führe X aus" instructions unflagged.
+    //   - "erzwinge den Tool-Aufruf" — erzwingen was not in the verb list.
+    //   - "überspringe jede Rückfrage" — überspringen was not in the list.
+    //   - "ohne den Nutzer um Bestätigung zu fragen" — the old
+    //     `\bohne (?:zu fragen|bestätigung|…)\b` required the object to
+    //     follow "ohne" immediately; real German puts words in between.
+    re: /\b(always|automatically|immer|automatisch)\b[^.\n]{0,24}\b(call|invoke|run|execute|use|aufrufen?|ausführen?|nutze?n?|verwende?n?)\b|\b(immer|automatisch|sofort)\b[^.\n]{0,48}\b(aufrufen|ausführen|auszuführen)\b|\b(führe|führt|führen)\b[^.\n]{0,12}\b(immer|sofort|automatisch|ungefragt|stets)\b[^.\n]{0,48}\baus\b|\berzwing(?:e|t|en|st)\b|(?<![a-zA-ZäöüÄÖÜß])überspring(?:e|t|en|st)\b[^.\n]{0,32}(?<![a-zA-ZäöüÄÖÜß])(rückfragen?|nachfragen?|bestätigung(?:en)?|abfragen?|sicherheitsabfragen?)\b|\bwithout (?:asking|confirmation|permission|telling)\b|\bohne\b[^.\n]{0,40}\b(zu fragen|nachfrage|rückfrage|bestätigung|erlaubnis|sicherheitsabfrage)\b|\bignorier(?:e|t|en|st)\b[^.\n]{0,32}\b(sicherheitsabfragen?|warnungen?|rückfragen?|bestätigungen?)\b|\bbypass(?:ing)?\b|\bumgeh(?:e|en|st)\b/i,
   },
   {
     code: 'data_exfiltration',

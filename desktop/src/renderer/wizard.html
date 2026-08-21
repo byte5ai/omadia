@@ -14,124 +14,125 @@
       <aside class="rail">
         <div class="brand">omadia</div>
         <ol class="steps" id="steps">
-          <li data-step="0">Welcome</li>
-          <li data-step="1">AI provider</li>
-          <li data-step="2">Capabilities</li>
-          <li data-step="3">Data location</li>
-          <li data-step="4">Recovery key</li>
+          <li data-step="0" data-i18n="steps.welcome">Welcome</li>
+          <li data-step="1" data-i18n="steps.provider">AI provider</li>
+          <li data-step="2" data-i18n="steps.capabilities">Capabilities</li>
+          <li data-step="3" data-i18n="steps.data">Data location</li>
+          <li data-step="4" data-i18n="steps.recovery">Recovery key</li>
         </ol>
-        <div class="rail-foot">single-tenant · BYO-key · own your data</div>
+        <div class="rail-foot" data-i18n="rail.foot">single-tenant · BYO-key · own your data</div>
       </aside>
 
       <main class="panel">
         <!-- 0: Welcome -->
         <section class="step" data-step="0">
-          <h1>Run omadia on your machine</h1>
-          <p class="lead">
+          <h1 data-i18n="welcome.title">Run omadia on your machine</h1>
+          <p class="lead" data-i18n="welcome.lead">
             omadia installs a complete local stack — the kernel, the admin
             interface, and an embedded Postgres database — and runs it entirely on
             this computer. No Docker, no cloud account. Your data and your AI key
             never leave the machine.
           </p>
           <ul class="facts">
-            <li>Embedded database with vector search, persisted locally.</li>
-            <li>You bring your own AI provider key.</li>
-            <li>Everything is removed cleanly when you uninstall.</li>
+            <li data-i18n="welcome.fact1">Embedded database with vector search, persisted locally.</li>
+            <li data-i18n="welcome.fact2">You bring your own AI provider key.</li>
+            <li data-i18n="welcome.fact3">Everything is removed cleanly when you uninstall.</li>
           </ul>
         </section>
 
         <!-- 1: Provider -->
         <section class="step hidden" data-step="1">
-          <h1>Connect an AI provider</h1>
-          <p class="lead">omadia uses your own key. It is stored encrypted in your OS keychain.</p>
+          <h1 data-i18n="provider.title">Connect an AI provider</h1>
+          <p class="lead" data-i18n="provider.lead">omadia uses your own key. It is stored encrypted in your OS keychain.</p>
           <label class="field">
-            <span>Provider</span>
+            <span data-i18n="provider.label">Provider</span>
             <select id="provider">
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="openai">OpenAI</option>
             </select>
           </label>
           <label class="field">
-            <span>API key</span>
+            <span data-i18n="provider.keyLabel">API key</span>
             <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
           </label>
           <div class="row">
-            <button id="testKey" class="btn ghost" type="button">Test key</button>
+            <button id="testKey" class="btn ghost" type="button" data-i18n="provider.test">Test key</button>
             <span id="testResult" class="test-result"></span>
           </div>
         </section>
 
         <!-- 2: Capabilities -->
         <section class="step hidden" data-step="2">
-          <h1>Optional capabilities</h1>
-          <p class="lead">You can change these later. The core (chat, memory, audit) always works.</p>
+          <h1 data-i18n="caps.title">Optional capabilities</h1>
+          <p class="lead" data-i18n="caps.lead">You can change these later. The core (chat, memory, audit) always works.</p>
           <label class="toggle">
             <input type="checkbox" id="capAttachments" checked />
             <span>
-              <strong>Attachments</strong>
-              <em>Store uploaded files on your local disk.</em>
+              <strong data-i18n="caps.attachments">Attachments</strong>
+              <em data-i18n="caps.attachmentsHint">Store uploaded files on your local disk.</em>
             </span>
           </label>
           <label class="toggle">
             <input type="checkbox" id="capEmbeddings" />
             <span>
-              <strong>Semantic memory <small class="soon">preview</small></strong>
-              <em>In-process embeddings for topic detection. Downloads a small model on first use.</em>
+              <strong><span data-i18n="caps.embeddings">Semantic memory</span> <small class="soon" data-i18n="caps.embeddingsBadge">preview</small></strong>
+              <em data-i18n="caps.embeddingsHint">In-process embeddings for topic detection. Downloads a small model on first use.</em>
             </span>
           </label>
           <label class="toggle">
             <input type="checkbox" id="capDiagrams" />
             <span>
-              <strong>Diagrams <small class="soon">needs network</small></strong>
-              <em>Render diagrams via the hosted omadia service.</em>
+              <strong><span data-i18n="caps.diagrams">Diagrams</span> <small class="soon" data-i18n="caps.diagramsBadge">needs network</small></strong>
+              <em data-i18n="caps.diagramsHint">Render diagrams via the hosted omadia service.</em>
             </span>
           </label>
         </section>
 
         <!-- 3: Data location -->
         <section class="step hidden" data-step="3">
-          <h1>Where should omadia store data?</h1>
-          <p class="lead">Database, encrypted secrets, and uploads all live here.</p>
+          <h1 data-i18n="data.title">Where should omadia store data?</h1>
+          <p class="lead" data-i18n="data.lead">Database, encrypted secrets, and uploads all live here.</p>
           <div class="row">
-            <input id="dataDir" type="text" readonly placeholder="Default application data folder" />
-            <button id="chooseDir" class="btn ghost" type="button">Choose…</button>
+            <input id="dataDir" type="text" readonly placeholder="Default application data folder" data-i18n-placeholder="data.placeholder" />
+            <button id="chooseDir" class="btn ghost" type="button" data-i18n="data.choose">Choose…</button>
           </div>
-          <p class="hint" id="dataDirHint">Using the default per-user application data folder.</p>
+          <p class="hint" id="dataDirHint" data-i18n="data.hint">Using the default per-user application data folder.</p>
         </section>
 
         <!-- 4: Recovery key -->
         <section class="step hidden" data-step="4">
-          <h1>Save your recovery key</h1>
-          <p class="lead">
+          <h1 data-i18n="recovery.title">Save your recovery key</h1>
+          <p class="lead" data-i18n="recovery.lead">
             This key encrypts your secrets vault. If you ever move omadia to a new
             machine, you need it. Losing it makes stored secrets unrecoverable.
           </p>
           <div class="recovery">
             <code id="recoveryKey">••••••••••••••••••••••••••••</code>
-            <button id="revealKey" class="btn ghost" type="button">Reveal</button>
+            <button id="revealKey" class="btn ghost" type="button" data-i18n="recovery.reveal">Reveal</button>
           </div>
-          <p class="hint">It is also kept safe in your OS keychain on this machine.</p>
+          <p class="hint" data-i18n="recovery.hint">It is also kept safe in your OS keychain on this machine.</p>
         </section>
 
         <!-- Provisioning overlay -->
         <section class="step hidden provisioning" data-step="provision">
-          <h1>Setting up omadia…</h1>
+          <h1 data-i18n="provision.title">Setting up omadia…</h1>
           <div class="progress">
             <div class="bar"><div id="barFill" class="bar-fill"></div></div>
-            <p id="progressMsg" class="progress-msg">Starting…</p>
-            <p class="hint" id="progressHint">First start runs database migrations — this can take up to a minute. <span id="elapsed"></span></p>
+            <p id="progressMsg" class="progress-msg" data-i18n="provision.starting">Starting…</p>
+            <p class="hint" id="progressHint"><span data-i18n="provision.hint">First start runs database migrations — this can take up to a minute.</span> <span id="elapsed"></span></p>
           </div>
           <pre id="bootLog" class="boot-log" aria-label="installation log"></pre>
           <p id="provisionError" class="error hidden"></p>
         </section>
 
         <footer class="nav">
-          <button id="back" class="btn ghost" type="button" disabled>Back</button>
-          <button id="next" class="btn primary" type="button">Continue</button>
+          <button id="back" class="btn ghost" type="button" disabled data-i18n="nav.back">Back</button>
+          <button id="next" class="btn primary" type="button" data-i18n="nav.continue">Continue</button>
         </footer>
       </main>
     </div>
 
+    <script src="wizard-i18n.js"></script>
     <script src="wizard.js"></script>
   </body>
 </html>

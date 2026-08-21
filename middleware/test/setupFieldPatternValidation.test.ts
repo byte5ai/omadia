@@ -78,6 +78,9 @@ async function makeHarness(fields: SetupFieldSpec[]): Promise<Harness> {
     manifest: { setup: { fields } },
     source_path: '<test>',
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   };
   const catalog = {
     get: (id: string): PluginCatalogEntry | undefined =>
@@ -671,6 +674,9 @@ describe('OM-17 / F2 — a refused pattern is SURFACED, not just logged', () => 
       },
       source_path: '<test>',
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     } as unknown as PluginCatalogEntry);
     const f = schema?.fields[0];
     assert.equal(f?.pattern, undefined);

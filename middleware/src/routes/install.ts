@@ -85,7 +85,9 @@ export function createInstallRouter(deps: InstallDeps): Router {
           .json({ code: 'install.invalid_job_id', message: 'missing id' });
         return;
       }
-      const incoming = req.body as { values?: unknown } | undefined;
+      const incoming = req.body as
+        | { values?: unknown; json_files?: unknown }
+        | undefined;
       if (!incoming || typeof incoming.values !== 'object' || !incoming.values) {
         res.status(400).json({
           code: 'install.invalid_body',
@@ -93,9 +95,25 @@ export function createInstallRouter(deps: InstallDeps): Router {
         });
         return;
       }
+      // #603 — optional raw json_file documents, keyed by setup-field key.
+      // Parsed SERVER-side in installService.configure (same doctrine as the
+      // post-install secrets/from-json route). Non-string entries are dropped.
+      let jsonFiles: Record<string, string> | undefined;
+      if (
+        incoming.json_files &&
+        typeof incoming.json_files === 'object' &&
+        !Array.isArray(incoming.json_files)
+      ) {
+        jsonFiles = Object.fromEntries(
+          Object.entries(incoming.json_files as Record<string, unknown>).filter(
+            (e): e is [string, string] => typeof e[1] === 'string',
+          ),
+        );
+      }
       const job = await deps.service.configure(
         jobId,
         incoming.values as Record<string, unknown>,
+        jsonFiles,
       );
       const body: InstallConfigureResponse = {
         job,

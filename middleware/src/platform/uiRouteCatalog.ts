@@ -30,8 +30,58 @@ const LOCALE_CODE = /^[a-z]{2}(?:-[A-Za-z0-9]+)*$/;
 /**
  * Characters permitted in a single href path segment — the RFC 3986
  * "unreserved" set. Deliberately excludes `%`, `?`, `#`, and `\`.
+ *
+ * This stays strict (#798). The rule exists because the shell decides
+ * "core destinations win" by comparing hrefs for string equality, and
+ * percent-encoding breaks that comparison — so widening it to admit
+ * `%xx` would weaken every literal href to fix one path that core can
+ * spell for itself. See {@link pluginUiHref}.
  */
 const HREF_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
+
+/**
+ * Plugin ids the kernel will encode into a nav href. Mirrors
+ * `PLUGIN_ID_PATTERN` in `plugins/manifestLoader.ts` — npm-style, lowercase,
+ * optionally `@scope/`-prefixed.
+ *
+ * Re-stated rather than imported, matching what web-ui's `_lib/pluginId.ts`
+ * does for the same pattern (C8b): `manifestLoader.ts` keeps these two
+ * declarations in a form a source-reading parity test can anchor on, and
+ * exporting them would reformat the lines that test matches. So the
+ * restatement is PINNED the same way instead —
+ * `uiRouteCatalogPluginUiNav.test.ts` reads `manifestLoader.ts` and asserts
+ * both are character-identical, which turns this comment into a check.
+ *
+ * Checked rather than assumed for a second reason: `registerNav` is called
+ * with a kernel-supplied id, but an id that never passed the manifest gate
+ * (a hand-built harness, a future programmatic registration) must not be
+ * percent-encoded into the shell's chrome unexamined.
+ */
+const ENCODABLE_PLUGIN_ID =
+  /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const PLUGIN_ID_MAX_LENGTH = 214;
+
+/**
+ * The canonical in-app path to a plugin's own bundled UI.
+ *
+ * Core serves the compiled bundle at `/p/<pluginId>/ui/` and the web UI
+ * hosts it in an iframe at `/plugin-ui/<pluginId>`. For a scoped id, the
+ * encoded spelling is the ONLY one that resolves — Express and the Next
+ * router both split on a raw `/`, so `@acme/widget` becomes two segments
+ * and matches nothing. Measured on a live core: encoded 200, raw 404.
+ *
+ * That spelling is also, by construction, the one {@link HREF_SEGMENT}
+ * refuses. Both rules are right; what was missing was somewhere for them
+ * to meet. This function is that place: the plugin declares
+ * `pluginUi: true`, the kernel renders the path from the id it already
+ * holds, and no plugin ever hand-builds a percent-encoded href.
+ *
+ * Exported so the web UI's mirrored derivation and this module's tests can
+ * assert against one definition instead of two string literals.
+ */
+export function pluginUiHref(pluginId: string): string {
+  return `/plugin-ui/${encodeURIComponent(pluginId)}`;
+}
 
 /**
  * Reject control characters and bidirectional-formatting codepoints.
@@ -289,6 +339,11 @@ export class UiRouteCatalog {
    * in-app paths and labels are length- and charset-checked, because
    * both are rendered inside the shell's own header where an operator
    * has every reason to trust what they see.
+   *
+   * The destination arrives one of two ways (#798): a literal `href`,
+   * validated as a canonical in-app path, or `pluginUi: true`, which asks
+   * the kernel to render {@link pluginUiHref} for this plugin. Exactly one
+   * of the two must be supplied.
    */
   registerNav(pluginId: string, input: UiNavEntryInput): () => void {
     if (typeof pluginId !== 'string' || pluginId.length === 0) {
@@ -306,7 +361,49 @@ export class UiRouteCatalog {
       );
     }
     const context = `UiRouteCatalog.registerNav(${pluginId}/${input.navId})`;
-    assertInAppHref(context, input.href);
+
+    // #798 — two ways to name a destination, never both. Accepting both
+    // would leave the entry's real target ambiguous at exactly the moment
+    // it matters (a plugin sending a literal href AND `pluginUi: true` is
+    // asking two different questions), so the ambiguity is refused here
+    // rather than resolved by precedence.
+    const wantsPluginUi = input.pluginUi === true;
+    if (input.pluginUi !== undefined && !wantsPluginUi) {
+      throw new Error(
+        `${context}: pluginUi must be literal \`true\` when present`,
+      );
+    }
+    if (wantsPluginUi && input.href !== undefined) {
+      throw new Error(
+        `${context}: supply either 'href' or 'pluginUi: true', not both — 'pluginUi' means the kernel renders the href`,
+      );
+    }
+    if (!wantsPluginUi && input.href === undefined) {
+      throw new Error(
+        `${context}: a nav entry needs a destination — supply 'href', or 'pluginUi: true' to point at this plugin's own bundled UI`,
+      );
+    }
+
+    let href: string;
+    if (wantsPluginUi) {
+      if (
+        pluginId.length > PLUGIN_ID_MAX_LENGTH ||
+        !ENCODABLE_PLUGIN_ID.test(pluginId)
+      ) {
+        throw new Error(
+          `${context}: pluginUi requires an npm-style plugin id (got '${pluginId}') — the kernel will not percent-encode an unrecognised id into the shell's chrome`,
+        );
+      }
+      // Deliberately NOT run through `assertInAppHref`: this href is
+      // percent-encoded and would fail it. The safety the validator buys
+      // for untrusted input is bought differently here — the string is
+      // built by core from a charset-checked id, so there is no untrusted
+      // portion left to validate.
+      href = pluginUiHref(pluginId);
+    } else {
+      assertInAppHref(context, input.href);
+      href = input.href;
+    }
     if (
       input.cluster !== undefined &&
       (input.cluster.length > MAX_CLUSTER_LENGTH ||
@@ -337,8 +434,9 @@ export class UiRouteCatalog {
     const entry: UiNavEntry = {
       pluginId,
       navId: input.navId,
-      href: input.href,
+      href,
       label,
+      ...(wantsPluginUi ? { pluginUi: true as const } : {}),
       ...(input.cluster !== undefined ? { cluster: input.cluster } : {}),
       ...(input.order !== undefined ? { order: input.order } : {}),
     };
@@ -384,6 +482,9 @@ export class UiRouteCatalog {
           href: entry.href,
           order,
           label: resolveLabel(entry.label, locale),
+          // Carried to the shell so it can re-derive the href from
+          // `pluginId` itself rather than trusting this string (#798).
+          ...(entry.pluginUi === true ? { pluginUi: true as const } : {}),
           ...(entry.cluster !== undefined ? { cluster: entry.cluster } : {}),
         };
       })

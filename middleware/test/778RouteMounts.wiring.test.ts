@@ -48,6 +48,9 @@ function withoutLineComments(src: string): string {
 }
 
 const liveIndexSource = withoutLineComments(indexSource);
+const conductorWebhookMountAnchor =
+  "app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));";
+const globalJsonMountAnchor = "app.use(express.json({ limit: '10mb', verify: recordRawBodyBytes }));";
 
 describe('#778 W1 — index.ts actually mounts the #577/#578 routers', () => {
   it('imports createSkillPromotionRouter from routes/skillPromotion.js', () => {
@@ -96,6 +99,28 @@ describe('#778 W1 — index.ts actually mounts the #577/#578 routers', () => {
       strippedIfCommented,
       /app\.use\(\s*'\/api\/v1\/admin\/skills',\s*requireAuth,\s*createSkillPromotionRouter\(/,
       'a commented-out mount must not satisfy the live-code check',
+    );
+  });
+});
+
+describe('#470 C10 — index.ts keeps the conductor webhook raw-body mount ahead of express.json', () => {
+  it('mounts createConductorWebhooksInboundRouter before the global JSON parser', () => {
+    const conductorMountIndex = liveIndexSource.indexOf(conductorWebhookMountAnchor);
+    const globalJsonMountIndex = liveIndexSource.indexOf(globalJsonMountAnchor);
+
+    assert.notEqual(
+      conductorMountIndex,
+      -1,
+      `src/index.ts must contain the exact live-code anchor ${conductorWebhookMountAnchor}`,
+    );
+    assert.notEqual(
+      globalJsonMountIndex,
+      -1,
+      `src/index.ts must contain the exact live-code anchor ${globalJsonMountAnchor}`,
+    );
+    assert.ok(
+      conductorMountIndex < globalJsonMountIndex,
+      'the conductor webhook router must stay mounted before the global express.json parser or route-level express.raw() will miss the raw body',
     );
   });
 });

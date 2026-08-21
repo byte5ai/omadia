@@ -25,6 +25,9 @@ function makeEntry(opts: {
     manifest: {},
     source_path: opts.source_path,
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   };
 }
 

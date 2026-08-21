@@ -70,6 +70,7 @@ export interface AdminProvidersDeps {
             readonly requiresAvvDisclosure?: boolean;
             readonly euHosted?: boolean;
             readonly requiresApiKey?: boolean;
+            readonly subscriptionNotice?: boolean;
           };
         }
       | undefined;
@@ -326,6 +327,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // Safe defaults for an unknown provider: third-party, non-EU.
           requiresAvvDisclosure: descriptor?.policy?.requiresAvvDisclosure ?? true,
           euHosted: descriptor?.policy?.euHosted ?? false,
+          // Subscription CLIs run on a PERSONAL consumer plan: no DPA/AVV can
+          // exist for them, which the operator must know BEFORE routing
+          // personal data through such an agent (field-test OM-10 family).
+          subscriptionNotice: descriptor?.policy?.subscriptionNotice ?? false,
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,

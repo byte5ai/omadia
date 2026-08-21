@@ -550,6 +550,9 @@ async function makeConsentHarness(opts: {
     manifest: {},
     source_path: '<test>',
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   } as unknown as PluginCatalogEntry;
   const catalog = {
     get: (id: string): PluginCatalogEntry | undefined =>
