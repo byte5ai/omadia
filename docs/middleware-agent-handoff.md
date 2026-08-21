@@ -1143,6 +1143,25 @@ Respond-Route 500 statt 409 — Ergebnis korrekt (Run cancelled), Oberfläche
 hässlich. Die Cancel-Flag-Spalten werden absichtlich NIE gelöscht — sie sind
 der tragende Backstop aller Cancel-Races.
 
+### Conductor-Workflow-Delete (PR #836)
+
+Neu: **`DELETE /api/v1/operator/conductors/:slug`** — löscht einen manuellen
+Workflow mit den zwei Removal-Shapes des #330-Reapers: **hard** (physischer
+DELETE, wenn kein Run irgendeine Version referenziert; Versions/Drafts/
+Schedules kaskadieren) oder **soft** (`status='disabled'` + `reaped_at`-Stempel;
+Run-Historie bleibt als Audit-Trace). Aktive Runs ⇒ 409
+`conductor.has_active_runs` (erst per #759-Route canceln); `eph-`-Namespace ⇒
+400 (Ephemeral-Lifecycle). Response `{deleted, mode: 'hard'|'soft'}`.
+Resurrection-Guards: `list()` filtert `reaped_at IS NULL` (Library **und**
+Event-Router), `removeLogical` disabled Workflow + Cron-Schedules atomar (eine
+CTE), `setStatus` und der Publish-Upsert verweigern reaped Rows (Publish auf
+gelöschten Slug ⇒ 409 `conductor.slug_exists`), `GET /:slug` ⇒ 404, FK-Race
+23503 im Hard-Pfad fällt auf soft zurück. Store-Methoden: `hasActiveRuns`,
+`removeLogical`, `hardDeleteUnreferenced` (workflowStore.ts, Spiegel von
+ephemeralStore). Web-UI: Delete-Button + ConfirmDialog auf `/conductor`,
+`deleteConductorWorkflow` in `api.ts`, i18n `conductor.delete*` en+de.
+Tests: `test/conductorWorkflowDelete.test.ts`.
+
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
 Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`

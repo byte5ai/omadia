@@ -8,6 +8,7 @@ import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
 import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
@@ -177,6 +178,13 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
       });
     } catch (err) {
+      // Reaped slugs surface here: the upsert's reaped_at guard turns a publish
+      // onto a deleted workflow into a slug conflict instead of a silent,
+      // hidden resurrection.
+      if (err instanceof WorkflowSlugExistsError) {
+        res.status(409).json({ code: 'conductor.slug_exists', message: err.message });
+        return;
+      }
       console.error('[conductor] publish failed:', err);
       res.status(500).json({ code: 'conductor.publish_failed', message: errMsg(err) });
     }
@@ -393,7 +401,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   router.get('/:slug', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
-      if (!wf || !wf.activeVersionId) {
+      // A logically removed workflow is deleted from the operator's point of
+      // view — it must not be readable (or leak its existence) via GET either.
+      if (!wf || !wf.activeVersionId || wf.reapedAt) {
         res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
         return;
       }
@@ -424,6 +434,46 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(204).end();
     } catch (err) {
       res.status(500).json({ code: 'conductor.status_failed', message: errMsg(err) });
+    }
+  });
+
+  // Delete a workflow. Two removal shapes, mirroring the #330 ephemeral reaper:
+  // physical DELETE when no run references any version (versions/drafts/schedules
+  // cascade with the row), logical removal otherwise (disabled + reaped_at — the
+  // run history stays as audit trace, the list() filter hides the row from the
+  // library AND the event router, and the cron worker skips disabled workflows).
+  // Active (running/waiting) runs block with 409 — the operator cancels first.
+  router.delete('/:slug', async (req: Request, res: Response): Promise<void> => {
+    const slug = paramStr(req.params.slug);
+    // #330 — ephemeral workflows are lifecycle-managed by their reaper, never by operators.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `deletion of '${EPHEMERAL_SLUG_PREFIX}' workflows is managed by the ephemeral lifecycle` });
+      return;
+    }
+    try {
+      const wf = await deps.workflowStore.getBySlug(slug);
+      if (!wf || (wf.origin ?? 'manual') !== 'manual' || wf.reapedAt) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow not found' });
+        return;
+      }
+      if (await deps.workflowStore.hasActiveRuns(wf.id)) {
+        res.status(409).json({ code: 'conductor.has_active_runs', message: 'workflow has running or waiting runs — cancel them first' });
+        return;
+      }
+      // TOCTOU guard: a run inserted between the NOT-EXISTS snapshot and the
+      // DELETE commit raises FK 23503 (conductor_runs blocks the cascade) —
+      // that race falls back to the logical shape instead of a 500.
+      let hard = false;
+      try {
+        hard = await deps.workflowStore.hardDeleteUnreferenced(wf.id);
+      } catch (err) {
+        if ((err as { code?: string }).code !== '23503') throw err;
+      }
+      if (!hard) await deps.workflowStore.removeLogical(wf.id);
+      res.status(200).json({ deleted: true, mode: hard ? 'hard' : 'soft' });
+    } catch (err) {
+      console.error('[conductor] delete failed:', err);
+      res.status(500).json({ code: 'conductor.delete_failed', message: errMsg(err) });
     }
   });
 
