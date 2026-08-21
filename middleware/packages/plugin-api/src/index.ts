@@ -155,3 +155,8 @@ export * from './topic.js';
 // /admin/duplicates (Excerpts tab); keep_a/keep_b deletes the loser
 // excerpt via the new `deleteExcerpt` KG method.
 export * from './excerptMerge.js';
+
+// #330 B3 — Principal-addressed targeted delivery ('targetedSend' kernel
+// service): how an agent plugin DMs a user or fans a report out to a role's
+// current holders. Optional service; plugins must feature-detect.
+export * from './targetedSend.js';
