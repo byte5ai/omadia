@@ -980,6 +980,22 @@
         "next": "Installiere das Plugin zuerst und setze danach seinen Provider.",
         "action": "Zum Store"
       },
+      "oauth_poll_failed": {
+        "what": "Die Prüfung, ob die ChatGPT-Anmeldung bestätigt wurde, ist fehlgeschlagen.",
+        "next": "Kurz warten — es wird automatisch erneut versucht; bleibt es fehlerhaft, den Dialog schließen und die Anmeldung neu starten."
+      },
+      "oauth_start_failed": {
+        "what": "Die ChatGPT-Anmeldung konnte nicht gestartet werden.",
+        "next": "Gleich noch einmal versuchen. Hält es an, ist der OpenAI-Anmeldedienst von diesem Server aus evtl. nicht erreichbar."
+      },
+      "oauth_too_many_flows": {
+        "what": "Auf diesem Server laufen bereits zu viele ChatGPT-Anmeldungen.",
+        "next": "Warten, bis die laufenden abgeschlossen sind oder ablaufen, dann die Anmeldung erneut starten."
+      },
+      "oauth_unsupported": {
+        "what": "Dieser Provider kann nicht per ChatGPT-Anmeldung verbunden werden.",
+        "next": "Für diesen Provider stattdessen einen API-Key verwenden oder den ChatGPT-Abo-Provider wählen."
+      },
       "read_failed": {
         "what": "Die Provider-Liste konnte nicht gelesen werden.",
         "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."

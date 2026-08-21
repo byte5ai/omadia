@@ -980,6 +980,22 @@
         "next": "Install the plugin first, then set its provider.",
         "action": "Open the store"
       },
+      "oauth_poll_failed": {
+        "what": "Checking whether the ChatGPT login was approved failed.",
+        "next": "Wait a moment and it retries on its own; if it keeps failing, close the dialog and start the login again."
+      },
+      "oauth_start_failed": {
+        "what": "The ChatGPT login could not be started.",
+        "next": "Try again in a moment. If it persists, the OpenAI login service may be unreachable from this server."
+      },
+      "oauth_too_many_flows": {
+        "what": "Too many ChatGPT logins are already in progress on this server.",
+        "next": "Wait for the pending ones to finish or expire, then start the login again."
+      },
+      "oauth_unsupported": {
+        "what": "This provider cannot be connected with a ChatGPT login.",
+        "next": "Use an API key for this provider instead, or pick the ChatGPT subscription provider."
+      },
       "read_failed": {
         "what": "The provider list could not be read.",
         "next": "Reload the page. If it stays empty, the middleware cannot reach its config store."
