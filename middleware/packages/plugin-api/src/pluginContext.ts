@@ -2145,7 +2145,9 @@ export class SqlPermissionError extends Error {
         ? `plugin '${pluginId}' reached for the database capability '${capability}' but its manifest does not declare \`permissions.sql\` — ` +
             'add a `permissions.sql` block (with a `ledger:` this plugin owns) so the operator can see the request at install time'
         : `plugin '${pluginId}' declares \`permissions.sql\` but the operator has not granted it — ` +
-            `'${capability}' stays unavailable until the grant is recorded`,
+            `'${capability}' stays unavailable until the grant is recorded. ` +
+            'Grant it in the admin UI under Plugins \u2192 this plugin \u2192 Permissions, or with ' +
+            `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/grants {"sql":true}`,
     );
     this.name = 'SqlPermissionError';
     this.pluginId = pluginId;

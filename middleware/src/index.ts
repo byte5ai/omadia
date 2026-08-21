@@ -583,6 +583,19 @@ async function main(): Promise<void> {
   const publicPathGrantStore = createLazyPublicPathGrantStore(() =>
     serviceRegistry.get<Pool>('graphPool'),
   );
+  // Epic #470 C16 (#817) — ONE SQL grant store, shared by all four consumers:
+  // `toolPluginRuntime` reads it at activate, the runtime router writes it when
+  // the operator consents, `installService` purges it on uninstall (B6), and
+  // the grants view reads it back. Constructing a second one per consumer would
+  // work — they are all thin wrappers over the same late-bound pool — but it
+  // would also make "which store did that write go to?" a question with more
+  // than one answer, which is the wrong property for a consent record.
+  //
+  // Late-bound for the same reason as the public-path store: `graphPool` is
+  // published by a PLUGIN, well after this line runs.
+  const sqlGrantStore = createServiceRegistryBackedSqlGrantStore(() =>
+    serviceRegistry.get<Pool>('graphPool'),
+  );
   const notificationRouter = new NotificationRouter();
 
   // Phase B+ — directory aggregator for the /operator/channels dashboard.
@@ -1130,9 +1143,7 @@ async function main(): Promise<void> {
     // Epic #470 C7 / G4 — resolved per call, not captured: `graphPool` is
     // published by a plugin THIS runtime activates, ~600 lines below where the
     // runtime is built, so a store bound here would be permanently null.
-    sqlGrantStore: createServiceRegistryBackedSqlGrantStore(() =>
-      serviceRegistry.get<Pool>('graphPool'),
-    ),
+    sqlGrantStore,
     nativeToolRegistry,
     pluginRouteRegistry,
     // Epic #470 C4 / H1 — declared public-path prefixes are claimed here on
@@ -1376,6 +1387,11 @@ async function main(): Promise<void> {
     // wired ~1400 LOC below (graphPool block). Undefined until then / on the
     // in-memory backend; the install-time template gate validates regardless.
     conductorTemplates: () => conductorTemplateRegistrarRef,
+    // Epic #470 C16 / B6 — operator consent is purged with the plugin, so a
+    // reinstall under the same id starts un-granted instead of inheriting the
+    // previous package's database and unauthenticated routes.
+    publicPathGrantStore,
+    sqlGrantStore,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -3825,7 +3841,12 @@ async function main(): Promise<void> {
     // Re-resolve the plugin's connection state (derived config + ctx.status)
     // immediately after a successful connect — same deactivate→activate the
     // install flow uses, so the status badge clears without a restart.
-    reactivatePlugin: (pluginId) => installService.reactivate(pluginId),
+    // `reactivate` now reports the resulting status (#470 C16) — the broker has
+    // no use for it and its own contract is `Promise<void>`, so it is dropped
+    // explicitly here rather than by widening the broker's type.
+    reactivatePlugin: async (pluginId) => {
+      await installService.reactivate(pluginId);
+    },
   });
 
   app.use(
@@ -4078,9 +4099,12 @@ async function main(): Promise<void> {
       // prefixes. Behind requireAuth like every other runtime endpoint.
       publicPathGrantStore,
       publicPathGrants,
+      // Epic #470 C16 (#817) — the half C7 shipped a gate for but no answer to.
+      sqlGrantStore,
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');
+  console.log('[middleware] plugin grant consent ready at /api/v1/admin/runtime/installed/:id/grants (auth: required)');
 
   // Operator settings overview — every .env-based value bootstrap writes into
   // the config-store / vault, editable with live re-activation. Reuses the

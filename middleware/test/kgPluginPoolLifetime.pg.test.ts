@@ -147,9 +147,29 @@ describe('#665 — KG plugin close() must not end the shared pg pool', () => {
     // and doing it through the REAL InstallService keeps that true if the
     // funnel is ever rewired.
     let reactivations = 0;
+    const statusWrites = { cleared: 0, succeeded: 0, failed: 0 };
     const service = new InstallService({
       catalog: { list: () => [], get: () => undefined } as never,
-      registry: { has: (id: string) => id === KG_ID } as never,
+      // `reactivate` records the outcome truthfully since #470 C16, so the
+      // stub needs the three status writers as well as `has`. They are counted
+      // rather than dropped: this test drives the SUCCESS path, so the two
+      // success writers must fire exactly once and the failure writer never —
+      // which is also a cheap check that the pool survived a clean
+      // re-activation rather than a swallowed one.
+      registry: {
+        has: (id: string) => id === KG_ID,
+        get: (id: string) =>
+          id === KG_ID ? { id, status: 'active' } : undefined,
+        clearActivationError: async (): Promise<void> => {
+          statusWrites.cleared += 1;
+        },
+        markActivationSucceeded: async (): Promise<void> => {
+          statusWrites.succeeded += 1;
+        },
+        markActivationFailed: async (): Promise<void> => {
+          statusWrites.failed += 1;
+        },
+      } as never,
       vault: {} as never,
       onUninstall: async (): Promise<void> => {
         await handle.close();
@@ -162,6 +182,11 @@ describe('#665 — KG plugin close() must not end the shared pg pool', () => {
     await service.reactivate(KG_ID);
 
     assert.equal(reactivations, 1, 'reactivate must have driven the full hook pair');
+    assert.deepEqual(
+      statusWrites,
+      { cleared: 1, succeeded: 1, failed: 0 },
+      'a clean re-activation must be recorded as a success, not left implicit',
+    );
 
     const after = await pool.query<{ ok: number }>('SELECT 1 AS ok');
     assert.equal(

@@ -2390,6 +2390,119 @@ export async function setAuditMode(
 }
 
 // -----------------------------------------------------------------------------
+// Plugin grants — epic #470 C16 (#817)
+// -----------------------------------------------------------------------------
+
+/** `permissions.sql` as the manifest declares it. */
+export interface DeclaredSqlPermission {
+  ledger: string;
+  migrations?: string;
+  handoff?: string;
+}
+
+/** One thing the manifest asked for that the operator has not granted. */
+export type MissingGrant =
+  | { kind: 'sql'; ledger: string }
+  | { kind: 'public_path'; path: string };
+
+/**
+ * The whole consent question for one plugin: what the manifest asks for, what
+ * the operator answered, the install state that answer produced, and what is
+ * still outstanding.
+ *
+ * Mirrors `GrantsView` in `middleware/src/routes/runtimeGrants.ts`.
+ */
+export interface PluginGrantsView {
+  id: string;
+  declared: {
+    sql: DeclaredSqlPermission | null;
+    public_paths: string[];
+    optional_requires: string[];
+  };
+  granted: {
+    sql: boolean;
+    /** What is on record, which may be a ledger the manifest no longer
+     *  declares — "not granted" and "granted for a different table" are
+     *  different problems with different fixes. */
+    sql_ledger: string | null;
+    public_paths: string[];
+  };
+  state: 'active' | 'inactive' | 'errored';
+  missing: MissingGrant[];
+  orphaned_public_paths: string[];
+  last_activation_error: string | null;
+  last_activation_error_at: string | null;
+}
+
+function grantsUrl(pluginId: string): string {
+  return botApi(
+    `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/grants`,
+  );
+}
+
+/** Read the consent state. Never mutates — safe to call on mount. */
+export async function getPluginGrants(
+  pluginId: string,
+): Promise<PluginGrantsView> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(grantsUrl(pluginId), {
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `GET installed/${pluginId}/grants failed: ${String(res.status)}`,
+      text,
+    );
+  }
+  return (await res.json()) as PluginGrantsView;
+}
+
+/**
+ * Record consent and re-activate the plugin.
+ *
+ * An ABSENT key leaves that grant alone; a PRESENT `public_paths` is the
+ * complete consented set, so omitting a prefix revokes it. Both rules are the
+ * server's — see `runtimeGrants.ts` — and are restated here because a caller
+ * that sends `{ public_paths: [] }` meaning "leave it alone" would revoke
+ * everything.
+ *
+ * The returned view carries the state the plugin is ACTUALLY in afterwards: a
+ * grant can be written successfully and the plugin still come back `errored`
+ * for an unrelated reason, and the caller must show that rather than assume the
+ * 200 meant "working".
+ */
+export async function setPluginGrants(
+  pluginId: string,
+  body: { sql?: boolean; public_paths?: string[] },
+): Promise<PluginGrantsView> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(grantsUrl(pluginId), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(body),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PUT installed/${pluginId}/grants failed: ${String(res.status)}`,
+      text,
+    );
+  }
+  return (await res.json()) as PluginGrantsView;
+}
+
+// -----------------------------------------------------------------------------
 // Routines (operator dashboard)
 // -----------------------------------------------------------------------------
 
