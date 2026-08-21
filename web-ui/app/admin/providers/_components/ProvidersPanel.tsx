@@ -699,6 +699,16 @@ function AssignmentRow({
           })}
         </p>
       )}
+      {/* Subscription CLIs (consumer plan): no AVV/DPA CAN exist — a stronger
+          caveat than the ordinary third-party disclosure, so it gets the
+          warning styling, not the muted note styling. */}
+      {selectedProvider?.subscriptionNotice && (
+        <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
+          {t('assignments.subscriptionNotice', {
+            provider: selectedProvider?.label ?? a.provider,
+          })}
+        </p>
+      )}
       {error !== undefined && (
         <ErrorHelp code={errorCode(error)} rawDetail={error} />
       )}

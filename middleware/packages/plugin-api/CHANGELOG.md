@@ -8,6 +8,64 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.4.0
+
+- MINOR: `PluginActionStatus` gains an optional, kernel-stamped `checked_at`
+  ISO timestamp, and `ctx.status.report({ state: 'ok', title })` is now stored
+  and rendered as a positive "connection verified" badge instead of being
+  normalized to `clear()`. A BARE `{ state: 'ok' }` keeps its clear() synonym
+  semantics — no existing caller changes behaviour. (Field-test OM-16/24/33:
+  integrations can now surface "Verbunden · geprüft <Zeit>" on the store card.)
+
+## 1.3.0 — 2026-08-20
+
+Additive. Two shapes a plugin could not express before, both found by the
+epic #470 P5 acceptance run against a real core: a dependency it can survive
+the absence of, and a nav entry pointing at its own bundled UI when its id is
+scoped. Every existing consumer keeps compiling — the new members are optional
+or additive, and no existing member changed meaning.
+
+### Added
+
+- **`ctx.services.getOptional(name)`** (`<T>(name: string) => T | undefined`)
+  — the accessor for a capability declared under the new manifest field
+  `optional_requires:` (#795). Declaration-gated exactly like `get`, so an
+  undeclared name still throws `ServiceNotDeclaredError` and a typo cannot
+  quietly become `undefined`; what it adds is a call site that says absence is
+  survivable. `optional_requires:` entries use the same capability-ref syntax
+  as `requires:` and satisfy the same declaration gate, but are NOT an
+  activation dependency: the installer raises no
+  `install.missing_capability`, and the capability resolver neither demands
+  nor orders a provider for them.
+
+  The ordering consequence is part of the contract: with no activation edge,
+  an optional provider that IS installed may activate after its consumer.
+  Resolve optional services lazily, at first use, rather than caching the
+  result of one call during `activate()`.
+
+- **`UiNavEntryInput.pluginUi`** (`true | undefined`) — ask the kernel to
+  render the canonical path to this plugin's own bundled UI instead of
+  supplying a literal `href` (#798). A scoped plugin id resolves only
+  percent-encoded (`/plugin-ui/%40acme%2Fwidget`), and percent-encoding is
+  precisely what the literal-`href` validator refuses — so a scoped plugin
+  previously had no spelling that both validated and worked. Supply exactly
+  one of `href` or `pluginUi: true`; supplying both, or neither, throws.
+
+- **`ResolvedUiNavEntry.pluginUi`** (`true | undefined`) — set on entries
+  registered that way, so the web UI re-derives the href from `pluginId`
+  locally instead of trusting a percent-encoded string across a deployment
+  boundary.
+
+### Changed
+
+- **`UiNavEntryInput.href`** is now optional (`string | undefined`), because
+  a `pluginUi: true` entry supplies none. Widening an input field: every
+  plugin that passes an `href` today is unaffected.
+- **`UiNavEntry.href`** stays required — the kernel resolves `pluginUi` to a
+  concrete path at registration, so a catalogued entry always has one.
+- **`ServiceNotDeclaredError`**'s message now names `optional_requires:` as a
+  fix alongside `requires:` and `provides:`.
+
 ## 1.2.0 — 2026-08-20
 
 Additive. A plugin may now be handed a Postgres pool and own tables in the

@@ -18,6 +18,8 @@
  * conventions ever change.
  */
 
+import { isValidPluginId } from './pluginId';
+
 function botApi(path: string): string {
   if (typeof window !== 'undefined') {
     return `/bot-api${path}`;
@@ -59,6 +61,25 @@ const MAX_LABEL_LENGTH = 40;
 const MAX_HREF_LENGTH = 256;
 const MAX_ENTRIES = 100;
 const HREF_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
+
+/**
+ * The canonical host-page path for a plugin's own bundled UI (#798).
+ *
+ * A scoped plugin id only resolves percent-encoded — and percent-encoding is
+ * exactly what {@link isCanonicalInAppHref} refuses, on purpose, because the
+ * shell compares hrefs to core paths by string equality. Rather than relax
+ * that rule for one case, an entry flagged `pluginUi` has its href DERIVED
+ * here from `pluginId` and the transmitted href is discarded.
+ *
+ * That is a stronger check than validating the string would have been. The
+ * middleware is a separate deployable; this way a version skew or a
+ * compromised control plane cannot put an arbitrary encoded path into the
+ * chrome, because the only encoded path this file can produce is the one it
+ * computes itself from a charset-checked id.
+ */
+function pluginUiHref(pluginId: string): string {
+  return `/plugin-ui/${encodeURIComponent(pluginId)}`;
+}
 
 /** Control, bidi-formatting and zero-width codepoints. */
 function hasUnsafeChars(value: string): boolean {
@@ -109,7 +130,7 @@ export function parseEntries(payload: unknown): readonly NavEntryDto[] {
   for (const item of raw.slice(0, MAX_ENTRIES)) {
     if (typeof item !== 'object' || item === null) continue;
     const e = item as Record<string, unknown>;
-    const { pluginId, navId, href, label, order, cluster } = e;
+    const { pluginId, navId, href, label, order, cluster, pluginUi } = e;
     if (
       typeof pluginId !== 'string' ||
       typeof navId !== 'string' ||
@@ -119,9 +140,31 @@ export function parseEntries(payload: unknown): readonly NavEntryDto[] {
       continue;
     }
     if (label.trim().length === 0 || label.length > MAX_LABEL_LENGTH) continue;
-    if (hasUnsafeChars(label) || hasUnsafeChars(href)) continue;
-    if (!isCanonicalInAppHref(href)) continue;
+    if (hasUnsafeChars(label)) continue;
     if (cluster !== undefined && typeof cluster !== 'string') continue;
+
+    // #798 — a plugin-UI entry names its destination by plugin id, so the
+    // href is recomputed rather than validated. Anything else the payload
+    // claimed for `href` is ignored.
+    let resolvedHref: string;
+    if (pluginUi === true) {
+      // `isValidPluginId` rather than a fourth copy of the pattern: it is
+      // already pinned character-identical to `manifestLoader.ts` by
+      // `pluginId.test.ts` (C8b), and it is the same gate the host page at
+      // `/plugin-ui/[pluginId]` applies to whatever this href points at.
+      // A nav entry that passed here but 404'd there would be the exact
+      // class of split-brain bug #798 is about.
+      if (!isValidPluginId(pluginId)) continue;
+      resolvedHref = pluginUiHref(pluginId);
+    } else if (pluginUi !== undefined) {
+      // Present but not literal `true` — a shape this shell does not
+      // understand. Dropping beats guessing.
+      continue;
+    } else {
+      if (hasUnsafeChars(href)) continue;
+      if (!isCanonicalInAppHref(href)) continue;
+      resolvedHref = href;
+    }
     // `JSON.parse('{"order":1e400}')` yields Infinity, which is a number —
     // it would poison every comparison in the merge sort.
     const resolvedOrder =
@@ -129,7 +172,7 @@ export function parseEntries(payload: unknown): readonly NavEntryDto[] {
     out.push({
       pluginId,
       navId,
-      href,
+      href: resolvedHref,
       label,
       order: resolvedOrder,
       ...(typeof cluster === 'string' ? { cluster } : {}),

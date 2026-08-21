@@ -407,6 +407,8 @@ export interface PluginActionStatus {
   state: PluginActionState;
   title?: string;
   detail?: string;
+  /** Kernel-stamped ISO time of the report — see plugin-api's contract. */
+  checked_at?: string;
 }
 
 /**
@@ -450,6 +452,14 @@ export interface Plugin {
   version: string;
   latest_version: string;
   description: string;
+  /**
+   * OM-28/OM-06 (#602) — the manifest may declare `identity.description` as a
+   * localized map (`{ en, de, … }`). `description` stays the resolved English
+   * string so every existing consumer (search, older UIs, the hub) keeps
+   * working; this carries the full map so the web-ui can pick the viewer's
+   * locale. Absent when the manifest declared a plain string.
+   */
+  description_localized?: Record<string, string>;
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;
   icon_url: string | null;
@@ -514,6 +524,19 @@ export interface Plugin {
    *  to empty array). The kernel rejects boot if any `requires` has no
    *  matching `provides` across the installed plugin set. */
   requires: string[];
+  /**
+   * Capabilities this plugin may use but can run without (#795). Same
+   * capability-ref syntax as {@link requires}, and the same effect on the
+   * `ctx.services` declaration gate — but NOT an activation dependency:
+   * the installer does not refuse the install when nothing provides one,
+   * the capability resolver neither orders nor demands a provider, and
+   * `ctx.services.getOptional(name)` simply answers `undefined`.
+   *
+   * Absent when the manifest declares none; read it as `?? []`. Surfaced
+   * on the install DTO so the consent UI can render these prerequisites
+   * as optional rather than as blockers.
+   */
+  optional_requires?: string[];
   /**
    * Builder service-type declarations (OB — service-type auto-discovery).
    * Integration plugins list every `ctx.services.provide(...)` surface they

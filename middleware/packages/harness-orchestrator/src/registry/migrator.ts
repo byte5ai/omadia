@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,7 +23,21 @@ function defaultMigrationsDir(): string {
   const override = process.env['MULTI_ORCH_MIGRATIONS_DIR'];
   if (override) return resolve(override);
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '..', '..', '..', '..', 'migrations');
+  // Two real layouts (v0.115.0 fresh-install regression):
+  //   monorepo/Docker  …/packages/harness-orchestrator/dist/registry → 4 up
+  //   installed dep    …/node_modules/@omadia/harness-orchestrator/dist/registry → 5 up
+  // The 4-up guess lands in `node_modules/migrations` on the second layout and
+  // scandir throws at boot. Probe both and take the first that EXISTS; keep the
+  // 4-up path as the final fallback so the error message still names the
+  // historically-documented location when neither exists.
+  const candidates = [
+    resolve(here, '..', '..', '..', '..', 'migrations'),
+    resolve(here, '..', '..', '..', '..', '..', 'migrations'),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(dir)) return dir;
+  }
+  return candidates[0]!;
 }
 
 const LEDGER_DDL = `

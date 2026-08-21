@@ -1,3 +1,4 @@
+import { extractFromJsonFile } from './setupJsonFile.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -196,6 +197,7 @@ export class InstallService {
   async configure(
     jobId: string,
     values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
   ): Promise<InstallJob> {
     const job = this.get(jobId);
 
@@ -217,6 +219,42 @@ export class InstallService {
     }
 
     this.transition(job, 'configuring', 'Validiere Eingaben');
+
+    // #603 (OM-17) — a `json_file` upload submitted WITH the install form. The
+    // parse happens HERE, per the platform doctrine on the post-install
+    // `secrets/from-json` route: a client that decides which bytes become
+    // `gw_sa_private_key` is a client that can be made to decide wrongly. The
+    // raw document is never persisted; only the extracted values continue, and
+    // they continue through the SAME validation as typed input (patterns,
+    // required, vault/config split), so "uploaded it" cannot drift from
+    // "typed it". A value the operator explicitly typed wins over the file —
+    // the visible field is the truth the operator sees.
+    if (jsonFiles) {
+      for (const field of schema.fields) {
+        if (field.type !== 'json_file') continue;
+        const raw = jsonFiles[field.key];
+        if (typeof raw !== 'string' || raw.length === 0) continue;
+        const out = extractFromJsonFile(raw, {
+          key: field.key,
+          extracts: field.extracts ?? {},
+          ...(field.expect ? { expect: field.expect } : {}),
+        });
+        if (!out.ok) {
+          this.fail(job, {
+            code: 'install.validation_failed',
+            message: 'Eingaben enthalten Fehler',
+            details: [
+              { key: field.key, code: out.failure.code, message: out.failure.message },
+            ],
+          });
+          return job;
+        }
+        for (const [k, v] of Object.entries(out.values)) {
+          const existing = values[k];
+          if (existing === undefined || existing === '') values[k] = v;
+        }
+      }
+    }
 
     const validated = await validateValues(schema, values);
     if (validated.errors.length > 0) {

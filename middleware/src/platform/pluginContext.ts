@@ -326,6 +326,17 @@ export function createPluginContext(
         ? (borrowPool(resolved as Pool, agentId) as T)
         : resolved;
     },
+    // #795 — the accessor an `optional_requires:` entry is consumed
+    // through. Same gates in the same order as `get`: a name the manifest
+    // declares nowhere is still a manifest bug and still throws, because a
+    // typo that quietly became `undefined` is precisely the failure the
+    // declaration gate exists to prevent. What differs is the contract the
+    // caller signs up to — `undefined` is an answer here, not a symptom —
+    // and the fact that the kernel never held the plugin's activation back
+    // waiting for a provider.
+    getOptional<T>(name: string): T | undefined {
+      return services.get<T>(name);
+    },
     has(name: string): boolean {
       return serviceRegistry.has(name);
     },
@@ -788,8 +799,10 @@ export function createPluginContext(
   // Status accessor (spec 004): the plugin pushes its operator-facing action
   // status to the kernel registry. Self-scoped to this plugin id — a plugin
   // cannot report another's status. No-op when no registry was threaded
-  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
-  // no badge; the value is normalized to guard against malformed input.
+  // (migration/test contexts). `clear()` and a BARE `report({state:'ok'})`
+  // both leave no badge; an ok WITH a title renders as a positive
+  // "connection verified" badge. Values are normalized against malformed
+  // input and `checked_at` is kernel-stamped.
   const statusRegistry = opts.pluginStatusRegistry;
   const status: StatusAccessor = {
     report(next) {
@@ -802,8 +815,14 @@ export function createPluginContext(
         state,
         ...(typeof next?.title === 'string' ? { title: next.title } : {}),
         ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+        // Kernel-stamped, never taken from the caller: the time a status
+        // claims to have been checked must be the time it was reported.
+        checked_at: new Date().toISOString(),
       };
-      if (state === 'ok') {
+      if (state === 'ok' && normalized.title === undefined) {
+        // Bare ok stays the clear() synonym (previewRuntime's synthetic
+        // markers and every pre-existing caller rely on it). An ok WITH a
+        // title is a deliberate, renderable "connection verified" signal.
         statusRegistry.clear(agentId);
         return;
       }

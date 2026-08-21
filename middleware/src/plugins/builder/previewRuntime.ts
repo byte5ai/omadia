@@ -221,6 +221,11 @@ export interface PreviewPluginContext {
    *  `docs/harness-platform/HANDOFF-2026-05-04-preview-services-undefined.md`. */
   readonly services: {
     get<T>(name: string): T | undefined;
+    /** #795 — the optional-dependency accessor. Ungated in preview (there is
+     *  no installed manifest to check a declaration against), so it resolves
+     *  identically to `get`; what a previewed agent depends on is the return
+     *  value, and that is the same. */
+    getOptional<T>(name: string): T | undefined;
     has(name: string): boolean;
     provide<T>(name: string, impl: T): () => void;
     replace<T>(name: string, impl: T): () => void;
@@ -929,6 +934,14 @@ function createStubContext(opts: {
     // they neither leak into the kernel registry nor get shadowed by it.
     services: {
       get: <T,>(name: string): T | undefined => {
+        if (localServices.has(name)) return localServices.get(name) as T;
+        return host ? host.get<T>(name) : undefined;
+      },
+      // #795 — the preview runtime is ungated by design (there is no
+      // installed manifest to check against), so optional and required
+      // resolution take the same path here. The distinction that matters
+      // to a previewed agent is the return value, and that is identical.
+      getOptional: <T,>(name: string): T | undefined => {
         if (localServices.has(name)) return localServices.get(name) as T;
         return host ? host.get<T>(name) : undefined;
       },

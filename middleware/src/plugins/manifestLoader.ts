@@ -32,7 +32,7 @@ import {
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
-import { normalizeLocalized } from './manifestLocalized.js';
+import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -57,12 +57,36 @@ const DEFAULT_MANIFEST_DIR =
   process.env['PLUGIN_MANIFEST_DIR'] ??
   path.join(REPO_ROOT, 'docs', 'harness-platform', 'examples');
 
+/**
+ * Where a catalog entry came from — issue #794.
+ *
+ * `bundled` means the package ships INSIDE the middleware image, under
+ * `middleware/packages/*`, and is therefore code this repository controls and
+ * reviews. `installed` means everything else: uploaded zips, local-dev
+ * packages, and the example manifests. The distinction exists because the
+ * dated SQL migration ramp (`LEGACY_SQL_GRANTS_2026_08_20`) may only ever
+ * apply to code we ship — an upload must never be able to reach it.
+ *
+ * It is derived by the LOADER, never read from the manifest. A manifest is
+ * author-supplied data; letting a package declare its own origin would make
+ * the security boundary a self-assessment, which is exactly the bar C7 was
+ * written to raise above.
+ *
+ * Default is `installed` at every construction site: an entry whose origin
+ * nobody asserted is not privileged.
+ */
+export type PluginOrigin = 'bundled' | 'installed';
+
 export interface PluginCatalogOptions {
   manifestDir?: string;
   /** Additional manifest sources (e.g. extracted zip uploads). Each entry
    *  points at a package-root directory that contains a `manifest.yaml`.
-   *  On ID collision with the built-in catalog the uploaded version wins. */
-  extraSources?: () => Array<{ packageRoot: string }>;
+   *  On ID collision with the built-in catalog the uploaded version wins.
+   *
+   *  `origin` is asserted by the CALLER (see the wiring in `index.ts`, which
+   *  is the only place that passes `'bundled'`, and only for the built-in
+   *  package store). Omitting it means `installed`. */
+  extraSources?: () => Array<{ packageRoot: string; origin?: PluginOrigin }>;
 }
 
 export interface PluginCatalogEntry {
@@ -73,6 +97,9 @@ export interface PluginCatalogEntry {
   source_path: string;
   /** Loader that produced this entry. Only manifest-v1 is supported today. */
   source_kind: 'manifest-v1';
+  /** #794 — whether this package ships inside the middleware image. Set by the
+   *  loader from WHERE the manifest was found, never from its content. */
+  origin: PluginOrigin;
 }
 
 export class PluginCatalog {
@@ -91,7 +118,11 @@ export class PluginCatalog {
       const manifestPath = path.join(src.packageRoot, 'manifest.yaml');
       const entry = await loadManifestFromPath(manifestPath);
       if (entry) {
-        next.set(entry.plugin.id, entry);
+        // #794 — the origin the CALLER asserted, not one the package claimed.
+        next.set(entry.plugin.id, {
+          ...entry,
+          origin: src.origin ?? 'installed',
+        });
       } else {
         console.warn(
           `[catalog] skipped uploaded manifest at ${manifestPath}: not a recognised schema-v1 manifest`,
@@ -130,6 +161,10 @@ export async function loadManifestFromPath(
       manifest: doc,
       source_path: absPath,
       source_kind: 'manifest-v1',
+      // #794 — a single manifest read in isolation carries no evidence of
+      // where the package came from, so it gets the unprivileged origin.
+      // `PluginCatalog.load` re-stamps it from the source that asked for it.
+      origin: 'installed',
     };
   } catch (err) {
     console.warn(`[catalog] failed to parse ${absPath}:`, err);
@@ -159,6 +194,11 @@ async function loadManifestV1Entries(
           manifest: doc,
           source_path: fullPath,
           source_kind: 'manifest-v1',
+          // #794 — the example-manifest directory is operator-pointable via
+          // `PLUGIN_MANIFEST_DIR` and carries no package code (so these
+          // entries cannot even be activated: `resolvePackagePath` finds no
+          // package root for them). Unprivileged.
+          origin: 'installed',
         });
       } else {
         console.warn(
@@ -358,6 +398,11 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
   const requires = extractCapabilityList(doc['requires'], id, 'requires');
+  const optionalRequires = extractCapabilityList(
+    doc['optional_requires'],
+    id,
+    'optional_requires',
+  );
   const serviceTypes = extractServiceTypes(doc['service_types'], id);
   const channel =
     kind === 'channel' ? extractChannelBlock(doc['channel']) : undefined;
@@ -438,13 +483,18 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     permissionsSummary.acquires_oauth = true;
   }
 
+  const descriptionMap = normalizeLocalized(identity['description']);
+
   const base: Plugin = {
     id,
     kind,
     name,
     version,
     latest_version: version,
-    description: asString(identity['description']) ?? '',
+    // OM-28/OM-06 (#602) — `identity.description` accepts a localized map.
+    // `description` stays the English-resolved string (search, hub, older
+    // consumers); the full map rides along in `description_localized` below.
+    description: resolveLocalized(descriptionMap, 'en') ?? '',
     authors: extractAuthors(identity['authors']),
     license: asString(identity['license']) ?? 'Unknown',
     icon_url: null,
@@ -465,6 +515,22 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  // Attached only when the manifest declared MORE than a bare English string —
+  // a plain-string description round-trips exactly as before.
+  if (
+    descriptionMap &&
+    (Object.keys(descriptionMap).length > 1 || descriptionMap['en'] === undefined)
+  ) {
+    result = { ...result, description_localized: descriptionMap };
+  }
+  // Only attached when the manifest actually declares one, mirroring
+  // `service_types` below: `undefined` and `[]` mean the same thing to every
+  // consumer (all of which read it as `?? []`), and omitting the key keeps
+  // the catalog entry byte-identical for the overwhelming majority of
+  // manifests that declare no optional dependency.
+  if (optionalRequires.length > 0) {
+    result = { ...result, optional_requires: optionalRequires };
+  }
   if (oauthProviders.length > 0) {
     result = { ...result, oauth_providers: oauthProviders };
   }
@@ -486,17 +552,19 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
 }
 
 /**
- * Parses a `provides:` or `requires:` array. Each entry must be a non-empty
- * string that {@link parseCapabilityRef} accepts. Malformed entries are
- * dropped with a `console.warn` so that one bad manifest doesn't break
- * catalog-load for the rest; the capability resolver additionally re-parses
- * at activation time and surfaces a hard error if a `requires` has no
- * provider — so dropping here is safe from a correctness standpoint.
+ * Parses a `provides:`, `requires:` or `optional_requires:` array. Each entry
+ * must be a non-empty string that {@link parseCapabilityRef} accepts — the
+ * three fields share one syntax so a capability can be moved between them
+ * without rewriting it. Malformed entries are dropped with a `console.warn`
+ * so that one bad manifest doesn't break catalog-load for the rest; the
+ * capability resolver additionally re-parses at activation time and surfaces
+ * a hard error if a `requires` has no provider — so dropping here is safe
+ * from a correctness standpoint.
  */
 function extractCapabilityList(
   raw: unknown,
   pluginId: string,
-  field: 'provides' | 'requires',
+  field: 'provides' | 'requires' | 'optional_requires',
 ): string[] {
   const arr = asArray(raw);
   const out: string[] = [];

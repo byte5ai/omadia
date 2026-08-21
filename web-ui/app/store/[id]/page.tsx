@@ -93,6 +93,10 @@ export default async function PluginDetailPage({
   // language so a single-language guide still renders.
   const locale = await getLocale();
   const setupGuideText = pickLocalized(plugin.setup_guide, locale);
+  // OM-28/OM-06 (#602) — the manifest may localize its description; the plain
+  // string stays the fallback for every manifest that never declared a map.
+  const localizedDescription =
+    pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   const t = await getTranslations('store.detail');
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
@@ -193,10 +197,8 @@ export default async function PluginDetailPage({
           >
           <Section label={t('sectionDescription')}>
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
-              {plugin.description ? (
-                <>
-                                    {plugin.description}
-                </>
+              {localizedDescription ? (
+                localizedDescription
               ) : (
                 <span className="text-[color:var(--fg-muted)]">
                   {t('noDescription')}
@@ -290,42 +292,63 @@ export default async function PluginDetailPage({
             />
           </Section>
 
-          {(plugin.provides?.length ?? 0) + (plugin.requires?.length ?? 0) >
+          {/* #602 P4 (OM-06/07) — the pure service-contract detail reads as
+              jargon to the operator audience this store serves; it matters to
+              plugin developers wiring capabilities together. Native <details>,
+              collapsed by default, keeps it one click away without burying the
+              user-relevant sections (description, setup, permissions), which
+              stay expanded above. */}
+          {(plugin.provides?.length ?? 0) +
+            (plugin.requires?.length ?? 0) +
+            plugin.integrations_summary.length >
           0 ? (
-            <Section
-              label={t('sectionCapabilities')}
-              icon={<Plug className="size-4" aria-hidden />}
-              meta={t('capabilitiesMeta', {
-                provides: plugin.provides?.length ?? 0,
-                requires: plugin.requires?.length ?? 0,
-              })}
-            >
-              <CapabilitiesBlock
-                provides={plugin.provides ?? []}
-                requires={plugin.requires ?? []}
-              />
-            </Section>
-          ) : null}
+            <details className="group rounded-lg border border-[color:var(--rule)] px-5 py-4">
+              <summary className="cursor-pointer select-none text-[13px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)] transition-colors hover:text-[color:var(--fg)]">
+                {t('sectionForDevelopers')}
+                <span className="ml-2 normal-case tracking-normal text-[12px] font-normal text-[color:var(--faint-ink)]">
+                  {t('sectionForDevelopersHint')}
+                </span>
+              </summary>
+              <div className="mt-6 space-y-12">
+              {(plugin.provides?.length ?? 0) + (plugin.requires?.length ?? 0) >
+              0 ? (
+                <Section
+                  label={t('sectionCapabilities')}
+                  icon={<Plug className="size-4" aria-hidden />}
+                  meta={t('capabilitiesMeta', {
+                    provides: plugin.provides?.length ?? 0,
+                    requires: plugin.requires?.length ?? 0,
+                  })}
+                >
+                  <CapabilitiesBlock
+                    provides={plugin.provides ?? []}
+                    requires={plugin.requires ?? []}
+                  />
+                </Section>
+              ) : null}
 
-          {plugin.integrations_summary.length > 0 ? (
-            <Section
-              label={t('sectionIntegrations')}
-              icon={<Network className="size-4" aria-hidden />}
-            >
-              <ul className="space-y-2">
-                {plugin.integrations_summary.map((target, idx) => (
-                  <li
-                    key={idx}
-                    className="flex items-center gap-3 border-t border-[color:var(--rule)] py-3 first:border-t-0 first:pt-0"
-                  >
-                    <span className="font-mono-num text-[11px] text-[color:var(--faint-ink)]">
-                      {String(idx + 1).padStart(2, '0')}
-                    </span>
-                    <span className="text-[color:var(--ink)]">{target}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
+              {plugin.integrations_summary.length > 0 ? (
+                <Section
+                  label={t('sectionIntegrations')}
+                  icon={<Network className="size-4" aria-hidden />}
+                >
+                  <ul className="space-y-2">
+                    {plugin.integrations_summary.map((target, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-center gap-3 border-t border-[color:var(--rule)] py-3 first:border-t-0 first:pt-0"
+                      >
+                        <span className="font-mono-num text-[11px] text-[color:var(--faint-ink)]">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <span className="text-[color:var(--ink)]">{target}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              ) : null}
+              </div>
+            </details>
           ) : null}
 
           {/*
