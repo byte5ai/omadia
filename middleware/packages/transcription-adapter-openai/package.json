@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/transcription-adapter-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "OpenAI transcription adapter for omadia (#584). Provides the 'transcription@1' capability with gpt-transcribe (batch, POST /v1/audio/transcriptions) and gpt-live-transcribe (realtime WebSocket, experimental-gated). API key is vault-backed, never plugin config.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test 'test/**/*.test.ts'"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "undici": "^8.0.0",
+    "ws": "^8.21.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -148,6 +148,7 @@ jobs:
           npm run test -w @omadia/canvas-core
           npm run test -w @omadia/conductor-core
           npm run test -w @omadia/plugin-api
+          npm run test -w @omadia/transcription-adapter-openai
 
       # `--test-timeout` is applied to the FILE, not to each leaf (#566): a
       # file whose leaves are all fast but whose total crosses the ceiling is

@@ -1306,6 +1306,39 @@ Reap-Cleanup). Tests: `test/agentSetupService.test.ts`,
 `test/observedConversationInvites.test.ts`,
 `test/conductorScopedRoleAssignments.test.ts`,
 `test/conductorEphemeralAttachments.test.ts`.
+### Transcription-Capability + Recording-Ingestion (#584 WS T+I)
+
+Speech-to-Text ist eine Core-Capability nach ADR-0003: Registry-Key
+`'transcription'` (bare), Manifest-Form `'transcription@1'` — Twin-Konstanten
+in `packages/plugin-api/src/transcription.ts` (sessionBriefing-Konvention).
+Interface provider-neutral: `transcribeFile` (Batch) + `transcribeStream`
+(Realtime, `AsyncIterable<TranscriptDelta>`), Hint-Carrier
+(`languageHints`/`keywordHints`/`context`) für die #584-Hint-Synergie.
+Guardrails als Decorator `withTranscriptionGuardrails` (per-Call-Cap,
+per-Agent-Minuten-Quota In-Memory, Metering; Attribution via
+`turnContext.currentAgentSlug()` zur Call-Zeit, VOR dem ersten yield
+gecaptured — ALS überlebt Generator-yields nicht).
+
+Erster Provider: `packages/transcription-adapter-openai/` (Plugin, provides
+`transcription@1`, Vault-Key; `gpt-transcribe` Batch ungated,
+`gpt-live-transcribe` hinter `TRANSCRIPTION_REALTIME_EXPERIMENTAL`).
+Provider-Switch mit verifiziertem Rollback:
+`/api/v1/admin/transcription-provider` (`src/routes/adminTranscriptionProvider.ts`,
+schlankes Spiegelbild der Embedding-Route ohne Corpus/Gate) + web-ui-Panel
+`/admin/transcription-provider` (Consent-Surface: „Roh-Audio verlässt die
+Installation", i18n en+de).
+
+Workstream I: Native-Tool `transcribe_recording`
+(`packages/harness-orchestrator/src/tools/transcribeRecordingTool.ts`,
+Registrierung in `plugin.ts` mit late-bound Service-Resolve). Ingestiert
+Aufnahmen in dieselbe Artefakt-Substanz wie Live-Chat: ein `SessionLogEntry`
+pro Utterance (additive Felder `speaker?`/`time?`; `TurnIngest.speaker` in
+beiden KG-Backends), Markdown-Transkript + KG-Turns + Briefing. Transkript
+gilt als untrusted Input und läuft als Tool-Result durch die bestehenden
+Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
+`test/sessionLoggerSpeaker.test.ts`, `test/adminTranscriptionProviderRoute.test.ts`,
+`packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
+`packages/transcription-adapter-openai/test/`.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -1671,6 +1704,12 @@ ODOO_INSECURE_TLS=false             # true nur lokal bei Private-CA
 CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN, CONFLUENCE_BASE_URL
 CONFLUENCE_SPACE_KEY=HOME
 CONFLUENCE_PROXY_MAX_BYTES=200000
+# Transcription (#584 — transcription@1 capability)
+TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-Pfad
+                                        # (transcribeStream); Batch (gpt-transcribe)
+                                        # läuft ohne Gate, sobald der Adapter
+                                        # @omadia/transcription-adapter-openai
+                                        # installiert + mit API-Key versorgt ist
 # Optional endpoints
 ADMIN_TOKEN                         # mount /api/admin (mutating memory)
 DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)

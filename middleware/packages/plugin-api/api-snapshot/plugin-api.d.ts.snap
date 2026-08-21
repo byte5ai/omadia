@@ -391,6 +391,8 @@ export * from './mergeCandidate.js';
 export * from './topic.js';
 export * from './excerptMerge.js';
 export * from './targetedSend.js';
+export * from './transcription.js';
+export * from './transcriptionGuardrails.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -826,6 +828,7 @@ toolCalls?: number;
 iterations?: number;
 entityRefs: EntityRef[];
 userId?: string;
+speaker?: string;
 entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
@@ -2413,6 +2416,69 @@ recluster(opts?: TopicClusteringRunOptions): Promise<TopicClusteringRunResult>;
 }
 export declare const TOPIC_CLUSTERING_SERVICE_NAME = "topicClustering";
 export declare const TOPIC_CLUSTERING_CAPABILITY = "topicClustering@1";
+
+// ===== transcription.d.ts =====
+export declare const TRANSCRIPTION_SERVICE_NAME = "transcription";
+export declare const TRANSCRIPTION_CAPABILITY = "transcription@1";
+export interface TranscribeOpts {
+readonly languageHints?: readonly string[];
+readonly keywordHints?: readonly string[];
+readonly context?: string;
+readonly maxDurationMs?: number;
+readonly signal?: AbortSignal;
+}
+export interface TranscriptSegment {
+readonly text: string;
+readonly startMs?: number;
+readonly endMs?: number;
+readonly speaker?: string;
+}
+export interface Transcript {
+readonly text: string;
+readonly segments: readonly TranscriptSegment[];
+readonly language?: string;
+readonly durationMs?: number;
+readonly provider: string;
+}
+export type TranscriptDelta = {
+readonly kind: 'partial';
+readonly itemId: string;
+readonly text: string;
+} | {
+readonly kind: 'segment';
+readonly itemId: string;
+readonly segment: TranscriptSegment;
+};
+export interface TranscribeFileRef {
+readonly bytes: Uint8Array;
+readonly fileName?: string;
+readonly contentType?: string;
+}
+export interface TranscriptionService {
+readonly providerId: string;
+transcribeFile(ref: TranscribeFileRef, opts?: TranscribeOpts): Promise<Transcript>;
+transcribeStream(audio: AsyncIterable<Uint8Array>, opts?: TranscribeOpts): AsyncIterable<TranscriptDelta>;
+}
+export declare class TranscriptionQuotaExceededError extends Error {
+readonly agentKey: string;
+readonly quotaMinutes: number;
+readonly usedMinutes: number;
+constructor(agentKey: string, quotaMinutes: number, usedMinutes: number);
+}
+export declare class TranscriptionRealtimeDisabledError extends Error {
+constructor(detail: string);
+}
+
+// ===== transcriptionGuardrails.d.ts =====
+import { type TranscriptionService } from './transcription.js';
+export interface TranscriptionGuardrailOptions {
+readonly maxCallMinutes?: number;
+readonly agentQuotaMinutes?: number;
+readonly resolveAgentKey?: () => string;
+readonly onMinutesMetered?: (agentKey: string, minutes: number, providerId: string) => void;
+readonly now?: () => number;
+}
+export declare function withTranscriptionGuardrails(inner: TranscriptionService, options?: TranscriptionGuardrailOptions): TranscriptionService;
 
 // ===== turnReceiptStore.d.ts =====
 import type { PrivacyReceipt } from './privacyReceipt.js';

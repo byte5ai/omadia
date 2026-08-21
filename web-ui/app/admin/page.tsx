@@ -47,6 +47,8 @@ const GROUPS: readonly GroupDef[] = [
       // with LLM access. The former standalone "General" group (Configuration +
       // Usage) is gone — provider keys are now entered inline on LLM access.
       { href: '/admin/usage', key: 'usage' },
+      // #584 WS T — live transcription@1 provider switch + consent surface.
+      { href: '/admin/transcription-provider', key: 'transcriptionProvider' },
     ],
   },
   {

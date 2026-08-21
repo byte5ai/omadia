@@ -295,6 +295,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         toolCalls: turn.toolCalls,
         iterations: turn.iterations,
         ...(turn.userId ? { userId: turn.userId } : {}),
+        // #584 WS I — speaker-attributed transcript-ingest turns.
+        ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
       },
       // Palaia (OB-70 / OB-71) — mirror the Neon DB defaults on Turn
       // ingest so the in-memory backend exposes the same axes to consumers.
