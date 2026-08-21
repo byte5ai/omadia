@@ -116,9 +116,11 @@ export class ConductorWorkflowStore {
     // store covers both consumers at once — the library route stays clutter-free AND
     // the event router never event-triggers an ephemeral workflow: those are
     // run-scoped (exactly one run, started by createEphemeralRun), not standing
-    // event subscribers.
+    // event subscribers. The reaped_at filter extends the same contract to deleted
+    // manual workflows (operator DELETE, logical shape): hidden from the library and
+    // never event-triggered again, while the row stays as audit trace.
     const r = await this.pool.query<WorkflowRow>(
-      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE origin = 'manual' ORDER BY created_at DESC`,
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE origin = 'manual' AND reaped_at IS NULL ORDER BY created_at DESC`,
     );
     return r.rows.map(toWorkflow);
   }
@@ -169,10 +171,15 @@ export class ConductorWorkflowStore {
       // hit the unique-constraint). Status is only set on first create, never changed here.
       // In expectNew mode the conflict clause flips to DO NOTHING: zero returned rows
       // means the slug is taken and the publish aborts with WorkflowSlugExistsError.
+      // The DO UPDATE's reaped_at guard makes a deleted slug behave like a taken
+      // one (zero returned rows → WorkflowSlugExistsError): publishing must not
+      // silently resurrect a logically removed workflow — it would stay hidden
+      // (reaped_at set) while collecting versions and cron schedules.
       const conflictClause = input.expectNew
         ? 'ON CONFLICT (slug) DO NOTHING'
         : `ON CONFLICT (slug) DO UPDATE
-           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()`;
+           SET name = EXCLUDED.name, description = EXCLUDED.description, updated_at = now()
+           WHERE conductor_workflows.reaped_at IS NULL`;
       const upserted = await client.query<{ id: string }>(
         `INSERT INTO conductor_workflows (slug, name, description, status, origin, expires_at, created_by_agent)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -233,9 +240,71 @@ export class ConductorWorkflowStore {
   }
 
   async setStatus(slug: string, status: 'enabled' | 'disabled'): Promise<void> {
+    // reaped_at guard: a deleted (logically removed) workflow must never be
+    // re-enabled — that would be a hidden, startable zombie (invisible to the
+    // library and event router, but cron- and manually-runnable).
     await this.pool.query(
-      'UPDATE conductor_workflows SET status = $2, updated_at = now() WHERE slug = $1',
+      'UPDATE conductor_workflows SET status = $2, updated_at = now() WHERE slug = $1 AND reaped_at IS NULL',
       [slug, status],
     );
+  }
+
+  /** True while any run of any of the workflow's versions is running/waiting —
+   *  deletion is blocked then (the operator cancels via the #759 route first). */
+  async hasActiveRuns(workflowId: string): Promise<boolean> {
+    const r = await this.pool.query<{ count: string }>(
+      `SELECT count(*) AS count
+         FROM conductor_runs r
+         JOIN conductor_workflow_versions v ON r.workflow_version_id = v.id
+        WHERE v.workflow_id = $1
+          AND r.status IN ('running', 'waiting')`,
+      [workflowId],
+    );
+    return Number(r.rows[0]?.count ?? 0) > 0;
+  }
+
+  /** Logical removal — the #330 reaper shape extended to manual workflows:
+   *  disabled (not startable, the cron worker skips it), stamped `reaped_at`
+   *  (hidden from list(), so neither the library nor the event router sees it),
+   *  run history + versions retained as audit trace. Idempotent — a removed
+   *  row is never re-stamped. */
+  async removeLogical(workflowId: string): Promise<void> {
+    // One statement so the workflow and its cron schedules disable atomically —
+    // the schedules must not stay enabled (the worker's workflowEnabled check
+    // would then be the only thing keeping a deleted workflow's cron quiet).
+    await this.pool.query(
+      `WITH removed AS (
+         UPDATE conductor_workflows
+            SET status = 'disabled', reaped_at = now(), updated_at = now()
+          WHERE id = $1 AND origin = 'manual' AND reaped_at IS NULL
+        RETURNING id
+       )
+       UPDATE conductor_schedules s
+          SET status = 'disabled'
+         FROM removed
+        WHERE s.workflow_id = removed.id`,
+      [workflowId],
+    );
+  }
+
+  /**
+   * Physical removal, guarded: only a manual workflow no run references (its
+   * versions, drafts and schedules cascade with it — conductor_runs' FK blocks
+   * referenced rows at the DB level). Returns false when runs exist; the caller
+   * falls back to removeLogical.
+   */
+  async hardDeleteUnreferenced(workflowId: string): Promise<boolean> {
+    const r = await this.pool.query(
+      `DELETE FROM conductor_workflows w
+        WHERE w.id = $1
+          AND w.origin = 'manual'
+          AND NOT EXISTS (
+            SELECT 1 FROM conductor_workflow_versions v
+              JOIN conductor_runs r ON r.workflow_version_id = v.id
+             WHERE v.workflow_id = w.id
+          )`,
+      [workflowId],
+    );
+    return (r.rowCount ?? 0) > 0;
   }
 }
