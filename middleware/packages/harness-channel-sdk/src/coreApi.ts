@@ -5,6 +5,7 @@ import type { ChatStreamEvent } from './streamEvent.js';
 import type { ConversationRosterProvider } from './conversationRoster.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
+import type { ConversationSendProvider } from './conversationSend.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 
@@ -151,4 +152,11 @@ export interface CoreApi {
    * Facilitator waiting for its `bot_added` handshake trigger).
    */
   emitConversationEvent?(event: ConversationMembershipEvent): void;
+
+  /**
+   * Register the channel's conversation-addressed proactive-send capability
+   * (#330 C3b — group nudges). Optional — same feature-detect + deactivate
+   * lifecycle as {@link registerTargetedSendProvider}.
+   */
+  registerConversationSendProvider?(channelId: string, provider: ConversationSendProvider): void;
 }

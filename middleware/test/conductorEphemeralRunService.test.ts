@@ -45,6 +45,7 @@ interface Harness {
   reaped: string[];
   hardDeleted: string[];
   cancelRequests: Array<{ id: string; by: string }>;
+  expired: string[];
 }
 
 function harness(opts?: {
@@ -52,6 +53,7 @@ function harness(opts?: {
   recentCreates?: number;
   startRunError?: Error;
   limits?: Partial<typeof LIMITS>;
+  openTimerAwait?: boolean;
 }): Harness {
   const published: Array<Record<string, unknown>> = [];
   const started: Array<Record<string, unknown>> = [];
@@ -81,11 +83,15 @@ function harness(opts?: {
       return 0;
     },
   } as unknown as ConductorEphemeralStore;
+  const expired: string[] = [];
   const executor = {
     startRun: async (input: Record<string, unknown>) => {
       if (opts?.startRunError) throw opts.startRunError;
       started.push(input);
       return { id: 'run-1', status: 'running' };
+    },
+    expireAwait: async (awaitId: string) => {
+      expired.push(awaitId);
     },
   } as unknown as ConductorRunExecutor;
 
@@ -94,10 +100,14 @@ function harness(opts?: {
     workflowStore,
     ephemeralStore,
     executor,
+    awaitStore: {
+      openTimerAwaitForRun: async (runId: string) =>
+        opts?.openTimerAwait && runId === 'run-1' ? { id: 'aw-timer-1', stepId: 'wait' } : null,
+    } as never,
     limits: { ...LIMITS, ...opts?.limits },
     now: () => NOW,
   });
-  return { service, published, started, reaped, hardDeleted, cancelRequests };
+  return { service, published, started, reaped, hardDeleted, cancelRequests, expired };
 }
 
 const VALID_INPUT = { agentId: 'facilitator-1', patternId: 'demo', slots: { agents: { worker: 'real-agent' } } };
@@ -185,6 +195,16 @@ describe('ConductorEphemeralRunService.createEphemeralRun', () => {
     assert.equal(out.runId, 'run-1');
     assert.equal(out.workflowId, 'wf-1');
     assert.equal(out.workflowSlug, pub.slug);
+  });
+
+  it('poke() early-fires an open timer await and no-ops without one (#330 C3)', async () => {
+    const withTimer = harness({ openTimerAwait: true });
+    assert.deepEqual(await withTimer.service.poke('run-1'), { poked: true });
+    assert.deepEqual(withTimer.expired, ['aw-timer-1']);
+
+    const without = harness();
+    assert.deepEqual(await without.service.poke('run-1'), { poked: false });
+    await assert.rejects(without.service.poke('  '), EphemeralInvalidInputError);
   });
 
   it('best-effort cancels + reaps the scaffold and rethrows when startRun fails', async () => {

@@ -6,6 +6,7 @@ import type {
   ChannelUserRef,
   ConversationMembershipEvent,
   ConversationRosterProvider,
+  ConversationSendProvider,
   CoreApi,
   HttpMethod,
   IncomingTurn,
@@ -18,6 +19,7 @@ import type { WebSocketRegistry } from './webSocketRegistry.js';
 import type { ConversationRosterRegistry } from './rosterRegistry.js';
 import type { ConversationEventHub } from './conversationEventHub.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
+import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 
 /**
  * Orchestrator adapter the CoreApi delegates to. Intentionally narrow — we
@@ -73,6 +75,8 @@ export interface CreateCoreApiOptions {
   rosterRegistry?: ConversationRosterRegistry;
   targetedSends?: TargetedSendRegistry;
   conversationEvents?: ConversationEventHub;
+  /** #330 C3b — conversation-addressed proactive send (group nudges). */
+  conversationSends?: ConversationSendRegistry;
   log?: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
 
@@ -170,6 +174,12 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     const conversationEvents = opts.conversationEvents;
     api.emitConversationEvent = (event: ConversationMembershipEvent): void => {
       conversationEvents.emit(event);
+    };
+  }
+  if (opts.conversationSends) {
+    const conversationSends = opts.conversationSends;
+    api.registerConversationSendProvider = (channelId: string, provider: ConversationSendProvider): void => {
+      conversationSends.register(channelId, provider);
     };
   }
 

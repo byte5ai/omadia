@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { nextStep } from '@omadia/conductor-core';
+import { nextStep, parseIsoDurationMs } from '@omadia/conductor-core';
 import type { JsonObject, JsonValue, Step, WorkflowGraph } from '@omadia/conductor-core';
 
 import type { ConductorWorkflowStore } from './workflowStore.js';
@@ -23,7 +23,7 @@ export class RunAlreadyEndedError extends Error {}
 
 export interface PreviewStep {
   stepId: string;
-  kind: 'agent' | 'action' | 'human';
+  kind: 'agent' | 'action' | 'human' | 'timer';
   actor: string;
   postcondition: string;
   transition: string | null;
@@ -61,15 +61,9 @@ function isApproved(response: JsonValue, strict = false): boolean {
   return obj?.approved !== false;
 }
 
-/** Parse an ISO-8601 duration (PT6H, PT24H, PT30M, P1D, P1DT2H) to milliseconds, or null. */
-export function parseIsoDurationMs(iso: string | null | undefined): number | null {
-  if (!iso) return null;
-  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(iso.trim());
-  if (!m) return null;
-  const [, d, h, min, s] = m;
-  const ms = (Number(d ?? 0) * 86400 + Number(h ?? 0) * 3600 + Number(min ?? 0) * 60 + Number(s ?? 0)) * 1000;
-  return ms > 0 ? ms : null;
-}
+// #330 C3 (review L1) — ONE ISO-8601 duration parser for validate-time and
+// runtime (lives in conductor-core); re-exported so existing imports keep working.
+export { parseIsoDurationMs } from '@omadia/conductor-core';
 
 /**
  * Owns run advancement: the engine (`@omadia/conductor-core`) decides the path; this executor
@@ -197,6 +191,47 @@ export class ConductorRunExecutor {
             nextStepId: null, context, status: 'failed', claimedBy: lease,
           });
           break;
+        }
+
+        // #330 C3 — deterministic per-step attempt counter. Bumped BEFORE the
+        // step runs so a transition guard like `lt ctx.stepAttempts.moderate 24`
+        // bounds assess/nudge loops without trusting the model to count.
+        context = this.bumpStepAttempt(context, stepId);
+
+        // #330 C3 — timer step: deterministic park. The awaitWorker's deadline
+        // poll fires expireAwait, which follows the step's fallback (the
+        // on-expiry edge) — the same machinery human deadlines already use.
+        if (step.kind === 'timer') {
+          const durationMs = parseIsoDurationMs(step.timer?.duration ?? null);
+          if (!durationMs || !step.fallbackTransitionId) {
+            // validate() catches this at publish time; a runtime miss must
+            // fail loudly rather than park a run nothing can ever wake.
+            await this.runStore.recordStepAndAdvance({
+              runId, seq, stepId, actor: { kind: 'timer', invalid: true },
+              postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
+              context, status: 'failed', claimedBy: lease,
+            });
+            break;
+          }
+          await this.awaitStore.create({
+            runId,
+            stepId: step.id,
+            principalKind: 'timer',
+            principalRef: 'timer',
+            channelType: 'timer',
+            message: `timer ${step.timer?.duration ?? ''}`,
+            quorum: 'any',
+            reminderIntervalMs: null,
+            deadlineAt: new Date(Date.now() + durationMs),
+            fallbackTransitionId: step.fallbackTransitionId,
+          });
+          await this.runStore.park(runId, step.id, context, lease);
+          // Same cancel-vs-park race close as the human park (#759).
+          if (await this.runStore.isCancelRequested(runId)) {
+            return this.finalizeCancelledWaitingRun(runId, lease);
+          }
+          this.log(`[conductor] run ${runId} parked on timer '${step.id}' (${step.timer?.duration ?? '?'})`);
+          return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
         }
 
         // Human step → durable await + park; resolveAwait/expireAwait resume the run.
@@ -483,18 +518,23 @@ export class ConductorRunExecutor {
     await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
     const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
+    // #330 C3 — a timer expiry is the step doing exactly its job, not a
+    // missed deadline; the actor says so, and the trace stays honest.
+    const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
+    // A timer expiring is the step working as designed — 'unmet' would lie.
+    const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
     if (!fallback) {
       await this.runStore.recordStepAndAdvance({
-        runId: aw.runId, seq, stepId: aw.stepId, actor: { kind: 'human', timedOut: true },
-        postconditionOutcome: 'unmet', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+        runId: aw.runId, seq, stepId: aw.stepId, actor,
+        postconditionOutcome: expiredOutcome, transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
       });
       const ended = await this.runStore.get(aw.runId);
       if (ended) this.finalizeIfEnded(ended);
       return;
     }
     await this.runStore.recordStepAndAdvance({
-      runId: aw.runId, seq, stepId: aw.stepId, actor: { kind: 'human', timedOut: true },
-      postconditionOutcome: 'unmet', transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running', claimedBy: lease,
+      runId: aw.runId, seq, stepId: aw.stepId, actor,
+      postconditionOutcome: expiredOutcome, transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running', claimedBy: lease,
     });
     this.log(`[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`);
     await this.driveFrom(aw.runId, graph, fallback.target, run.context, lease);
@@ -527,6 +567,28 @@ export class ConductorRunExecutor {
       if (!step) {
         status = 'failed';
         break;
+      }
+
+      context = this.bumpStepAttempt(context, stepId);
+
+      // #330 C3 — preview simulates a timer instantly: record it and follow
+      // the on-expiry fallback (no parking in a dry-run).
+      if (step.kind === 'timer') {
+        const fb = step.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId) : undefined;
+        steps.push({
+          stepId,
+          kind: step.kind,
+          actor: 'timer (simulated instant)',
+          postcondition: 'n/a',
+          transition: fb?.id ?? null,
+          result: { simulated: true, duration: step.timer?.duration ?? null },
+        });
+        if (!fb) {
+          status = 'failed';
+          break;
+        }
+        currentStepId = fb.target;
+        continue;
       }
 
       let result: JsonValue;
@@ -612,6 +674,14 @@ export class ConductorRunExecutor {
   private accumulate(context: JsonObject, stepId: string, result: JsonValue): JsonObject {
     const prev = asObject(context.steps);
     return { ...context, steps: { ...prev, [stepId]: result } };
+  }
+
+  /** #330 C3 — `ctx.stepAttempts[stepId]`: how often a step has been ENTERED
+   *  in this run. Deterministic loop budget for guarded cycles. */
+  private bumpStepAttempt(context: JsonObject, stepId: string): JsonObject {
+    const prev = asObject(context.stepAttempts);
+    const before = typeof prev[stepId] === 'number' ? (prev[stepId] as number) : 0;
+    return { ...context, stepAttempts: { ...prev, [stepId]: before + 1 } };
   }
 
   /** Persist a step's decision; returns the next step id to drive, or null if the run ended/parked. */
