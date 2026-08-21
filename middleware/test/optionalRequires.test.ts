@@ -244,7 +244,18 @@ describe('#795 services gate — optional_requires is a declaration', () => {
     );
     const declared = declaredServiceNames('@test/consumer', catalog);
     assert.equal(
-      classifyServiceGrant('@test/consumer', 'turnContext', declared, catalog),
+      // #788 — an `optional_requires:` name is granted by the DECLARATION, so
+      // it must classify as `declared` even for a plugin that has registered
+      // nothing. Passing "registers nothing" here is what proves that: if the
+      // provides-registration check ever widened to cover optional
+      // dependencies, this assertion would flip to `provides-not-registered`.
+      classifyServiceGrant(
+        '@test/consumer',
+        'turnContext',
+        declared,
+        catalog,
+        () => false,
+      ),
       'declared',
     );
   });

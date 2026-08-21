@@ -54,11 +54,27 @@ const COVERED_ROUTE_FILES = [
 
 /**
  * Codes that do NOT come from a route file, so a route scan can never find
- * them. `providers.key_rejected` is set by `rejected()` in
+ * them.
+ *
+ * `providers.key_rejected` is set by `rejected()` in
  * `middleware/src/platform/providerCredentialVerifier.ts` and reaches the UI
  * as `verifyErrorCode` on a 200 provider row, not as an error envelope.
+ *
+ * `package.id_conflict_bundled` (#789) is built by `PackageUploadService.ingest`
+ * in `middleware/src/plugins/packageUploadService.ts`, which owns the whole
+ * `package.*` family. It reaches the UI through two forwarders —
+ * `routes/packages.ts` (409) and `plugins/builder/installCommit.ts`
+ * (`reason: 'conflict'`) — and neither is a covered file, so the scan cannot
+ * see it. Registered here rather than by adding `packages.ts` to
+ * COVERED_ROUTE_FILES: that route forwards `result.code` wholesale, so
+ * covering it would silently claim copy for every one of the ~20 `package.*`
+ * codes the ingest service can emit, and a coverage guard that overclaims is
+ * worse than one with an honest boundary.
  */
-const NON_ROUTE_CODES = ['providers.key_rejected'] as const;
+const NON_ROUTE_CODES = [
+  'providers.key_rejected',
+  'package.id_conflict_bundled',
+] as const;
 
 /**
  * Covered files that re-emit a code held in a variable, plus the source file
