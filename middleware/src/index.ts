@@ -8,11 +8,17 @@ import {
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
 import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
+import { registerOpenAiResponsesAdapter } from '@omadia/llm-adapter-openai-responses';
 import {
   defaultLlmAdapters,
   LlmProviderCatalog,
   readProviderApiKey,
+  readProviderOAuthTokens,
+  readProviderOAuthUpdatedAt,
+  registerProviderOAuthStoreBinding,
   resolveLlmProvider,
+  writeProviderOAuthTokens,
+  type OAuthTokens,
 } from '@omadia/llm-provider';
 import express from 'express';
 import type { RequestHandler } from 'express';
@@ -381,8 +387,12 @@ import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
+import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
+import { ConversationEventHub } from './channels/conversationEventHub.js';
+import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
+import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
-import type { ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -514,6 +524,10 @@ async function main(): Promise<void> {
   // another register*Adapter call here (or a plugin registering at activate).
   registerAnthropicAdapter(defaultLlmAdapters);
   registerOpenAiAdapter(defaultLlmAdapters);
+  // #294 — the OpenAI Responses (SSE) wire the ChatGPT/Codex subscription
+  // backend speaks (experimental "Sign in with ChatGPT"). Registered
+  // unconditionally (cheap, SDK-free); the PROVIDER that uses it is env-gated.
+  registerOpenAiResponsesAdapter(defaultLlmAdapters);
   // #309 Shape 2 — the local `claude` CLI as a keyless, tool-less completion
   // provider on the operator's subscription (not an HTTP wire format).
   registerClaudeCliAdapter(defaultLlmAdapters);
@@ -528,7 +542,9 @@ async function main(): Promise<void> {
   // overlay HERE — before plugin activation and before the builder/orchestrator
   // resolve a model — so a fresh install is functional out of the box. Installed
   // provider PLUGINS (e.g. MiniMax) register additionally, further below.
-  registerBuiltinLlmProviders(llmProviderCatalog);
+  registerBuiltinLlmProviders(llmProviderCatalog, {
+    includeExperimental: config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL,
+  });
   console.log(
     `[middleware] ${String(llmProviderCatalog.list().length)} built-in LLM provider(s) registered: ${llmProviderCatalog
       .list()
@@ -601,10 +617,26 @@ async function main(): Promise<void> {
   // Phase B+ — directory aggregator for the /operator/channels dashboard.
   // Channel-kind plugins register their ChannelKeyDirectory contributions
   // during activate(); the kernel exposes the union over REST.
-  const channelDirectoryRegistry = new ChannelDirectoryRegistry((msg, fields) =>
-    console.log(`[middleware] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`),
-  );
+  const registryLog = (msg: string, fields?: Record<string, unknown>): void =>
+    console.log(`[middleware] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`);
+  const channelDirectoryRegistry = new ChannelDirectoryRegistry(registryLog);
   serviceRegistry.provide('channelDirectoryRegistry', channelDirectoryRegistry);
+
+  // #330 B1 — group-conversation registries. Constructed here (dep-free) so
+  // both the conductor block below and the channel runtime at the bottom can
+  // reference them; wired into createCoreApi + the channel registry there.
+  const conversationRosterRegistry = new ConversationRosterRegistry(registryLog);
+  const targetedSendRegistry = new TargetedSendRegistry(registryLog);
+  const conversationEventHub = new ConversationEventHub(registryLog);
+  serviceRegistry.provide('conversationRosters', conversationRosterRegistry);
+  // Subscribe-only facade: agent plugins may LISTEN for membership events, but
+  // emitting stays a channel-adapter privilege (CoreApi). A service-published
+  // emit() would let any granted plugin spoof `bot_added` — the Facilitator's
+  // handshake trigger — for conversations nobody invited it into.
+  serviceRegistry.provide('conversationEvents', {
+    subscribe: (fn: Parameters<ConversationEventHub['subscribe']>[0]) => conversationEventHub.subscribe(fn),
+  });
+
   const uiRouteCatalog = new UiRouteCatalog();
   // Publish the catalogue so plugin code (notably channel-teams' Hub +
   // Tab-Config) can read it via `ctx.services.get<UiRouteCatalog>(
@@ -3406,6 +3438,13 @@ async function main(): Promise<void> {
   // adminAudit hoisted from inside the graphPool block so the profiles
   // router (Phase 2.2 Slice D) can pass it to its snapshot mutation paths.
   let adminAudit: AdminAuditLog | undefined;
+  // #330 B3 — hoisted like adminAudit: filled inside the graphPool block once
+  // the Conductor's role store exists, read when the targeted-delivery service
+  // is constructed further down (before the channel runtime). On the
+  // no-Postgres path both stay undefined and role sends degrade to a
+  // 'role_resolution_unavailable' diagnostic while user sends keep working.
+  let targetedRoleResolver: ((roleKey: string) => Promise<AggregateHolderLookup>) | undefined;
+  let targetedBindingLookup: ((principalIds: string[], channelType: string) => Promise<Map<string, unknown>>) | undefined;
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -3494,6 +3533,14 @@ async function main(): Promise<void> {
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
     serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // #330 B3 — role fan-out + cached 1:1 conversation refs for targeted sends.
+    // Deliberately THE SAME holder registry the executor resolves approvals
+    // through: "who gets the report" and "who may approve" come from one
+    // instance, so a future external holder source (Entra group, Odoo HR)
+    // reaches both paths at once — no drift.
+    targetedRoleResolver = (roleKey) => conductorWiring.roleHolderRegistry.resolveHolders(roleKey);
+    targetedBindingLookup = (principalIds, channelType) =>
+      conductorWiring.channelBindingStore.getMany(principalIds, channelType);
     // #478 — plugin-borne workflow templates: hand the composite catalog's
     // registrar to the install service (runtime installs/uninstalls) and
     // re-register templates of already-installed plugins (registrations are
@@ -4135,6 +4182,51 @@ async function main(): Promise<void> {
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
+
+  // #294 — bind the process-wide OAuth token store for the ChatGPT provider to
+  // the vault: `load` reads every LLM-plugin scope newest-wins (rotation makes
+  // divergent copies dangerous), `persist` fans a refreshed/rotated token back
+  // out to all scopes with one shared stamp. Only wired when the experimental
+  // provider is on; harmless otherwise (no provider resolves the bearer).
+  if (config.CHATGPT_SUBSCRIPTION_EXPERIMENTAL) {
+    const oauthVault = secretVault;
+    const OAUTH_PROVIDER = 'openai-chatgpt';
+    const LLM_SCOPES = [
+      '@omadia/orchestrator',
+      '@omadia/verifier',
+      '@omadia/orchestrator-extras',
+    ] as const;
+    registerProviderOAuthStoreBinding(OAUTH_PROVIDER, {
+      load: async () => {
+        const copies: Array<{ tokens: OAuthTokens; updatedAt: number }> = [];
+        for (const scope of LLM_SCOPES) {
+          const tokens = await readProviderOAuthTokens(
+            (k) => oauthVault.get(scope, k),
+            OAUTH_PROVIDER,
+          );
+          if (tokens !== undefined) {
+            const updatedAt = await readProviderOAuthUpdatedAt(
+              (k) => oauthVault.get(scope, k),
+              OAUTH_PROVIDER,
+            );
+            copies.push({ tokens, updatedAt });
+          }
+        }
+        return copies;
+      },
+      persist: async (tokens, updatedAtMs) => {
+        for (const scope of LLM_SCOPES) {
+          await writeProviderOAuthTokens(
+            (k, v) => oauthVault.setMany(scope, { [k]: v }),
+            OAUTH_PROVIDER,
+            tokens,
+            updatedAtMs,
+          );
+        }
+      },
+    });
+    console.log('[middleware] ChatGPT-subscription OAuth token store bound (experimental)');
+  }
 
   // Embedding-provider switch (#440 follow-up) — pick which `embeddingClient@1`
   // adapter is active, LIVE. Unlike the memory-backend router next door this
@@ -4975,10 +5067,25 @@ async function main(): Promise<void> {
     whitelist: emailWhitelist,
   });
 
+  // #330 B3 — Principal-addressed targeted delivery ('targetedSend' service).
+  // Constructed after the conductor block so the role resolver + binding
+  // lookup are already set when Postgres is available; deny-by-default for
+  // plugins like every other kernel service.
+  const targetedDeliveryService = createTargetedDeliveryService({
+    providers: targetedSendRegistry,
+    ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
+    ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+    log: (m) => console.log(m),
+  });
+  serviceRegistry.provide('targetedSend', targetedDeliveryService);
+
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
     routes: routeRegistry,
     webSockets: webSocketRegistry,
+    rosterRegistry: conversationRosterRegistry,
+    targetedSends: targetedSendRegistry,
+    conversationEvents: conversationEventHub,
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
@@ -5017,6 +5124,8 @@ async function main(): Promise<void> {
     coreApi: channelCoreApi,
     routes: routeRegistry,
     webSockets: webSocketRegistry,
+    rosterRegistry: conversationRosterRegistry,
+    targetedSends: targetedSendRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();

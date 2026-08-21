@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
+
+- **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**
+  A new `openai-chatgpt` provider connects through the real device-code login
+  flow (`POST /api/v1/admin/providers/oauth/{start,poll}`): the operator gets a
+  user code, approves it at `auth.openai.com/codex/device`, and the resulting
+  bearer drives the ChatGPT/Codex **Responses** backend (a new
+  `openai-responses` SSE wire format + adapter). Gated behind
+  `CHATGPT_SUBSCRIPTION_EXPERIMENTAL` (off by default) — driving programmatic
+  calls through a consumer subscription is a ToS grey area, so the connect modal
+  shows a prominent notice and it is not an enterprise feature.
+- **Rotation-safe token store.** Refresh tokens rotate (reuse is a terminal
+  error), so tokens live in one process-wide store with single-flight refresh;
+  rotated tokens fan out to every LLM-plugin vault scope with a newest-wins
+  stamp, and a dead grant parks the provider in a clean "reconnect required"
+  state instead of retry-hammering. Empirically verified live: tools, forced
+  tool choice, parallel tool calls and vision all work on the backend.
+- Contract `@omadia/llm-provider-api` → 1.1.0 (additive: `openai-responses`
+  wire format, descriptor `oauth`, adapter `bearerProvider`).
+
+### Added — group-conversation primitives in the channel SDK + Principal-addressed targeted delivery (#330 Workstream B1)
+
+- Channel SDK (strictly additive; Teams 0.12.7 / Telegram 0.2.0 run unchanged): `IncomingTurn.conversationType` (`'direct' | 'group'`, absent = unknown → treated as direct via the new `isGroupConversation`), a `ConversationRoster` contract with `partial` lower-bound semantics, typed `ConversationMembershipEvent`s (`bot_added` incl. WHO invited the agent, `members_added`/`members_removed`), and a `TargetedSendProvider` that only ever delivers to ONE already-resolved user.
+- Three new optional `CoreApi` methods in the `registerWebSocket` feature-detect mould: `registerRosterProvider`, `registerTargetedSendProvider`, `emitConversationEvent` — defined only when the kernel wired the matching registry; channel deactivation drops the channel's contributions.
+- Kernel: per-channel roster + targeted-send registries, a conversation-event hub with per-subscriber isolation, and a `targetedSend` kernel service (deny-by-default) that resolves Principals — `user:<id>` → one delivery, `role:<key>` → late-bound fan-out to ALL current holders (notification semantics, one delivery per holder, no quorum). Empty roles, partial holder lists and unreachable holders are named diagnostics, never silent drops; on the no-Postgres path role sends degrade to `role_resolution_unavailable` while user sends keep working.
+- `@omadia/plugin-api` 1.7.0 (additive MINOR, snapshot updated): `TARGETED_SEND_SERVICE_NAME` + request/result shapes so an agent plugin (the #330 Facilitator) can send reports without depending on the channel SDK.
+
 ### Added — pattern-based ephemeral Conductor workflows with TTL reaper (#330 Workstream A)
 
 - Workflows now carry an `origin` (`manual` | `ephemeral`, migration `0009_ephemeral_workflows.sql`): agent-generated JIT workflows live in the reserved `eph-` slug namespace, never appear in the workflow library (`list()` filters to `manual`), and the create/instantiate routes reject the reserved prefix (`conductor.reserved_slug_prefix`).

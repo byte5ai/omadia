@@ -1,0 +1,23 @@
+{
+  "name": "@omadia/llm-adapter-openai-responses",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "OpenAI Responses wire-format adapter (SSE) for the omadia LLM provider seam — speaks the ChatGPT/Codex backend that subscription OAuth bearers are scoped to (#294, experimental). Implements the @omadia/llm-provider-api LlmAdapter contract (wireFormat 'openai-responses') with raw fetch + an in-package SSE parser; no vendor SDK. Register at boot via registerOpenAiResponsesAdapter.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@omadia/llm-provider-api": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

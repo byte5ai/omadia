@@ -195,6 +195,10 @@
           "title": "Knowledge-Graph Priorities",
           "description": "Set per-agent block and boost lists that override recall hits in the token-budget assembler."
         },
+        "datasets": {
+          "title": "Datasets",
+          "description": "Import CSVs as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
+        },
         "bulkPromote": {
           "title": "Bulk Promotion",
           "description": "Re-score historical turns and promote high-significance ones to durable knowledge (idempotent)."
@@ -979,6 +983,22 @@
         "what": "The plugin you are assigning a provider to is not installed here.",
         "next": "Install the plugin first, then set its provider.",
         "action": "Open the store"
+      },
+      "oauth_poll_failed": {
+        "what": "Checking whether the ChatGPT login was approved failed.",
+        "next": "Wait a moment and it retries on its own; if it keeps failing, close the dialog and start the login again."
+      },
+      "oauth_start_failed": {
+        "what": "The ChatGPT login could not be started.",
+        "next": "Try again in a moment. If it persists, the OpenAI login service may be unreachable from this server."
+      },
+      "oauth_too_many_flows": {
+        "what": "Too many ChatGPT logins are already in progress on this server.",
+        "next": "Wait for the pending ones to finish or expire, then start the login again."
+      },
+      "oauth_unsupported": {
+        "what": "This provider cannot be connected with a ChatGPT login.",
+        "next": "Use an API key for this provider instead, or pick the ChatGPT subscription provider."
       },
       "read_failed": {
         "what": "The provider list could not be read.",
@@ -2844,7 +2864,9 @@
         "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
         "networkError": "The provider could not be reached — timeout, DNS or no connection.",
         "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
-      }
+      },
+      "oauthConnect": "Sign in with ChatGPT",
+      "oauthReconnect": "Reconnect ChatGPT"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2862,6 +2884,20 @@
       "saving": "saving …",
       "saved": "✓ saved",
       "errorChip": "✗ error"
+    },
+    "oauth": {
+      "title": "Sign in with ChatGPT",
+      "close": "Close",
+      "tosNotice": "Experimental. Driving API calls through a personal ChatGPT subscription is a grey area of OpenAI’s terms. Do not use it as an enterprise feature, and expect it to break without notice.",
+      "starting": "Starting the login…",
+      "openHint": "Open the ChatGPT device page:",
+      "openLink": "Open verification page",
+      "enterCode": "Enter this code there:",
+      "waiting": "Then come back here — this dialog completes automatically once you approve.",
+      "connected": "Connected. ChatGPT is now available as a provider.",
+      "expired": "The login code expired before it was approved.",
+      "failed": "The login could not be completed.",
+      "retry": "Try again"
     }
   },
   "adminSubscriptionClis": {
@@ -4193,6 +4229,56 @@
     "colWeight": "Weight",
     "colReason": "Reason",
     "colUpdated": "Updated"
+  },
+  "adminDatasets": {
+    "title": "Knowledge · Datasets",
+    "intro": "Import a CSV as a structured dataset, read back the schema omadia inferred from it, and delete it again. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
+    "uploadHeading": "Import CSV",
+    "fields": {
+      "file": "CSV file",
+      "nameOptional": "Name (optional)"
+    },
+    "placeholders": {
+      "name": "Defaults to the file name"
+    },
+    "upload": "Import",
+    "uploading": "Importing",
+    "uploadLimits": "Up to {maxRows} rows and {maxMb} MB per file. Every cell passes the privacy scan before it is stored.",
+    "receipt": {
+      "imported": "Import complete — {rows} rows stored.",
+      "privacyScan": "Privacy scan: {scanned} cells checked, {masked} masked.",
+      "truncated": "{cells} cells exceeded the 4,000-character per-cell cap and were cut. Affected columns: {columns}."
+    },
+    "loading": "loading…",
+    "loadError": "Loading failed: {message}",
+    "empty": "No datasets imported yet.",
+    "listCapped": "Showing the {cap} most recent datasets — the endpoint returns no more than that, so older ones may exist without appearing here.",
+    "listRange": "Showing {from}–{to} of {total} datasets",
+    "meta": "{rows} rows · {columns} columns · imported {created}",
+    "showDetails": "Schema & rows",
+    "hideDetails": "Close",
+    "remove": "Delete",
+    "confirmDelete": "Delete the dataset “{name}” with all its rows and its graph node? This cannot be undone.",
+    "schemaHeading": "Inferred schema",
+    "schema": {
+      "column": "Column",
+      "type": "Type",
+      "sample": "Sample value"
+    },
+    "rowsHeading": "Row preview",
+    "noRows": "This dataset holds no rows.",
+    "rowsRange": "Showing {from}–{to} of {total} rows",
+    "previousPage": "Back",
+    "nextPage": "Next",
+    "errors": {
+      "tooLarge": "The file exceeds the {maxMb} MB upload limit.",
+      "notCsv": "Only CSV files are supported so far.",
+      "noFile": "No file arrived — pick a CSV first.",
+      "importFailed": "The CSV could not be imported. {detail}",
+      "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
+      "generic": "The request failed (HTTP {status}).",
+      "unexpected": "The request failed. {detail}"
+    }
   },
   "adminMemoryBackend": {
     "title": "Memory · Storage Backend",

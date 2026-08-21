@@ -54,6 +54,8 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/kg-lifecycle', key: 'kgLifecycle' },
       { href: '/admin/kg-priorities', key: 'kgPriorities' },
+      // #532 — the admin half of #430's CSV dataset pipeline.
+      { href: '/admin/datasets', key: 'datasets' },
       { href: '/admin/bulk-promote', key: 'bulkPromote' },
       { href: '/admin/inconsistencies', key: 'inconsistencies' },
       { href: '/admin/memory-backend', key: 'memoryBackend' },

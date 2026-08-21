@@ -5,7 +5,7 @@ import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
-import type { RoleHolderSource } from '@omadia/channel-sdk';
+import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
 
 import { runConductorMigrations } from './migrator.js';
 import { buildRoleHolderRegistry, holdersOnly } from './roleHolderResolver.js';
@@ -138,6 +138,11 @@ export interface ConductorWiring {
   ephemeralStore: ConductorEphemeralStore;
   ephemeralRunService: ConductorEphemeralRunService;
   ephemeralReaper: ConductorEphemeralReaper;
+  /** #330 B3 — THE role→holder registry (local assignment table + any external
+   *  sources). Exposed so the kernel's targeted-delivery fan-out resolves
+   *  through the same instance the executor uses for approvals: "who gets the
+   *  report" and "who may approve" must never drift apart. */
+  roleHolderRegistry: RoleHolderRegistry;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -475,6 +480,6 @@ export async function wireConductor(deps: {
     workflowStore, runStore, awaitStore, roleStore, scheduleStore, channelBindingStore, executor, awaitWorker,
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
-    patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper,
+    patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
   };
 }

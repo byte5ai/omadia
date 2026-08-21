@@ -268,6 +268,23 @@ explicit here so a deployment can reason about them:
        permission gate on POST/DELETE /roles/:key/holders (four-eyes or
        admin-only) — the audit trail alone stops being sufficient the moment
        non-admin operators exist. -->
+- **Role batons now also decide who RECEIVES targeted reports (#330 B3).**
+  The `targetedSend` kernel service resolves `role:<key>` addressees through
+  the SAME holder registry the executor uses for approvals (one instance,
+  exposed from `wireConductor` — "who may approve" and "who gets the report"
+  cannot drift). That widens the blast radius of the unaudited-but-logged
+  self-assignment above: assigning yourself a role means receiving every
+  report addressed to it. The compensating controls are the same baton audit
+  trail plus the delivery report itself (holders, `partial`, per-holder
+  outcomes are all named — no silent recipient). Principal resolution is
+  kernel-only by construction: channel plugins receive one already-resolved
+  user per delivery and can neither enumerate nor widen a role. The
+  `targetedSend` / `conversationRosters` / `conversationEvents` services are
+  deny-by-default like every kernel service, and `conversationEvents` is
+  published subscribe-only — emitting membership events (e.g. the
+  Facilitator's `bot_added` handshake trigger) stays a channel-adapter
+  privilege on the CoreApi, so a granted agent plugin cannot spoof an
+  invitation.
 
 ## 8. What lives in the vault
 

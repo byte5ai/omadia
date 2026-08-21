@@ -225,12 +225,76 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
 ];
 
 /**
+ * Experimental providers, kept OUT of {@link BUILTIN_LLM_PROVIDERS} so the
+ * stable set (and everything that flattens it) is unaffected. Registered only
+ * behind an explicit opt-in.
+ *
+ * `openai-chatgpt` (#294 "Sign in with ChatGPT"): connects via an OAuth device
+ * flow instead of an API key; the resulting subscription bearer is scoped to
+ * the ChatGPT/Codex Responses backend (verified live), NOT the public
+ * api.openai.com surface — hence the dedicated `openai-responses` wire format
+ * and its own baseURL.
+ */
+export const EXPERIMENTAL_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
+  {
+    id: 'openai-chatgpt',
+    label: 'ChatGPT (subscription)',
+    wireFormat: 'openai-responses',
+    baseURL: 'https://chatgpt.com/backend-api/codex',
+    oauth: { kind: 'device' },
+    // No API key — the login IS the credential. Like `claude-cli`, a consumer
+    // subscription has no data-processing agreement, so `subscriptionNotice`
+    // surfaces the stronger caveat (and the connect modal shows the ToS notice).
+    policy: {
+      requiresApiKey: false,
+      requiresAvvDisclosure: false,
+      subscriptionNotice: true,
+    },
+    models: [
+      {
+        id: 'openai-chatgpt:gpt-5.5',
+        provider: 'openai-chatgpt',
+        modelId: 'gpt-5.5',
+        label: 'GPT-5.5 (ChatGPT)',
+        class: 'frontier',
+        maxTokens: 128_000,
+        contextWindow: 400_000,
+        vision: true,
+      },
+      {
+        id: 'openai-chatgpt:gpt-5.4',
+        provider: 'openai-chatgpt',
+        modelId: 'gpt-5.4',
+        label: 'GPT-5.4 (ChatGPT)',
+        class: 'balanced',
+        maxTokens: 128_000,
+        contextWindow: 400_000,
+        vision: true,
+        classDefault: true,
+      },
+    ],
+  },
+];
+
+/**
  * Register the bundled built-in providers into a catalog (which also registers
  * their models into the global overlay). Idempotent per catalog. Call at boot
  * before plugin activation, and in tests that need a populated model registry.
+ *
+ * `includeExperimental` (default false) additionally registers
+ * {@link EXPERIMENTAL_LLM_PROVIDERS} — the `openai-chatgpt` "Sign in with
+ * ChatGPT" backend (#294) — gated on `CHATGPT_SUBSCRIPTION_EXPERIMENTAL`.
  */
-export function registerBuiltinLlmProviders(catalog: LlmProviderCatalog): void {
+export function registerBuiltinLlmProviders(
+  catalog: LlmProviderCatalog,
+  opts: { includeExperimental?: boolean } = {},
+): void {
   for (const descriptor of BUILTIN_LLM_PROVIDERS) {
     catalog.register(descriptor);
+  }
+  if (opts.includeExperimental === true) {
+    for (const descriptor of EXPERIMENTAL_LLM_PROVIDERS) {
+      catalog.register(descriptor);
+    }
   }
 }
