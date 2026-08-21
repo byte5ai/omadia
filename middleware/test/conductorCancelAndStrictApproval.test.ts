@@ -313,7 +313,7 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      (req as express.Request & { session?: unknown }).session = { sub: 'op-1' } as never;
+      (req as express.Request & { session?: unknown }).session = { sub: 'op-1', omadia_user_id: 'uuid-op-1' } as never;
       next();
     });
     const deps = {
@@ -384,6 +384,10 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     assert.equal(audited.length, 1);
     assert.deepEqual(audited[0], {
       actor: 'op-1',
+      // #775 — the session uuid travels alongside the sub, because the sub is
+      // an email under local auth and must never land in the uuid actor_id
+      // column. The harness session carries omadia_user_id for exactly this.
+      actorUserId: 'uuid-op-1',
       roleKey: 'approvers',
       action: 'add',
       holderId: 'op-1',

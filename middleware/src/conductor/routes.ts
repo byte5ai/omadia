@@ -98,6 +98,10 @@ export interface ConductorRouterDeps {
    */
   auditRoleChange?: (entry: {
     actor: string;
+    /** #775 — the session's omadia user uuid, when the session carries one.
+     *  `actor` above is the SUB (an email under local auth), which must never
+     *  be written to the uuid `admin_audit.actor_id` column. */
+    actorUserId?: string;
     roleKey: string;
     action: 'add' | 'remove';
     holderId: string;
@@ -330,6 +334,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         try {
           await deps.auditRoleChange({
             actor: req.session?.sub ?? 'operator',
+            actorUserId: req.session?.omadia_user_id,
             roleKey: key,
             action,
             holderId,

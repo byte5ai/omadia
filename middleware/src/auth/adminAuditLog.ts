@@ -108,3 +108,35 @@ function rowToEntry(row: AuditRow): AuditEntry {
     createdAt: row.created_at,
   };
 }
+
+/**
+ * #775 — map a conductor role-holder change to an audit entry WITHOUT ever
+ * putting a non-uuid into `actor_id`.
+ *
+ * The bug this fixes: the index.ts closure passed the session sub (an email,
+ * e.g. `demo@byte5.de`) as `actor.id`; `admin_audit.actor_id` is a uuid
+ * column, so EVERY write failed — loudly in the log, but the audit trail for
+ * baton moves (the entire point of #759) stayed empty on any install using
+ * email subs, i.e. the normal local-auth case.
+ *
+ * Mapping: the uuid goes to `id` only when the session actually carried one;
+ * the sub always goes to `email` — same treatment the adminUsers routes give
+ * it, and for the `'operator'` fallback it is the only place the actor can be
+ * preserved at all (the column is free-text, like `target`).
+ */
+export function roleChangeAuditEntry(entry: {
+  actor: string;
+  actorUserId?: string;
+  roleKey: string;
+  action: 'add' | 'remove';
+  holderId: string;
+  holdersAfter: readonly string[];
+}): AuditEntryInput {
+  return {
+    actor: { id: entry.actorUserId, email: entry.actor },
+    action: 'conductor.role_holders_change',
+    target: `conductor-role:${entry.roleKey}`,
+    before: { action: entry.action, holderId: entry.holderId },
+    after: { holders: [...entry.holdersAfter] },
+  };
+}
