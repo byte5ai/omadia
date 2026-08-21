@@ -366,9 +366,38 @@ export type InstallJobState =
   | 'created'
   | 'awaiting_config'
   | 'configuring'
+  /** Installed AND running. */
   | 'active'
+  /** #825 — installed but NOT running: the install completed and activation
+   *  did not, most often because a declared grant was skipped. Distinct from
+   *  `failed`, where nothing was installed. The fix is a grant, not a retry —
+   *  which is why the wizard routes this to the permissions step. */
+  | 'errored'
+  /** The install itself did not complete. Nothing was installed. */
   | 'failed'
   | 'cancelled';
+
+/** #825 — mirrors `MissingGrant` in admin-v1.ts (and `PluginGrantsView.missing`
+ *  in api.ts, which is the same shape from the same server-side function). */
+export type InstallMissingGrant =
+  | { kind: 'sql'; ledger: string }
+  | { kind: 'public_path'; path: string };
+
+/**
+ * #825 — the activation outcome, reported separately from the job outcome.
+ *
+ * The install job used to say `active` while the grants view said `errored`,
+ * for the same plugin at the same moment. The wizard never noticed because it
+ * re-read the grants view anyway; automation driving the install API did.
+ * `state`/`ok` now answer "is the plugin running?" and `missing` answers "what
+ * was it not given?" — two questions the single word `active` was conflating.
+ */
+export interface InstallActivationState {
+  state: 'active' | 'inactive' | 'errored';
+  ok: boolean;
+  error: string | null;
+  missing: InstallMissingGrant[];
+}
 
 export interface InstallSetupField {
   key: string;
@@ -424,6 +453,11 @@ export interface InstallJob {
   current_step: string;
   error: InstallJobError | null;
   setup_schema: InstallSetupSchema | null;
+  /** #825 — present once the job reaches a terminal INSTALLED state (`active`
+   *  or `errored`); `null` before that and on `failed`/`cancelled`. Optional on
+   *  the type so the wizard keeps compiling — and working — against a
+   *  middleware older than #825, which simply omits the key. */
+  activation_state?: InstallActivationState | null;
   created_at: string;
   updated_at: string;
 }

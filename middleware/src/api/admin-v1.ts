@@ -742,9 +742,92 @@ export type InstallJobState =
   | 'created'
   | 'awaiting_config'
   | 'configuring'
+  /** Installed AND activated: the registry read back `active` after the
+   *  activation hook ran. The plugin is running. */
   | 'active'
+  /**
+   * #825 — installed but NOT running.
+   *
+   * The install itself completed (vault + registry writes landed, the plugin
+   * IS installed and shows up in the runtime list), and then activation did not
+   * succeed — most commonly because the operator skipped a grant the manifest
+   * declares (epic #470 C16), so `activate()` could not obtain its SQL ledger
+   * or public path.
+   *
+   * Distinct from `failed` in the one way that matters to a caller deciding
+   * what to do next: `failed` means nothing was installed and re-submitting the
+   * form is the fix; `errored` means the plugin IS installed and the fix is a
+   * GRANT, not a retry. `activation_state` carries which one.
+   */
+  | 'errored'
+  /** The install did not complete — validation, the template gate, or a
+   *  vault/registry write failed. Nothing is installed. */
   | 'failed'
   | 'cancelled';
+
+/**
+ * #825 — one thing the manifest asked for that the operator has not granted.
+ *
+ * The canonical declaration: `routes/runtimeGrants.ts` re-exports this type
+ * rather than declaring its own, so `GET …/grants` `missing[]` and the install
+ * job's `activation_state.missing` are the same shape by construction and not
+ * by coincidence. Both are produced by `plugins/grantGap.ts`.
+ */
+export type MissingGrant =
+  | { readonly kind: 'sql'; readonly ledger: string }
+  | { readonly kind: 'public_path'; readonly path: string };
+
+/**
+ * #825 — the outcome of the ACTIVATION, reported separately from the outcome of
+ * the JOB.
+ *
+ * WHAT WAS WRONG
+ * --------------
+ * `configure()` transitioned the job to `active` immediately after the registry
+ * write and BEFORE the hook that does the activating. #799 taught the registry
+ * to correct itself when that hook fails (`markActivationFailed`, status flipped
+ * to `errored`), but the job kept the optimistic word it had already written. So
+ * an install where the operator skipped the grants answered `active` from
+ * `GET /api/v1/install/jobs/:id` while `GET …/grants` answered `errored` with
+ * `missing[]` populated — same plugin, same moment. The wizard papered over it
+ * by re-reading the grants view; automation driving the install API had no such
+ * second opinion and believed the job. It cost two false FAILs in the C16
+ * acceptance probe.
+ *
+ * WHY A FIELD AND NOT ONLY THE STATE
+ * ----------------------------------
+ * "The job finished" and "the plugin is running" are two different facts, and
+ * collapsing them into one word is what produced the lie. The job state now
+ * tells the truth about activation, and this field says WHY in machine-readable
+ * terms — so a client can tell "installed, needs a grant" from "installed,
+ * threw on activate" without parsing an error string.
+ *
+ * Present on every terminal INSTALLED state (`active` AND `errored`), including
+ * the success case, so its absence never has to be read as success. `null` while
+ * the job is still running and on `failed`/`cancelled`, where nothing was
+ * installed and there was no activation to report on.
+ */
+export interface InstallActivationState {
+  /** The registry's status for this plugin, read back AFTER the activation
+   *  attempt. This is the #799 truthful status, not an inference from the
+   *  absence of a throw. */
+  state: 'active' | 'inactive' | 'errored';
+  /** `state === 'active'`. Restated so a client need not special-case the
+   *  status vocabulary to answer "did it come up?". */
+  ok: boolean;
+  /** `last_activation_error` from the registry — the activation hook's message.
+   *  `null` on success. */
+  error: string | null;
+  /** Declared-but-not-granted permissions, derived exactly as
+   *  `GET /api/v1/admin/runtime/installed/:id/grants` derives its `missing[]`
+   *  (literally the same function — `plugins/grantGap.ts`). Non-empty here is
+   *  the operator-actionable case: the fix is a grant, not a retry.
+   *
+   *  Can be non-empty on an `active` job too — a plugin may come up while an
+   *  optional permission stays unanswered. `state`/`ok` say whether it is
+   *  running; this says what it was not given. */
+  missing: MissingGrant[];
+}
 
 export interface InstallSetupField {
   key: string;
@@ -818,6 +901,11 @@ export interface InstallJob {
   current_step: string;
   error: ApiError | null;
   setup_schema: InstallSetupSchema | null;
+  /** #825 — the activation outcome, set once the install reaches a terminal
+   *  INSTALLED state (`active` or `errored`). `null` before that, and on
+   *  `failed`/`cancelled` where nothing was installed. See
+   *  {@link InstallActivationState}. */
+  activation_state: InstallActivationState | null;
   created_at: ISO8601;
   updated_at: ISO8601;
 }

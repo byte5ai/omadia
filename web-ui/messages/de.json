@@ -3163,6 +3163,7 @@
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
+      "activationFailed": "Installiert, aber das Plugin ist nicht gestartet: {message}",
       "updateAvailable": "Update verfügbar",
       "updating": "Aktualisiere …",
       "update": "Aktualisieren",
