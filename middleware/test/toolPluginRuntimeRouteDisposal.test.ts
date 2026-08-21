@@ -26,10 +26,9 @@ import {
  * first-mount-wins it also shadowed anything mounted later at the same
  * prefix after a hot-upgrade.
  *
- * This matters for the dev-platform extraction
- * (specs/470-dev-platform-plugin): "with the plugin not installed, no
- * dev-platform code paths" is not verifiable while routers outlive their
- * plugin.
+ * This matters for any plugin extraction (epic #470): "with the plugin not
+ * installed, no code paths from it" is not verifiable while routers outlive
+ * their plugin.
  */
 
 /**
@@ -82,7 +81,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
 
-    registry.register('/api/v1/dev-runner', Router(), '@plugin/dev');
+    registry.register('/api/v1/example-plugin', Router(), '@plugin/dev');
     seedActive(runtime, '@plugin/dev');
 
     assert.equal(
@@ -122,9 +121,9 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     const { runtime, stoppedJobsFor } = makeRuntime(registry, catalog);
 
     catalog.registerNav('@plugin/dev', {
-      navId: 'devPlatform',
-      href: '/admin/dev-platform',
-      label: { en: 'Dev Platform' },
+      navId: 'examplePlugin',
+      href: '/admin/example-plugin',
+      label: { en: 'Example Plugin' },
     });
     seedActive(runtime, '@plugin/dev');
 
@@ -149,7 +148,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     } as unknown as ToolPluginRuntimeDeps;
     const runtime = new ToolPluginRuntime(deps);
 
-    registry.register('/api/v1/dev-runner', Router(), '@plugin/slow');
+    registry.register('/api/v1/example-plugin', Router(), '@plugin/slow');
 
     let disposedWhenCloseRan: boolean | undefined;
     (runtime as unknown as { active: Map<string, unknown> }).active.set(
@@ -183,7 +182,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     // serve for the life of the process. The rollback itself lives in
     // activate()'s catch and is NOT covered here — driving it needs a real
     // on-disk package plus catalog/vault wiring. Tracked as a test gap in
-    // specs/470-dev-platform-plugin/plan.md.
+    // the epic #470 spec set under `specs/`.
     const registry = newTestRouteRegistry();
     const { runtime } = makeRuntime(registry, new UiRouteCatalog());
     registry.register('/api/v1/half-built', Router(), '@plugin/broken');
@@ -204,7 +203,7 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
     pluginRouter.get('/ping', (_req, res) => {
       res.status(200).json({ from: 'plugin' });
     });
-    registry.register('/api/v1/dev-runner', pluginRouter, '@plugin/dev');
+    registry.register('/api/v1/example-plugin', pluginRouter, '@plugin/dev');
     seedActive(runtime, '@plugin/dev');
 
     const app = express();
@@ -214,13 +213,13 @@ describe('ToolPluginRuntime.deactivate — route disposal', () => {
       res.status(404).json({ from: 'fallthrough' });
     });
 
-    const live = await getJson<{ from: string }>(app, '/api/v1/dev-runner/ping');
+    const live = await getJson<{ from: string }>(app, '/api/v1/example-plugin/ping');
     assert.equal(live.status, 200);
     assert.deepEqual(live.body, { from: 'plugin' });
 
     await runtime.deactivate('@plugin/dev');
 
-    const dead = await getJson<{ from: string }>(app, '/api/v1/dev-runner/ping');
+    const dead = await getJson<{ from: string }>(app, '/api/v1/example-plugin/ping');
     assert.equal(
       dead.status,
       404,

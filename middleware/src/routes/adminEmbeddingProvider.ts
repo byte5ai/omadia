@@ -38,8 +38,8 @@ import {
  * one thing it must never do. `installService.reactivate` runs
  * `toolPluginRuntime.deactivate`, which calls the KG plugin's `close()`, which
  * calls `graphPool.end()` — on the pool the kernel captured ONCE
- * (`src/index.ts`) and shares with ~40 subsystems: routines, dev-platform
- * webhooks, agent schedules, cost telemetry, MCP audit, `AgentGraphStore`,
+ * (`src/index.ts`) and shares with ~40 subsystems: routines, plugin webhooks,
+ * agent schedules, cost telemetry, MCP audit, `AgentGraphStore`,
  * `McpConfigService`. After every SUCCESSFUL switch all of them answered
  * `Cannot use a pool after calling end on the pool` until the process was
  * restarted, i.e. the "switch without restart" feature forced one. The gate is

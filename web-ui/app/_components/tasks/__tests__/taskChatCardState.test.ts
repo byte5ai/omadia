@@ -75,7 +75,7 @@ describe('parseTaskStartResult', () => {
 describe('isTaskStartToolName', () => {
   it('matches only the seam start half', () => {
     expect(isTaskStartToolName('ask_research_start')).toBe(true);
-    expect(isTaskStartToolName('dev_job_start')).toBe(true);
+    expect(isTaskStartToolName('example_job_start')).toBe(true);
     expect(isTaskStartToolName('ask_research_status')).toBe(false);
     expect(isTaskStartToolName('ask_research_list')).toBe(false);
     expect(isTaskStartToolName('query_knowledge_graph')).toBe(false);

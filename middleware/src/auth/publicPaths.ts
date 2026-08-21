@@ -6,10 +6,15 @@
  * handler is ever reached.
  *
  * This list lives in its own module for one reason: tests must assert against
- * the SAME array production runs. Epic #470's runner router was mounted without
- * a session guard and its e2e test built a bare express() app to prove it — so
- * the test passed while `/api/v1/dev-runner` 401'd in production behind the
- * blanket guard. A shared constant makes that class of drift impossible.
+ * the SAME array production runs. A plugin router once shipped without a
+ * session guard and its e2e test built a bare express() app to prove it — so
+ * the test passed while the route 401'd in production behind the blanket
+ * guard. A shared constant makes that class of drift impossible.
+ *
+ * The list is CLOSED and core-owned: every entry is justified in
+ * `test/auth/staticPublicPathsClosedSet.test.ts`, and a plugin that needs a
+ * public path declares it in `permissions.public_paths` and has the operator
+ * consent to it (`platform/publicPathGrants.ts`) instead of being added here.
  */
 
 import { CIMD_METADATA_PATH } from '../services/mcpCimd.js';

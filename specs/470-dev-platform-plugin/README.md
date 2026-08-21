@@ -388,15 +388,48 @@ Three different jobs; none of them is sufficient alone.
 ```bash
 node scripts/check-core-decoupling.mjs            # verify (CI runs this)
 node scripts/check-core-decoupling.mjs --report   # per-zone breakdown
-node scripts/check-core-decoupling.mjs --update   # lower the baseline
+node scripts/check-core-decoupling.mjs --update   # record the count
 ```
 
+The check counts Dev Platform references across 14 disjoint zones. Baseline **0** — every
+zone CLEAN, pinned there permanently by C13 (3,300 → 214 at C10 → 0 at C13).
+
+**It is no longer a ratchet.** While the extraction was in flight the committed count was
+allowed to fall and never rise, which was the right shape for a migration in progress and is
+the wrong shape now: a ratchet parked at zero still reads its floor out of a JSON file, and a
+JSON file is editable. So `EXTRACTION_COMPLETE` in the script makes the check assert `0`
+outright and ignore the baseline for pass/fail. Any reference fails CI, and `--update`
+refuses to write a non-zero baseline. Bringing the Dev Platform back into core is a real
+architectural decision that has to be argued for in review — not a number someone edits.
+
+Two things are allowlisted, both historical record rather than coupling, each anchored on an
+exact path so the exemption cannot widen:
+
+| Allowlisted | Why it cannot be reworded |
+|---|---|
+| `middleware/migrations/00{22..30}_*` | Every deployment that ran them has these FILENAMES in its `schema_migrations` ledger, and C11's plugin-side migrator seeds its own ledger from exactly those donor rows. Rename one and the handoff stops matching on the installations that need it most. The DDL body names the real tables and columns that exist in those databases right now. |
+| `middleware/packages/plugin-api/CHANGELOG.md` | A published entry for a released version. It exists to be FOUND — it spells out the removed exports so a consumer grepping their own source lands on the entry explaining where the type went. Rewording it would misreport what that version shipped. |
+
+The script also excludes **itself**: `PATTERNS` has to spell out the 21 identifiers it hunts
+for, so an unfiltered scan counted 27 hits against the detector and made the target `27`
+instead of `0`. Self-exclusion is safe precisely because it is the detector — no runtime, no
+image, and adding a pattern there can only make the check stricter.
+
+`services/githubAppJwt.ts` **stays in core** and is deliberately not allowlisted: it carries
+no matching identifier because it is generic GitHub App auth. Moving it into the plugin
+repository would recreate the reverse dependency across a repo boundary.
 The ratchet counts Dev Platform references across 14 disjoint zones and **fails if the count
 rises, per zone**. Baseline **206** (C10 took it down from 3,300). It only ever falls; raising it needs a hand-edited baseline, so
 a new coupling shows up in review instead of slipping in.
 
 That is what makes the checklist's staleness survivable — a file inventory goes stale on
-contact, but the count does not, and it cannot reach zero while a reference survives.
+contact, but the count does not.
+
+**Zero counts identifiers, not the English name.** A comment may still say "the dev platform
+plugin"; what cannot survive is an identifier-shaped reference — an import, a route, a config
+key, an i18n key, a fixture string, a `devPlatform`/`dev-runner`/`DEV_JOB` token. That is the
+line the patterns draw, and it is the right one: prose describes history, identifiers create
+coupling.
 
 But it counts IDENTIFIERS, NOT BEHAVIOUR: zero is a necessary condition for done, not a
 sufficient one. Sections 2 and 3 of `acceptance.md` cover the rest, and neither is automated.

@@ -17,7 +17,7 @@ import type { NavEntryDto } from '../_lib/navigation';
  * keep working; the cluster header gets a subtle `contains-active` style
  * when any of its children matches.
  *
- * Two sources feed this bar (specs/470-dev-platform-plugin):
+ * Two sources feed this bar (epic #470):
  *
  *   1. `NAV` below — the shell's own compiled surfaces. Labels come from
  *      the `nav.*` message catalogue, per web-ui/CLAUDE.md.
@@ -77,9 +77,9 @@ const NAV: readonly NavItem[] = [
       { kind: 'link', href: '/operator/receipts', key: 'receipts' },
       // #760 — miss-report review queue, same operator audience.
       { kind: 'link', href: '/operator/privacy-reports', key: 'privacyReports' },
-      // Dev Platform used to be hardcoded here. It is now contributed at
-      // runtime (middleware registers it while DEV_PLATFORM_ENABLED), so the
-      // entry disappears when the feature is off — see mergeNav below.
+      // An optional feature's entry used to be hardcoded here. Plugin
+      // surfaces are now contributed at runtime, so the entry appears only
+      // while that plugin is installed and active — see mergeNav below.
     ],
   },
   // OM-09 — there was NO in-product help at all: no help route, no `?`, no
