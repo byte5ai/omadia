@@ -19,6 +19,17 @@ interface ManifestInfo {
   readonly manifestPath: string;
   readonly packageRoot: string;
   readonly declaredNames: ReadonlySet<string>;
+  /**
+   * #788 — capabilities this manifest lists under `provides:` and NOWHERE
+   * else. These are the names the runtime now refuses until the plugin has
+   * actually called `provide()`, so a `services.get` on one of them is an
+   * ordering bug waiting for the first turn that reaches it.
+   *
+   * A name that is also under `requires:`/`optional_requires:` is excluded:
+   * the dependency declaration grants it outright, which is exactly what makes
+   * the `replace()`-wrapping pattern legal.
+   */
+  readonly providesOnlyNames: ReadonlySet<string>;
   readonly sourceFiles: readonly string[];
 }
 
@@ -49,6 +60,61 @@ describe('plugin service grant coverage', () => {
       snapshot.undeclaredFindings,
       [],
       `undeclared built-in service grants found:\n${snapshot.undeclaredFindings.join('\n')}`,
+    );
+  });
+
+  it('no built-in resolves a capability it only declares under `provides:`', async () => {
+    // #788 — the permanent form of the one-off audit that shipped with the
+    // fix. `provides:` no longer grants a name until the plugin has actually
+    // called `provide()` for it, so a bundled package that resolves a
+    // provides-only capability now throws at runtime.
+    //
+    // This scan cannot see the ORDER of the two calls, and does not claim to:
+    // it flags the read at all, which is the conservative direction. A
+    // legitimate read-back is spelled by ALSO declaring the name
+    // (`requires:`/`optional_requires:`) — a plugin that holds its own
+    // implementation rarely needs the registry to hand it back.
+    //
+    // Deliberately NOT allowlist-aware: the legacy allowlist grandfathers
+    // UNDECLARED names, and every name here is declared. There is no ramp to
+    // fall back to, which is why the audit had to come back empty before the
+    // gate could be tightened at all.
+    const snapshot = await loadCoverageSnapshot();
+    assert.deepEqual(
+      snapshot.scanFailures,
+      [],
+      `service-grant scanner failed:\n${snapshot.scanFailures.join('\n')}`,
+    );
+
+    // A guard that scans nothing passes forever. `provides:` disappearing from
+    // every bundled manifest, or the parser losing the block, must fail here
+    // rather than turn this test into a green no-op.
+    const packagesWithProvides = snapshot.manifests.filter(
+      (m) => m.providesOnlyNames.size > 0,
+    );
+    assert.ok(
+      packagesWithProvides.length >= 10,
+      `only ${String(packagesWithProvides.length)} bundled packages declare a provides-only capability; the 2026-08-21 audit found 14. Either the manifests changed or the parser stopped reading \`provides:\`.`,
+    );
+
+    const findings: string[] = [];
+    for (const manifest of packagesWithProvides) {
+      for (const use of snapshot.observedByPlugin.get(manifest.pluginId) ?? []) {
+        if (!manifest.providesOnlyNames.has(use.capability)) continue;
+        findings.push(
+          `${manifest.pluginId} resolves '${use.capability}' at ${use.file}:${String(use.line)}, ` +
+            'but its manifest declares that capability only under `provides:`. Since #788 that ' +
+            `read throws until the plugin has called ctx.services.provide('${use.capability}', …). ` +
+            `Provide it before resolving it, or add '${use.capability}@<major>' to ` +
+            '`requires:`/`optional_requires:` if this plugin consumes another plugin\'s implementation.',
+        );
+      }
+    }
+
+    assert.deepEqual(
+      findings,
+      [],
+      `provides-only service reads found:\n${findings.join('\n')}`,
     );
   });
 
@@ -195,9 +261,25 @@ async function parseManifest(
 
   const requires = asStringArray(parsed['requires'], manifestPath, 'requires');
   const provides = asStringArray(parsed['provides'], manifestPath, 'provides');
+  const optionalRequires = asStringArray(
+    parsed['optional_requires'],
+    manifestPath,
+    'optional_requires',
+  );
   const declaredNames = new Set<string>();
-  for (const rawCapability of [...requires, ...provides]) {
+  for (const rawCapability of [...requires, ...provides, ...optionalRequires]) {
     declaredNames.add(parseCapabilityRef(rawCapability).name);
+  }
+
+  // #788 — `provides:` minus everything the manifest also declares as a
+  // dependency.
+  const consumeNames = new Set(
+    [...requires, ...optionalRequires].map((raw) => parseCapabilityRef(raw).name),
+  );
+  const providesOnlyNames = new Set<string>();
+  for (const raw of provides) {
+    const name = parseCapabilityRef(raw).name;
+    if (!consumeNames.has(name)) providesOnlyNames.add(name);
   }
 
   const sourceRoot = path.join(packageRoot, 'src');
@@ -207,6 +289,7 @@ async function parseManifest(
     manifestPath,
     packageRoot,
     declaredNames,
+    providesOnlyNames,
     sourceFiles,
   };
 }
@@ -435,7 +518,9 @@ function asString(value: unknown): string | undefined {
 function asStringArray(
   value: unknown,
   manifestPath: string,
-  field: 'requires' | 'provides',
+  // #788 added `optional_requires` — a capability-ref list with exactly the
+  // same shape and the same failure modes as the other two.
+  field: 'requires' | 'provides' | 'optional_requires',
 ): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {

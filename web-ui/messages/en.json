@@ -962,6 +962,12 @@
         "next": "Reload the page to see where the installation actually stands."
       }
     },
+    "package": {
+      "id_conflict_bundled": {
+        "what": "This plugin id belongs to a plugin that ships with omadia, so the upload was refused.",
+        "next": "Give your package its own id in manifest.yaml and package.json, then upload it again."
+      }
+    },
     "providers": {
       "apply_failed": {
         "what": "The assignment was accepted but could not be written to the plugin.",

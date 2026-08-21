@@ -1471,11 +1471,13 @@ readonly [PER_CALLER_FACTORY]: (caller: ServiceCaller) => T;
 export declare function perCallerService<T>(factory: (caller: ServiceCaller) => T): PerCallerFactory<T>;
 export declare function isPerCallerService<T = unknown>(value: unknown): value is PerCallerFactory<T>;
 export declare function resolvePerCallerService<T>(factory: PerCallerFactory<T>, caller: ServiceCaller): T;
+export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
 export declare class ServiceNotDeclaredError extends Error {
 readonly pluginId: string;
 readonly capability: string;
 readonly manifestField = "requires";
-constructor(pluginId: string, capability: string);
+readonly reason: ServiceNotDeclaredReason;
+constructor(pluginId: string, capability: string, reason?: ServiceNotDeclaredReason);
 }
 export interface ServicesAccessor {
 get<T>(name: string): T | undefined;

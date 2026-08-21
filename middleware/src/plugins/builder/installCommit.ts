@@ -72,6 +72,10 @@ export type InstallResult = InstallSuccess | InstallFailure;
 
 const CONFLICT_INGEST_CODES = new Set<string>([
   'package.id_conflict_builtin',
+  // #789 — the builder can generate an agent whose id collides with a bundled
+  // package too, and it must surface as the same "pick another id" conflict
+  // rather than falling through to the generic reason.
+  'package.id_conflict_bundled',
   'package.duplicate_version',
 ]);
 

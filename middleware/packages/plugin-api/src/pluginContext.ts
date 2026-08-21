@@ -520,8 +520,25 @@ export function resolvePerCallerService<T>(
 }
 
 /**
+ * Why a `ctx.services.get(name)` call was refused — issue #788.
+ *
+ * The two reasons have different fixers and must not be collapsed:
+ *
+ *  - `undeclared` — the manifest never mentions the capability. The author
+ *    adds a `requires:` / `optional_requires:` line.
+ *  - `provides-not-registered` — the manifest DOES mention it, but only under
+ *    `provides:`, and the plugin has not called `ctx.services.provide(name, …)`
+ *    yet. `provides:` grants read-back of the plugin's OWN registration; until
+ *    that registration exists there is nothing of the plugin's to read back,
+ *    and resolving the name would hand over somebody else's implementation.
+ *    The author either provides it first, or declares it as a dependency.
+ */
+export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
+
+/**
  * Thrown by `ctx.services.get(name)` when the plugin's manifest does not
- * declare `name` as a capability it `requires` (or `provides`).
+ * declare `name` as a capability it `requires` — or declares it only under
+ * `provides:` without having provided it (see {@link ServiceNotDeclaredReason}).
  *
  * Typed so a plugin can distinguish "the operator has not installed a
  * provider" (`get` returns `undefined`) from "I forgot to declare this"
@@ -532,15 +549,29 @@ export class ServiceNotDeclaredError extends Error {
   public readonly capability: string;
   /** The manifest field that would grant it. */
   public readonly manifestField = 'requires';
-  constructor(pluginId: string, capability: string) {
+  /** #788 — which of the two refusals this is. Defaults to `undeclared` so
+   *  every pre-existing construction site keeps its exact message. */
+  public readonly reason: ServiceNotDeclaredReason;
+  constructor(
+    pluginId: string,
+    capability: string,
+    reason: ServiceNotDeclaredReason = 'undeclared',
+  ) {
     super(
-      `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
-        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
-        `or \`provides:\` if this plugin is the provider)`,
+      reason === 'provides-not-registered'
+        ? `plugin '${pluginId}' called ctx.services.get('${capability}') and its manifest declares '${capability}' under \`provides:\`, ` +
+            `but the plugin has not called ctx.services.provide('${capability}', …) yet — ` +
+            `a \`provides:\` entry grants read-back of THIS plugin's own registration, not access to another plugin's service. ` +
+            `Either provide '${capability}' before resolving it, or add '${capability}@<major>' to \`requires:\` ` +
+            `(or \`optional_requires:\` when absence is survivable) if this plugin is a consumer of somebody else's implementation`
+        : `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
+            `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
+            `or \`provides:\` if this plugin is the provider — note that \`provides:\` only grants the name once the plugin has actually provided it)`,
     );
     this.name = 'ServiceNotDeclaredError';
     this.pluginId = pluginId;
     this.capability = capability;
+    this.reason = reason;
   }
 }
 
@@ -563,6 +594,16 @@ export class ServiceNotDeclaredError extends Error {
  * plugin could ask for any service — including `graphPool`, the same Postgres
  * pool core uses — with no manifest declaration and nothing in the install
  * dialog.
+ *
+ * **A `provides:` entry grants the name only once it has been provided
+ * (issue #788).** `provides:` is a self-declaration that costs nothing at
+ * activation — unlike `requires:`, it creates no ordering edge and cannot fail
+ * an activation. A plugin that listed `provides: ["graphPool@1"]` and never
+ * called `provide()` was therefore passing the gate for somebody else's
+ * `graphPool`: an undeclared-capability bypass wearing a declaration's
+ * clothes. The kernel now checks the registry for a live registration owned by
+ * the asking plugin and throws with
+ * `reason: 'provides-not-registered'` until there is one.
  *
  * `has` stays ungated: it answers a yes/no existence question and hands over
  * no capability, so gating it would only turn feature-probing into

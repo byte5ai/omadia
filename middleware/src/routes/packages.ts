@@ -169,7 +169,11 @@ function mapIngestCodeToStatus(code: string): number {
     case 'zip.symlink':
     case 'zip.forbidden_extension':
       return 422;
+    // `package.id_conflict_bundled` (#789) belongs here rather than with the
+    // 422s: the zip is well-formed, the id is simply already taken by a
+    // package this image ships.
     case 'package.id_conflict_builtin':
+    case 'package.id_conflict_bundled':
     case 'package.duplicate_version':
       return 409;
     default:

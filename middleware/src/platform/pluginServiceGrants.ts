@@ -26,11 +26,45 @@
  *   - `optional_requires: ["turnContext@1"]` grants `get('turnContext')` and
  *     `getOptional('turnContext')` without making the capability an
  *     activation prerequisite (#795).
- *   - `provides: ["memoryStore@1"]`     grants `get('memoryStore')` — a plugin
- *     may always read back its own registration; it holds the implementation
- *     anyway, so this is not an escalation.
+ *   - `provides: ["memoryStore@1"]`     grants `get('memoryStore')` ONCE the
+ *     plugin has actually called `provide('memoryStore', …)` — see below.
  *   - anything else throws `ServiceNotDeclaredError`, naming both the
  *     capability and the manifest field that would grant it.
+ *
+ * WHY `provides:` IS NOT ENOUGH ON ITS OWN (issue #788)
+ * ----------------------------------------------------
+ * The original reading was "a plugin may always read back its own
+ * registration; it holds the implementation anyway, so this is not an
+ * escalation". The premise is right and the conclusion followed from it — but
+ * the gate never checked the premise. `provides:` is a self-declaration that,
+ * unlike `requires:`, costs nothing: it creates no activation edge, holds
+ * nothing back, and cannot fail an install. So `provides: ["graphPool@1"]` in
+ * an uploaded manifest bought `get('graphPool')` — the operator's Postgres
+ * pool, registered by somebody else entirely — for the price of one YAML line.
+ * That is an undeclared-capability bypass wearing a declaration's clothes, and
+ * it is strictly WEAKER than the `requires:` path it sits beside: `requires:`
+ * at least shows up in the install dialog and in dependency resolution.
+ *
+ * So the grant now needs the fact as well as the claim. `ServiceRegistry`
+ * tracks live registrations per owning agentId (`providedBy`), and a name
+ * declared ONLY under `provides:` resolves only while the asking plugin holds
+ * a live registration for it. Order matters and is the point: `provide()`
+ * first, `get()` after. A plugin that reads before it registers gets a throw
+ * that says exactly that (`reason: 'provides-not-registered'`) rather than
+ * somebody else's object.
+ *
+ * A name in BOTH `requires:` and `provides:` is unaffected — the `requires:`
+ * declaration grants it outright, because a plugin that declares a dependency
+ * has already paid the dependency's price.
+ *
+ * AUDIT (2026-08-21). Every bundled package under `middleware/packages/*` and
+ * every sibling plugin repo under `~/sources/omadia-*` was scanned for a
+ * `services.get(name)` where `name` appears only in that manifest's
+ * `provides:`. Fourteen packages declare `provides:` at all; none of them read
+ * a provides-only name back, in comments or in code, so this tightening
+ * grandfathers nothing and needs no allowlist row. The permanent guard lives
+ * in `test/pluginServiceGrantCoverage.test.ts`, which re-runs that scan over
+ * the bundled packages with the TypeScript checker rather than a regex.
  *
  * WHY THERE IS AN ALLOWLIST
  * -------------------------
@@ -80,19 +114,27 @@ import {
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 
 /**
- * Audited legacy grants — snapshot taken 2026-08-20.
+ * The half of the audit that lives in THIS repository — `middleware/packages/*`.
  *
- * Keyed by the kernel-known plugin id, valued with the exact service names
- * that plugin resolves today without declaring them. CLOSED SET: adding a row
- * means a shipped plugin regressed and needs a manifest fix, not a wider gate.
+ * Reachable only when the catalog says `origin === 'bundled'`, which the loader
+ * stamps from WHERE the package was found and never reads from a manifest.
+ * That is the whole of the #789 fix for these ids, and it matters most here:
+ * `@omadia/orchestrator` alone carries nineteen names including `graphPool`
+ * (the operator's Postgres pool) and `tigrisStore`. `PluginCatalog` documents
+ * that an uploaded package wins an `identity.id` collision, so before this gate
+ * a zip claiming that id inherited all nineteen without declaring one of them.
+ * Same mechanism and same fail-closed default as `LEGACY_SQL_GRANTS_2026_08_20`
+ * in `pluginSqlGrants.ts`.
  *
- * Sources: `middleware/packages/*` (built-ins) and the ten standalone plugin
- * repos under `~/sources/omadia-*`, read at their `main`.
+ * An id here that STOPS being bundled (extracted to its own repo, the way the
+ * channel plugins were) drops to `[]` rather than falling through to the
+ * standalone table. That is deliberate: leaving the repo is exactly when a
+ * grant deserves a fresh audit, and a silent carry-over would be a grant nobody
+ * re-checked.
  */
-export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
+export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   Record<string, readonly string[]>
 > = Object.freeze({
-  // -- built-in plugin packages (middleware/packages/*) ---------------------
   '@omadia/plugin-office': Object.freeze(['privacyRedact']),
   '@omadia/verifier': Object.freeze(['graphPool', 'odoo.client']),
   '@omadia/knowledge-graph-inmemory': Object.freeze(['turnContext']),
@@ -135,7 +177,41 @@ export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
     'turnHookRegistry',
     'turnReceiptStore',
   ]),
-  // -- standalone plugin repos (shipped via hub.omadia.ai) -----------------
+});
+
+/**
+ * The half of the audit that ships from `hub.omadia.ai` — one repository per
+ * plugin, arriving as an installed package.
+ *
+ * WHY THESE ARE NOT ORIGIN-GATED, AND WHAT THAT COSTS
+ * ---------------------------------------------------
+ * They cannot be: they are never `bundled`. Gating them on origin would return
+ * `[]` for every one of them, and a re-audit on 2026-08-21 confirmed all nine
+ * rows are still load-bearing — not one of the sibling manifests declares its
+ * allowlisted names yet. `@omadia/channel-teams` alone would lose thirteen,
+ * `graphPool` and `anthropicClient` among them, at the first turn after the
+ * upgrade. That is the #794 trap at customer scale, and this repo has sprung it
+ * once already.
+ *
+ * So for these ids the key stays the id, and the id is not a credential —
+ * nothing today distinguishes the real `@omadia/channel-teams` zip from a zip
+ * that merely says so. What #789 CAN close, and this file does close, is the
+ * neighbouring case where the claimed id belongs to a package this repo ships:
+ * see {@link legacyServiceGrantsFor}, which refuses the ramp to any installed
+ * package whose id the catalog knows as bundled, and the ingest refusal in
+ * `plugins/packageUploadService.ts` that stops such a zip landing at all.
+ *
+ * The residual is a zip claiming one of the nine ids below on a host where that
+ * plugin is not installed. Closing it needs package provenance — a signature
+ * the Hub issues and the middleware verifies — not a longer list. Until then
+ * the mitigation is retirement: each row dies the moment the sibling repo's
+ * `manifest.yaml` declares the capability under `requires:` or
+ * `optional_requires:`, which is a one-line change in nine repositories and
+ * needs no coordination with this one.
+ */
+export const STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
   '@omadia/channel-discord': Object.freeze([
     'channelResolver',
     'chatAgent',
@@ -182,11 +258,74 @@ export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
   ]),
 });
 
+/**
+ * Audited legacy grants — snapshot taken 2026-08-20.
+ *
+ * Keyed by the kernel-known plugin id, valued with the exact service names
+ * that plugin resolves today without declaring them. CLOSED SET: adding a row
+ * means a shipped plugin regressed and needs a manifest fix, not a wider gate.
+ *
+ * Sources: `middleware/packages/*` (built-ins) and the ten standalone plugin
+ * repos under `~/sources/omadia-*`, read at their `main`.
+ *
+ * SPLIT BY ORIGIN (issue #789). This constant is the UNION of the two tables
+ * below and exists so the audit record can still be read in one piece. Nothing
+ * consults it to make a decision — every grant goes through {@link
+ * legacyServiceGrantsFor}, which picks the table by the catalog's `origin`.
+ */
+export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  ...BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20,
+  ...STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20,
+});
+
+/**
+ * The legacy ramp in force for one plugin — issue #789.
+ *
+ * The ONLY reader of the two tables above. Three branches, each answering a
+ * different question the id alone cannot:
+ *
+ *  1. `origin === 'bundled'` — this is a package the middleware image ships.
+ *     It gets its bundled row, and nothing else: an id that has since left the
+ *     tree is not carried over from the standalone table.
+ *  2. installed, but the catalog knows the id as bundled — an upload or a
+ *     local-dev package is SHADOWING code we ship (`PluginCatalog` resolves an
+ *     `identity.id` collision in the upload's favour). It inherits nothing.
+ *     This is #789's reported case, and `packageUploadService.ts` refuses such
+ *     a package at ingest so it normally never gets this far.
+ *  3. installed, and the id is not one this repo bundles — a Hub plugin. Its
+ *     standalone row applies; see that table's docblock for what that costs and
+ *     how it retires.
+ *
+ * A plugin the catalog cannot resolve gets `[]`. Same fail-closed reading as
+ * `declaredServiceNames` and `bundledSqlRampCapabilities`: an id whose manifest
+ * the kernel cannot find is an id whose permissions cannot be checked.
+ */
+export function legacyServiceGrantsFor(
+  agentId: string,
+  catalog: PluginCatalog,
+): readonly string[] {
+  const bundledRow = BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20[agentId];
+  const standaloneRow = STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20[agentId];
+  // The overwhelmingly common case: an id on neither dated list. Answered
+  // before the catalog is touched at all, so the ramp costs one map lookup per
+  // `get` for every plugin that is not being grandfathered.
+  if (bundledRow === undefined && standaloneRow === undefined) return [];
+
+  const entry = catalog.get(agentId);
+  if (entry === undefined) return [];
+  if (entry.origin === 'bundled') return bundledRow ?? [];
+  if (catalog.isBundledId(agentId)) return [];
+  return standaloneRow ?? [];
+}
+
 /** Why a `services.get` call was allowed — or wasn't. */
 export type ServiceGrantOutcome =
   | 'declared'
   | 'self-provided'
   | 'legacy-allowlist'
+  | 'provides-not-registered'
   | 'undeclared';
 
 /**
@@ -227,34 +366,81 @@ export function declaredServiceNames(
   return names;
 }
 
-/** Classify one `services.get(name)` call. Pure — no logging, no throwing, so
- *  it can be asserted directly in tests. */
+/** Parse a list of capability refs into bare names, dropping malformed ones —
+ *  a name that cannot be parsed grants nothing, the fail-closed direction. */
+function namesOf(refs: readonly string[] | undefined): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const raw of refs ?? []) {
+    try {
+      names.add(parseCapabilityRef(raw).name);
+    } catch {
+      // The loader already warned about this entry.
+    }
+  }
+  return names;
+}
+
+/**
+ * Classify one `services.get(name)` call. Pure — no logging, no throwing, so
+ * it can be asserted directly in tests.
+ *
+ * `isRegisteredByPlugin` answers "does this plugin hold a LIVE registration for
+ * `name` right now?" (issue #788). It is a required argument rather than an
+ * optional one because there is no defensible default: `() => true` restores
+ * the bypass, and `() => false` would silently deny a legitimate provider at a
+ * call site that simply forgot to wire the registry. Forcing every caller to
+ * answer is the point.
+ */
 export function classifyServiceGrant(
   agentId: string,
   name: string,
   declared: ReadonlySet<string>,
   catalog: PluginCatalog,
+  isRegisteredByPlugin: (name: string) => boolean,
 ): ServiceGrantOutcome {
   if (declared.has(name)) {
-    const entry = catalog.get(agentId);
-    const provides = entry?.plugin.provides ?? [];
-    const selfProvided = provides.some((raw) => {
-      try {
-        return parseCapabilityRef(raw).name === name;
-      } catch {
-        return false;
-      }
-    });
-    return selfProvided ? 'self-provided' : 'declared';
+    const plugin = catalog.get(agentId)?.plugin;
+    // A dependency declaration grants the name outright — it was paid for at
+    // activation. Checked FIRST so a plugin that both consumes and re-provides
+    // a capability (the `replace()` wrapping pattern) is untouched by #788.
+    const consumeDeclared =
+      namesOf(plugin?.requires).has(name) ||
+      namesOf(plugin?.optional_requires).has(name);
+    if (consumeDeclared) return 'declared';
+    // #788 — `provides:` alone is a claim; a live registration is the fact
+    // behind it. Without the fact, resolving the name would hand over whatever
+    // OTHER plugin registered it, which is the bypass this closes.
+    if (namesOf(plugin?.provides).has(name)) {
+      return isRegisteredByPlugin(name)
+        ? 'self-provided'
+        : 'provides-not-registered';
+    }
+    // `declared` said yes but no manifest field claims the name: only
+    // reachable if a caller passed a set that did not come from
+    // `declaredServiceNames`. Treat the manifest as authoritative.
+    return 'declared';
   }
-  const legacy = LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20[agentId];
-  if (legacy?.includes(name)) return 'legacy-allowlist';
+  if (legacyServiceGrantsFor(agentId, catalog).includes(name)) {
+    return 'legacy-allowlist';
+  }
   return 'undeclared';
 }
 
 export interface ServiceGrantGateOptions {
   agentId: string;
   catalog: PluginCatalog;
+  /**
+   * #788 — whether this plugin currently holds a live registration for the
+   * name. `createPluginContext` supplies
+   * `(name) => serviceRegistry.providedBy(agentId, name)`, with `agentId` the
+   * kernel-known id, so a plugin cannot answer the question about itself.
+   *
+   * Evaluated per call, not once when the gate is built: a context is created
+   * at activation, BEFORE the plugin's `activate()` has had the chance to
+   * `provide()` anything, so a snapshot taken here would deny every provider
+   * its own capability forever.
+   */
+  isRegisteredByPlugin: (name: string) => boolean;
   /** Where the one-time legacy warning goes. */
   log: (...args: unknown[]) => void;
 }
@@ -274,14 +460,26 @@ export interface ServiceGrantGateOptions {
 export function createServiceGrantGate(
   opts: ServiceGrantGateOptions,
 ): (name: string) => void {
-  const { agentId, catalog, log } = opts;
+  const { agentId, catalog, isRegisteredByPlugin, log } = opts;
   const declared = declaredServiceNames(agentId, catalog);
   const warned = new Set<string>();
 
   return function assertServiceGranted(name: string): void {
-    const outcome = classifyServiceGrant(agentId, name, declared, catalog);
+    const outcome = classifyServiceGrant(
+      agentId,
+      name,
+      declared,
+      catalog,
+      isRegisteredByPlugin,
+    );
     if (outcome === 'undeclared') {
       throw new ServiceNotDeclaredError(agentId, name);
+    }
+    // #788 — a distinct reason, because it has a distinct fixer. 'undeclared'
+    // sends the author to the manifest; this one sends them to the ORDER of
+    // two calls they have already written.
+    if (outcome === 'provides-not-registered') {
+      throw new ServiceNotDeclaredError(agentId, name, 'provides-not-registered');
     }
     if (outcome === 'legacy-allowlist' && !warned.has(name)) {
       warned.add(name);

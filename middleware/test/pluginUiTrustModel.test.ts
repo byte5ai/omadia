@@ -108,7 +108,17 @@ describe('plugin UI trust model — tripwires for the C8b trade', () => {
     } as unknown as PluginCatalog;
 
     const declared = new Set<string>(['knowledgeGraph', 'exampleUiRuntime']);
-    const outcome = classifyServiceGrant(agentId, 'graphPool', declared, catalog);
+    // #788 — this plugin registers nothing, which is the honest answer for a
+    // trust-model probe about a capability it never provides. The outcome must
+    // be `undeclared` on the strength of the manifest alone.
+    const neverRegistered = (): boolean => false;
+    const outcome = classifyServiceGrant(
+      agentId,
+      'graphPool',
+      declared,
+      catalog,
+      neverRegistered,
+    );
     assert.equal(
       outcome,
       'undeclared',
@@ -118,6 +128,7 @@ describe('plugin UI trust model — tripwires for the C8b trade', () => {
     const assertServiceGranted = createServiceGrantGate({
       agentId,
       catalog,
+      isRegisteredByPlugin: neverRegistered,
       log: () => undefined,
     });
     assert.throws(

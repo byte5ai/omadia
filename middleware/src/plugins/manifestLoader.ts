@@ -105,6 +105,23 @@ export interface PluginCatalogEntry {
 export class PluginCatalog {
   private entries = new Map<string, PluginCatalogEntry>();
 
+  /**
+   * #789 — every id an `origin: 'bundled'` source offered during the last
+   * `load()`, INCLUDING ids an installed package went on to shadow.
+   *
+   * `entries` cannot answer this. Collisions resolve in the upload's favour
+   * (the documented "the uploaded version wins" rule), so the moment a zip
+   * claims `@omadia/orchestrator` the entry under that key reads
+   * `origin: 'installed'` and every trace of the bundled package is gone from
+   * the map. A gate that asked `entries` "is this a bundled id?" would be
+   * asking the shadow about the thing it is hiding, and the answer erodes
+   * exactly when it matters.
+   *
+   * Rebuilt from scratch on each `load()` from `extraSources()`, so a package
+   * that stops shipping in the image stops being a bundled id.
+   */
+  private bundled = new Set<string>();
+
   constructor(private readonly options: PluginCatalogOptions = {}) {}
 
   async load(): Promise<void> {
@@ -114,15 +131,17 @@ export class PluginCatalog {
     for (const entry of manifestEntries) next.set(entry.plugin.id, entry);
 
     const extras = this.options.extraSources?.() ?? [];
+    const nextBundled = new Set<string>();
     for (const src of extras) {
       const manifestPath = path.join(src.packageRoot, 'manifest.yaml');
       const entry = await loadManifestFromPath(manifestPath);
       if (entry) {
         // #794 — the origin the CALLER asserted, not one the package claimed.
-        next.set(entry.plugin.id, {
-          ...entry,
-          origin: src.origin ?? 'installed',
-        });
+        const origin = src.origin ?? 'installed';
+        // #789 — recorded BEFORE the collision resolves, so a later upload
+        // claiming this id cannot erase the fact that we ship it.
+        if (origin === 'bundled') nextBundled.add(entry.plugin.id);
+        next.set(entry.plugin.id, { ...entry, origin });
       } else {
         console.warn(
           `[catalog] skipped uploaded manifest at ${manifestPath}: not a recognised schema-v1 manifest`,
@@ -130,6 +149,7 @@ export class PluginCatalog {
       }
     }
     this.entries = next;
+    this.bundled = nextBundled;
   }
 
   list(): PluginCatalogEntry[] {
@@ -140,6 +160,23 @@ export class PluginCatalog {
 
   get(id: string): PluginCatalogEntry | undefined {
     return this.entries.get(id);
+  }
+
+  /**
+   * #789 — is `id` the id of a package this middleware image ships, regardless
+   * of who currently occupies that key in the catalog?
+   *
+   * Two callers, both asking because an id alone proves nothing:
+   *  - `platform/pluginServiceGrants.ts` refuses the dated legacy service ramp
+   *    to an installed package sitting on a bundled id;
+   *  - `plugins/packageUploadService.ts` refuses such a package at ingest, so
+   *    it normally never reaches the catalog at all.
+   *
+   * Differs from `get(id)?.origin === 'bundled'` precisely in the shadowed
+   * case, which is the only case either caller cares about.
+   */
+  isBundledId(id: string): boolean {
+    return this.bundled.has(id);
   }
 }
 
