@@ -1280,7 +1280,16 @@ das Gate, kein Katalogeintrag):
   Kernel selbst ein Gruppen-`bot_added` beobachtet hat
   (`src/platform/observedConversationInvites.ts` — subscribed DIREKT am
   ConversationEventHub, vor jedem Plugin; Key channelType::conversationId,
-  TTL 24h). Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
+  TTL 24h). Der Index **überlebt Restarts** (#330 follow-up): Write-through in
+  `observed_conversation_invites` (Migration `0048`, Core-Serie;
+  `src/platform/observedInvitePersistence.ts`) — Map bleibt der Hot Path,
+  Writes fire-and-forget (log-only), Boot-Hydration TTL-gefiltert, auf
+  MAX_ENTRIES gecappt, Key aus den Tabellen-SPALTEN (JSONB≠Spalten ⇒ Row wird
+  verworfen), try/catch um `hydrate()` (fehlende Tabelle ⇒ altes
+  Re-Invite-Verhalten, nie Boot-Abbruch). Live-Events vor der Hydration
+  gewinnen. Achtung: zwei Instanzen auf EINER DATABASE_URL teilen sich den
+  Index (Annahme: eine Deployment == eine DB).
+  Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
   `unbind()` ist gleich hart geguarded: nur eigene Ephemeral-Attachment-Rows
   — Operator-Bindings sind von dieser Fläche aus unerreichbar, und ein
   vorbestehendes Operator-Binding wird NIE in den Ephemeral-Lifecycle
@@ -1339,6 +1348,26 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `test/sessionLoggerSpeaker.test.ts`, `test/adminTranscriptionProviderRoute.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
+
+### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
+Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
+`0011`): Deadline-Poll → `expireAwait` → On-Expiry-Fallback — derselbe
+Mechanismus wie Human-Deadlines. Guarded Cycles durch einen Timer sind
+validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
+`ctx.stepAttempts[stepId]` (Executor bumpt bei jedem Step-Entry; Guard z.B.
+`lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
+Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
+Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
+tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+`conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
+`registerConversationSendProvider`, Kernel `src/channels/
+conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
+Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
+`test/conversationSendService.test.ts`.
 
 ## 4. Migration Managed Agents → Lokal
 

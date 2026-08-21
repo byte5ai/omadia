@@ -54,6 +54,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   disk but still needs a grant no longer aborts the whole chain, stranding the
   operator with an installed dependency and a dead wizard.
 
+### Changed — the observed-invite index survives restarts (#330 follow-up)
+
+- Migration `0048_observed_invites.sql` (core series, `middleware/migrations/`): new table
+  `observed_conversation_invites` as write-through backing store for the kernel-side invite
+  index (#330 C2a) — the deny-by-default scope guard for plugin auto-binds. Until now the
+  index was in-memory only, so every deploy/restart forced operators to remove and re-invite
+  the bot before a facilitation could start.
+- The in-memory map stays the hot path: writes are fire-and-forget (log-only on failure),
+  boot hydration is TTL-filtered, capped at the in-memory limit, keyed off the table's key
+  COLUMNS (a JSONB payload disagreeing with its columns is dropped — defense in depth for a
+  security guard), and wrapped so a missing table degrades to the old re-invite behaviour
+  instead of failing the boot. Live events observed before hydration win.
+
 ### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
 
 - **The updater sidecar reports structured progress.** `GET /status` gains
@@ -71,6 +84,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   migration) and a link to `docs/upgrading.md`. The run is remembered in
   `localStorage`, so the dialog resumes after the admin UI container itself is
   replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
+
+### Added — timer steps, machine-checkable DoD loops and conversation-addressed nudges (#330 C3)
+
+- New Conductor step kind **`timer`** (migration `0011_timer_awaits.sql` widens the await principal-kind CHECK): parks the run via the existing await machinery and follows its `fallbackTransitionId` (the on-expiry edge) when the deadline poll fires — guarded cycles through a timer are legal, unguarded ones stay a validation error (`timer_step_invalid_duration` / `timer_requires_fallback` gate the shape). Preview simulates timers instantly; the run trace records an honest `{kind:'timer', ticked:true}` actor.
+- Deterministic loop budget: the executor maintains `ctx.stepAttempts[stepId]` (bumped on every step entry), so a transition guard like `lt ctx.stepAttempts.moderate 24` bounds an assess loop without trusting the model to count — on top of the ephemeral TTL and MAX_STEPS.
+- Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
+- `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
+- New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
+
 
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 

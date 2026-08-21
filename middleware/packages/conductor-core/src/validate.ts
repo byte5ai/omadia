@@ -1,5 +1,6 @@
 // Semantic workflow-graph validation (FR-003). Pure; uses ajv only for the shape gate.
 
+import { parseIsoDurationMs } from './duration.js';
 import type {
   KnownRefs,
   Step,
@@ -146,6 +147,26 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     }
     if (s.kind === 'human' && !s.human) {
       errors.push({ code: 'human_step_missing_config', message: `human step '${s.id}' has no human config`, nodeIds: [s.id] });
+    }
+    // #330 C3 — a timer step is a deterministic park-then-fallback: it needs a
+    // positive ISO-8601 duration AND the on-expiry edge (fallbackTransitionId),
+    // otherwise the run would park forever with nothing to wake it.
+    if (s.kind === 'timer') {
+      const ms = parseIsoDurationMs(s.timer?.duration) ?? 0;
+      if (ms <= 0) {
+        errors.push({
+          code: 'timer_step_invalid_duration',
+          message: `timer step '${s.id}' needs a positive ISO-8601 duration (e.g. "PT1H")`,
+          nodeIds: [s.id],
+        });
+      }
+      if (s.fallbackTransitionId === undefined) {
+        errors.push({
+          code: 'timer_requires_fallback',
+          message: `timer step '${s.id}' has no fallbackTransitionId — the on-expiry edge is what resumes the run`,
+          nodeIds: [s.id],
+        });
+      }
     }
 
     if (s.fallbackTransitionId !== undefined) {
