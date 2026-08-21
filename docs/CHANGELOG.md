@@ -18,6 +18,26 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
+
+- **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**
+  A new `openai-chatgpt` provider connects through the real device-code login
+  flow (`POST /api/v1/admin/providers/oauth/{start,poll}`): the operator gets a
+  user code, approves it at `auth.openai.com/codex/device`, and the resulting
+  bearer drives the ChatGPT/Codex **Responses** backend (a new
+  `openai-responses` SSE wire format + adapter). Gated behind
+  `CHATGPT_SUBSCRIPTION_EXPERIMENTAL` (off by default) — driving programmatic
+  calls through a consumer subscription is a ToS grey area, so the connect modal
+  shows a prominent notice and it is not an enterprise feature.
+- **Rotation-safe token store.** Refresh tokens rotate (reuse is a terminal
+  error), so tokens live in one process-wide store with single-flight refresh;
+  rotated tokens fan out to every LLM-plugin vault scope with a newest-wins
+  stamp, and a dead grant parks the provider in a clean "reconnect required"
+  state instead of retry-hammering. Empirically verified live: tools, forced
+  tool choice, parallel tool calls and vision all work on the backend.
+- Contract `@omadia/llm-provider-api` → 1.1.0 (additive: `openai-responses`
+  wire format, descriptor `oauth`, adapter `bearerProvider`).
+
 ### Removed — the core-decoupling ratchet is retired (#470 C14)
 
 - `scripts/check-core-decoupling.mjs`, its colocated detector test

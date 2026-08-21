@@ -29,6 +29,10 @@ export interface LlmAdapterBuildOptions {
   readonly id?: string;
   /** OpenAI-adapter vendor quirks from the descriptor; ignored by other adapters. */
   readonly quirks?: ProviderQuirks;
+  /** Resolves a fresh bearer per request (OAuth-connected providers, #294).
+   *  When set, adapters that support it MUST prefer it over `apiKey` — the
+   *  token can rotate mid-process, so it must never be captured at build time. */
+  readonly bearerProvider?: () => Promise<string>;
   readonly log?: (...args: unknown[]) => void;
 }
 

@@ -23,6 +23,7 @@ const API_KEY_LEAF = 'api_key';
 const OAUTH_ACCESS_LEAF = 'oauth_access_token';
 const OAUTH_REFRESH_LEAF = 'oauth_refresh_token';
 const OAUTH_EXPIRES_LEAF = 'oauth_expires_at';
+const OAUTH_UPDATED_LEAF = 'oauth_updated_at';
 
 /** Canonical vault key for a provider's API key: `provider:anthropic/api_key`. */
 export function providerApiKeyVaultKey(providerId: string): string {
@@ -73,12 +74,17 @@ export function providerOAuthVaultKeys(providerId: string): {
   access: string;
   refresh: string;
   expiresAt: string;
+  /** Epoch-ms of the last write — newest-wins hydration across vault scopes
+   *  (refresh-token ROTATION makes divergent copies dangerous; see
+   *  providerOAuthTokenStore.ts). */
+  updatedAt: string;
 } {
   const base = `${PROVIDER_KEY_NAMESPACE}${providerId}`;
   return {
     access: `${base}/${OAUTH_ACCESS_LEAF}`,
     refresh: `${base}/${OAUTH_REFRESH_LEAF}`,
     expiresAt: `${base}/${OAUTH_EXPIRES_LEAF}`,
+    updatedAt: `${base}/${OAUTH_UPDATED_LEAF}`,
   };
 }
 
@@ -108,11 +114,13 @@ export async function readProviderOAuthTokens(
 
 /** Persist a provider's OAuth tokens. `set` is the scope-bound vault write.
  *  Optional fields are blanked when absent so stale refresh/expiry values do not
- *  survive a later rewrite and get read back as current tokens. */
+ *  survive a later rewrite and get read back as current tokens. `updatedAtMs`
+ *  stamps the write for newest-wins hydration (defaults to the wall clock). */
 export async function writeProviderOAuthTokens(
   set: (key: string, value: string) => Promise<void>,
   providerId: string,
   tokens: OAuthTokens,
+  updatedAtMs?: number,
 ): Promise<void> {
   const keys = providerOAuthVaultKeys(providerId);
   await set(keys.access, tokens.accessToken);
@@ -126,4 +134,15 @@ export async function writeProviderOAuthTokens(
   } else {
     await set(keys.expiresAt, '');
   }
+  await set(keys.updatedAt, String(updatedAtMs ?? Date.now()));
+}
+
+/** Read the newest-wins stamp for a scope's OAuth copy (0 when absent). */
+export async function readProviderOAuthUpdatedAt(
+  get: (key: string) => Promise<string | undefined>,
+  providerId: string,
+): Promise<number> {
+  const raw = (await get(providerOAuthVaultKeys(providerId).updatedAt))?.trim();
+  const n = raw !== undefined && raw.length > 0 ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) ? n : 0;
 }

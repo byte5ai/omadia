@@ -2824,7 +2824,9 @@
         "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
         "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
         "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
-      }
+      },
+      "oauthConnect": "Mit ChatGPT anmelden",
+      "oauthReconnect": "ChatGPT neu verbinden"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2842,6 +2844,20 @@
       "saving": "speichert …",
       "saved": "✓ gespeichert",
       "errorChip": "✗ Fehler"
+    },
+    "oauth": {
+      "title": "Mit ChatGPT anmelden",
+      "close": "Schließen",
+      "tosNotice": "Experimentell. API-Aufrufe über ein persönliches ChatGPT-Abo zu betreiben, ist eine Grauzone der OpenAI-Bedingungen. Nicht als Enterprise-Funktion nutzen — kann jederzeit ohne Vorankündigung ausfallen.",
+      "starting": "Anmeldung wird gestartet…",
+      "openHint": "Öffne die ChatGPT-Geräteseite:",
+      "openLink": "Bestätigungsseite öffnen",
+      "enterCode": "Gib dort diesen Code ein:",
+      "waiting": "Komm dann hierher zurück — dieser Dialog schließt sich automatisch, sobald du bestätigt hast.",
+      "connected": "Verbunden. ChatGPT steht jetzt als Provider zur Verfügung.",
+      "expired": "Der Anmeldecode ist abgelaufen, bevor er bestätigt wurde.",
+      "failed": "Die Anmeldung konnte nicht abgeschlossen werden.",
+      "retry": "Erneut versuchen"
     }
   },
   "adminSubscriptionClis": {

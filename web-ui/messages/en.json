@@ -2824,7 +2824,9 @@
         "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
         "networkError": "The provider could not be reached — timeout, DNS or no connection.",
         "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
-      }
+      },
+      "oauthConnect": "Sign in with ChatGPT",
+      "oauthReconnect": "Reconnect ChatGPT"
     },
     "assignments": {
       "heading": "Per-agent assignment",
@@ -2842,6 +2844,20 @@
       "saving": "saving …",
       "saved": "✓ saved",
       "errorChip": "✗ error"
+    },
+    "oauth": {
+      "title": "Sign in with ChatGPT",
+      "close": "Close",
+      "tosNotice": "Experimental. Driving API calls through a personal ChatGPT subscription is a grey area of OpenAI’s terms. Do not use it as an enterprise feature, and expect it to break without notice.",
+      "starting": "Starting the login…",
+      "openHint": "Open the ChatGPT device page:",
+      "openLink": "Open verification page",
+      "enterCode": "Enter this code there:",
+      "waiting": "Then come back here — this dialog completes automatically once you approve.",
+      "connected": "Connected. ChatGPT is now available as a provider.",
+      "expired": "The login code expired before it was approved.",
+      "failed": "The login could not be completed.",
+      "retry": "Try again"
     }
   },
   "adminSubscriptionClis": {
