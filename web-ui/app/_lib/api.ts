@@ -5159,6 +5159,25 @@ export type UpdaterState =
   | 'failed'
   | 'rolled_back';
 
+export type UpdaterPhase =
+  | 'resolve'
+  | 'preflight'
+  | 'pin'
+  | 'replace'
+  | 'health_gate'
+  | 'rollback'
+  | 'done';
+
+export type UpdaterFailure =
+  | {
+      kind: 'health_gate';
+      /** `never_reachable` | `version_never_matched` — the health waiter's
+       *  verdict. Kept as string so an unknown future verdict still renders. */
+      reason: string;
+      observedVersion: string | null;
+    }
+  | { kind: 'replace'; service: string | null };
+
 export interface UpdateStatus {
   current: { version: string; source: AppVersionSource };
   latest: {
@@ -5174,8 +5193,16 @@ export interface UpdateStatus {
     reachable: boolean;
     state?: UpdaterState;
     targetVersion?: string | null;
+    previousVersion?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
     error?: string;
     steps?: string[];
+    /** Which of the job's steps is running; null while idle or on a sidecar
+     *  that predates the field. Drives the progress stepper. */
+    phase?: UpdaterPhase | null;
+    /** Structured reason for `failed` / `rolled_back`; null otherwise. */
+    failure?: UpdaterFailure | null;
     /** Which executor drives the update (#696). */
     engine?: 'docker' | 'fly';
     /** False on Fly: the chosen version does NOT survive the operator's next

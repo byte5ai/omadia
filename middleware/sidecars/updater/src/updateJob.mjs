@@ -32,14 +32,50 @@ import { waitForHealthyVersion } from './health.mjs';
 export { detectComposeProject } from './engine/docker.mjs';
 
 /**
+ * The six numbered steps above, as a machine-readable progress marker. The
+ * free-text trail (`log`) is for humans reading a log; the phase is what the
+ * admin page renders as a stepper, so it must not depend on parsing English.
+ *
+ * @typedef {'resolve' | 'preflight' | 'pin' | 'replace' | 'health_gate' | 'rollback' | 'done'} UpdatePhase
+ */
+
+/**
+ * Why an update did not land, in a shape the UI can decode without parsing
+ * the human-readable `error` string.
+ *
+ *   - `health_gate` — every service was replaced but the middleware never
+ *     reported the target version. `reason` is the health waiter's verdict
+ *     (`never_reachable` / `version_never_matched`), `observedVersion` what
+ *     `/health` last said, if anything.
+ *   - `replace` — a service could not be moved to the new image.
+ *
+ * @typedef {{
+ *   kind: 'health_gate',
+ *   reason: string,
+ *   observedVersion: string | null,
+ * } | {
+ *   kind: 'replace',
+ *   service: string | null,
+ * }} UpdateFailure
+ *
+ * @typedef {{
+ *   ok: boolean,
+ *   rolledBack: boolean,
+ *   error?: string,
+ *   failure?: UpdateFailure,
+ * }} UpdateResult
+ */
+
+/**
  * @param {{
  *   engine: import('./engine/index.mjs').UpdateEngine,
  *   config: any,
  *   targetVersion: string,
  *   log: (msg: string) => void,
+ *   setPhase?: (phase: UpdatePhase) => void,
  *   healthWaiter?: typeof waitForHealthyVersion,
  * }} opts
- * @returns {Promise<{ ok: boolean, rolledBack: boolean, error?: string }>}
+ * @returns {Promise<UpdateResult>}
  */
 export async function runUpdate(opts) {
   const {
@@ -47,10 +83,12 @@ export async function runUpdate(opts) {
     config,
     targetVersion,
     log,
+    setPhase = () => {},
     healthWaiter = waitForHealthyVersion,
   } = opts;
 
   // 1 — resolve targets before touching anything.
+  setPhase('resolve');
   const targets = [];
   for (const service of config.services) {
     if (PROTECTED_SERVICES.includes(service) || service === config.selfService) {
@@ -63,9 +101,11 @@ export async function runUpdate(opts) {
   }
 
   // 2 — every new image must be obtainable before anything is replaced.
+  setPhase('preflight');
   await engine.preflight(targets, targetVersion, log);
 
   // 3 — persist the pin, where the platform allows it.
+  setPhase('pin');
   let previousPin = null;
   if (engine.canPersistPin) {
     try {
@@ -83,9 +123,12 @@ export async function runUpdate(opts) {
   }
 
   // 4 — replace.
+  setPhase('replace');
   const replaced = [];
+  let replacing = null;
   try {
     for (const target of targets) {
+      replacing = target.service;
       // Recorded BEFORE the call, not after. `replace()` can fail *past the
       // point of mutation* — on Fly the machine is already carrying the new
       // image when the wait-for-started step throws — and a bookkeeping entry
@@ -100,11 +143,18 @@ export async function runUpdate(opts) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(`replace failed: ${message}`);
+    setPhase('rollback');
     await rollback({ engine, replaced, previousPin, log });
-    return { ok: false, rolledBack: true, error: message };
+    return {
+      ok: false,
+      rolledBack: true,
+      error: message,
+      failure: { kind: 'replace', service: replacing },
+    };
   }
 
   // 5 — health gate on the NEW version.
+  setPhase('health_gate');
   log(`waiting for ${config.healthUrl} to report ${targetVersion}`);
   const health = await healthWaiter({
     url: config.healthUrl,
@@ -114,14 +164,25 @@ export async function runUpdate(opts) {
   });
   if (health.ok) {
     log(`health gate passed (${health.reason})`);
+    setPhase('done');
     return { ok: true, rolledBack: false };
   }
 
   // 6 — revert.
   const reason = `health gate failed: ${health.reason} (observed version: ${health.observedVersion ?? 'none'})`;
   log(reason);
+  setPhase('rollback');
   await rollback({ engine, replaced, previousPin, log });
-  return { ok: false, rolledBack: true, error: reason };
+  return {
+    ok: false,
+    rolledBack: true,
+    error: reason,
+    failure: {
+      kind: 'health_gate',
+      reason: health.reason,
+      observedVersion: health.observedVersion ?? null,
+    },
+  };
 }
 
 /**

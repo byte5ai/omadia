@@ -3934,6 +3934,69 @@
     "inProgressTitle": "Update in progress",
     "inProgressBody": "The containers are being replaced. This page keeps polling — the middleware is briefly unavailable while it restarts.",
     "rolledBack": "The last update failed and was rolled back: {message}",
+    "rolledBackNeverReachable": "The update to {from} was rolled back: the new version never answered /health. This instance is back on {to}.",
+    "rolledBackVersionNeverMatched": "The update to {from} was rolled back: /health kept reporting {observed} instead of {from}. This instance is back on {to}.",
+    "rolledBackReplace": "The update to {from} was rolled back: the {service} service could not be replaced. This instance is back on {to}.",
+    "rolledBackHint": "A new image that never comes up usually needs something at boot the old one did not — most often a secret such as CREDENTIAL_KEYCHAIN_KEY (required since v0.115). Check the middleware logs from the failed boot right away; hosted log retention is short. docs/upgrading.md has the per-version steps.",
+    "progress": {
+      "kicker": "Update",
+      "titleRunning": "Updating to {version}",
+      "titleRollingBack": "Rolling back — {version} did not come up",
+      "titleSucceeded": "Updated to {version}",
+      "titleRolledBack": "Update to {version} rolled back",
+      "titleFailed": "Update to {version} failed",
+      "elapsed": "elapsed {elapsed}",
+      "seconds": "{seconds}s",
+      "stepsLabel": "Update steps",
+      "steps": {
+        "resolve": "Resolve running services",
+        "preflight": "Verify new images in the registry",
+        "pin": "Pin the target version",
+        "replace": "Replace middleware and admin UI",
+        "health_gate": "Wait for /health to report the new version",
+        "rollback": "Roll back to {version}"
+      },
+      "replaceHint": "the middleware restarts now — this page may briefly lose it",
+      "healthGateHint": "up to 5 minutes",
+      "noPhaseYet": "Waiting for the updater to report its first step.",
+      "pollingEvery": "Polling every {seconds} s",
+      "pollingAttempts": "{count} checks",
+      "pollingLastAnswer": "last answer {elapsed} ago",
+      "middlewareReachable": "Middleware is answering.",
+      "middlewareUnreachable": "Middleware is not answering — expected while it restarts.",
+      "stalledTitle": "This is taking longer than expected.",
+      "stalledBody": "The updater's own health gate is 5 minutes, so a run this long usually means the updater itself is gone or this page lost track of it. You can dismiss this dialog; the update history below and the container logs tell you what actually happened.",
+      "succeededBody": "The middleware reports {version}.",
+      "succeededReloadHint": "The admin UI was replaced too — reload to make sure you are looking at the new one.",
+      "cannotClose": "This dialog closes when the update has finished.",
+      "close": "Close",
+      "reload": "Reload admin UI",
+      "dismissStalled": "Dismiss",
+      "trailTitle": "Updater log ({count} lines)",
+      "failure": {
+        "rolledBackBody": "Every service was restored to {version}. Nothing was lost, but schema migrations are forward-only — a database the new version already migrated stays migrated.",
+        "notRolledBackBody": "The updater could not restore the previous version. Check the services by hand before doing anything else.",
+        "neverReachable": {
+          "title": "The new version never answered /health.",
+          "body": "The container was replaced, but nothing ever listened on the health endpoint within the gate window. That is almost always the new version dying at boot, not a network problem. Likely causes:",
+          "causeSecret": "A secret the new version requires and the old one did not — most often CREDENTIAL_KEYCHAIN_KEY, mandatory since v0.115. Set it, then run the update again.",
+          "causeMigration": "A schema migration that failed against this database.",
+          "causeLogs": "Read the middleware logs from the failed boot now — hosted platforms keep them for minutes, not hours."
+        },
+        "versionNeverMatched": {
+          "title": "/health kept reporting {observed} instead of the new version.",
+          "body": "Something answered, but it was not the new image: the service may have been restarted on the old tag, or a proxy in front of it is still pointing at the old instance."
+        },
+        "replace": {
+          "title": "The {service} service could not be replaced.",
+          "body": "The platform refused to move the service to the new image. The updater log below has the exact error."
+        },
+        "unknown": {
+          "title": "The update did not land."
+        },
+        "docsLink": "docs/upgrading.md — per-version upgrade steps"
+      }
+    },
     "confirmTitle": "Confirm",
     "confirmInstruction": "Type <code>{phrase}</code> to confirm.",
     "confirmWarning": "This replaces the running middleware and admin UI containers. Schema migrations are forward-only — a rollback restores the images, not the database. Snapshot your volume before a major bump.",

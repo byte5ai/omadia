@@ -3934,6 +3934,69 @@
     "inProgressTitle": "Update läuft",
     "inProgressBody": "Die Container werden ersetzt. Diese Seite pollt weiter — die Middleware ist während des Neustarts kurz nicht erreichbar.",
     "rolledBack": "Das letzte Update ist fehlgeschlagen und wurde zurückgerollt: {message}",
+    "rolledBackNeverReachable": "Das Update auf {from} wurde zurückgerollt: Die neue Version hat /health nie beantwortet. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackVersionNeverMatched": "Das Update auf {from} wurde zurückgerollt: /health meldete weiterhin {observed} statt {from}. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackReplace": "Das Update auf {from} wurde zurückgerollt: Der Dienst {service} konnte nicht ersetzt werden. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackHint": "Ein neues Image, das nie hochkommt, braucht beim Start meist etwas, das das alte nicht brauchte — am häufigsten ein Secret wie CREDENTIAL_KEYCHAIN_KEY (Pflicht seit v0.115). Sieh sofort in die Middleware-Logs des fehlgeschlagenen Starts; gehostete Plattformen behalten sie nur kurz. docs/upgrading.md hat die Schritte pro Version.",
+    "progress": {
+      "kicker": "Update",
+      "titleRunning": "Update auf {version} läuft",
+      "titleRollingBack": "Rollback — {version} ist nicht hochgekommen",
+      "titleSucceeded": "Auf {version} aktualisiert",
+      "titleRolledBack": "Update auf {version} zurückgerollt",
+      "titleFailed": "Update auf {version} fehlgeschlagen",
+      "elapsed": "seit {elapsed}",
+      "seconds": "{seconds} s",
+      "stepsLabel": "Update-Schritte",
+      "steps": {
+        "resolve": "Laufende Dienste ermitteln",
+        "preflight": "Neue Images in der Registry prüfen",
+        "pin": "Zielversion festschreiben",
+        "replace": "Middleware und Admin-UI ersetzen",
+        "health_gate": "Warten, bis /health die neue Version meldet",
+        "rollback": "Zurückrollen auf {version}"
+      },
+      "replaceHint": "die Middleware startet jetzt neu — diese Seite verliert sie kurz",
+      "healthGateHint": "bis zu 5 Minuten",
+      "noPhaseYet": "Warte auf den ersten gemeldeten Schritt des Updaters.",
+      "pollingEvery": "Abfrage alle {seconds} s",
+      "pollingAttempts": "{count} Abfragen",
+      "pollingLastAnswer": "letzte Antwort vor {elapsed}",
+      "middlewareReachable": "Die Middleware antwortet.",
+      "middlewareUnreachable": "Die Middleware antwortet nicht — während des Neustarts erwartet.",
+      "stalledTitle": "Das dauert länger als erwartet.",
+      "stalledBody": "Das Health-Gate des Updaters beträgt 5 Minuten; ein so langer Lauf heißt meist, dass der Updater selbst weg ist oder diese Seite ihn aus den Augen verloren hat. Du kannst den Dialog schließen; die Update-Historie unten und die Container-Logs zeigen, was wirklich passiert ist.",
+      "succeededBody": "Die Middleware meldet {version}.",
+      "succeededReloadHint": "Die Admin-UI wurde ebenfalls ersetzt — lade neu, um sicher die neue zu sehen.",
+      "cannotClose": "Dieser Dialog schließt sich, wenn das Update abgeschlossen ist.",
+      "close": "Schließen",
+      "reload": "Admin-UI neu laden",
+      "dismissStalled": "Ausblenden",
+      "trailTitle": "Updater-Log ({count} Zeilen)",
+      "failure": {
+        "rolledBackBody": "Alle Dienste wurden auf {version} zurückgesetzt. Nichts ist verloren, aber Schema-Migrationen laufen nur vorwärts — eine bereits migrierte Datenbank bleibt migriert.",
+        "notRolledBackBody": "Der Updater konnte die vorherige Version nicht wiederherstellen. Prüfe die Dienste von Hand, bevor du etwas anderes tust.",
+        "neverReachable": {
+          "title": "Die neue Version hat /health nie beantwortet.",
+          "body": "Der Container wurde ersetzt, aber innerhalb des Gate-Fensters hat nie etwas auf dem Health-Endpoint gelauscht. Das ist fast immer ein Absturz der neuen Version beim Start, kein Netzwerkproblem. Wahrscheinliche Ursachen:",
+          "causeSecret": "Ein Secret, das die neue Version braucht und die alte nicht — am häufigsten CREDENTIAL_KEYCHAIN_KEY, Pflicht seit v0.115. Setzen, dann das Update erneut starten.",
+          "causeMigration": "Eine Schema-Migration, die an dieser Datenbank gescheitert ist.",
+          "causeLogs": "Lies jetzt die Middleware-Logs des fehlgeschlagenen Starts — gehostete Plattformen behalten sie Minuten, nicht Stunden."
+        },
+        "versionNeverMatched": {
+          "title": "/health meldete weiterhin {observed} statt der neuen Version.",
+          "body": "Es hat etwas geantwortet, aber nicht das neue Image: Der Dienst ist vielleicht auf dem alten Tag neu gestartet, oder ein Proxy davor zeigt noch auf die alte Instanz."
+        },
+        "replace": {
+          "title": "Der Dienst {service} konnte nicht ersetzt werden.",
+          "body": "Die Plattform hat den Wechsel auf das neue Image verweigert. Das Updater-Log unten enthält den genauen Fehler."
+        },
+        "unknown": {
+          "title": "Das Update ist nicht gelandet."
+        },
+        "docsLink": "docs/upgrading.md — Upgrade-Schritte pro Version"
+      }
+    },
     "confirmTitle": "Bestätigen",
     "confirmInstruction": "Zum Bestätigen <code>{phrase}</code> eintippen.",
     "confirmWarning": "Das ersetzt die laufenden Middleware- und Admin-UI-Container. Schema-Migrationen laufen nur vorwärts — ein Rollback stellt die Images wieder her, nicht die Datenbank. Vor einem größeren Sprung ein Volume-Snapshot ziehen.",

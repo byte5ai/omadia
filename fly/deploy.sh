@@ -9,7 +9,8 @@
 #   - omadia-middleware-<suffix>  kernel API, persistent /data volume
 #   - omadia-web-ui-<suffix>      admin UI, public entrypoint
 #
-# Secrets are generated here (VAULT_KEY, Postgres password); the LLM key
+# Secrets are generated here (VAULT_KEY, CREDENTIAL_KEYCHAIN_KEY, Postgres
+# password); the LLM key
 # is collected by the /setup wizard on first boot — nothing to paste.
 #
 # Prerequisites: flyctl installed and logged in (fly auth login), and
@@ -65,6 +66,7 @@ PG_PASSWORD="$(openssl rand -hex 16)"
   POSTGRES_PASSWORD="$PG_PASSWORD"
 "$FLY" secrets set --app "$MW_APP" \
   VAULT_KEY="$(openssl rand -base64 32)" \
+  CREDENTIAL_KEYCHAIN_KEY="$(openssl rand -base64 32)" \
   DATABASE_URL="postgresql://omadia:${PG_PASSWORD}@${PG_APP}.internal:5432/omadia"
 "$FLY" secrets set --app "$UI_APP" \
   MIDDLEWARE_URL="http://${MW_APP}.internal:8080"
@@ -118,5 +120,5 @@ echo "Done. Open https://${UI_APP}.fly.dev and finish the /setup wizard"
 echo "(first admin + LLM key, stored encrypted in the vault)."
 echo
 echo "The middleware is public at https://${MW_APP}.fly.dev (needed for"
-echo "channel webhooks). VAULT_KEY lives only as a Fly secret on ${MW_APP};"
-echo "losing it makes vault entries unrecoverable."
+echo "channel webhooks). VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY live only as Fly"
+echo "secrets on ${MW_APP}; losing them makes vault / keychain entries unrecoverable."
