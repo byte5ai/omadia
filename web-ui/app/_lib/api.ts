@@ -381,6 +381,10 @@ export interface AdminProvider {
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
   requiresAvvDisclosure?: boolean;
+  /** Provider runs on a personal consumer subscription — no AVV/DPA can exist;
+   *  the assignment UI shows a dedicated warning (stronger than the ordinary
+   *  third-party disclosure). */
+  subscriptionNotice?: boolean;
   euHosted?: boolean;
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
@@ -629,10 +633,16 @@ export async function createInstallJob(
 export async function configureInstallJob(
   jobId: string,
   values: Record<string, unknown>,
+  /** #603 (OM-17) — raw json_file documents keyed by setup-field key. Parsed
+   *  SERVER-side (size cap, `expect` check, path extraction); the derived
+   *  values then run through the same validation as typed input. */
+  jsonFiles?: Record<string, string>,
 ): Promise<InstallConfigureResponse> {
   return postJson<InstallConfigureResponse>(
     `/v1/install/jobs/${encodeURIComponent(jobId)}/configure`,
-    { values },
+    jsonFiles && Object.keys(jsonFiles).length > 0
+      ? { values, json_files: jsonFiles }
+      : { values },
   );
 }
 

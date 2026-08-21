@@ -502,6 +502,9 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     version: ver.version,
     latest_version: entry.latest_version,
     description: entry.description,
+    ...(entry.description_localized
+      ? { description_localized: entry.description_localized }
+      : {}),
     authors: entry.authors,
     license: entry.license,
     icon_url: entry.icon_url,

@@ -161,7 +161,10 @@ async function provision() {
   const unsubProgress = bridge.onBootProgress((p) => {
     const pct = PHASE_PCT[p.phase] ?? 10;
     $('#barFill').style.width = pct + '%';
-    $('#progressMsg').textContent = p.message + (p.detail ? ' — ' + p.detail : '');
+    // Localized by PHASE (typed contract), supervisor message as fallback —
+    // a new phase never renders blank, it just renders English.
+    const phaseText = wt('boot.' + p.phase, p.message);
+    $('#progressMsg').textContent = phaseText + (p.detail ? ' — ' + p.detail : '');
     if (p.phase === 'error') $('#barFill').style.background = 'var(--err)';
   });
   // Live, granular log (kernel migrations, plugin activation, DB readiness …).

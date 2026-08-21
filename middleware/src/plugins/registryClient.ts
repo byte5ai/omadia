@@ -381,6 +381,15 @@ export class RegistryClient {
       kind: kind as PluginKind,
       domain: asString(raw['domain'], `unknown.${id}`),
       description: asString(raw['description'], ''),
+      ...(isObject(raw['description_localized'])
+        ? {
+            description_localized: Object.fromEntries(
+              Object.entries(raw['description_localized'] as Record<string, unknown>)
+                .filter(([, v]) => typeof v === 'string' && v.length > 0)
+                .map(([k, v]) => [k, v as string]),
+            ),
+          }
+        : {}),
       categories: asStringArray(raw['categories']),
       authors: parseAuthors(raw['authors']),
       license: asString(raw['license'], 'Unknown'),

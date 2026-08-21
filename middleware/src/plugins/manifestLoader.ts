@@ -32,7 +32,7 @@ import {
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
-import { normalizeLocalized } from './manifestLocalized.js';
+import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -483,13 +483,18 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     permissionsSummary.acquires_oauth = true;
   }
 
+  const descriptionMap = normalizeLocalized(identity['description']);
+
   const base: Plugin = {
     id,
     kind,
     name,
     version,
     latest_version: version,
-    description: asString(identity['description']) ?? '',
+    // OM-28/OM-06 (#602) — `identity.description` accepts a localized map.
+    // `description` stays the English-resolved string (search, hub, older
+    // consumers); the full map rides along in `description_localized` below.
+    description: resolveLocalized(descriptionMap, 'en') ?? '',
     authors: extractAuthors(identity['authors']),
     license: asString(identity['license']) ?? 'Unknown',
     icon_url: null,
@@ -510,6 +515,14 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  // Attached only when the manifest declared MORE than a bare English string —
+  // a plain-string description round-trips exactly as before.
+  if (
+    descriptionMap &&
+    (Object.keys(descriptionMap).length > 1 || descriptionMap['en'] === undefined)
+  ) {
+    result = { ...result, description_localized: descriptionMap };
+  }
   // Only attached when the manifest actually declares one, mirroring
   // `service_types` below: `undefined` and `[]` mean the same thing to every
   // consumer (all of which read it as `?? []`), and omitting the key keeps
