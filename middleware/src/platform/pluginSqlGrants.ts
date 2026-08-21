@@ -293,7 +293,30 @@ export function parseSqlPermission(
       `[catalog] plugin '${pluginId}': permissions.sql.migrations must be a non-empty string — falling back to the default '${DEFAULT_MIGRATIONS_DIR}'`,
     );
   }
-  return migrations === undefined ? { ledger } : { ledger, migrations };
+  // Epic #470 C15 — the ledger-handoff plan the kernel runs BEFORE the
+  // migrations directory. Only the shape of the STRING is decided here; the
+  // file it names is read and validated at activation
+  // (`platform/pluginHandoffPlan.ts`), where the package root is known and a
+  // refusal can still fail the activation.
+  //
+  // Dropped-with-a-warning rather than rejected, matching `migrations` and
+  // this loader's rule everywhere else. The degradation is not silent
+  // downstream: `handoff` absent means the kernel runs no handoff, so the
+  // migrations simply apply — the pre-C15 behaviour, which is safe.
+  const handoffRaw = rec['handoff'];
+  let handoff: string | undefined;
+  if (typeof handoffRaw === 'string' && handoffRaw.length > 0) {
+    handoff = handoffRaw;
+  } else if (handoffRaw !== undefined) {
+    warn(
+      `[catalog] plugin '${pluginId}': permissions.sql.handoff must be a non-empty path inside the package — ignored, so the migration runner will apply every file`,
+    );
+  }
+  return {
+    ledger,
+    ...(migrations === undefined ? {} : { migrations }),
+    ...(handoff === undefined ? {} : { handoff }),
+  };
 }
 
 /** Directory a plugin's migrations live in when the manifest does not say. */

@@ -1792,6 +1792,7 @@ constructor(agentId: string, fromVersion: string, toVersion: string, cause: unkn
 export interface SqlPermission {
 readonly migrations?: string;
 readonly ledger: string;
+readonly handoff?: string;
 }
 export interface MigrationReport {
 readonly applied: readonly string[];

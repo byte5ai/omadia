@@ -48,6 +48,39 @@
  * `migrationsDir` is resolved relative to the plan file, so a plan shipped
  * inside a plugin package works from wherever the operator copied it.
  *
+ * ONE PLAN, THREE READERS (epic #470 C15)
+ * ---------------------------------------
+ * The same JSON is read by three things:
+ *
+ *   1. this CLI, via `--plan`;
+ *   2. the kernel, when a manifest declares `permissions.sql.handoff`
+ *      (`middleware/src/platform/pluginHandoffPlan.ts`);
+ *   3. a plugin that manages its own ordering, via `ctx.sql.seedLedger`.
+ *
+ * `entries` (and the optional `dryRun`) are what all three consume, and they
+ * are exactly `SeedLedgerOptions`. `pluginId`, `ledger` and `migrationsDir`
+ * are for THIS tool alone: it runs with no manifest, so it has to be told
+ * them. The kernel knows all three authoritatively and deliberately ignores
+ * the file's copies — a plan that could redirect the write would undo the
+ * grant matching the manifest — though it does WARN when the plan's `ledger`
+ * disagrees with the manifest's, because then the table an operator previewed
+ * here is not the table the kernel is about to write.
+ *
+ * So a plan shipped inside a package for the manifest carries only `entries`,
+ * and this tool reads that same file when the three missing fields are
+ * supplied as flags:
+ *
+ *   node middleware/scripts/plugin-ledger-handoff.mjs \
+ *     --plan node_modules/@vendor/thing/handoff-plan.json \
+ *     --plugin-id @vendor/thing \
+ *     --ledger plg_vendor_thing_migrations \
+ *     --migrations-dir migrations
+ *
+ * The kernel's reader is STRICTER than this one: it rejects unknown keys
+ * (notably `dir`, which `SeedLedgerOptions` accepts and the kernel refuses to
+ * honour) and caps the file size. A plan that the kernel accepts always works
+ * here; the reverse is not guaranteed.
+ *
  * Exit codes: 0 = plan computed (or applied), 1 = the handoff refused,
  * 2 = usage / plan-file error.
  *
@@ -71,6 +104,14 @@ Usage: node middleware/scripts/plugin-ledger-handoff.mjs --plan <file.json> [opt
   --apply              Actually write the ledger rows. Default is a dry run.
   --database-url <url> Overrides $DATABASE_URL.
   --json               Machine-readable output.
+
+  For a plan shipped inside a package for 'permissions.sql.handoff', which
+  carries only 'entries', supply the three fields the manifest would have
+  told the kernel:
+
+  --plugin-id <id>       e.g. @vendor/thing
+  --ledger <table>       e.g. plg_vendor_thing_migrations
+  --migrations-dir <dir> resolved relative to the plan file
 `;
 
 function parseArgs(argv) {
@@ -82,6 +123,9 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') args.apply = false;
     else if (arg === '--plan') args.plan = argv[(i += 1)];
     else if (arg === '--database-url') args.databaseUrl = argv[(i += 1)];
+    else if (arg === '--plugin-id') args.pluginId = argv[(i += 1)];
+    else if (arg === '--ledger') args.ledger = argv[(i += 1)];
+    else if (arg === '--migrations-dir') args.migrationsDir = argv[(i += 1)];
     else if (arg === '--help' || arg === '-h') args.help = true;
     else fail(`unknown argument '${arg}'`);
   }
@@ -93,7 +137,7 @@ function fail(msg) {
   process.exit(2);
 }
 
-function loadPlan(planPath) {
+function loadPlan(planPath, args) {
   let raw;
   try {
     raw = readFileSync(planPath, 'utf8');
@@ -106,9 +150,28 @@ function loadPlan(planPath) {
   } catch (err) {
     fail(`plan '${planPath}' is not valid JSON: ${err.message}`);
   }
+  // Epic #470 C15 — the same file may also be the one a manifest names in
+  // `permissions.sql.handoff`, and that reader knows the plugin, the ledger
+  // and the directory authoritatively, so a package-shipped plan carries only
+  // `entries` (and optionally `dryRun`). This tool has no manifest, so it
+  // still needs all three — but they may now come from flags instead of from
+  // the file. That is what lets ONE plan serve both readers: forcing a plugin
+  // to ship two files would let the one an operator previews drift from the
+  // one the kernel runs.
+  if (typeof args.pluginId === 'string' && args.pluginId.length > 0) {
+    plan.pluginId = args.pluginId;
+  }
+  if (typeof args.ledger === 'string' && args.ledger.length > 0) {
+    plan.ledger = args.ledger;
+  }
+  if (typeof args.migrationsDir === 'string' && args.migrationsDir.length > 0) {
+    plan.migrationsDir = args.migrationsDir;
+  }
   for (const field of ['pluginId', 'ledger', 'migrationsDir']) {
     if (typeof plan[field] !== 'string' || plan[field].length === 0) {
-      fail(`plan is missing a non-empty '${field}'`);
+      fail(
+        `plan is missing a non-empty '${field}' — add it to the plan file, or pass --${field.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`,
+      );
     }
   }
   if (!Array.isArray(plan.entries) || plan.entries.length === 0) {
@@ -181,7 +244,7 @@ async function main() {
     fail('set DATABASE_URL or pass --database-url');
   }
 
-  const plan = loadPlan(args.plan);
+  const plan = loadPlan(args.plan, args);
   const pool = new pg.Pool({ connectionString, max: 2 });
   try {
     const result = await seedPluginLedgerFromDonor({
