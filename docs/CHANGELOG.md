@@ -42,7 +42,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - Deterministic loop budget: the executor maintains `ctx.stepAttempts[stepId]` (bumped on every step entry), so a transition guard like `lt ctx.stepAttempts.moderate 24` bounds an assess loop without trusting the model to count — on top of the ephemeral TTL and MAX_STEPS.
 - Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
 - `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
-- New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.8.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
+- New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
 
 
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)

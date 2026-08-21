@@ -180,6 +180,9 @@ describe('ConductorEphemeralRunService.createEphemeralRun', () => {
     assert.equal(pub.expectNew, true);
     assert.equal(pub.enable, true);
     assert.equal(pub.createdByAgent, 'facilitator-1');
+    // published_by is a UUID column for human operators — an agent handle in
+    // there breaks the INSERT against real Postgres (#330 field report).
+    assert.equal(pub.publishedBy, null);
     assert.ok((pub.slug as string).startsWith(`${EPHEMERAL_SLUG_PREFIX}demo-`));
     // The slot was substituted — the published graph carries the concrete ref.
     const graph = pub.graph as { steps: Array<{ agentId?: string }> };

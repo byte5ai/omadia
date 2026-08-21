@@ -169,7 +169,9 @@ export class ConductorEphemeralRunService {
       origin: 'ephemeral',
       expiresAt,
       createdByAgent: agentId,
-      publishedBy: `agent:${agentId}`,
+      // conductor_workflow_versions.published_by is a UUID column reserved for
+      // human operators; the agent handle lives in created_by_agent (TEXT).
+      publishedBy: null,
     });
 
     try {
