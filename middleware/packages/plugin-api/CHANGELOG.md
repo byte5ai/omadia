@@ -21,7 +21,11 @@ migrations directory (epic #470, C15).
   `{ "entries": [{ "filename", "witnessSql" }], "dryRun"?: false }`. The kernel
   reads it at activation, validates it against the package root, and performs
   the handoff through the same seeder — read-only witness fence, advisory lock
-  and entry validation included — before its own migration runner.
+  and entry validation included — before its own migration runner. A shared
+  file MAY carry `"dryRun": false` for the operator CLI's benefit; the kernel
+  refuses `"dryRun": true`, because a preview that writes nothing would hand
+  every file straight to the migration runner below. Use the CLI's
+  `--dry-run` / `--apply` flags to preview or apply.
 
 ### Why a declaration and not the call C11 already shipped
 

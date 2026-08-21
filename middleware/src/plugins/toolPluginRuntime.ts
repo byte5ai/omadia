@@ -416,7 +416,6 @@ export class ToolPluginRuntime {
       const report = await withTimeout(
         seedLedger.call(ctx.sql, {
           entries: plan.entries,
-          dryRun: plan.dryRun,
         }),
         MIGRATION_TIMEOUT_MS,
         `seedLedger(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
@@ -425,8 +424,7 @@ export class ToolPluginRuntime {
         `[tool-runtime] ${agentId}: ledger handoff — ${String(report.seeded.length)} seeded, ` +
           `${String(report.alreadySeeded.length)} already seeded, ` +
           `${String(report.applied.length)} left for the migration runner ` +
-          `(ledger '${report.ledger}', donor '${report.donorLedger}', ${String(report.durationMs)}ms` +
-          `${report.dryRun ? ', dry run — nothing written' : ''})`,
+          `(ledger '${report.ledger}', donor '${report.donorLedger}', ${String(report.durationMs)}ms)`,
       );
       if (report.skippedNoWitness.length > 0) {
         // THE output this feature exists to produce. The donor ledger records

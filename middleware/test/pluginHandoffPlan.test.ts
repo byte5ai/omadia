@@ -18,7 +18,7 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -33,19 +33,30 @@ const PLUGIN_ID = '@test/handoff-plan';
 
 describe('#470 C15 loadHandoffPlan', () => {
   let root: string;
+  let outsideRoots: string[];
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'c15-plan-'));
+    outsideRoots = [];
   });
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+    await Promise.all(
+      outsideRoots.map((dir) => rm(dir, { recursive: true, force: true })),
+    );
   });
 
   async function writePlan(relative: string, body: string): Promise<void> {
     const abs = join(root, relative);
     await mkdir(join(abs, '..'), { recursive: true });
     await writeFile(abs, body, 'utf8');
+  }
+
+  async function makeOutsideRoot(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'c15-plan-outside-'));
+    outsideRoots.push(dir);
+    return dir;
   }
 
   function load(declaredPath: string): Promise<unknown> {
@@ -97,14 +108,13 @@ describe('#470 C15 loadHandoffPlan', () => {
       plan.entries.map((e) => e.filename),
       ['0001_a.js', '0002_b.js'],
     );
-    assert.equal(
-      plan.dryRun,
-      false,
-      'a plan that does not ask for a dry run writes — the default may not drift',
+    assert.ok(
+      !('dryRun' in plan),
+      'the kernel-run plan is executable data, not a preview request',
     );
   });
 
-  it('carries dryRun through when the plan asks for it', async () => {
+  it('refuses dryRun: true because the kernel-run path may not preview and then fall through', async () => {
     await writePlan(
       'plans/preview.json',
       JSON.stringify({
@@ -112,12 +122,8 @@ describe('#470 C15 loadHandoffPlan', () => {
         entries: [{ filename: '0001_a.js', witnessSql: 'SELECT true' }],
       }),
     );
-    const plan = await loadHandoffPlan({
-      pluginId: PLUGIN_ID,
-      packageRoot: root,
-      declaredPath: 'plans/preview.json',
-    });
-    assert.equal(plan.dryRun, true);
+    const err = await refusal('plans/preview.json', 'dry-run-declared');
+    assert.match(err.message, /migration runner/i);
   });
 
   it('accepts the operator-CLI fields and reports the ledger as advisory only', async () => {
@@ -165,6 +171,55 @@ describe('#470 C15 loadHandoffPlan', () => {
     // `<root>-evil/plan.json` from `<root>/plan.json`. A bare `startsWith`
     // passes the first one, and the file it reads is outside the package.
     await refusal(`../${basename(root)}-evil/plan.json`, 'escapes-package-root');
+  });
+
+  it('refuses a file symlink that escapes the package root', async () => {
+    const outside = await makeOutsideRoot();
+    await writeFile(
+      join(outside, 'outside-plan.json'),
+      JSON.stringify({
+        entries: [{ filename: '0001_a.js', witnessSql: 'SELECT true' }],
+      }),
+      'utf8',
+    );
+    await mkdir(join(root, 'plans'), { recursive: true });
+    await symlink(join(outside, 'outside-plan.json'), join(root, 'plans', 'current.json'));
+
+    const err = await refusal('plans/current.json', 'escapes-package-root');
+    assert.match(err.message, /link/i);
+  });
+
+  it('refuses a directory symlink that escapes the package root', async () => {
+    const outside = await makeOutsideRoot();
+    await writeFile(
+      join(outside, 'secret.json'),
+      JSON.stringify({
+        entries: [{ filename: '0001_a.js', witnessSql: 'SELECT true' }],
+      }),
+      'utf8',
+    );
+    await symlink(outside, join(root, 'plans'));
+
+    const err = await refusal('plans/secret.json', 'escapes-package-root');
+    assert.match(err.message, /link/i);
+  });
+
+  it('accepts a symlink that stays inside the package root', async () => {
+    await writePlan(
+      'real/plan.json',
+      JSON.stringify({
+        entries: [{ filename: '0001_a.js', witnessSql: 'SELECT true' }],
+      }),
+    );
+    await mkdir(join(root, 'plans'), { recursive: true });
+    await symlink('../real/plan.json', join(root, 'plans', 'current.json'));
+
+    const plan = await loadHandoffPlan({
+      pluginId: PLUGIN_ID,
+      packageRoot: root,
+      declaredPath: 'plans/current.json',
+    });
+    assert.deepEqual(plan.entries.map((e) => e.filename), ['0001_a.js']);
   });
 
   it('refuses a missing file', async () => {

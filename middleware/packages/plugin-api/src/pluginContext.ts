@@ -1944,17 +1944,22 @@ export interface SqlPermission {
    * kernel runs BEFORE {@link SqlPermission.migrations} — epic #470 C15.
    *
    * ```json
-   * {
-   *   "entries": [
-   *     { "filename": "0001_x.js", "witnessSql": "SELECT to_regclass('public.x') IS NOT NULL" }
-   *   ],
-   *   "dryRun": false
+ * {
+ *   "entries": [
+ *     { "filename": "0001_x.js", "witnessSql": "SELECT to_regclass('public.x') IS NOT NULL" }
+ *   ],
+ *   "dryRun": false
    * }
    * ```
    *
    * Same shape {@link SqlAccessor.seedLedger} accepts, and the same shape the
    * operator CLI (`middleware/scripts/plugin-ledger-handoff.mjs --plan`)
-   * reads, so one file serves all three readers.
+   * reads, so one file serves all three readers. A shared file MAY carry
+   * `"dryRun": false`; `"dryRun": true` is refused on the kernel-run path.
+   * Preview mode belongs to the CLI flag, not to plugin data: if core read a
+   * plan that asked it to "write nothing", then core's own migration runner
+   * would immediately apply every file underneath it, silently recreating the
+   * exact "0 seeded, 9 already seeded" failure C15 exists to remove.
    *
    * DECLARE THIS RATHER THAN CALLING `seedLedger` YOURSELF when the manifest
    * also declares `migrations`. The kernel runs that directory before your

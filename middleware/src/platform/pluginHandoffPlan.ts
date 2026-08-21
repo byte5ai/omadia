@@ -50,7 +50,8 @@ export type HandoffPlanRefusal =
   | 'unreadable'
   | 'too-large'
   | 'not-json'
-  | 'malformed';
+  | 'malformed'
+  | 'dry-run-declared';
 
 /** Thrown when a manifest declares a handoff plan core will not run. */
 export class PluginHandoffPlanError extends Error {
@@ -81,9 +82,6 @@ export interface HandoffPlanEntry {
 
 export interface HandoffPlan {
   readonly entries: readonly HandoffPlanEntry[];
-  /** Report the plan and write nothing. Defaults to false — a plan that does
-   *  not ask for a dry run performs the handoff. */
-  readonly dryRun: boolean;
   /**
    * The ledger the plan file names, when it names one.
    *
@@ -100,10 +98,16 @@ export interface HandoffPlan {
 /**
  * The plan file's shape.
  *
- * `entries` and `dryRun` are core's; the shape is deliberately the one
- * `SqlAccessor.seedLedger` already accepts, so a plugin that manages its own
- * ordering against an older core can pass the same parsed object straight to
- * `ctx.sql.seedLedger`.
+ * `entries` are core's, and `dryRun` is accepted ONLY so one file can serve
+ * both readers without drift. The operator CLI owns preview mode and derives
+ * it from `--apply` / `--dry-run`; the kernel-run path below refuses
+ * `"dryRun": true` because a preview that writes nothing would hand every
+ * file straight to the migration runner one line later, silently recreating
+ * the exact G7 failure C15 exists to remove.
+ *
+ * The rest of the shape is deliberately the one `SqlAccessor.seedLedger`
+ * accepts, so a plugin that manages its own ordering against an older core
+ * can pass the same parsed object straight to `ctx.sql.seedLedger`.
  *
  * `pluginId` / `ledger` / `migrationsDir` belong to the operator CLI
  * (`middleware/scripts/plugin-ledger-handoff.mjs`), which runs with no
@@ -177,7 +181,39 @@ export async function loadHandoffPlan(
     );
   }
 
-  const stat = await fs.stat(resolved).catch(() => undefined);
+  // `path.resolve` closes `../` tricks and sibling-prefix lookalikes, but it
+  // is still lexical. A package can ship `handoff-plan.json -> /outside/file`
+  // or `plans -> /outside` and pass the string check while `stat()` follows
+  // the link. So after lexical containment we resolve BOTH real paths and
+  // assert containment again. The root must be realpathed too: on macOS `/var`
+  // is really `/private/var`, and realpathing only the target would make
+  // every tmpdir-based package look like an escape.
+  const realRoot = await fs.realpath(root).catch((err: unknown) => {
+    throw refuse(
+      'unreadable',
+      `package root could not be resolved: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+  const realResolved = await fs.realpath(resolved).catch((err: unknown) => {
+    if (hasErrnoCode(err, 'ENOENT')) {
+      throw refuse(
+        'unreadable',
+        'is not a readable file — the manifest declares a handoff the package does not ship',
+      );
+    }
+    throw refuse(
+      'unreadable',
+      `could not be resolved: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+  if (!realResolved.startsWith(realRoot + path.sep)) {
+    throw refuse(
+      'escapes-package-root',
+      'resolves outside the package root after following symlinks — the resolution went through a link, so the package is pointing core at a file it does not ship',
+    );
+  }
+
+  const stat = await fs.stat(realResolved).catch(() => undefined);
   if (!stat?.isFile()) {
     throw refuse(
       'unreadable',
@@ -191,7 +227,7 @@ export async function loadHandoffPlan(
     );
   }
 
-  const raw = await fs.readFile(resolved, 'utf8').catch((err: unknown) => {
+  const raw = await fs.readFile(realResolved, 'utf8').catch((err: unknown) => {
     throw refuse(
       'unreadable',
       `could not be read: ${err instanceof Error ? err.message : String(err)}`,
@@ -228,13 +264,18 @@ export async function loadHandoffPlan(
     }
     seen.add(entry.filename);
   }
+  if (result.data.dryRun === true) {
+    throw refuse(
+      'dry-run-declared',
+      'asks the kernel to preview and write nothing — that hands every file straight to the migration runner below, silently recreating the exact failure this handoff exists to remove; use middleware/scripts/plugin-ledger-handoff.mjs --dry-run to preview instead',
+    );
+  }
 
   return {
     entries: result.data.entries.map((e) => ({
       filename: e.filename,
       witnessSql: e.witnessSql,
     })),
-    dryRun: result.data.dryRun ?? false,
     ...(result.data.ledger === undefined
       ? {}
       : { declaredLedger: result.data.ledger }),
@@ -249,4 +290,13 @@ function describeIssues(error: z.ZodError): string {
       return `${where}: ${issue.message}`;
     })
     .join('; ');
+}
+
+function hasErrnoCode(err: unknown, code: string): err is NodeJS.ErrnoException {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === code
+  );
 }

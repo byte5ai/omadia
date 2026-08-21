@@ -18,6 +18,12 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — handoff plans now stay inside the package after symlinks and fail closed on declared dry runs (#470 C15)
+
+- `middleware/src/platform/pluginHandoffPlan.ts` now re-checks `permissions.sql.handoff` containment after resolving real paths for BOTH the package root and the target, closing the two escapes PR #815 left open: a file symlink inside the package pointing outside, and a directory symlink inside the package whose child path points outside. Missing targets still refuse as `unreadable`, not as an escape, so the operator still hears "the package does not ship this file" for the case they can actually fix.
+- The same loader now refuses `"dryRun": true` in a kernel-run handoff plan. Preview mode belongs to `middleware/scripts/plugin-ledger-handoff.mjs --dry-run`; if core honoured a plan-level dry run it would write nothing, then immediately let its own migration runner apply every file, silently recreating the exact G7 failure C15 exists to remove.
+- Regression locks now cover the two fail-closed properties the feature lives or dies on: a witness that fails at the database aborts activation before the migration runner can run, and a manifest whose SQL grant no longer matches its declared ledger is treated as ungranted so neither the handoff nor the runner can reach the database.
+
 ### Fixed — core-decoupling zero floor no longer hides same-named files (#470 C13 review)
 
 - `scripts/check-core-decoupling.mjs` now excludes only the exact detector path `scripts/check-core-decoupling.mjs` instead of any basename match, closing the hole where a same-named file dropped under `middleware/src/` could hide Dev Platform identifiers from the permanent zero floor. A colocated regression test proves the detector stays self-excluded while a probe file at `middleware/src/__probe/check-core-decoupling.mjs` is counted.

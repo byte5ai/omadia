@@ -41,6 +41,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, beforeEach, describe, it } from 'node:test';
 
+import { SqlMigrationError } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
@@ -215,10 +216,14 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
     } as unknown as PluginCatalog;
   }
 
-  function runtimeFor(sqlPermission: Record<string, unknown>): ToolPluginRuntime {
+  function runtimeFor(
+    sqlPermission: Record<string, unknown>,
+    opts: { grantLedger?: string } = {},
+  ): ToolPluginRuntime {
     const stub = (): (() => void) => (): void => {};
     const serviceRegistry = new ServiceRegistry();
     serviceRegistry.provide('graphPool', pool);
+    const grantedLedger = opts.grantLedger ?? ledger;
     const deps = {
       catalog: catalogFor(sqlPermission),
       registry: { get: () => ({ status: 'active' }) },
@@ -238,7 +243,7 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
       jobScheduler: { register: stub, stopForPlugin: (): void => {} },
       // The operator granted exactly the ledger the manifest declares.
       sqlGrantStore: {
-        get: async (): Promise<{ ledger: string }> => ({ ledger }),
+        get: async (): Promise<{ ledger: string }> => ({ ledger: grantedLedger }),
       },
       log: (msg: string): void => {
         logs.push(msg);
@@ -283,6 +288,22 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
       `SELECT filename FROM ${ledger} ORDER BY filename`,
     );
     return res.rows.map((r) => r.filename);
+  }
+
+  async function tableExists(name: string): Promise<boolean> {
+    const res = await pool.query<{ ok: boolean }>(
+      `SELECT to_regclass($1) IS NOT NULL AS ok`,
+      [`public.${name}`],
+    );
+    return res.rows[0]?.ok === true;
+  }
+
+  async function ledgerExists(): Promise<boolean> {
+    const res = await pool.query<{ ok: boolean }>(
+      `SELECT to_regclass($1) IS NOT NULL AS ok`,
+      [`public.${ledger}`],
+    );
+    return res.rows[0]?.ok === true;
   }
 
   it('seeds from the donor and leaves the runner nothing to do', async () => {
@@ -439,9 +460,8 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
     assert.equal(err.reason, 'escapes-package-root');
   });
 
-  it('writes nothing when the plan asks for a dry run', async () => {
+  it('refuses activation when the plan asks for a dry run', async () => {
     await seedDonorRows();
-    await createDonorTables();
     await writeHandoffPlan({
       dryRun: true,
       entries: files.map((file, i) => ({
@@ -450,15 +470,98 @@ describe('#470 C15 pre-activate ledger handoff', { skip: !pgAvailable }, () => {
       })),
     });
 
-    await runtimeFor({ ledger, migrations: 'migrations', handoff: 'handoff-plan.json' }).activate(
-      pluginId,
-    );
-
-    assert.match(handoffLine(), /dry run/);
+    const err = await runtimeFor({
+      ledger,
+      migrations: 'migrations',
+      handoff: 'handoff-plan.json',
+    })
+      .activate(pluginId)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    assert.ok(err instanceof PluginHandoffPlanError, `got ${String(err)}`);
+    assert.equal(err.reason, 'dry-run-declared');
     assert.deepEqual(
       stepOrder(),
-      ['handoff', 'migrations'],
-      'a dry run reports and writes nothing, so the runner still applies every file',
+      [],
+      'a declared dry run fails closed before either step can run — letting the runner continue would recreate G7 from one stray key',
+    );
+    assert.equal(await ledgerExists(), false, 'the plugin ledger was never created');
+    for (const table of tables) {
+      assert.equal(
+        await tableExists(table),
+        false,
+        `${table} must stay absent because the migration runner never ran`,
+      );
+    }
+  });
+
+  it('refuses activation when a witness fails at the database and never reaches the migration runner', async () => {
+    await writeHandoffPlan({
+      entries: [
+        {
+          filename: files[0],
+          witnessSql: `SELECT * FROM c15_missing_relation_${suffix}`,
+        },
+        ...files.slice(1).map((file, i) => ({
+          filename: file,
+          witnessSql: witnessFor(tables[i + 1] as string),
+        })),
+      ],
+    });
+
+    const err = await runtimeFor({
+      ledger,
+      migrations: 'migrations',
+      handoff: 'handoff-plan.json',
+    })
+      .activate(pluginId)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    assert.ok(err instanceof SqlMigrationError, `got ${String(err)}`);
+    assert.deepEqual(
+      stepOrder(),
+      [],
+      'the seeder failed before it could log success, and the migration runner below stayed dark',
+    );
+    assert.equal(await ledgerExists(), false, 'the failed handoff rolled its ledger DDL back');
+    for (const table of tables) {
+      assert.equal(
+        await tableExists(table),
+        false,
+        `${table} must stay absent because the migration runner never ran`,
+      );
+    }
+  });
+
+  it('treats a mismatched SQL grant as ungranted and skips both pre-activate steps', async () => {
+    await seedDonorRows();
+    await writeHandoffPlan();
+
+    await runtimeFor(
+      { ledger, migrations: 'migrations', handoff: 'handoff-plan.json' },
+      { grantLedger: `${ledger}_other` },
+    ).activate(pluginId);
+
+    assert.deepEqual(
+      stepOrder(),
+      [],
+      'without a matching grant there is no SQL accessor, so neither the handoff nor the runner can run',
+    );
+    assert.equal(await ledgerExists(), false, 'the plugin ledger was never created');
+    for (const table of tables) {
+      assert.equal(
+        await tableExists(table),
+        false,
+        `${table} must stay absent because the plugin was treated as ungranted`,
+      );
+    }
+    assert.ok(
+      logs.some((line) => line.includes('treating as ungranted')),
+      `missing mismatched-grant log line:\n${logs.join('\n')}`,
     );
   });
 });
