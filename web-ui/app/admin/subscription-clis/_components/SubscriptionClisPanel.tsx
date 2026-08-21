@@ -22,6 +22,7 @@ import {
   type CliBackendsResponse,
   type CliBackendStatus,
 } from '../../../_lib/api';
+import { InstallBox, ManualInstallSteps } from './InstallBox';
 
 type T = ReturnType<typeof useTranslations>;
 
@@ -193,40 +194,6 @@ export function SubscriptionClisPanel({
   );
 }
 
-/**
- * OM-11 — the "how do I get this CLI onto the server" steps.
- *
- * Extracted so the SAME instructions can render in both states that need them:
- * collapsed inside the connect box (CLI present, operator prefers the terminal)
- * and expanded on its own when the CLI is absent, where it is the only thing
- * the operator can act on.
- */
-function ManualInstallSteps({
-  b,
-  t,
-}: {
-  b: CliBackendStatus;
-  t: T;
-}): React.ReactElement {
-  return (
-    <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-[color:var(--fg-muted)]">
-      <li>
-        {t('connect.step1')}{' '}
-        <code className="select-all text-[color:var(--fg-strong)]">
-          {t('connect.installCmd')}
-        </code>
-      </li>
-      <li>
-        {t('connect.step2')}{' '}
-        <code className="select-all text-[color:var(--fg-strong)]">
-          {t('connect.loginCmd', { bin: b.bin })}
-        </code>
-      </li>
-      <li>{t('connect.step3')}</li>
-    </ol>
-  );
-}
-
 type LoginPhase =
   | { phase: 'idle' }
   | { phase: 'starting' }
@@ -349,10 +316,14 @@ function CliRow({
           <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
             {t('install.heading')}
           </div>
-          <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
-            {t('install.intro')}
-          </p>
-          <ManualInstallSteps b={b} t={t} />
+          {b.installable ? (
+            <InstallBox b={b} t={t} onChanged={onChanged} />
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-[color:var(--fg-muted)]">{t('install.intro')}</p>
+              <ManualInstallSteps b={b} t={t} />
+            </>
+          )}
         </div>
       )}
 

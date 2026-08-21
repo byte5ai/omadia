@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — runtime install of subscription CLIs from the admin UI (#309 extension, enabler for #294)
+
+- **The Subscription-CLIs page can now install a missing vendor CLI in-app.**
+  The public image deliberately does not bundle the Claude/Codex/Gemini CLIs
+  (redistribution needs legal review); previously a missing CLI dead-ended in
+  manual shell steps. A new "Install now" button triggers an operator-side
+  `npm install` from the public registry into `CLI_TOOLS_DIR` (defaults to
+  `<PLATFORM_DATA_DIR>/cli-tools` on the persisted volume, so installs survive
+  restarts). Detection and the in-app login prefer that directory over PATH.
+- **New routes** (auth-required, same router as the existing login flow):
+  `POST /api/v1/admin/cli-backends/:id/install` (202 accepted / 200 already
+  installed / 409 while another install runs / 400 unknown id or non-semver
+  version) and `GET /api/v1/admin/cli-backends/:id/install/status`.
+- **Hardening:** package names only from a fixed allowlist, optional version
+  strictly semver-validated, `execFile` without a shell, bounded time/output,
+  host-global single-flight. New env vars documented in `middleware/.env.example`:
+  `CLI_TOOLS_DIR`, `CODEX_HOME`.
+
 ### Added — migration handoff: a plugin can adopt an existing installation's schema (#470 C11)
 
 - **Plugins extracted out of core no longer re-apply core's migrations.**

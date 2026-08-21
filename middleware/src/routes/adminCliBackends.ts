@@ -6,6 +6,8 @@
  * for instead of a metered API key.
  *
  *  GET  /                       → { backends, generatedAt } (`?refresh=1` to bust cache)
+ *  POST /:id/install            → 202 { status:'started' } | 200 { alreadyInstalled } (runtime npm install)
+ *  GET  /:id/install/status     → { status: idle|running|succeeded|failed, … }
  *  POST /:id/login/start        → { sessionId, verificationUrl } (spawns `claude auth login`)
  *  POST /:id/login/code         → { status, account? } (writes the pasted code to stdin)
  *  POST /:id/login/cancel       → { ok }
@@ -25,6 +27,13 @@ import {
   cancelCliLogin,
   cliLogout,
 } from '../platform/cliAuthService.js';
+import {
+  startCliInstall,
+  getCliInstallStatus,
+  UnknownCliBackendError,
+  CliInstallConflictError,
+  InvalidCliVersionError,
+} from '../platform/cliInstallService.js';
 
 export function createAdminCliBackendsRouter(): Router {
   const router = Router();
@@ -37,6 +46,34 @@ export function createAdminCliBackendsRouter(): Router {
     } catch (err) {
       res.status(500).json({ error: 'detection_failed', message: errMessage(err) });
     }
+  });
+
+  router.post('/:id/install', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { version?: unknown };
+    if (body.version !== undefined && typeof body.version !== 'string') {
+      res.status(400).json({ error: 'bad_request', message: 'version must be a string.' });
+      return;
+    }
+    try {
+      const result = await startCliInstall(String(req.params['id']), body.version);
+      if (result.alreadyInstalled) {
+        res.json({ status: 'succeeded', alreadyInstalled: true });
+        return;
+      }
+      res.status(202).json({ status: 'started' });
+    } catch (err) {
+      if (err instanceof CliInstallConflictError) {
+        res.status(409).json({ error: 'install_in_progress', message: err.message });
+      } else if (err instanceof UnknownCliBackendError || err instanceof InvalidCliVersionError) {
+        res.status(400).json({ error: 'bad_request', message: err.message });
+      } else {
+        res.status(500).json({ error: 'install_failed', message: errMessage(err) });
+      }
+    }
+  });
+
+  router.get('/:id/install/status', (req: Request, res: Response) => {
+    res.json(getCliInstallStatus(String(req.params['id'])));
   });
 
   router.post('/:id/login/start', async (req: Request, res: Response) => {
