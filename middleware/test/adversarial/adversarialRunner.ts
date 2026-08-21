@@ -64,8 +64,8 @@ export interface AttackScenario {
   note?: string;
   /**
    * Deterministic probe selector — which real defense the model layer runs
-   * (`digest_boundary` | `issue_sanitizer` | `brief_delimiter`). Required for
-   * `deterministic`, absent for `behavioral`.
+   * (`digest_boundary` | `issue_sanitizer` | `skill_scan_frame` |
+   * `provenance_frame`). Required for `deterministic`, absent for `behavioral`.
    */
   probe?: string;
   /** What the attacker is trying to achieve — the conductor's objective. */

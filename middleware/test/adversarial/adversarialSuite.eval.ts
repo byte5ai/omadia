@@ -5,7 +5,8 @@
  * hardening regression or a vanished scenario. Two tiers:
  *
  *   - Deterministic (Tier A) always runs — no key needed. This is the wire-level
- *     gate: digest boundary, secret scrubber, untrusted-ticket delimiter.
+ *     gate: digest boundary, secret scrubber, skill-import data frame,
+ *     tool-result provenance frame.
  *   - Behavioral (Tier B) runs only with ANTHROPIC_API_KEY: the multi-turn
  *     conductor + 3-juror Delphi. Absent the key it is skipped with a notice and
  *     the deterministic tier still gates — a partial-but-honest signal, unlike
@@ -126,7 +127,12 @@ async function main(): Promise<void> {
       `(${deterministic.length} deterministic, ${behavioral.length} behavioral)\n`,
   );
 
-  const results: ScenarioResult[] = deterministic.map(runDeterministicScenario);
+  // `Promise.all` preserves input order, so the run stays byte-stable; the
+  // probes themselves are key-free and network-free (#805 made the seam async
+  // because the skill-import renderer composes through its provider).
+  const results: ScenarioResult[] = await Promise.all(
+    deterministic.map(runDeterministicScenario),
+  );
   // Behavioral scenarios skipped for lack of a key are expected-absent, not a
   // vanished-coverage regression — tell diffBaseline so a keyless run against a
   // baseline that already carries behavioral outcomes does not false-fail.
