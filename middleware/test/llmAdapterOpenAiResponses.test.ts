@@ -174,6 +174,18 @@ describe('openai-responses provider — errors', () => {
     });
   });
 
+  it('classifies a dead OAuth grant (by error name) as non-retryable auth', async () => {
+    const provider = createOpenAiResponsesProvider({
+      baseURL: 'https://x/codex',
+      apiKey: 'tok',
+      fetchImpl: sseFetch(''),
+    });
+    // Mirror the cross-package error the bearerProvider throws (name-matched).
+    const err = new Error('grant dead');
+    err.name = 'OAuthReconnectRequiredError';
+    assert.deepEqual(provider.classifyError(err), { retryable: false, kind: 'auth' });
+  });
+
   it('throws when the stream ends without response.completed', async () => {
     const provider = createOpenAiResponsesProvider({
       baseURL: 'https://x/codex',

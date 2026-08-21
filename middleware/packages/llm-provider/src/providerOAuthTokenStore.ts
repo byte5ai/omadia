@@ -46,11 +46,15 @@ export interface ProviderOAuthDeps {
   readonly fetchImpl?: FetchLike;
   readonly config?: OAuthClientConfig;
   readonly nowMs?: NowMs;
+  readonly log?: (...args: unknown[]) => void;
 }
 
 interface StoreEntry {
   tokens?: OAuthTokens;
-  hydrated: boolean;
+  /** In-flight (or settled) hydration — a PROMISE, not a bool, so a second
+   *  concurrent caller awaits the same load instead of racing past a
+   *  half-populated entry (the production binding spans many vault reads). */
+  hydration?: Promise<void>;
   state: 'ok' | 'reconnect_required';
   inflight?: Promise<string>;
 }
@@ -61,7 +65,7 @@ const bindings = new Map<string, ProviderOAuthStoreBinding>();
 function entry(providerId: string): StoreEntry {
   let e = entries.get(providerId);
   if (!e) {
-    e = { hydrated: false, state: 'ok' };
+    e = { state: 'ok' };
     entries.set(providerId, e);
   }
   return e;
@@ -77,12 +81,17 @@ export function registerProviderOAuthStoreBinding(
   entries.delete(providerId);
 }
 
-/** Prime the store right after a successful connect (poll route). */
+/** Prime the store right after a successful connect (poll route). Marks
+ *  hydration as already done and clears any reconnect latch. */
 export function primeProviderOAuthTokens(
   providerId: string,
   tokens: OAuthTokens,
 ): void {
-  entries.set(providerId, { tokens, hydrated: true, state: 'ok' });
+  entries.set(providerId, {
+    tokens,
+    hydration: Promise.resolve(),
+    state: 'ok',
+  });
 }
 
 /** Whether the provider needs a fresh device-flow connect. */
@@ -90,17 +99,20 @@ export function isProviderOAuthReconnectRequired(providerId: string): boolean {
   return entries.get(providerId)?.state === 'reconnect_required';
 }
 
-async function hydrate(providerId: string, e: StoreEntry): Promise<void> {
-  if (e.hydrated) return;
-  e.hydrated = true;
+function hydrate(providerId: string, e: StoreEntry): Promise<void> {
+  if (e.hydration) return e.hydration;
   const binding = bindings.get(providerId);
-  if (!binding) return;
-  const copies = await binding.load();
-  let best: { tokens: OAuthTokens; updatedAt: number } | undefined;
-  for (const c of copies) {
-    if (!best || c.updatedAt > best.updatedAt) best = c;
-  }
-  if (best) e.tokens = best.tokens;
+  e.hydration = (async () => {
+    if (!binding) return;
+    const copies = await binding.load();
+    let best: { tokens: OAuthTokens; updatedAt: number } | undefined;
+    for (const c of copies) {
+      if (!best || c.updatedAt > best.updatedAt) best = c;
+    }
+    // Only adopt hydrated tokens if a live connect hasn't primed newer ones.
+    if (best && e.tokens === undefined) e.tokens = best.tokens;
+  })();
+  return e.hydration;
 }
 
 /**
@@ -149,10 +161,20 @@ export async function getProviderOAuthBearer(
         current.refreshToken,
         nowMs,
       );
-      // Persist the rotation BEFORE resolving, so no caller runs on tokens
-      // that only exist in memory.
-      await bindings.get(providerId)?.persist(refreshed, nowMs());
+      // Memory is canonical (this store's whole design). Commit the rotation to
+      // memory FIRST — the old refresh token is already dead server-side, so the
+      // refreshed one must never be dropped. Then persist; a persist failure is
+      // degraded to a warning (worst case: lost on restart, recovered by a
+      // re-connect) rather than throwing away a live token and wedging the grant.
       e.tokens = refreshed;
+      try {
+        await bindings.get(providerId)?.persist(refreshed, nowMs());
+      } catch (persistErr) {
+        (deps.log ?? (() => undefined))(
+          `oauth: failed to persist rotated tokens for "${providerId}" (kept in memory):`,
+          persistErr,
+        );
+      }
       return refreshed.accessToken;
     } catch (err) {
       if (err instanceof OAuthReconnectRequiredError) {

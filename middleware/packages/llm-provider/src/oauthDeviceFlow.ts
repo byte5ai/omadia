@@ -96,6 +96,10 @@ export type NowMs = () => number;
 export class OAuthReconnectRequiredError extends Error {
   constructor(readonly code: string) {
     super(`oauth: refresh grant is no longer usable (${code}) — sign in again`);
+    // Set explicitly: subclass constructors do NOT set `name` (it stays
+    // 'Error'), and the openai-responses adapter classifies a dead grant by
+    // `err.name` across a package boundary where `instanceof` can't reach.
+    this.name = 'OAuthReconnectRequiredError';
   }
 }
 

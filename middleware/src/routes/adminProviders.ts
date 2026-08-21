@@ -30,6 +30,7 @@
  */
 import {
   exchangeAuthorizationCode,
+  isProviderOAuthReconnectRequired,
   legacyProviderApiKeyVaultKey,
   listModels,
   listModelsByProvider,
@@ -346,9 +347,14 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
                 ? { status: 'verified' }
                 : { status: 'no_key' }
               : oauthConnect
-                ? (await isProviderOAuthConnected(deps.vault, id))
-                  ? { status: 'verified' }
-                  : { status: 'no_key' }
+                ? // A dead grant (terminal refresh failure) leaves stale tokens
+                  // in the vault; the process-wide latch is the truth. Report
+                  // `no_key` so the row shows "Reconnect" instead of a green
+                  // chip that lies while every call throws.
+                  isProviderOAuthReconnectRequired(id) ||
+                  !(await isProviderOAuthConnected(deps.vault, id))
+                  ? { status: 'no_key' }
+                  : { status: 'verified' }
                 : await resolveStatus(deps.vault, id, descriptor);
           return {
           id,
@@ -632,7 +638,17 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
   }
   const pendingFlows = new Map<string, PendingFlow>();
   const FLOW_CAP_MS = 15 * 60_000;
+  const MAX_PENDING_FLOWS = 32;
   const oauthConfig = deps.oauthConfig ?? OPENAI_CODEX_OAUTH;
+
+  /** Drop expired flows so an operator closing the modal (or StrictMode's
+   *  double-mount) can't leak entries forever. */
+  const sweepExpiredFlows = (): void => {
+    const now = Date.now();
+    for (const [id, flow] of pendingFlows) {
+      if (now > flow.deadlineMs) pendingFlows.delete(id);
+    }
+  };
 
   const resolveOAuthProvider = (raw: unknown): ProviderId | undefined => {
     const id = typeof raw === 'string' && raw.length > 0 ? raw : 'openai-chatgpt';
@@ -649,6 +665,14 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       res.status(400).json({
         code: 'providers.oauth_unsupported',
         message: 'This provider does not support OAuth device login.',
+      });
+      return;
+    }
+    sweepExpiredFlows();
+    if (pendingFlows.size >= MAX_PENDING_FLOWS) {
+      res.status(429).json({
+        code: 'providers.oauth_too_many_flows',
+        message: 'Too many login attempts in flight. Try again shortly.',
       });
       return;
     }

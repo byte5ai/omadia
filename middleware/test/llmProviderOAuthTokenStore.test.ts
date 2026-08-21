@@ -103,6 +103,52 @@ describe('providerOAuthTokenStore', () => {
     assert.equal(count(), 1);
   });
 
+  it('keeps the refreshed token in memory even when persistence throws', async () => {
+    // The old refresh token is already dead server-side; a transient vault
+    // failure must NOT drop the rotated token (which would wedge the grant).
+    const stale: OAuthTokens = { accessToken: 'old', refreshToken: 'r0', expiresAt: 0 };
+    const { fetch } = refreshFetch(() => ({
+      body: { access_token: 'new', refresh_token: 'r1', expires_in: 3600 },
+    }));
+    registerProviderOAuthStoreBinding(PROVIDER, {
+      load: async () => [{ tokens: stale, updatedAt: 1 }],
+      persist: async () => {
+        throw new Error('vault down');
+      },
+    });
+    const deps = { fetchImpl: fetch, config: CFG, nowMs: () => 1_000_000, log: () => undefined };
+
+    const bearer = await getProviderOAuthBearer(PROVIDER, deps);
+    assert.equal(bearer, 'new'); // rotation kept despite persist failure
+    assert.equal(isProviderOAuthReconnectRequired(PROVIDER), false);
+    // A second call reuses the in-memory rotated token — no reuse of r0.
+    const again = await getProviderOAuthBearer(PROVIDER, {
+      config: CFG,
+      nowMs: () => 1_000_001,
+    });
+    assert.equal(again, 'new');
+  });
+
+  it('does not throw "no tokens stored" for a second caller during a slow hydration', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const valid: OAuthTokens = { accessToken: 'v', refreshToken: 'r', expiresAt: 10 ** 15 };
+    registerProviderOAuthStoreBinding(PROVIDER, {
+      load: async () => {
+        await gate; // hydration spans many ticks, like the real vault binding
+        return [{ tokens: valid, updatedAt: 1 }];
+      },
+      persist: async () => undefined,
+    });
+    const deps = { config: CFG, nowMs: () => 1 };
+    const p1 = getProviderOAuthBearer(PROVIDER, deps);
+    const p2 = getProviderOAuthBearer(PROVIDER, deps);
+    release();
+    assert.deepEqual(await Promise.all([p1, p2]), ['v', 'v']);
+  });
+
   it('serves a still-valid access token without any refresh', async () => {
     const fresh: OAuthTokens = { accessToken: 'valid', refreshToken: 'r', expiresAt: 10 ** 15 };
     const { fetch, count } = refreshFetch(() => ({ body: {} }));

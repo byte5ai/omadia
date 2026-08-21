@@ -488,9 +488,20 @@ export async function startProviderOAuth(
   return postJson<ProviderOAuthStart>('/v1/admin/providers/oauth/start', { provider });
 }
 
-/** Poll a running device flow once. */
+/** Poll a running device flow once. The server answers a stale/expired flow
+ *  with 404 `{status:'expired'}` and a backend error with 502 `{status:'error'}`;
+ *  both are terminal poll states, so map the thrown ApiError back to them
+ *  instead of surfacing a generic failure. */
 export async function pollProviderOAuth(flowId: string): Promise<ProviderOAuthPoll> {
-  return postJson<ProviderOAuthPoll>('/v1/admin/providers/oauth/poll', { flowId });
+  try {
+    return await postJson<ProviderOAuthPoll>('/v1/admin/providers/oauth/poll', { flowId });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.status === 404) return { status: 'expired' };
+      if (err.status === 502) return { status: 'error' };
+    }
+    throw err;
+  }
 }
 
 // -----------------------------------------------------------------------------
