@@ -1,7 +1,7 @@
 {
-  "total": 211,
+  "total": 206,
   "zones": {
-    "middleware/src": 19,
+    "middleware/src": 14,
     "middleware/test": 60,
     "middleware/packages": 16,
     "middleware/scripts": 0,
