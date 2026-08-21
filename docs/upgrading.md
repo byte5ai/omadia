@@ -18,7 +18,8 @@ keys, and shifts in the plugin API.
 
 1. Read the section for your target version below, plus the
    [`CHANGELOG.md`](CHANGELOG.md) entries since your current one.
-2. Back up your Postgres volume and your `VAULT_KEY`.
+2. Back up your Postgres volume, your `VAULT_KEY` and your
+   `CREDENTIAL_KEYCHAIN_KEY`.
 3. Pull the new image. Pin a release with `OMADIA_VERSION`, see the
    [README quickstart](../README.md#-quickstart).
 4. Restart with `docker compose up -d`.
@@ -171,6 +172,46 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
+
+## Upgrading to 0.115 or later — `CREDENTIAL_KEYCHAIN_KEY` is required
+
+> **Do this before pulling the image, or the update rolls back.**
+
+Since v0.115 the middleware resolves a second master key at boot,
+`CREDENTIAL_KEYCHAIN_KEY`, for the credential keychain (#578 / #778). It
+follows exactly the `VAULT_KEY` rules: base64 of 32 random bytes, a dev-file
+fallback under `NODE_ENV=development`, and a **hard boot failure** under
+`NODE_ENV=production` when unset — which is what the shipped image runs.
+
+What that means for an instance installed before v0.115:
+
+- The old version never needed the key, so nothing ever asked you for it.
+- The new version throws `CREDENTIAL_KEYCHAIN_KEY is required when
+  NODE_ENV=production` before it starts listening.
+- A rolling update (compose or Fly executor) therefore ends in
+  `health gate failed: never_reachable (observed version: none)` and is rolled
+  back. The instance keeps running the old version; nothing is lost.
+
+### Steps
+
+1. Generate a key — a **different** value than `VAULT_KEY`, it protects a
+   separate trust domain:
+
+   ```bash
+   openssl rand -base64 32
+   ```
+
+2. Set it where the middleware reads its secrets:
+   - compose: `CREDENTIAL_KEYCHAIN_KEY=…` in the project-root `.env`
+   - Fly: `fly secrets set CREDENTIAL_KEYCHAIN_KEY=… --app <middleware-app>`
+   - Render: add the env var on the middleware service (new blueprints
+     generate it automatically)
+3. Keep it as safe as `VAULT_KEY`: losing it makes keychain entries
+   unrecoverable.
+4. Run the update again.
+
+Fresh installs via `render.yaml` or `fly/deploy.sh` generate the key
+themselves; only pre-v0.115 instances have to add it by hand.
 
 ## Upgrading to 0.3
 
