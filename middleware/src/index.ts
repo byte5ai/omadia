@@ -397,6 +397,7 @@ import { createTargetedDeliveryService } from './channels/targetedDeliveryServic
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
 import { createConversationSendService } from './channels/conversationSendService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
+import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { createAgentSetupServices } from './platform/agentSetupService.js';
 import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
@@ -3477,6 +3478,22 @@ async function main(): Promise<void> {
     // boot with expired ephemerals is the normal restart case. Everything here
     // is pool-backed or lazily resolved, so no wiring output is needed.
     const ephemeralAttachmentsStore = new ConductorEphemeralAttachmentsStore(graphPool);
+    // #330 follow-up — the invite index survives restarts: a deploy between
+    // the Teams invite and the facilitation start must not force a re-invite.
+    // Hydration is awaited (cheap, one bounded SELECT) so the scope guard is
+    // warm before the conversationBindings service below can serve its first
+    // bind; writes stay fire-and-forget.
+    observedInvites.attachPersistence(new PgObservedInvitePersistence(graphPool));
+    try {
+      await observedInvites.hydrate();
+    } catch (err) {
+      // Persistence is an upgrade, never a dependency: a missing table or a
+      // flaky pool degrades to the old re-invite-after-restart behaviour —
+      // it must not turn the boot into an outage (review H1).
+      console.log(
+        `[middleware] invite-index hydration skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const facilitationRoleStore = new ConductorRoleStore(graphPool);
     const scopedRoleAssignments = createScopedRoleAssignments({
       roleStore: facilitationRoleStore,
