@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
+
+- **The updater sidecar reports structured progress.** `GET /status` gains
+  `phase` (`resolve | preflight | pin | replace | health_gate | rollback | done`,
+  `null` while idle) and `failure` (`{kind:'health_gate', reason, observedVersion}`
+  or `{kind:'replace', service}`, `null` otherwise). `runUpdate` takes an
+  optional `setPhase` hook. The middleware's `/api/v1/admin/update/status`
+  passes both through (normalised to `null` for an older sidecar) together
+  with `previousVersion`, `startedAt` and `finishedAt`.
+- **Admin → Update blocks the page while an update runs** and shows a stepper
+  driven by `phase`, the polling itself (cadence, checks, last answer, and the
+  restart gap as "middleware is not answering — expected"), and a decoded
+  outcome. A `never_reachable` health gate is explained with its likely cause
+  (a newly required secret such as `CREDENTIAL_KEYCHAIN_KEY`, a failed
+  migration) and a link to `docs/upgrading.md`. The run is remembered in
+  `localStorage`, so the dialog resumes after the admin UI container itself is
+  replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
+
 ### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
 
 - Three new plugin-facing, deny-by-default kernel services remove the manual Facilitator setup: `agentProvisioning` (`ensureAgent` — idempotently creates a top-level Agent, seeds its persona create-only via the Wave-8 `agent_persona_skills` path with the skill slug namespaced under the agent, and attaches the calling plugin; an existing agent — and an existing operator-configured `agent_plugins` row — is never touched, the `fallback` slug never managed), `conversationBindings` (`bind` only for conversations the KERNEL itself observed a group `bot_added` for, via a hub-direct invite index keyed by channel type + conversation; `unbind` is equally guarded to the caller's own ephemeral attachments, so operator bindings are out of reach and the `channel_bindings` PK plus guard close the steal path; both mutations land in the new `channel.binding_change` audit action), and `conductorRoleAssignments` (role writes hard-confined to the `facilitation-` namespace, every holder mutation audited through the #759 `conductor.role_holders_change` sink).

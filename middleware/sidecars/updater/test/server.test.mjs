@@ -29,12 +29,18 @@ describe('updater HTTP control plane (#432)', () => {
       config: CONFIG,
       docker: {},
       detectProjectImpl: async () => 'omadia',
-      runUpdateImpl: async ({ targetVersion, log }) => {
+      runUpdateImpl: async ({ targetVersion, log, setPhase }) => {
         log(`fake update to ${targetVersion}`);
+        setPhase('health_gate');
         // Hold the job open so the in-progress assertions are not racing a
         // job that already finished.
         await started;
-        return { ok: true, rolledBack: false };
+        return {
+          ok: false,
+          rolledBack: true,
+          error: 'health gate failed: never_reachable (observed version: none)',
+          failure: { kind: 'health_gate', reason: 'never_reachable', observedVersion: null },
+        };
       },
     });
     server = created.server;
@@ -79,6 +85,8 @@ describe('updater HTTP control plane (#432)', () => {
     const body = await res.json();
     assert.equal(body.state, 'idle');
     assert.equal(body.targetVersion, null);
+    assert.equal(body.phase, null);
+    assert.equal(body.failure, null);
   });
 
   it('rejects a floating target tag', async () => {
@@ -106,6 +114,8 @@ describe('updater HTTP control plane (#432)', () => {
     const status = await (await fetch(`${base}/status`, { headers: auth })).json();
     assert.equal(status.state, 'updating');
     assert.equal(status.targetVersion, 'v0.75.0');
+    assert.equal(status.phase, 'health_gate', 'the job phase is exposed while in flight');
+    assert.equal(status.failure, null);
   });
 
   it('refuses a second update while one is in flight', async () => {
@@ -116,6 +126,20 @@ describe('updater HTTP control plane (#432)', () => {
     });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).error, 'update_in_progress');
+  });
+
+  it('exposes the structured failure once the job has rolled back', async () => {
+    resolveStarted();
+    await new Promise((r) => setTimeout(r, 20));
+    const status = await (await fetch(`${base}/status`, { headers: auth })).json();
+    assert.equal(status.state, 'rolled_back');
+    assert.deepEqual(status.failure, {
+      kind: 'health_gate',
+      reason: 'never_reachable',
+      observedVersion: null,
+    });
+    assert.match(status.error, /never_reachable/);
+    assert.ok(status.finishedAt, 'finishedAt is stamped');
   });
 
   it('404s an unknown route', async () => {

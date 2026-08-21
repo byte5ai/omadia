@@ -6,7 +6,11 @@ import type { UpdateAuditStore } from '../update/auditStore.js';
 import type { ReleaseLookup } from '../update/releaseLookup.js';
 import { releaseIsNewer } from '../update/releaseLookup.js';
 import { parseVersion, toTag } from '../update/semver.js';
-import type { UpdaterClient } from '../update/updaterClient.js';
+import type {
+  UpdaterClient,
+  UpdaterFailure,
+  UpdaterPhase,
+} from '../update/updaterClient.js';
 import type { PlatformInfo } from '../update/platform.js';
 import type { AppVersion } from '../update/version.js';
 
@@ -76,8 +80,13 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
       reachable: boolean;
       state?: string;
       targetVersion?: string | null;
+      previousVersion?: string | null;
+      startedAt?: string | null;
+      finishedAt?: string | null;
       error?: string;
       steps?: readonly string[];
+      phase?: UpdaterPhase | null;
+      failure?: UpdaterFailure | null;
       engine?: string;
       pinPersisted?: boolean;
     } = { configured: false, reachable: false };
@@ -90,7 +99,16 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
             reachable: true,
             state: status.status.state,
             targetVersion: status.status.targetVersion,
+            previousVersion: status.status.previousVersion,
+            startedAt: status.status.startedAt,
+            finishedAt: status.status.finishedAt,
             steps: status.status.steps,
+            // Structured progress + outcome so the page can render a stepper
+            // and decode a failed health gate instead of parsing `steps`.
+            // Normalised to null (not undefined) so the JSON shape is stable
+            // whether or not the sidecar is new enough to send them.
+            phase: status.status.phase ?? null,
+            failure: status.status.failure ?? null,
             // #696 — the executor tells us which platform it drives and
             // whether it can make the chosen version stick. Both are passed
             // through so the UI can warn instead of implying a guarantee the

@@ -189,6 +189,11 @@ interface StatusBody {
     reachable: boolean;
     state?: string;
     error?: string;
+    phase?: string | null;
+    failure?: unknown;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    previousVersion?: string | null;
   };
   auditAvailable: boolean;
   platform: { kind: string; appName?: string; machineId?: string };
@@ -239,6 +244,39 @@ describe('GET /api/v1/admin/update/status', () => {
     assert.equal(body.executor.configured, true);
     assert.equal(body.executor.reachable, false);
     assert.equal(body.executor.error, 'ECONNREFUSED');
+  });
+
+  it('passes the sidecar job phase, timestamps and structured failure through', async () => {
+    const { client } = fakeUpdater({
+      state: 'rolled_back',
+      targetVersion: 'v0.120.0',
+      previousVersion: 'v0.90.1',
+      startedAt: '2026-08-21T09:56:19.000Z',
+      finishedAt: '2026-08-21T10:02:47.000Z',
+      error: 'health gate failed: never_reachable (observed version: none)',
+      phase: 'rollback',
+      failure: { kind: 'health_gate', reason: 'never_reachable', observedVersion: null },
+    });
+    const { baseUrl } = harness({ updater: client });
+    const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
+    assert.equal(body.executor.state, 'rolled_back');
+    assert.equal(body.executor.phase, 'rollback');
+    assert.deepEqual(body.executor.failure, {
+      kind: 'health_gate',
+      reason: 'never_reachable',
+      observedVersion: null,
+    });
+    assert.equal(body.executor.previousVersion, 'v0.90.1');
+    assert.equal(body.executor.startedAt, '2026-08-21T09:56:19.000Z');
+    assert.equal(body.executor.finishedAt, '2026-08-21T10:02:47.000Z');
+  });
+
+  it('normalises phase/failure to null for a sidecar that predates them', async () => {
+    const { client } = fakeUpdater({ state: 'idle' });
+    const { baseUrl } = harness({ updater: client });
+    const body = await readJson<StatusBody>(await fetch(`${baseUrl}/status`));
+    assert.equal(body.executor.phase, null);
+    assert.equal(body.executor.failure, null);
   });
 
   it('still answers when the release check is offline', async () => {

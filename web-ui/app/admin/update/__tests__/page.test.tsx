@@ -73,7 +73,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
+
+const INFLIGHT_KEY = 'omadia.adminUpdate.inflight';
 
 describe('/admin/update', () => {
   it('reports the running version and that a newer release exists', async () => {
@@ -242,7 +245,207 @@ describe('/admin/update', () => {
         confirm: 'v0.75.0',
       });
     });
-    expect(await screen.findByText(/update in progress/i)).toBeInTheDocument();
+    // The page is covered by the progress dialog, not decorated with a box.
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('data-outcome', 'running');
+    expect(screen.getByRole('heading', { name: /updating to v0\.75\.0/i })).toBeInTheDocument();
+    expect(screen.getByTestId('polling-indicator')).toBeInTheDocument();
+    // The dialog cannot be dismissed while running.
+    expect(screen.queryByRole('button', { name: /^close$/i })).not.toBeInTheDocument();
+    // And the run is remembered, so a reload of the (replaced) admin UI resumes it.
+    const remembered = JSON.parse(window.localStorage.getItem(INFLIGHT_KEY) ?? 'null') as
+      | { target: string; previous: string | null }
+      | null;
+    expect(remembered).toMatchObject({ target: 'v0.75.0', previous: 'v0.74.0' });
+  });
+
+  it('resumes the dialog after a reload from the remembered run', async () => {
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.75.0', previous: 'v0.74.0', startedAt: Date.now() }),
+    );
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true, reachable: true, state: 'updating', targetVersion: 'v0.75.0',
+          startedAt: new Date().toISOString(), phase: 'health_gate', steps: ['leased', 'waiting'],
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAttribute('data-outcome', 'running');
+    // The stepper follows the sidecar's phase, not the text trail.
+    await waitFor(() => {
+      expect(dialog.querySelector('[data-step="health_gate"]')).toHaveAttribute('data-state', 'current');
+    });
+    expect(dialog.querySelector('[data-step="replace"]')).toHaveAttribute('data-state', 'done');
+  });
+
+  it('adopts an update started from somewhere else', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true, reachable: true, state: 'updating', targetVersion: 'v0.75.0',
+          previousVersion: 'v0.74.0', startedAt: new Date().toISOString(), phase: 'replace', steps: [],
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+    expect(await screen.findByRole('dialog')).toHaveAttribute('data-outcome', 'running');
+  });
+
+  it('shows the middleware as not answering — not as an error — while it restarts', async () => {
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.75.0', previous: 'v0.74.0', startedAt: Date.now() }),
+    );
+    mockGetUpdateStatus.mockRejectedValue(new Error('fetch failed'));
+    renderWithIntl(<UpdateClient />);
+
+    const indicator = await screen.findByTestId('polling-indicator');
+    await waitFor(() => {
+      expect(indicator).toHaveAttribute('data-reachable', 'false');
+    });
+    expect(screen.getByText(/not answering/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not load the update status/i)).not.toBeInTheDocument();
+  });
+
+  it('turns into the success view once the middleware reports the target', async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.75.0', previous: 'v0.74.0', startedAt: Date.now() }),
+    );
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        current: { version: 'v0.75.0', source: 'release' },
+        updateAvailable: false,
+        executor: { configured: true, reachable: true, state: 'succeeded', targetVersion: 'v0.75.0', phase: 'done', steps: [] },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => {
+      expect(dialog).toHaveAttribute('data-outcome', 'succeeded');
+    });
+    expect(screen.getByRole('heading', { name: /updated to v0\.75\.0/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /reload admin ui/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^close$/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(window.localStorage.getItem(INFLIGHT_KEY)).toBeNull();
+  });
+
+  it('explains a health-gate rollback with the likely cause instead of a raw error string', async () => {
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.120.0', previous: 'v0.90.1', startedAt: Date.now() - 6 * 60_000 }),
+    );
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        current: { version: 'v0.90.1', source: 'release' },
+        latest: { tag: 'v0.120.0', url: 'https://example.test', publishedAt: '2026-08-21T09:00:00Z', prerelease: false },
+        executor: {
+          configured: true, reachable: true, state: 'rolled_back', targetVersion: 'v0.120.0',
+          previousVersion: 'v0.90.1', startedAt: new Date(Date.now() - 6 * 60_000).toISOString(),
+          finishedAt: new Date().toISOString(), phase: 'rollback',
+          error: 'health gate failed: never_reachable (observed version: none)',
+          failure: { kind: 'health_gate', reason: 'never_reachable', observedVersion: null },
+          steps: ['waiting for http://middleware:8080/health to report v0.120.0', 'health gate failed: never_reachable (observed version: none)', 'rolling back'],
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => {
+      expect(dialog).toHaveAttribute('data-outcome', 'rolled_back');
+    });
+    expect(screen.getByRole('heading', { name: /update to v0\.120\.0 rolled back/i })).toBeInTheDocument();
+    const explanation = screen.getByTestId('failure-explanation');
+    expect(explanation).toHaveAttribute('data-failure-kind', 'never_reachable');
+    expect(explanation).toHaveTextContent(/never answered \/health/i);
+    expect(explanation).toHaveTextContent(/CREDENTIAL_KEYCHAIN_KEY/);
+    expect(dialog.querySelector('[data-step="health_gate"]')).toHaveAttribute('data-state', 'failed');
+    expect(dialog.querySelector('[data-step="rollback"]')).toHaveAttribute('data-state', 'done');
+    expect(screen.getByRole('link', { name: /docs\/upgrading\.md/i })).toHaveAttribute(
+      'href',
+      expect.stringContaining('docs/upgrading.md'),
+    );
+  });
+
+  it('stays closed after the operator dismisses a stalled run, even while the sidecar still says updating', async () => {
+    const user = userEvent.setup();
+    // A run remembered from 20 minutes ago — past the stall threshold.
+    const startedAt = Date.now() - 20 * 60_000;
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.75.0', previous: 'v0.74.0', startedAt }),
+    );
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true, reachable: true, state: 'updating', targetVersion: 'v0.75.0',
+          previousVersion: 'v0.74.0', startedAt: new Date(startedAt).toISOString(), phase: 'health_gate', steps: [],
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const dismiss = await screen.findByRole('button', { name: /^dismiss$/i });
+    await user.click(dismiss);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    // Polls keep returning the same `updating` snapshot; adoption must not reopen it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(INFLIGHT_KEY)).toBeNull();
+  });
+
+  it('drops a remembered run that is older than the TTL instead of resuming it', async () => {
+    window.localStorage.setItem(
+      INFLIGHT_KEY,
+      JSON.stringify({ target: 'v0.75.0', previous: 'v0.74.0', startedAt: Date.now() - 2 * 60 * 60_000 }),
+    );
+    renderWithIntl(<UpdateClient />);
+    await screen.findByText('v0.74.0');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(INFLIGHT_KEY)).toBeNull();
+  });
+
+  it('does not let a rollback from an EARLIER run close a freshly started one', async () => {
+    const user = userEvent.setup();
+    // The sidecar still reports last week's rollback for the same target.
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: {
+          configured: true, reachable: true, state: 'rolled_back', targetVersion: 'v0.75.0',
+          startedAt: '2026-08-01T00:00:00Z', finishedAt: '2026-08-01T00:06:00Z',
+          failure: { kind: 'health_gate', reason: 'never_reachable', observedVersion: null },
+          error: 'health gate failed', steps: [],
+        },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    // Before the click: the decoded banner, not the dialog.
+    expect(await screen.findByTestId('rolled-back-banner')).toHaveTextContent(/never answered \/health/i);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    const input = screen.getByLabelText(/target version/i);
+    await user.type(input, 'v0.75.0');
+    await user.click(screen.getByRole('button', { name: /update to v0\.75\.0/i }));
+
+    const dialog = await screen.findByRole('dialog');
+    // Polls keep returning the OLD rolled_back status; the dialog must stay open.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(dialog).toHaveAttribute('data-outcome', 'running');
   });
 
   it('renders a refused trigger with its own message, not a raw error', async () => {

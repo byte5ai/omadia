@@ -20,6 +20,28 @@ export type UpdaterState =
   | 'failed'
   | 'rolled_back';
 
+/** Which of the job's numbered steps is running — see
+ *  `sidecars/updater/src/updateJob.mjs`. Absent on an older sidecar. */
+export type UpdaterPhase =
+  | 'resolve'
+  | 'preflight'
+  | 'pin'
+  | 'replace'
+  | 'health_gate'
+  | 'rollback'
+  | 'done';
+
+/** Structured reason for a `failed` / `rolled_back` outcome, so the admin
+ *  page can explain it without parsing the English `error` string. */
+export type UpdaterFailure =
+  | {
+      readonly kind: 'health_gate';
+      /** `never_reachable` | `version_never_matched` (health.mjs verdicts). */
+      readonly reason: string;
+      readonly observedVersion: string | null;
+    }
+  | { readonly kind: 'replace'; readonly service: string | null };
+
 export interface UpdaterStatus {
   readonly state: UpdaterState;
   readonly targetVersion: string | null;
@@ -29,6 +51,10 @@ export interface UpdaterStatus {
   readonly error: string | null;
   /** Human-readable progress trail, newest last. */
   readonly steps: readonly string[];
+  /** Current job step; null while idle. Absent on an older sidecar. */
+  readonly phase?: UpdaterPhase | null;
+  /** Why the last job did not land; null otherwise. Absent on an older sidecar. */
+  readonly failure?: UpdaterFailure | null;
   /** Which executor the sidecar runs (#696). Absent on an older sidecar. */
   readonly engine?: 'docker' | 'fly';
   /**
