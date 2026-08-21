@@ -76,6 +76,21 @@ type Phase =
   | { kind: 'success' }
   | { kind: 'error'; message: string };
 
+/**
+ * #825 — in this flow "installed" and "running" are different questions.
+ *
+ * The chained-install wizard's contract is to leave every dependency
+ * INSTALLED so the next step can proceed. `errored` still answers "yes" to
+ * that question: the package is installed, and the remedy is a grant on the
+ * plugin's own consent surface. This wizard has no step for that consent, so
+ * aborting on `errored` would strand the operator with an installed
+ * dependency and a dead wizard — strictly worse than the pre-#833 behaviour it
+ * replaced.
+ */
+function isInstalledTerminal(state: InstallJob['state']): boolean {
+  return state === 'active' || state === 'errored';
+}
+
 export function RequiresWizard({
   targetPluginId,
   targetPluginName,
@@ -333,7 +348,7 @@ export function RequiresWizard({
         }
 
         const configured = await configureInstallJob(job.id, values);
-        if (configured.job.state !== 'active') {
+        if (!isInstalledTerminal(configured.job.state)) {
           const message =
             configured.job.error?.message ??
             t('stepEndedInState', {

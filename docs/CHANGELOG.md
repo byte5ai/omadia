@@ -18,6 +18,42 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — the install job no longer reports `active` over a plugin that never came up (#825)
+
+- **The job's terminal state is derived from the activation outcome, not written
+  before it.** `configure()` used to transition to `active` right after the
+  registry write and *before* the `onInstalled` hook that does the activating,
+  so an install whose activation failed answered `active` from
+  `GET /api/v1/install/jobs/:id` while `GET …/grants` answered `errored` for the
+  same plugin at the same moment. A new terminal state `errored` says what that
+  case actually is: installed, not running — distinct from `failed`, where
+  nothing was installed and re-submitting the form is the fix. `errored` is a
+  terminal INSTALLED state, so `cancel()` refuses to overwrite it and
+  `uninstall()` keeps the job readable.
+- **`InstallJob.activation_state` carries the machine-readable reason** —
+  `{ state, ok, error, missing[] }` — so automation driving the install API can
+  tell "installed, needs a grant" from "installed, threw on activate" without
+  parsing an error string. A failure must be OBSERVED (the hook threw) or
+  RECORDED (the registry status literally reads `errored`); a registry that
+  tracks no status is saying nothing, and silence is never read as failure.
+- **The missing-grant rule has one implementation.** `plugins/grantGap.ts` is
+  now the single derivation behind both `activation_state.missing` and the
+  consent panel's `GET …/grants` `missing[]`, so the two surfaces cannot drift
+  into disagreeing again.
+- **`ok` is derived from `state`, never independently.** A registry that records
+  `inactive` no longer reports `ok: true`, and an observed hook throw outranks a
+  registry row that still reads `active` — the hook is first-hand, the status is
+  a recording that may not have landed.
+- **A grant-driven re-activation updates the job, not only the registry.**
+  `reactivate()` re-settles every completed install job for that plugin through
+  the same derivation the install path uses, so after the operator grants what
+  was missing the job moves from `errored` to `active` instead of serving a
+  stale `missing[]` forever.
+- **The chained-install wizard keeps chaining.** `RequiresWizard` treats
+  `errored` as the INSTALLED terminal state it is, so a dependency that landed on
+  disk but still needs a grant no longer aborts the whole chain, stranding the
+  operator with an installed dependency and a dead wizard.
+
 ### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
 
 - **The updater sidecar reports structured progress.** `GET /status` gains

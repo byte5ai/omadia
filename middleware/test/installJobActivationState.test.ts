@@ -39,7 +39,11 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { InstallService } from '../src/plugins/installService.js';
-import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import {
+  InMemoryInstalledRegistry,
+  type InstalledAgent,
+  type InstalledRegistry,
+} from '../src/plugins/installedRegistry.js';
 import { buildGrantsView } from '../src/routes/runtimeGrants.js';
 import type { PluginSqlGrantRow, PluginSqlGrantStore } from '../src/platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantRow, PublicPathGrantStore } from '../src/platform/publicPathGrantStore.js';
@@ -159,6 +163,7 @@ function makeHarness(
     grantPath?: boolean;
     activationThrows?: string;
     withHook?: boolean;
+    afterActivate?: (agentId: string, harness: Harness) => Promise<void>;
   } = {},
 ): Harness {
   const sqlRows = new Map<string, PluginSqlGrantRow>();
@@ -227,11 +232,96 @@ function makeHarness(
             if (!paths.has(PATH_ONE)) {
               throw new Error(`public path not granted for '${agentId}'`);
             }
+            await opts.afterActivate?.(agentId, harness);
           },
         }),
   });
   harness.service = service;
   return harness;
+}
+
+function makeStickyActiveHarness(
+  onInstalled: () => Promise<void>,
+): {
+  service: InstallService;
+  registry: InstalledRegistry;
+} {
+  const installed = new Map<string, InstalledAgent>();
+  const registry: InstalledRegistry = {
+    list: () => [...installed.values()],
+    get: (id: string) => installed.get(id),
+    has: (id: string) => installed.has(id),
+    register: async (entry: InstalledAgent) => {
+      const current = installed.get(entry.id);
+      // Simulate the faulty registry implementation the review called out:
+      // the install-time "flip to errored" write never lands, so the recorded
+      // status keeps reading `active` even though the hook threw.
+      if (current && current.status === 'active' && entry.status === 'errored') {
+        installed.set(entry.id, current);
+        return;
+      }
+      installed.set(entry.id, entry);
+    },
+    remove: async (id: string) => {
+      installed.delete(id);
+    },
+    markActivationFailed: async (id: string, error: string) => {
+      const current = installed.get(id);
+      if (!current) return;
+      installed.set(id, {
+        ...current,
+        last_activation_error: error,
+        last_activation_error_at: new Date().toISOString(),
+      });
+    },
+    markActivationSucceeded: async (id: string) => {
+      const current = installed.get(id);
+      if (!current) return;
+      installed.set(id, {
+        ...current,
+        last_activated_at: new Date().toISOString(),
+      });
+    },
+    clearActivationError: async (id: string) => {
+      const current = installed.get(id);
+      if (!current) return;
+      const next = { ...current };
+      delete next.last_activation_error;
+      delete next.last_activation_error_at;
+      installed.set(id, next);
+    },
+    updateConfig: async (id: string, config: Record<string, unknown>) => {
+      const current = installed.get(id);
+      if (!current) throw new Error(`missing '${id}'`);
+      installed.set(id, { ...current, config });
+    },
+    updateVersion: async (
+      id: string,
+      newVersion: string,
+      newConfig: Record<string, unknown>,
+    ) => {
+      const current = installed.get(id);
+      if (!current) throw new Error(`missing '${id}'`);
+      installed.set(id, {
+        ...current,
+        installed_version: newVersion,
+        config: newConfig,
+      });
+    },
+  };
+  const vault = {
+    get: async () => undefined,
+    set: async () => {},
+    setMany: async () => {},
+    purge: async () => {},
+  } as unknown as SecretVault;
+  const service = new InstallService({
+    catalog: makeCatalog(),
+    registry,
+    vault,
+    onInstalled,
+  });
+  return { service, registry };
 }
 
 async function install(h: Harness) {
@@ -343,6 +433,57 @@ void describe('#825 — install with the grants given', () => {
   });
 });
 
+// ── 2a. `activation_state.ok` must restate `state === 'active'` ───────────
+
+void describe('#825 — activation_state.ok matches activation_state.state', () => {
+  void it('reports a recorded inactive plugin as ok:false and keeps the job non-active', async () => {
+    const h = makeHarness({
+      grantSql: true,
+      grantPath: true,
+      afterActivate: async (agentId, harness) => {
+        const entry = harness.registry.get(agentId);
+        assert.ok(entry, 'the install must have written the registry row first');
+        await harness.registry.register({ ...entry, status: 'inactive' });
+      },
+    });
+    const job = await install(h);
+
+    assert.equal(job.activation_state?.state, 'inactive');
+    assert.equal(
+      job.activation_state?.ok,
+      false,
+      '`inactive` is the opposite of `state === active`, not a hidden success',
+    );
+    assert.equal(
+      job.state,
+      'errored',
+      'a job whose activation state is not active must not settle to active',
+    );
+    assert.equal(h.registry.get(PLUGIN)?.status, 'inactive');
+  });
+
+  void it('lets an observed throw overrule a registry that still reads active', async () => {
+    const { service, registry } = makeStickyActiveHarness(() =>
+      Promise.reject(new Error('activate() threw but the registry still says active')),
+    );
+    const created = service.create(PLUGIN);
+    const job = await service.configure(created.id, {});
+
+    assert.equal(
+      registry.get(PLUGIN)?.status,
+      'active',
+      'this witness only proves the hook observation outranks a stale recorded active',
+    );
+    assert.equal(job.state, 'errored');
+    assert.equal(job.activation_state?.state, 'errored');
+    assert.equal(job.activation_state?.ok, false);
+    assert.match(
+      String(job.activation_state?.error),
+      /registry still says active/,
+    );
+  });
+});
+
 // ── 3. errored ≠ failed, in both directions ───────────────────────────────
 
 void describe('#825 — errored and failed stay different answers', () => {
@@ -407,6 +548,58 @@ void describe('#825 — errored is a terminal INSTALLED state', () => {
       'errored',
       'a client polling the job must keep getting its final answer, not a 404',
     );
+  });
+});
+
+// ── 4a. re-activation must refresh completed install jobs ─────────────────
+
+void describe('#825 — re-activation refreshes completed install jobs', () => {
+  void it('updates an errored job after the operator grants what was missing', async () => {
+    const h = makeHarness();
+    const job = await install(h);
+    assert.equal(job.state, 'errored');
+
+    await h.sqlStore.grant(PLUGIN, LEDGER, 'operator');
+    await h.pathStore.grant(PLUGIN, PATH_ONE, 'operator');
+
+    const status = await h.service.reactivate(PLUGIN);
+
+    assert.equal(status, 'active');
+    assert.equal(job.state, 'active');
+    assert.equal(job.current_step, 'Installation abgeschlossen');
+    assert.deepEqual(job.activation_state, {
+      state: 'active',
+      ok: true,
+      error: null,
+      missing: [],
+    });
+  });
+
+  void it('refreshes terminal installed jobs even on the no-hook early return', async () => {
+    const h = makeHarness({ withHook: false, grantSql: true, grantPath: true });
+    const job = await install(h);
+    assert.equal(job.state, 'active');
+
+    const entry = h.registry.get(PLUGIN);
+    assert.ok(entry, 'the install must have created the registry row');
+    await h.registry.register({
+      ...entry,
+      status: 'errored',
+      last_activation_error: 'still broken',
+      last_activation_error_at: '2026-08-21T00:00:00.000Z',
+    });
+
+    const status = await h.service.reactivate(PLUGIN);
+
+    assert.equal(status, 'errored');
+    assert.equal(job.state, 'errored');
+    assert.equal(job.current_step, 'Installiert — Aktivierung fehlgeschlagen');
+    assert.deepEqual(job.activation_state, {
+      state: 'errored',
+      ok: false,
+      error: 'still broken',
+      missing: [],
+    });
   });
 });
 
