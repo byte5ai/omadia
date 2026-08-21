@@ -72,10 +72,15 @@ services:
       # across `docker compose restart` and rebuilds.
       #
       # For any deployment beyond local dev: drop the NODE_ENV override
-      # below AND supply your own key via `.env` (`VAULT_KEY=$(openssl
-      # rand -base64 32)`). Keep that key stable — losing it makes vault
-      # entries unrecoverable.
+      # below AND supply your own keys via `.env` — BOTH `VAULT_KEY` and
+      # `CREDENTIAL_KEYCHAIN_KEY` (each `openssl rand -base64 32`, two
+      # different values). Keep them stable — losing them makes vault /
+      # keychain entries unrecoverable.
       VAULT_KEY: ${VAULT_KEY:-}
+      # Credential-keychain master key (#578/#778). Same rules as VAULT_KEY,
+      # same dev fallback (/data/.dev-credential-keychain.key), but a
+      # separate trust domain — never reuse the VAULT_KEY value.
+      CREDENTIAL_KEYCHAIN_KEY: ${CREDENTIAL_KEYCHAIN_KEY:-}
       NODE_ENV: ${NODE_ENV:-development}
       # NB: `DEV_ENDPOINTS_ENABLED` (the unauthenticated /api/dev/graph +
       # /api/dev/memory mount) is intentionally NOT hard-coded here. The
