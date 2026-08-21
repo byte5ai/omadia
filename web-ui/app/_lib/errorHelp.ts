@@ -70,6 +70,11 @@ export const ERROR_HELP_CODES = [
   'providers.unknown_plugin',
   'providers.unknown_provider',
   'providers.verify_failed',
+  // #789 — emitted by plugins/packageUploadService.ts, not by a route file.
+  // Registered in NON_ROUTE_CODES for the same reason
+  // `providers.key_rejected` is: the ingest service builds the envelope and
+  // routes/packages.ts + builder/installCommit.ts only forward it.
+  'package.id_conflict_bundled',
   // runtime.ts
   'runtime.agent_inactive',
   'runtime.empty_secrets_patch',

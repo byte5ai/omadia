@@ -81,5 +81,10 @@ export function fakeCatalog(): PluginCatalog {
     get: () => undefined,
     load: async () => undefined,
     list: () => [],
+    // #789 — an empty catalog bundles nothing, so no id an ingest test uploads
+    // can collide with a shipped package. Stubbed explicitly rather than left
+    // off: `PackageUploadService.ingest` calls this on every upload, and a
+    // missing method is a TypeError mid-ingest rather than a clean `false`.
+    isBundledId: () => false,
   } as unknown as PluginCatalog;
 }

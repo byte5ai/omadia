@@ -19,6 +19,17 @@ interface ManifestInfo {
   readonly manifestPath: string;
   readonly packageRoot: string;
   readonly declaredNames: ReadonlySet<string>;
+  /**
+   * #788 — capabilities this manifest lists under `provides:` and NOWHERE
+   * else. These are the names the runtime now refuses until the plugin has
+   * actually called `provide()`, so a `services.get` on one of them is an
+   * ordering bug waiting for the first turn that reaches it.
+   *
+   * A name that is also under `requires:`/`optional_requires:` is excluded:
+   * the dependency declaration grants it outright, which is exactly what makes
+   * the `replace()`-wrapping pattern legal.
+   */
+  readonly providesOnlyNames: ReadonlySet<string>;
   readonly sourceFiles: readonly string[];
 }
 
@@ -26,6 +37,16 @@ interface ServiceUse {
   readonly capability: string;
   readonly file: string;
   readonly line: number;
+  /**
+   * Which `ctx.services` verb touched the name — #788 follow-up.
+   *
+   * `replace` runs the SAME grant gate as `get` (a name a plugin may not read
+   * is a name it may not redefine), so an undeclared or provides-only
+   * `replace` is the same latent runtime throw and has to be scanned for the
+   * same way. Recorded rather than folded into `get` because the two produce
+   * different remedies in the finding text.
+   */
+  readonly verb: 'get' | 'replace';
 }
 
 interface CoverageSnapshot {
@@ -49,6 +70,64 @@ describe('plugin service grant coverage', () => {
       snapshot.undeclaredFindings,
       [],
       `undeclared built-in service grants found:\n${snapshot.undeclaredFindings.join('\n')}`,
+    );
+  });
+
+  it('no built-in resolves a capability it only declares under `provides:`', async () => {
+    // #788 — the permanent form of the one-off audit that shipped with the
+    // fix. `provides:` no longer grants a name until the plugin has actually
+    // called `provide()` for it, so a bundled package that resolves a
+    // provides-only capability now throws at runtime.
+    //
+    // This scan cannot see the ORDER of the two calls, and does not claim to:
+    // it flags the read at all, which is the conservative direction. A
+    // legitimate read-back is spelled by ALSO declaring the name
+    // (`requires:`/`optional_requires:`) — a plugin that holds its own
+    // implementation rarely needs the registry to hand it back.
+    //
+    // Deliberately NOT allowlist-aware: the legacy allowlist grandfathers
+    // UNDECLARED names, and every name here is declared. There is no ramp to
+    // fall back to, which is why the audit had to come back empty before the
+    // gate could be tightened at all.
+    const snapshot = await loadCoverageSnapshot();
+    assert.deepEqual(
+      snapshot.scanFailures,
+      [],
+      `service-grant scanner failed:\n${snapshot.scanFailures.join('\n')}`,
+    );
+
+    // A guard that scans nothing passes forever. `provides:` disappearing from
+    // every bundled manifest, or the parser losing the block, must fail here
+    // rather than turn this test into a green no-op.
+    const packagesWithProvides = snapshot.manifests.filter(
+      (m) => m.providesOnlyNames.size > 0,
+    );
+    assert.ok(
+      packagesWithProvides.length >= 10,
+      `only ${String(packagesWithProvides.length)} bundled packages declare a provides-only capability; the 2026-08-21 audit found 14. Either the manifests changed or the parser stopped reading \`provides:\`.`,
+    );
+
+    const findings: string[] = [];
+    for (const manifest of packagesWithProvides) {
+      for (const use of snapshot.observedByPlugin.get(manifest.pluginId) ?? []) {
+        if (!manifest.providesOnlyNames.has(use.capability)) continue;
+        findings.push(
+          `${manifest.pluginId} ${verbPhrase(use.verb)} '${use.capability}' at ${use.file}:${String(use.line)}, ` +
+            'but its manifest declares that capability only under `provides:`. Since #788 that ' +
+            `call throws until the plugin has called ctx.services.provide('${use.capability}', …).` +
+            (use.verb === 'replace'
+              ? ' For a `replace` that fix is not even available: the live provider belongs to another plugin, and `provide` would throw duplicate-provider against it. Wrap your own registration instead, ' +
+                `or add '${use.capability}@<major>' to `
+              : ` Provide it before resolving it, or add '${use.capability}@<major>' to `) +
+            '`requires:`/`optional_requires:` if this plugin consumes another plugin\'s implementation.',
+        );
+      }
+    }
+
+    assert.deepEqual(
+      findings,
+      [],
+      `provides-only service reads found:\n${findings.join('\n')}`,
     );
   });
 
@@ -130,7 +209,7 @@ async function loadCoverageSnapshot(): Promise<CoverageSnapshot> {
     for (const use of observed) {
       if (declared.has(use.capability) || legacy.has(use.capability)) continue;
       undeclaredFindings.push(
-        `${manifest.pluginId} resolves '${use.capability}' at ${use.file}:${String(use.line)} without declaring it. Either add '${use.capability}@<major>' to manifest.yaml or add a dated row to LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20 for this legacy pair.`,
+        `${manifest.pluginId} ${verbPhrase(use.verb)} '${use.capability}' at ${use.file}:${String(use.line)} without declaring it. Either add '${use.capability}@<major>' to manifest.yaml or add a dated row to LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20 for this legacy pair.`,
       );
     }
   }
@@ -208,6 +287,17 @@ async function parseManifest(
     declaredNames.add(parseCapabilityRef(rawCapability).name);
   }
 
+  // #788 — `provides:` minus everything the manifest also declares as a
+  // dependency.
+  const consumeNames = new Set(
+    [...requires, ...optionalRequires].map((raw) => parseCapabilityRef(raw).name),
+  );
+  const providesOnlyNames = new Set<string>();
+  for (const raw of provides) {
+    const name = parseCapabilityRef(raw).name;
+    if (!consumeNames.has(name)) providesOnlyNames.add(name);
+  }
+
   const sourceRoot = path.join(packageRoot, 'src');
   const sourceFiles = await collectTypeScriptFiles(sourceRoot);
   return {
@@ -215,6 +305,7 @@ async function parseManifest(
     manifestPath,
     packageRoot,
     declaredNames,
+    providesOnlyNames,
     sourceFiles,
   };
 }
@@ -295,16 +386,18 @@ function collectServiceUsesForManifest(
     }
 
     walk(sourceFile, (node) => {
-      if (!isServicesGetCall(node)) return;
-      const firstArg = node.arguments[0];
-      const location = formatNodeLocation(sourceFile, firstArg ?? node);
+      const verb = gatedServiceCallVerb(node);
+      if (verb === undefined) return;
+      const call = node as ts.CallExpression;
+      const firstArg = call.arguments[0];
+      const location = formatNodeLocation(sourceFile, firstArg ?? call);
       if (!firstArg) {
         scanFailures.push(
-          `${manifest.pluginId} uses ctx.services.get with no argument at ${location}`,
+          `${manifest.pluginId} uses ctx.services.${verb} with no argument at ${location}`,
         );
         return;
       }
-      const resolved = resolveServiceName(firstArg, checker);
+      const resolved = resolveServiceName(firstArg, checker, verb);
       if ('error' in resolved) {
         scanFailures.push(`${manifest.pluginId} ${location}: ${resolved.error}`);
         return;
@@ -313,6 +406,7 @@ function collectServiceUsesForManifest(
         capability: resolved.name,
         file: relativeToMiddleware(filePath),
         line: sourceFile.getLineAndCharacterOfPosition(firstArg.getStart()).line + 1,
+        verb,
       });
     });
   }
@@ -320,26 +414,41 @@ function collectServiceUsesForManifest(
   return observed;
 }
 
-function isServicesGetCall(node: ts.Node): node is ts.CallExpression {
-  if (!ts.isCallExpression(node)) return false;
+const GATED_SERVICE_VERBS = new Set(['get', 'replace']);
+
+/**
+ * A gated `ctx.services.<verb>(name, …)` call. Returns the verb so the finding
+ * can name the line the author actually wrote.
+ *
+ * `provide` is deliberately absent: it is not gated, because it cannot take a
+ * live name away from anyone — `ServiceRegistry.provide` throws
+ * duplicate-provider instead. Adding it here would report false findings for
+ * every plugin that registers a name it did not spell in `provides:`.
+ */
+function gatedServiceCallVerb(node: ts.Node): 'get' | 'replace' | undefined {
+  if (!ts.isCallExpression(node)) return undefined;
   const callee = node.expression;
-  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== 'get') {
-    return false;
-  }
+  if (!ts.isPropertyAccessExpression(callee)) return undefined;
+  const verb = callee.name.text;
+  if (!GATED_SERVICE_VERBS.has(verb)) return undefined;
   const target = callee.expression;
-  return ts.isPropertyAccessExpression(target) && target.name.text === 'services';
+  if (!ts.isPropertyAccessExpression(target) || target.name.text !== 'services') {
+    return undefined;
+  }
+  return verb as 'get' | 'replace';
 }
 
 function resolveServiceName(
   arg: ts.Expression,
   checker: ts.TypeChecker,
+  verb: 'get' | 'replace' = 'get',
 ): { name: string } | { error: string } {
   if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
     return { name: arg.text };
   }
   if (!ts.isIdentifier(arg)) {
     return {
-      error: `ctx.services.get argument must be a string literal or identifier, saw ${ts.SyntaxKind[arg.kind]}`,
+      error: `ctx.services.${verb} argument must be a string literal or identifier, saw ${ts.SyntaxKind[arg.kind]}`,
     };
   }
   const symbol = checker.getSymbolAtLocation(arg);
@@ -443,6 +552,8 @@ function asString(value: unknown): string | undefined {
 function asStringArray(
   value: unknown,
   manifestPath: string,
+  // All three are capability-ref lists with the same shape and the same
+  // failure modes, so they parse through one path.
   field: 'requires' | 'optional_requires' | 'provides',
 ): string[] {
   if (value === undefined) return [];
@@ -461,6 +572,12 @@ function asStringArray(
     out.push(entry);
   }
   return out;
+}
+
+/** "resolves" reads wrong for a `replace`; the finding has to name the verb
+ *  the author actually wrote or it sends them hunting for the wrong call. */
+function verbPhrase(verb: 'get' | 'replace'): string {
+  return verb === 'replace' ? 'replaces the provider of' : 'resolves';
 }
 
 function relativeToMiddleware(absPath: string): string {
