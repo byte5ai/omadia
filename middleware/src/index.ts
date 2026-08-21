@@ -37,7 +37,7 @@ import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
@@ -391,6 +391,9 @@ import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
+import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
+import { createAgentSetupServices } from './platform/agentSetupService.js';
+import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
@@ -628,6 +631,11 @@ async function main(): Promise<void> {
   const conversationRosterRegistry = new ConversationRosterRegistry(registryLog);
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
+  // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
+  // any plugin) and is the scope guard for plugin auto-binds. A plugin can only
+  // bind conversations the transport actually reported a group bot_added for.
+  const observedInvites = new ObservedConversationInvites({ log: (m) => console.log(`[middleware] ${m}`) });
+  observedInvites.attach(conversationEventHub);
   serviceRegistry.provide('conversationRosters', conversationRosterRegistry);
   // Subscribe-only facade: agent plugins may LISTEN for membership events, but
   // emitting stays a channel-adapter privilege (CoreApi). A service-published
@@ -3454,8 +3462,85 @@ async function main(): Promise<void> {
     // run executor + operator API, all behind the graphPool (inert in-memory).
     // Agent steps run real turns on Agents (orchestrator instances) resolved by slug
     // from the registry; action steps invoke real connector tools.
+    // #330 C2a — the full attachment-cleanup chain is built BEFORE wireConductor
+    // (review H2b): the reaper's first tick fires inside wireConductor, and a
+    // boot with expired ephemerals is the normal restart case. Everything here
+    // is pool-backed or lazily resolved, so no wiring output is needed.
+    const ephemeralAttachmentsStore = new ConductorEphemeralAttachmentsStore(graphPool);
+    const facilitationRoleStore = new ConductorRoleStore(graphPool);
+    const scopedRoleAssignments = createScopedRoleAssignments({
+      roleStore: facilitationRoleStore,
+      auditRoleChange: async (entry) => {
+        await adminAudit?.record({
+          actor: { id: entry.actor },
+          action: 'conductor.role_holders_change',
+          target: `conductor-role:${entry.roleKey}`,
+          before: { action: entry.action, holderId: entry.holderId },
+          after: { holders: entry.holdersAfter },
+        });
+      },
+      log: (m) => console.log(m),
+    });
+    const auditBindingChange = async (entry: {
+      actor: string;
+      action: 'bind' | 'unbind';
+      channelType: string;
+      channelKey: string;
+      agentSlug: string;
+    }): Promise<void> => {
+      await adminAudit?.record({
+        actor: { id: entry.actor },
+        action: 'channel.binding_change',
+        target: `channel-binding:${entry.channelType}/${entry.channelKey}`,
+        before: { action: entry.action },
+        after: { agentSlug: entry.agentSlug },
+      });
+    };
+    // THE one disposal path (reap hook, guarded unbind, retry sweep): remove
+    // the binding, close the role holders (audited), and only then delete the
+    // row — a failure keeps the row, so the attachment sweep retries it.
+    const disposeEphemeralAttachment = async (
+      attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
+      actor: string,
+    ): Promise<void> => {
+      const lateConfigStore = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+      const lateRegistry = serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+      if (!lateConfigStore || !lateRegistry) {
+        throw new Error('configStore/orchestratorRegistry not ready — attachment kept for retry');
+      }
+      await lateConfigStore.removeChannelBinding(attachment.channelType, attachment.channelKey);
+      await lateRegistry.reload();
+      if (attachment.roleKey) {
+        const holders = await scopedRoleAssignments.holders(attachment.roleKey);
+        for (const holderId of holders) {
+          await scopedRoleAssignments.removeHolder({ roleKey: attachment.roleKey, holderId, actor });
+        }
+      }
+      await ephemeralAttachmentsStore.delete(attachment.id);
+      await auditBindingChange({
+        actor,
+        action: 'unbind',
+        channelType: attachment.channelType,
+        channelKey: attachment.channelKey,
+        agentSlug: attachment.agentSlug,
+      }).catch(() => undefined);
+      console.log(`[conductor] disposed ephemeral attachment ${attachment.channelType}/${attachment.channelKey}${attachment.roleKey ? ` (role ${attachment.roleKey})` : ''} by ${actor}`);
+    };
+    const onEphemeralReaped = async (workflow: { id: string; slug: string }): Promise<void> => {
+      const rows = await ephemeralAttachmentsStore.getByWorkflow(workflow.id);
+      for (const row of rows) {
+        try {
+          await disposeEphemeralAttachment(row, 'conductor-ephemeral-reaper');
+        } catch (err) {
+          console.log(
+            `[conductor] ephemeral attachment disposal for '${workflow.slug}' failed (sweep retries after expiry): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    };
     const conductorWiring = await wireConductor({
       pool: graphPool,
+      onEphemeralReaped,
       app,
       requireAuth,
       getRegistry,
@@ -3533,6 +3618,22 @@ async function main(): Promise<void> {
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
     serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // #330 C2a — the three zero-touch-setup services (all deny-by-default via
+    // the manifest grant gate). Constructed above, BEFORE wireConductor.
+    serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);
+    const agentSetup = createAgentSetupServices({
+      pool: graphPool,
+      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      invites: observedInvites,
+      attachments: ephemeralAttachmentsStore,
+      disposeAttachment: disposeEphemeralAttachment,
+      auditBindingChange,
+      log: (m) => console.log(m),
+    });
+    serviceRegistry.provide('agentProvisioning', agentSetup.agentProvisioning);
+    serviceRegistry.provide('conversationBindings', agentSetup.conversationBindings);
+    agentSetup.startAttachmentSweep();
     // #330 B3 — role fan-out + cached 1:1 conversation refs for targeted sends.
     // Deliberately THE SAME holder registry the executor resolves approvals
     // through: "who gets the report" and "who may approve" come from one

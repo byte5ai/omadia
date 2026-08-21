@@ -33,6 +33,7 @@ import type { PatternCatalog } from './patternCatalog.js';
 import { ConductorEphemeralStore } from './ephemeralStore.js';
 import { ConductorEphemeralRunService } from './ephemeralRunService.js';
 import { ConductorEphemeralReaper } from './ephemeralReaper.js';
+import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
@@ -108,6 +109,10 @@ export {
 } from './ephemeralRunService.js';
 export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits } from './ephemeralRunService.js';
 export { ConductorEphemeralReaper } from './ephemeralReaper.js';
+export { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
+export type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
+export { createScopedRoleAssignments, FACILITATION_ROLE_PREFIX, RoleKeyOutOfScopeError } from './scopedRoleAssignments.js';
+export type { ScopedRoleAssignments } from './scopedRoleAssignments.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;
@@ -143,6 +148,9 @@ export interface ConductorWiring {
    *  through the same instance the executor uses for approvals: "who gets the
    *  report" and "who may approve" must never drift apart. */
   roleHolderRegistry: RoleHolderRegistry;
+  /** #330 C2a — auto-provisioned binding/role rows tied to ephemeral workflows;
+   *  consumed by the kernel's onEphemeralReaped cleanup + the agent-setup seam. */
+  ephemeralAttachments: ConductorEphemeralAttachmentsStore;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -202,6 +210,11 @@ export async function wireConductor(deps: {
     maxCreatesPerHour?: number;
     reaperIntervalMs?: number;
   };
+  /** #330 C2a — invoked on BOTH reap paths (terminal-state hook + TTL reaper)
+   *  before the definition is disposed of, so auto-provisioned bindings/roles
+   *  die with their workflow. Best-effort: a throw is logged, never blocks
+   *  the reap. Implemented in src/index.ts — wireConductor has no ConfigStore. */
+  onEphemeralReaped?: (workflow: { id: string; slug: string }) => Promise<void>;
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -276,10 +289,18 @@ export async function wireConductor(deps: {
   // hook below can dispose of an agent-generated workflow the moment its run ends
   // (the reaper's TTL poll is the safety net, not the primary path).
   const ephemeralStore = new ConductorEphemeralStore(deps.pool);
+  const ephemeralAttachments = new ConductorEphemeralAttachmentsStore(deps.pool);
   const reapIfEphemeral = async (workflowVersionId: string): Promise<void> => {
     const version = await workflowStore.getVersion(workflowVersionId);
     const workflow = version ? await workflowStore.getById(version.workflowId) : null;
     if (workflow?.origin !== 'ephemeral' || workflow.reapedAt) return;
+    // #330 C2a — dispose of auto-provisioned attachments (binding, role) first;
+    // best-effort like the webhook dispatch, the TTL reaper is the safety net.
+    if (deps.onEphemeralReaped) {
+      await deps.onEphemeralReaped({ id: workflow.id, slug: workflow.slug }).catch((err: unknown) => {
+        log(`[conductor] ephemeral attachment cleanup for '${workflow.slug}' failed (reap continues): ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
     await ephemeralStore.markReaped(workflow.id);
     await ephemeralStore.hardDeleteUnreferenced(workflow.id);
     log(`[conductor] ephemeral '${workflow.slug}' reaped on terminal run state (audit trace retained)`);
@@ -390,6 +411,7 @@ export async function wireConductor(deps: {
   });
   const ephemeralReaper = new ConductorEphemeralReaper({
     store: ephemeralStore,
+    ...(deps.onEphemeralReaped ? { onReaped: (wf: { id: string; slug: string }) => deps.onEphemeralReaped!(wf) } : {}),
     ...(deps.ephemeral?.reaperIntervalMs !== undefined ? { intervalMs: deps.ephemeral.reaperIntervalMs } : {}),
     log,
   });
@@ -481,5 +503,6 @@ export async function wireConductor(deps: {
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
     patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
+    ephemeralAttachments,
   };
 }
