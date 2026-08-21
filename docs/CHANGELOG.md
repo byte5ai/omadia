@@ -38,6 +38,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - Contract `@omadia/llm-provider-api` → 1.1.0 (additive: `openai-responses`
   wire format, descriptor `oauth`, adapter `bearerProvider`).
 
+### Added — pattern-based ephemeral Conductor workflows with TTL reaper (#330 Workstream A)
+
+- Workflows now carry an `origin` (`manual` | `ephemeral`, migration `0009_ephemeral_workflows.sql`): agent-generated JIT workflows live in the reserved `eph-` slug namespace, never appear in the workflow library (`list()` filters to `manual`), and the create/instantiate routes reject the reserved prefix (`conductor.reserved_slug_prefix`).
+- New kernel service `conductorEphemeralRuns` (deny-by-default like every plugin service — no grants-catalog entry yet, the Facilitator plugin adds one): `createEphemeralRun({ agentId, patternId, slots, payload, ttlMs })` instantiates a curated pattern from the new bundled `src/conductor/patterns/` catalog (slot-fill via the existing template machinery — agents can never submit arbitrary graphs), publishes it as `origin='ephemeral'` and starts the run with the previously call-site-less `triggerKind: 'agent'`.
+- Guardrails (env-tunable, `CONDUCTOR_EPHEMERAL_*`): mandatory clamped TTL (default 24h, max 7d), per-agent concurrent-run cap (3) and hourly create rate limit (10).
+- Disposal is "discard the scaffold, never the minutes": on a terminal run state (immediate hook) or TTL expiry (new reaper worker) the definition is disabled + stamped `reaped_at`; expired-but-active runs get a #759 cancel request; a physical DELETE only happens for definitions no run references. Run history and version graph are retained as the audit trace.
+- First bundled pattern: `facilitation` (moderate → initiator confirmation with 24h deadline → report / abort-report) — the Conductor substrate for the #330 Facilitator.
+
 ### Removed — the core-decoupling ratchet is retired (#470 C14)
 
 - `scripts/check-core-decoupling.mjs`, its colocated detector test

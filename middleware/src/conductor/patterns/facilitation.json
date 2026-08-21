@@ -1,0 +1,106 @@
+{
+  "id": "facilitation",
+  "name": {
+    "en": "Facilitated group outcome",
+    "de": "Moderiertes Gruppenergebnis"
+  },
+  "description": {
+    "en": "Scaffold for an agent-moderated group conversation: a facilitator agent moderates toward a stated goal until the definition of done is met, the initiator confirms the outcome, and a final report is produced. Unconfirmed outcomes fall back to an abort report at the deadline.",
+    "de": "Gerüst für eine agentenmoderierte Gruppenkonversation: Ein Moderations-Agent moderiert auf ein erklärtes Ziel hin, bis die Definition-of-Done erfüllt ist, der Initiator bestätigt das Ergebnis, und ein Abschlussbericht wird erstellt. Unbestätigte Ergebnisse fallen zur Frist auf einen Abbruchbericht zurück."
+  },
+  "useCase": {
+    "en": "facilitation",
+    "de": "Moderation"
+  },
+  "defaultSlug": "facilitation",
+  "version": 1,
+  "graph": {
+    "entryStepId": "moderate",
+    "steps": [
+      {
+        "id": "moderate",
+        "kind": "agent",
+        "agentId": "slot:agent:facilitator",
+        "prompt": "You are facilitating a group conversation toward a defined outcome. Goal: {{ctx.goal}}. Definition of done: {{ctx.definitionOfDone}}. Moderate the group until the definition of done is met, then produce a concise outcome summary: the result itself, how the group reached it, and the key insights along the way.",
+        "position": { "x": 80, "y": 160 }
+      },
+      {
+        "id": "confirm",
+        "kind": "human",
+        "human": {
+          "principal": { "kind": "role", "ref": "slot:role:initiator" },
+          "channel": "slot:channel:report",
+          "message": "The facilitation toward \"{{ctx.goal}}\" has concluded. Outcome summary: {{steps.moderate.text}}. Please approve the result.",
+          "deadline": "PT24H"
+        },
+        "fallbackTransitionId": "t-confirm-timeout",
+        "position": { "x": 340, "y": 160 }
+      },
+      {
+        "id": "report",
+        "kind": "agent",
+        "agentId": "slot:agent:facilitator",
+        "prompt": "The initiator approved the facilitation outcome for the goal {{ctx.goal}}. Produce the final report: the confirmed result, the path the group took to reach it, and the insights that emerged.",
+        "position": { "x": 600, "y": 160 }
+      },
+      {
+        "id": "abort-report",
+        "kind": "agent",
+        "agentId": "slot:agent:facilitator",
+        "prompt": "The facilitation outcome for the goal {{ctx.goal}} was not confirmed before the deadline. Produce a failure report: the state that was reached, why no confirmed result exists, and what the group would need to continue.",
+        "position": { "x": 600, "y": 320 }
+      }
+    ],
+    "transitions": [
+      { "id": "t-moderated", "source": "moderate", "target": "confirm" },
+      {
+        "id": "t-confirmed",
+        "source": "confirm",
+        "target": "report",
+        "guard": { "op": "eq", "path": "stepResult.approved", "value": true }
+      },
+      { "id": "t-confirm-timeout", "source": "confirm", "target": "abort-report" }
+    ]
+  },
+  "slots": {
+    "agents": [
+      {
+        "key": "facilitator",
+        "label": {
+          "en": "Facilitator agent",
+          "de": "Moderations-Agent"
+        },
+        "description": {
+          "en": "Agent that moderates the group, summarizes the outcome, and writes the final report.",
+          "de": "Agent, der die Gruppe moderiert, das Ergebnis zusammenfasst und den Abschlussbericht schreibt."
+        }
+      }
+    ],
+    "roles": [
+      {
+        "key": "initiator",
+        "label": {
+          "en": "Initiator role",
+          "de": "Initiator-Rolle"
+        },
+        "description": {
+          "en": "Role that commissioned the facilitation and confirms the outcome.",
+          "de": "Rolle, die die Moderation beauftragt hat und das Ergebnis bestätigt."
+        }
+      }
+    ],
+    "channels": [
+      {
+        "key": "report",
+        "label": {
+          "en": "Report channel",
+          "de": "Berichtskanal"
+        },
+        "description": {
+          "en": "Channel used to reach the initiator for confirmation and reporting.",
+          "de": "Kanal, über den der Initiator für Bestätigung und Bericht erreicht wird."
+        }
+      }
+    ]
+  }
+}

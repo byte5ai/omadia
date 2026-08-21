@@ -266,6 +266,16 @@ const ConfigSchema = z.object({
   // origin in dev, while the webhook route only ever lives on the middleware).
   CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
+  // #330 — guardrails for agent-generated ephemeral workflows
+  // (conductor.createEphemeralRun): a mandatory, clamped TTL plus per-agent
+  // concurrency and creation-rate caps make runaway generation structurally
+  // impossible; the reaper poll disposes of expired/terminal scaffolds.
+  CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
+  CONDUCTOR_EPHEMERAL_MAX_TTL_MS: z.coerce.number().int().positive().default(7 * 24 * 60 * 60 * 1000),
+  CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT: z.coerce.number().int().positive().default(3),
+  CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR: z.coerce.number().int().positive().default(10),
+  CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+
   // #757 — bounded retention for persisted per-turn privacy receipts
   // (`turn_receipts`). The payload is PII-free (counts only) but turn_id +
   // scope are personal-data linkage, so rows are reaped after this many days.

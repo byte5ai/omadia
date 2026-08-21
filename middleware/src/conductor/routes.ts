@@ -7,6 +7,7 @@ import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-cor
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
+import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
@@ -97,6 +98,10 @@ export interface ConductorRouterDeps {
    */
   auditRoleChange?: (entry: {
     actor: string;
+    /** #775 — the session's omadia user uuid, when the session carries one.
+     *  `actor` above is the SUB (an email under local auth), which must never
+     *  be written to the uuid `admin_audit.actor_id` column. */
+    actorUserId?: string;
     roleKey: string;
     action: 'add' | 'remove';
     holderId: string;
@@ -138,6 +143,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
     const name = typeof body.name === 'string' ? body.name : '';
     if (!slug || !name) {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'slug and name are required' });
+      return;
+    }
+    // #330 — 'eph-' is the agent-generated namespace (createEphemeralRun); a manual
+    // workflow squatting on it would collide with the reaper's lifecycle.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
       return;
     }
     const graph = body.graph as unknown as WorkflowGraph;
@@ -323,6 +334,7 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
         try {
           await deps.auditRoleChange({
             actor: req.session?.sub ?? 'operator',
+            actorUserId: req.session?.omadia_user_id,
             roleKey: key,
             action,
             holderId,
@@ -400,6 +412,13 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(400).json({ code: 'conductor.invalid_input', message: "status must be 'enabled' or 'disabled'" });
       return;
     }
+    // #330 — ephemeral workflows are lifecycle-managed by their reaper, never by
+    // operators: re-enabling a reaped definition would create a permanently
+    // startable zombie the reaper can no longer see (reaped_at is stamped once).
+    if (paramStr(req.params.slug).startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `status of '${EPHEMERAL_SLUG_PREFIX}' workflows is managed by the ephemeral lifecycle` });
+      return;
+    }
     try {
       await deps.workflowStore.setStatus(paramStr(req.params.slug), status);
       res.status(204).end();
@@ -431,6 +450,13 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   router.post('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     const slug = paramStr(req.params.slug);
     const payload = asObject(asObject(req.body).payload);
+    // #330 — an ephemeral workflow is run-scoped: exactly one run, started by
+    // createEphemeralRun. A manual run would delay the reap (listReapable waits
+    // for all-terminal) and count against the creating agent's quota.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `runs of '${EPHEMERAL_SLUG_PREFIX}' workflows are managed by the ephemeral lifecycle` });
+      return;
+    }
     try {
       // Async: the run is created + driven in the background (real agent turns are slow).
       // 202 Accepted; the client polls GET /:slug/runs/:runId for the final status + trace.

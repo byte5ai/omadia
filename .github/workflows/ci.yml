@@ -131,6 +131,24 @@ jobs:
       - name: Test (node --test via tsx)
         run: npm run test
 
+      # #764 — the workspace packages carry their own test suites, and until
+      # this step NO workflow ran them: `npm run test` above globs only
+      # `middleware/test/**`. That was found the expensive way — #759 broke two
+      # conductor-core tests (a fixture warning plus a published-schema drift
+      # that would make consumers REJECT valid graphs) while every required
+      # check stayed green; a reviewer caught it by hand.
+      #
+      # `@omadia/plugin-ui-helpers` is deliberately absent: it declares a test
+      # script but contains zero test files, so including it fails on
+      # "no test files found" — and papering over that with --passWithNoTests
+      # would create a permanently-green no-op, the exact failure family this
+      # repo keeps finding (#640, #752). If it gains tests, add it here.
+      - name: Test (workspace package suites)
+        run: |
+          npm run test -w @omadia/canvas-core
+          npm run test -w @omadia/conductor-core
+          npm run test -w @omadia/plugin-api
+
       # `--test-timeout` is applied to the FILE, not to each leaf (#566): a
       # file whose leaves are all fast but whose total crosses the ceiling is
       # killed as a unit, and the failure is reported against whichever leaf

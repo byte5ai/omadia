@@ -244,7 +244,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog } from './auth/adminAuditLog.js';
+import { AdminAuditLog, roleChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -3436,15 +3436,20 @@ async function main(): Promise<void> {
       // instance: `adminAudit` is constructed further down this block, and the
       // route handler only dereferences it at request time.
       auditRoleChange: async (entry) => {
-        await adminAudit?.record({
-          actor: { id: entry.actor },
-          action: 'conductor.role_holders_change',
-          target: `conductor-role:${entry.roleKey}`,
-          before: { action: entry.action, holderId: entry.holderId },
-          after: { holders: entry.holdersAfter },
-        });
+        // #775 — the mapping lives in roleChangeAuditEntry so it is testable:
+        // the previous inline version put an EMAIL into the uuid actor_id
+        // column and every audit write failed.
+        await adminAudit?.record(roleChangeAuditEntry(entry));
       },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      // #330 — guardrails for agent-generated ephemeral workflows (env-tunable).
+      ephemeral: {
+        defaultTtlMs: config.CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS,
+        maxTtlMs: config.CONDUCTOR_EPHEMERAL_MAX_TTL_MS,
+        maxActivePerAgent: config.CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT,
+        maxCreatesPerHour: config.CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR,
+        reaperIntervalMs: config.CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS,
+      },
       webhookInboundMaxPerMinute: config.CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE,
       // Review finding — the operator UI must display an inbound endpoint URL it can
       // actually reach; PUBLIC_BASE_URL alone isn't reliable here since it may
@@ -3481,6 +3486,10 @@ async function main(): Promise<void> {
         }
       },
     });
+    // #330 — agent-facing create+start seam for ephemeral (JIT) workflows.
+    // Deny-by-default like every kernel service: a plugin only reaches it after
+    // declaring the service name in its manifest (pluginServiceGrants catalog).
+    serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
     // #478 — plugin-borne workflow templates: hand the composite catalog's
     // registrar to the install service (runtime installs/uninstalls) and
     // re-register templates of already-installed plugins (registrations are
