@@ -1,0 +1,116 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/transcription-adapter-openai"
+  name: "Transkription (OpenAI)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.transcription"
+  description: "Speech-to-Text-Adapter für die OpenAI-Transkriptionsmodelle (#584). Liefert die Capability 'transcription@1' mit gpt-transcribe (Batch, POST /v1/audio/transcriptions) und gpt-live-transcribe (Realtime-WebSocket, experimentell hinter TRANSCRIPTION_REALTIME_EXPERIMENTAL). Es darf immer nur ein transcription@1-Provider aktiv sein."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "api_key"
+      type: "secret"
+      label: "API-Key"
+      help: "Bearer-Token für den Transkriptions-Endpoint. Liegt im Vault, nie in installed.json. Ohne Key aktiviert sich das Plugin, published aber keinen Service (Konsumenten degraden auf no-transcription-Pfade). ACHTUNG Datenschutz: Mit aktivem Provider verlassen Roh-Audiodaten (Meetings, Aufnahmen, Sprachnotizen) die Installation Richtung des konfigurierten Endpoints — der Operator willigt mit der Installation explizit ein. Der secret-Typ verhindert zusätzlich die automatische Installation durch den Built-in-Katalog."
+      required: false
+    - key: "base_url"
+      type: "string"
+      label: "Base-URL"
+      help: "Basis-URL des Endpoints, mit oder ohne '/v1'. Default: https://api.openai.com"
+      required: false
+      default: "https://api.openai.com"
+    - key: "batch_model"
+      type: "string"
+      label: "Batch-Modell"
+      help: "Modell für transcribeFile (fertige Aufnahmen). Default: gpt-transcribe ($0.0045/min)."
+      required: false
+      default: "gpt-transcribe"
+    - key: "realtime_model"
+      type: "string"
+      label: "Realtime-Modell"
+      help: "Modell für transcribeStream (Live-Audio). Default: gpt-live-transcribe ($0.017/min). Der Realtime-Pfad ist zusätzlich hinter der Env-Variable TRANSCRIPTION_REALTIME_EXPERIMENTAL=1 gegated, solange es keinen produktiven Konsumenten gibt (#584 WS S folgt)."
+      required: false
+      default: "gpt-live-transcribe"
+    - key: "realtime_url"
+      type: "string"
+      label: "Realtime-URL"
+      help: "WebSocket-URL der Realtime-API. Default: wss://api.openai.com/v1/realtime"
+      required: false
+      default: "wss://api.openai.com/v1/realtime"
+    - key: "timeout_ms"
+      type: "integer"
+      label: "Batch-Timeout (ms)"
+      help: "Hard-cancel pro transcribeFile()-Call. Default 300000 (5 min — Audio-Uploads brauchen länger als Text-Calls)."
+      required: false
+      default: 300000
+    - key: "max_call_minutes"
+      type: "integer"
+      label: "Max. Audio-Minuten pro Call"
+      help: "Kostenbremse pro Aufruf. Realtime-Streams werden am Cap hart geschnitten (Wall-Clock-Backstop im Guardrail). Batch-Dateien lassen sich vor der Transkription nicht vermessen — dort wirkt der Cap advisory, die tatsächlich abgerechnete Dauer zählt aber immer gegen die Agent-Quota. Default 240."
+      required: false
+      default: 240
+    - key: "agent_quota_minutes"
+      type: "integer"
+      label: "Minuten-Quota pro Agent"
+      help: "Kostenbremse: Transkriptionsminuten-Kontingent pro Agent (In-Memory-Zähler, reset bei Prozess-Neustart — bewusst Bremse, kein Abrechnungs-Ledger). Default 600."
+      required: false
+      default: 600
+
+playbook:
+  when_to_use: |
+    Erster transcription@1-Provider (#584). Batch-Transkription (Workstream I:
+    "transcribe this recording") läuft sofort; der Realtime-Pfad für
+    Live-Meetings (Workstream S, AudioMeetingSource) ist experimentell und
+    braucht TRANSCRIPTION_REALTIME_EXPERIMENTAL=1. Vor der Installation
+    prüfen, ob bereits ein anderer transcription@1-Provider aktiv ist — zwei
+    aktive Provider wirft ctx.services.provide beim zweiten. Datenschutz: Roh-
+    Audio geht an den konfigurierten externen Endpoint; Transkripte gelten
+    downstream als untrusted Input und laufen durch die Privacy-Choke-Points.
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound:
+      - "openai-transcription"
+  filesystem:
+    scratch: false
+
+integrations:
+  - id: "openai_transcription_batch"
+    kind: "http"
+    target: "POST {base_url}/v1/audio/transcriptions"
+    auth_from: "api_key"
+    docs: "https://developers.openai.com/api/docs/guides/speech-to-text"
+  - id: "openai_transcription_realtime"
+    kind: "websocket"
+    target: "{realtime_url} (session.type=transcription)"
+    auth_from: "api_key"
+    docs: "https://developers.openai.com/api/docs/guides/realtime-transcription"
+
+provides:
+  - "transcription@1"
+requires: []
+optional_requires:
+  - "turnContext@1"

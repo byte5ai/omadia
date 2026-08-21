@@ -40,6 +40,8 @@ import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
+import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
+import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
 import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
@@ -128,6 +130,7 @@ import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
@@ -391,7 +394,10 @@ import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
+import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
+import { createConversationSendService } from './channels/conversationSendService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
+import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { createAgentSetupServices } from './platform/agentSetupService.js';
 import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
@@ -630,6 +636,7 @@ async function main(): Promise<void> {
   // reference them; wired into createCoreApi + the channel registry there.
   const conversationRosterRegistry = new ConversationRosterRegistry(registryLog);
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
+  const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
   // any plugin) and is the scope guard for plugin auto-binds. A plugin can only
@@ -3453,6 +3460,10 @@ async function main(): Promise<void> {
   // 'role_resolution_unavailable' diagnostic while user sends keep working.
   let targetedRoleResolver: ((roleKey: string) => Promise<AggregateHolderLookup>) | undefined;
   let targetedBindingLookup: ((principalIds: string[], channelType: string) => Promise<Map<string, unknown>>) | undefined;
+  // #330 C3b (review H1) — conversationSend scope authority: an agent may only
+  // post into conversations it holds an ephemeral attachment for. Stays
+  // undefined without Postgres → the service fails closed.
+  let conversationSendScope: ((agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>) | undefined;
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -3467,6 +3478,22 @@ async function main(): Promise<void> {
     // boot with expired ephemerals is the normal restart case. Everything here
     // is pool-backed or lazily resolved, so no wiring output is needed.
     const ephemeralAttachmentsStore = new ConductorEphemeralAttachmentsStore(graphPool);
+    // #330 follow-up — the invite index survives restarts: a deploy between
+    // the Teams invite and the facilitation start must not force a re-invite.
+    // Hydration is awaited (cheap, one bounded SELECT) so the scope guard is
+    // warm before the conversationBindings service below can serve its first
+    // bind; writes stay fire-and-forget.
+    observedInvites.attachPersistence(new PgObservedInvitePersistence(graphPool));
+    try {
+      await observedInvites.hydrate();
+    } catch (err) {
+      // Persistence is an upgrade, never a dependency: a missing table or a
+      // flaky pool degrades to the old re-invite-after-restart behaviour —
+      // it must not turn the boot into an outage (review H1).
+      console.log(
+        `[middleware] invite-index hydration skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const facilitationRoleStore = new ConductorRoleStore(graphPool);
     const scopedRoleAssignments = createScopedRoleAssignments({
       roleStore: facilitationRoleStore,
@@ -3525,6 +3552,10 @@ async function main(): Promise<void> {
         agentSlug: attachment.agentSlug,
       }).catch(() => undefined);
       console.log(`[conductor] disposed ephemeral attachment ${attachment.channelType}/${attachment.channelKey}${attachment.roleKey ? ` (role ${attachment.roleKey})` : ''} by ${actor}`);
+    };
+    conversationSendScope = async (agentSlug, channelType, conversationId) => {
+      const row = await ephemeralAttachmentsStore.getByConversation(channelType, conversationId);
+      return row !== undefined && row.agentSlug === agentSlug;
     };
     const onEphemeralReaped = async (workflow: { id: string; slug: string }): Promise<void> => {
       const rows = await ephemeralAttachmentsStore.getByWorkflow(workflow.id);
@@ -4367,6 +4398,29 @@ async function main(): Promise<void> {
     '[middleware] embedding-provider switch ready at /api/v1/admin/embedding-provider (auth: required)',
   );
 
+  // #584 WS T — operator surface for the `transcription@1` capability: list
+  // installed providers, show the live one, switch with verified rollback.
+  // The lean sibling of the embedding-provider router above — a transcription
+  // switch destroys no corpus, so there is no confirm/discard step and no
+  // gate re-evaluation. This page doubles as the consent surface: an active
+  // provider means raw audio leaves the deployment for the configured
+  // external endpoint.
+  app.use(
+    '/api/v1/admin/transcription-provider',
+    requireAuth,
+    createAdminTranscriptionProviderRouter({
+      installedRegistry,
+      catalog: pluginCatalog,
+      getTranscription: () =>
+        serviceRegistry.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+      activate: (id) => toolPluginRuntime.activate(id),
+      deactivate: (id) => toolPluginRuntime.deactivate(id),
+    }),
+  );
+  console.log(
+    '[middleware] transcription-provider switch ready at /api/v1/admin/transcription-provider (auth: required)',
+  );
+
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
   // Read-only host-capability probe; never triggers a login or consumes quota.
@@ -5179,6 +5233,15 @@ async function main(): Promise<void> {
     log: (m) => console.log(m),
   });
   serviceRegistry.provide('targetedSend', targetedDeliveryService);
+  // #330 C3b — conversation-addressed proactive send (Facilitator group nudges).
+  serviceRegistry.provide(
+    'conversationSend',
+    createConversationSendService({
+      providers: conversationSendRegistry,
+      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
+      log: (m) => console.log(m),
+    }),
+  );
 
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
@@ -5187,6 +5250,7 @@ async function main(): Promise<void> {
     rosterRegistry: conversationRosterRegistry,
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
+    conversationSends: conversationSendRegistry,
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The
@@ -5227,6 +5291,7 @@ async function main(): Promise<void> {
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
     targetedSends: targetedSendRegistry,
+    conversationSends: conversationSendRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();

@@ -459,6 +459,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         ...(turn.iterations !== undefined
           ? { iterations: turn.iterations }
           : {}),
+        // #584 WS I — speaker-attributed transcript-ingest turns. Passthrough
+        // prop; ordinary Q&A turns never carry it.
+        ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
       });
       const turnUuid = await this.upsertNode(client, {
         externalId: turnExtId,

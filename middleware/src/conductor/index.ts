@@ -401,6 +401,7 @@ export async function wireConductor(deps: {
     workflowStore,
     ephemeralStore,
     executor,
+    awaitStore,
     limits: {
       defaultTtlMs: deps.ephemeral?.defaultTtlMs ?? 24 * 60 * 60 * 1000,
       maxTtlMs: deps.ephemeral?.maxTtlMs ?? 7 * 24 * 60 * 60 * 1000,
