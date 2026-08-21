@@ -34,14 +34,6 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Bot Framework webhook for channel-teams: the adapter validates the
   // Bot-issued JWT inside the handler; Teams never sends a session cookie.
   /^\/api\/messages(?:\/|$|\?)/,
-  // Epic #470 — the dev-platform runner phone-home router. A runner is a
-  // process, not an operator: it holds a one-time job token and no session
-  // cookie. Every request is authenticated against the job-token hash in
-  // devplatform/routes/devRunnerApi.ts — that IS its authentication.
-  /^\/api\/v1\/dev-runner(?:\/|$|\?)/,
-  // Epic #470 — GitHub redirects finish the dev-platform GitHub-App setup on a
-  // signed state token / installation ownership check, not on an operator session.
-  /^\/api\/v1\/dev-platform\/github-app\/(?:callback|setup)(?:\/|$|\?)/,
   // Epic #459 W9 — generic MCP-server OAuth callback (bugfix). Same shape as
   // the spec-005 kernel OAuth broker callback above: the provider (Notion,
   // etc.) redirects the operator's browser back here after consent, and the
