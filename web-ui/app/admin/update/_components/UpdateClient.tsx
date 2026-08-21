@@ -16,6 +16,9 @@ import {
   type UpdateStatus,
 } from '../../../_lib/api';
 
+import { decodeFailure, deriveOutcome, type InflightUpdate } from './updateFailure';
+import { UpdateProgressModal, type PollingInfo } from './UpdateProgressModal';
+
 /**
  * Admin → Update (#432).
  *
@@ -29,7 +32,13 @@ import {
  *   - Polling, not awaiting. Applying an update recreates the container that
  *     served the request, so the trigger answers 202 and this page then polls
  *     `/status` through the restart. Errors during that window are expected,
- *     not failures, and are swallowed while an update is in flight.
+ *     not failures, and are swallowed while an update is in flight — but they
+ *     are SHOWN, in the progress dialog, as "middleware not answering", so
+ *     the operator sees the restart happening instead of a frozen page.
+ *   - The in-flight run survives this page. The web-ui container is replaced
+ *     too, so the tab may reload mid-update; the run is remembered in
+ *     localStorage and the dialog resumes on the next mount. An update started
+ *     from another browser is picked up from the sidecar's `updating` state.
  *   - Honest capability reporting. With no executor configured the page says
  *     so and shows the manual command instead of offering a button that would
  *     answer 409.
@@ -43,6 +52,47 @@ import {
  */
 const IDLE_POLL_MS = 30_000;
 const ACTIVE_POLL_MS = 4_000;
+
+/** localStorage key for the run this browser is watching. */
+const INFLIGHT_KEY = 'omadia.adminUpdate.inflight';
+/** A remembered run older than this is a leftover (tab closed mid-update,
+ *  sidecar restarted since) and is dropped on read instead of resuming as an
+ *  instantly-stalled dialog. Comfortably above the sidecar's 5 min gate plus
+ *  pull and rollback time. */
+const INFLIGHT_TTL_MS = 60 * 60_000;
+
+function readInflight(): InflightUpdate | null {
+  try {
+    const raw = window.localStorage.getItem(INFLIGHT_KEY);
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === 'object' && parsed !== null &&
+      typeof (parsed as InflightUpdate).target === 'string' &&
+      typeof (parsed as InflightUpdate).startedAt === 'number'
+    ) {
+      const p = parsed as InflightUpdate;
+      if (Date.now() - p.startedAt > INFLIGHT_TTL_MS) {
+        window.localStorage.removeItem(INFLIGHT_KEY);
+        return null;
+      }
+      return { target: p.target, previous: p.previous ?? null, startedAt: p.startedAt };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeInflight(value: InflightUpdate | null): void {
+  try {
+    if (value === null) window.localStorage.removeItem(INFLIGHT_KEY);
+    else window.localStorage.setItem(INFLIGHT_KEY, JSON.stringify(value));
+  } catch {
+    // Storage can be unavailable (private mode, quota); the dialog then just
+    // does not survive a reload, which is a degradation, not a failure.
+  }
+}
 
 /** Error codes the backend returns for a refused trigger. Anything else falls
  *  back to the generic message with the technical detail behind it. */
@@ -75,19 +125,42 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
   const [confirmInput, setConfirmInput] = useState('');
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
-  const [awaitingRestart, setAwaitingRestart] = useState(false);
+  // The run this browser is watching; null when no dialog is open. Restored
+  // from localStorage on mount so a tab reload mid-update resumes the dialog.
+  const [inflight, setInflight] = useState<InflightUpdate | null>(null);
+  const [polling, setPolling] = useState<Omit<PollingInfo, 'intervalMs'>>({
+    lastAttemptAt: null,
+    lastOkAt: null,
+    attempts: 0,
+  });
+
+  useEffect(() => {
+    const remembered = readInflight();
+    if (remembered !== null) setInflight(remembered);
+  }, []);
+
+  // The run the operator dismissed from the stalled state. Until the sidecar
+  // reports something else, its `updating` snapshot is still in `status`, and
+  // without this marker the adoption effect below would reopen the dialog on
+  // the very next render. Keyed on the sidecar's own startedAt so a genuinely
+  // new job for the same target is still adopted.
+  const dismissedRef = useRef<{ target: string; startedAt: string | null } | null>(null);
 
   // Read inside the interval callback without making it a dependency — the
   // poll must not be torn down and rebuilt on every status change. Mirrored in
   // an effect rather than assigned during render (refs are not render state).
   const awaitingRef = useRef(false);
+  const awaitingRestart = inflight !== null;
   useEffect(() => {
     awaitingRef.current = awaitingRestart;
   }, [awaitingRestart]);
 
   const load = useCallback(async (refresh = false): Promise<void> => {
+    const attemptAt = Date.now();
+    let okAt: number | null = null;
     try {
       const next = await getUpdateStatus(refresh);
+      okAt = Date.now();
       setStatus(next);
       setLoadError(null);
       if (next.auditAvailable) {
@@ -97,13 +170,71 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     } catch (err) {
       // While the stack is restarting the middleware is legitimately gone;
       // surfacing that as an error would make a working update look broken.
+      // The dialog shows the gap as "not answering" from the polling info.
       if (!awaitingRef.current) {
         setLoadError(err instanceof Error ? err.message : String(err));
       }
+    } finally {
+      // Bookkeeping for the dialog's polling indicator: every attempt counts,
+      // and a failed one leaves `lastOkAt` where it was, so "last answer N s
+      // ago" keeps growing while the middleware is down.
+      setPolling((p) => ({
+        lastAttemptAt: attemptAt,
+        attempts: p.attempts + 1,
+        lastOkAt: okAt ?? p.lastOkAt,
+      }));
     }
   }, []);
 
   const active = awaitingRestart || status?.executor.state === 'updating';
+
+  // An update started elsewhere (another tab, another admin, or this tab
+  // before a reload that lost storage) shows up as the sidecar being
+  // `updating`; adopt it so the dialog covers that run too.
+  useEffect(() => {
+    if (inflight !== null || status?.executor.state !== 'updating') return;
+    const target = status.executor.targetVersion;
+    if (typeof target !== 'string' || target.length === 0) return;
+    const dismissed = dismissedRef.current;
+    if (
+      dismissed !== null &&
+      dismissed.target === target &&
+      dismissed.startedAt === (status.executor.startedAt ?? null)
+    ) {
+      return;
+    }
+    const started = typeof status.executor.startedAt === 'string'
+      ? Date.parse(status.executor.startedAt)
+      : NaN;
+    const adopted: InflightUpdate = {
+      target,
+      previous: status.executor.previousVersion ?? status.current.version,
+      startedAt: Number.isNaN(started) ? Date.now() : started,
+    };
+    setInflight(adopted);
+    writeInflight(adopted);
+  }, [inflight, status]);
+
+  const outcome = inflight === null ? 'running' : deriveOutcome(status, inflight);
+  const currentVersion = status?.current.version ?? null;
+
+  const closeDialog = useCallback((): void => {
+    if (inflight !== null) {
+      dismissedRef.current = {
+        target: inflight.target,
+        startedAt: status?.executor.startedAt ?? null,
+      };
+    }
+    setInflight(null);
+    writeInflight(null);
+    setConfirmInput('');
+    void load(true);
+  }, [inflight, load, status?.executor.startedAt]);
+
+  const reloadPage = useCallback((): void => {
+    writeInflight(null);
+    window.location.reload();
+  }, []);
 
   useEffect(() => {
     void load();
@@ -139,15 +270,6 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     status?.executor.configured === true && status.executor.reachable;
   const updating = status?.executor.state === 'updating';
 
-  // The restart is over once the running build IS the target.
-  useEffect(() => {
-    if (!awaitingRestart || !status) return;
-    if (status.current.version === target && target.length > 0) {
-      setAwaitingRestart(false);
-      setConfirmInput('');
-    }
-  }, [awaitingRestart, status, target]);
-
   const confirmMatches = useMemo(
     () =>
       target.length > 0 &&
@@ -177,8 +299,18 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     try {
       await triggerUpdate({ targetVersion: target, confirm: confirmInput.trim() });
       // From here the middleware is expected to disappear and come back on the
-      // new image; polling takes over.
-      setAwaitingRestart(true);
+      // new image; polling takes over and the dialog shows it.
+      const run: InflightUpdate = {
+        target,
+        previous: currentVersion,
+        startedAt: Date.now(),
+      };
+      setInflight(run);
+      writeInflight(run);
+      dismissedRef.current = null;
+      // Fresh counters for the dialog; both timestamps reset together so the
+      // indicator does not read "not answering" for the first tick.
+      setPolling({ attempts: 0, lastOkAt: null, lastAttemptAt: null });
     } catch (err) {
       const code = err instanceof ApiError ? err.code : null;
       setTriggerError(
@@ -191,7 +323,24 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     } finally {
       setTriggering(false);
     }
-  }, [confirmInput, confirmMatches, target, t]);
+  }, [confirmInput, confirmMatches, currentVersion, target, t]);
+
+  const rolledBackBanner = useMemo(() => {
+    if (status?.executor.state !== 'rolled_back' || awaitingRestart) return null;
+    const decoded = decodeFailure(status.executor.failure, status.executor.error);
+    const from = status.executor.targetVersion ?? '?';
+    const to = status.current.version;
+    switch (decoded.kind) {
+      case 'never_reachable':
+        return t('rolledBackNeverReachable', { from, to });
+      case 'version_never_matched':
+        return t('rolledBackVersionNeverMatched', { from, to, observed: decoded.observedVersion });
+      case 'replace':
+        return t('rolledBackReplace', { from, to, service: decoded.service ?? '?' });
+      default:
+        return t('rolledBack', { message: decoded.message });
+    }
+  }, [awaitingRestart, status, t]);
 
   return (
     <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
@@ -329,25 +478,33 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
         </section>
       )}
 
-      {(updating || awaitingRestart) && (
+      {inflight !== null && (
+        <UpdateProgressModal
+          inflight={inflight}
+          status={status}
+          outcome={outcome}
+          polling={{ ...polling, intervalMs: active ? ACTIVE_POLL_MS : IDLE_POLL_MS }}
+          onClose={closeDialog}
+          onReload={reloadPage}
+        />
+      )}
+
+      {updating && inflight === null && (
         <section className="mb-6 rounded-lg border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 p-4 text-sm">
           <h2 className="mb-2 text-[10px] font-semibold tracking-wider uppercase">
             {t('inProgressTitle')}
           </h2>
           <p>{t('inProgressBody')}</p>
-          {(status?.executor.steps ?? []).length > 0 && (
-            <ol className="mt-3 max-h-48 overflow-y-auto font-mono text-xs text-[color:var(--fg-muted)]">
-              {(status?.executor.steps ?? []).map((step) => (
-                <li key={step}>{step}</li>
-              ))}
-            </ol>
-          )}
         </section>
       )}
 
-      {status?.executor.state === 'rolled_back' && !awaitingRestart && (
-        <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]">
-          {t('rolledBack', { message: status.executor.error ?? '' })}
+      {rolledBackBanner !== null && (
+        <section
+          data-testid="rolled-back-banner"
+          className="mb-6 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4 text-sm text-[color:var(--danger)]"
+        >
+          <p className="font-medium">{rolledBackBanner}</p>
+          <p className="mt-1 text-xs">{t('rolledBackHint')}</p>
         </section>
       )}
 

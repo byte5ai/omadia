@@ -53,9 +53,22 @@ Mirrored by `middleware/src/update/updaterClient.ts`.
   "startedAt": "2026-08-13T…",
   "finishedAt": null,
   "error": null,
-  "steps": ["2026-08-13T… pulling ghcr.io/byte5ai/omadia-middleware:v0.75.0", "…"]
+  "steps": ["2026-08-13T… pulling ghcr.io/byte5ai/omadia-middleware:v0.75.0", "…"],
+  // which of the six numbered steps the job is in; null while idle
+  "phase": "resolve|preflight|pin|replace|health_gate|rollback|done",
+  // structured reason for a failed / rolled_back outcome, null otherwise:
+  //   { "kind": "health_gate", "reason": "never_reachable|version_never_matched", "observedVersion": "v0.90.1"|null }
+  //   { "kind": "replace", "service": "middleware" }
+  "failure": null
 }
 ```
+
+`phase` and `failure` exist so the admin page can render a stepper and a
+decoded failure reason without parsing the English `steps` trail. A health
+gate `never_reachable` with `observedVersion: null` means the new image never
+answered `/health` at all — in practice almost always a boot-time failure of the
+new version (a newly required secret, see `docs/upgrading.md`), not a network
+problem.
 
 `POST /update` answers **before** the work starts, on purpose: the update
 recreates the middleware container that is waiting on the response, so holding

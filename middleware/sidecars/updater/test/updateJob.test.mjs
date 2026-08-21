@@ -171,6 +171,88 @@ describe('runUpdate (#432)', () => {
     assert.equal(middleware.Config.Image, 'ghcr.io/byte5ai/omadia-middleware:v0.74.0');
   });
 
+  it('reports every phase in order and ends on `done` when the gate passes', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+    const phases = [];
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      setPhase: (p) => phases.push(p),
+      healthWaiter: async () => ({ ok: true, reason: 'version_match', observedVersion: 'v0.75.0' }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.failure, undefined);
+    assert.deepEqual(phases, ['resolve', 'preflight', 'pin', 'replace', 'health_gate', 'done']);
+  });
+
+  it('returns a structured health_gate failure the UI can decode without parsing text', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+    const phases = [];
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      setPhase: (p) => phases.push(p),
+      healthWaiter: async () => ({ ok: false, reason: 'never_reachable', observedVersion: null }),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(result.failure, {
+      kind: 'health_gate',
+      reason: 'never_reachable',
+      observedVersion: null,
+    });
+    // The human trail still carries the same verdict — the two must not drift.
+    assert.match(result.error, /health gate failed: never_reachable \(observed version: none\)/);
+    assert.equal(phases.at(-1), 'rollback');
+    assert.ok(phases.includes('health_gate'));
+  });
+
+  it('names the service that could not be replaced in the failure', async () => {
+    const docker = createFakeDocker({
+      services: SERVICES,
+      failCreateFor: 'omadia-web-ui:v0.75.0',
+    });
+    const envFile = await makeEnvFile();
+    const phases = [];
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      setPhase: (p) => phases.push(p),
+      healthWaiter: async () => {
+        throw new Error('health gate must not be reached');
+      },
+    });
+
+    assert.deepEqual(result.failure, { kind: 'replace', service: 'web-ui' });
+    assert.deepEqual(phases, ['resolve', 'preflight', 'pin', 'replace', 'rollback']);
+  });
+
+  it('works without a setPhase hook (older callers)', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async () => ({ ok: true, reason: 'version_match', observedVersion: 'v0.75.0' }),
+    });
+    assert.equal(result.ok, true);
+  });
+
   it('refuses a protected service even if it is configured', async () => {
     const docker = createFakeDocker({ services: { postgres: 'pgvector/pgvector:pg17' } });
     const envFile = await makeEnvFile();
