@@ -7,7 +7,9 @@ export interface ConductorAwait {
   id: string;
   runId: string;
   stepId: string;
-  principalKind: 'user' | 'role';
+  /** 'timer' (#330 C3): a deterministic tick — no principal, no reminders;
+   *  only the deadline poll acts on it. */
+  principalKind: 'user' | 'role' | 'timer';
   principalRef: string;
   channelType: string;
   message: string;
@@ -27,6 +29,7 @@ export async function resolveAwaitHolders(
   aw: Pick<ConductorAwait, 'principalKind' | 'principalRef'>,
   resolveRole: (roleKey: string) => Promise<string[]>,
 ): Promise<string[]> {
+  if (aw.principalKind === 'timer') return []; // #330 C3 — nobody to remind or list
   return aw.principalKind === 'role' ? resolveRole(aw.principalRef) : [aw.principalRef];
 }
 
@@ -76,7 +79,7 @@ export class ConductorAwaitStore {
   async create(input: {
     runId: string;
     stepId: string;
-    principalKind: 'user' | 'role';
+    principalKind: 'user' | 'role' | 'timer';
     principalRef: string;
     channelType: string;
     message: string;
@@ -124,6 +127,20 @@ export class ConductorAwaitStore {
    * invariant asserted in the wrong place, and a future non-human await kind would have to
    * remember to add itself to survive it. If such a kind ever lands, it names itself here.
    */
+  /** #330 C3 — the run's open timer await, if any (there is at most one open
+   *  await per (run, step); a graph has no reason to park two timers at once).
+   *  Backs `conductorEphemeralRuns.poke`: expire the tick early when the
+   *  group already reached its outcome instead of waiting out the interval. */
+  async openTimerAwaitForRun(runId: string): Promise<ConductorAwait | null> {
+    const r = await this.pool.query<AwaitRow>(
+      `SELECT ${COLS} FROM conductor_awaits
+        WHERE run_id = $1 AND status = 'waiting' AND principal_kind = 'timer'
+        ORDER BY created_at ASC LIMIT 1`,
+      [runId],
+    );
+    return r.rows[0] ? toAwait(r.rows[0]) : null;
+  }
+
   async listWaiting(limit = 100): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
       `SELECT ${COLS} FROM conductor_awaits
