@@ -3,6 +3,10 @@ import { pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 
 import { createPluginContext } from '../platform/pluginContext.js';
+import {
+  PluginHandoffPlanError,
+  loadHandoffPlan,
+} from '../platform/pluginHandoffPlan.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import { PublicPathClaimError } from '../platform/publicPathGrants.js';
@@ -355,6 +359,91 @@ export class ToolPluginRuntime {
       operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
+
+    // Epic #470 C15 — run the declared ledger handoff BEFORE the migration
+    // runner below.
+    //
+    // C11 gave a plugin `ctx.sql.seedLedger` and documented it as "call this
+    // before `runMigrations`", which a plugin cannot honour: the runner below
+    // runs before `activate()`, so the plugin's own call always arrived after
+    // every ledger row was already written. The 2026-08-21 acceptance run
+    // measured `0 seeded, 9 already seeded` on the exact upgrade C11 exists
+    // for, with `skippedNoWitness` — the one alarm it was built to raise —
+    // unreachable. And nothing failed: that log line is indistinguishable
+    // from a healthy re-run.
+    //
+    // The witnesses are knowledge only the plugin has; the ordering is a
+    // decision only core can make. So the plugin declares the plan in its
+    // manifest and core executes it here, through the SAME accessor a plugin
+    // would have called — read-only witness fence, advisory lock, entry
+    // validation and all. `ctx.sql.seedLedger` stays for plugins that manage
+    // their own order; against this core it degrades to `alreadySeeded`,
+    // which is what it should report once the work is done.
+    //
+    // A refusal fails the activation, and deliberately takes the migration
+    // runner with it: running the files anyway would write exactly the ledger
+    // rows the unreadable plan existed to decide on.
+    if (declaredSql?.handoff && ctx.sql) {
+      const plan = await loadHandoffPlan({
+        pluginId: agentId,
+        packageRoot: packagePath,
+        declaredPath: declaredSql.handoff,
+      });
+      if (plan.declaredLedger && plan.declaredLedger !== declaredSql.ledger) {
+        // Not fatal — core's ledger is the granted one and the plan's copy is
+        // advisory. But an operator who previewed the handoff with
+        // `plugin-ledger-handoff.mjs` read a different table than the one
+        // about to be written, and that is worth saying out loud.
+        log(
+          `[tool-runtime] WARN ${agentId}: handoff plan names ledger '${plan.declaredLedger}' but the manifest declares '${declaredSql.ledger}' — the manifest wins; an operator dry-run against the plan's table showed a different database`,
+        );
+      }
+      const seedLedger = ctx.sql.seedLedger;
+      if (!seedLedger) {
+        throw new PluginHandoffPlanError(
+          agentId,
+          declaredSql.handoff,
+          'malformed',
+          'this kernel builds a SQL accessor with no ledger seeder — the handoff cannot run, and running the migrations instead would silently do the thing the plan exists to prevent',
+        );
+      }
+      // Bounded with the same budget as the runner it precedes, and for the
+      // same reason: `seedPluginLedgerFromDonor` sets its timeouts
+      // server-side, but neither covers a connection that never answers, and
+      // this await sits on the boot path. The two steps also share one
+      // advisory lock, so a tighter bound here would only move where the pair
+      // gives up.
+      const report = await withTimeout(
+        seedLedger.call(ctx.sql, {
+          entries: plan.entries,
+          dryRun: plan.dryRun,
+        }),
+        MIGRATION_TIMEOUT_MS,
+        `seedLedger(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
+      log(
+        `[tool-runtime] ${agentId}: ledger handoff — ${String(report.seeded.length)} seeded, ` +
+          `${String(report.alreadySeeded.length)} already seeded, ` +
+          `${String(report.applied.length)} left for the migration runner ` +
+          `(ledger '${report.ledger}', donor '${report.donorLedger}', ${String(report.durationMs)}ms` +
+          `${report.dryRun ? ', dry run — nothing written' : ''})`,
+      );
+      if (report.skippedNoWitness.length > 0) {
+        // THE output this feature exists to produce. The donor ledger records
+        // these, but their witness says the schema object is not there: a
+        // restore from an older snapshot, a rolled-back deploy, a table
+        // dropped during an incident. The runner below repairs it, so this is
+        // a warning rather than a refusal — but the operator has to be told
+        // the database is not the one they think it is, and told WHICH files,
+        // because a count alone gives them nowhere to look.
+        log(
+          `[tool-runtime] WARN ${agentId}: ledger handoff — the donor ledger records ` +
+            `${String(report.skippedNoWitness.length)} file(s) whose witness says the schema object is ABSENT; ` +
+            `the migration runner will apply them, which is the repair — confirm this is the database you think it is: ` +
+            report.skippedNoWitness.join(', '),
+        );
+      }
+    }
 
     // Epic #470 C7 / G4 — apply the plugin's schema BEFORE its `activate()`
     // runs. A plugin whose first act is to query its own tables must not have

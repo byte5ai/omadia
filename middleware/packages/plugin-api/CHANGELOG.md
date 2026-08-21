@@ -8,6 +8,48 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.6.0 — 2026-08-21
+
+Additive. `permissions.sql` gains an optional `handoff` — a path, inside the
+package, to the JSON plan the kernel runs BEFORE it runs the plugin's
+migrations directory (epic #470, C15).
+
+### Added
+
+- **`SqlPermission.handoff?: string`** — names a plan of the same shape
+  {@link SqlAccessor.seedLedger} accepts:
+  `{ "entries": [{ "filename", "witnessSql" }], "dryRun"?: false }`. The kernel
+  reads it at activation, validates it against the package root, and performs
+  the handoff through the same seeder — read-only witness fence, advisory lock
+  and entry validation included — before its own migration runner.
+
+### Why a declaration and not the call C11 already shipped
+
+`seedLedger` was documented as "call this BEFORE `runMigrations`", and a plugin
+cannot honour that. The kernel runs the migrations directory ITSELF, before
+`activate()`, so that "the tables exist" is an invariant `activate()` can rely
+on rather than a race each plugin re-loses in its own way. The plugin's own
+call therefore always arrived second, after every ledger row was already
+written.
+
+The 2026-08-21 acceptance run of the first extracted plugin measured the
+consequence on the exact upgrade C11 exists for: `0 seeded, 9 already seeded`,
+with `skippedNoWitness` — the one alarm the feature was built to raise —
+unreachable. Nothing failed, and that is the problem: the line is
+indistinguishable from a healthy re-run.
+
+The witnesses are knowledge only the plugin has; the ordering is a decision
+only the kernel can make. So the plugin declares and the kernel executes.
+
+### Compatibility
+
+Every existing consumer keeps compiling: `handoff` is optional, and a plugin
+that omits it sees the pre-1.6.0 behaviour exactly. `SqlAccessor.seedLedger`
+is unchanged and stays the right call for a plugin that manages its own
+ordering or must work against a kernel older than this one — against a kernel
+that honours `handoff`, that call simply reports `alreadySeeded`, which is what
+it should report once the work is done.
+
 ## 1.5.0 — 2026-08-21
 
 > **Why 1.4.0 and not 1.3.0.** This change was written against a tree where

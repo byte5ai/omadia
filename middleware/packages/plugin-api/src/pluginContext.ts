@@ -1926,6 +1926,7 @@ export class MigrationHookError extends Error {
  *   sql:
  *     migrations: migrations   # optional; directory inside the package
  *     ledger: omadia_verifier_migrations
+ *     handoff: handoff-plan.json  # optional; run before `migrations`
  * ```
  */
 export interface SqlPermission {
@@ -1937,6 +1938,32 @@ export interface SqlPermission {
    *  Must match `^[a-z][a-z0-9_]{2,62}$` AND begin with the plugin's sanitized
    *  id, so a manifest cannot nominate another plugin's ledger. */
   readonly ledger: string;
+  /**
+   * Path (relative to the package root) to a JSON ledger-handoff plan the
+   * kernel runs BEFORE {@link SqlPermission.migrations} — epic #470 C15.
+   *
+   * ```json
+   * {
+   *   "entries": [
+   *     { "filename": "0001_x.js", "witnessSql": "SELECT to_regclass('public.x') IS NOT NULL" }
+   *   ],
+   *   "dryRun": false
+   * }
+   * ```
+   *
+   * Same shape {@link SqlAccessor.seedLedger} accepts, and the same shape the
+   * operator CLI (`middleware/scripts/plugin-ledger-handoff.mjs --plan`)
+   * reads, so one file serves all three readers.
+   *
+   * DECLARE THIS RATHER THAN CALLING `seedLedger` YOURSELF when the manifest
+   * also declares `migrations`. The kernel runs that directory before your
+   * `activate()`, so a `seedLedger` call inside `activate()` arrives after
+   * every ledger row is already written and can only ever report
+   * `alreadySeeded` — the `skippedNoWitness` alarm never fires. Keeping the
+   * in-`activate` call as well is safe and is the right fallback for older
+   * kernels, where it does the work instead.
+   */
+  readonly handoff?: string;
 }
 
 /** What one `runMigrations` pass did. Returned rather than logged so a plugin
