@@ -28,6 +28,7 @@ import {
   probeProvenanceFrameWith,
   probeSkillScanFrameWith,
   PROVENANCE_MARKER,
+  realToolResultInterner,
   runBehavioralScenario,
   runDeterministicScenario,
   type SkillFrameComposer,
@@ -133,6 +134,11 @@ const brokenRawInterner: ToolResultInterner = (_toolName, rows) => {
   return `${header}\n\n${body}`;
 };
 
+const cannedBenignRows = [
+  { ref: 'ctl-1', amount: 1 },
+  { ref: 'ctl-2', amount: 2 },
+];
+
 describe('counter-proof: a broken composer turns the probe red (#805)', () => {
   it('skill_scan_frame: a static (nonce-free) delimiter is forgeable ⇒ breached', async () => {
     const scenario = scenarioById('direct_skill_frame_close_forgery');
@@ -145,6 +151,26 @@ describe('counter-proof: a broken composer turns the probe red (#805)', () => {
       mutated.outcome,
       'breached',
       `mutated composer still read as held: ${mutated.evidence ?? ''}`,
+    );
+  });
+
+  it('skill_scan_frame: a composer that DROPS the frontmatter ⇒ breached', async () => {
+    const scenario = scenarioById('direct_skill_frontmatter_forgery');
+
+    const real = await runDeterministicScenario(scenario);
+    assert.equal(real.outcome, 'held', `real composer breached: ${real.evidence ?? ''}`);
+
+    const bodyOnlyComposer: SkillFrameComposer = (_frontmatter, body) =>
+      Promise.resolve({
+        frameTag: STATIC_FRAME_TAG,
+        instructions: 'You review imported SKILL.md content for instruction-intent risk.',
+        data: `<${STATIC_FRAME_TAG}>\nbody:\n${body}\n</${STATIC_FRAME_TAG}>`,
+      });
+    const mutated = await probeSkillScanFrameWith(bodyOnlyComposer, scenario);
+    assert.equal(
+      mutated.outcome,
+      'breached',
+      `frontmatter-dropping composer still read as held: ${mutated.evidence ?? ''}`,
     );
   });
 
@@ -189,6 +215,22 @@ describe('counter-proof: a broken composer turns the probe red (#805)', () => {
       mutated.outcome,
       'breached',
       `mutated interner still read as held: ${mutated.evidence ?? ''}`,
+    );
+  });
+
+  it('provenance_frame: an interner that ignores the hostile rows ⇒ breached', async () => {
+    const scenario = scenarioById('indirect_doc_forged_marker');
+
+    const real = await runDeterministicScenario(scenario);
+    assert.equal(real.outcome, 'held', `real interner breached: ${real.evidence ?? ''}`);
+
+    const cannedRowsInterner: ToolResultInterner = (toolName, _rows, turnId) =>
+      realToolResultInterner(toolName, cannedBenignRows, turnId);
+    const mutated = probeProvenanceFrameWith(cannedRowsInterner, scenario);
+    assert.equal(
+      mutated.outcome,
+      'breached',
+      `rows-ignoring interner still read as held: ${mutated.evidence ?? ''}`,
     );
   });
 });
