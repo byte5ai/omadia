@@ -36,6 +36,12 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   `localStorage`, so the dialog resumes after the admin UI container itself is
   replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
 
+### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
+
+- Three new plugin-facing, deny-by-default kernel services remove the manual Facilitator setup: `agentProvisioning` (`ensureAgent` — idempotently creates a top-level Agent, seeds its persona create-only via the Wave-8 `agent_persona_skills` path with the skill slug namespaced under the agent, and attaches the calling plugin; an existing agent — and an existing operator-configured `agent_plugins` row — is never touched, the `fallback` slug never managed), `conversationBindings` (`bind` only for conversations the KERNEL itself observed a group `bot_added` for, via a hub-direct invite index keyed by channel type + conversation; `unbind` is equally guarded to the caller's own ephemeral attachments, so operator bindings are out of reach and the `channel_bindings` PK plus guard close the steal path; both mutations land in the new `channel.binding_change` audit action), and `conductorRoleAssignments` (role writes hard-confined to the `facilitation-` namespace, every holder mutation audited through the #759 `conductor.role_holders_change` sink).
+- Migration `0010_ephemeral_attachments.sql`: auto-provisioned bindings/roles are recorded per facilitation and live exactly as long as its ephemeral workflow. Both reap paths (terminal-state hook + TTL reaper) dispose of them through one shared cleanup, and rows only disappear AFTER a successful cleanup — an attachment sweep retries expired `pending` (invite never became a facilitation) and expired `attached` (reap-time cleanup failed or ran before the kernel stores were up) rows. A pre-existing operator binding is never adopted into this self-disposing lifecycle.
+- `configStore`/`orchestratorRegistry` are resolved lazily per call (the orchestrator plugin publishes them at its own activation), so the seam is independent of plugin boot order.
+
 ### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
 
 - **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**
