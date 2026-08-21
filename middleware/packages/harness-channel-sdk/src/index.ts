@@ -16,6 +16,30 @@ export type {
   ChannelSessionClaims,
 } from './coreApi.js';
 
+// #330 B1 — group-conversation primitives: conversation type + roster,
+// membership lifecycle events, and Principal-addressed targeted delivery.
+// All optional capabilities; classic adapters are untouched.
+export {
+  isGroupConversation,
+  type ConversationType,
+  type ConversationParticipant,
+  type ConversationRoster,
+  type ConversationRosterProvider,
+} from './conversationRoster.js';
+export type {
+  BotAddedEvent,
+  ConversationMembershipEvent,
+  MembersAddedEvent,
+  MembersRemovedEvent,
+} from './membershipEvent.js';
+export type {
+  TargetedDeliveryOutcome,
+  TargetedMessage,
+  TargetedSendDiagnostic,
+  TargetedSendProvider,
+  TargetedSendReport,
+} from './targetedSend.js';
+
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
 // a folded SemanticAnswer / richer control is wanted).
