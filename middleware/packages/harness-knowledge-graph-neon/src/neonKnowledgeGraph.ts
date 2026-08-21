@@ -703,17 +703,29 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   async listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
     const result = await this.pool.query<DatasetRow>(
       `SELECT id, name, source_file_name, owner_omadia_user_id, row_count, columns, created_at
        FROM datasets
        WHERE tenant_id = $1 AND owner_omadia_user_id = $2
        ORDER BY created_at DESC
-       LIMIT $3`,
-      [this.tenantId, opts.ownerOmadiaUserId, limit],
+       LIMIT $3 OFFSET $4`,
+      [this.tenantId, opts.ownerOmadiaUserId, limit, offset],
     );
     return result.rows.map((r) => this.datasetRowToSummary(r));
+  }
+
+  async countDatasets(opts: { ownerOmadiaUserId: string }): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM datasets
+       WHERE tenant_id = $1 AND owner_omadia_user_id = $2`,
+      [this.tenantId, opts.ownerOmadiaUserId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   async getDataset(

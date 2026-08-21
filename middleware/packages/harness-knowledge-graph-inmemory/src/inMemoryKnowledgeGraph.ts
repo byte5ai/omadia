@@ -2997,13 +2997,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   async listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
     return [...this.datasets.values()]
       .filter((d) => d.ownerOmadiaUserId === opts.ownerOmadiaUserId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map((d) => this.datasetToSummary(d));
+  }
+
+  async countDatasets(opts: { ownerOmadiaUserId: string }): Promise<number> {
+    return [...this.datasets.values()].filter(
+      (d) => d.ownerOmadiaUserId === opts.ownerOmadiaUserId,
+    ).length;
   }
 
   async getDataset(

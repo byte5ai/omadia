@@ -752,7 +752,10 @@ Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
 
 - `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
   Request, `MAX_UPLOAD_BYTES` = 25 MB).
-- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets` — paginierte Liste der eigenen Datasets
+  (`limit`/`offset` via zod, 400 bei ungültiger Query; Response
+  `{ items, totalMatched }` — `totalMatched` fehlt nur, wenn die
+  Graph-Implementierung das optionale `countDatasets` noch nicht kennt).
 - `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
 - `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
 - `DELETE /api/v1/datasets/:id` — Dataset löschen.
@@ -1483,9 +1486,14 @@ migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
 (`PluginEntity`, `system='dataset'`) für Recall/Zitation.
 
 - **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
-  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
-  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
-  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+  queryDatasetRows,deleteDataset}` plus das **optionale** `countDatasets`
+  (`plugin-api/src/knowledgeGraph.ts`; `listDatasets` nimmt seit #532 auch
+  `offset` — additiv, plugin-api 1.7.0), implementiert in
+  `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub). Die
+  extras-Wrapper (captureFiltering/inconsistencyTriggering/mergeTriggering)
+  reichen `countDatasets` nur durch, wenn der innere Graph es kann —
+  keine fabrizierten Totals.
 - **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
   datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
   (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
@@ -2029,17 +2037,38 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
 
-### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up) — **erledigt (#532)**
 
-Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
-absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckte
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete blieb
 API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
-Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
-schließt das Issue deshalb NICHT, sondern "addresses" es — ein
-Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
-Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
-Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
-erfassen.
+Triage-Acceptance-Criteria verlangen aber genau diese UI; das
+Folge-Issue #532 hat sie nachgezogen.
+
+Geliefert, überwiegend `web-ui`-seitig; an der REST-Surface aus §3 gab es
+EINE additive Änderung: `GET /api/v1/datasets` paginiert jetzt
+(`limit`/`offset`, Response `{ items, totalMatched }`, getragen von
+`listDatasets.offset` + optionalem `countDatasets` im plugin-api-Interface,
+Minor-Bump auf 1.7.0) — ohne sie waren Datasets jenseits des 50er-Caps im
+Admin-UI unsichtbar UND unlöschbar:
+
+- `web-ui/app/admin/datasets/page.tsx` — Upload (Datei + optionaler Name),
+  Liste, aufklappbares Detail mit Schema-Tabelle und Zeilen-Vorschau,
+  Delete mit Bestätigung.
+- Der Client (`web-ui/app/_lib/api.ts`) spiegelt `DatasetSummary` /
+  `DatasetColumnSchema` / den unaggregierten Zweig von
+  `DatasetQueryResult`, weil `web-ui` nicht gegen den
+  middleware-Workspace baut.
+- Die Zeilen-Vorschau paginiert **server-seitig** über `limit`/`offset`
+  (25 pro Seite, Server clamped auf [1, 200]). Ein Datensatz fasst bis zu
+  `MAX_DATASET_ROWS` (50 000) Zeilen — genau der Fall, gegen den
+  `queryDatasetRows` existiert.
+- Nach einem Import werden `privacyScan.scannedCells` /
+  `maskedCells` und eine etwaige Zell-Truncation angezeigt: der Scan läuft
+  auf diesem Pfad genauso wie beim Chat-Attachment-Auto-Ingest, und das
+  soll sichtbar sein statt geglaubt werden zu müssen.
+- ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
+  des eingeloggten Kontos, nicht die der Instanz.
 
 ---
 

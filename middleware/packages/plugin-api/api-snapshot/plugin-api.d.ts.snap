@@ -531,7 +531,11 @@ ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult>;
 listDatasets(opts: {
 ownerOmadiaUserId: string;
 limit?: number;
+offset?: number;
 }): Promise<DatasetSummary[]>;
+countDatasets?(opts: {
+ownerOmadiaUserId: string;
+}): Promise<number>;
 getDataset(datasetId: string, viewerOmadiaUserId: string): Promise<DatasetSummary | null>;
 queryDatasetRows(datasetId: string, viewerOmadiaUserId: string, opts?: DatasetQueryOptions): Promise<DatasetQueryResult | null>;
 deleteDataset(datasetId: string, actor: AclMutationOptions): Promise<boolean>;
