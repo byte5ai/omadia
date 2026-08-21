@@ -4515,6 +4515,31 @@ export async function getConductorRun(slug: string, runId: string): Promise<Cond
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
 }
 
+/** Delete a workflow. Physical when no run references it; otherwise a logical
+ *  removal (disabled + hidden) that keeps the run history as audit trace.
+ *  409 conductor.has_active_runs while runs are running/waiting. postJson
+ *  hard-codes POST, so this is a dedicated DELETE fetch mirroring
+ *  deleteConductorTemplate. */
+export async function deleteConductorWorkflow(slug: string): Promise<{ deleted: boolean; mode: 'hard' | 'soft' }> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`;
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      ...forwarded,
+    },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as { deleted: boolean; mode: 'hard' | 'soft' };
+}
+
 /** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
  *  driver (honoured at the next step boundary); terminal runs 409. */
 export async function cancelConductorRun(slug: string, runId: string): Promise<{ run: ConductorRun }> {
