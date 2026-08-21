@@ -207,8 +207,8 @@ deterministic tier additionally runs on every PR *for free* as part of
 
 - **`direct_injection` and `indirect_injection` currently have NO Tier A probe.**
   Both vectors were measured by `brief_delimiter`, which ran the real
-  `composeBrief` out of `src/devplatform/`. Epic #470 C10 moved the Dev Platform
-  to `byte5ai/omadia-dev-platform`, and a probe against a module core no longer
+  `composeBrief` out of the dev platform tree. Epic #470 C10 moved that tree to
+  its own repository, and a probe against a module core no longer
   ships measures a library rather than a deployed defense — so the probe, its
   five corpus scenarios and their baseline rows left with it. **This is a real
   coverage reduction, recorded rather than absorbed silently.** Two ways to close

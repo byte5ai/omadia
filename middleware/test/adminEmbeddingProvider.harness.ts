@@ -2,7 +2,7 @@
  * Shared harness for the `/api/v1/admin/embedding-provider` route tests.
  *
  * Extracted so the spec file stays about behaviour. Same convention as
- * `devplatform/devPlatformRoutes.harness.ts` — the `.harness.ts` suffix keeps
+ * the other route harnesses in this tree — the `.harness.ts` suffix keeps
  * it out of the test-file glob the runner uses.
  *
  * It models the runtime the way it actually behaves: `activate(id)` publishes
