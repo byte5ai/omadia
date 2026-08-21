@@ -195,6 +195,10 @@
           "title": "Knowledge-Graph Prioritäten",
           "description": "Pro Agent Block- und Boost-Listen setzen, die Recall-Treffer im Token-Budget-Assembler überschreiben."
         },
+        "datasets": {
+          "title": "Datensätze",
+          "description": "CSVs als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
+        },
         "bulkPromote": {
           "title": "Bulk-Promotion",
           "description": "Historische Turns nachträglich scoren und hoch bewertete als dauerhaftes Wissen promoten (idempotent)."
@@ -4173,6 +4177,56 @@
     "colWeight": "Gewicht",
     "colReason": "Grund",
     "colUpdated": "Aktualisiert"
+  },
+  "adminDatasets": {
+    "title": "Wissen · Datensätze",
+    "intro": "Eine CSV als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
+    "uploadHeading": "CSV importieren",
+    "fields": {
+      "file": "CSV-Datei",
+      "nameOptional": "Name (optional)"
+    },
+    "placeholders": {
+      "name": "Standard ist der Dateiname"
+    },
+    "upload": "Importieren",
+    "uploading": "Importiert",
+    "uploadLimits": "Höchstens {maxRows} Zeilen und {maxMb} MB pro Datei. Jede Zelle durchläuft vor dem Speichern den Privacy-Scan.",
+    "receipt": {
+      "imported": "Import abgeschlossen — {rows} Zeilen gespeichert.",
+      "privacyScan": "Privacy-Scan: {scanned} Zellen geprüft, {masked} maskiert.",
+      "truncated": "{cells} Zellen überschritten das Limit von 4.000 Zeichen pro Zelle und wurden gekürzt. Betroffene Spalten: {columns}."
+    },
+    "loading": "lädt…",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "empty": "Noch keine Datensätze importiert.",
+    "listCapped": "Es werden die {cap} neuesten Datensätze angezeigt — mehr liefert der Endpunkt nicht zurück, ältere können also existieren, ohne hier aufzutauchen.",
+    "listRange": "Zeige {from}–{to} von {total} Datensätzen",
+    "meta": "{rows} Zeilen · {columns} Spalten · importiert {created}",
+    "showDetails": "Schema & Zeilen",
+    "hideDetails": "Schließen",
+    "remove": "Löschen",
+    "confirmDelete": "Den Datensatz „{name}“ mit allen Zeilen und seinem Graph-Knoten löschen? Das lässt sich nicht rückgängig machen.",
+    "schemaHeading": "Abgeleitetes Schema",
+    "schema": {
+      "column": "Spalte",
+      "type": "Typ",
+      "sample": "Beispielwert"
+    },
+    "rowsHeading": "Zeilenvorschau",
+    "noRows": "Dieser Datensatz enthält keine Zeilen.",
+    "rowsRange": "{from}–{to} von {total} Zeilen",
+    "previousPage": "Zurück",
+    "nextPage": "Weiter",
+    "errors": {
+      "tooLarge": "Die Datei überschreitet das Upload-Limit von {maxMb} MB.",
+      "notCsv": "Bisher werden ausschließlich CSV-Dateien unterstützt.",
+      "noFile": "Es kam keine Datei an — bitte zuerst eine CSV auswählen.",
+      "importFailed": "Die CSV konnte nicht importiert werden. {detail}",
+      "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
+      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
+      "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"
+    }
   },
   "adminMemoryBackend": {
     "title": "Memory · Speicher-Backend",

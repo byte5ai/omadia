@@ -100,10 +100,20 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   private readonly detector: MergeCandidateDetectorService;
   private readonly log: (msg: string) => void;
 
+  /**
+   * Optional on the interface (plugin-api back-compat). Mirrors the inner
+   * graph's support instead of fabricating a capped count: the route treats
+   * absence as "backend cannot count" and the UI then warns instead of
+   * rendering a confidently wrong total.
+   */
+  readonly countDatasets?: (opts: { ownerOmadiaUserId: string }) => Promise<number>;
+
   constructor(opts: MergeTriggeringKnowledgeGraphOptions) {
     this.inner = opts.inner;
     this.detector = opts.detector;
     this.log = opts.log ?? ((msg: string): void => { console.error(msg); });
+    const innerCount = opts.inner.countDatasets?.bind(opts.inner);
+    if (innerCount) this.countDatasets = innerCount;
   }
 
   private fire(mkId: string): void {
@@ -597,6 +607,7 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]> {
     return this.inner.listDatasets(opts);
   }
