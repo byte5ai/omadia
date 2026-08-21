@@ -1472,12 +1472,14 @@ export declare function perCallerService<T>(factory: (caller: ServiceCaller) => 
 export declare function isPerCallerService<T = unknown>(value: unknown): value is PerCallerFactory<T>;
 export declare function resolvePerCallerService<T>(factory: PerCallerFactory<T>, caller: ServiceCaller): T;
 export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
+export type ServiceGateOperation = 'get' | 'replace';
 export declare class ServiceNotDeclaredError extends Error {
 readonly pluginId: string;
 readonly capability: string;
 readonly manifestField = "requires";
 readonly reason: ServiceNotDeclaredReason;
-constructor(pluginId: string, capability: string, reason?: ServiceNotDeclaredReason);
+readonly operation: ServiceGateOperation;
+constructor(pluginId: string, capability: string, reason?: ServiceNotDeclaredReason, operation?: ServiceGateOperation);
 }
 export interface ServicesAccessor {
 get<T>(name: string): T | undefined;

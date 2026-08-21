@@ -536,9 +536,25 @@ export function resolvePerCallerService<T>(
 export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
 
 /**
- * Thrown by `ctx.services.get(name)` when the plugin's manifest does not
- * declare `name` as a capability it `requires` — or declares it only under
- * `provides:` without having provided it (see {@link ServiceNotDeclaredReason}).
+ * Which `ctx.services` verb the gate refused — issue #788 follow-up.
+ *
+ * `get` and `replace` run the SAME grant check but are different mistakes, and
+ * naming the wrong one in the message sends the author to the wrong line:
+ *
+ *  - `get` — the plugin tried to RESOLVE a capability.
+ *  - `replace` — the plugin tried to SWAP OUT the live provider of a
+ *    capability. That is strictly more dangerous than resolving it, because
+ *    every other consumer in the process (core included) resolves the
+ *    replacement afterwards. It is gated on the same declaration for that
+ *    reason: a name a plugin may not read is a name it may not redefine.
+ */
+export type ServiceGateOperation = 'get' | 'replace';
+
+/**
+ * Thrown by `ctx.services.get(name)` / `ctx.services.replace(name, …)` when the
+ * plugin's manifest does not declare `name` as a capability it `requires` — or
+ * declares it only under `provides:` without having provided it (see
+ * {@link ServiceNotDeclaredReason}).
  *
  * Typed so a plugin can distinguish "the operator has not installed a
  * provider" (`get` returns `undefined`) from "I forgot to declare this"
@@ -552,19 +568,39 @@ export class ServiceNotDeclaredError extends Error {
   /** #788 — which of the two refusals this is. Defaults to `undeclared` so
    *  every pre-existing construction site keeps its exact message. */
   public readonly reason: ServiceNotDeclaredReason;
+  /** Which verb was refused. Defaults to `get`, the only gated verb before
+   *  the `replace` gate landed, so pre-existing call sites are unchanged. */
+  public readonly operation: ServiceGateOperation;
   constructor(
     pluginId: string,
     capability: string,
     reason: ServiceNotDeclaredReason = 'undeclared',
+    operation: ServiceGateOperation = 'get',
   ) {
+    const call =
+      operation === 'replace'
+        ? `ctx.services.replace('${capability}', …)`
+        : `ctx.services.get('${capability}')`;
+    // `replace` needs its own remedy sentence. The fix for a refused `get` is
+    // "provide it first, then read it back"; for a refused `replace` on a
+    // provides-only name that advice is impossible — the live registration
+    // belongs to somebody else, and `provide` would throw duplicate-provider
+    // against it. Say what the author can actually do instead.
+    const providesRemedy =
+      operation === 'replace'
+        ? `but the plugin has not called ctx.services.provide('${capability}', …) yet, so the live provider of '${capability}' belongs to somebody else — ` +
+          `a \`provides:\` entry grants a plugin power over ITS OWN registration, not the right to swap out another plugin's. ` +
+          `Wrap your own registration instead, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin legitimately decorates somebody else's implementation`
+        : `but the plugin has not called ctx.services.provide('${capability}', …) yet — ` +
+          `a \`provides:\` entry grants read-back of THIS plugin's own registration, not access to another plugin's service. ` +
+          `Either provide '${capability}' before resolving it, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin is a consumer of somebody else's implementation`;
     super(
       reason === 'provides-not-registered'
-        ? `plugin '${pluginId}' called ctx.services.get('${capability}') and its manifest declares '${capability}' under \`provides:\`, ` +
-            `but the plugin has not called ctx.services.provide('${capability}', …) yet — ` +
-            `a \`provides:\` entry grants read-back of THIS plugin's own registration, not access to another plugin's service. ` +
-            `Either provide '${capability}' before resolving it, or add '${capability}@<major>' to \`requires:\` ` +
-            `(or \`optional_requires:\` when absence is survivable) if this plugin is a consumer of somebody else's implementation`
-        : `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
+        ? `plugin '${pluginId}' called ${call} and its manifest declares '${capability}' under \`provides:\`, ` +
+            providesRemedy
+        : `plugin '${pluginId}' called ${call} but its manifest does not declare that capability — ` +
             `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
             `or \`provides:\` if this plugin is the provider — note that \`provides:\` only grants the name once the plugin has actually provided it)`,
     );
@@ -572,6 +608,7 @@ export class ServiceNotDeclaredError extends Error {
     this.pluginId = pluginId;
     this.capability = capability;
     this.reason = reason;
+    this.operation = operation;
   }
 }
 

@@ -685,3 +685,223 @@ describe('#789 — uploads may not claim a bundled plugin id', () => {
     assert.deepEqual(legacyServiceGrantsFor(BUNDLED_ID, catalog), []);
   });
 });
+
+// --- 4. #788 follow-up: `replace` is gated on the same declaration ----------
+
+/**
+ * `get` was gated; `replace` was not — and `replace` is the sharper verb.
+ *
+ * It only succeeds when a provider already exists, so an ungated `replace` was
+ * not "register something of mine" but "take this live name away from whoever
+ * owns it". Core registers `graphPool` and `anthropicClient` at boot, so any
+ * activated plugin could substitute its own object and every later consumer in
+ * the process — core included — would resolve the substitute.
+ *
+ * It also minted the fact §1's gate reads: `ServiceRegistry.track` counts a
+ * `replace` as a live registration, so an undeclared `replace` upgraded a bare
+ * `provides:` claim into a 'self-provided' grant. The #788 fix was reachable
+ * around, one verb over.
+ *
+ * REVERSION COUNTER-PROOF: drop `assertServiceGranted(name, 'replace')` from
+ * `ctx.services.replace` in `platform/pluginContext.ts` and the first three
+ * tests below stop throwing — the last one then observes the victim's object
+ * replaced by the attacker's.
+ */
+describe('#788 follow-up — `replace` may not take a name the plugin cannot read', () => {
+  const VICTIM = '@test/real-pool-owner';
+  const ATTACKER = '@test/undeclared-replacer';
+
+  it('refuses a replace of a name the manifest never declares', () => {
+    const catalog = catalogOf([pluginOf({ id: ATTACKER })]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    const realPool = { real: true };
+    registry.provide('graphPool', realPool, VICTIM);
+
+    assert.throws(
+      () => ctx.services.replace('graphPool', { evil: true }),
+      ServiceNotDeclaredError,
+      'an undeclared name must not be redefinable — a name a plugin may not read is a name it may not redefine',
+    );
+    assert.equal(
+      registry.get('graphPool'),
+      realPool,
+      'the victim\'s registration must survive the refused replace',
+    );
+  });
+
+  it('refuses a replace of a provides-only name the plugin has not provided', () => {
+    // The exact #788 shape, one verb over: `provides:` is a claim, and until
+    // the plugin holds its own registration the live provider is somebody
+    // else's to keep.
+    const catalog = catalogOf([
+      pluginOf({ id: ATTACKER, provides: ['graphPool@1'] }),
+    ]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    const realPool = { real: true };
+    registry.provide('graphPool', realPool, VICTIM);
+
+    assert.throws(
+      () => ctx.services.replace('graphPool', { evil: true }),
+      ServiceNotDeclaredError,
+      '`provides:` grants power over the plugin\'s OWN registration, not the right to swap out another plugin\'s',
+    );
+    assert.equal(registry.get('graphPool'), realPool);
+  });
+
+  it('does not let a refused replace mint a self-provided grant', () => {
+    // The escalation the gate closes. Before it, the refused-at-`get` plugin
+    // could call `replace` first: `track` counted the replacement as a live
+    // registration, `providedBy` went true, and the very next `get` classified
+    // as 'self-provided'. The throw must leave the registry untouched.
+    const catalog = catalogOf([
+      pluginOf({ id: ATTACKER, provides: ['graphPool@1'] }),
+    ]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    registry.provide('graphPool', { real: true }, VICTIM);
+
+    assert.throws(() => ctx.services.replace('graphPool', { evil: true }));
+    assert.equal(
+      registry.providedBy(ATTACKER, 'graphPool'),
+      false,
+      'a refused replace must not register anything, or the gate would grant on the strength of its own refusal',
+    );
+    assert.equal(
+      classify(ATTACKER, 'graphPool', catalog, registry),
+      'provides-not-registered',
+      'still refused at `get` afterwards — the escalation path must stay closed',
+    );
+  });
+
+  it('names `replace` in the error, not `get`', () => {
+    // The author called one verb; a message naming the other sends them to the
+    // wrong line. Both refusal reasons carry the operation.
+    const catalog = catalogOf([
+      pluginOf({ id: ATTACKER, provides: ['graphPool@1'] }),
+    ]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    registry.provide('graphPool', { real: true }, VICTIM);
+
+    assert.throws(
+      () => ctx.services.replace('graphPool', { evil: true }),
+      (err: unknown) => {
+        assert.ok(err instanceof ServiceNotDeclaredError);
+        assert.equal(err.operation, 'replace');
+        assert.equal(err.reason, 'provides-not-registered');
+        assert.match(err.message, /ctx\.services\.replace\('graphPool'/);
+        assert.doesNotMatch(err.message, /called ctx\.services\.get\(/);
+        return true;
+      },
+    );
+
+    const bare = catalogOf([pluginOf({ id: ATTACKER })]);
+    const second = makeCtx(ATTACKER, bare);
+    second.registry.provide('graphPool', { real: true }, VICTIM);
+    assert.throws(
+      () => second.ctx.services.replace('graphPool', { evil: true }),
+      (err: unknown) => {
+        assert.ok(err instanceof ServiceNotDeclaredError);
+        assert.equal(err.operation, 'replace');
+        assert.equal(err.reason, 'undeclared');
+        assert.match(err.message, /ctx\.services\.replace\('graphPool'/);
+        return true;
+      },
+    );
+  });
+
+  it('leaves `get` reporting itself as `get`', () => {
+    // Narrowness, on the error surface: threading the operation must not
+    // relabel the verb that was already gated.
+    const catalog = catalogOf([pluginOf({ id: ATTACKER })]);
+    const { ctx } = makeCtx(ATTACKER, catalog);
+    assert.throws(
+      () => ctx.services.get('graphPool'),
+      (err: unknown) => {
+        assert.ok(err instanceof ServiceNotDeclaredError);
+        assert.equal(err.operation, 'get');
+        assert.match(err.message, /called ctx\.services\.get\('graphPool'\)/);
+        return true;
+      },
+    );
+  });
+
+  it('leaves the decorator pattern working — the wrapping plugin declares the name', () => {
+    // THE NARROWNESS PROOF. `@omadia/orchestrator-extras` wraps
+    // `knowledgeGraph` and declares `knowledgeGraph@^1` under `requires:`.
+    // A gate that broke this would have to be reverted, so assert the real
+    // shape: read the original, wrap it, replace, and unwind cleanly.
+    const catalog = catalogOf([
+      pluginOf({
+        id: ATTACKER,
+        requires: ['knowledgeGraph@^1'],
+        provides: ['captureFilter@1'],
+      }),
+    ]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    const inner = { inner: true };
+    registry.provide('knowledgeGraph', inner, VICTIM);
+
+    assert.equal(ctx.services.get('knowledgeGraph'), inner);
+    const wrapped = { wraps: inner };
+    const undo = ctx.services.replace('knowledgeGraph', wrapped);
+    assert.equal(registry.get('knowledgeGraph'), wrapped);
+    undo();
+    assert.equal(
+      registry.get('knowledgeGraph'),
+      inner,
+      'the decorator must still unwind to the original on deactivate',
+    );
+  });
+
+  it('lets a plugin re-wrap its OWN registration without a `requires:` line', () => {
+    // The second legal case: the plugin provided the name itself, so it is
+    // already 'self-provided' and replacing its own object takes nothing from
+    // anyone.
+    const catalog = catalogOf([
+      pluginOf({ id: ATTACKER, provides: ['memoryStore@1'] }),
+    ]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    const first = { v: 1 };
+    ctx.services.provide('memoryStore', first);
+    const second = { v: 2 };
+    ctx.services.replace('memoryStore', second);
+    assert.equal(registry.get('memoryStore'), second);
+  });
+
+  it('leaves `provide` ungated — it cannot displace anyone', () => {
+    // The asymmetry is deliberate and must stay asserted, or a later reader
+    // "fixes" it by gating `provide` too and breaks every plugin that
+    // registers a name it did not spell in `provides:`. `provide` throws
+    // duplicate-provider rather than taking a live name.
+    const catalog = catalogOf([pluginOf({ id: ATTACKER })]);
+    const { ctx, registry } = makeCtx(ATTACKER, catalog);
+    const impl = { mine: true };
+    ctx.services.provide('somethingNobodyHolds', impl);
+    assert.equal(registry.get('somethingNobodyHolds'), impl);
+
+    registry.provide('graphPool', { real: true }, VICTIM);
+    assert.throws(
+      () => ctx.services.provide('graphPool', { evil: true }),
+      /duplicate provider/,
+      'the collision, not the grant gate, is what stops `provide` from shadowing',
+    );
+  });
+
+  it('still applies the legacy ramp to `replace`, consistently with `get`', () => {
+    // A grandfathered plugin resolves these names today; refusing it the
+    // `replace` half while granting the `get` half would be an inconsistency
+    // the ramp cannot explain. It retires the same way: one manifest line.
+    const teamsId = '@omadia/channel-teams';
+    const catalog = catalogOf([pluginOf({ id: teamsId })], {
+      origin: 'installed',
+    });
+    const { ctx, registry, logs } = makeCtx(teamsId, catalog);
+    registry.provide('graphPool', { real: true }, VICTIM);
+    const wrapped = { wrapped: true };
+    ctx.services.replace('graphPool', wrapped);
+    assert.equal(registry.get('graphPool'), wrapped);
+    assert.ok(
+      logs.some((line) => line.includes('legacy allowlist')),
+      'the ramp must still announce itself on the replace path',
+    );
+  });
+});

@@ -110,6 +110,7 @@ import {
   ServiceNotDeclaredError,
   parseCapabilityRef,
 } from '@omadia/plugin-api';
+import type { ServiceGateOperation } from '@omadia/plugin-api';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 
@@ -292,8 +293,18 @@ export const LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20: Readonly<
  *  2. installed, but the catalog knows the id as bundled — an upload or a
  *     local-dev package is SHADOWING code we ship (`PluginCatalog` resolves an
  *     `identity.id` collision in the upload's favour). It inherits nothing.
- *     This is #789's reported case, and `packageUploadService.ts` refuses such
- *     a package at ingest so it normally never gets this far.
+ *     This is #789's reported case.
+ *
+ *     For UPLOADS this branch is a second lock: `packageUploadService.ts`
+ *     refuses such a zip at ingest, so it normally never gets this far.
+ *     For LOCAL-DEV packages (`PLUGIN_DEV_DIR`) this branch is the ONLY lock —
+ *     `LocalDevPackageStore` feeds `extraSources` straight from the
+ *     filesystem and never touches `ingest`, so no refusal runs on that path.
+ *     That is deliberate rather than an oversight: `PLUGIN_DEV_DIR` is an
+ *     operator-set env var pointing at a directory the operator controls, so
+ *     shadowing a bundled id from it is a supported local workflow. What is
+ *     NOT supported is inheriting the shadowed id's grants, and this branch is
+ *     what denies them on both paths.
  *  3. installed, and the id is not one this repo bundles — a Hub plugin. Its
  *     standalone row applies; see that table's docblock for what that costs and
  *     how it retires.
@@ -459,12 +470,15 @@ export interface ServiceGrantGateOptions {
  */
 export function createServiceGrantGate(
   opts: ServiceGrantGateOptions,
-): (name: string) => void {
+): (name: string, operation?: ServiceGateOperation) => void {
   const { agentId, catalog, isRegisteredByPlugin, log } = opts;
   const declared = declaredServiceNames(agentId, catalog);
   const warned = new Set<string>();
 
-  return function assertServiceGranted(name: string): void {
+  return function assertServiceGranted(
+    name: string,
+    operation: ServiceGateOperation = 'get',
+  ): void {
     const outcome = classifyServiceGrant(
       agentId,
       name,
@@ -473,16 +487,24 @@ export function createServiceGrantGate(
       isRegisteredByPlugin,
     );
     if (outcome === 'undeclared') {
-      throw new ServiceNotDeclaredError(agentId, name);
+      throw new ServiceNotDeclaredError(agentId, name, 'undeclared', operation);
     }
     // #788 — a distinct reason, because it has a distinct fixer. 'undeclared'
     // sends the author to the manifest; this one sends them to the ORDER of
     // two calls they have already written.
     if (outcome === 'provides-not-registered') {
-      throw new ServiceNotDeclaredError(agentId, name, 'provides-not-registered');
+      throw new ServiceNotDeclaredError(
+        agentId,
+        name,
+        'provides-not-registered',
+        operation,
+      );
     }
     if (outcome === 'legacy-allowlist' && !warned.has(name)) {
       warned.add(name);
+      // Warned once per (plugin, capability) — NOT per (plugin, capability,
+      // operation). A plugin on the ramp that both resolves and replaces a
+      // name has one manifest line to fix, so one warning is the honest count.
       log(
         `[services] '${agentId}' resolved '${name}' without declaring it — allowed by the dated legacy allowlist (2026-08-20). ` +
           `Add '${name}@<major>' to the plugin's manifest \`requires:\`; the allowlist is a migration ramp, not a permission.`,
