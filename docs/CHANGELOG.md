@@ -18,6 +18,24 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
+
+- **The updater sidecar reports structured progress.** `GET /status` gains
+  `phase` (`resolve | preflight | pin | replace | health_gate | rollback | done`,
+  `null` while idle) and `failure` (`{kind:'health_gate', reason, observedVersion}`
+  or `{kind:'replace', service}`, `null` otherwise). `runUpdate` takes an
+  optional `setPhase` hook. The middleware's `/api/v1/admin/update/status`
+  passes both through (normalised to `null` for an older sidecar) together
+  with `previousVersion`, `startedAt` and `finishedAt`.
+- **Admin → Update blocks the page while an update runs** and shows a stepper
+  driven by `phase`, the polling itself (cadence, checks, last answer, and the
+  restart gap as "middleware is not answering — expected"), and a decoded
+  outcome. A `never_reachable` health gate is explained with its likely cause
+  (a newly required secret such as `CREDENTIAL_KEYCHAIN_KEY`, a failed
+  migration) and a link to `docs/upgrading.md`. The run is remembered in
+  `localStorage`, so the dialog resumes after the admin UI container itself is
+  replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
+
 ### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
 
 - **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**

@@ -40,6 +40,12 @@ function createState() {
     finishedAt: null,
     error: null,
     steps: [],
+    /** Current step of the job (`UpdatePhase` in updateJob.mjs); null while
+     *  idle. Lets the admin page render a stepper instead of parsing `steps`. */
+    phase: null,
+    /** Structured reason for a non-`succeeded` outcome (`UpdateFailure`);
+     *  null while idle, updating, or after success. */
+    failure: null,
   };
 }
 
@@ -149,6 +155,7 @@ export function createServer(deps = {}) {
         config,
         targetVersion,
         log,
+        setPhase: (phase) => { status.phase = phase; },
       });
       status.state = result.ok
         ? 'succeeded'
@@ -156,6 +163,7 @@ export function createServer(deps = {}) {
           ? 'rolled_back'
           : 'failed';
       status.error = result.error ?? null;
+      status.failure = result.failure ?? null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(`update aborted: ${message}`);
