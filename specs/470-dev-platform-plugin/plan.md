@@ -243,6 +243,15 @@ exactly one consumer; extracting a package for one consumer is speculative gener
 
 ### 4.2 What stays in core
 
+> **C10 note (the flip has landed).** Everything below is now settled by code, not by
+> plan. Core keeps `services/githubAppJwt.ts` (§5), the generic C1–C8 platform
+> capabilities, `DEV_ENDPOINTS_ENABLED` / `DEV_ENDPOINTS_LOOPBACK_ONLY`, `FLY_APP_NAME`,
+> the `express`/`pg`/`zod` plugin peer-dependencies, migrations `0022`–`0030` (until
+> **C11**) and the two `publicPaths` exemptions (until **C12**). The `DevJobStepPort` /
+> `devJobStepEffect.ts` line below is stale in the other direction: C5 (#554) deleted
+> that conductor port as dead code rather than keeping it, per `dormant-capabilities.md`
+> §1. The ratchet went 3,300 → 214 and the survivors are enumerated in `README.md`.
+
 - ~~`DevJob*` types in `@omadia/plugin-api` — a published, versioned contract that
   third-party plugins consume via `ctx.devJobs`.~~ **Superseded — §4.1 wins.**
   `implementation.md` §2.5 recorded that §4.1 and §4.2 contradicted each other on this
@@ -648,7 +657,7 @@ single irreversible step moved last.
 | **P2c** | Mechanical decoupling: break the `wireDevPlatform ↔ routes` cycle; collapse the 41 config keys into one namespaced object. ✅ `mintAppJwt` already moved to `src/services/githubAppJwt.ts`. | `index.ts` wiring reduced to one `assembleDevPlatform(cfg)` call |
 | **P3** | The extension points. **H1** dynamic `publicPaths` + exclusive prefix ownership · **G2** `auth: 'session'` composed *inside* the disposed guard · **G3** route-local raw parser · **G4** permission-gated `graphPool@1` + shared `runPluginMigrations`. | Any plugin can own routes, exemptions, raw bodies and tables |
 | **P3b** | **G7** (§4.3a): extract the `@theme inline` bridge out of `globals.css`; build the plugin Tailwind subset from it and serve it — replacing the 345 hand-written lines of `harness-admin-css.ts`; add a static-asset serving path for plugin SPA bundles; reject arbitrary-value classes at ingest. | Any plugin can ship a real UI in the house design system — the platform's weakest extension point today |
-| **P4** | Stand up `byte5ai/omadia-plugin-dev-platform`; move ~49,100 LOC per `core-decoupling-checklist.md`; port the UI; stand up the repo's own GHCR + SBOM + signing pipeline. **Do not delete the `publicPaths` exemptions until P3 is proven on the live runner phone-home path.** | Dev Platform installs and uninstalls from its own repo |
+| **P4** | ✅ Stood up as `byte5ai/omadia-dev-platform`; ~49k LOC moved; UI ported; the repo owns its GHCR + SBOM + signing pipeline. Core's side is **C10** (this flip). The `publicPaths` exemptions deliberately survive it — they leave in **C12**, alone, in a single revertible commit. | Dev Platform installs and uninstalls from its own repo |
 | **P5** | Migration ownership handoff (no renumbering) + ledger seed, tested against a database restored from a production snapshot. Its own PR, its own rollback story. | Plugin owns its schema |
 | **P6** | Delete the residue: core's `DEV_*` config, the compose overlay, the CI matrix entries and `id-token: write`, the workflow prompt rules, and every comment reference. | `node scripts/check-core-decoupling.mjs --report` reads **0**, and every row of `acceptance.md` §2 and §3 passes |
 

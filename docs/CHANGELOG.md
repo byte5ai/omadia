@@ -18,6 +18,38 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
+
+- **BREAKING for operators who ran it.** The Dev Platform — isolated per-job code
+  runners (clone → agent-edit → diff → server-side PR), its repo/job/gate admin
+  surface, the GitHub App onboarding, the webhook trigger, the LLM proxy and the
+  runner sidecars — is no longer part of core. It ships as an installable,
+  uninstallable plugin from
+  [`byte5ai/omadia-dev-platform`](https://github.com/byte5ai/omadia-dev-platform).
+  **Install it through the plugin Hub, or upload its ZIP.**
+- **Configuration moves with it.** All 43 `DEV_PLATFORM_*` / `DEV_JOB_*` /
+  `DEV_RUNNER_*` / `DEV_FLY_*` / `DEV_EGRESS_*` / `DEV_ARTIFACT_*` /
+  `DEV_WEBHOOK*` environment variables are gone from the middleware schema and are
+  now plugin settings. `middleware/.env.example` points operators at the plugin.
+  Unrelated lookalikes are **unchanged**: `DEV_ENDPOINTS_ENABLED` and
+  `DEV_ENDPOINTS_LOOPBACK_ONLY` are core's dev-graph endpoints, and `FLY_APP_NAME`
+  describes the host.
+- **Your data is not touched.** Migrations `0022`–`0030` and every `dev_*` table
+  stay exactly where they are; core still ships and applies them. The handoff of
+  ledger ownership to the plugin is a separate, independently revertible change
+  (#470 C11), and it seeds by filename only against a per-file schema witness —
+  it never deletes the donor rows.
+- **In-flight jobs keep working across the upgrade.** The two `auth/publicPaths.ts`
+  exemptions that let a runner phone home without a session are deliberately still
+  present; they are removed on their own afterwards (#470 C12).
+- The `dev-runner` and `dev-runner-daemon` images are no longer built, signed or
+  published from this repository. The plugin repo owns their GHCR publishing, SBOM
+  and cosign signing. A daemon pinning the old keyless certificate identity needs
+  the transition `--certificate-identity-regexp` before it will accept images from
+  the new signer.
+- In chat, a dev-job start no longer renders its bespoke card; it uses the generic
+  long-running-task card instead (#470 H3).
+
 ### Fixed — plugin SQL ledgers now live in a core-proof namespace
 
 - `permissions.sql.ledger` is now kernel-validated as

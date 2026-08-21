@@ -54,8 +54,6 @@ import { useChatSessionsCtx } from '../_lib/chatSessionsContext';
 import { dismissSeenTurns, useStreamStore } from '../_lib/streamStore';
 import { ChoiceCard } from '../_components/ChoiceCard';
 import { McpInputCard } from '../_components/chat/McpInputCard';
-import { DevJobChatCard } from '../_components/devjobs/DevJobChatCard';
-import { parseDevJobStartResult } from '../_components/devjobs/devJobChatCardState';
 import { TaskChatCard } from '../_components/tasks/TaskChatCard';
 import {
   isTaskStartToolName,
@@ -1094,14 +1092,10 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
       </summary>
       <div className="flex flex-col gap-1 px-2 pb-2">
         {tools.map((tool) => {
-          // Epic #470 W3 — a `dev_job_start` call renders a live dev-job card
-          // (seeded from its tool result) instead of the generic tool row.
-          const seed =
-            tool.name === 'dev_job_start' ? parseDevJobStartResult(tool.output) : null;
-          if (seed) return <DevJobChatCard key={tool.id} seed={seed} />;
-          // W2-2 (issue #543) — any OTHER `<tool>_start` from the generic
-          // long-running task seam renders the tool-agnostic task card. Checked
-          // second so a tool with its own richer, gate-capable card keeps it.
+          // W2-2 (issue #543) — any `<tool>_start` from the generic
+          // long-running task seam renders the tool-agnostic task card. Epic
+          // #470 H3: the bespoke card left with the Dev Platform, so that
+          // plugin's start tool now lands here too.
           const taskSeed = isTaskStartToolName(tool.name)
             ? parseTaskStartResult(tool.output)
             : null;

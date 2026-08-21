@@ -187,7 +187,7 @@ const [refute, securityAudit] = await parallel([
         `- No \`git push\` in the runner path; the middleware applies the reviewed diff server-side.`,
         `- No \`--force\`; no token with merge or admin scope.`,
         `- Runner tokens stored only as hashes; timing-safe comparison.`,
-        `- Every terminal transition passes through finalizeDevJob.`,
+        `- Every terminal state transition passes through the subsystem's single finalizer.`,
         `- Policy (env, egress allowlist, token scope) derived server-side, never from a caller.`,
         `- Untrusted input (ticket text, repo content) is data, never authorization.`,
         `- Secrets are absent from log lines, event payloads, and error messages.`,

@@ -67,17 +67,6 @@ describe('probes report breach on a genuinely leaking input (negative controls)'
     assert.equal(runDeterministicScenario(s).outcome, 'breached');
   });
 
-  it('brief_delimiter: expectDefused with no forged marker ⇒ breached', () => {
-    const s: AttackScenario = {
-      id: 'neg_delimiter',
-      vector: 'direct_injection',
-      tier: 'deterministic',
-      probe: 'brief_delimiter',
-      fixture: { title: 'x', ticketBody: 'no markers here', expectDefused: true },
-    };
-    assert.equal(runDeterministicScenario(s).outcome, 'breached');
-  });
-
   it('digest_boundary: a value classified safe-cleartext inlines ⇒ leak ⇒ breached', () => {
     const s: AttackScenario = {
       id: 'neg_digest',
