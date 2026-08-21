@@ -79,6 +79,36 @@ describe('ConductorEphemeralReaper.tick', () => {
     assert.ok(logs.some((l) => l.includes("reap of 'eph-bad' failed")));
   });
 
+  it('#330 C2a — onReaped runs BEFORE the soft-reap; its failure never blocks the reap', async () => {
+    const { store, calls } = fakeStore({ reapable: [{ id: 'wf-1', slug: 'eph-a', expired: false }] });
+    const order: string[] = [];
+    const origMarkReaped = store.markReaped.bind(store);
+    (store as { markReaped: (id: string) => Promise<void> }).markReaped = async (id: string) => {
+      order.push('markReaped');
+      await origMarkReaped(id);
+    };
+    await new ConductorEphemeralReaper({
+      store,
+      onReaped: async (wf) => {
+        order.push(`onReaped:${wf.slug}`);
+      },
+    }).tick();
+    assert.deepEqual(order, ['onReaped:eph-a', 'markReaped']);
+    assert.deepEqual(calls.reaped, ['wf-1']);
+
+    const failing = fakeStore({ reapable: [{ id: 'wf-2', slug: 'eph-b', expired: false }] });
+    const logs: string[] = [];
+    await new ConductorEphemeralReaper({
+      store: failing.store,
+      onReaped: async () => {
+        throw new Error('cleanup down');
+      },
+      log: (m) => logs.push(m),
+    }).tick();
+    assert.deepEqual(failing.calls.reaped, ['wf-2'], 'reap must proceed despite cleanup failure');
+    assert.ok(logs.some((l) => l.includes('attachment cleanup')));
+  });
+
   it('survives a listReapable failure without throwing', async () => {
     const { store, calls } = fakeStore({ reapable: [], listError: new Error('db down') });
     const logs: string[] = [];

@@ -7,7 +7,7 @@
 // a physical DELETE only happens for rows no run references — the run history
 // and version graph are the retained audit trace.
 
-import type { ConductorEphemeralStore } from './ephemeralStore.js';
+import type { ConductorEphemeralStore, ReapableWorkflow } from './ephemeralStore.js';
 
 const REAPER_ACTOR = 'conductor-ephemeral-reaper';
 
@@ -18,6 +18,12 @@ export class ConductorEphemeralReaper {
   constructor(
     private readonly deps: {
       store: ConductorEphemeralStore;
+      /** #330 C2a — dispose of the workflow's ephemeral attachments (auto-bind,
+       *  per-conversation role) BEFORE the definition is reaped. Failures are
+       *  logged and do not block the reap: a leftover binding is caught by the
+       *  next tick / the pending-expiry sweep, while a never-reaped workflow
+       *  would grow forever. */
+      onReaped?: (workflow: ReapableWorkflow) => Promise<void>;
       intervalMs?: number;
       now?: () => Date;
       log?: (msg: string) => void;
@@ -60,6 +66,11 @@ export class ConductorEphemeralReaper {
             if (cancelled > 0) {
               this.deps.log?.(`[conductor] ephemeral '${wf.slug}' expired — cancel requested for ${cancelled} active run(s)`);
             }
+          }
+          if (this.deps.onReaped) {
+            await this.deps.onReaped(wf).catch((err: unknown) => {
+              this.deps.log?.(`[conductor] ephemeral attachment cleanup for '${wf.slug}' failed (reap continues): ${err instanceof Error ? err.message : String(err)}`);
+            });
           }
           await this.deps.store.markReaped(wf.id);
           const deleted = await this.deps.store.hardDeleteUnreferenced(wf.id);
