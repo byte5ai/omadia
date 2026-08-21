@@ -520,8 +520,41 @@ export function resolvePerCallerService<T>(
 }
 
 /**
- * Thrown by `ctx.services.get(name)` when the plugin's manifest does not
- * declare `name` as a capability it `requires` (or `provides`).
+ * Why a `ctx.services.get(name)` call was refused — issue #788.
+ *
+ * The two reasons have different fixers and must not be collapsed:
+ *
+ *  - `undeclared` — the manifest never mentions the capability. The author
+ *    adds a `requires:` / `optional_requires:` line.
+ *  - `provides-not-registered` — the manifest DOES mention it, but only under
+ *    `provides:`, and the plugin has not called `ctx.services.provide(name, …)`
+ *    yet. `provides:` grants read-back of the plugin's OWN registration; until
+ *    that registration exists there is nothing of the plugin's to read back,
+ *    and resolving the name would hand over somebody else's implementation.
+ *    The author either provides it first, or declares it as a dependency.
+ */
+export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
+
+/**
+ * Which `ctx.services` verb the gate refused — issue #788 follow-up.
+ *
+ * `get` and `replace` run the SAME grant check but are different mistakes, and
+ * naming the wrong one in the message sends the author to the wrong line:
+ *
+ *  - `get` — the plugin tried to RESOLVE a capability.
+ *  - `replace` — the plugin tried to SWAP OUT the live provider of a
+ *    capability. That is strictly more dangerous than resolving it, because
+ *    every other consumer in the process (core included) resolves the
+ *    replacement afterwards. It is gated on the same declaration for that
+ *    reason: a name a plugin may not read is a name it may not redefine.
+ */
+export type ServiceGateOperation = 'get' | 'replace';
+
+/**
+ * Thrown by `ctx.services.get(name)` / `ctx.services.replace(name, …)` when the
+ * plugin's manifest does not declare `name` as a capability it `requires` — or
+ * declares it only under `provides:` without having provided it (see
+ * {@link ServiceNotDeclaredReason}).
  *
  * Typed so a plugin can distinguish "the operator has not installed a
  * provider" (`get` returns `undefined`) from "I forgot to declare this"
@@ -532,15 +565,50 @@ export class ServiceNotDeclaredError extends Error {
   public readonly capability: string;
   /** The manifest field that would grant it. */
   public readonly manifestField = 'requires';
-  constructor(pluginId: string, capability: string) {
+  /** #788 — which of the two refusals this is. Defaults to `undeclared` so
+   *  every pre-existing construction site keeps its exact message. */
+  public readonly reason: ServiceNotDeclaredReason;
+  /** Which verb was refused. Defaults to `get`, the only gated verb before
+   *  the `replace` gate landed, so pre-existing call sites are unchanged. */
+  public readonly operation: ServiceGateOperation;
+  constructor(
+    pluginId: string,
+    capability: string,
+    reason: ServiceNotDeclaredReason = 'undeclared',
+    operation: ServiceGateOperation = 'get',
+  ) {
+    const call =
+      operation === 'replace'
+        ? `ctx.services.replace('${capability}', …)`
+        : `ctx.services.get('${capability}')`;
+    // `replace` needs its own remedy sentence. The fix for a refused `get` is
+    // "provide it first, then read it back"; for a refused `replace` on a
+    // provides-only name that advice is impossible — the live registration
+    // belongs to somebody else, and `provide` would throw duplicate-provider
+    // against it. Say what the author can actually do instead.
+    const providesRemedy =
+      operation === 'replace'
+        ? `but the plugin has not called ctx.services.provide('${capability}', …) yet, so the live provider of '${capability}' belongs to somebody else — ` +
+          `a \`provides:\` entry grants a plugin power over ITS OWN registration, not the right to swap out another plugin's. ` +
+          `Wrap your own registration instead, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin legitimately decorates somebody else's implementation`
+        : `but the plugin has not called ctx.services.provide('${capability}', …) yet — ` +
+          `a \`provides:\` entry grants read-back of THIS plugin's own registration, not access to another plugin's service. ` +
+          `Either provide '${capability}' before resolving it, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin is a consumer of somebody else's implementation`;
     super(
-      `plugin '${pluginId}' called ctx.services.get('${capability}') but its manifest does not declare that capability — ` +
-        `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
-        `or \`provides:\` if this plugin is the provider)`,
+      reason === 'provides-not-registered'
+        ? `plugin '${pluginId}' called ${call} and its manifest declares '${capability}' under \`provides:\`, ` +
+            providesRemedy
+        : `plugin '${pluginId}' called ${call} but its manifest does not declare that capability — ` +
+            `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
+            `or \`provides:\` if this plugin is the provider — note that \`provides:\` only grants the name once the plugin has actually provided it)`,
     );
     this.name = 'ServiceNotDeclaredError';
     this.pluginId = pluginId;
     this.capability = capability;
+    this.reason = reason;
+    this.operation = operation;
   }
 }
 
@@ -563,6 +631,16 @@ export class ServiceNotDeclaredError extends Error {
  * plugin could ask for any service — including `graphPool`, the same Postgres
  * pool core uses — with no manifest declaration and nothing in the install
  * dialog.
+ *
+ * **A `provides:` entry grants the name only once it has been provided
+ * (issue #788).** `provides:` is a self-declaration that costs nothing at
+ * activation — unlike `requires:`, it creates no ordering edge and cannot fail
+ * an activation. A plugin that listed `provides: ["graphPool@1"]` and never
+ * called `provide()` was therefore passing the gate for somebody else's
+ * `graphPool`: an undeclared-capability bypass wearing a declaration's
+ * clothes. The kernel now checks the registry for a live registration owned by
+ * the asking plugin and throws with
+ * `reason: 'provides-not-registered'` until there is one.
  *
  * `has` stays ungated: it answers a yes/no existence question and hands over
  * no capability, so gating it would only turn feature-probing into
@@ -626,10 +704,24 @@ export interface ServicesAccessor {
    * the dispose handle restores it on plugin deactivate. Throws if no
    * provider exists yet — use `provide` for the first registration.
    *
-   * Intentionally privileged: only call when this plugin is the canonical
-   * decorator for the named capability (e.g. `harness-orchestrator-extras`
-   * wrapping `knowledgeGraph` with the capture-filter). Treat the swap as
-   * a coordinated handoff, not a competing provider.
+   * Intentionally privileged, and ENFORCED as such: `replace` is
+   * declaration-gated on exactly the same terms as {@link get}. It throws
+   * {@link ServiceNotDeclaredError} with `operation: 'replace'` when the
+   * manifest declares `name` nowhere, and when it declares `name` only under
+   * `provides:` without this plugin holding a live registration for it — in
+   * that case the live provider belongs to somebody else, and taking it would
+   * hand every other consumer in the process an implementation they never
+   * asked for.
+   *
+   * So the canonical decorator declares the capability it wraps under
+   * `requires:`/`optional_requires:` (e.g. `harness-orchestrator-extras`
+   * declares `knowledgeGraph@^1` and wraps it with the capture-filter), and a
+   * plugin re-wrapping its OWN registration is already permitted. Treat the
+   * swap as a coordinated handoff, not a competing provider.
+   *
+   * Note the asymmetry with `provide`, which is NOT gated: `provide` cannot
+   * displace anyone (it throws duplicate-provider instead), whereas `replace`
+   * only succeeds when there is an owner to displace.
    *
    * Accepts a {@link perCallerService} wrapper on the same terms as
    * `provide`.

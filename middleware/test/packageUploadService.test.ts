@@ -73,6 +73,9 @@ function fakeCatalog(): PluginCatalog {
     get: () => undefined,
     load: async () => undefined,
     list: () => [],
+    // #789 — see the note on the shared helper in _helpers/pluginPackageZip.ts.
+    // This fixture's plugin id is `@test/scan-target`, which nothing bundles.
+    isBundledId: () => false,
   } as unknown as PluginCatalog;
 }
 

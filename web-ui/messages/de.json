@@ -973,6 +973,12 @@
         "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
       }
     },
+    "package": {
+      "id_conflict_bundled": {
+        "what": "Diese Plugin-ID gehört zu einem Plugin, das mit omadia ausgeliefert wird — der Upload wurde abgelehnt.",
+        "next": "Vergib dem Paket in manifest.yaml und package.json eine eigene ID und lade es erneut hoch."
+      }
+    },
     "providers": {
       "apply_failed": {
         "what": "Die Zuordnung wurde angenommen, konnte aber nicht ins Plugin geschrieben werden.",

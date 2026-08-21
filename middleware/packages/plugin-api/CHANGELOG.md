@@ -8,6 +8,42 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.10.0 — 2026-08-21
+
+Additive. The service grant gate reports which verb it refused, and `replace`
+is now gated on the same declaration as `get` (issues #788, #789).
+
+Numbered 1.10.0 rather than 1.8.0: 1.8.0 and 1.9.0 were taken on `main` by the
+transcription capability (#829) and the timer/nudge surface (#830) while this
+branch was open. Reusing 1.8.0 would have shipped two different exported type
+surfaces under one version — the failure this file's SemVer rule exists to
+prevent.
+
+### Added
+
+- **`ServiceGateOperation`** — `'get' | 'replace'`, the `ctx.services` verb the
+  gate refused.
+- **`ServiceNotDeclaredError.operation`** — defaults to `'get'`, so every
+  existing construction site keeps its exact message. The constructor takes it
+  as an optional 4th argument.
+
+### Changed
+
+- **`ctx.services.replace(name, …)` now throws `ServiceNotDeclaredError`** when
+  the plugin's manifest does not declare `name` under
+  `requires:`/`optional_requires:`, and when it declares `name` only under
+  `provides:` without holding a live registration for it. `replace` is the one
+  verb that takes a live name away from its owner, so an ungated `replace` let
+  any activated plugin swap out core's `graphPool` or another plugin's service
+  for an implementation every later consumer then resolves. `provide` stays
+  ungated — it throws duplicate-provider rather than displacing anyone.
+
+  Decorators are unaffected: wrapping a capability already requires declaring
+  it (`@omadia/orchestrator-extras` declares `knowledgeGraph@^1`), and
+  re-wrapping a plugin's own registration is already `self-provided`. Scanned
+  before landing: 21 bundled packages and 35 sibling plugin repos contain one
+  `ctx.services.replace` call site between them, and it declares its name.
+
 ## 1.6.0 — 2026-08-21
 
 Additive. `permissions.sql` gains an optional `handoff` — a path, inside the
