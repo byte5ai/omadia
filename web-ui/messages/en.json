@@ -465,7 +465,7 @@
     "deleteConfirmButton": "Delete",
     "deleteCancelButton": "Cancel",
     "deleteFailed": "The workflow could not be deleted",
-    "deleteHasActiveRuns": "This workflow has running or waiting runs — cancel them first, then delete.",
+    "deleteHasActiveRuns": "This workflow has running or waiting runs — the run history is open below: cancel them there, then delete.",
     "running": "Running…",
     "refreshButton": "Refresh",
     "statusLabel": "Status",

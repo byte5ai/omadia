@@ -465,7 +465,7 @@
     "deleteConfirmButton": "Löschen",
     "deleteCancelButton": "Abbrechen",
     "deleteFailed": "Der Workflow konnte nicht gelöscht werden",
-    "deleteHasActiveRuns": "Dieser Workflow hat laufende oder wartende Läufe — erst abbrechen, dann löschen.",
+    "deleteHasActiveRuns": "Dieser Workflow hat laufende oder wartende Läufe — der Verlauf ist unten geöffnet: dort erst abbrechen, dann löschen.",
     "running": "Läuft…",
     "refreshButton": "Aktualisieren",
     "statusLabel": "Status",
