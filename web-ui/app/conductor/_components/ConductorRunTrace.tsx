@@ -165,23 +165,29 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
 
   // #759 — operator cancel. 'waiting' ends immediately; 'running' shows the
   // pending hint until the driver honours the flag at the next step boundary.
-  const [cancelling, setCancelling] = useState(false);
+  // Offered on the run-list rows too (#330 field report): the delete guard
+  // demands cancelling active runs, so the button must be findable without
+  // knowing to open a single trace first. Busy state is per run id — one
+  // pending cancel must not lock every other row.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const cancelRun = useCallback(
     async (runId: string) => {
       if (!confirm(t('cancelRunConfirm'))) return;
-      setCancelling(true);
+      setCancellingId(runId);
       setError(null);
       try {
         await cancelConductorRun(slug, runId);
-        setSelected(await getConductorRun(slug, runId));
+        // Refresh whichever lens is open: the trace when this run is selected,
+        // and always the list (status badge flips / row button disappears).
+        if (selected?.run.id === runId) setSelected(await getConductorRun(slug, runId));
         await reload();
       } catch (err) {
         setError(err instanceof ApiError ? t('cancelRunFailed') : String(err));
       } finally {
-        setCancelling(false);
+        setCancellingId(null);
       }
     },
-    [slug, t, reload],
+    [slug, t, reload, selected],
   );
 
   return (
@@ -209,7 +215,7 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
             {(selected.run.status === 'running' || selected.run.status === 'waiting') && (
               <Button
                 variant="danger"
-                busy={cancelling}
+                busy={cancellingId === selected.run.id}
                 busyLabel={t('cancelRunBusy')}
                 onClick={() => void cancelRun(selected.run.id)}
               >
@@ -230,10 +236,10 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
       ) : (
         <ul className="grid gap-2">
           {runs.map((r) => (
-            <li key={r.id}>
+            <li key={r.id} className="flex items-center gap-2">
               {/* eslint-disable-next-line no-restricted-syntax -- full-width run-list row selector opening a trace, not a §4.2 CTA */}
               <button
-                className="flex w-full items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
+                className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
                 onClick={() => void openRun(r.id)}
               >
                 <span className="flex items-center gap-3">
@@ -242,6 +248,20 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
                 </span>
                 <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">{fmtTime(r.startedAt, format)}</span>
               </button>
+              {/* #330 field report — the delete guard demands cancelling active
+                  runs; the button has to be visible from the LIST, not hidden
+                  inside a single trace. Sibling (not nested) button: the row
+                  selector stays a plain button, valid HTML. */}
+              {(r.status === 'running' || r.status === 'waiting') && (
+                <Button
+                  variant="danger"
+                  busy={cancellingId === r.id}
+                  busyLabel={t('cancelRunBusy')}
+                  onClick={() => void cancelRun(r.id)}
+                >
+                  {t('cancelRunButton')}
+                </Button>
+              )}
             </li>
           ))}
         </ul>

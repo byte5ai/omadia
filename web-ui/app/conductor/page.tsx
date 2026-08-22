@@ -148,11 +148,14 @@ export default function ConductorPage(): React.JSX.Element {
         await reload();
       } catch (err) {
         // Catalog copy, not the raw ApiError text (i18n hard rule) — the 409
-        // active-runs case gets its own actionable message.
+        // active-runs case gets its own actionable message AND opens the run
+        // history right away (#330 field report): the guard demands cancelling
+        // active runs, so put the cancel buttons on screen instead of making
+        // the operator hunt for them.
         setDeleteSlug(null);
-        setDeleteError(
-          err instanceof ApiError && err.status === 409 ? t('deleteHasActiveRuns') : t('deleteFailed'),
-        );
+        const hasActiveRuns = err instanceof ApiError && err.status === 409;
+        if (hasActiveRuns) setHistorySlug(wfSlug);
+        setDeleteError(hasActiveRuns ? t('deleteHasActiveRuns') : t('deleteFailed'));
       } finally {
         setDeleteBusy(false);
       }

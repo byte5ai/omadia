@@ -18,6 +18,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — cancelling Conductor runs no longer requires finding the hidden button (#330 field report)
+
+- The run history offers **Cancel** directly on each running/waiting row (previously only
+  inside an opened trace — the delete guard said "cancel first" while the button was
+  effectively unfindable). Per-run busy state; the row-level cancel does not open the trace.
+- A delete blocked by active runs (409) now **opens the run history automatically** and the
+  message says where to cancel (en+de).
+
 ### Fixed — verifier: judge sees the sentence a fragment claim was cut from (#129 follow-up)
 
 - The claim extractor sometimes emits a subject-less fragment ("in die
