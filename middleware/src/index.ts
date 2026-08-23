@@ -3660,6 +3660,20 @@ async function main(): Promise<void> {
       attachments: ephemeralAttachmentsStore,
       disposeAttachment: disposeEphemeralAttachment,
       auditBindingChange,
+      // #330 field report — rehydration payload: the workflow's newest still
+      // active run, so a restarted facilitator plugin can keep poking its
+      // timer await. Read-only, newest-first, absent run → null.
+      resolveActiveRun: async (workflowId: string) => {
+        const r = await graphPool.query<{ id: string }>(
+          `SELECT r.id FROM conductor_runs r
+             JOIN conductor_workflow_versions v ON r.workflow_version_id = v.id
+            WHERE v.workflow_id = $1 AND r.status IN ('running', 'waiting')
+            ORDER BY r.started_at DESC
+            LIMIT 1`,
+          [workflowId],
+        );
+        return r.rows[0]?.id ?? null;
+      },
       log: (m) => console.log(m),
     });
     serviceRegistry.provide('agentProvisioning', agentSetup.agentProvisioning);

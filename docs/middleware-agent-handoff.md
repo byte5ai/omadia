@@ -1315,6 +1315,12 @@ das Gate, kein Katalogeintrag):
   adoptiert. bind/unbind laufen als `channel.binding_change` ins admin_audit.
   `attachWorkflow()` (guarded: nur eigene pending-Row) koppelt das Binding an
   den Facilitation-Run.
+- **Restart-Rehydration (#330 field report):** `listOwnAttachments({agentSlug})`
+  liefert die eigenen, nicht abgelaufenen Attachment-Rows inkl. `activeRunId`
+  (neuester running/waiting Run des Workflows, via `resolveActiveRun` in
+  `src/index.ts`). Der Facilitator baut daraus nach einem Deploy seinen
+  In-Memory-State wieder auf — ohne das lehnte er nach jedem Fly-Restart alle
+  progress/nudge-Calls ab ("kein aktives Facilitation-Ziel").
 - **`conductorRoleAssignments`** (`src/conductor/scopedRoleAssignments.ts`):
   Rollen-Writes hart auf Präfix `facilitation-` beschränkt; jede
   Holder-Mutation läuft durch den #759-Audit-Sink

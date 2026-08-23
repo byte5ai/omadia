@@ -26,6 +26,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 - A delete blocked by active runs (409) now **opens the run history automatically** and the
   message says where to cancel (en+de).
 
+### Added — restart-proof facilitation groundwork (#330 field report)
+
+- Graph migration `0009_teams_conversation_refs.sql`: `teams_conversation_refs` — write-through
+  backing store for the Teams channel plugin's per-conversation Bot-Framework
+  ConversationReference cache. The in-memory LRU dies with every restart, after which
+  proactive delivery (group nudges via `conversationSend`, roster reads) answered
+  `no_binding` until the conversation produced a new inbound activity.
+- `conversationBindings.listOwnAttachments({agentSlug})`: read-own listing of a plugin's
+  non-expired ephemeral attachments, enriched with the workflow's newest running/waiting run
+  (`activeRunId`). Lets a restarted agent plugin rehydrate its facilitation state instead of
+  refusing every `facilitation_progress`/`facilitation_nudge` call. Same attribution trust
+  model as bind/unbind; read-only.
+
 ### Fixed — verifier: judge sees the sentence a fragment claim was cut from (#129 follow-up)
 
 - The claim extractor sometimes emits a subject-less fragment ("in die
