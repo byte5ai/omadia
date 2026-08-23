@@ -91,6 +91,31 @@ function harness(opts?: {
       input.agentSlug === 'facilitator' ? ({} as EphemeralAttachment) : undefined,
     getByConversation: async () => attachmentRow,
     getByWorkflow: async () => [],
+    listByAgent: async (agentSlug: string) =>
+      agentSlug === 'facilitator'
+        ? [
+            {
+              id: '1',
+              workflowId: 'wf-1',
+              agentSlug: 'facilitator',
+              channelType: 'teams',
+              channelKey: 'conv-1',
+              roleKey: 'facilitation-abc',
+              state: 'attached',
+              expiresAt: new Date('2026-08-23T00:00:00.000Z'),
+            },
+            {
+              id: '2',
+              workflowId: null,
+              agentSlug: 'facilitator',
+              channelType: 'teams',
+              channelKey: 'conv-pending',
+              roleKey: null,
+              state: 'pending',
+              expiresAt: new Date('2026-08-23T00:00:00.000Z'),
+            },
+          ]
+        : [],
     listExpiredPending: async () => [],
     listExpiredAttached: async () => [],
     delete: async () => undefined,
@@ -106,6 +131,7 @@ function harness(opts?: {
     disposeAttachment: async (attachment, actor) => {
       calls.disposed.push({ channelKey: attachment.channelKey, actor });
     },
+    resolveActiveRun: async (workflowId) => (workflowId === 'wf-1' ? 'run-restored' : null),
     auditBindingChange: async (entry) => {
       calls.audits.push({ action: entry.action, channelKey: entry.channelKey });
     },
@@ -288,5 +314,26 @@ describe('conversationBindings.attachWorkflow (M1 guard)', () => {
       workflowId: 'wf-1', expiresAt: new Date(),
     });
     assert.deepEqual(foreign, { attached: false });
+  });
+});
+
+// #330 field report — restart rehydration: the read-own listing that lets the
+// facilitator rebuild its in-memory state after a deploy instead of refusing
+// every progress/nudge call.
+describe('conversationBindings.listOwnAttachments', () => {
+  it('returns only the caller-scoped rows, enriched with the active run when one exists', async () => {
+    const { services } = harness();
+    const rows = await services.conversationBindings.listOwnAttachments({ agentSlug: 'facilitator' });
+    assert.equal(rows.length, 2);
+    const attached = rows.find((r) => r.conversationId === 'conv-1');
+    assert.equal(attached?.state, 'attached');
+    assert.equal(attached?.roleKey, 'facilitation-abc');
+    assert.equal(attached?.activeRunId, 'run-restored');
+    const pending = rows.find((r) => r.conversationId === 'conv-pending');
+    assert.equal(pending?.state, 'pending');
+    assert.equal(pending?.activeRunId, null);
+
+    const foreign = await services.conversationBindings.listOwnAttachments({ agentSlug: 'intruder' });
+    assert.deepEqual(foreign, []);
   });
 });

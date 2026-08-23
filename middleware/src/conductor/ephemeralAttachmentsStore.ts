@@ -105,6 +105,18 @@ export class ConductorEphemeralAttachmentsStore {
     return r.rows[0] ? toAttachment(r.rows[0]) : undefined;
   }
 
+  /** #330 field report — restart rehydration: the agent's own non-expired
+   *  attachments. Expired rows are the sweep's business, not the caller's. */
+  async listByAgent(agentSlug: string, now: Date): Promise<EphemeralAttachment[]> {
+    const r = await this.pool.query<AttachmentRow>(
+      `SELECT ${COLS} FROM conductor_ephemeral_attachments
+        WHERE agent_slug = $1 AND expires_at > $2
+        ORDER BY created_at ASC`,
+      [agentSlug, now],
+    );
+    return r.rows.map(toAttachment);
+  }
+
   async getByWorkflow(workflowId: string): Promise<EphemeralAttachment[]> {
     const r = await this.pool.query<AttachmentRow>(
       `SELECT ${COLS} FROM conductor_ephemeral_attachments WHERE workflow_id = $1`,

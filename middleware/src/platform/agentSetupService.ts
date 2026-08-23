@@ -113,6 +113,23 @@ export interface ConversationBindingsService {
   /** The observed invite for a conversation (inviter, channel) — how the
    *  plugin learns WHO to assign the initiator role to. */
   observedInvite(channelType: string, conversationId: string): ObservedInvite | undefined;
+  /** #330 field report — restart survival: the caller's own non-expired
+   *  ephemeral attachments, enriched with the workflow's active run when one
+   *  exists. A plugin whose in-memory facilitation state died with the last
+   *  deploy rehydrates from this instead of refusing every progress/nudge
+   *  call until someone re-invites the bot. Read-own only — same attribution
+   *  trust model as bind/unbind. */
+  listOwnAttachments(input: { agentSlug: string }): Promise<
+    Array<{
+      channelType: string;
+      conversationId: string;
+      workflowId: string | null;
+      roleKey: string | null;
+      state: 'pending' | 'attached';
+      expiresAt: Date;
+      activeRunId: string | null;
+    }>
+  >;
 }
 
 export function createAgentSetupServices(deps: {
@@ -129,6 +146,10 @@ export function createAgentSetupServices(deps: {
    *  the row on success, so retries stay possible. */
   disposeAttachment: (attachment: EphemeralAttachment, actor: string) => Promise<void>;
   auditBindingChange?: (entry: BindingAuditEntry) => Promise<void>;
+  /** #330 field report — the newest running/waiting run of a workflow, for
+   *  listOwnAttachments' rehydration payload. Optional: absent (or throwing)
+   *  resolvers just leave activeRunId null. */
+  resolveActiveRun?: (workflowId: string) => Promise<string | null>;
   now?: () => Date;
   log?: (msg: string) => void;
 }): {
@@ -304,6 +325,37 @@ export function createAgentSetupServices(deps: {
 
     observedInvite(channelType, conversationId) {
       return deps.invites.get(channelType, conversationId);
+    },
+
+    async listOwnAttachments(input) {
+      const rows = await deps.attachments.listByAgent(input.agentSlug, (deps.now ?? (() => new Date()))());
+      // Reads are not audited like mutations, but this new enumeration
+      // surface must leave a trace (review M1): who asked, for which slug,
+      // how much came back.
+      log(`[agent-setup] listOwnAttachments agentSlug=${input.agentSlug} → ${String(rows.length)} row(s)`);
+      return Promise.all(
+        rows.map(async (row) => {
+          let activeRunId: string | null = null;
+          if (row.workflowId && deps.resolveActiveRun) {
+            try {
+              activeRunId = await deps.resolveActiveRun(row.workflowId);
+            } catch (err) {
+              // Rehydration is best-effort: a missing run id only disables
+              // early poke, never the listing itself.
+              log(`[agent-setup] active-run lookup failed for ${row.workflowId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          return {
+            channelType: row.channelType,
+            conversationId: row.channelKey,
+            workflowId: row.workflowId,
+            roleKey: row.roleKey,
+            state: row.state,
+            expiresAt: row.expiresAt,
+            activeRunId,
+          };
+        }),
+      );
     },
   };
 
