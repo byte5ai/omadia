@@ -329,6 +329,10 @@ export function createAgentSetupServices(deps: {
 
     async listOwnAttachments(input) {
       const rows = await deps.attachments.listByAgent(input.agentSlug, (deps.now ?? (() => new Date()))());
+      // Reads are not audited like mutations, but this new enumeration
+      // surface must leave a trace (review M1): who asked, for which slug,
+      // how much came back.
+      log(`[agent-setup] listOwnAttachments agentSlug=${input.agentSlug} → ${String(rows.length)} row(s)`);
       return Promise.all(
         rows.map(async (row) => {
           let activeRunId: string | null = null;
