@@ -33,6 +33,9 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   ConversationReference cache. The in-memory LRU dies with every restart, after which
   proactive delivery (group nudges via `conversationSend`, roster reads) answered
   `no_binding` until the conversation produced a new inbound activity.
+- The facilitation pattern's report prompts carry hard FORMAT rules: compact Teams-flavoured
+  Markdown (bold mini-headings + bullets, outcome emoji, <150 words) — no ASCII dividers or
+  ALL-CAPS banner walls in chat anymore.
 - `conversationBindings.listOwnAttachments({agentSlug})`: read-own listing of a plugin's
   non-expired ephemeral attachments, enriched with the workflow's newest running/waiting run
   (`activeRunId`). Lets a restarted agent plugin rehydrate its facilitation state instead of
