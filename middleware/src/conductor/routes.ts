@@ -387,12 +387,26 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       return;
     }
     try {
-      const result = await deps.facilitationAdmin.terminate(paramStr(req.params.workflowId), req.session?.sub ?? 'operator');
-      if (!result.disposed) {
+      const result = await deps.facilitationAdmin.terminate(
+        paramStr(req.params.workflowId),
+        req.session?.sub ?? 'operator',
+        req.session?.omadia_user_id,
+      );
+      if (result.outcome === 'not_found') {
         res.status(404).json({ code: 'conductor.not_found', message: 'no such facilitation' });
         return;
       }
-      res.json(result);
+      if (result.outcome === 'cancel_failed') {
+        // Disposal was SKIPPED on purpose: reaping with a live run would hide
+        // it from this very lens. 502 tells the operator to retry.
+        res.status(502).json({
+          code: 'conductor.facilitation_cancel_failed',
+          message: `cancel failed for ${String(result.failedRuns)} run(s) — nothing was disposed, retry`,
+          cancelledRuns: result.cancelledRuns,
+        });
+        return;
+      }
+      res.json({ cancelledRuns: result.cancelledRuns, disposed: true });
     } catch (err) {
       res.status(500).json({ code: 'conductor.facilitation_terminate_failed', message: errMsg(err) });
     }

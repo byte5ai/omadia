@@ -25,6 +25,7 @@ function row(overrides: Partial<FacilitationOverview> = {}): FacilitationOvervie
     conversation: { channelType: 'teams', conversationId: '19:abc@thread.v2' },
     roleKey: 'facilitation-abc',
     initiators: ['mwege@byte5.de'],
+    incomplete: false,
     run: {
       id: 'run-1',
       status: 'waiting',

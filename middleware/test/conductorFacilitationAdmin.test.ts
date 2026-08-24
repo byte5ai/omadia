@@ -43,9 +43,10 @@ const RUN = {
   cancelRequestedAt: null,
 };
 
-function harness(opts?: { runStatus?: 'waiting' | 'running' | 'completed'; origin?: 'manual' | 'ephemeral' }) {
+function harness(opts?: { runStatus?: 'waiting' | 'running' | 'completed'; origin?: 'manual' | 'ephemeral'; cancelThrows?: boolean }) {
   const cancelled: string[] = [];
   const disposed: string[] = [];
+  const audits: Array<Record<string, unknown>> = [];
   const admin = new ConductorFacilitationAdmin({
     workflowStore: {
       listEphemeralActive: async () => [WF],
@@ -70,9 +71,13 @@ function harness(opts?: { runStatus?: 'waiting' | 'running' | 'completed'; origi
     } as unknown as ConductorEphemeralAttachmentsStore,
     executor: {
       cancelRun: async (runId: string) => {
+        if (opts?.cancelThrows) throw new Error('driver busy');
         cancelled.push(runId);
         return { ...RUN, status: 'cancelled' } as never;
       },
+    },
+    auditTerminate: async (entry) => {
+      audits.push(entry as unknown as Record<string, unknown>);
     },
     disposeWorkflow: async (workflowId: string) => {
       disposed.push(workflowId);
@@ -86,7 +91,7 @@ function harness(opts?: { runStatus?: 'waiting' | 'running' | 'completed'; origi
       partial: false,
     }),
   });
-  return { admin, cancelled, disposed };
+  return { admin, cancelled, disposed, audits };
 }
 
 describe('ConductorFacilitationAdmin.list', () => {
@@ -106,31 +111,43 @@ describe('ConductorFacilitationAdmin.list', () => {
       ['Marcel Wege', '28:bot'],
     );
     assert.equal(row.participantsPartial, false);
+    assert.equal(row.incomplete, false);
     assert.equal(row.expiresAt, '2026-08-25T07:00:00.000Z');
   });
 });
 
 describe('ConductorFacilitationAdmin.terminate', () => {
-  it('cancels active runs, then disposes through the reaper path', async () => {
-    const { admin, cancelled, disposed } = harness({ runStatus: 'waiting' });
-    const out = await admin.terminate('wf-1', 'mwege@byte5.de');
-    assert.deepEqual(out, { cancelledRuns: 1, disposed: true });
+  it('cancels active runs, then disposes through the reaper path — with an audit trace', async () => {
+    const { admin, cancelled, disposed, audits } = harness({ runStatus: 'waiting' });
+    const out = await admin.terminate('wf-1', 'mwege@byte5.de', 'uuid-1');
+    assert.deepEqual(out, { outcome: 'terminated', cancelledRuns: 1 });
     assert.deepEqual(cancelled, ['run-1']);
     assert.deepEqual(disposed, ['wf-1']);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]!.actor, 'mwege@byte5.de');
+    assert.equal(audits[0]!.actorUserId, 'uuid-1');
   });
 
   it('skips terminal runs but still disposes the scaffold (zombie cleanup)', async () => {
     const { admin, cancelled, disposed } = harness({ runStatus: 'completed' });
     const out = await admin.terminate('wf-1', 'op');
-    assert.deepEqual(out, { cancelledRuns: 0, disposed: true });
+    assert.deepEqual(out, { outcome: 'terminated', cancelledRuns: 0 });
     assert.deepEqual(cancelled, []);
     assert.deepEqual(disposed, ['wf-1']);
+  });
+
+  it('a failed cancel SKIPS disposal — a live run must never vanish from the lens (review H1)', async () => {
+    const { admin, disposed, audits } = harness({ runStatus: 'running', cancelThrows: true });
+    const out = await admin.terminate('wf-1', 'op');
+    assert.deepEqual(out, { outcome: 'cancel_failed', cancelledRuns: 0, failedRuns: 1 });
+    assert.deepEqual(disposed, []);
+    assert.deepEqual(audits, []);
   });
 
   it('refuses non-ephemeral workflows — the library is out of reach', async () => {
     const { admin, disposed } = harness({ origin: 'manual' });
     const out = await admin.terminate('wf-1', 'op');
-    assert.deepEqual(out, { cancelledRuns: 0, disposed: false });
+    assert.deepEqual(out, { outcome: 'not_found' });
     assert.deepEqual(disposed, []);
   });
 });

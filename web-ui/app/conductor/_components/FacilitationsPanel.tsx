@@ -6,7 +6,6 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
-  ApiError,
   listFacilitations,
   terminateFacilitation,
   type FacilitationOverview,
@@ -54,7 +53,8 @@ export function FacilitationsPanel(): React.JSX.Element {
       const { facilitations } = await listFacilitations();
       setRows(facilitations);
     } catch (err) {
-      setError(err instanceof ApiError ? t('facilitationsLoadFailed') : String(err));
+      void err;
+      setError(t('facilitationsLoadFailed'));
     } finally {
       setLoading(false);
     }
@@ -72,7 +72,8 @@ export function FacilitationsPanel(): React.JSX.Element {
         await terminateFacilitation(workflowId);
         await reload();
       } catch (err) {
-        setError(err instanceof ApiError ? t('facilitationTerminateFailed') : String(err));
+        void err;
+      setError(t('facilitationTerminateFailed'));
       } finally {
         setTerminating(null);
       }
@@ -91,7 +92,7 @@ export function FacilitationsPanel(): React.JSX.Element {
       {error && <p className="mb-3 text-[14px] text-[color:var(--danger,#e5484d)]">{error}</p>}
       {rows.length === 0 ? (
         <p className="text-[13px] text-[color:var(--fg-muted)]">
-          {loading ? `${t('refreshButton')}…` : t('facilitationsEmpty')}
+          {loading ? t('facilitationsLoading') : t('facilitationsEmpty')}
         </p>
       ) : (
         <ul className="grid gap-3">
@@ -123,6 +124,9 @@ export function FacilitationsPanel(): React.JSX.Element {
                     {t('facilitationTerminateButton')}
                   </Button>
                 </div>
+                {f.incomplete && (
+                  <p className="mt-1 text-[12px] text-[color:var(--warning,#f5a623)]">{t('facilitationIncomplete')}</p>
+                )}
                 <dl className="mt-2 grid gap-x-6 gap-y-1 text-[13px] text-[color:var(--fg-muted)] sm:grid-cols-2">
                   {f.conversation && (
                     <div>

@@ -744,7 +744,9 @@
     "facilitationParticipants": "Teilnehmer",
     "facilitationRosterPartial": "(Liste evtl. unvollständig)",
     "facilitationInitiator": "Initiator",
-    "facilitationExpires": "Läuft ab"
+    "facilitationExpires": "Läuft ab",
+    "facilitationsLoading": "Facilitations werden geladen…",
+    "facilitationIncomplete": "Einige Details konnten nicht geladen werden — diese Zeile kann unvollständig sein."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy-Reports · omadia",

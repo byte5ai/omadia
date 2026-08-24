@@ -195,6 +195,9 @@ export async function wireConductor(deps: {
   getRoster?: (channelType: string, conversationId: string) => Promise<
     { participants: readonly { userRef: { id: string; displayName?: string }; isBot?: boolean }[]; partial?: boolean } | undefined
   >;
+  /** #330 round 4 — durable audit trace for the destructive operator
+   *  terminate. Late-bound thunk like auditRoleChange. */
+  auditFacilitationTerminate?: (entry: { actor: string; actorUserId?: string; workflowId: string; slug: string; cancelledRuns: number }) => Promise<void>;
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -474,6 +477,7 @@ export async function wireConductor(deps: {
     ephemeralAttachments,
     executor,
     disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'by operator terminate'),
+    ...(deps.auditFacilitationTerminate ? { auditTerminate: deps.auditFacilitationTerminate } : {}),
     resolveRoleHolders: holdersOnly((key) => roleHolderRegistry.resolveHolders(key)),
     ...(deps.getRoster ? { getRoster: deps.getRoster } : {}),
     log,

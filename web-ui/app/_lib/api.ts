@@ -4453,6 +4453,8 @@ export interface FacilitationOverview {
   conversation: { channelType: string; conversationId: string } | null;
   roleKey: string | null;
   initiators: string[];
+  /** True when the kernel could not load every detail — the row may under-report. */
+  incomplete: boolean;
   run: {
     id: string;
     status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';

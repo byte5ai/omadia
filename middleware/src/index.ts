@@ -3577,6 +3577,19 @@ async function main(): Promise<void> {
       getRegistry,
       // #330 round 4 — participants column of the facilitation admin lens.
       getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
+      // #330 round 4 — the destructive terminate leaves a durable trace.
+      // Closure like auditRoleChange: adminAudit is constructed further down.
+      auditFacilitationTerminate: async (entry) => {
+        // #775 lesson — the SUB is an email and must NEVER land in the uuid
+        // actor_id column; the uuid rides separately when the session has one.
+        await adminAudit?.record({
+          actor: { id: entry.actorUserId, email: entry.actor },
+          action: 'conductor.facilitation_terminate',
+          target: `conductor-workflow:${entry.slug}`,
+          before: { workflowId: entry.workflowId },
+          after: { cancelledRuns: entry.cancelledRuns },
+        });
+      },
       // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
       // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
       // ad-hoc outbound webhook without an installed connector.

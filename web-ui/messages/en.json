@@ -744,7 +744,9 @@
     "facilitationParticipants": "Participants",
     "facilitationRosterPartial": "(list may be incomplete)",
     "facilitationInitiator": "Initiator",
-    "facilitationExpires": "Expires"
+    "facilitationExpires": "Expires",
+    "facilitationsLoading": "Loading facilitations…",
+    "facilitationIncomplete": "Some details could not be loaded — this row may under-report."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy reports · omadia",
