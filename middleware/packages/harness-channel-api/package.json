@@ -13,7 +13,7 @@
   },
   "peerDependencies": {
     "@omadia/api-key-auth": "^0.1.0",
-    "@omadia/channel-sdk": "^0.1.0",
+    "@omadia/channel-sdk": "^0.2.0",
     "@omadia/plugin-api": "*",
     "express": "^5.1.0",
     "zod": "^4.0.0"
