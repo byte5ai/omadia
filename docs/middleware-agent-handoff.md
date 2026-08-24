@@ -1374,6 +1374,36 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 `packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
 `packages/transcription-adapter-openai/test/`.
 
+### Facilitation-Admin-Lens (#330 Runde 4)
+
+Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
+Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
+im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
+requireAuth unter `/api/v1/operator/conductors`, VOR den `/:slug`-Routen
+deklariert):
+
+- **`GET /facilitations`** — Overview aller nicht gereapten ephemeren
+  Workflows aus rein durablem State: Conversation (Attachment-Row), Goal/DoD
+  + Assess-Runden (`ctx.stepAttempts.moderate`) + letztes Verdict
+  (`ctx.stepResult.data`), Initiator-Role-Holder, Teilnehmer via
+  Roster-Registry (best-effort, 30s-TTL-Cache — jeder Roster-Read öffnet
+  einen proaktiven Channel-Turn). Store-Fehler beim Zusammenbau ⇒ Row-Flag
+  `incomplete: true` + Log (unter-reporten ja, erfinden nie).
+- **`POST /facilitations/:workflowId/terminate`** — cancelt aktive Runs
+  (#759-Semantik) und disposed das Scaffold über DENSELBEN Cleanup-Pfad wie
+  der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
+  Binding + Rolle gehen mit). Schlägt EIN Cancel fehl, wird die Disposal
+  ÜBERSPRUNGEN (502 `conductor.facilitation_cancel_failed`) — reaped_at auf
+  einem lebenden Run würde ihn aus genau dieser Lens verstecken. Non-ephemeral
+  ⇒ 404. Jede erfolgreiche Terminierung landet als
+  `conductor.facilitation_terminate` im admin_audit (actor-uuid/email nach
+  #775-Regel getrennt).
+
+Web-UI: Panel „Laufende Facilitations" auf der Conductor-Seite
+(`web-ui/app/conductor/_components/FacilitationsPanel.tsx`), Stop & remove
+hinter ConfirmDialog. Modul: `src/conductor/facilitationAdmin.ts`, Tests:
+`test/conductorFacilitationAdmin.test.ts`.
+
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
 
 Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;

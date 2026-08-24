@@ -4441,6 +4441,45 @@ export async function listConductorWorkflows(): Promise<{ workflows: ConductorWo
   return getJson(CONDUCTOR_BASE);
 }
 
+// #330 round 4 — operator lens over LIVE facilitations (ephemeral workflows
+// are hidden from the library by design). Wire shape mirrors the kernel's
+// FacilitationOverview.
+export interface FacilitationOverview {
+  workflowId: string;
+  slug: string;
+  name: string;
+  createdByAgent: string | null;
+  expiresAt: string | null;
+  conversation: { channelType: string; conversationId: string } | null;
+  roleKey: string | null;
+  initiators: string[];
+  /** True when the kernel could not load every detail — the row may under-report. */
+  incomplete: boolean;
+  run: {
+    id: string;
+    status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+    startedAt: string | null;
+    endedAt: string | null;
+    cancelRequestedAt: string | null;
+    currentStepId: string | null;
+    goal: string | null;
+    definitionOfDone: string | null;
+    rounds: number;
+    lastVerdict: { dodMet: boolean | null; summary: string | null } | null;
+  } | null;
+  participants: Array<{ displayName: string; isBot: boolean }> | null;
+  participantsPartial: boolean;
+}
+
+export async function listFacilitations(): Promise<{ facilitations: FacilitationOverview[] }> {
+  return getJson(`${CONDUCTOR_BASE}/facilitations`);
+}
+
+/** Cancel the facilitation's active runs and dispose of its scaffold (binding + initiator role go with it). */
+export async function terminateFacilitation(workflowId: string): Promise<{ cancelledRuns: number; disposed: boolean }> {
+  return postJson(`${CONDUCTOR_BASE}/facilitations/${encodeURIComponent(workflowId)}/terminate`, {});
+}
+
 export async function getConductorWorkflowGraph(
   slug: string,
 ): Promise<{ workflow: ConductorWorkflow; graph: unknown }> {
