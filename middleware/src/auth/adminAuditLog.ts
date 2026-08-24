@@ -30,7 +30,9 @@ export type AuditAction =
   // #330 C2a — plugin-driven conversation bind/unbind: a binding decides
   // which Agent answers a group, so the auto-bind lifecycle belongs in the
   // same trail as the role batons.
-  | 'channel.binding_change';
+  | 'channel.binding_change'
+  // #330 round 4 — the operator terminated a live facilitation from the admin lens.
+  | 'conductor.facilitation_terminate';
 
 export interface AuditActor {
   id?: string;
