@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — facilitation details modal; the panel disappears when there is nothing to show
+
+- Every facilitation card gets a **Details** modal: the summary plus the FULL durable run
+  trace (every assess round with postcondition outcome and transition) — "wo stehen wir
+  gerade?" without leaving the admin.
+- Installations without the facilitator (or without any running facilitation) no longer see
+  an empty box: the panel renders nothing when the listing is empty, and treats a
+  pre-feature kernel's 501 exactly like "feature not present". Real load errors stay visible.
+
+
 ### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
 
 - The "Laufende Facilitations" card is structured now: conversation line, goal as title, the

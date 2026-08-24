@@ -746,7 +746,13 @@
     "facilitationInitiator": "Initiator",
     "facilitationExpires": "Expires",
     "facilitationsLoading": "Loading facilitations…",
-    "facilitationIncomplete": "Some details could not be loaded — this row may under-report."
+    "facilitationIncomplete": "Some details could not be loaded — this row may under-report.",
+    "facilitationDetailsButton": "Details",
+    "facilitationDetailsHeading": "Facilitation details",
+    "facilitationDetailsClose": "Close",
+    "facilitationTraceHeading": "Run trace (assess rounds)",
+    "facilitationTraceFailed": "The run trace could not be loaded",
+    "facilitationNoRun": "No run exists for this facilitation yet."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy reports · omadia",

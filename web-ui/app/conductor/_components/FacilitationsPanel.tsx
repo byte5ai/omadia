@@ -6,10 +6,13 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
+  ApiError,
   listFacilitations,
   terminateFacilitation,
   type FacilitationOverview,
 } from '@/app/_lib/api';
+
+import { FacilitationDetailsModal } from './FacilitationDetailsModal';
 
 const card = 'rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4';
 
@@ -24,7 +27,7 @@ const STATUS_TONE: Record<string, string> = {
 /** DoD text usually arrives as one flat "1. ... 2. ..." sentence from chat —
  *  split it back into list items for reading. Deterministic string handling
  *  only; anything without the numbering pattern renders as plain text. */
-function splitDod(text: string): string[] | null {
+export function splitDod(text: string): string[] | null {
   const parts = text.split(/(?=(?:^|\s)\d{1,2}\.\s)/).map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2) return null;
   return parts.map((part) => part.replace(/^\d{1,2}\.\s*/, ''));
@@ -54,6 +57,10 @@ export function FacilitationsPanel(): React.JSX.Element {
   const [loading, setLoading] = useState(false);
   const [terminating, setTerminating] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
+  // Older kernels answer 501 (facilitation admin not wired) — treat exactly
+  // like "feature not present" and render nothing instead of an error box.
+  const [unavailable, setUnavailable] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -62,8 +69,11 @@ export function FacilitationsPanel(): React.JSX.Element {
       const { facilitations } = await listFacilitations();
       setRows(facilitations);
     } catch (err) {
-      void err;
-      setError(t('facilitationsLoadFailed'));
+      if (err instanceof ApiError && err.status === 501) {
+        setUnavailable(true);
+      } else {
+        setError(t('facilitationsLoadFailed'));
+      }
     } finally {
       setLoading(false);
     }
@@ -89,6 +99,12 @@ export function FacilitationsPanel(): React.JSX.Element {
     },
     [reload, t],
   );
+
+  // Nothing to show and nothing wrong: installations without the facilitator
+  // (or without any running facilitation) get no empty box at all.
+  if (unavailable || (!error && !loading && rows.length === 0)) {
+    return <></>;
+  }
 
   return (
     <section className={card}>
@@ -131,14 +147,19 @@ export function FacilitationsPanel(): React.JSX.Element {
                       {f.run?.goal ?? f.name}
                     </p>
                   </div>
-                  <Button
-                    variant="danger"
-                    busy={terminating === f.workflowId}
-                    busyLabel={t('facilitationTerminateBusy')}
-                    onClick={() => setConfirmId(f.workflowId)}
-                  >
-                    {t('facilitationTerminateButton')}
-                  </Button>
+                  <div className="flex shrink-0 gap-2">
+                    <Button variant="ghost" onClick={() => setDetailsId(f.workflowId)}>
+                      {t('facilitationDetailsButton')}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      busy={terminating === f.workflowId}
+                      busyLabel={t('facilitationTerminateBusy')}
+                      onClick={() => setConfirmId(f.workflowId)}
+                    >
+                      {t('facilitationTerminateButton')}
+                    </Button>
+                  </div>
                 </div>
                 {f.incomplete && (
                   <p className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]">{t('facilitationIncomplete')}</p>
@@ -219,6 +240,12 @@ export function FacilitationsPanel(): React.JSX.Element {
             );
           })}
         </ul>
+      )}
+      {detailsId !== null && rows.some((r) => r.workflowId === detailsId) && (
+        <FacilitationDetailsModal
+          facilitation={rows.find((r) => r.workflowId === detailsId)!}
+          onClose={() => setDetailsId(null)}
+        />
       )}
       <ConfirmDialog
         open={confirmId !== null}

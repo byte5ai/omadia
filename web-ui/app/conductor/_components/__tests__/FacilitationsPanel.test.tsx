@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { listFacilitations, terminateFacilitation, type FacilitationOverview } from '@/app/_lib/api';
+import { ApiError, getConductorRun, listFacilitations, terminateFacilitation, type FacilitationOverview } from '@/app/_lib/api';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { FacilitationsPanel } from '../FacilitationsPanel';
 
@@ -12,6 +12,7 @@ vi.mock('@/app/_lib/api', async (importOriginal) => {
     ...actual,
     listFacilitations: vi.fn(),
     terminateFacilitation: vi.fn(),
+    getConductorRun: vi.fn(),
   };
 });
 
@@ -80,10 +81,38 @@ describe('FacilitationsPanel', () => {
     expect(listFacilitations).toHaveBeenCalledTimes(2);
   });
 
-  it('renders the empty state', async () => {
+  it('renders NOTHING when no facilitation runs — installations without the facilitator see no box', async () => {
     vi.mocked(listFacilitations).mockResolvedValue({ facilitations: [] });
     renderWithIntl(<FacilitationsPanel />);
-    expect(await screen.findByText('No facilitation is running.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listFacilitations).toHaveBeenCalled();
+    });
+    expect(screen.queryByText('Running facilitations')).not.toBeInTheDocument();
+  });
+
+  it('renders NOTHING on a pre-feature kernel (501)', async () => {
+    vi.mocked(listFacilitations).mockRejectedValue(new ApiError(501, 'not wired'));
+    renderWithIntl(<FacilitationsPanel />);
+    await waitFor(() => {
+      expect(listFacilitations).toHaveBeenCalled();
+    });
+    expect(screen.queryByText('Running facilitations')).not.toBeInTheDocument();
+  });
+
+  it('opens the details modal with the run trace', async () => {
+    vi.mocked(getConductorRun).mockResolvedValue({
+      run: {
+        id: 'run-1', status: 'waiting', triggerKind: 'agent', startedAt: '2026-08-24T07:00:00.000Z',
+        endedAt: null, currentStepId: 'wait', context: {}, cancelRequestedAt: null,
+      },
+      steps: [],
+    } as never);
+    renderWithIntl(<FacilitationsPanel />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Details' }));
+    expect(await screen.findByText('Facilitation details')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(getConductorRun).toHaveBeenCalledWith('eph-facilitation-ab12cd34', 'run-1');
+    });
   });
 
   it('renders a numbered DoD as an ordered list', async () => {
