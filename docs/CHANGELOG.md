@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — channel directory entries can carry resolved member names
+
+- `ChannelKeyEntry` (`@omadia/channel-sdk`) gained optional `members` (capped list of
+  display names, resolved by the channel plugin — e.g. Teams via Microsoft Graph) and
+  `memberCount` (uncapped total). The kernel forwards both through
+  `ChannelDirectoryRegistry.listAll()` and `GET /api/v1/operator/channels`
+  (`members` / `member_count`); the operator Channels dashboard renders a
+  "Members: Alice, Bob +N more" line (en+de). Older plugins that don't set the
+  fields are unaffected — the fields are additive and optional in both directions.
+
 ### Changed — cancelling Conductor runs no longer requires finding the hidden button (#330 field report)
 
 - The run history offers **Cancel** directly on each running/waiting row (previously only

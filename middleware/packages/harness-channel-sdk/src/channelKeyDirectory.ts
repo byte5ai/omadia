@@ -43,6 +43,16 @@ export interface ChannelKeyEntry {
   /** Free-form context shown beside the label — environment, tenant
    *  hint, conversation name. Optional. */
   readonly hint?: string;
+  /** Display names of the conversation's members, resolved by the plugin
+   *  (e.g. via Graph for Teams). Capped by the plugin (recommended: 8) —
+   *  `memberCount` carries the uncapped total. These are data, not UI
+   *  copy: the dashboard composes the visible sentence from its own
+   *  message catalog. Optional — omitted when the plugin cannot resolve
+   *  members (missing permissions, non-conversation entries). */
+  readonly members?: readonly string[];
+  /** Total number of members in the conversation, including those not
+   *  listed in `members` because of the cap. Optional. */
+  readonly memberCount?: number;
 }
 
 export interface ChannelKeyDirectory {

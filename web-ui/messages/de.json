@@ -784,6 +784,8 @@
     "fallbackHint": "Channels ohne explizite Zuordnung landen beim Standard-Orchestrator ({fallback}).",
     "fallbackHintNone": "kein Standard gesetzt",
     "originLabel": "via",
+    "membersLine": "Mitglieder: {names}",
+    "membersMore": "{count, plural, one {+# weiteres} other {+# weitere}}",
     "staleBadge": "veraltet",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(Standard · {fallback})",
