@@ -54,6 +54,14 @@ describe('ObservedConversationInvites', () => {
     assert.equal(invites.get('teams', 'nochan-1'), undefined);
   });
 
+  it("records 'bot_present' (#330 round 3) as eligibility — group-only, like bot_added", () => {
+    const invites = new ObservedConversationInvites();
+    invites.observe(botAdded({ kind: 'bot_present', conversationId: 'grp-present' }));
+    assert.equal(invites.get('teams', 'grp-present')?.addedBy?.id, 'aad-owner');
+    invites.observe(botAdded({ kind: 'bot_present', conversationId: 'dm-present', conversationType: 'direct' }));
+    assert.equal(invites.get('teams', 'dm-present'), undefined);
+  });
+
   it('expires invites after the TTL', () => {
     let now = 1_000_000;
     const invites = new ObservedConversationInvites({ ttlMs: 60_000, now: () => now });
