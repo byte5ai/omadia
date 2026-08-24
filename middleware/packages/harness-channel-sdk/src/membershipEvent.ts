@@ -38,4 +38,16 @@ export interface MembersRemovedEvent extends ConversationEventBase {
   kind: 'members_removed';
 }
 
-export type ConversationMembershipEvent = BotAddedEvent | MembersAddedEvent | MembersRemovedEvent;
+/** #330 field report round 3 — the agent observed it is ALREADY a member of a
+ *  group conversation (an inbound group message is transport-verified proof of
+ *  membership; a bot added long ago never gets another `bot_added`). This is
+ *  an ELIGIBILITY signal only: consumers may record that a facilitation COULD
+ *  bind here, but must not eagerly bind or announce anything — the deliberate
+ *  entry stays `bot_added`. `addedBy` carries the message's verified sender
+ *  (the person engaging the agent), best-effort like on `bot_added`. */
+export interface BotPresentEvent extends ConversationEventBase {
+  kind: 'bot_present';
+  addedBy?: ChannelUserRef;
+}
+
+export type ConversationMembershipEvent = BotAddedEvent | MembersAddedEvent | MembersRemovedEvent | BotPresentEvent;
