@@ -2306,3 +2306,24 @@ Gute Einstiegs-Prompts, geordnet nach erwartetem Gewinn:
   alles"-Antwort.
 - Die Dev-UI unter `http://localhost:3000` ist der schnellste Weg, Agent-
   Verhalten interaktiv zu testen — sie streamt Tool-Calls live.
+
+## Channel-Directory: aufgelöste Namen + Mitglieder (2026-08-24)
+
+Der Channel-Directory-Contract (`@omadia/channel-sdk` 0.2.0,
+`ChannelKeyEntry`) trägt zwei optionale Felder: `members` (gecappte
+Display-Namen, vom Channel-Plugin aufgelöst — Teams macht das via
+Microsoft Graph) und `memberCount` (ungecappte Gesamtzahl). Der Kernel
+reicht beide durch `ChannelDirectoryRegistry.listAll()` →
+`GET /api/v1/operator/channels` (`members` / `member_count`) und cappt
+dabei hart (max. 16 Namen à 120 Zeichen, negative Counts verworfen) —
+Plugins sind untrusted. Das Channels-Dashboard (web-ui, auch eingebettet
+in `/operator/agents`) rendert daraus eine "Mitglieder: …"-Zeile
+(i18n-Keys `operatorChannels.membersLine` / `membersMore`).
+
+Die eigentliche Graph-Auflösung (Group-Chat-Topic, Chat-/Team-Members,
+Org-Name für den Catch-all) lebt im Plugin-Repo
+`byte5ai/omadia-channel-teams` (`teamsGraphResolver.ts`) — nie awaited
+im Render-Pfad, stale-while-revalidate ab `observe()`, degradiert ohne
+Graph-App-Permissions lautlos auf die Bot-Framework-Labels. Benötigte
+Application-Permissions (Admin-Consent im Tenant): `Chat.Read.All`,
+`ChatMember.Read.All`, `TeamMember.Read.All`, `Organization.Read.All`.

@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — channel directory entries can carry resolved member names
+
+- `ChannelKeyEntry` (`@omadia/channel-sdk`) gained optional `members` (capped list of
+  display names, resolved by the channel plugin — e.g. Teams via Microsoft Graph) and
+  `memberCount` (uncapped total). The kernel forwards both through
+  `ChannelDirectoryRegistry.listAll()` and `GET /api/v1/operator/channels`
+  (`members` / `member_count`); the operator Channels dashboard renders a
+  "Members: Alice, Bob +N more" line (en+de). Older plugins that don't set the
+  fields are unaffected — the fields are additive and optional in both directions.
+
 ### Added — `bot_present`: an inbound group message opens facilitation eligibility (#330 round 3)
 
 - New channel-SDK membership-event kind **`bot_present`** — the adapter observed the agent is
@@ -26,7 +36,6 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
   chats people talk to the bot in; two live facilitation attempts died on this.
 - The kernel invite index accepts `bot_present` as **eligibility only** — the deliberate,
   announced entry (and any eager auto-bind by consumers) stays `bot_added`.
-
 
 ### Changed — cancelling Conductor runs no longer requires finding the hidden button (#330 field report)
 

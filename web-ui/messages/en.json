@@ -784,6 +784,8 @@
     "fallbackHint": "Channels without an explicit binding fall through to the standard Orchestrator ({fallback}).",
     "fallbackHintNone": "no standard set",
     "originLabel": "via",
+    "membersLine": "Members: {names}",
+    "membersMore": "{count, plural, one {+# more} other {+# more}}",
     "staleBadge": "stale",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(standard · {fallback})",

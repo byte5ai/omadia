@@ -53,6 +53,10 @@ interface OperatorChannelDto {
   readonly channel_key: string;
   readonly label: string;
   readonly hint?: string;
+  /** Member display names resolved by the channel plugin (capped there);
+   *  `member_count` carries the uncapped total. Both optional. */
+  readonly members?: readonly string[];
+  readonly member_count?: number;
   readonly origin_plugin_id: string;
   readonly bound_agent_slug: string | null;
   /** True when this row is only known from the binding table (the channel
@@ -143,6 +147,10 @@ export function createOperatorChannelsRouter(
           channel_key: entry.key,
           label: entry.label,
           ...(entry.hint !== undefined ? { hint: entry.hint } : {}),
+          ...(entry.members !== undefined ? { members: entry.members } : {}),
+          ...(entry.memberCount !== undefined
+            ? { member_count: entry.memberCount }
+            : {}),
           origin_plugin_id: entry.originPluginId,
           bound_agent_slug: slug,
           stale: false,

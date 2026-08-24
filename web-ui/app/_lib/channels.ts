@@ -37,6 +37,8 @@ export interface OperatorChannelDto {
   channel_key: string;
   label: string;
   hint?: string;
+  members?: string[];
+  member_count?: number;
   origin_plugin_id: string;
   bound_agent_slug: string | null;
   stale: boolean;
