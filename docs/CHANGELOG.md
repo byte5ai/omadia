@@ -18,6 +18,17 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
+
+- The "Laufende Facilitations" card is structured now: conversation line, goal as title, the
+  latest assessment as a highlighted box, the DoD split back into an ordered list
+  (deterministic string handling), participant chips, and a compact meta footer — instead of
+  one full-width text wall.
+- The assess tick's prompt carries an explicit nudge discipline: nudge ONLY when the progress
+  log has not moved since the previous tick — an actively working group needs no impulse, and
+  a second facilitator voice mid-conversation reads as a duplicate bot.
+
+
 ### Added — Admin lens + stop for running facilitations (#330 round 4)
 
 - New operator endpoints `GET /api/v1/operator/conductors/facilitations` and

@@ -85,4 +85,23 @@ describe('FacilitationsPanel', () => {
     renderWithIntl(<FacilitationsPanel />);
     expect(await screen.findByText('No facilitation is running.')).toBeInTheDocument();
   });
+
+  it('renders a numbered DoD as an ordered list', async () => {
+    vi.mocked(listFacilitations).mockResolvedValue({
+      facilitations: [
+        row({
+          run: {
+            ...row().run!,
+            definitionOfDone: '1. Eventformat entschieden, von allen bestätigt. 2. Termin fix. 3. Ort festgelegt.',
+          },
+        }),
+      ],
+    });
+    renderWithIntl(<FacilitationsPanel />);
+    const items = await screen.findAllByRole('listitem');
+    const texts = items.map((li) => li.textContent);
+    expect(texts).toContain('Eventformat entschieden, von allen bestätigt.');
+    expect(texts).toContain('Termin fix.');
+    expect(texts).toContain('Ort festgelegt.');
+  });
 });
