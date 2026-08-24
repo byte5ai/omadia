@@ -188,11 +188,21 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
  * ---------------------------------------------------
  * They cannot be: they are never `bundled`. Gating them on origin would return
  * `[]` for every one of them, and a re-audit on 2026-08-21 confirmed all nine
- * rows are still load-bearing — not one of the sibling manifests declares its
- * allowlisted names yet. `@omadia/channel-teams` alone would lose thirteen,
- * `graphPool` and `anthropicClient` among them, at the first turn after the
- * upgrade. That is the #794 trap at customer scale, and this repo has sprung it
- * once already.
+ * rows were load-bearing at that time — not one of the sibling manifests
+ * declared its allowlisted names. `@omadia/channel-teams` alone would have lost
+ * thirteen, `graphPool` and `anthropicClient` among them, at the first turn
+ * after the upgrade. That is the #794 trap at customer scale, and this repo has
+ * sprung it once already.
+ *
+ * UPDATE (omadia#838 / #839, 2026-08-24). That retirement has now happened for
+ * eight of the nine ids: each sibling repo declared its resolved capabilities
+ * (`requires:` where a plugin manifest provides the name and activate() cannot
+ * proceed without it, `optional_requires:` otherwise), released, and the Hub
+ * serves the declaring build. Their rows are gone from the table below. The
+ * ninth, `@omadia/channel-teams`, declared all thirteen of its names too, but
+ * keeps a single residual row — `graphPool` — because this table doubles as the
+ * C7 SQL ramp and channel-teams has no `permissions.sql` grant yet (see the
+ * table's own comment and omadia#787).
  *
  * So for these ids the key stays the id, and the id is not a credential —
  * nothing today distinguishes the real `@omadia/channel-teams` zip from a zip
@@ -202,61 +212,48 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
  * package whose id the catalog knows as bundled, and the ingest refusal in
  * `plugins/packageUploadService.ts` that stops such a zip landing at all.
  *
- * The residual is a zip claiming one of the nine ids below on a host where that
+ * The residual attack is a zip claiming a still-listed id on a host where that
  * plugin is not installed. Closing it needs package provenance — a signature
  * the Hub issues and the middleware verifies — not a longer list. Until then
  * the mitigation is retirement: each row dies the moment the sibling repo's
  * `manifest.yaml` declares the capability under `requires:` or
- * `optional_requires:`, which is a one-line change in nine repositories and
- * needs no coordination with this one.
+ * `optional_requires:`, a one-line change per repository that needs no
+ * coordination with this one — as omadia#838 / #839 have now done for eight of
+ * the nine.
  */
 export const STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   Record<string, readonly string[]>
 > = Object.freeze({
-  '@omadia/channel-discord': Object.freeze([
-    'channelResolver',
-    'chatAgent',
-  ]),
-  '@omadia/channel-slack': Object.freeze([
-    'channelResolver',
-    'chatAgent',
-  ]),
-  '@omadia/channel-teams': Object.freeze([
-    'anthropicClient',
-    'channelDirectoryRegistry',
-    'channelResolver',
-    'conductorAwaitResolver',
-    'embeddingClient',
-    'graphPool',
-    'graphTenantId',
-    'microsoft365.graph',
-    'routinesIntegration',
-    'tigrisStore',
-    'topicDetector',
-    'turnContext',
-    'uiRouteCatalog',
-  ]),
-  '@omadia/channel-telegram': Object.freeze([
-    'channelResolver',
-    'memoryStore',
-    'turnContext',
-  ]),
-  '@omadia/channel-whatsapp': Object.freeze([
-    'channelResolver',
-    'chatAgent',
-  ]),
-  '@omadia/integration-odoo': Object.freeze(['entityRefBus']),
-  '@omadia/agent-odoo-hr': Object.freeze([
-    'odoo.agentToolkit.hr',
-    'odoo.client',
-  ]),
-  '@omadia/agent-odoo-accounting': Object.freeze([
-    'odoo.agentToolkit.accounting',
-  ]),
-  '@omadia/agent-confluence': Object.freeze([
-    'confluence.client',
-    'confluence.toolkit',
-  ]),
+  // omadia#838 / #839 — RETIRED. Eight of the nine standalone ids declared the
+  // capabilities they resolve in their own manifests, released, and the Hub now
+  // serves the declaring build, so their rows are gone. The service gate reads
+  // the manifest declaration (`declaredServiceNames` -> 'declared') and no
+  // longer needs a grandfather row:
+  //   @omadia/channel-telegram      0.2.2  requires chatAgent, memoryStore;
+  //                                        optional_requires channelResolver, turnContext
+  //   @omadia/channel-discord       0.1.5  requires chatAgent; optional_requires channelResolver
+  //   @omadia/channel-slack         0.2.3  requires chatAgent; optional_requires channelResolver
+  //   @omadia/channel-whatsapp      0.1.9  requires chatAgent; optional_requires channelResolver
+  //   @omadia/integration-odoo      0.2.1  requires entityRefBus;
+  //                                        provides odoo.client/cache/agentToolkit.{hr,accounting}/enrich
+  //   @omadia/agent-odoo-hr         0.2.8  requires odoo.agentToolkit.hr, odoo.client
+  //   @omadia/agent-odoo-accounting 0.1.4  requires odoo.agentToolkit.accounting
+  //   @omadia/agent-confluence      0.3.3  optional_requires confluence.client, confluence.toolkit
+  //
+  // @omadia/channel-teams (0.19.1) declared all thirteen of its names too, so
+  // its SERVICE-gate rows are retired as well — with ONE deliberate residual,
+  // `graphPool`. `graphPool` is the only POOL_SHAPED capability, and this exact
+  // list is ALSO consulted by the C7 SQL gate as its legacy ramp
+  // (`createSqlGate`'s `legacyCapabilities`, wired from `legacyServiceGrantsFor`
+  // in `pluginContext.ts`). channel-teams ships no `permissions.sql` and holds
+  // no operator grant, so removing `graphPool` here would leave the manifest
+  // declaration satisfying the service gate while `classifySqlAccess` returns
+  // `undeclared` and throws `SqlPermissionError` on the channel's first Postgres
+  // touch after upgrade — the #794 trap one gate lower. The manifest declaration
+  // means the service gate no longer reads this row; only the SQL ramp does. It
+  // retires when channel-teams declares `permissions.sql` and the operator
+  // grants it (C7 / omadia#787), which is independent of #838.
+  '@omadia/channel-teams': Object.freeze(['graphPool']),
 });
 
 /**
