@@ -81,7 +81,11 @@ export class ObservedConversationInvites {
   }
 
   observe(event: ConversationMembershipEvent): void {
-    if (event.kind !== 'bot_added') return;
+    // 'bot_present' (#330 round 3) counts as eligibility too: an inbound
+    // group message is transport-verified proof of membership — a bot that
+    // was added long ago never gets another bot_added, and the guard would
+    // otherwise stay closed for exactly the chats people talk to the bot in.
+    if (event.kind !== 'bot_added' && event.kind !== 'bot_present') return;
     // Group-only by design: a 1:1 never needs a facilitation binding, and
     // treating an unknown type as group would widen the guard on a guess.
     if (event.conversationType !== 'group') return;
