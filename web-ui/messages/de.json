@@ -746,7 +746,13 @@
     "facilitationInitiator": "Initiator",
     "facilitationExpires": "Läuft ab",
     "facilitationsLoading": "Facilitations werden geladen…",
-    "facilitationIncomplete": "Einige Details konnten nicht geladen werden — diese Zeile kann unvollständig sein."
+    "facilitationIncomplete": "Einige Details konnten nicht geladen werden — diese Zeile kann unvollständig sein.",
+    "facilitationDetailsButton": "Details",
+    "facilitationDetailsHeading": "Facilitation-Details",
+    "facilitationDetailsClose": "Schließen",
+    "facilitationTraceHeading": "Verlauf (Assess-Runden)",
+    "facilitationTraceFailed": "Der Verlauf konnte nicht geladen werden",
+    "facilitationNoRun": "Für diese Facilitation existiert noch kein Lauf."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy-Reports · omadia",
