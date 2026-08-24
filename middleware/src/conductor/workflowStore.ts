@@ -125,6 +125,16 @@ export class ConductorWorkflowStore {
     return r.rows.map(toWorkflow);
   }
 
+  /** #330 round 4 — the operator lens over live facilitations: every not-yet-
+   *  reaped ephemeral workflow. Deliberately a separate method: the library
+   *  list() above stays user-authored-only by contract. */
+  async listEphemeralActive(): Promise<ConductorWorkflow[]> {
+    const r = await this.pool.query<WorkflowRow>(
+      `SELECT ${WORKFLOW_COLS} FROM conductor_workflows WHERE origin = 'ephemeral' AND reaped_at IS NULL ORDER BY created_at DESC`,
+    );
+    return r.rows.map(toWorkflow);
+  }
+
   async getVersion(versionId: string): Promise<ConductorVersion | null> {
     const r = await this.pool.query<VersionRow>(
       'SELECT id, workflow_id, version, graph FROM conductor_workflow_versions WHERE id = $1',

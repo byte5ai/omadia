@@ -18,6 +18,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Admin lens + stop for running facilitations (#330 round 4)
+
+- New operator endpoints `GET /api/v1/operator/conductors/facilitations` and
+  `POST .../facilitations/:workflowId/terminate`. Ephemeral workflows are hidden from the
+  library by design, which left LIVE facilitations invisible — two instances ended up
+  moderating the same meeting with no way to see or stop them.
+- The overview reads only durable state: conversation (attachment row), goal/DoD + assess
+  rounds + latest fenced-JSON verdict (run context), initiator role holders, participants via
+  the kernel roster registry (best-effort). Terminate cancels active runs (#759 semantics) and
+  disposes of the scaffold through the reaper's own cleanup path (binding + role go with it);
+  idempotent, refuses non-ephemeral workflows.
+- Conductor page: new "Laufende Facilitations" panel with the overview and a confirmed
+  Stop & remove action (en+de).
+
+
 ### Added — channel directory entries can carry resolved member names
 
 - `ChannelKeyEntry` (`@omadia/channel-sdk`) gained optional `members` (capped list of

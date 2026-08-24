@@ -12,6 +12,7 @@ import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
+import type { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
@@ -51,6 +52,9 @@ export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
+  /** #330 round 4 — operator lens + terminate for live facilitations
+   *  (ephemeral workflows are hidden from the library by design). */
+  facilitationAdmin?: ConductorFacilitationAdmin;
   roleStore: ConductorRoleStore;
   scheduleStore: ConductorScheduleStore;
   executor: ConductorRunExecutor;
@@ -359,6 +363,41 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   });
 
   // Operator inbox — all pending human awaits across runs, with role principals resolved live.
+  // #330 round 4 — live facilitations (ephemeral workflows are hidden from
+  // the library by design, which made them invisible to operators). Declared
+  // BEFORE the parametric '/:slug' routes so 'facilitations' never reads as a
+  // workflow slug.
+  router.get('/facilitations', async (_req: Request, res: Response): Promise<void> => {
+    if (!deps.facilitationAdmin) {
+      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
+      return;
+    }
+    try {
+      res.json({ facilitations: await deps.facilitationAdmin.list() });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.facilitations_failed', message: errMsg(err) });
+    }
+  });
+
+  // Operator stop: cancel active runs (#759 semantics) + dispose of the
+  // scaffold (binding + role go with it). Idempotent.
+  router.post('/facilitations/:workflowId/terminate', async (req: Request, res: Response): Promise<void> => {
+    if (!deps.facilitationAdmin) {
+      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
+      return;
+    }
+    try {
+      const result = await deps.facilitationAdmin.terminate(paramStr(req.params.workflowId), req.session?.sub ?? 'operator');
+      if (!result.disposed) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'no such facilitation' });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.facilitation_terminate_failed', message: errMsg(err) });
+    }
+  });
+
   router.get('/awaits/pending', async (_req: Request, res: Response): Promise<void> => {
     try {
       const awaits = await deps.awaitStore.listWaiting();

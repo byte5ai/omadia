@@ -3575,6 +3575,8 @@ async function main(): Promise<void> {
       app,
       requireAuth,
       getRegistry,
+      // #330 round 4 — participants column of the facilitation admin lens.
+      getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
       // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
       // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
       // ad-hoc outbound webhook without an installed connector.

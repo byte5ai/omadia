@@ -37,6 +37,7 @@ import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
+import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
@@ -64,6 +65,8 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
 }
 
 export { runConductorMigrations } from './migrator.js';
+export { ConductorFacilitationAdmin } from './facilitationAdmin.js';
+export type { FacilitationOverview } from './facilitationAdmin.js';
 export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
@@ -186,6 +189,12 @@ export async function wireConductor(deps: {
    * external source cannot shadow `conductor-local` and substitute its own approver list.
    */
   roleHolderSources?: readonly RoleHolderSource[];
+  /** #330 round 4 — kernel roster registry accessor for the facilitation
+   *  admin overview (participants column). Best-effort; omit on hosts
+   *  without channel rosters. */
+  getRoster?: (channelType: string, conversationId: string) => Promise<
+    { participants: readonly { userRef: { id: string; displayName?: string }; isBot?: boolean }[]; partial?: boolean } | undefined
+  >;
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -290,9 +299,11 @@ export async function wireConductor(deps: {
   // (the reaper's TTL poll is the safety net, not the primary path).
   const ephemeralStore = new ConductorEphemeralStore(deps.pool);
   const ephemeralAttachments = new ConductorEphemeralAttachmentsStore(deps.pool);
-  const reapIfEphemeral = async (workflowVersionId: string): Promise<void> => {
-    const version = await workflowStore.getVersion(workflowVersionId);
-    const workflow = version ? await workflowStore.getById(version.workflowId) : null;
+  // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
+  // operator's facilitation terminate — #330 round 4). Idempotent: an already
+  // reaped or non-ephemeral workflow is a no-op.
+  const disposeEphemeralWorkflow = async (workflowId: string, reason: string): Promise<void> => {
+    const workflow = await workflowStore.getById(workflowId);
     if (workflow?.origin !== 'ephemeral' || workflow.reapedAt) return;
     // #330 C2a — dispose of auto-provisioned attachments (binding, role) first;
     // best-effort like the webhook dispatch, the TTL reaper is the safety net.
@@ -303,7 +314,11 @@ export async function wireConductor(deps: {
     }
     await ephemeralStore.markReaped(workflow.id);
     await ephemeralStore.hardDeleteUnreferenced(workflow.id);
-    log(`[conductor] ephemeral '${workflow.slug}' reaped on terminal run state (audit trace retained)`);
+    log(`[conductor] ephemeral '${workflow.slug}' reaped ${reason} (audit trace retained)`);
+  };
+  const reapIfEphemeral = async (workflowVersionId: string): Promise<void> => {
+    const version = await workflowStore.getVersion(workflowVersionId);
+    if (version) await disposeEphemeralWorkflow(version.workflowId, 'on terminal run state');
   };
 
   const executor = new ConductorRunExecutor({
@@ -451,6 +466,19 @@ export async function wireConductor(deps: {
     log,
   });
 
+  // #330 round 4 — operator lens + stop for live facilitations (invisible in
+  // the library by design). Built on the SAME executor/disposal instances.
+  const facilitationAdmin = new ConductorFacilitationAdmin({
+    workflowStore,
+    runStore,
+    ephemeralAttachments,
+    executor,
+    disposeWorkflow: (workflowId) => disposeEphemeralWorkflow(workflowId, 'by operator terminate'),
+    resolveRoleHolders: holdersOnly((key) => roleHolderRegistry.resolveHolders(key)),
+    ...(deps.getRoster ? { getRoster: deps.getRoster } : {}),
+    log,
+  });
+
   deps.app.use(
     '/api/v1/operator/conductors',
     deps.requireAuth,
@@ -458,6 +486,7 @@ export async function wireConductor(deps: {
       workflowStore,
       runStore,
       awaitStore,
+      facilitationAdmin,
       roleStore,
       scheduleStore,
       executor,
