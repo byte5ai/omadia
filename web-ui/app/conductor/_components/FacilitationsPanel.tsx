@@ -21,6 +21,15 @@ const STATUS_TONE: Record<string, string> = {
   cancelled: 'var(--fg-muted)',
 };
 
+/** DoD text usually arrives as one flat "1. ... 2. ..." sentence from chat —
+ *  split it back into list items for reading. Deterministic string handling
+ *  only; anything without the numbering pattern renders as plain text. */
+function splitDod(text: string): string[] | null {
+  const parts = text.split(/(?=(?:^|\s)\d{1,2}\.\s)/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  return parts.map((part) => part.replace(/^\d{1,2}\.\s*/, ''));
+}
+
 function fmtTime(iso: string | null, format: ReturnType<typeof useFormatter>): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -100,20 +109,27 @@ export function FacilitationsPanel(): React.JSX.Element {
             const tone = STATUS_TONE[f.run?.status ?? ''] ?? 'var(--fg-muted)';
             const humans = (f.participants ?? []).filter((p) => !p.isBot);
             return (
-              <li key={f.workflowId} className="rounded-md border border-[color:var(--border)] p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-3">
-                    {f.run && (
-                      <span
-                        className="rounded-md px-2 py-0.5 font-mono text-[11px]"
-                        style={{ color: tone, border: `1px solid ${tone}` }}
-                      >
-                        {f.run.status}
-                      </span>
-                    )}
-                    <span className="truncate text-[14px] font-medium text-[color:var(--fg-strong)]">
+              <li key={f.workflowId} className="rounded-md border border-[color:var(--border)] p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      {f.run && (
+                        <span
+                          className="shrink-0 rounded-md px-2 py-0.5 font-mono text-[11px]"
+                          style={{ color: tone, border: `1px solid ${tone}` }}
+                        >
+                          {f.run.status}
+                        </span>
+                      )}
+                      {f.conversation && (
+                        <span className="truncate font-mono text-[11px] text-[color:var(--fg-muted)]">
+                          {f.conversation.channelType} · {f.conversation.conversationId}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-2 max-w-[70ch] text-[14px] font-medium leading-snug text-[color:var(--fg-strong)]">
                       {f.run?.goal ?? f.name}
-                    </span>
+                    </p>
                   </div>
                   <Button
                     variant="danger"
@@ -125,62 +141,80 @@ export function FacilitationsPanel(): React.JSX.Element {
                   </Button>
                 </div>
                 {f.incomplete && (
-                  <p className="mt-1 text-[12px] text-[color:var(--warning,#f5a623)]">{t('facilitationIncomplete')}</p>
+                  <p className="mt-2 text-[12px] text-[color:var(--warning,#f5a623)]">{t('facilitationIncomplete')}</p>
                 )}
-                <dl className="mt-2 grid gap-x-6 gap-y-1 text-[13px] text-[color:var(--fg-muted)] sm:grid-cols-2">
-                  {f.conversation && (
-                    <div>
-                      <dt className="inline font-medium">{t('facilitationConversation')}: </dt>
-                      <dd className="inline font-mono text-[12px]">
-                        {f.conversation.channelType} · {f.conversation.conversationId}
-                      </dd>
-                    </div>
-                  )}
-                  {f.run?.definitionOfDone && (
-                    <div className="sm:col-span-2">
-                      <dt className="inline font-medium">{t('facilitationDod')}: </dt>
-                      <dd className="inline">{f.run.definitionOfDone}</dd>
-                    </div>
-                  )}
+                {f.run?.lastVerdict && (
+                  <div className="mt-3 rounded-md border border-[color:var(--border)] bg-black/10 px-3 py-2 text-[13px]">
+                    <span className="font-medium text-[color:var(--fg-strong)]">{t('facilitationLastVerdict')}: </span>
+                    <span
+                      style={{
+                        color:
+                          f.run.lastVerdict.dodMet === true
+                            ? 'var(--success,#30a46c)'
+                            : f.run.lastVerdict.dodMet === false
+                              ? 'var(--warning,#f5a623)'
+                              : 'var(--fg-muted)',
+                      }}
+                    >
+                      {f.run.lastVerdict.dodMet === true
+                        ? t('facilitationDodMet')
+                        : f.run.lastVerdict.dodMet === false
+                          ? t('facilitationDodOpen')
+                          : '—'}
+                    </span>
+                    {f.run.lastVerdict.summary && (
+                      <span className="text-[color:var(--fg-muted)]"> — {f.run.lastVerdict.summary}</span>
+                    )}
+                  </div>
+                )}
+                {f.run?.definitionOfDone && (
+                  <div className="mt-3 max-w-[80ch] text-[13px] text-[color:var(--fg-muted)]">
+                    <p className="mb-1 font-medium text-[color:var(--fg-strong)]">{t('facilitationDod')}</p>
+                    {(() => {
+                      const items = splitDod(f.run.definitionOfDone);
+                      return items ? (
+                        <ol className="list-decimal space-y-0.5 pl-5">
+                          {items.map((item, idx) => (
+                            <li key={idx}>{item}</li>
+                          ))}
+                        </ol>
+                      ) : (
+                        <p>{f.run.definitionOfDone}</p>
+                      );
+                    })()}
+                  </div>
+                )}
+                {humans.length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[13px]">
+                    <span className="font-medium text-[color:var(--fg-strong)]">{t('facilitationParticipants')}:</span>
+                    {humans.map((p) => (
+                      <span
+                        key={p.displayName}
+                        className="rounded-full border border-[color:var(--border)] px-2 py-0.5 text-[12px] text-[color:var(--fg-muted)]"
+                      >
+                        {p.displayName}
+                      </span>
+                    ))}
+                    {f.participantsPartial && (
+                      <span className="text-[12px] text-[color:var(--fg-muted)]">{t('facilitationRosterPartial')}</span>
+                    )}
+                  </div>
+                )}
+                <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 border-t border-[color:var(--border)]/50 pt-2 text-[12px] text-[color:var(--fg-muted)]">
                   {f.run && (
-                    <div>
-                      <dt className="inline font-medium">{t('facilitationRounds')}: </dt>
-                      <dd className="inline">{f.run.rounds}</dd>
-                    </div>
-                  )}
-                  {f.run?.lastVerdict && (
-                    <div className="sm:col-span-2">
-                      <dt className="inline font-medium">{t('facilitationLastVerdict')}: </dt>
-                      <dd className="inline">
-                        {f.run.lastVerdict.dodMet === true
-                          ? t('facilitationDodMet')
-                          : f.run.lastVerdict.dodMet === false
-                            ? t('facilitationDodOpen')
-                            : '—'}
-                        {f.run.lastVerdict.summary ? ` — ${f.run.lastVerdict.summary}` : ''}
-                      </dd>
-                    </div>
-                  )}
-                  {humans.length > 0 && (
-                    <div className="sm:col-span-2">
-                      <dt className="inline font-medium">{t('facilitationParticipants')}: </dt>
-                      <dd className="inline">
-                        {humans.map((p) => p.displayName).join(', ')}
-                        {f.participantsPartial ? ` ${t('facilitationRosterPartial')}` : ''}
-                      </dd>
-                    </div>
+                    <span>
+                      {t('facilitationRounds')}: <span className="text-[color:var(--fg-strong)]">{f.run.rounds}</span>
+                    </span>
                   )}
                   {f.initiators.length > 0 && (
-                    <div>
-                      <dt className="inline font-medium">{t('facilitationInitiator')}: </dt>
-                      <dd className="inline font-mono text-[12px]">{f.initiators.join(', ')}</dd>
-                    </div>
+                    <span>
+                      {t('facilitationInitiator')}: <span className="font-mono">{f.initiators.join(', ')}</span>
+                    </span>
                   )}
-                  <div>
-                    <dt className="inline font-medium">{t('facilitationExpires')}: </dt>
-                    <dd className="inline">{fmtTime(f.expiresAt, format)}</dd>
-                  </div>
-                </dl>
+                  <span>
+                    {t('facilitationExpires')}: {fmtTime(f.expiresAt, format)}
+                  </span>
+                </div>
               </li>
             );
           })}
