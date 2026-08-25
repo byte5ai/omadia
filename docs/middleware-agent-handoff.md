@@ -1385,7 +1385,9 @@ deklariert):
 - **`GET /facilitations`** — Overview aller nicht gereapten ephemeren
   Workflows aus rein durablem State: Conversation (Attachment-Row), Goal/DoD
   + Assess-Runden (`ctx.stepAttempts.moderate`) + letztes Verdict
-  (`ctx.stepResult.data`), Initiator-Role-Holder, Teilnehmer via
+  (`ctx.steps.moderate.data` — accumulate() persistiert pro Step-Id;
+  `ctx.stepResult` existiert nur transient als Guard-Argument, NIE im
+  durablen Context), Initiator-Role-Holder, Teilnehmer via
   Roster-Registry (best-effort, 30s-TTL-Cache — jeder Roster-Read öffnet
   einen proaktiven Channel-Turn). Store-Fehler beim Zusammenbau ⇒ Row-Flag
   `incomplete: true` + Log (unter-reporten ja, erfinden nie).

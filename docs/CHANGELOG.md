@@ -18,6 +18,14 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — facilitation lens read the verdict from a context key that never exists
+
+- The facilitation admin lens read the latest assess verdict from `ctx.stepResult` — but
+  the executor persists step results under `ctx.steps[stepId]`; `stepResult` only exists
+  as the transient guard-evaluation argument. Result: `lastVerdict` (and the new interim
+  results table) was ALWAYS null in the admin UI. Now read from `ctx.steps.moderate.data`,
+  with the test fixture matching the executor's real durable shape.
+
 ### Added — interim results table per DoD point in the facilitation details modal
 
 - The moderate tick's fenced-JSON verdict now carries `items[]` — one entry per numbered

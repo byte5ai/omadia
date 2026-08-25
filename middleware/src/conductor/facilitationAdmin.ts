@@ -123,7 +123,11 @@ function verdictItems(value: JsonValue | undefined): FacilitationVerdictItem[] |
 function runOverview(run: ConductorRun): NonNullable<FacilitationOverview['run']> {
   const ctx = asRecord(run.context as JsonValue) ?? {};
   const attempts = asRecord(ctx['stepAttempts']);
-  const verdictData = asRecord(asRecord(ctx['stepResult'])?.['data']);
+  // The executor accumulates step results durably under ctx.steps[stepId]
+  // (`ctx.stepResult` only ever exists as the guard-evaluation argument, never
+  // in the persisted context) — the latest assess verdict lives at
+  // ctx.steps.moderate.data. Keyed by the facilitation pattern's step id.
+  const verdictData = asRecord(asRecord(asRecord(ctx['steps'])?.['moderate'])?.['data']);
   const rounds = typeof attempts?.['moderate'] === 'number' ? (attempts['moderate'] as number) : 0;
   const iso = (value: Date | string | null): string | null =>
     value == null ? null : value instanceof Date ? value.toISOString() : value;
