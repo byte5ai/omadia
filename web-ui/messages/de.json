@@ -1739,6 +1739,7 @@
     "agentsEmpty": "Noch keine Orchestratoren. Leg oben einen an.",
     "agentMeta": "id: {id} · privacy: {privacy} · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailOpenLink": "Details",
     "detailBackToList": "Alle Orchestratoren",
     "detailAssignedHeading": "Zugewiesene Plugins",
     "detailAssignedHint": "Plugin nur für diesen Orchestrator aktivieren oder deaktivieren — der Schalter wird sofort gespeichert. Plugins anhängen oder lösen geht im Editor darunter.",

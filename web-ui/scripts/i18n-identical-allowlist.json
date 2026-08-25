@@ -49,6 +49,7 @@
     "agentPicker.label": "glossary",
     "operatorAgents.agentMeta": "diagnostic",
     "operatorAgents.detailMetaTitle": "brand",
+    "operatorAgents.detailOpenLink": "loanword",
     "builder.simple.persona.optional": "loanword",
     "builder.workspace.buildBusLive": "loanword",
     "builder.spec.setupFields.required.off": "loanword",

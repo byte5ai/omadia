@@ -1739,6 +1739,7 @@
     "agentsEmpty": "No orchestrators yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailOpenLink": "Details",
     "detailBackToList": "All orchestrators",
     "detailAssignedHeading": "Assigned plugins",
     "detailAssignedHint": "Enable or disable a plugin for this orchestrator only — the switch is saved immediately. Attach or detach plugins in the editor below.",
