@@ -1858,6 +1858,34 @@
         "not_an_mcp_grant": "Diese Freigabe ist keine MCP-Tool-Freigabe.",
         "unknown": "Anfrage fehlgeschlagen: {detail}"
       }
+    },
+    "grants": {
+      "heading": "Tool-Grants",
+      "hint": "Nur-Lese-Ansicht der Tools, die dieser Orchestrator aufrufen darf, und der MCP-Server, die seinen Plugins zugewiesen sind. Grants werden auf der MCP-Admin-Seite verwaltet.",
+      "loading": "Grants werden geladen…",
+      "refresh": "Aktualisieren",
+      "empty": "Dieser Orchestrator hält noch keine Tool-Grants.",
+      "epochSummary": "Grant-Epoche: {epoch}",
+      "epochRow": "Epoche: {epoch}",
+      "epochNever": "nie erhöht",
+      "serverRemoved": "(Server entfernt)",
+      "pluginHeading": "Plugin-MCP-Grants",
+      "pluginEmpty": "Den Plugins dieses Orchestrators sind keine MCP-Server zugewiesen.",
+      "grantedMeta": "vergeben von {who} · {date}",
+      "kind": {
+        "native": "nativ",
+        "mcp": "MCP"
+      },
+      "errors": {
+        "agent_graph_store_unavailable": "Die Orchestrator-Registry ist gerade nicht erreichbar. Versuch es gleich noch einmal.",
+        "config_validation": "Der Server hat die Anfrage abgelehnt.",
+        "invalid_body": "Der Server hat den Anfrage-Payload abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
+        "unknown": "Laden der Grants fehlgeschlagen: {detail}"
+      }
     }
   },
   "builder": {
