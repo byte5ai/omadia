@@ -1846,6 +1846,18 @@
       "unassignBody": "Revoke all {count} tool grants of \"{server}\" for this orchestrator?",
       "unassignConfirm": "Revoke all",
       "cancel": "Cancel",
+      "delegation": {
+        "label": "Identity delegation",
+        "modeService": "Service",
+        "modePerUser": "Per user",
+        "scopeHint": "Server-wide setting — it applies to every agent using this server, not just this one.",
+        "perUserFailClosed": "Per-user calls act under each user's own identity and fail closed when none can be resolved.",
+        "switchToService": "Switch to service…",
+        "switchToPerUser": "Switch to per user…",
+        "switchTitle": "Change delegation for every agent",
+        "switchBody": "\"{server}\" delegates identity per server, not per assignment. Switching to {mode} changes it for every agent using this server. Continue?",
+        "switchConfirm": "Switch mode"
+      },
       "errors": {
         "config_validation": "The scan gate rejected the change — a selected tool is blocked or not scanned yet.",
         "invalid_delegation": "The server rejected the delegation mode.",

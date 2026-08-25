@@ -1846,6 +1846,18 @@
       "unassignBody": "Alle {count} Tool-Freigaben von \"{server}\" für diesen Orchestrator entziehen?",
       "unassignConfirm": "Alle entziehen",
       "cancel": "Abbrechen",
+      "delegation": {
+        "label": "Identitäts-Delegation",
+        "modeService": "Service",
+        "modePerUser": "Pro Nutzer",
+        "scopeHint": "Server-weite Einstellung — sie gilt für jeden Agenten, der diesen Server nutzt, nicht nur für diesen.",
+        "perUserFailClosed": "Pro-Nutzer-Aufrufe laufen unter der Identität des jeweiligen Nutzers und schlagen fail-closed fehl, wenn keine auflösbar ist.",
+        "switchToService": "Auf Service umstellen…",
+        "switchToPerUser": "Auf pro Nutzer umstellen…",
+        "switchTitle": "Delegation für alle Agenten ändern",
+        "switchBody": "\"{server}\" delegiert Identität pro Server, nicht pro Zuweisung. Die Umstellung auf {mode} gilt für jeden Agenten, der diesen Server nutzt. Fortfahren?",
+        "switchConfirm": "Modus umstellen"
+      },
       "errors": {
         "config_validation": "Der Scan-Gate hat die Änderung abgelehnt — ein ausgewähltes Tool ist blockiert oder noch nicht gescannt.",
         "invalid_delegation": "Der Server hat den Delegationsmodus abgelehnt.",

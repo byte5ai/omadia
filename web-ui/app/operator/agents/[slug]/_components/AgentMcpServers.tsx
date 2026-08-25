@@ -13,6 +13,8 @@ import {
   listMcpServers,
   parseMcpGrantErrorCode,
   replaceMcpToolAllowlist,
+  setMcpServerDelegation,
+  type McpDelegation,
   type McpDiscoveredTool,
   type McpServerNode,
 } from '../../../../_lib/agentBuilder';
@@ -88,6 +90,13 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
   const [ackArm, setAckArm] = useState<string | null>(null);
   const [ackBusy, setAckBusy] = useState<string | null>(null);
   const [confirmUnassign, setConfirmUnassign] = useState<McpServerNode | null>(null);
+  /** Pending delegation switch, held until the operator confirms the
+   *  server-wide effect in the dialog. */
+  const [confirmDelegation, setConfirmDelegation] = useState<{
+    server: McpServerNode;
+    next: McpDelegation;
+  } | null>(null);
+  const [delegationBusy, setDelegationBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -153,6 +162,33 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
       setError(grantErrorText(err));
     } finally {
       setBusy(null);
+    }
+  }
+
+  /** Localized name of a delegation mode. */
+  const modeLabel = useCallback(
+    (mode: McpDelegation): string =>
+      mode === 'per_user' ? t('mcp.delegation.modePerUser') : t('mcp.delegation.modeService'),
+    [t],
+  );
+
+  /**
+   * Delegation is stored PER SERVER (`mcp_servers.delegation`, migration 0031)
+   * — there is no per-(agent, server) storage, by the W0c schema-fit gate's
+   * decision (epic #860). Switching it here therefore changes WHOSE identity
+   * every agent's calls to this server act under, which is why the switch is
+   * confirm-gated and labelled with its server-wide effect.
+   */
+  async function switchDelegation(server: McpServerNode, next: McpDelegation): Promise<void> {
+    setDelegationBusy(server.id);
+    setError(null);
+    try {
+      await setMcpServerDelegation(server.id, next);
+      await refresh();
+    } catch (err) {
+      setError(grantErrorText(err));
+    } finally {
+      setDelegationBusy(null);
     }
   }
 
@@ -224,6 +260,14 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
                   {t('statusDisabled')}
                 </span>
               ) : null}
+              {server.delegation !== undefined ? (
+                <span
+                  title={t('mcp.delegation.scopeHint')}
+                  className="rounded-full border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]"
+                >
+                  {modeLabel(server.delegation)}
+                </span>
+              ) : null}
               <span className="ml-auto text-[11px] text-[color:var(--fg-muted)]">
                 {grantedSet.size > 0
                   ? t('mcp.toolsGranted', {
@@ -236,6 +280,41 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
             {isOpen ? (
               <div className="flex flex-col gap-2 border-t border-[color:var(--border)]/60 p-3">
                 <McpAuthSection serverId={server.id} />
+                {server.delegation !== undefined ? (
+                  <div className="flex flex-col gap-1 rounded-md border border-[color:var(--border)] px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] font-medium text-[color:var(--fg-strong)]">
+                        {t('mcp.delegation.label')}
+                      </span>
+                      <span className="text-[11px] text-[color:var(--fg-strong)]">
+                        {modeLabel(server.delegation)}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        busy={delegationBusy === server.id}
+                        onClick={() =>
+                          setConfirmDelegation({
+                            server,
+                            next: server.delegation === 'per_user' ? 'service' : 'per_user',
+                          })
+                        }
+                      >
+                        {server.delegation === 'per_user'
+                          ? t('mcp.delegation.switchToService')
+                          : t('mcp.delegation.switchToPerUser')}
+                      </Button>
+                    </div>
+                    <div className="text-[11px] text-[color:var(--fg-muted)]">
+                      {t('mcp.delegation.scopeHint')}
+                    </div>
+                    {server.delegation === 'per_user' ? (
+                      <div className="text-[11px] text-[color:var(--fg-muted)]">
+                        {t('mcp.delegation.perUserFailClosed')}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {server.discoveredTools.length === 0 ? (
                   <div className="text-sm text-[color:var(--fg-muted)]">{t('mcp.noTools')}</div>
                 ) : (
@@ -389,6 +468,27 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
           const target = confirmUnassign;
           setConfirmUnassign(null);
           if (target !== null) void saveAllowlist(target, []);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDelegation !== null}
+        title={t('mcp.delegation.switchTitle')}
+        body={
+          confirmDelegation !== null
+            ? t('mcp.delegation.switchBody', {
+                server: confirmDelegation.server.name,
+                mode: modeLabel(confirmDelegation.next),
+              })
+            : undefined
+        }
+        confirmLabel={t('mcp.delegation.switchConfirm')}
+        cancelLabel={t('mcp.cancel')}
+        tone="danger"
+        onCancel={() => setConfirmDelegation(null)}
+        onConfirm={() => {
+          const target = confirmDelegation;
+          setConfirmDelegation(null);
+          if (target !== null) void switchDelegation(target.server, target.next);
         }}
       />
     </section>
