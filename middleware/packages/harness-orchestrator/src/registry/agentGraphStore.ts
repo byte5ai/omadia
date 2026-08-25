@@ -249,6 +249,23 @@ export interface ToolGrantRow {
   readonly mcpServerId: string | null;
   readonly config: Record<string, unknown>;
   readonly createdAt: Date;
+  /** Grant epoch (W0c, #861): `bumpMcpGrantEpoch` stamps `config.verdictEpoch`
+   *  (a `now()::text` timestamp) into the grant's JSONB — there is no epoch
+   *  column. Surfaced here as a typed field so readers (the agent detail UI)
+   *  never dig through the untyped `config`. `null` until the first bump.
+   *  Optional so hand-built fixtures predating the field stay valid; the row
+   *  mapper always populates it. */
+  readonly grantEpoch?: string | null;
+}
+
+/** One `plugin_mcp_grants` row (epic #459 W5, issue #458): the operator's
+ *  explicit plugin → MCP-server grant. Named so the per-agent read model
+ *  (W0c, #861) has a typed row instead of an inline shape. */
+export interface PluginMcpGrantRow {
+  readonly pluginId: string;
+  readonly mcpServerId: string;
+  readonly grantedBy: string;
+  readonly grantedAt: Date;
 }
 
 export interface ScheduleRow {
@@ -576,6 +593,13 @@ interface ToolGrantDbRow {
   created_at: Date;
 }
 
+interface PluginMcpGrantDbRow {
+  plugin_id: string;
+  mcp_server_id: string;
+  granted_by: string;
+  granted_at: Date;
+}
+
 interface ScheduleDbRow {
   id: string;
   agent_id: string;
@@ -800,6 +824,9 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
 }
 
 function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
+  // `verdictEpoch` is written by bumpMcpGrantEpoch via jsonb_set; anything
+  // that is not a string (absent, or a hand-edited config) reads as null.
+  const epoch = r.config?.['verdictEpoch'];
   return {
     id: r.id,
     agentId: r.agent_id,
@@ -809,6 +836,16 @@ function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
     mcpServerId: r.mcp_server_id,
     config: r.config,
     createdAt: r.created_at,
+    grantEpoch: typeof epoch === 'string' ? epoch : null,
+  };
+}
+
+function mapPluginMcpGrant(r: PluginMcpGrantDbRow): PluginMcpGrantRow {
+  return {
+    pluginId: r.plugin_id,
+    mcpServerId: r.mcp_server_id,
+    grantedBy: r.granted_by,
+    grantedAt: r.granted_at,
   };
 }
 
@@ -1651,21 +1688,28 @@ export class AgentGraphStore {
 
   // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
 
-  async listPluginMcpGrants(): Promise<
-    readonly { pluginId: string; mcpServerId: string; grantedBy: string; grantedAt: Date }[]
-  > {
-    const { rows } = await this.pool.query<{
-      plugin_id: string;
-      mcp_server_id: string;
-      granted_by: string;
-      granted_at: Date;
-    }>('SELECT * FROM plugin_mcp_grants');
-    return rows.map((r) => ({
-      pluginId: r.plugin_id,
-      mcpServerId: r.mcp_server_id,
-      grantedBy: r.granted_by,
-      grantedAt: r.granted_at,
-    }));
+  async listPluginMcpGrants(): Promise<readonly PluginMcpGrantRow[]> {
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      'SELECT * FROM plugin_mcp_grants',
+    );
+    return rows.map(mapPluginMcpGrant);
+  }
+
+  /** Plugin-scoped read of `plugin_mcp_grants` (W0c, #861): full grant rows
+   *  for a set of plugin ids — one round-trip for an agent detail page that
+   *  shows the MCP grants of every plugin enabled on that agent. SELECT-only
+   *  by construction (no DDL, no writes). */
+  async listPluginMcpGrantsForPlugins(
+    pluginIds: readonly string[],
+  ): Promise<readonly PluginMcpGrantRow[]> {
+    if (pluginIds.length === 0) return [];
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      `SELECT * FROM plugin_mcp_grants
+       WHERE plugin_id = ANY($1::text[])
+       ORDER BY plugin_id, granted_at`,
+      [[...pluginIds]],
+    );
+    return rows.map(mapPluginMcpGrant);
   }
 
   async listGrantedServerIdsForPlugin(pluginId: string): Promise<readonly string[]> {
@@ -2293,6 +2337,19 @@ export class AgentGraphStore {
   async listAllToolGrants(): Promise<readonly ToolGrantRow[]> {
     const { rows } = await this.pool.query<ToolGrantDbRow>(
       'SELECT * FROM agent_tool_grants ORDER BY created_at',
+    );
+    return rows.map(mapToolGrant);
+  }
+
+  /** Agent-scoped read of `agent_tool_grants` (W0c, #861): the grants of ONE
+   *  agent, for the agent detail page. Same row shape as `listAllToolGrants`
+   *  (grant epoch included via `grantEpoch`); uses the
+   *  `agent_tool_grants_agent_idx` index from migration 0003. SELECT-only by
+   *  construction (no DDL, no writes). */
+  async listToolGrantsForAgent(agentId: string): Promise<readonly ToolGrantRow[]> {
+    const { rows } = await this.pool.query<ToolGrantDbRow>(
+      'SELECT * FROM agent_tool_grants WHERE agent_id = $1 ORDER BY created_at',
+      [agentId],
     );
     return rows.map(mapToolGrant);
   }
