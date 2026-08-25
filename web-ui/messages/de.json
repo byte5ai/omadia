@@ -752,7 +752,14 @@
     "facilitationDetailsClose": "Schließen",
     "facilitationTraceHeading": "Verlauf (Assess-Runden)",
     "facilitationTraceFailed": "Der Verlauf konnte nicht geladen werden",
-    "facilitationNoRun": "Für diese Facilitation existiert noch kein Lauf."
+    "facilitationNoRun": "Für diese Facilitation existiert noch kein Lauf.",
+    "facilitationResultsHeading": "Zwischenstand der Ergebnisse (je DoD-Punkt)",
+    "facilitationResultsPoint": "Punkt",
+    "facilitationResultsStatus": "Status",
+    "facilitationResultsNote": "Aktueller Stand",
+    "facilitationStatusDone": "erledigt",
+    "facilitationStatusPartial": "teilweise",
+    "facilitationStatusOpen": "offen"
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy-Reports · omadia",

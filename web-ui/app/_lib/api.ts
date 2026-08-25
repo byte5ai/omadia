@@ -4465,7 +4465,17 @@ export interface FacilitationOverview {
     goal: string | null;
     definitionOfDone: string | null;
     rounds: number;
-    lastVerdict: { dodMet: boolean | null; summary: string | null } | null;
+    lastVerdict: {
+      dodMet: boolean | null;
+      summary: string | null;
+      /** Per-DoD-point interim state (pattern v3+); null on runs started before it. */
+      items: Array<{
+        point: number | null;
+        label: string | null;
+        status: 'done' | 'partial' | 'open' | null;
+        note: string | null;
+      }> | null;
+    } | null;
   } | null;
   participants: Array<{ displayName: string; isBot: boolean }> | null;
   participantsPartial: boolean;

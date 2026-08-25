@@ -752,7 +752,14 @@
     "facilitationDetailsClose": "Close",
     "facilitationTraceHeading": "Run trace (assess rounds)",
     "facilitationTraceFailed": "The run trace could not be loaded",
-    "facilitationNoRun": "No run exists for this facilitation yet."
+    "facilitationNoRun": "No run exists for this facilitation yet.",
+    "facilitationResultsHeading": "Interim results (per DoD point)",
+    "facilitationResultsPoint": "Point",
+    "facilitationResultsStatus": "Status",
+    "facilitationResultsNote": "Current state",
+    "facilitationStatusDone": "done",
+    "facilitationStatusPartial": "partial",
+    "facilitationStatusOpen": "open"
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy reports · omadia",

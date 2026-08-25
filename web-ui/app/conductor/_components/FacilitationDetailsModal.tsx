@@ -58,6 +58,23 @@ export function FacilitationDetailsModal({
   }, [loadTrace]);
 
   const dodItems = f.run?.definitionOfDone ? splitDod(f.run.definitionOfDone) : null;
+  const verdictItems = f.run?.lastVerdict?.items ?? null;
+
+  const statusLabel = (status: 'done' | 'partial' | 'open' | null): string =>
+    status === 'done'
+      ? t('facilitationStatusDone')
+      : status === 'partial'
+        ? t('facilitationStatusPartial')
+        : status === 'open'
+          ? t('facilitationStatusOpen')
+          : '—';
+
+  const statusColor = (status: 'done' | 'partial' | 'open' | null): string =>
+    status === 'done'
+      ? 'var(--success,#30a46c)'
+      : status === 'partial'
+        ? 'var(--warning,#f5a623)'
+        : 'var(--fg-muted)';
 
   return (
     <div
@@ -117,6 +134,45 @@ export function FacilitationDetailsModal({
               )}
             </div>
           )}
+          {verdictItems && verdictItems.length > 0 && (
+            <div>
+              <p id="facilitation-results-heading" className="mb-1 font-medium text-[color:var(--fg-strong)]">
+                {t('facilitationResultsHeading')}
+              </p>
+              {/* Focusable so keyboard users can horizontally scroll an overflowing table. */}
+              <div
+                className="overflow-x-auto rounded-md border border-[color:var(--border)]"
+                role="region"
+                aria-labelledby="facilitation-results-heading"
+                tabIndex={0}
+              >
+                <table className="w-full border-collapse text-left text-[12.5px]">
+                  <thead>
+                    <tr className="border-b border-[color:var(--border)] bg-black/10 text-[11px] uppercase tracking-wide text-[color:var(--fg-muted)]">
+                      <th scope="col" className="px-3 py-2 font-medium">#</th>
+                      <th scope="col" className="px-3 py-2 font-medium">{t('facilitationResultsPoint')}</th>
+                      <th scope="col" className="px-3 py-2 font-medium">{t('facilitationResultsStatus')}</th>
+                      <th scope="col" className="px-3 py-2 font-medium">{t('facilitationResultsNote')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {verdictItems.map((item, idx) => (
+                      <tr key={idx} className="border-b border-[color:var(--border)] align-top last:border-b-0">
+                        <td className="px-3 py-2 text-[color:var(--fg-muted)]">{item.point ?? idx + 1}</td>
+                        <td className="px-3 py-2 text-[color:var(--fg-strong)]">{item.label ?? '—'}</td>
+                        <td className="whitespace-nowrap px-3 py-2 font-medium" style={{ color: statusColor(item.status) }}>
+                          {statusLabel(item.status)}
+                        </td>
+                        <td className="px-3 py-2 text-[color:var(--fg-muted)]">{item.note ?? ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {/* The table's point labels are a model paraphrase — the authoritative DoD text
+              stays visible alongside it (review M1). */}
           {f.run?.definitionOfDone && (
             <div className="text-[color:var(--fg-muted)]">
               <p className="mb-1 font-medium text-[color:var(--fg-strong)]">{t('facilitationDod')}</p>

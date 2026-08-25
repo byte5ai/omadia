@@ -20,6 +20,14 @@ export interface FacilitationParticipant {
   isBot: boolean;
 }
 
+/** One DoD point's interim state, straight from the moderate step's fenced-JSON verdict. */
+export interface FacilitationVerdictItem {
+  point: number | null;
+  label: string | null;
+  status: 'done' | 'partial' | 'open' | null;
+  note: string | null;
+}
+
 export interface FacilitationOverview {
   workflowId: string;
   slug: string;
@@ -44,7 +52,12 @@ export interface FacilitationOverview {
     definitionOfDone: string | null;
     /** Assess rounds so far (executor-owned ctx.stepAttempts, never model-counted). */
     rounds: number;
-    lastVerdict: { dodMet: boolean | null; summary: string | null } | null;
+    lastVerdict: {
+      dodMet: boolean | null;
+      summary: string | null;
+      /** Per-DoD-point interim state from the latest assess verdict (pattern v3+); null on older runs. */
+      items: FacilitationVerdictItem[] | null;
+    } | null;
   } | null;
   participants: FacilitationParticipant[] | null;
   participantsPartial: boolean;
@@ -73,6 +86,40 @@ function asRecord(value: JsonValue | undefined): Record<string, JsonValue> | und
     : undefined;
 }
 
+const VERDICT_ITEM_STATUSES = ['done', 'partial', 'open'] as const;
+/** The verdict fence itself is capped at 16 KB — cap the per-cell strings far below that. */
+const VERDICT_ITEM_TEXT_MAX = 300;
+const VERDICT_ITEM_POINT_MAX = 999;
+
+/** Model output — validate every entry, drop what isn't an object, null what isn't well-typed,
+ *  cap free-text length and require a sane positive integer point number. */
+function verdictItems(value: JsonValue | undefined): FacilitationVerdictItem[] | null {
+  if (!Array.isArray(value)) return null;
+  const cappedText = (field: JsonValue | undefined): string | null =>
+    typeof field === 'string' ? field.slice(0, VERDICT_ITEM_TEXT_MAX) : null;
+  const items = value.flatMap((entry): FacilitationVerdictItem[] => {
+    const record = asRecord(entry);
+    if (!record) return [];
+    const point = record['point'];
+    const status = record['status'];
+    return [
+      {
+        point:
+          typeof point === 'number' && Number.isInteger(point) && point > 0 && point <= VERDICT_ITEM_POINT_MAX
+            ? point
+            : null,
+        label: cappedText(record['label']),
+        status:
+          typeof status === 'string' && (VERDICT_ITEM_STATUSES as readonly string[]).includes(status)
+            ? (status as FacilitationVerdictItem['status'])
+            : null,
+        note: cappedText(record['note']),
+      },
+    ];
+  });
+  return items.length > 0 ? items : null;
+}
+
 function runOverview(run: ConductorRun): NonNullable<FacilitationOverview['run']> {
   const ctx = asRecord(run.context as JsonValue) ?? {};
   const attempts = asRecord(ctx['stepAttempts']);
@@ -94,6 +141,7 @@ function runOverview(run: ConductorRun): NonNullable<FacilitationOverview['run']
       ? {
           dodMet: typeof verdictData['dodMet'] === 'boolean' ? (verdictData['dodMet'] as boolean) : null,
           summary: typeof verdictData['summary'] === 'string' ? (verdictData['summary'] as string) : null,
+          items: verdictItems(verdictData['items']),
         }
       : null,
   };

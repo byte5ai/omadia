@@ -1404,6 +1404,17 @@ Web-UI: Panel „Laufende Facilitations" auf der Conductor-Seite
 hinter ConfirmDialog. Modul: `src/conductor/facilitationAdmin.ts`, Tests:
 `test/conductorFacilitationAdmin.test.ts`.
 
+**Zwischenstand-Tabelle (Pattern v3):** Das Moderate-Verdict trägt zusätzlich
+`items[]` — pro nummeriertem DoD-Punkt `{point, label, status:
+done|partial|open, note}`. Der Kernel validiert die Model-Ausgabe defensiv
+(`verdictItems()` in `facilitationAdmin.ts`: Nicht-Objekte fliegen raus,
+falsch getypte Felder werden genullt) und reicht sie als
+`run.lastVerdict.items` durch (Strings auf 300 Zeichen gekappt, `point` nur
+als positive Ganzzahl); das Details-Modal (`FacilitationDetailsModal.tsx`)
+rendert daraus die Tabelle #/Punkt/Status/Stand. Die Labels sind eine
+Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
+die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
+
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
 
 Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
