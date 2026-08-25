@@ -3166,6 +3166,11 @@ async function main(): Promise<void> {
       getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // W0c (#861) — the per-agent grant read model needs the graph store.
+      // Same graphPool-guarded shape as the other AgentGraphStore sites; when
+      // no DATABASE_URL is set the route degrades to its own 503.
+      getAgentGraphStore: () =>
+        graphPool ? new AgentGraphStore(graphPool) : undefined,
     }),
   );
   console.log(

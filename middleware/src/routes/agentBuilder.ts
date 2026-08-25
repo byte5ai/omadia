@@ -62,7 +62,7 @@ import {
   McpRegistryError,
   type McpRegistryConfig,
 } from '../services/mcpRegistryClient.js';
-import { scanDiscoveredTools } from '../services/mcpToolGuard.js';
+import { diffMcpToolAllowlist, scanDiscoveredTools } from '../services/mcpToolGuard.js';
 import { scanSkillForRisks } from '../services/skillGuard.js';
 import { importSkillMarkdown } from '../services/skillImport.js';
 import { serializeSkillMarkdown } from '../services/skillLoader.js';
@@ -1828,18 +1828,44 @@ export function createAgentBuilderRouter(
     }
   });
 
-  /** Grant one server tool to an orchestrator (top-level agent). Runs the same
-   *  fail-closed verdict gate as the canvas, then reloads so the orchestrator
-   *  picks the tool up on its next turn. */
+  /** Grant one server tool to an orchestrator (top-level agent), or — with
+   *  `toolNames: string[]` — replace the agent's whole tool allowlist for that
+   *  server (issue #862). The allowlist IS the set of `agent_tool_grants` rows
+   *  for the (agent, server) pair; there is no separate allowlist storage.
+   *  Every tool that would be granted runs the same fail-closed verdict gate
+   *  as the canvas BEFORE any row is written; one rejection aborts the whole
+   *  edit. Then reloads so the orchestrator picks the change up on its next
+   *  turn.
+   *
+   *  `delegation` (optional, 'service' | 'per_user') sets the SERVER's
+   *  delegation mode at assignment time. Delegation lives per server
+   *  (`mcp_servers.delegation`, resolved at dispatch by `resolveMcpUserKey`) —
+   *  a true per-assignment mode would need a schema migration, so the response
+   *  reports the actual scope via `delegationScope: 'server'`. */
   router.put('/mcp-grants', async (req: Request, res: Response) => {
     const l = live(res);
     if (!l) return;
     try {
       const agentSlug = String(req.body?.agentSlug ?? '').trim();
       const mcpServerId = String(req.body?.mcpServerId ?? '');
-      const toolRef = String(req.body?.toolName ?? '');
-      if (agentSlug === '' || !isUuid(mcpServerId) || toolRef === '') {
+      const singleRef = String(req.body?.toolName ?? '');
+      const listRefs: unknown = req.body?.toolNames;
+      const hasSingle = singleRef !== '';
+      const hasList = Array.isArray(listRefs);
+      // Exactly one mode: the historical single additive grant, or the
+      // allowlist replace. Neither (or both) is a malformed request.
+      if (agentSlug === '' || !isUuid(mcpServerId) || hasSingle === hasList) {
         res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      if (hasList && listRefs.some((t) => typeof t !== 'string' || t === '')) {
+        res.status(400).json({ error: 'invalid_grant' });
+        return;
+      }
+      const rawDelegation: unknown = req.body?.delegation;
+      const delegation = rawDelegation === undefined ? undefined : parseDelegation(rawDelegation);
+      if (delegation === null) {
+        res.status(400).json({ error: 'invalid_delegation' });
         return;
       }
       const agent = (await l.config.listAgents()).find((a) => a.slug === agentSlug);
@@ -1847,19 +1873,86 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'orchestrator_not_found', agentSlug });
         return;
       }
-      const toolName = await assertMcpToolAllowed(l, mcpServerId, toolRef);
-      // createToolGrant is idempotent for top-level MCP grants (ON CONFLICT via
-      // migration 0014), so a repeat is a clean no-op; reload picks up a real
-      // change and is itself a no-op otherwise.
-      await l.graph.createToolGrant({
-        agentId: agent.id,
-        subAgentId: null,
-        toolKind: 'mcp',
-        toolRef: toolName,
-        mcpServerId,
-      });
+      const server = (await l.graph.listMcpServers()).find((s) => s.id === mcpServerId);
+      if (!server) {
+        res.status(404).json({ error: 'mcp_server_not_found' });
+        return;
+      }
+      // Normalize first, gate later. `mcpToolNameFromRef` strips an optional
+      // '<serverName>:' prefix — the same normalization `assertMcpToolAllowed`
+      // applies — so the diff below compares names, never raw refs.
+      const desiredRefs = hasSingle ? [singleRef] : (listRefs as string[]);
+      const desired = desiredRefs.map((ref) => mcpToolNameFromRef(ref, server.name));
+      const currentGrants = (await l.graph.listAllToolGrants()).filter(
+        (g) =>
+          g.toolKind === 'mcp' &&
+          g.mcpServerId === mcpServerId &&
+          g.agentId === agent.id &&
+          g.subAgentId === null,
+      );
+      // The unique index (0014) keys on the RAW tool_ref, so two persisted
+      // rows (e.g. 'search' and 'odoo-mcp:search') can normalize to the SAME
+      // tool name. A revoke must delete EVERY row behind the name — the map
+      // therefore holds id LISTS, not single ids.
+      const grantIdsByTool = new Map<string, string[]>();
+      for (const g of currentGrants) {
+        const name = mcpToolNameFromRef(g.toolRef, server.name);
+        const ids = grantIdsByTool.get(name);
+        if (ids) ids.push(g.id);
+        else grantIdsByTool.set(name, [g.id]);
+      }
+      const diff = diffMcpToolAllowlist([...grantIdsByTool.keys()], desired);
+      // Single-grant mode stays additive (historical contract); only the
+      // allowlist mode revokes what fell off the list.
+      const toRevoke = hasList ? diff.toRevoke : [];
+      // Gate only what would be WRITTEN (`diff.toGrant`). Already-granted
+      // rows passed the gate at creation, and a re-discover can leave one of
+      // them "granted but not currently callable" (stale ack) — the dispatch
+      // guard in mcpGrantPolicy blocks such a tool at call time regardless,
+      // and refusing an unrelated clean edit because of it would jam the
+      // editor exactly when the operator needs it. One gate rejection still
+      // aborts the whole edit BEFORE any write.
+      for (const toolName of diff.toGrant) {
+        await assertMcpToolAllowed(l, mcpServerId, toolName);
+      }
+      const revokeIds = toRevoke.flatMap(
+        (toolName) => grantIdsByTool.get(toolName) ?? [],
+      );
+      if (diff.toGrant.length > 0 || revokeIds.length > 0) {
+        // One store-level transaction for the whole edit: a partial failure
+        // rolls back, so `granted`/`revoked` in the response always describe
+        // what actually persisted.
+        await l.graph.applyMcpToolAllowlist({
+          agentId: agent.id,
+          mcpServerId,
+          grantRefs: diff.toGrant,
+          revokeIds,
+        });
+      }
+      if (delegation !== undefined && delegation !== server.delegation) {
+        await l.graph.setMcpServerDelegation(mcpServerId, delegation);
+      }
+      if (diff.toGrant.length > 0 || toRevoke.length > 0) {
+        // Same recipe as server status/ack changes: policy refresh + epoch
+        // bump so the reload below actually rebuilds the agents whose MCP
+        // tool surface changed.
+        await refreshMcpGrantPolicy(l.graph);
+        await l.graph.bumpMcpGrantEpoch(mcpServerId);
+      }
       await reload(l);
-      res.json({ agentSlug, mcpServerId, toolName, granted: true });
+      res.json({
+        agentSlug,
+        mcpServerId,
+        ...(hasSingle
+          ? { toolName: desired[0], granted: true }
+          : {
+              toolNames: [...diff.unchanged, ...diff.toGrant].sort(),
+              granted: diff.toGrant,
+              revoked: toRevoke,
+            }),
+        delegation: delegation ?? server.delegation,
+        delegationScope: 'server',
+      });
     } catch (err) {
       fail(res, err);
     }
@@ -1887,6 +1980,13 @@ export function createAgentBuilderRouter(
         return;
       }
       await l.graph.deleteToolGrant(grantId);
+      if (grant.mcpServerId) {
+        // A revoke changes the holder's tool surface: refresh the dispatch
+        // policy and bump the server's grant epoch so the reload rebuilds the
+        // affected agents (a bare reload can miss config-only deltas).
+        await refreshMcpGrantPolicy(l.graph);
+        await l.graph.bumpMcpGrantEpoch(grant.mcpServerId);
+      }
       await reload(l);
       res.status(204).end();
     } catch (err) {
@@ -2286,6 +2386,14 @@ export function createAgentBuilderRouter(
             subAgentName: sub?.name ?? null,
             serverId: g.mcpServerId,
             serverName: server?.name ?? null,
+            // Delegation is a per-SERVER mode (issue #862): every assignment of
+            // this server acts under the same identity resolution
+            // (`resolveMcpUserKey`), so the row surfaces the server's mode.
+            delegation: server?.delegation ?? null,
+            // Last verdict-epoch bump of this grant (set by bumpMcpGrantEpoch);
+            // null until the first bump touches the row.
+            grantEpoch:
+              typeof g.config['verdictEpoch'] === 'string' ? g.config['verdictEpoch'] : null,
             toolName,
             severity: v?.severity ?? null,
             notYetScanned: v === undefined,
@@ -2311,6 +2419,8 @@ export function createAgentBuilderRouter(
           subAgentName: b.contract,
           serverId: b.mcpServerId,
           serverName: server?.name ?? null,
+          delegation: server?.delegation ?? null,
+          grantEpoch: null,
           toolName: b.toolName,
           severity: v?.severity ?? null,
           notYetScanned: v === undefined,
@@ -2327,6 +2437,8 @@ export function createAgentBuilderRouter(
         subAgentName: null,
         serverId: g.mcpServerId,
         serverName: serverById.get(g.mcpServerId)?.name ?? null,
+        delegation: serverById.get(g.mcpServerId)?.delegation ?? null,
+        grantEpoch: null,
         toolName: '*',
         severity: null,
         notYetScanned: false,
@@ -2463,7 +2575,7 @@ async function createEdge(
       const onAgent = source.startsWith('agent:');
       const subAgentId = onAgent ? null : idAfter(source, 'subagent');
       const toolKind = (config['toolKind'] as 'native' | 'mcp') ?? 'native';
-      const toolRef = String(config['toolRef'] ?? idAfter(target, 'tool'));
+      let toolRef = String(config['toolRef'] ?? idAfter(target, 'tool'));
       const mcpServerId = (config['mcpServerId'] as string | null) ?? null;
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
@@ -2474,7 +2586,11 @@ async function createEdge(
         if (!mcpServerId) {
           throw new ConfigValidationError('mcp tool_grant requires an mcpServerId');
         }
-        await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        // Persist the NORMALIZED name the gate returns, not the caller's raw
+        // ref: a '<serverName>:'-prefixed ref would land as its own row beside
+        // the bare-name grant (the 0014 unique index keys on the raw ref),
+        // splitting one tool across two rows (W0c review).
+        toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,
@@ -2752,6 +2868,9 @@ export function mcpNode(s: McpServerRow) {
     status: s.status,
     lastDiscoveredAt: s.lastDiscoveredAt ? s.lastDiscoveredAt.toISOString() : null,
     discoveredTools: s.discoveredTools,
+    /** Per-server identity delegation (W0-1, D2) — the mode every assignment
+     *  of this server acts under, resolved at dispatch by `resolveMcpUserKey`. */
+    delegation: s.delegation,
     source: s.source,
     registryId: s.registryId,
     license: s.license,

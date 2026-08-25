@@ -29,8 +29,15 @@ function errText(err: unknown): string {
  */
 export function McpAuthSection({
   serverId,
+  showDelegation = true,
 }: {
   serverId: string;
+  /** The delegation block (mode + un-gated switch) is server-level admin UI.
+   *  Pages that provide their own delegation surface — the per-agent
+   *  assignment editor shows the mode READ-ONLY with a server-wide-effect
+   *  label per the W0c #862 decision — pass `false` so one page never renders
+   *  two contradictory delegation controls. */
+  showDelegation?: boolean;
 }): React.ReactElement | null {
   const t = useTranslations('adminMcp');
   const [status, setStatus] = useState<McpAuthStatus | null>(null);
@@ -212,7 +219,7 @@ export function McpAuthSection({
           <div className="mt-1">{t('auth.manualStillSupported')}</div>
         </div>
       ) : null}
-      {status.delegation ? (
+      {showDelegation && status.delegation ? (
         <div className="flex flex-col gap-1 border-t border-[color:var(--border)] pt-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-medium">{t('auth.delegationLabel')}:</span>

@@ -185,6 +185,11 @@ export interface ToolGrantNode {
   toolKind: ToolKind;
   toolRef: string;
   mcpServerId: string | null;
+  // NOTE deliberately NO `grantEpoch` here: the middleware's `toolGrantNode()`
+  // serializer (canvas graph payload) does not emit it. The grant epoch is
+  // surfaced by exactly two wire shapes — `AgentToolGrantRowDto.grant_epoch`
+  // (GET /v1/operator/agents/:slug/grants, agents.ts) and
+  // `McpGrantMatrixRow.grantEpoch` (GET /mcp-grants) — read it from those.
 }
 
 /** Scan verdict decoration on a discovered MCP tool (issue #454). Absent on
@@ -241,6 +246,12 @@ export interface McpServerNode {
   kgIngest?: boolean;
   /** Epic #459 — declared config fields (from placeholders or a registry). */
   configSchema?: McpConfigField[];
+  /** Issue #862 — per-SERVER identity delegation mode (W0-1): every
+   *  assignment of this server acts under the same identity resolution, so
+   *  an assignment UI shows this value read-only and changes it via
+   *  {@link setMcpServerDelegation} (global effect for every agent holding a
+   *  grant on the server); absent on older middleware. */
+  delegation?: McpDelegation;
 }
 
 /** Epic #459 — a declared MCP server config field. */
@@ -674,6 +685,13 @@ export interface McpGrantMatrixRow {
   notYetScanned: boolean;
   acked: boolean;
   blocked: boolean;
+  /** Issue #862 — the granted server's per-SERVER delegation mode (`null`
+   *  when the row has no server); absent on older middleware. */
+  delegation?: McpDelegation | null;
+  /** Issue #862 — last verdict-epoch bump of this grant; `null` until the
+   *  first bump (always `null` on skill-binding / plugin rows); absent on
+   *  older middleware. */
+  grantEpoch?: string | null;
 }
 
 /** One MCP call audit entry (issue #462). No tool arguments by design. */
@@ -731,6 +749,103 @@ export async function grantMcpToolToOrchestrator(
     method: 'PUT',
     body: JSON.stringify({ agentSlug, mcpServerId, toolName }),
   });
+}
+
+/**
+ * Result of an allowlist replace via `PUT /mcp-grants` with `toolNames[]`
+ * (issue #862). `delegationScope` is always `'server'`: delegation lives on
+ * `mcp_servers`, not per assignment, so a `delegation` sent with the edit
+ * changed the SERVER's mode — for every agent holding a grant on it.
+ */
+export interface McpToolAllowlistResult {
+  agentSlug: string;
+  mcpServerId: string;
+  /** The full allowlist after the edit (normalized tool names, sorted). */
+  toolNames: string[];
+  /** Tools this edit newly granted. */
+  granted: string[];
+  /** Tools this edit revoked (fell off the list). */
+  revoked: string[];
+  /** The server's delegation mode after the edit. */
+  delegation: McpDelegation;
+  delegationScope: 'server';
+}
+
+/**
+ * Replace an agent's whole tool allowlist for one MCP server (issue #862).
+ * The allowlist IS the set of `agent_tool_grants` rows for the (agent,
+ * server) pair — tools missing from `toolNames` are revoked, new ones pass
+ * the same fail-closed verdict gate as a single grant (one rejection aborts
+ * the whole edit; nothing is written).
+ *
+ * `delegation` optionally sets the SERVER's delegation mode in the same
+ * call — a per-server switch with global effect, see
+ * {@link McpToolAllowlistResult.delegationScope}.
+ */
+export async function replaceMcpToolAllowlist(
+  agentSlug: string,
+  mcpServerId: string,
+  toolNames: string[],
+  opts?: { delegation?: McpDelegation },
+): Promise<McpToolAllowlistResult> {
+  return callJson<McpToolAllowlistResult>('/v1/operator/mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({
+      agentSlug,
+      mcpServerId,
+      toolNames,
+      ...(opts?.delegation !== undefined ? { delegation: opts.delegation } : {}),
+    }),
+  });
+}
+
+/**
+ * Machine codes the agent-builder grant routes emit as `{ error: '<code>' }`
+ * (they predate the `{ code }` envelope `ApiError.code` parses, so the code
+ * must be read from the body).
+ *
+ * i18n HARD RULE: these are NOT user-facing text. Pages map each code to a
+ * message-catalogue key and render the localized copy; the raw body string
+ * must never reach the UI.
+ */
+export const MCP_GRANT_ERROR_CODES = [
+  // PUT /mcp-grants — the verdict gate (`assertMcpToolAllowed`) rejects
+  // blocked / unscanned tools as a 409 `config_validation`.
+  'config_validation',
+  'invalid_delegation',
+  'invalid_grant',
+  'mcp_server_not_found',
+  'multi_orchestrator_unavailable',
+  'orchestrator_not_found',
+  // DELETE /mcp-grants/:grantId
+  'grant_not_found',
+  'invalid_grant_id',
+  'not_an_mcp_grant',
+] as const;
+
+export type McpGrantErrorCode = (typeof MCP_GRANT_ERROR_CODES)[number];
+
+const MCP_GRANT_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  MCP_GRANT_ERROR_CODES,
+);
+
+/**
+ * Extract the machine code from a failed grant/allowlist call, or `null`
+ * when the error is not an {@link ApiError}, its body is not JSON, or the
+ * code is not one this client knows. Total by construction — a proxy's HTML
+ * 502 page yields `null`, never a throw.
+ */
+export function parseMcpGrantErrorCode(err: unknown): McpGrantErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      MCP_GRANT_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as McpGrantErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function revokeMcpGrant(grantId: string): Promise<void> {

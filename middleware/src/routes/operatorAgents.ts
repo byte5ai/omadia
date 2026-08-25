@@ -6,6 +6,8 @@ import {
   attachAllPlugins,
   ConfigValidationError,
   FALLBACK_AGENT_SLUG,
+  mcpToolNameFromRef,
+  type AgentGraphStore,
   type ChatSessionStore,
   type ConfigStore,
   type OrchestratorRegistry,
@@ -56,7 +58,10 @@ interface AgentPluginCatalogEntry {
  *   POST   /api/v1/operator/agents                       create agent
  *   PATCH  /api/v1/operator/agents/:slug                 update agent (name, privacy, status)
  *   DELETE /api/v1/operator/agents/:slug                 delete agent
+ *   GET    /api/v1/operator/agents/:slug/plugins         read agent plugin assignment
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
+ *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
+ *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
  *   PUT    /api/v1/operator/agents/:slug/bindings        replace agent channel bindings
  *   PUT    /api/v1/operator/agents/fallback              set platform fallback (body: { slug | null })
  *   POST   /api/v1/operator/agents/:slug/drain           drain + clear session snapshots
@@ -95,6 +100,14 @@ const AgentPluginsSchema = z.object({
   ),
 });
 
+/** W0c (#861) — single-plugin toggle. The plugin id lives in the BODY, not
+ *  the path: plugin ids contain `/` (`@omadia/odoo`), which an Express path
+ *  segment cannot carry without double-encoding. */
+const AgentPluginToggleSchema = z.object({
+  id: z.string().min(1).max(200),
+  enabled: z.boolean(),
+});
+
 const AgentBindingsSchema = z.object({
   bindings: z.array(
     z.object({
@@ -128,6 +141,11 @@ export interface OperatorAgentsRouterOptions {
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
+  /** W0c (#861) — grant read model for the agent detail page. Late-bound like
+   *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
+   *  mounts, or no DATABASE_URL). Read-only: this router never writes through
+   *  the graph store. */
+  readonly getAgentGraphStore?: () => AgentGraphStore | undefined;
 }
 
 export function createOperatorAgentsRouter(
@@ -350,6 +368,169 @@ export function createOperatorAgentsRouter(
       await live.store.deleteAgent(existing.id);
       await live.registry.reload();
       res.json({ ok: true });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── read plugin assignment (W0c, #861) ──────────────────────────────
+  // Per-agent read so the agent detail page can render the assignment
+  // without filtering the full GET / dashboard payload. Same row shape as
+  // the `plugins` array on GET /.
+  router.get('/:slug/plugins', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [settings, plugins] = await Promise.all([
+        live.store.getPlatformSettings(),
+        live.store.listAgentPlugins(existing.id),
+      ]);
+      res.json({
+        slug: existing.slug,
+        fallback: settings.fallbackAgentId === existing.id,
+        plugins: plugins.map((p) => ({
+          id: p.pluginId,
+          config: p.config,
+          enabled: p.enabled,
+        })),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── toggle ONE plugin (W0c, #861) ───────────────────────────────────
+  // Single-flag flip so the UI does not have to PUT the whole replace-set
+  // just to enable/disable one plugin (a stale PUT would silently drop
+  // assignments made in another tab). Body: { id, enabled }.
+  //
+  //   row exists          → upsert with the CURRENT config, new enabled flag
+  //   missing + enabled   → assign (empty config, like a fresh multi-select add)
+  //   missing + disabled  → 404 plugin_not_assigned (nothing to disable)
+  router.patch('/:slug/plugins', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = AgentPluginToggleSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Phase B contract (same invariant as PUT /:slug/plugins): the fallback
+      // Agent always runs plugins with the global store config — per-Agent
+      // config overrides are reserved for named Agents.
+      const settings = await live.store.getPlatformSettings();
+      const isFallback = settings.fallbackAgentId === existing.id;
+      const current = await live.store.listAgentPlugins(existing.id);
+      const row = current.find((p) => p.pluginId === body.id);
+      if (!row && !body.enabled) {
+        res.status(404).json({ error: 'plugin_not_assigned' });
+        return;
+      }
+      // upsertAgentPlugin overwrites config on conflict — pass the existing
+      // config through so a toggle never wipes a per-Agent configuration.
+      const config = isFallback ? {} : (row?.config ?? {});
+      await live.store.upsertAgentPlugin(existing.id, {
+        pluginId: body.id,
+        config,
+        enabled: body.enabled,
+      });
+      await live.registry.reload();
+      res.json({
+        ok: true,
+        fallback: isFallback,
+        plugin: { id: body.id, enabled: body.enabled },
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── per-agent grant read model (W0c, #861) ──────────────────────────
+  // One response for the agent detail page: the agent's `agent_tool_grants`
+  // rows — held directly OR by one of its sub-agents, matching the graph
+  // reads' attribution rule; `sub_agent_id` tells the rows apart — (grant
+  // epoch included — bumpMcpGrantEpoch stamps config.verdictEpoch, surfaced
+  // as `grant_epoch`) plus the `plugin_mcp_grants` of every plugin assigned
+  // to the agent. `tool_ref` is normalized via `mcpToolNameFromRef` (the
+  // stored ref may carry a '<serverName>:' prefix; every other reader
+  // normalizes too) so clients can compare it against discovered tool names
+  // verbatim. Read-only; grant WRITES stay on the agent-builder router
+  // (/api/v1/operator/mcp-grants).
+  router.get('/:slug/grants', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const graph = options.getAgentGraphStore?.();
+    if (!graph) {
+      res.status(503).json({
+        error: 'agent_graph_store_unavailable',
+        message:
+          'agentGraphStore not wired into the operator-agents router.',
+      });
+      return;
+    }
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [toolGrants, plugins, servers] = await Promise.all([
+        graph.listToolGrantsForAgent(existing.id),
+        live.store.listAgentPlugins(existing.id),
+        graph.listMcpServers(),
+      ]);
+      const pluginGrants = await graph.listPluginMcpGrantsForPlugins(
+        plugins.map((p) => p.pluginId),
+      );
+      const serverById = new Map(servers.map((s) => [s.id, s]));
+      // Latest verdict-epoch bump across the agent's grants. Epochs are
+      // `now()::text` timestamps — lexicographic max IS the latest.
+      const epochs = toolGrants
+        .map((g) => g.grantEpoch)
+        .filter((e): e is string => typeof e === 'string');
+      res.json({
+        slug: existing.slug,
+        grant_epoch:
+          epochs.length > 0 ? epochs.reduce((a, b) => (a > b ? a : b)) : null,
+        tool_grants: toolGrants.map((g) => ({
+          id: g.id,
+          tool_kind: g.toolKind,
+          tool_ref:
+            g.toolKind === 'mcp' && g.mcpServerId
+              ? mcpToolNameFromRef(
+                  g.toolRef,
+                  serverById.get(g.mcpServerId)?.name ?? '',
+                )
+              : g.toolRef,
+          sub_agent_id: g.subAgentId,
+          mcp_server_id: g.mcpServerId,
+          server_name: g.mcpServerId
+            ? (serverById.get(g.mcpServerId)?.name ?? null)
+            : null,
+          grant_epoch: g.grantEpoch ?? null,
+          created_at: g.createdAt,
+        })),
+        plugin_mcp_grants: pluginGrants.map((g) => ({
+          plugin_id: g.pluginId,
+          mcp_server_id: g.mcpServerId,
+          server_name: serverById.get(g.mcpServerId)?.name ?? null,
+          granted_by: g.grantedBy,
+          granted_at: g.grantedAt,
+        })),
+      });
     } catch (err) {
       badRequest(res, err);
     }

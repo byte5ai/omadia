@@ -223,7 +223,26 @@ export interface McpServerRow {
   readonly delegation: McpDelegation;
 }
 
-/** How an MCP server resolves the identity a call acts as (W0-1, D2). */
+/** How an MCP server resolves the identity a call acts as (W0-1, D2).
+ *
+ *  Scope decision (#860 W0c, resolving #862's "delegation choice per
+ *  assignment"): delegation is a PER-SERVER property and stays one. There is
+ *  deliberately NO per-(agent, server) delegation storage — not on
+ *  `agent_tool_grants`, not on `plugin_mcp_grants`, no bridge table. A
+ *  per-agent assignment view therefore shows the server's mode READ-ONLY and
+ *  links to the per-server setting; changing it there applies to every agent
+ *  holding a grant on that server and must say so.
+ *
+ *  The real escape hatch is NOT a new column: `agent_tool_grants.config`
+ *  (JSONB, migration 0003) could hold a `delegation` key today with zero DDL,
+ *  which is why an SQL-only migration scan cannot see a widening. Storing any
+ *  `config.delegation*` key on a grant row is therefore FORBIDDEN by
+ *  convention — per-assignment delegation needs resolution semantics in
+ *  `resolveMcpUserKey` and its own design pass, not a JSONB side door. Guarded
+ *  twice by the W0c schema-fit gate in
+ *  `middleware/test/mcpDelegationBackfillMigration.pg.test.ts`: a migration
+ *  scan over the grant tables AND a source scan that fails on any code
+ *  reading or writing a delegation key out of grant config. */
 export type McpDelegation = 'per_user' | 'service';
 
 /**
@@ -249,6 +268,23 @@ export interface ToolGrantRow {
   readonly mcpServerId: string | null;
   readonly config: Record<string, unknown>;
   readonly createdAt: Date;
+  /** Grant epoch (W0c, #861): `bumpMcpGrantEpoch` stamps `config.verdictEpoch`
+   *  (a `now()::text` timestamp) into the grant's JSONB — there is no epoch
+   *  column. Surfaced here as a typed field so readers (the agent detail UI)
+   *  never dig through the untyped `config`. `null` until the first bump.
+   *  Optional so hand-built fixtures predating the field stay valid; the row
+   *  mapper always populates it. */
+  readonly grantEpoch?: string | null;
+}
+
+/** One `plugin_mcp_grants` row (epic #459 W5, issue #458): the operator's
+ *  explicit plugin → MCP-server grant. Named so the per-agent read model
+ *  (W0c, #861) has a typed row instead of an inline shape. */
+export interface PluginMcpGrantRow {
+  readonly pluginId: string;
+  readonly mcpServerId: string;
+  readonly grantedBy: string;
+  readonly grantedAt: Date;
 }
 
 export interface ScheduleRow {
@@ -576,6 +612,13 @@ interface ToolGrantDbRow {
   created_at: Date;
 }
 
+interface PluginMcpGrantDbRow {
+  plugin_id: string;
+  mcp_server_id: string;
+  granted_by: string;
+  granted_at: Date;
+}
+
 interface ScheduleDbRow {
   id: string;
   agent_id: string;
@@ -800,6 +843,9 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
 }
 
 function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
+  // `verdictEpoch` is written by bumpMcpGrantEpoch via jsonb_set; anything
+  // that is not a string (absent, or a hand-edited config) reads as null.
+  const epoch = r.config?.['verdictEpoch'];
   return {
     id: r.id,
     agentId: r.agent_id,
@@ -809,6 +855,16 @@ function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
     mcpServerId: r.mcp_server_id,
     config: r.config,
     createdAt: r.created_at,
+    grantEpoch: typeof epoch === 'string' ? epoch : null,
+  };
+}
+
+function mapPluginMcpGrant(r: PluginMcpGrantDbRow): PluginMcpGrantRow {
+  return {
+    pluginId: r.plugin_id,
+    mcpServerId: r.mcp_server_id,
+    grantedBy: r.granted_by,
+    grantedAt: r.granted_at,
   };
 }
 
@@ -1651,21 +1707,28 @@ export class AgentGraphStore {
 
   // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
 
-  async listPluginMcpGrants(): Promise<
-    readonly { pluginId: string; mcpServerId: string; grantedBy: string; grantedAt: Date }[]
-  > {
-    const { rows } = await this.pool.query<{
-      plugin_id: string;
-      mcp_server_id: string;
-      granted_by: string;
-      granted_at: Date;
-    }>('SELECT * FROM plugin_mcp_grants');
-    return rows.map((r) => ({
-      pluginId: r.plugin_id,
-      mcpServerId: r.mcp_server_id,
-      grantedBy: r.granted_by,
-      grantedAt: r.granted_at,
-    }));
+  async listPluginMcpGrants(): Promise<readonly PluginMcpGrantRow[]> {
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      'SELECT * FROM plugin_mcp_grants',
+    );
+    return rows.map(mapPluginMcpGrant);
+  }
+
+  /** Plugin-scoped read of `plugin_mcp_grants` (W0c, #861): full grant rows
+   *  for a set of plugin ids — one round-trip for an agent detail page that
+   *  shows the MCP grants of every plugin enabled on that agent. SELECT-only
+   *  by construction (no DDL, no writes). */
+  async listPluginMcpGrantsForPlugins(
+    pluginIds: readonly string[],
+  ): Promise<readonly PluginMcpGrantRow[]> {
+    if (pluginIds.length === 0) return [];
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      `SELECT * FROM plugin_mcp_grants
+       WHERE plugin_id = ANY($1::text[])
+       ORDER BY plugin_id, granted_at`,
+      [[...pluginIds]],
+    );
+    return rows.map(mapPluginMcpGrant);
   }
 
   async listGrantedServerIdsForPlugin(pluginId: string): Promise<readonly string[]> {
@@ -2295,6 +2358,73 @@ export class AgentGraphStore {
       'SELECT * FROM agent_tool_grants ORDER BY created_at',
     );
     return rows.map(mapToolGrant);
+  }
+
+  /** Agent-scoped read of `agent_tool_grants` (W0c, #861): the grants of ONE
+   *  agent, for the agent detail page. Same row shape as `listAllToolGrants`
+   *  (grant epoch included via `grantEpoch`). `agent_tool_grants` is a XOR
+   *  table (0003: `agent_id` OR `subagent_id`), and the codebase attributes a
+   *  sub-agent-held grant to its parent agent everywhere the graph is read
+   *  (`assembleGraph`, `indexGraph.grantsByAgent`, the graph-signature
+   *  filter) — this read matches that rule: rows held directly by the agent
+   *  PLUS rows held by its sub-agents, distinguishable via `subAgentId`.
+   *  SELECT-only by construction (no DDL, no writes). */
+  async listToolGrantsForAgent(agentId: string): Promise<readonly ToolGrantRow[]> {
+    const { rows } = await this.pool.query<ToolGrantDbRow>(
+      `SELECT * FROM agent_tool_grants
+       WHERE agent_id = $1
+          OR subagent_id IN (SELECT id FROM agent_subagents WHERE parent_agent_id = $1)
+       ORDER BY created_at`,
+      [agentId],
+    );
+    return rows.map(mapToolGrant);
+  }
+
+  /**
+   * Transactional bulk edit of an agent's MCP tool allowlist for one server
+   * (W0c, #862). `PUT /mcp-grants` in allowlist mode is N creates + M deletes;
+   * done through the single-row methods a mid-edit failure would leave the
+   * persisted allowlist neither old nor new. Here every write shares one
+   * transaction: a partial failure rolls back and the route's granted/revoked
+   * response always describes what actually persisted. The INSERT keeps
+   * `createToolGrant`'s ON CONFLICT no-op contract (unique index 0014).
+   */
+  async applyMcpToolAllowlist(input: {
+    readonly agentId: string;
+    readonly mcpServerId: string;
+    /** Normalized tool names to grant (rows to INSERT). */
+    readonly grantRefs: readonly string[];
+    /** Grant row ids to revoke (rows to DELETE). */
+    readonly revokeIds: readonly string[];
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const toolRef of input.grantRefs) {
+        await client.query(
+          `INSERT INTO agent_tool_grants
+             (agent_id, subagent_id, tool_kind, tool_ref, mcp_server_id, config)
+           VALUES ($1,NULL,'mcp',$2,$3,'{}'::jsonb)
+           ON CONFLICT (agent_id, mcp_server_id, tool_ref)
+             WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
+             DO NOTHING`,
+          [input.agentId, toolRef, input.mcpServerId],
+        );
+      }
+      for (const id of input.revokeIds) {
+        await client.query('DELETE FROM agent_tool_grants WHERE id = $1', [id]);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // connection-level failure — the pool discards the client below.
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async createToolGrant(input: ToolGrantInput): Promise<ToolGrantRow> {

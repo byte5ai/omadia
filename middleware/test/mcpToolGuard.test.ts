@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 
 import {
   computeMcpToolVerdict,
+  diffMcpToolAllowlist,
   mcpToolContentHash,
   scanDiscoveredTools,
   scanMcpToolForRisks,
@@ -133,6 +134,47 @@ describe('computeMcpToolVerdict', () => {
     const b = mcpToolContentHash({ ...benign, description: 'Lists invoices. Now with extras.' });
     assert.notEqual(a, b);
     assert.equal(a, mcpToolContentHash({ ...benign }));
+  });
+});
+
+describe('diffMcpToolAllowlist (issue #862 — allowlist IS the grant rows)', () => {
+  it('grants everything when nothing is granted yet', () => {
+    assert.deepEqual(diffMcpToolAllowlist([], ['b', 'a']), {
+      toGrant: ['a', 'b'],
+      toRevoke: [],
+      unchanged: [],
+    });
+  });
+
+  it('revokes everything when the desired allowlist is empty', () => {
+    assert.deepEqual(diffMcpToolAllowlist(['a', 'b'], []), {
+      toGrant: [],
+      toRevoke: ['a', 'b'],
+      unchanged: [],
+    });
+  });
+
+  it('partitions into grant / revoke / unchanged', () => {
+    assert.deepEqual(diffMcpToolAllowlist(['keep', 'drop'], ['keep', 'add']), {
+      toGrant: ['add'],
+      toRevoke: ['drop'],
+      unchanged: ['keep'],
+    });
+  });
+
+  it('an identical set is a no-op edit (no writes, no epoch bump)', () => {
+    const diff = diffMcpToolAllowlist(['a', 'b'], ['b', 'a']);
+    assert.deepEqual(diff.toGrant, []);
+    assert.deepEqual(diff.toRevoke, []);
+    assert.deepEqual(diff.unchanged, ['a', 'b']);
+  });
+
+  it('dedupes repeated names and sorts each partition deterministically', () => {
+    assert.deepEqual(diffMcpToolAllowlist(['x', 'x', 'a'], ['x', 'x', 'c', 'c', 'b']), {
+      toGrant: ['b', 'c'],
+      toRevoke: ['a'],
+      unchanged: ['x'],
+    });
   });
 });
 
