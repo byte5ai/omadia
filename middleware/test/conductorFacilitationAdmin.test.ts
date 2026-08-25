@@ -32,7 +32,20 @@ const RUN = {
     goal: 'omadia Event planen',
     definitionOfDone: '6 Punkte, alle bestätigt',
     stepAttempts: { moderate: 7 },
-    stepResult: { data: { dodMet: false, summary: '3/6 Punkte offen' } },
+    stepResult: {
+      data: {
+        dodMet: false,
+        summary: '3/6 Punkte offen',
+        items: [
+          { point: 1, label: 'Eventformat entschieden', status: 'done', note: 'Meetup, von allen bestätigt' },
+          { point: 2, label: 'Termin fix', status: 'partial', note: 'Vorschlag 12.9. liegt vor' },
+          // malformed entries the model might emit — must be dropped / nulled, never crash:
+          'garbage',
+          { point: 'x', label: 3, status: 'weird', note: null },
+          { point: -2.5, label: 'x'.repeat(500), status: 'open', note: 'ok' },
+        ],
+      },
+    },
   },
   triggerKind: 'agent',
   triggerSource: {},
@@ -104,7 +117,16 @@ describe('ConductorFacilitationAdmin.list', () => {
     assert.equal(row.run?.goal, 'omadia Event planen');
     assert.equal(row.run?.definitionOfDone, '6 Punkte, alle bestätigt');
     assert.equal(row.run?.rounds, 7);
-    assert.deepEqual(row.run?.lastVerdict, { dodMet: false, summary: '3/6 Punkte offen' });
+    assert.deepEqual(row.run?.lastVerdict, {
+      dodMet: false,
+      summary: '3/6 Punkte offen',
+      items: [
+        { point: 1, label: 'Eventformat entschieden', status: 'done', note: 'Meetup, von allen bestätigt' },
+        { point: 2, label: 'Termin fix', status: 'partial', note: 'Vorschlag 12.9. liegt vor' },
+        { point: null, label: null, status: null, note: null },
+        { point: null, label: 'x'.repeat(300), status: 'open', note: 'ok' },
+      ],
+    });
     assert.deepEqual(row.initiators, ['mwege@byte5.de']);
     assert.deepEqual(
       row.participants?.map((p) => p.displayName),

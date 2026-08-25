@@ -37,7 +37,15 @@ function row(overrides: Partial<FacilitationOverview> = {}): FacilitationOvervie
       goal: 'omadia Event planen',
       definitionOfDone: '6 Punkte, alle bestätigt',
       rounds: 7,
-      lastVerdict: { dodMet: false, summary: '3/6 offen' },
+      lastVerdict: {
+        dodMet: false,
+        summary: '3/6 offen',
+        items: [
+          { point: 1, label: 'Eventformat entschieden', status: 'done', note: 'Meetup, von allen bestätigt' },
+          { point: 2, label: 'Termin fix', status: 'partial', note: 'Vorschlag 12.9. liegt vor' },
+          { point: 3, label: 'Ort bzw. Plattform', status: 'open', note: '' },
+        ],
+      },
     },
     participants: [
       { displayName: 'Marcel Wege', isBot: false },
@@ -110,9 +118,40 @@ describe('FacilitationsPanel', () => {
     renderWithIntl(<FacilitationsPanel />);
     await userEvent.click(await screen.findByRole('button', { name: 'Details' }));
     expect(await screen.findByText('Facilitation details')).toBeInTheDocument();
+    // Interim results table — one row per DoD point with its status.
+    expect(screen.getByText('Interim results (per DoD point)')).toBeInTheDocument();
+    expect(screen.getByText('Eventformat entschieden')).toBeInTheDocument();
+    expect(screen.getByText('done')).toBeInTheDocument();
+    expect(screen.getByText('partial')).toBeInTheDocument();
+    expect(screen.getByText('open')).toBeInTheDocument();
     await waitFor(() => {
       expect(getConductorRun).toHaveBeenCalledWith('eph-facilitation-ab12cd34', 'run-1');
     });
+  });
+
+  it('falls back to the DoD list in the modal when the verdict has no items (pre-v3 runs)', async () => {
+    vi.mocked(listFacilitations).mockResolvedValue({
+      facilitations: [
+        row({
+          run: {
+            ...row().run!,
+            lastVerdict: { dodMet: false, summary: '3/6 offen', items: null },
+          },
+        }),
+      ],
+    });
+    vi.mocked(getConductorRun).mockResolvedValue({
+      run: {
+        id: 'run-1', status: 'waiting', triggerKind: 'agent', startedAt: '2026-08-24T07:00:00.000Z',
+        endedAt: null, currentStepId: 'wait', context: {}, cancelRequestedAt: null,
+      },
+      steps: [],
+    } as never);
+    renderWithIntl(<FacilitationsPanel />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Details' }));
+    expect(await screen.findByText('Facilitation details')).toBeInTheDocument();
+    expect(screen.queryByText('Interim results (per DoD point)')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/6 Punkte, alle bestätigt/).length).toBeGreaterThan(0);
   });
 
   it('renders a numbered DoD as an ordered list', async () => {

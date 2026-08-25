@@ -18,6 +18,18 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — interim results table per DoD point in the facilitation details modal
+
+- The moderate tick's fenced-JSON verdict now carries `items[]` — one entry per numbered
+  DoD point with a short label, a status (`done` / `partial` / `open`) and a one-line note
+  on the concrete current state (facilitation pattern v3).
+- The kernel validates the model-emitted items defensively (drops garbage, nulls bad
+  fields) and serves them through the facilitation admin lens; the details modal renders
+  them as a **# / point / status / current-state table** — the actual interim result at a
+  glance instead of a wall of `t-keep-waiting` rows. The authoritative DoD text stays
+  visible alongside (the table labels are a model paraphrase); runs started before
+  pattern v3 simply show the DoD list as before.
+
 ### Added — facilitation details modal; the panel disappears when there is nothing to show
 
 - Every facilitation card gets a **Details** modal: the summary plus the FULL durable run
