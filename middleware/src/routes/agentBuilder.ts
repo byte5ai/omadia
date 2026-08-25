@@ -1878,13 +1878,11 @@ export function createAgentBuilderRouter(
         res.status(404).json({ error: 'mcp_server_not_found' });
         return;
       }
-      // Gate first, write after: every candidate passes `assertMcpToolAllowed`
-      // (the shared fail-closed gate) and comes back as its normalized name.
+      // Normalize first, gate later. `mcpToolNameFromRef` strips an optional
+      // '<serverName>:' prefix — the same normalization `assertMcpToolAllowed`
+      // applies — so the diff below compares names, never raw refs.
       const desiredRefs = hasSingle ? [singleRef] : (listRefs as string[]);
-      const desired: string[] = [];
-      for (const ref of desiredRefs) {
-        desired.push(await assertMcpToolAllowed(l, mcpServerId, ref));
-      }
+      const desired = desiredRefs.map((ref) => mcpToolNameFromRef(ref, server.name));
       const currentGrants = (await l.graph.listAllToolGrants()).filter(
         (g) =>
           g.toolKind === 'mcp' &&
@@ -1892,27 +1890,44 @@ export function createAgentBuilderRouter(
           g.agentId === agent.id &&
           g.subAgentId === null,
       );
-      const grantIdByTool = new Map(
-        currentGrants.map((g) => [mcpToolNameFromRef(g.toolRef, server.name), g.id]),
-      );
-      const diff = diffMcpToolAllowlist([...grantIdByTool.keys()], desired);
+      // The unique index (0014) keys on the RAW tool_ref, so two persisted
+      // rows (e.g. 'search' and 'odoo-mcp:search') can normalize to the SAME
+      // tool name. A revoke must delete EVERY row behind the name — the map
+      // therefore holds id LISTS, not single ids.
+      const grantIdsByTool = new Map<string, string[]>();
+      for (const g of currentGrants) {
+        const name = mcpToolNameFromRef(g.toolRef, server.name);
+        const ids = grantIdsByTool.get(name);
+        if (ids) ids.push(g.id);
+        else grantIdsByTool.set(name, [g.id]);
+      }
+      const diff = diffMcpToolAllowlist([...grantIdsByTool.keys()], desired);
       // Single-grant mode stays additive (historical contract); only the
       // allowlist mode revokes what fell off the list.
       const toRevoke = hasList ? diff.toRevoke : [];
+      // Gate only what would be WRITTEN (`diff.toGrant`). Already-granted
+      // rows passed the gate at creation, and a re-discover can leave one of
+      // them "granted but not currently callable" (stale ack) — the dispatch
+      // guard in mcpGrantPolicy blocks such a tool at call time regardless,
+      // and refusing an unrelated clean edit because of it would jam the
+      // editor exactly when the operator needs it. One gate rejection still
+      // aborts the whole edit BEFORE any write.
       for (const toolName of diff.toGrant) {
-        // createToolGrant is idempotent for top-level MCP grants (ON CONFLICT
-        // via migration 0014), so a repeat is a clean no-op.
-        await l.graph.createToolGrant({
-          agentId: agent.id,
-          subAgentId: null,
-          toolKind: 'mcp',
-          toolRef: toolName,
-          mcpServerId,
-        });
+        await assertMcpToolAllowed(l, mcpServerId, toolName);
       }
-      for (const toolName of toRevoke) {
-        const grantId = grantIdByTool.get(toolName);
-        if (grantId) await l.graph.deleteToolGrant(grantId);
+      const revokeIds = toRevoke.flatMap(
+        (toolName) => grantIdsByTool.get(toolName) ?? [],
+      );
+      if (diff.toGrant.length > 0 || revokeIds.length > 0) {
+        // One store-level transaction for the whole edit: a partial failure
+        // rolls back, so `granted`/`revoked` in the response always describe
+        // what actually persisted.
+        await l.graph.applyMcpToolAllowlist({
+          agentId: agent.id,
+          mcpServerId,
+          grantRefs: diff.toGrant,
+          revokeIds,
+        });
       }
       if (delegation !== undefined && delegation !== server.delegation) {
         await l.graph.setMcpServerDelegation(mcpServerId, delegation);
@@ -2560,7 +2575,7 @@ async function createEdge(
       const onAgent = source.startsWith('agent:');
       const subAgentId = onAgent ? null : idAfter(source, 'subagent');
       const toolKind = (config['toolKind'] as 'native' | 'mcp') ?? 'native';
-      const toolRef = String(config['toolRef'] ?? idAfter(target, 'tool'));
+      let toolRef = String(config['toolRef'] ?? idAfter(target, 'tool'));
       const mcpServerId = (config['mcpServerId'] as string | null) ?? null;
       if (!toolRef) {
         throw new ConfigValidationError('tool_grant requires a toolRef');
@@ -2571,7 +2586,11 @@ async function createEdge(
         if (!mcpServerId) {
           throw new ConfigValidationError('mcp tool_grant requires an mcpServerId');
         }
-        await assertMcpToolAllowed(l, mcpServerId, toolRef);
+        // Persist the NORMALIZED name the gate returns, not the caller's raw
+        // ref: a '<serverName>:'-prefixed ref would land as its own row beside
+        // the bare-name grant (the 0014 unique index keys on the raw ref),
+        // splitting one tool across two rows (W0c review).
+        toolRef = await assertMcpToolAllowed(l, mcpServerId, toolRef);
       }
       const grant = await l.graph.createToolGrant({
         agentId: onAgent ? agent.id : null,

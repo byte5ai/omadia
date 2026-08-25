@@ -178,4 +178,33 @@ describe('AgentToolGrants (#861)', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(mockGetAgentGrants).toHaveBeenCalledTimes(2);
   });
+
+  it('reports the epoch as UNKNOWN, not "never bumped", while the load is pending', async () => {
+    // "Never bumped" is a factual claim about authorization state. While the
+    // DTO has not resolved, the truth is unknown — asserting "never bumped"
+    // during the pending window would be a false statement (W0c review).
+    let resolve!: (v: unknown) => void;
+    mockGetAgentGrants.mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    renderWithIntl(<AgentToolGrants slug="sales-bot" />);
+
+    expect(screen.getByText('Grant epoch: unknown')).toBeTruthy();
+    expect(screen.queryByText('Grant epoch: never bumped')).toBeNull();
+
+    resolve(grantsDto({ grant_epoch: null, tool_grants: [], plugin_mcp_grants: [] }));
+    expect(await screen.findByText('Grant epoch: never bumped')).toBeTruthy();
+    expect(screen.queryByText('Grant epoch: unknown')).toBeNull();
+  });
+
+  it('reports the epoch as UNKNOWN after a failed load — never a false "never bumped"', async () => {
+    mockGetAgentGrants.mockRejectedValue(new Error('offline'));
+    renderWithIntl(<AgentToolGrants slug="sales-bot" />);
+
+    await screen.findByRole('alert');
+    expect(screen.getByText('Grant epoch: unknown')).toBeTruthy();
+    expect(screen.queryByText('Grant epoch: never bumped')).toBeNull();
+  });
 });

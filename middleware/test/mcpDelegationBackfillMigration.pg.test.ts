@@ -350,6 +350,15 @@ describe('migration 0031 — delegation backfill predicate (pg)', { skip: !pgAva
 describe('W0c schema-fit gate — delegation stays per-server (#860)', () => {
   const MIGRATIONS_DIR = new URL('../migrations/', import.meta.url);
 
+  /** SUBSTRING match on purpose, not `\bdelegation\b`: `_` is a word
+   *  character, so a word-boundary regex never fires after `delegation` in
+   *  `delegation_mode`, `mcp_delegation` or `delegation_override` — the most
+   *  natural names for a per-assignment column, and exactly the evasion the
+   *  W0c review demonstrated with a synthetic migration. `/delegation/i`
+   *  matches only 0031 in today's tree, so the tightening costs nothing
+   *  (`/delegat/` would over-match 0006/0015). */
+  const DELEGATION_ANYWHERE = /delegation/i;
+
   async function executableMigrations(): Promise<ReadonlyMap<string, string>> {
     const names = (await readdir(MIGRATIONS_DIR)).filter((n) => n.endsWith('.sql')).sort();
     const entries = await Promise.all(
@@ -364,7 +373,7 @@ describe('W0c schema-fit gate — delegation stays per-server (#860)', () => {
   it('no migration but 0031 touches `delegation` — no per-assignment storage exists', async () => {
     const migrations = await executableMigrations();
     const mentioning = [...migrations]
-      .filter(([, sql]) => /\bdelegation\b/i.test(sql))
+      .filter(([, sql]) => DELEGATION_ANYWHERE.test(sql))
       .map(([name]) => name);
     assert.deepEqual(
       mentioning,
@@ -394,7 +403,7 @@ describe('W0c schema-fit gate — delegation stays per-server (#860)', () => {
     }
     assert.doesNotMatch(
       createTable,
-      /\bdelegation\b/i,
+      DELEGATION_ANYWHERE,
       'agent_tool_grants gained a delegation column — per-assignment delegation needs its own design pass, not this table',
     );
   });
@@ -403,7 +412,7 @@ describe('W0c schema-fit gate — delegation stays per-server (#860)', () => {
     const sql = (await executableMigrations()).get('0012_plugin_mcp_grants.sql');
     assert.ok(sql, 'migration 0012 is missing');
     assert.match(sql, /PRIMARY KEY \(plugin_id, mcp_server_id\)/);
-    assert.doesNotMatch(sql, /\bdelegation\b/i);
+    assert.doesNotMatch(sql, DELEGATION_ANYWHERE);
   });
 
   it('0014 pins the grant identity the per-agent UI builds on: (agent_id, mcp_server_id, tool_ref)', async () => {
@@ -414,5 +423,104 @@ describe('W0c schema-fit gate — delegation stays per-server (#860)', () => {
       /ON agent_tool_grants \(agent_id, mcp_server_id, tool_ref\)\s+WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'/,
       'the top-level MCP grant identity changed — #861/#862 assignment semantics must be re-reviewed',
     );
+  });
+
+  it('the gate matcher catches the demonstrated `delegation_mode` evasion (synthetic 0049)', () => {
+    // The W0c review injected exactly this migration into a copy of the tree
+    // and all five gate tests PASSED, because `\bdelegation\b` never matches
+    // `delegation_mode` (`_` is a word character). This self-test pins the
+    // hardened matcher against that evasion and its neighbours — if someone
+    // relaxes DELEGATION_ANYWHERE back to word boundaries, this fails first.
+    const synthetic0049 = [
+      "ALTER TABLE agent_tool_grants ADD COLUMN delegation_mode TEXT NOT NULL DEFAULT 'inherit';",
+      "ALTER TABLE agent_tool_grants ADD CONSTRAINT agent_tool_grants_delegation_mode_chk",
+      "  CHECK (delegation_mode IN ('inherit', 'service', 'per_user'));",
+    ].join('\n');
+    assert.match(synthetic0049, DELEGATION_ANYWHERE, 'the gate matcher no longer sees delegation_mode DDL');
+    assert.doesNotMatch(
+      synthetic0049,
+      /\bdelegation\b/i,
+      'sanity: the OLD word-boundary matcher really was blind to this DDL — if this fires, the fixture drifted',
+    );
+    for (const evasion of ['mcp_delegation', 'agent_delegation_override', 'DELEGATION_MODE']) {
+      assert.match(`ADD COLUMN ${evasion} TEXT`, DELEGATION_ANYWHERE, `matcher misses "${evasion}"`);
+    }
+  });
+
+  it('the sibling migration dirs cannot smuggle grant-table or delegation DDL past the scan', async () => {
+    // `executableMigrations()` reads only `middleware/migrations/`. Two more
+    // live migration series exist (`src/services/graph/migrations/`,
+    // `packages/harness-knowledge-graph-neon/src/migrations/`) that the scan
+    // above never sees — DDL added there would be invisible to the gate. Pin
+    // that they stay out of the delegation/grant-table business entirely, so
+    // `middleware/migrations/` remains the single place such DDL can appear
+    // (where the tests above catch it).
+    const SIBLING_DIRS = [
+      new URL('../src/services/graph/migrations/', import.meta.url),
+      new URL('../packages/harness-knowledge-graph-neon/src/migrations/', import.meta.url),
+    ];
+    for (const dir of SIBLING_DIRS) {
+      const names = (await readdir(dir)).filter((n) => n.endsWith('.sql'));
+      assert.ok(names.length > 0, `no .sql files under ${dir.pathname} — dir moved? update the gate`);
+      for (const name of names) {
+        const sql = stripWholeLineSqlComments(await readFile(new URL(name, dir), 'utf8'));
+        assert.doesNotMatch(
+          sql,
+          DELEGATION_ANYWHERE,
+          `${dir.pathname}${name} mentions delegation — that DDL belongs in middleware/migrations/ where the gate scans it`,
+        );
+        assert.doesNotMatch(
+          sql,
+          /agent_tool_grants|plugin_mcp_grants/i,
+          `${dir.pathname}${name} touches a grant table — that DDL belongs in middleware/migrations/ where the gate scans it`,
+        );
+      }
+    }
+  });
+
+  it('no source code reads or writes a delegation key out of grant config JSONB (the no-DDL side door)', async () => {
+    // `agent_tool_grants.config` (JSONB, 0003) could hold per-assignment
+    // delegation with ZERO migrations — the one widening no SQL scan can see.
+    // The convention (recorded on `McpDelegation` in agentGraphStore.ts) is
+    // that storing any `config.delegation*` key on a grant row is forbidden;
+    // this scan enforces it across the middleware and the orchestrator
+    // package. Comment lines are stripped so prose may explain the rule.
+    const SRC_ROOTS = [
+      new URL('../src/', import.meta.url),
+      new URL('../packages/harness-orchestrator/src/', import.meta.url),
+    ];
+    const FORBIDDEN = [
+      // config.delegation / config?.delegation / config['delegation'] / config["delegation"]
+      /config\??\.(delegation)|config\?*\[[`'"]delegation/i,
+      // SQL JSONB access: config->'delegation', config->>'delegation…'
+      /config\s*->>?\s*'delegation/i,
+      // SQL JSONB write: jsonb_set(config, '{delegation…}')
+      /jsonb_set\([^)]*config[^)]*delegation/i,
+      // object literal delegation key flowing into a grant config param
+      /delegation[a-zA-Z]*\s*:[^,\n]*\}\s*as\s*ToolGrantInput/i,
+    ];
+    for (const root of SRC_ROOTS) {
+      const files = (await readdir(root, { recursive: true })).filter(
+        (n) => typeof n === 'string' && n.endsWith('.ts'),
+      );
+      assert.ok(files.length > 0, `no .ts files under ${root.pathname}`);
+      for (const rel of files) {
+        const raw = await readFile(new URL(rel, root), 'utf8');
+        const code = raw
+          .split('\n')
+          .filter((line) => {
+            const t = line.trimStart();
+            return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+          })
+          .join('\n');
+        for (const pattern of FORBIDDEN) {
+          assert.doesNotMatch(
+            code,
+            pattern,
+            `${root.pathname}${rel} touches a delegation key on config JSONB (${pattern}) — per-assignment delegation via grant config is forbidden by the #860 W0c decision`,
+          );
+        }
+      }
+    }
   });
 });

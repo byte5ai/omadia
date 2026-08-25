@@ -290,8 +290,12 @@ describe('parseMcpGrantErrorCode (i18n hard rule support)', () => {
 });
 
 describe('shared type surface (extended, not re-declared)', () => {
-  it('ToolGrantNode carries an OPTIONAL grantEpoch (absent on older middleware)', () => {
-    const oldMiddleware: ToolGrantNode = {
+  it('ToolGrantNode mirrors the canvas serializer exactly — NO grantEpoch field', () => {
+    // The middleware's toolGrantNode() never emits a grant epoch on the canvas
+    // graph payload; the epoch lives on AgentToolGrantRowDto.grant_epoch and
+    // McpGrantMatrixRow.grantEpoch only. A phantom optional here misled a page
+    // unit into rendering a column that would stay empty forever (W0c review).
+    const node: ToolGrantNode = {
       id: 'g1',
       agentId: 'a1',
       subAgentId: null,
@@ -299,12 +303,10 @@ describe('shared type surface (extended, not re-declared)', () => {
       toolRef: 'mcp:odoo:read_employees',
       mcpServerId: 's1',
     };
-    const newMiddleware: ToolGrantNode = {
-      ...oldMiddleware,
-      grantEpoch: '2026-08-25 17:00:00.000000+00',
-    };
-    expect(oldMiddleware.grantEpoch).toBeUndefined();
-    expect(newMiddleware.grantEpoch).toBe('2026-08-25 17:00:00.000000+00');
+    expect(node).not.toHaveProperty('grantEpoch');
+    // @ts-expect-error grantEpoch is not part of the canvas wire contract
+    const rejected: ToolGrantNode = { ...node, grantEpoch: 'x' };
+    expect(rejected).toBeDefined();
   });
 
   it('McpServerNode carries an OPTIONAL per-server delegation next to discoveredTools', () => {

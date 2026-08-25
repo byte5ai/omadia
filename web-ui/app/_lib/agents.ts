@@ -226,7 +226,15 @@ export async function toggleAgentPlugin(
 export interface AgentToolGrantRowDto {
   id: string;
   tool_kind: 'native' | 'mcp';
+  /** For `tool_kind === 'mcp'` this is the BARE tool name: the middleware
+   *  normalizes stored refs through `mcpToolNameFromRef` before serializing
+   *  (a persisted ref may carry a legacy '<serverName>:' prefix). Safe to
+   *  compare verbatim against `discoveredTools[].name`. */
   tool_ref: string;
+  /** Set when a SUB-AGENT of this agent holds the grant (agent_tool_grants is
+   *  a XOR table; the read model attributes sub-agent rows to the parent,
+   *  like every graph read). The assignment editor must skip these rows —
+   *  they are not part of the orchestrator's own top-level allowlist. */
   sub_agent_id: string | null;
   mcp_server_id: string | null;
   /** Joined-in display name; null for native tools or a deleted server. */
@@ -258,10 +266,11 @@ export interface AgentGrantsDto {
 }
 
 /**
- * Per-agent grant read model (issue #861): the agent's own
- * `agent_tool_grants` rows plus the `plugin_mcp_grants` of every plugin
- * assigned to it, one response for the agent detail page. Read-only — grant
- * WRITES stay on the agent-builder surface (`_lib/agentBuilder.ts`).
+ * Per-agent grant read model (issue #861): the agent's `agent_tool_grants`
+ * rows — held directly or by one of its sub-agents (`sub_agent_id` tells them
+ * apart) — plus the `plugin_mcp_grants` of every plugin assigned to it, one
+ * response for the agent detail page. Read-only — grant WRITES stay on the
+ * agent-builder surface (`_lib/agentBuilder.ts`).
  */
 export async function getAgentGrants(slug: string): Promise<AgentGrantsDto> {
   return callJson<AgentGrantsDto>(

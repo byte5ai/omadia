@@ -50,26 +50,44 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   replaceAgentPlugins: mockReplace,
 }));
 
-vi.mock('../../_components/PluginsDnd', () => ({
-  PluginsDnd: (props: {
-    onReplace: (
-      plugins: Array<{
-        id: string;
-        enabled?: boolean;
-        config?: Record<string, unknown>;
-      }>,
-    ) => void;
-  }) => (
-    // eslint-disable-next-line no-restricted-syntax -- test stub standing in for the dnd editor, not a §4.2 CTA
-    <button
-      type="button"
-      data-testid="plugins-dnd-save"
-      onClick={() =>
-        props.onReplace([{ id: '@omadia/odoo', enabled: true, config: {} }])
-      }
-    />
-  ),
-}));
+vi.mock('../../_components/PluginsDnd', async () => {
+  const { useState } = await import('react');
+  return {
+    // The stub carries MOUNT-LOCAL state (like the real editor's unsaved
+    // drafts) so the remount contract is testable: a remount resets
+    // "dirty" back to "clean", a preserved mount keeps it.
+    PluginsDnd: (props: {
+      onReplace: (
+        plugins: Array<{
+          id: string;
+          enabled?: boolean;
+          config?: Record<string, unknown>;
+        }>,
+      ) => void;
+    }) => {
+      const [dirty, setDirty] = useState(false);
+      return (
+        <div>
+          <span data-testid="plugins-dnd-state">{dirty ? 'dirty' : 'clean'}</span>
+          {/* eslint-disable-next-line no-restricted-syntax -- test stub standing in for the dnd editor, not a §4.2 CTA */}
+          <button
+            type="button"
+            data-testid="plugins-dnd-edit"
+            onClick={() => setDirty(true)}
+          />
+          {/* eslint-disable-next-line no-restricted-syntax -- test stub standing in for the dnd editor, not a §4.2 CTA */}
+          <button
+            type="button"
+            data-testid="plugins-dnd-save"
+            onClick={() =>
+              props.onReplace([{ id: '@omadia/odoo', enabled: true, config: {} }])
+            }
+          />
+        </div>
+      );
+    },
+  };
+});
 
 function agent(over: Partial<OperatorAgentDto> = {}): OperatorAgentDto {
   return {
@@ -218,5 +236,40 @@ describe('AgentDetail plugin assignment', () => {
       { id: '@omadia/odoo', enabled: true, config: {} },
     ]);
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+  });
+
+  it('a successful instant toggle does NOT remount the editor — unsaved edits survive', async () => {
+    // Regression (W0c review): the toggle and the editor are two independent
+    // write paths. When they shared one remount key, a successful toggle
+    // remounted PluginsDnd and silently discarded every unsaved drag/config
+    // edit below it. The stub's mount-local "dirty" flag stands in for that
+    // unsaved state.
+    const user = userEvent.setup();
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+
+    await user.click(await screen.findByTestId('plugins-dnd-edit'));
+    expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
+
+    await user.click(
+      await screen.findByRole('checkbox', { name: 'Enable or disable Odoo' }),
+    );
+    await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+
+    expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
+  });
+
+  it("the editor's own save DOES remount it so it reseeds from fresh props", async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+
+    await user.click(await screen.findByTestId('plugins-dnd-edit'));
+    expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
+
+    await user.click(screen.getByTestId('plugins-dnd-save'));
+    await waitFor(() => expect(mockReplace).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('clean'),
+    );
   });
 });

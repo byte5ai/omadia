@@ -1,21 +1,22 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../../_lib/test-utils';
-import { ApiError } from '../../../../_lib/api';
 import type { McpDelegation, McpServerNode } from '../../../../_lib/agentBuilder';
 import type { AgentGrantsDto } from '../../../../_lib/agents';
 import { AgentMcpServers } from '../_components/AgentMcpServers';
 
 /**
- * Issue #862 (epic #860) — delegation choice per agent-MCP assignment.
+ * Issue #862 (epic #860) — delegation on the agent-MCP assignment row.
  *
  * The W0c schema-fit gate decided delegation stays PER SERVER
  * (`mcp_servers.delegation`, migration 0031): there is no per-(agent, server)
- * delegation storage, so the assignment row shows the SERVER's mode and
- * switches it via the existing server-level endpoint — a change with a
- * server-wide effect the UI must label before the operator confirms it.
+ * delegation storage. The coordinator's follow-up ruling for the assignment
+ * view: the row shows the SERVER's mode READ-ONLY, labels its server-wide
+ * effect, and links to the MCP server settings — the single write surface.
+ * There must be NO delegation write path on the agent detail page, including
+ * the one McpAuthSection normally embeds (it is passed showDelegation={false}).
  */
 
 const {
@@ -81,7 +82,7 @@ async function renderExpanded(): Promise<ReturnType<typeof userEvent.setup>> {
   return user;
 }
 
-describe('AgentMcpServers delegation (#862, per-server by the W0c gate)', () => {
+describe('AgentMcpServers delegation (#862, read-only per the W0c ruling)', () => {
   it('shows the server delegation mode with its server-wide scope labelling', async () => {
     await renderExpanded();
 
@@ -105,50 +106,37 @@ describe('AgentMcpServers delegation (#862, per-server by the W0c gate)', () => 
     ).toBeTruthy();
   });
 
-  it('switches the mode only after the server-wide-effect dialog is confirmed', async () => {
-    const user = await renderExpanded();
+  it('is strictly read-only — no switch control, and the mode write is never called', async () => {
+    await renderExpanded();
 
-    await user.click(screen.getByRole('button', { name: 'Switch to per user…' }));
-    // Nothing happens until the operator confirms the global effect.
-    expect(mockSetMcpServerDelegation).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText(
-        '"odoo-mcp" delegates identity per server, not per assignment. Switching to Per user changes it for every agent using this server. Continue?',
-      ),
-    ).toBeTruthy();
-
-    // The post-switch refresh serves the flipped mode.
-    mockListMcpServers.mockResolvedValue({ servers: [server('per_user')] });
-    await user.click(screen.getByRole('button', { name: 'Switch mode' }));
-
-    await waitFor(() =>
-      expect(mockSetMcpServerDelegation).toHaveBeenCalledWith('srv-1', 'per_user'),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Switch to service…' })).toBeTruthy(),
-    );
-  });
-
-  it('does not switch when the dialog is cancelled', async () => {
-    const user = await renderExpanded();
-
-    await user.click(screen.getByRole('button', { name: 'Switch to per user…' }));
-    await user.click(await screen.findByRole('button', { name: 'Cancel' }));
-
+    expect(screen.queryByRole('button', { name: /Switch to/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Switch mode' })).toBeNull();
     expect(mockSetMcpServerDelegation).not.toHaveBeenCalled();
   });
 
-  it('maps a rejected switch to the localized error code message, never the raw body', async () => {
-    mockSetMcpServerDelegation.mockRejectedValue(
-      new ApiError(400, 'Bad Request', '{"error":"invalid_delegation"}'),
-    );
-    const user = await renderExpanded();
+  it('links to the MCP server settings, the single delegation write surface', async () => {
+    await renderExpanded();
 
-    await user.click(screen.getByRole('button', { name: 'Switch to per user…' }));
-    await user.click(await screen.findByRole('button', { name: 'Switch mode' }));
+    const link = screen.getByRole('link', { name: 'Change in MCP server settings' });
+    expect(link.getAttribute('href')).toBe('/admin/mcp');
+  });
 
-    expect(await screen.findByText('The server rejected the delegation mode.')).toBeTruthy();
-    expect(screen.queryByText('{"error":"invalid_delegation"}')).toBeNull();
+  it('suppresses McpAuthSection\'s own delegation toggle on this page (one surface per context)', async () => {
+    // A protected server WITH auth-status delegation would normally render
+    // McpAuthSection's un-gated switch — the agent page passes
+    // showDelegation={false}, so no second (and un-labelled) delegation
+    // control can appear here.
+    mockGetMcpAuthStatus.mockResolvedValue({
+      connected: true,
+      protected: true,
+      delegation: 'service',
+      identityResolved: true,
+    });
+    await renderExpanded();
+
+    expect(screen.queryByText('Acting identity')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Require per-user identity' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Use a shared service identity' })).toBeNull();
   });
 
   it('renders no delegation UI when the middleware does not report a mode', async () => {
@@ -157,11 +145,11 @@ describe('AgentMcpServers delegation (#862, per-server by the W0c gate)', () => 
     renderWithIntl(<AgentMcpServers slug="odoo" />);
     await user.click(await screen.findByRole('button', { name: /odoo-mcp/ }));
 
-    // Older middleware without `delegation` on the server row → no block, no switch.
+    // Middleware builds without `delegation` on the server row → no block.
     await screen.findByText(
       'No tools discovered yet — run discovery in the MCP Control Center first.',
     );
     expect(screen.queryByText('Identity delegation')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Switch to/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Change in MCP server settings' })).toBeNull();
   });
 });

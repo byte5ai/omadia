@@ -185,10 +185,11 @@ export interface ToolGrantNode {
   toolKind: ToolKind;
   toolRef: string;
   mcpServerId: string | null;
-  /** Issue #861 — last verdict-epoch bump of this grant (`bumpMcpGrantEpoch`
-   *  stamps `config.verdictEpoch`); `null` until the first bump touches the
-   *  row; absent on older middleware. */
-  grantEpoch?: string | null;
+  // NOTE deliberately NO `grantEpoch` here: the middleware's `toolGrantNode()`
+  // serializer (canvas graph payload) does not emit it. The grant epoch is
+  // surfaced by exactly two wire shapes — `AgentToolGrantRowDto.grant_epoch`
+  // (GET /v1/operator/agents/:slug/grants, agents.ts) and
+  // `McpGrantMatrixRow.grantEpoch` (GET /mcp-grants) — read it from those.
 }
 
 /** Scan verdict decoration on a discovered MCP tool (issue #454). Absent on

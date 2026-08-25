@@ -20,6 +20,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import { after, afterEach, before, describe, it } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -218,9 +219,18 @@ class FakeGraphStore {
   toolGrants: ToolGrantMem[] = [];
   pluginGrants: PluginMcpGrantMem[] = [];
   servers: Array<{ id: string; name: string }> = [];
+  /** agentId → its sub-agent ids, mirroring agent_subagents. */
+  subAgentsOf: Record<string, readonly string[]> = {};
 
   listToolGrantsForAgent(agentId: string): Promise<ToolGrantMem[]> {
-    return Promise.resolve(this.toolGrants.filter((g) => g.agentId === agentId));
+    // Mirrors the real store's contract (W0c): rows held directly by the
+    // agent PLUS rows held by one of ITS sub-agents (agent_id NULL there).
+    const subs = new Set(this.subAgentsOf[agentId] ?? []);
+    return Promise.resolve(
+      this.toolGrants.filter(
+        (g) => g.agentId === agentId || (g.subAgentId !== null && subs.has(g.subAgentId)),
+      ),
+    );
   }
   listPluginMcpGrantsForPlugins(
     pluginIds: readonly string[],
@@ -618,6 +628,112 @@ describe('createOperatorAgentsRouter', () => {
       'plugin grants scoped to the plugins assigned to THIS agent',
     );
     assert.equal(body.plugin_mcp_grants[0]!.server_name, 'odoo-mcp');
+  });
+
+  it('GET /:slug/grants includes grants held by the agent\'s SUB-agents, attributed via sub_agent_id (W0c)', async () => {
+    // agent_tool_grants is a XOR table: a sub-agent-held grant has agent_id
+    // NULL. Hiding those rows made the detail page claim "no grants" while
+    // the sub-agent could reach the server (the W0c review's failing state).
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    const other = await store.createAgent({ slug: 'other', name: 'Other' });
+    graph.servers = [{ id: 'srv-1', name: 'odoo-mcp' }];
+    graph.subAgentsOf = { [agent.id]: ['sa-researcher'], [other.id]: ['sa-foreign'] };
+    graph.toolGrants = [
+      {
+        id: 'g-sub',
+        agentId: null,
+        subAgentId: 'sa-researcher',
+        toolKind: 'mcp',
+        toolRef: 'odoo-mcp:search',
+        mcpServerId: 'srv-1',
+        config: {},
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        grantEpoch: '2026-08-22 08:00:00+00',
+      },
+      {
+        id: 'g-foreign',
+        agentId: null,
+        subAgentId: 'sa-foreign',
+        toolKind: 'mcp',
+        toolRef: 'odoo-mcp:write',
+        mcpServerId: 'srv-1',
+        config: {},
+        createdAt: new Date('2026-08-02T00:00:00Z'),
+        grantEpoch: null,
+      },
+    ];
+    const res = await fetch(`${baseUrl}/public/grants`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      grant_epoch: string | null;
+      tool_grants: Array<{ id: string; sub_agent_id: string | null; tool_ref: string }>;
+    };
+    assert.deepEqual(
+      body.tool_grants.map((g) => g.id),
+      ['g-sub'],
+      "own sub-agents' grants in, other agents' sub-agents out",
+    );
+    assert.equal(body.tool_grants[0]!.sub_agent_id, 'sa-researcher');
+    assert.equal(
+      body.grant_epoch,
+      '2026-08-22 08:00:00+00',
+      'a sub-agent grant epoch counts toward the agent-level max',
+    );
+  });
+
+  it('GET /:slug/grants normalizes a serverName-prefixed mcp tool_ref to the bare tool name (W0c)', async () => {
+    // Stored refs may carry the '<serverName>:' prefix (canvas edges persist
+    // the caller's raw ref). Every other reader normalizes via
+    // mcpToolNameFromRef; the read model must too, so the UI can compare
+    // tool_ref against discoveredTools[].name verbatim.
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    graph.servers = [{ id: 'srv-1', name: 'odoo-mcp' }];
+    graph.toolGrants = [
+      {
+        id: 'g-prefixed',
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'mcp',
+        toolRef: 'odoo-mcp:search_partners',
+        mcpServerId: 'srv-1',
+        config: {},
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        grantEpoch: null,
+      },
+      {
+        id: 'g-native',
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'native',
+        toolRef: 'memory:search', // native refs are NOT server-prefixed — stay verbatim
+        mcpServerId: null,
+        config: {},
+        createdAt: new Date('2026-08-02T00:00:00Z'),
+        grantEpoch: null,
+      },
+    ];
+    const res = await fetch(`${baseUrl}/public/grants`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { tool_grants: Array<{ id: string; tool_ref: string }> };
+    assert.equal(body.tool_grants[0]!.tool_ref, 'search_partners');
+    assert.equal(body.tool_grants[1]!.tool_ref, 'memory:search');
+  });
+
+  it('index.ts supplies getAgentGraphStore to the operator-agents mount (wiring pin, W0c)', async () => {
+    // The route tests above inject their own store; they cannot see a missing
+    // option at the REAL mount. That exact gap shipped once: index.ts called
+    // createOperatorAgentsRouter without getAgentGraphStore and every
+    // /grants request 503ed in every environment (W0c review blocker). Pin
+    // the wiring statically so the option cannot silently disappear again.
+    const indexSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const mount = /createOperatorAgentsRouter\(\{([\s\S]*?)\}\)/.exec(indexSource)?.[1];
+    assert.ok(mount, 'index.ts no longer mounts createOperatorAgentsRouter — update this pin');
+    assert.match(
+      mount,
+      /getAgentGraphStore:/,
+      'index.ts must pass getAgentGraphStore to createOperatorAgentsRouter — without it every GET /:slug/grants 503s',
+    );
+    assert.match(mount, /new AgentGraphStore\(graphPool\)/, 'the option must construct the real store from graphPool');
   });
 
   it('GET /:slug/grants → grant_epoch null when no grant was ever bumped', async () => {

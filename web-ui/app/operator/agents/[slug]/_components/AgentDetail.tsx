@@ -12,10 +12,7 @@ import {
   type OperatorAgentDto,
   type PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
-import {
-  humanizeApiError,
-  pluginsRevisionKey,
-} from '../../_components/AgentsDashboard';
+import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { PluginsDnd } from '../../_components/PluginsDnd';
 
 interface AgentDetailProps {
@@ -40,8 +37,9 @@ interface AgentDetailProps {
  *    replace-set PUT) — spec says extend, not duplicate.
  *
  * After every successful write `router.refresh()` re-runs the parent RSC
- * fetch; `pluginsRevisionKey` remounts PluginsDnd so its local state reseeds
- * from the fresh props (same contract as the dashboard cards).
+ * fetch. PluginsDnd is remounted (reseeding its local state from fresh props)
+ * only after ITS OWN save — see `editorRevision` — so an instant toggle above
+ * never discards unsaved edits in the editor below.
  *
  * Error copy: the routes emit machine codes as `{ error: '<code>' }`.
  * `parseOperatorAgentErrorCode` narrows them and each code maps to a
@@ -57,6 +55,20 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PluginCatalogEntryDto[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  /**
+   * Remount key for PluginsDnd, bumped ONLY by the editor's own save path.
+   *
+   * The dashboard keys PluginsDnd on `pluginsRevisionKey(agent)` (a hash over
+   * each plugin's id/enabled/config) because there the editor is the only
+   * writer. Here the assigned-list checkbox is a SECOND writer that mutates
+   * exactly the `enabled` bit such a hash includes — with a shared key, a
+   * successful toggle would remount the editor and silently discard every
+   * unsaved drag and config edit below it (W0c review). A counter the toggle
+   * cannot touch keeps the two write paths decoupled: toggles leave the
+   * editor's local state alone; the editor's own save still remounts it so it
+   * reseeds from the fresh props (same contract as the dashboard).
+   */
+  const [editorRevision, setEditorRevision] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,11 +107,16 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
       : t('detailErrors.unknown', { detail: humanizeApiError(err) });
   }
 
-  function run(label: string, op: () => Promise<unknown>): void {
+  function run(
+    label: string,
+    op: () => Promise<unknown>,
+    opts?: { readonly remountEditor?: boolean },
+  ): void {
     setError(null);
     setBusy(label);
     op()
       .then(() => {
+        if (opts?.remountEditor) setEditorRevision((r) => r + 1);
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
@@ -184,14 +201,16 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
         )}
         {catalog ? (
           <PluginsDnd
-            key={pluginsRevisionKey(props.agent)}
+            key={`${props.agent.id}:${editorRevision}`}
             agent={props.agent}
             catalog={catalog}
             isFallback={props.isFallback}
             disabled={disabled}
             onReplace={(plugins) =>
-              run('plugins', () =>
-                replaceAgentPlugins(props.agent.slug, plugins),
+              run(
+                'plugins',
+                () => replaceAgentPlugins(props.agent.slug, plugins),
+                { remountEditor: true },
               )
             }
           />

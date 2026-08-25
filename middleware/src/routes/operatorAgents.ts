@@ -6,6 +6,7 @@ import {
   attachAllPlugins,
   ConfigValidationError,
   FALLBACK_AGENT_SLUG,
+  mcpToolNameFromRef,
   type AgentGraphStore,
   type ChatSessionStore,
   type ConfigStore,
@@ -456,11 +457,16 @@ export function createOperatorAgentsRouter(
   });
 
   // ── per-agent grant read model (W0c, #861) ──────────────────────────
-  // One response for the agent detail page: the agent's own
-  // `agent_tool_grants` rows (grant epoch included — bumpMcpGrantEpoch
-  // stamps config.verdictEpoch, surfaced as `grant_epoch`) plus the
-  // `plugin_mcp_grants` of every plugin assigned to the agent. Read-only;
-  // grant WRITES stay on the agent-builder router (/api/v1/operator/mcp-grants).
+  // One response for the agent detail page: the agent's `agent_tool_grants`
+  // rows — held directly OR by one of its sub-agents, matching the graph
+  // reads' attribution rule; `sub_agent_id` tells the rows apart — (grant
+  // epoch included — bumpMcpGrantEpoch stamps config.verdictEpoch, surfaced
+  // as `grant_epoch`) plus the `plugin_mcp_grants` of every plugin assigned
+  // to the agent. `tool_ref` is normalized via `mcpToolNameFromRef` (the
+  // stored ref may carry a '<serverName>:' prefix; every other reader
+  // normalizes too) so clients can compare it against discovered tool names
+  // verbatim. Read-only; grant WRITES stay on the agent-builder router
+  // (/api/v1/operator/mcp-grants).
   router.get('/:slug/grants', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -502,7 +508,13 @@ export function createOperatorAgentsRouter(
         tool_grants: toolGrants.map((g) => ({
           id: g.id,
           tool_kind: g.toolKind,
-          tool_ref: g.toolRef,
+          tool_ref:
+            g.toolKind === 'mcp' && g.mcpServerId
+              ? mcpToolNameFromRef(
+                  g.toolRef,
+                  serverById.get(g.mcpServerId)?.name ?? '',
+                )
+              : g.toolRef,
           sub_agent_id: g.subAgentId,
           mcp_server_id: g.mcpServerId,
           server_name: g.mcpServerId

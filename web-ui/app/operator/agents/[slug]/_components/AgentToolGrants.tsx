@@ -80,13 +80,20 @@ export function AgentToolGrants(props: AgentToolGrantsProps): React.ReactElement
     <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
       <div className="mb-1 flex flex-wrap items-center gap-2">
         <h2 className="text-lg font-medium">{t('grants.heading')}</h2>
+        {/* Three DISTINCT epoch states: unknown (still loading, or the load
+            failed — the true epoch cannot be asserted), never bumped (a
+            RESOLVED DTO whose grant_epoch is null), and a real timestamp.
+            Collapsing unknown into "never bumped" would make the panel state
+            a false fact about authorization state (W0c review). */}
         <span className="text-xs text-[color:var(--fg-muted)]">
-          {t('grants.epochSummary', {
-            epoch:
-              grants?.grant_epoch != null
-                ? formatEpoch(grants.grant_epoch, format)
-                : t('grants.epochNever'),
-          })}
+          {grants == null
+            ? t('grants.epochUnknown')
+            : t('grants.epochSummary', {
+                epoch:
+                  grants.grant_epoch != null
+                    ? formatEpoch(grants.grant_epoch, format)
+                    : t('grants.epochNever'),
+              })}
         </span>
         <div className="ml-auto">
           <Button size="sm" variant="ghost" busy={busy} onClick={() => void refresh()}>

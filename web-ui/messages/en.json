@@ -1853,11 +1853,7 @@
         "modePerUser": "Per user",
         "scopeHint": "Server-wide setting — it applies to every agent using this server, not just this one.",
         "perUserFailClosed": "Per-user calls act under each user's own identity and fail closed when none can be resolved.",
-        "switchToService": "Switch to service…",
-        "switchToPerUser": "Switch to per user…",
-        "switchTitle": "Change delegation for every agent",
-        "switchBody": "\"{server}\" delegates identity per server, not per assignment. Switching to {mode} changes it for every agent using this server. Continue?",
-        "switchConfirm": "Switch mode"
+        "serverSettingsLink": "Change in MCP server settings"
       },
       "errors": {
         "config_validation": "The scan gate rejected the change — a selected tool is blocked or not scanned yet.",
@@ -1881,6 +1877,7 @@
       "epochSummary": "Grant epoch: {epoch}",
       "epochRow": "epoch: {epoch}",
       "epochNever": "never bumped",
+      "epochUnknown": "Grant epoch: unknown",
       "serverRemoved": "(server removed)",
       "pluginHeading": "Plugin MCP grants",
       "pluginEmpty": "No MCP servers are granted to this orchestrator's plugins.",

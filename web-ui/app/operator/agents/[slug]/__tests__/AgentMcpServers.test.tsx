@@ -238,6 +238,35 @@ describe('AgentMcpServers (#862)', () => {
     );
   });
 
+  it('ignores sub-agent-held grants — the editor manages only the orchestrator\'s own allowlist', async () => {
+    // The grants DTO includes rows held by the agent's sub-agents
+    // (sub_agent_id set). Pre-checking one here would make the header count
+    // wrong AND make Save/Unassign issue a top-level PUT derived from a set
+    // the orchestrator never held — "revoking" without touching the
+    // sub-agent row (W0c review).
+    const dto = grants(['search_partners']);
+    mockGetAgentGrants.mockResolvedValue({
+      ...dto,
+      tool_grants: [
+        ...dto.tool_grants,
+        {
+          id: 'g-sub',
+          tool_kind: 'mcp' as const,
+          tool_ref: 'create_invoice',
+          sub_agent_id: 'sa-1',
+          mcp_server_id: 'srv-1',
+          server_name: 'odoo-mcp',
+          grant_epoch: null,
+          created_at: '2026-08-25T00:00:00Z',
+        },
+      ],
+    });
+    await renderExpanded();
+
+    expect(screen.getByText('1 of 4 tools granted')).toBeTruthy();
+    expect((screen.getByLabelText('Grant create_invoice') as HTMLInputElement).checked).toBe(false);
+  });
+
   it('shows the empty state when no MCP server exists', async () => {
     mockListMcpServers.mockResolvedValue({ servers: [] });
     mockGetAgentGrants.mockResolvedValue(grants([]));

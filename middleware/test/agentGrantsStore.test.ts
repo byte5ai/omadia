@@ -57,7 +57,7 @@ function toolGrantDbRow(overrides: Record<string, unknown> = {}): Record<string,
 
 // ── listToolGrantsForAgent ──────────────────────────────────────────────────
 
-test('listToolGrantsForAgent selects only the given agent, ordered by created_at', async () => {
+test('listToolGrantsForAgent reads the agent AND its sub-agents, ordered by created_at', async () => {
   const { pool, calls } = fakePool([toolGrantDbRow()]);
   const store = new AgentGraphStore(pool);
   const rows = await store.listToolGrantsForAgent(AGENT_ID);
@@ -66,6 +66,15 @@ test('listToolGrantsForAgent selects only the given agent, ordered by created_at
   const { sql, params } = calls[0]!;
   assert.match(sql, /FROM agent_tool_grants/);
   assert.match(sql, /WHERE agent_id = \$1/);
+  // agent_tool_grants is a XOR table (0003): a sub-agent-held grant has
+  // agent_id NULL. The read must attribute those rows to the parent agent,
+  // matching assembleGraph/indexGraph — an agent_id-only filter silently
+  // hides sub-agent grants from the detail page (W0c review).
+  assert.match(
+    sql,
+    /subagent_id IN \(SELECT id FROM agent_subagents WHERE parent_agent_id = \$1\)/,
+    'sub-agent-held grants must be attributed to the parent agent',
+  );
   assert.match(sql, /ORDER BY created_at/);
   assert.deepEqual(params, [AGENT_ID]);
 
@@ -73,6 +82,17 @@ test('listToolGrantsForAgent selects only the given agent, ordered by created_at
   assert.equal(rows[0]!.agentId, AGENT_ID);
   assert.equal(rows[0]!.toolRef, 'search');
   assert.equal(rows[0]!.mcpServerId, SERVER_ID);
+});
+
+test('listToolGrantsForAgent maps a sub-agent-held row (agent_id NULL) faithfully', async () => {
+  const SUB_AGENT_ID = '00000000-0000-0000-0000-0000000000cc';
+  const { pool } = fakePool([
+    toolGrantDbRow({ agent_id: null, subagent_id: SUB_AGENT_ID }),
+  ]);
+  const store = new AgentGraphStore(pool);
+  const [row] = await store.listToolGrantsForAgent(AGENT_ID);
+  assert.equal(row!.agentId, null);
+  assert.equal(row!.subAgentId, SUB_AGENT_ID, 'sub_agent attribution must survive the mapper');
 });
 
 test('listToolGrantsForAgent is SELECT-only — never writes', async () => {
@@ -168,4 +188,70 @@ test('listPluginMcpGrants maps rows through the same named shape', async () => {
   assert.equal(row!.pluginId, 'odoo-hr');
   assert.equal(row!.mcpServerId, SERVER_ID);
   assert.equal(row!.grantedBy, 'operator@example.com');
+});
+
+// ── applyMcpToolAllowlist (transactional bulk edit, W0c #862) ───────────────
+
+/** Pool whose `connect()` hands out a capturing client — `applyMcpToolAllowlist`
+ *  must run every write on ONE client inside BEGIN/COMMIT. */
+function fakeClientPool(failOn?: RegExp): {
+  pool: Pool;
+  calls: string[];
+  released: { value: boolean };
+} {
+  const calls: string[] = [];
+  const released = { value: false };
+  const client = {
+    query: async (sql: string, _params?: unknown[]) => {
+      calls.push(sql);
+      if (failOn && failOn.test(sql)) throw new Error(`boom on ${sql.slice(0, 30)}`);
+      return { rows: [] };
+    },
+    release: () => {
+      released.value = true;
+    },
+  };
+  const pool = {
+    connect: async () => client,
+    query: async () => {
+      throw new Error('applyMcpToolAllowlist must not use pool.query — writes belong on the transaction client');
+    },
+  } as unknown as Pool;
+  return { pool, calls, released };
+}
+
+test('applyMcpToolAllowlist wraps every grant and revoke in one BEGIN/COMMIT', async () => {
+  const { pool, calls, released } = fakeClientPool();
+  const store = new AgentGraphStore(pool);
+  await store.applyMcpToolAllowlist({
+    agentId: AGENT_ID,
+    mcpServerId: SERVER_ID,
+    grantRefs: ['read_partners', 'search'],
+    revokeIds: ['00000000-0000-0000-0000-0000000000aa'],
+  });
+  assert.equal(calls[0], 'BEGIN');
+  assert.equal(calls.at(-1), 'COMMIT');
+  const inserts = calls.filter((c) => /INSERT INTO agent_tool_grants/.test(c));
+  const deletes = calls.filter((c) => /DELETE FROM agent_tool_grants/.test(c));
+  assert.equal(inserts.length, 2);
+  assert.equal(deletes.length, 1);
+  assert.match(inserts[0]!, /ON CONFLICT/, 'keeps createToolGrant\'s idempotent contract (0014)');
+  assert.equal(released.value, true, 'client returned to the pool');
+});
+
+test('applyMcpToolAllowlist rolls back the whole edit when one write fails', async () => {
+  const { pool, calls, released } = fakeClientPool(/DELETE FROM/);
+  const store = new AgentGraphStore(pool);
+  await assert.rejects(
+    store.applyMcpToolAllowlist({
+      agentId: AGENT_ID,
+      mcpServerId: SERVER_ID,
+      grantRefs: ['read_partners'],
+      revokeIds: ['00000000-0000-0000-0000-0000000000aa'],
+    }),
+    /boom/,
+  );
+  assert.equal(calls.at(-1), 'ROLLBACK', 'a partial edit must not persist');
+  assert.ok(!calls.includes('COMMIT'));
+  assert.equal(released.value, true, 'client returned to the pool even on failure');
 });

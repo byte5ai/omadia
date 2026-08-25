@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -13,7 +14,6 @@ import {
   listMcpServers,
   parseMcpGrantErrorCode,
   replaceMcpToolAllowlist,
-  setMcpServerDelegation,
   type McpDelegation,
   type McpDiscoveredTool,
   type McpServerNode,
@@ -50,11 +50,17 @@ function isGrantable(tool: McpDiscoveredTool): boolean {
   return !needsAck(tool);
 }
 
-/** The agent's granted MCP tool names, keyed by server id. */
+/** The agent's OWN granted MCP tool names, keyed by server id. Rows held by a
+ *  sub-agent (`sub_agent_id` set) are excluded on purpose: this editor manages
+ *  only the orchestrator's top-level allowlist, and `PUT /mcp-grants` bulk
+ *  replace operates on exactly that set — pre-checking a sub-agent's grant
+ *  would make Save/Unassign claim a revocation that never touches the
+ *  sub-agent row (W0c review). Sub-agent grants stay visible read-only in the
+ *  tool-grant list above. */
 function grantedByServer(grants: AgentGrantsDto | null): Map<string, Set<string>> {
   const map = new Map<string, Set<string>>();
   for (const g of grants?.tool_grants ?? []) {
-    if (g.tool_kind !== 'mcp' || g.mcp_server_id === null) continue;
+    if (g.tool_kind !== 'mcp' || g.mcp_server_id === null || g.sub_agent_id !== null) continue;
     const set = map.get(g.mcp_server_id) ?? new Set<string>();
     set.add(g.tool_ref);
     map.set(g.mcp_server_id, set);
@@ -90,13 +96,6 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
   const [ackArm, setAckArm] = useState<string | null>(null);
   const [ackBusy, setAckBusy] = useState<string | null>(null);
   const [confirmUnassign, setConfirmUnassign] = useState<McpServerNode | null>(null);
-  /** Pending delegation switch, held until the operator confirms the
-   *  server-wide effect in the dialog. */
-  const [confirmDelegation, setConfirmDelegation] = useState<{
-    server: McpServerNode;
-    next: McpDelegation;
-  } | null>(null);
-  const [delegationBusy, setDelegationBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -171,26 +170,6 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
       mode === 'per_user' ? t('mcp.delegation.modePerUser') : t('mcp.delegation.modeService'),
     [t],
   );
-
-  /**
-   * Delegation is stored PER SERVER (`mcp_servers.delegation`, migration 0031)
-   * — there is no per-(agent, server) storage, by the W0c schema-fit gate's
-   * decision (epic #860). Switching it here therefore changes WHOSE identity
-   * every agent's calls to this server act under, which is why the switch is
-   * confirm-gated and labelled with its server-wide effect.
-   */
-  async function switchDelegation(server: McpServerNode, next: McpDelegation): Promise<void> {
-    setDelegationBusy(server.id);
-    setError(null);
-    try {
-      await setMcpServerDelegation(server.id, next);
-      await refresh();
-    } catch (err) {
-      setError(grantErrorText(err));
-    } finally {
-      setDelegationBusy(null);
-    }
-  }
 
   async function ack(server: McpServerNode, toolName: string): Promise<void> {
     const key = `${server.id} ${toolName}`;
@@ -279,7 +258,15 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
             </button>
             {isOpen ? (
               <div className="flex flex-col gap-2 border-t border-[color:var(--border)]/60 p-3">
-                <McpAuthSection serverId={server.id} />
+                {/* Delegation is a PER-SERVER setting (`mcp_servers.delegation`,
+                    0031) — the W0c coordinator decision for #862 is that the
+                    assignment view shows it READ-ONLY with its server-wide
+                    effect labelled and links to the server settings, where the
+                    single write surface lives. `showDelegation={false}` keeps
+                    McpAuthSection's own (un-gated) delegation toggle off this
+                    page so the agent context has exactly one delegation
+                    surface. */}
+                <McpAuthSection serverId={server.id} showDelegation={false} />
                 {server.delegation !== undefined ? (
                   <div className="flex flex-col gap-1 rounded-md border border-[color:var(--border)] px-3 py-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -289,21 +276,12 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
                       <span className="text-[11px] text-[color:var(--fg-strong)]">
                         {modeLabel(server.delegation)}
                       </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        busy={delegationBusy === server.id}
-                        onClick={() =>
-                          setConfirmDelegation({
-                            server,
-                            next: server.delegation === 'per_user' ? 'service' : 'per_user',
-                          })
-                        }
+                      <Link
+                        href="/admin/mcp"
+                        className="text-[11px] text-[color:var(--accent)] underline-offset-2 hover:underline"
                       >
-                        {server.delegation === 'per_user'
-                          ? t('mcp.delegation.switchToService')
-                          : t('mcp.delegation.switchToPerUser')}
-                      </Button>
+                        {t('mcp.delegation.serverSettingsLink')}
+                      </Link>
                     </div>
                     <div className="text-[11px] text-[color:var(--fg-muted)]">
                       {t('mcp.delegation.scopeHint')}
@@ -468,27 +446,6 @@ export function AgentMcpServers({ slug }: { slug: string }): React.ReactElement 
           const target = confirmUnassign;
           setConfirmUnassign(null);
           if (target !== null) void saveAllowlist(target, []);
-        }}
-      />
-      <ConfirmDialog
-        open={confirmDelegation !== null}
-        title={t('mcp.delegation.switchTitle')}
-        body={
-          confirmDelegation !== null
-            ? t('mcp.delegation.switchBody', {
-                server: confirmDelegation.server.name,
-                mode: modeLabel(confirmDelegation.next),
-              })
-            : undefined
-        }
-        confirmLabel={t('mcp.delegation.switchConfirm')}
-        cancelLabel={t('mcp.cancel')}
-        tone="danger"
-        onCancel={() => setConfirmDelegation(null)}
-        onConfirm={() => {
-          const target = confirmDelegation;
-          setConfirmDelegation(null);
-          if (target !== null) void switchDelegation(target.server, target.next);
         }}
       />
     </section>
