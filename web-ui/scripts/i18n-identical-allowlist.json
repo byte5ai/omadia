@@ -48,6 +48,7 @@
     "privacyOperator.repoDefaultFilterPlaceholder": "loanword",
     "agentPicker.label": "glossary",
     "operatorAgents.agentMeta": "diagnostic",
+    "operatorAgents.detailMetaTitle": "brand",
     "builder.simple.persona.optional": "loanword",
     "builder.workspace.buildBusLive": "loanword",
     "builder.spec.setupFields.required.off": "loanword",
