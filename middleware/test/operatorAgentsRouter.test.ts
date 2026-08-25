@@ -12,6 +12,11 @@
  *  6. ConfigValidationError surfaces as HTTP 409.
  *  7. Zod errors surface as HTTP 400 with a structured `issues` array.
  *  8. 503 when no orchestratorRegistry is published.
+ *  9. W0c (#861): GET /:slug/plugins reads the assignment; PATCH
+ *     /:slug/plugins flips ONE plugin (config preserved, fallback keeps the
+ *     global config, unassigned+disable → 404); GET /:slug/grants returns
+ *     the agent's tool grants (grant epoch included) + the plugin MCP
+ *     grants of its assigned plugins, and 503s without a graph store.
  */
 
 import { strict as assert } from 'node:assert';
@@ -23,6 +28,7 @@ import express from 'express';
 
 import {
   ConfigValidationError,
+  type AgentGraphStore,
   type ChatSessionStore,
   type ConfigStore,
   type OrchestratorRegistry,
@@ -54,8 +60,12 @@ interface BindingMem {
   createdAt: Date;
 }
 
+let idCounter = 0;
 function newId(): string {
-  return `00000000-0000-0000-0000-${String(Date.now() % 1e12).padStart(12, '0')}`;
+  // Monotonic, not time-based: two agents created in the same millisecond
+  // must still get distinct ids (the W0c grants test creates two).
+  idCounter += 1;
+  return `00000000-0000-0000-0000-${String(idCounter).padStart(12, '0')}`;
 }
 
 /**
@@ -185,6 +195,44 @@ class FakeConfigStore {
   }
 }
 
+interface ToolGrantMem {
+  id: string;
+  agentId: string | null;
+  subAgentId: string | null;
+  toolKind: string;
+  toolRef: string;
+  mcpServerId: string | null;
+  config: Record<string, unknown>;
+  createdAt: Date;
+  grantEpoch: string | null;
+}
+interface PluginMcpGrantMem {
+  pluginId: string;
+  mcpServerId: string;
+  grantedBy: string;
+  grantedAt: Date;
+}
+
+/** Fake AgentGraphStore — only the three reads GET /:slug/grants uses. */
+class FakeGraphStore {
+  toolGrants: ToolGrantMem[] = [];
+  pluginGrants: PluginMcpGrantMem[] = [];
+  servers: Array<{ id: string; name: string }> = [];
+
+  listToolGrantsForAgent(agentId: string): Promise<ToolGrantMem[]> {
+    return Promise.resolve(this.toolGrants.filter((g) => g.agentId === agentId));
+  }
+  listPluginMcpGrantsForPlugins(
+    pluginIds: readonly string[],
+  ): Promise<PluginMcpGrantMem[]> {
+    const wanted = new Set(pluginIds);
+    return Promise.resolve(this.pluginGrants.filter((g) => wanted.has(g.pluginId)));
+  }
+  listMcpServers(): Promise<Array<{ id: string; name: string }>> {
+    return Promise.resolve(this.servers);
+  }
+}
+
 class FakeRegistry {
   reloadCalls = 0;
   invalidateCalls: Array<{ slug: string; mode: 'drain' | 'kill' }> = [];
@@ -210,11 +258,13 @@ describe('createOperatorAgentsRouter', () => {
   let baseUrl: string;
   let store: FakeConfigStore;
   let registry: FakeRegistry;
+  let graph: FakeGraphStore;
   let sessionStore: { list: () => Promise<unknown[]> };
 
   before(async () => {
     store = new FakeConfigStore();
     registry = new FakeRegistry();
+    graph = new FakeGraphStore();
     sessionStore = { list: () => Promise.resolve([]) };
     const app = express();
     app.use(express.json());
@@ -224,6 +274,7 @@ describe('createOperatorAgentsRouter', () => {
         getConfigStore: () => store as unknown as ConfigStore,
         getRegistry: () => registry as unknown as OrchestratorRegistry,
         getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
+        getAgentGraphStore: () => graph as unknown as AgentGraphStore,
       }),
     );
     server = await listenLoopback(app);
@@ -237,6 +288,7 @@ describe('createOperatorAgentsRouter', () => {
 
   afterEach(() => {
     store = new FakeConfigStore();
+    graph = new FakeGraphStore();
     registry.reloadCalls = 0;
     registry.invalidateCalls = [];
   });
@@ -367,6 +419,254 @@ describe('createOperatorAgentsRouter', () => {
     const remaining = await store.listAgentPlugins(agent.id);
     const ids = remaining.map((p) => p.pluginId).sort();
     assert.deepEqual(ids, ['@omadia/a', '@omadia/b']);
+  });
+
+  it('GET /:slug/plugins reads the assignment (W0c #861)', async () => {
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    await store.upsertAgentPlugin(agent.id, {
+      pluginId: '@omadia/odoo',
+      config: { url: 'https://odoo.example' },
+      enabled: true,
+    });
+    await store.upsertAgentPlugin(agent.id, {
+      pluginId: '@omadia/confluence',
+      enabled: false,
+    });
+    const res = await fetch(`${baseUrl}/public/plugins`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      slug: string;
+      fallback: boolean;
+      plugins: Array<{ id: string; config: Record<string, unknown>; enabled: boolean }>;
+    };
+    assert.equal(body.slug, 'public');
+    assert.equal(body.fallback, false);
+    const byId = new Map(body.plugins.map((p) => [p.id, p]));
+    assert.equal(byId.size, 2);
+    assert.deepEqual(byId.get('@omadia/odoo')?.config, { url: 'https://odoo.example' });
+    assert.equal(byId.get('@omadia/odoo')?.enabled, true);
+    assert.equal(byId.get('@omadia/confluence')?.enabled, false);
+  });
+
+  it('GET /:slug/plugins 404s for an unknown agent', async () => {
+    const res = await fetch(`${baseUrl}/ghost/plugins`);
+    assert.equal(res.status, 404);
+    assert.equal(((await res.json()) as { error: string }).error, 'not_found');
+  });
+
+  it('PATCH /:slug/plugins disables ONE plugin, preserves its config, reloads', async () => {
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    await store.upsertAgentPlugin(agent.id, {
+      pluginId: '@omadia/odoo',
+      config: { url: 'https://odoo.example' },
+      enabled: true,
+    });
+    const res = await fetch(`${baseUrl}/public/plugins`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: '@omadia/odoo', enabled: false }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      plugin: { id: string; enabled: boolean };
+    };
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.plugin, { id: '@omadia/odoo', enabled: false });
+    const rows = await store.listAgentPlugins(agent.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.enabled, false);
+    assert.deepEqual(
+      rows[0]!.config,
+      { url: 'https://odoo.example' },
+      'toggle must not wipe the per-agent config',
+    );
+    assert.equal(registry.reloadCalls, 1);
+  });
+
+  it('PATCH /:slug/plugins with enabled=true assigns a not-yet-assigned plugin', async () => {
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    const res = await fetch(`${baseUrl}/public/plugins`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: '@omadia/fresh', enabled: true }),
+    });
+    assert.equal(res.status, 200);
+    const rows = await store.listAgentPlugins(agent.id);
+    assert.deepEqual(
+      rows.map((p) => ({ id: p.pluginId, enabled: p.enabled })),
+      [{ id: '@omadia/fresh', enabled: true }],
+    );
+  });
+
+  it('PATCH /:slug/plugins with enabled=false on an unassigned plugin → 404 plugin_not_assigned', async () => {
+    await store.createAgent({ slug: 'public', name: 'Public' });
+    const res = await fetch(`${baseUrl}/public/plugins`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: '@omadia/ghost', enabled: false }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(
+      ((await res.json()) as { error: string }).error,
+      'plugin_not_assigned',
+    );
+    assert.equal(registry.reloadCalls, 0, 'no reload on a rejected toggle');
+  });
+
+  it('PATCH /:slug/plugins keeps the fallback agent on the global config ({})', async () => {
+    const agent = await store.createAgent({ slug: 'special', name: 'Special' });
+    await store.setFallbackAgentId(agent.id);
+    await store.upsertAgentPlugin(agent.id, {
+      pluginId: '@omadia/odoo',
+      config: { smuggled: true },
+      enabled: true,
+    });
+    const res = await fetch(`${baseUrl}/special/plugins`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: '@omadia/odoo', enabled: false }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { fallback: boolean }).fallback, true);
+    const rows = await store.listAgentPlugins(agent.id);
+    assert.deepEqual(
+      rows[0]!.config,
+      {},
+      'fallback Agent always runs plugins with the global store config',
+    );
+  });
+
+  it('GET /:slug/grants returns tool grants + plugin MCP grants + grant epoch (W0c #861)', async () => {
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    const other = await store.createAgent({ slug: 'other', name: 'Other' });
+    await store.upsertAgentPlugin(agent.id, { pluginId: '@omadia/odoo' });
+    graph.servers = [{ id: 'srv-1', name: 'odoo-mcp' }];
+    graph.toolGrants = [
+      {
+        id: 'g-1',
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'mcp',
+        toolRef: 'mcp:odoo-mcp:search',
+        mcpServerId: 'srv-1',
+        config: {},
+        createdAt: new Date('2026-08-01T00:00:00Z'),
+        grantEpoch: '2026-08-20 10:00:00+00',
+      },
+      {
+        id: 'g-2',
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'builtin',
+        toolRef: 'web_search',
+        mcpServerId: null,
+        config: {},
+        createdAt: new Date('2026-08-02T00:00:00Z'),
+        grantEpoch: '2026-08-21 09:30:00+00',
+      },
+      {
+        id: 'g-3',
+        agentId: other.id,
+        subAgentId: null,
+        toolKind: 'mcp',
+        toolRef: 'mcp:odoo-mcp:write',
+        mcpServerId: 'srv-1',
+        config: {},
+        createdAt: new Date('2026-08-03T00:00:00Z'),
+        grantEpoch: null,
+      },
+    ];
+    graph.pluginGrants = [
+      {
+        pluginId: '@omadia/odoo',
+        mcpServerId: 'srv-1',
+        grantedBy: 'operator',
+        grantedAt: new Date('2026-08-10T00:00:00Z'),
+      },
+      {
+        pluginId: '@omadia/unassigned',
+        mcpServerId: 'srv-1',
+        grantedBy: 'operator',
+        grantedAt: new Date('2026-08-11T00:00:00Z'),
+      },
+    ];
+    const res = await fetch(`${baseUrl}/public/grants`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      slug: string;
+      grant_epoch: string | null;
+      tool_grants: Array<{
+        id: string;
+        server_name: string | null;
+        grant_epoch: string | null;
+      }>;
+      plugin_mcp_grants: Array<{ plugin_id: string; server_name: string | null }>;
+    };
+    assert.equal(body.slug, 'public');
+    assert.equal(body.grant_epoch, '2026-08-21 09:30:00+00', 'latest bump wins');
+    assert.deepEqual(
+      body.tool_grants.map((g) => g.id),
+      ['g-1', 'g-2'],
+      'only the agent\'s own grants',
+    );
+    assert.equal(body.tool_grants[0]!.server_name, 'odoo-mcp');
+    assert.equal(body.tool_grants[0]!.grant_epoch, '2026-08-20 10:00:00+00');
+    assert.deepEqual(
+      body.plugin_mcp_grants.map((g) => g.plugin_id),
+      ['@omadia/odoo'],
+      'plugin grants scoped to the plugins assigned to THIS agent',
+    );
+    assert.equal(body.plugin_mcp_grants[0]!.server_name, 'odoo-mcp');
+  });
+
+  it('GET /:slug/grants → grant_epoch null when no grant was ever bumped', async () => {
+    const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+    graph.toolGrants = [
+      {
+        id: 'g-1',
+        agentId: agent.id,
+        subAgentId: null,
+        toolKind: 'builtin',
+        toolRef: 'web_search',
+        mcpServerId: null,
+        config: {},
+        createdAt: new Date(),
+        grantEpoch: null,
+      },
+    ];
+    const res = await fetch(`${baseUrl}/public/grants`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { grant_epoch: string | null };
+    assert.equal(body.grant_epoch, null);
+  });
+
+  it('GET /:slug/grants 503s when no agent graph store is wired', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => store as unknown as ConfigStore,
+        getRegistry: () => registry as unknown as OrchestratorRegistry,
+        getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const addr = s.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents/public/grants`,
+      );
+      assert.equal(res.status, 503);
+      assert.equal(
+        ((await res.json()) as { error: string }).error,
+        'agent_graph_store_unavailable',
+      );
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
   });
 
   it('PUT /:slug/bindings replaces the channel bindings', async () => {

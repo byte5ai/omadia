@@ -115,6 +115,7 @@ export type {
   McpToolVerdictAckRow,
   McpToolVerdictRow,
   PersonaSkillRow,
+  PluginMcpGrantRow,
   ScheduleInput,
   ScheduleRow,
   SkillInput,
