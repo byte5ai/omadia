@@ -202,9 +202,14 @@ export function toSemanticAnswer(
     };
   }
 
-  const verifier: VerifierBadge | undefined = r.verifier
-    ? { status: r.verifier.badge }
-    : undefined;
+  // The badge is only an honest signal when the verifier actually CHECKED
+  // something: with zero extracted claims (small talk, greetings) — and on the
+  // pipeline-failure fallback, which reports `approved` with an empty claim
+  // list — a "✓ geprüft" chip would assert a verification that never happened.
+  const verifier: VerifierBadge | undefined =
+    r.verifier && r.verifier.claimCount > 0
+      ? { status: r.verifier.badge }
+      : undefined;
 
   // #332 Layer 1 — curate a tamper-evident consulted-agents footer from the
   // deterministic run-trace. This is the ONLY sub-agent signal Teams/Telegram
@@ -250,6 +255,7 @@ export function toSemanticAnswer(
     text: disclosed.text,
     ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
     ...(verifier ? { verifier } : {}),
+    ...(r.memoryUsed ? { memoryUsed: true } : {}),
     ...(agentsConsulted && agentsConsulted.length > 0
       ? { agentsConsulted }
       : {}),

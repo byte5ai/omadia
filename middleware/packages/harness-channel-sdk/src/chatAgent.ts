@@ -543,6 +543,15 @@ export interface ChatTurnResult {
    */
   recalled?: RecalledContext;
   /**
+   * True when this turn's answer could have been influenced by persisted
+   * memory: an injected prior-context block (session tail + FTS + entity
+   * recall) or a `memory`-tool call by the orchestrator. `toSemanticAnswer`
+   * forwards it to `SemanticAnswer.memoryUsed` so channels can gate their
+   * memory-bypass affordances (Teams' "🔄 Fresh Check" button). Omitted when
+   * no memory contributed — a fresh check would then be a no-op.
+   */
+  memoryUsed?: boolean;
+  /**
    * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
    * user directed at a named specialist (`@omadia #strategist …`). Set by the
    * harness inside `chatStream`, NOT by the LLM; `toSemanticAnswer` forwards it
