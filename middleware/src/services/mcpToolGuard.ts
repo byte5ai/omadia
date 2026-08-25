@@ -173,6 +173,41 @@ export function computeMcpToolVerdict(
   };
 }
 
+// ── tool allowlist arithmetic (epic #860 W1, issue #862) ─────────────────────
+// An agent's tool allowlist for an MCP server IS its set of `agent_tool_grants`
+// rows for that (agent, server) pair — there is deliberately no separate
+// allowlist table. This helper only computes the set difference an allowlist
+// edit must apply; every name in `toGrant` still has to pass the fail-closed
+// verdict gate (`assertMcpToolAllowed` in the grant routes) before a row is
+// written. Editor arithmetic, not a second enforcement path — enforcement
+// stays with mcpGrantPolicy's dispatch guard and hydration filter.
+
+export interface McpToolAllowlistDiff {
+  /** Desired but not yet granted — each must pass the verdict gate first. */
+  readonly toGrant: readonly string[];
+  /** Granted but no longer desired — revoking needs no gate. */
+  readonly toRevoke: readonly string[];
+  /** On both sides — untouched by the edit. */
+  readonly unchanged: readonly string[];
+}
+
+/** Deterministic set difference between the currently granted tool names and a
+ *  desired allowlist. Both sides are deduped; each partition is sorted so
+ *  responses and did-anything-change decisions (epoch bump, policy refresh)
+ *  are stable regardless of input order. */
+export function diffMcpToolAllowlist(
+  currentToolNames: readonly string[],
+  desiredToolNames: readonly string[],
+): McpToolAllowlistDiff {
+  const current = new Set(currentToolNames);
+  const desired = new Set(desiredToolNames);
+  return {
+    toGrant: [...desired].filter((name) => !current.has(name)).sort(),
+    toRevoke: [...current].filter((name) => !desired.has(name)).sort(),
+    unchanged: [...desired].filter((name) => current.has(name)).sort(),
+  };
+}
+
 /** Scan a whole discovery batch. A scanner crash on one descriptor must not
  *  take down discovery: that tool degrades to `scan_failed` (visible, and the
  *  grant gate treats it as not-ackable-as-clean rather than silently passed). */
