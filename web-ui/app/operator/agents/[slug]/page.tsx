@@ -10,6 +10,8 @@ import {
   type OperatorAgentsListDto,
 } from '../../../_lib/agents';
 import { AgentDetail } from './_components/AgentDetail';
+import { AgentMcpServers } from './_components/AgentMcpServers';
+import { AgentToolGrants } from './_components/AgentToolGrants';
 
 /**
  * Issue #861 — per-agent capability page (epic #860).
@@ -101,6 +103,14 @@ export default async function OperatorAgentDetailPage({
               agent.id === list.fallback_agent_id
             }
           />
+          {/* Wiring (#860): the sibling per-agent surfaces — read-only
+              tool-grant list (#861) and the MCP assignment / allowlist
+              editor (#862) — mount below the plugin editor. Both are
+              client components that fetch their own data by slug. */}
+          <div className="mt-8 space-y-8">
+            <AgentToolGrants slug={agent.slug} />
+            <AgentMcpServers slug={agent.slug} />
+          </div>
         </>
       )}
     </main>

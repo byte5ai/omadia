@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
@@ -542,7 +543,16 @@ function AgentCard(props: {
           </span>
         </button>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {/* Wiring (#860): the per-agent capability page (plugins, tool
+                grants, MCP assignments) lives on its own route — the card
+                links there instead of growing more inline editors. */}
+            <Link
+              href={`/operator/agents/${encodeURIComponent(agent.slug)}`}
+              className="text-sm text-[color:var(--accent)] hover:underline"
+            >
+              {t('detailOpenLink')}
+            </Link>
             {/* The standard orchestrator is the catch-all for unbound traffic;
                 disabling or deleting it would strand that traffic, so those
                 actions are not offered for it at all. */}
