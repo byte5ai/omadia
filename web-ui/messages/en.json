@@ -1820,7 +1820,35 @@
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep",
-    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one.",
+    "grants": {
+      "heading": "Tool grants",
+      "hint": "Read-only view of the tools this orchestrator may call and the MCP servers its plugins were granted. Manage grants on the MCP admin page.",
+      "loading": "Loading grants…",
+      "refresh": "Refresh",
+      "empty": "This orchestrator holds no tool grants yet.",
+      "epochSummary": "Grant epoch: {epoch}",
+      "epochRow": "epoch: {epoch}",
+      "epochNever": "never bumped",
+      "serverRemoved": "(server removed)",
+      "pluginHeading": "Plugin MCP grants",
+      "pluginEmpty": "No MCP servers are granted to this orchestrator's plugins.",
+      "grantedMeta": "granted by {who} · {date}",
+      "kind": {
+        "native": "native",
+        "mcp": "MCP"
+      },
+      "errors": {
+        "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
+        "config_validation": "The server rejected the request.",
+        "invalid_body": "The server rejected the request payload.",
+        "invalid_slug": "This orchestrator slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
+        "not_found": "This orchestrator does not exist anymore — reload the page.",
+        "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
+        "unknown": "Loading grants failed: {detail}"
+      }
+    }
   },
   "builder": {
     "issueReport": {
