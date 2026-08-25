@@ -4427,10 +4427,22 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
+          // Fresh-Check gate (Teams "🔄 Fresh Check" button): memory influenced
+          // this answer when a prior-context block was injected (tail + FTS +
+          // entity recall) or the orchestrator's own `memory` tool ran. Without
+          // either, a memory-bypassing re-run cannot produce a different answer,
+          // so channels hide the affordance.
+          const memoryUsed =
+            (priorContext !== undefined && priorContext.trim().length > 0) ||
+            (runTrace?.orchestratorToolCalls.some(
+              (tc) => tc.toolName === MEMORY_TOOL_NAME,
+            ) ??
+              false);
           return {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
             ...(attachments ? { attachments } : {}),

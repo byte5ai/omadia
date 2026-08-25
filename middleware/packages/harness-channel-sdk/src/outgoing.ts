@@ -36,6 +36,16 @@ export interface SemanticAnswer {
   /** Visual verifier state — connectors may render as badge / icon / colour. */
   verifier?: VerifierBadge;
 
+  /**
+   * True when this turn's answer could have been influenced by persisted
+   * memory: an injected prior-context block (session tail + FTS + entity
+   * recall) or a `memory`-tool call by the orchestrator. Connectors use this
+   * to gate memory-bypass affordances (Teams' "🔄 Fresh Check" button) —
+   * absent/false means a re-run without memory would be a no-op, so the
+   * affordance should not be offered.
+   */
+  memoryUsed?: boolean;
+
   /** Soft-disclaimer line appended to the answer (e.g. "unverified claims"). */
   disclaimer?: string;
 
