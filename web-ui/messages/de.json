@@ -1848,6 +1848,56 @@
         "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
+    },
+    "mcp": {
+      "heading": "MCP-Server",
+      "hint": "Weise diesem Orchestrator MCP-Server zu und pflege die Tool-Allowlist. Ein Tool ist erst aufrufbar, wenn es hier freigegeben ist und den Scan-Gate passiert hat.",
+      "loading": "MCP-Server werden geladen…",
+      "loadError": "MCP-Server konnten nicht geladen werden: {detail}",
+      "empty": "Keine MCP-Server verfügbar. Registriere und discovere Server zuerst im MCP Control Center.",
+      "toolsGranted": "{granted} von {total} Tools freigegeben",
+      "notAssigned": "Nicht zugewiesen",
+      "discoveredTools": "Entdeckte Tools ({count})",
+      "noTools": "Noch keine Tools entdeckt — starte die Discovery zuerst im MCP Control Center.",
+      "toolAria": "{tool} freigeben",
+      "acked": "Bestätigt",
+      "needsAckHint": "Das Scan-Urteil muss bestätigt werden, bevor dieses Tool freigegeben werden kann.",
+      "unscannedHint": "Noch nicht gescannt — ungescannte Tools können nicht freigegeben werden.",
+      "ack": "Urteil bestätigen",
+      "ackConfirm": "Bestätigung wirklich erteilen",
+      "save": "Allowlist speichern",
+      "savedSummary": "Allowlist gespeichert — {granted} freigegeben, {revoked} entzogen.",
+      "selectAllGrantable": "Alle freigebbaren auswählen",
+      "discardDraft": "Änderungen verwerfen",
+      "unassign": "Server entfernen",
+      "unassignTitle": "MCP-Server entfernen",
+      "unassignBody": "Alle {count} Tool-Freigaben von \"{server}\" für diesen Orchestrator entziehen?",
+      "unassignConfirm": "Alle entziehen",
+      "cancel": "Abbrechen",
+      "delegation": {
+        "label": "Identitäts-Delegation",
+        "modeService": "Service",
+        "modePerUser": "Pro Nutzer",
+        "scopeHint": "Server-weite Einstellung — sie gilt für jeden Agenten, der diesen Server nutzt, nicht nur für diesen.",
+        "perUserFailClosed": "Pro-Nutzer-Aufrufe laufen unter der Identität des jeweiligen Nutzers und schlagen fail-closed fehl, wenn keine auflösbar ist.",
+        "switchToService": "Auf Service umstellen…",
+        "switchToPerUser": "Auf pro Nutzer umstellen…",
+        "switchTitle": "Delegation für alle Agenten ändern",
+        "switchBody": "\"{server}\" delegiert Identität pro Server, nicht pro Zuweisung. Die Umstellung auf {mode} gilt für jeden Agenten, der diesen Server nutzt. Fortfahren?",
+        "switchConfirm": "Modus umstellen"
+      },
+      "errors": {
+        "config_validation": "Der Scan-Gate hat die Änderung abgelehnt — ein ausgewähltes Tool ist blockiert oder noch nicht gescannt.",
+        "invalid_delegation": "Der Server hat den Delegationsmodus abgelehnt.",
+        "invalid_grant": "Der Server hat die Freigabe-Anfrage abgelehnt.",
+        "mcp_server_not_found": "Dieser MCP-Server existiert nicht mehr — lade die Seite neu.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
+        "orchestrator_not_found": "Dieser Orchestrator existiert nicht mehr — lade die Seite neu.",
+        "grant_not_found": "Diese Freigabe existiert nicht mehr — lade die Seite neu.",
+        "invalid_grant_id": "Die Freigabe-Id ist ungültig.",
+        "not_an_mcp_grant": "Diese Freigabe ist keine MCP-Tool-Freigabe.",
+        "unknown": "Anfrage fehlgeschlagen: {detail}"
+      }
     }
   },
   "builder": {
