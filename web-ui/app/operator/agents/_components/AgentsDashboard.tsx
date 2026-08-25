@@ -22,6 +22,7 @@ import {
   resolveAgentForChannel,
   setFallbackAgent,
   triggerAgentReload,
+  FALLBACK_AGENT_SLUG,
   type OperatorAgentDto,
   type OperatorAgentsListDto,
   type PluginCatalogEntryDto,
@@ -30,17 +31,6 @@ import {
 } from '../../../_lib/agents';
 
 import { PluginsDnd } from './PluginsDnd';
-
-/**
- * Slug of the auto-seeded fallback orchestrator (kept in sync with
- * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
- * is the catch-all for unbound channel traffic, so its Disable/Delete actions
- * are blocked in the UI (and server-side). We treat an orchestrator as the
- * protected fallback when it carries this slug OR is the active platform
- * fallback pointer — the platform pointer may be intentionally unset while the
- * seeded `fallback` row still exists.
- */
-const FALLBACK_AGENT_SLUG = 'fallback';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -848,8 +838,11 @@ function Field(props: {
  * a save, leaving local state stale. Hash the actual payload instead so a
  * `replaceAgentPlugins` write that produces new server state remounts the
  * editor and reseeds local state from props.
+ *
+ * Exported for the agent detail route (issue #861), which mounts the same
+ * PluginsDnd editor and needs the identical remount-after-save behavior.
  */
-function pluginsRevisionKey(agent: OperatorAgentDto): string {
+export function pluginsRevisionKey(agent: OperatorAgentDto): string {
   const sig = agent.plugins
     .map(
       (p) =>

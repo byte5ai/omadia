@@ -174,6 +174,148 @@ export async function deleteOperatorAgent(slug: string): Promise<void> {
   });
 }
 
+// ── W0c (#861) — per-agent plugin assignment + grant read model ─────────
+
+export interface AgentPluginsDto {
+  slug: string;
+  /** True when this agent is the platform fallback (its plugins always run
+   *  with the global store config). */
+  fallback: boolean;
+  plugins: OperatorAgentPluginDto[];
+}
+
+/**
+ * Per-agent read of the plugin assignment (issue #861) — same row shape as
+ * the `plugins` array on `GET /v1/operator/agents`, so the agent detail page
+ * does not have to filter the full dashboard payload.
+ */
+export async function getAgentPlugins(slug: string): Promise<AgentPluginsDto> {
+  return callJson<AgentPluginsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/plugins`,
+  );
+}
+
+export interface ToggleAgentPluginResponse {
+  ok: boolean;
+  fallback: boolean;
+  plugin: { id: string; enabled: boolean };
+}
+
+/**
+ * Enable/disable ONE plugin on an agent (issue #861). The plugin id travels
+ * in the body, not the path: plugin ids contain `/` (`@omadia/odoo`), which
+ * an Express path segment cannot carry without double-encoding. Server-side
+ * the toggle preserves the row's existing per-agent config; disabling a
+ * plugin that was never assigned yields a 404 with `error:
+ * 'plugin_not_assigned'` (see {@link parseOperatorAgentErrorCode}).
+ */
+export async function toggleAgentPlugin(
+  slug: string,
+  pluginId: string,
+  enabled: boolean,
+): Promise<ToggleAgentPluginResponse> {
+  return callJson<ToggleAgentPluginResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/plugins`,
+    { method: 'PATCH', body: JSON.stringify({ id: pluginId, enabled }) },
+  );
+}
+
+/** One `agent_tool_grants` row of the per-agent grant read model (issue
+ *  #861). Snake_case mirrors the REST payload verbatim, like the other
+ *  operator-agents DTOs in this file. */
+export interface AgentToolGrantRowDto {
+  id: string;
+  tool_kind: 'native' | 'mcp';
+  tool_ref: string;
+  sub_agent_id: string | null;
+  mcp_server_id: string | null;
+  /** Joined-in display name; null for native tools or a deleted server. */
+  server_name: string | null;
+  /** Issue #861 — last verdict-epoch bump of this grant (`bumpMcpGrantEpoch`
+   *  stamps `config.verdictEpoch`); null until the first bump touches the
+   *  row. */
+  grant_epoch: string | null;
+  created_at: string;
+}
+
+/** One `plugin_mcp_grants` row of a plugin assigned to the agent (#861). */
+export interface AgentPluginMcpGrantRowDto {
+  plugin_id: string;
+  mcp_server_id: string;
+  server_name: string | null;
+  granted_by: string;
+  granted_at: string;
+}
+
+export interface AgentGrantsDto {
+  slug: string;
+  /** Latest verdict-epoch bump across the agent's tool grants; null when no
+   *  grant has ever been bumped. Epochs are `now()::text` timestamps, so the
+   *  lexicographic max the server computes IS the latest. */
+  grant_epoch: string | null;
+  tool_grants: AgentToolGrantRowDto[];
+  plugin_mcp_grants: AgentPluginMcpGrantRowDto[];
+}
+
+/**
+ * Per-agent grant read model (issue #861): the agent's own
+ * `agent_tool_grants` rows plus the `plugin_mcp_grants` of every plugin
+ * assigned to it, one response for the agent detail page. Read-only — grant
+ * WRITES stay on the agent-builder surface (`_lib/agentBuilder.ts`).
+ */
+export async function getAgentGrants(slug: string): Promise<AgentGrantsDto> {
+  return callJson<AgentGrantsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/grants`,
+  );
+}
+
+/**
+ * Machine codes the operator-agents plugin/grant routes emit as
+ * `{ error: '<code>' }` (they predate the `{ code }` envelope `ApiError.code`
+ * parses, so the code must be read from the body).
+ *
+ * i18n HARD RULE: these are NOT user-facing text. Pages map each code to a
+ * message-catalogue key and render the localized copy; the raw body string
+ * must never reach the UI. `parseOperatorAgentErrorCode` narrows to this
+ * union so a page's mapping can be exhaustive with a typed fallback.
+ */
+export const OPERATOR_AGENT_ERROR_CODES = [
+  'agent_graph_store_unavailable',
+  'config_validation',
+  'invalid_body',
+  'invalid_slug',
+  'multi_orchestrator_unavailable',
+  'not_found',
+  'plugin_not_assigned',
+] as const;
+
+export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];
+
+const OPERATOR_AGENT_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  OPERATOR_AGENT_ERROR_CODES,
+);
+
+/**
+ * Extract the machine code from a failed operator-agents call, or `null`
+ * when the error is not an {@link ApiError}, its body is not JSON, or the
+ * code is not one this client knows. Total by construction — a proxy's HTML
+ * 502 page yields `null`, never a throw.
+ */
+export function parseOperatorAgentErrorCode(
+  err: unknown,
+): OperatorAgentErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      OPERATOR_AGENT_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as OperatorAgentErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,
@@ -346,6 +488,18 @@ export async function rehydrateFallback(): Promise<{
     method: 'POST',
   });
 }
+
+/**
+ * Slug of the auto-seeded fallback orchestrator (kept in sync with
+ * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
+ * is the catch-all for unbound channel traffic, so its Disable/Delete actions
+ * are blocked in the UI (and server-side). Treat an orchestrator as the
+ * protected fallback when it carries this slug OR is the active platform
+ * fallback pointer — the platform pointer may be intentionally unset while the
+ * seeded `fallback` row still exists. Shared by the dashboard and the agent
+ * detail route (issue #861) so the two never disagree on who the fallback is.
+ */
+export const FALLBACK_AGENT_SLUG = 'fallback';
 
 /**
  * #679 / I5 — the description the middleware seeds into the fallback Agent on
