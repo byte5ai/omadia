@@ -490,6 +490,18 @@ export async function rehydrateFallback(): Promise<{
 }
 
 /**
+ * Slug of the auto-seeded fallback orchestrator (kept in sync with
+ * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
+ * is the catch-all for unbound channel traffic, so its Disable/Delete actions
+ * are blocked in the UI (and server-side). Treat an orchestrator as the
+ * protected fallback when it carries this slug OR is the active platform
+ * fallback pointer — the platform pointer may be intentionally unset while the
+ * seeded `fallback` row still exists. Shared by the dashboard and the agent
+ * detail route (issue #861) so the two never disagree on who the fallback is.
+ */
+export const FALLBACK_AGENT_SLUG = 'fallback';
+
+/**
  * #679 / I5 — the description the middleware seeds into the fallback Agent on
  * first boot (`FALLBACK_AGENT_SEED_DESCRIPTION` in
  * `packages/harness-orchestrator/src/registry/onboarding.ts`).
