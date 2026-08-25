@@ -1804,7 +1804,45 @@
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
     "orphanKeep": "Behalten",
-    "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest."
+    "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest.",
+    "mcp": {
+      "heading": "MCP-Server",
+      "hint": "Weise diesem Orchestrator MCP-Server zu und pflege die Tool-Allowlist. Ein Tool ist erst aufrufbar, wenn es hier freigegeben ist und den Scan-Gate passiert hat.",
+      "loading": "MCP-Server werden geladen…",
+      "loadError": "MCP-Server konnten nicht geladen werden: {detail}",
+      "empty": "Keine MCP-Server verfügbar. Registriere und discovere Server zuerst im MCP Control Center.",
+      "toolsGranted": "{granted} von {total} Tools freigegeben",
+      "notAssigned": "Nicht zugewiesen",
+      "discoveredTools": "Entdeckte Tools ({count})",
+      "noTools": "Noch keine Tools entdeckt — starte die Discovery zuerst im MCP Control Center.",
+      "toolAria": "{tool} freigeben",
+      "acked": "Bestätigt",
+      "needsAckHint": "Das Scan-Urteil muss bestätigt werden, bevor dieses Tool freigegeben werden kann.",
+      "unscannedHint": "Noch nicht gescannt — ungescannte Tools können nicht freigegeben werden.",
+      "ack": "Urteil bestätigen",
+      "ackConfirm": "Bestätigung wirklich erteilen",
+      "save": "Allowlist speichern",
+      "savedSummary": "Allowlist gespeichert — {granted} freigegeben, {revoked} entzogen.",
+      "selectAllGrantable": "Alle freigebbaren auswählen",
+      "discardDraft": "Änderungen verwerfen",
+      "unassign": "Server entfernen",
+      "unassignTitle": "MCP-Server entfernen",
+      "unassignBody": "Alle {count} Tool-Freigaben von \"{server}\" für diesen Orchestrator entziehen?",
+      "unassignConfirm": "Alle entziehen",
+      "cancel": "Abbrechen",
+      "errors": {
+        "config_validation": "Der Scan-Gate hat die Änderung abgelehnt — ein ausgewähltes Tool ist blockiert oder noch nicht gescannt.",
+        "invalid_delegation": "Der Server hat den Delegationsmodus abgelehnt.",
+        "invalid_grant": "Der Server hat die Freigabe-Anfrage abgelehnt.",
+        "mcp_server_not_found": "Dieser MCP-Server existiert nicht mehr — lade die Seite neu.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
+        "orchestrator_not_found": "Dieser Orchestrator existiert nicht mehr — lade die Seite neu.",
+        "grant_not_found": "Diese Freigabe existiert nicht mehr — lade die Seite neu.",
+        "invalid_grant_id": "Die Freigabe-Id ist ungültig.",
+        "not_an_mcp_grant": "Diese Freigabe ist keine MCP-Tool-Freigabe.",
+        "unknown": "Anfrage fehlgeschlagen: {detail}"
+      }
+    }
   },
   "builder": {
     "issueReport": {
