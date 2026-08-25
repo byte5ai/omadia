@@ -223,7 +223,19 @@ export interface McpServerRow {
   readonly delegation: McpDelegation;
 }
 
-/** How an MCP server resolves the identity a call acts as (W0-1, D2). */
+/** How an MCP server resolves the identity a call acts as (W0-1, D2).
+ *
+ *  Scope decision (#860 W0c, resolving #862's "delegation choice per
+ *  assignment"): delegation is a PER-SERVER property and stays one. There is
+ *  deliberately NO per-(agent, server) delegation storage — not on
+ *  `agent_tool_grants`, not on `plugin_mcp_grants`, no bridge table. A
+ *  per-agent assignment view therefore shows the server's mode READ-ONLY and
+ *  links to the per-server setting; changing it there applies to every agent
+ *  holding a grant on that server and must say so. Widening this to
+ *  per-assignment would need a new column/table plus resolution semantics in
+ *  `resolveMcpUserKey` — that is a design decision with its own migration, not
+ *  something a UI unit may introduce as a side effect. Guarded by the W0c
+ *  schema-fit gate in `middleware/test/mcpDelegationBackfillMigration.pg.test.ts`. */
 export type McpDelegation = 'per_user' | 'service';
 
 /**
