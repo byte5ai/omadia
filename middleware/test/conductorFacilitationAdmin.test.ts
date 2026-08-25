@@ -32,18 +32,24 @@ const RUN = {
     goal: 'omadia Event planen',
     definitionOfDone: '6 Punkte, alle bestätigt',
     stepAttempts: { moderate: 7 },
-    stepResult: {
-      data: {
-        dodMet: false,
-        summary: '3/6 Punkte offen',
-        items: [
-          { point: 1, label: 'Eventformat entschieden', status: 'done', note: 'Meetup, von allen bestätigt' },
-          { point: 2, label: 'Termin fix', status: 'partial', note: 'Vorschlag 12.9. liegt vor' },
-          // malformed entries the model might emit — must be dropped / nulled, never crash:
-          'garbage',
-          { point: 'x', label: 3, status: 'weird', note: null },
-          { point: -2.5, label: 'x'.repeat(500), status: 'open', note: 'ok' },
-        ],
+    // Durable shape as the executor writes it: accumulate() puts each step's
+    // result under ctx.steps[stepId] — ctx.stepResult never exists here.
+    steps: {
+      wait: {},
+      moderate: {
+        text: 'Assess-Antwort …',
+        data: {
+          dodMet: false,
+          summary: '3/6 Punkte offen',
+          items: [
+            { point: 1, label: 'Eventformat entschieden', status: 'done', note: 'Meetup, von allen bestätigt' },
+            { point: 2, label: 'Termin fix', status: 'partial', note: 'Vorschlag 12.9. liegt vor' },
+            // malformed entries the model might emit — must be dropped / nulled, never crash:
+            'garbage',
+            { point: 'x', label: 3, status: 'weird', note: null },
+            { point: -2.5, label: 'x'.repeat(500), status: 'open', note: 'ok' },
+          ],
+        },
       },
     },
   },
