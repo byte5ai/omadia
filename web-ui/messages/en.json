@@ -1820,7 +1820,45 @@
     "orphanDetachAllTooltip": "Detach every stale plugin row (old ids from earlier deployments) at once.",
     "orphanExplain": "Plugin ids from earlier seeds that no longer exist in the current catalog (typically a rename like de.byte5.agent.* → @omadia/*). Dropped on next Save unless you tick \"Keep\".",
     "orphanKeep": "Keep",
-    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one."
+    "seededDescription": "Auto-created on first boot. Receives channel traffic that has no explicit binding, until you configure one.",
+    "mcp": {
+      "heading": "MCP servers",
+      "hint": "Assign MCP servers to this orchestrator and edit its per-tool allowlist. A tool only becomes callable once it is granted here and has passed the scan gate.",
+      "loading": "Loading MCP servers…",
+      "loadError": "Failed to load MCP servers: {detail}",
+      "empty": "No MCP servers available. Register and discover servers in the MCP Control Center first.",
+      "toolsGranted": "{granted} of {total} tools granted",
+      "notAssigned": "Not assigned",
+      "discoveredTools": "Discovered tools ({count})",
+      "noTools": "No tools discovered yet — run discovery in the MCP Control Center first.",
+      "toolAria": "Grant {tool}",
+      "acked": "Acknowledged",
+      "needsAckHint": "The scan verdict must be acknowledged before this tool can be granted.",
+      "unscannedHint": "Not scanned yet — unscanned tools cannot be granted.",
+      "ack": "Acknowledge verdict",
+      "ackConfirm": "Confirm acknowledge",
+      "save": "Save allowlist",
+      "savedSummary": "Allowlist saved — {granted} granted, {revoked} revoked.",
+      "selectAllGrantable": "Select all grantable",
+      "discardDraft": "Discard changes",
+      "unassign": "Unassign server",
+      "unassignTitle": "Unassign MCP server",
+      "unassignBody": "Revoke all {count} tool grants of \"{server}\" for this orchestrator?",
+      "unassignConfirm": "Revoke all",
+      "cancel": "Cancel",
+      "errors": {
+        "config_validation": "The scan gate rejected the change — a selected tool is blocked or not scanned yet.",
+        "invalid_delegation": "The server rejected the delegation mode.",
+        "invalid_grant": "The server rejected the grant request.",
+        "mcp_server_not_found": "This MCP server does not exist anymore — reload the page.",
+        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
+        "orchestrator_not_found": "This orchestrator does not exist anymore — reload the page.",
+        "grant_not_found": "This grant does not exist anymore — reload the page.",
+        "invalid_grant_id": "The grant id is not valid.",
+        "not_an_mcp_grant": "This grant is not an MCP tool grant.",
+        "unknown": "Request failed: {detail}"
+      }
+    }
   },
   "builder": {
     "issueReport": {
