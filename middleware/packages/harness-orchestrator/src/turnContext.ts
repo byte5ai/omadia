@@ -248,6 +248,19 @@ export interface TurnContextValue {
    * See {@link McpInputSentinelMint} for why this is not a string-shape check.
    */
   mcpInputSentinelMint?: McpInputSentinelMint;
+  /**
+   * True once this turn READ a memory file (`memory` tool, `view` on a concrete
+   * file — not the `/memories` directory listing the read-convention performs on
+   * every turn, and not a write). Drives the Fresh-Check affordance: a re-run
+   * without memory can only differ when memory actually fed this answer.
+   *
+   * Rides the turn context because the run trace deliberately records only
+   * `{callId, toolName, durationMs, isError}` — the tool INPUT never reaches it,
+   * so the command + path are observable at dispatch time and nowhere after.
+   * Written onto the LIVE store inside the turn scope (same technique as
+   * `mcpInputReplayNote`), read once when the turn result is assembled.
+   */
+  memoryFileRead?: boolean;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

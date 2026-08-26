@@ -1214,6 +1214,44 @@ Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-E
 }
 
 /**
+ * True when a `memory` tool call READ a concrete memory file. Deliberately
+ * narrower than "the memory tool ran":
+ *
+ *  - only `view` — a write (`create` / `str_replace` / `insert` / `delete` /
+ *    `rename`) records what this turn learned, it does not feed the answer;
+ *  - only a FILE path — the standing read-convention opens the `/memories`
+ *    DIRECTORY on essentially every turn, so counting that would mark every
+ *    answer as memory-fed and the Fresh-Check button would never disappear.
+ *
+ * A memory file is recognised by an extension on the last path segment, which
+ * is what the memory namespace stores (`/memories/observations/foo.md`); an
+ * extension-less path is treated as a directory, i.e. NOT a read. Ambiguity
+ * therefore resolves toward hiding the affordance rather than showing a button
+ * that cannot change the answer.
+ */
+function isMemoryFileRead(input: unknown): boolean {
+  if (typeof input !== 'object' || input === null) return false;
+  const { command, path } = input as { command?: unknown; path?: unknown };
+  if (command !== 'view' || typeof path !== 'string') return false;
+  const lastSegment = path.split('/').pop() ?? '';
+  return /\.[A-Za-z0-9]+$/.test(lastSegment);
+}
+
+/**
+ * True when the cross-session recall probe surfaced anything at all. Shared by
+ * the `kg_recall` annotation (stay quiet on a cold start) and the Fresh-Check
+ * gate (a probe hit is memory a bypassing re-run would drop).
+ */
+function hasRecalledContent(recalled: RecalledContext | undefined): boolean {
+  if (!recalled) return false;
+  return (
+    recalled.plans.length > 0 ||
+    recalled.processes.length > 0 ||
+    recalled.insights.length > 0
+  );
+}
+
+/**
  * #579 — the refusal delivered when a turn is quarantined by inbound screening.
  * The turn never runs; this stands in for the model's answer. DE-first (the
  * assistant is German-first) with an EN line so wire-only channels stay honest.
@@ -2673,7 +2711,19 @@ export class Orchestrator {
     // text this returns flows INTO the LLM prompt, so the recall query must
     // not itself carry a raw PII span the mask pass just removed.
     wireUserMessage?: string,
-  ): Promise<{ text: string | undefined; recalled: RecalledContext | undefined }> {
+  ): Promise<{
+    text: string | undefined;
+    recalled: RecalledContext | undefined;
+    /**
+     * True when the assembled block carried RECALL — a topically-matched turn
+     * from outside the live conversation window (`reason !== 'tail'`) or a
+     * cross-session plan/process/insight. Drives the Fresh-Check affordance:
+     * the verbatim tail of the current chat is what the user can already see
+     * scrolling up, so a memory-bypassing re-run would not change the answer
+     * on tail alone. Absent on every early return — no retrieval, no recall.
+     */
+    recallUsed?: boolean;
+  }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
     // is the one pathway we cannot afford to lose visibility on.
@@ -2779,9 +2829,21 @@ export class Orchestrator {
           : briefingText.length > 0
             ? briefingText
             : result.text;
+      // Recall vs. tail. `AssembledHit.reason` is the retriever's own
+      // discriminator: `'tail'` is the verbatim window of THIS conversation,
+      // every other reason ('entity' / 'fts' / 'manual-boost' / 'agent-boost')
+      // is a topical hit the retriever went looking for. Only the latter — plus
+      // the cross-session plan/process/insight probe, which never enters
+      // `included` — is something a Fresh Check would actually strip away.
+      // The session briefing is deliberately NOT counted: it summarises the
+      // current session, which the tail already represents.
+      const recallUsed =
+        result.included.some((hit) => hit.reason !== 'tail') ||
+        hasRecalledContent(result.recalled);
       return {
         text: merged.length > 0 ? merged : undefined,
         recalled: result.recalled,
+        ...(recallUsed ? { recallUsed: true } : {}),
       };
     } catch (err) {
       console.error(
@@ -2798,12 +2860,7 @@ export class Orchestrator {
   private toRecallAnnotationEvents(
     recalled: RecalledContext | undefined,
   ): ChatStreamEvent[] {
-    if (
-      !recalled ||
-      (recalled.plans.length === 0 &&
-        recalled.processes.length === 0 &&
-        recalled.insights.length === 0)
-    ) {
+    if (!recalled || !hasRecalledContent(recalled)) {
       return [];
     }
     return [
@@ -4077,7 +4134,7 @@ export class Orchestrator {
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
-    const { text: rawPriorContext, recalled } =
+    const { text: rawPriorContext, recalled, recallUsed } =
       await this.retrievePriorContext(input, wireUserMessage);
     // #361 — the recalled TEXT is LLM-bound wire content: it carries real
     // values persisted from earlier turns, so it is masked through the SAME
@@ -4427,17 +4484,18 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
-          // Fresh-Check gate (Teams "🔄 Fresh Check" button): memory influenced
-          // this answer when a prior-context block was injected (tail + FTS +
-          // entity recall) or the orchestrator's own `memory` tool ran. Without
-          // either, a memory-bypassing re-run cannot produce a different answer,
-          // so channels hide the affordance.
+          // Fresh-Check gate (Teams "🔄 Fresh Check" button). Memory influenced
+          // this answer when the retriever RECALLED something — a topical hit
+          // from outside the live window, or a cross-session plan/process/
+          // insight — or when the turn read a memory file. Deliberately NOT
+          // triggered by the two things that happen on nearly every turn: the
+          // verbatim tail of the current chat (the user can just scroll up; a
+          // fresh check would not change that answer) and the read-convention's
+          // `/memories` directory listing. Without a real memory contribution a
+          // memory-bypassing re-run cannot differ, so channels hide the button.
           const memoryUsed =
-            (priorContext !== undefined && priorContext.trim().length > 0) ||
-            (runTrace?.orchestratorToolCalls.some(
-              (tc) => tc.toolName === MEMORY_TOOL_NAME,
-            ) ??
-              false);
+            recallUsed === true ||
+            turnContext.current()?.memoryFileRead === true;
           return {
             answer: restoredAnswer,
             toolCalls,
@@ -6583,6 +6641,10 @@ export class Orchestrator {
       const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
       if (!this.isToolAvailable(memoryAgentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+      }
+      if (isMemoryFileRead(input)) {
+        const ctx = turnContext.current();
+        if (ctx) ctx.memoryFileRead = true;
       }
       return this.memoryToolHandler.handle(input);
     }
