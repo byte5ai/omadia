@@ -288,6 +288,9 @@ export type AssembledHitReason =
   | 'manual-boost'
   | 'agent-boost';
 
+/** The recall leg that produced a hit — never rewritten by a boost. */
+export type AssembledHitOrigin = 'tail' | 'entity' | 'fts';
+
 export interface AssembledHit {
   turnId: string;
   /** Final score after all multipliers (raw × manual × agent). */
@@ -296,8 +299,18 @@ export interface AssembledHit {
   chars: number;
   /** Which recall path delivered this hit / which multiplier boosted it,
    *  if any. `manual-boost` / `agent-boost` only override `entity`/`fts`
-   *  when relevant — the audit card shows the dominant reason. */
+   *  when relevant — the audit card shows the dominant reason.
+   *
+   *  PRESENTATIONAL. A boost overwrites the path that found the hit, so this
+   *  cannot answer "where did this come from" — use {@link origin} for that. */
   reason: AssembledHitReason;
+  /** Which leg actually delivered the hit, before any boost renamed it.
+   *  `'tail'` is the verbatim window of the CURRENT conversation; `'entity'`
+   *  and `'fts'` are topical recall the retriever went looking for. Unlike
+   *  {@link reason} this is never overwritten, so it is the field to branch on
+   *  when the distinction has to hold (e.g. the Fresh-Check gate, which must
+   *  not treat a boosted tail turn as recall). */
+  origin: AssembledHitOrigin;
 }
 
 export interface AssembledExclusion {
@@ -881,6 +894,7 @@ export class ContextRetriever {
         score: c.rawScore,
         chars: chunkChars,
         reason: pickReason(c),
+        origin: c.origin,
       });
       // Defensive: budget check on chars too (rounding can edge out the
       // token estimate by 1-2 tokens; chars cap is the hard ceiling).
