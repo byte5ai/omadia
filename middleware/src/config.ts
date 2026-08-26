@@ -329,6 +329,20 @@ const ConfigSchema = z.object({
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
 
+  /**
+   * W1a (#860) — public base URL the agent factory advertises to Azure as
+   * the per-bot Teams messaging endpoint
+   * (`<base>/api/teams/<botSlug>/messages`, channel-teams >= 0.20.0) when
+   * provisioning bot identities. Optional override in the
+   * TELEGRAM_/FLOW_/ATTACHMENT_PUBLIC_BASE_URL tradition: the provisioning
+   * wiring falls back to PUBLIC_BASE_URL, so set this only when Bot
+   * Framework traffic reaches the middleware under a different host than
+   * the browser-facing UI. Consumed where the provisioning job runner is
+   * constructed — it is bound into the teamsProvisioner accessor's
+   * messaging-endpoint URL builder, never string-built elsewhere.
+   */
+  TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
+
   // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
   // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
   // (HMAC-style header validation on the webhook). TELEGRAM_PUBLIC_BASE_URL
