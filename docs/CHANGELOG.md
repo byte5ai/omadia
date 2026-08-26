@@ -18,6 +18,39 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — Teams answer card: honest badges and a Fresh-Check button that means something (#859, #878)
+
+2026-08-25/26 — Field report on a bare `ping` → `Pong.` turn: the card claimed
+"✓ Antwort geprüft", repeated the AI-Act disclosure sentence that the ✨
+AI-generated chip already carries, and offered "🔄 Fresh Check (ohne Memory)"
+on an answer no memory had touched. Three separate over-triggers, now closed.
+
+- **Verifier badge** (#859): `toSemanticAnswer` forwards it only when
+  `claimCount > 0`. With zero extracted claims — small talk, and the
+  pipeline-failure fallback, which reports `approved` with an empty claim list —
+  the badge asserted a verification that never ran.
+- **Disclosure sentence** (channel-teams 0.20.0): the kernel folds the AI-Act
+  marking into `SemanticAnswer.text` for wire-only channels; Teams marks the
+  answer itself, so the connector strips the folded line (keeping any
+  operator-authored addendum) before rendering and before the history append.
+- **Fresh-Check button** (#859 introduced `memoryUsed`, #878 fixed its meaning):
+  the flag first meant "a prior-context block existed", and that block always
+  carries the verbatim tail of the running chat — so the button never
+  disappeared. It now means memory could actually have changed the answer:
+  topical recall (`AssembledHit.origin !== 'tail'`), a cross-session
+  plan/process/insight, or a successful memory-file read. The live tail and the
+  read-convention's `/memories` directory listing do not count, and neither do
+  memory writes.
+
+Two implementation notes worth remembering. `AssembledHit.reason` is
+presentational — a boost rewrites it, so a boosted tail turn reads as
+`'agent-boost'`; the new sibling `origin` carries the delivering leg and is what
+the gate branches on. And the run trace records only
+`{callId, toolName, durationMs, isError}`, never the tool input, so the memory
+command + result are captured at dispatch onto a mutable turn-context holder —
+a plain field would be lost, because a privacy guard re-enters dispatch inside a
+shallow copy of the turn store.
+
 ### Added — agent factory: Teams identity provisioning via teamsProvisioner@1 (W1a, #860)
 
 - New CORE migration `0049_agent_teams_identities.sql`: one Teams identity per agent

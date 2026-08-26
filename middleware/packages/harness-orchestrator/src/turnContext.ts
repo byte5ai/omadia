@@ -249,18 +249,27 @@ export interface TurnContextValue {
    */
   mcpInputSentinelMint?: McpInputSentinelMint;
   /**
-   * True once this turn READ a memory file (`memory` tool, `view` on a concrete
-   * file — not the `/memories` directory listing the read-convention performs on
-   * every turn, and not a write). Drives the Fresh-Check affordance: a re-run
-   * without memory can only differ when memory actually fed this answer.
+   * Set to `true` once this turn READ a memory file (`memory` tool, `view` on a
+   * concrete file — not the `/memories` directory listing the read-convention
+   * performs on every turn, and not a write). Drives the Fresh-Check affordance:
+   * a re-run without memory can only differ when memory actually fed the answer.
    *
    * Rides the turn context because the run trace deliberately records only
    * `{callId, toolName, durationMs, isError}` — the tool INPUT never reaches it,
    * so the command + path are observable at dispatch time and nowhere after.
-   * Written onto the LIVE store inside the turn scope (same technique as
-   * `mcpInputReplayNote`), read once when the turn result is assembled.
+   *
+   * Mutable holder, NOT a bare boolean, for the same reason as
+   * {@link subAgentBypassFlag}: with a privacy guard installed, `dispatchTool`
+   * re-enters a nested scope holding a SHALLOW COPY of this store, so a write to
+   * a plain field would land on the copy and be discarded when that scope
+   * returns — i.e. the flag would work only on guard-less hosts. The box is
+   * copied by reference, so the write survives.
+   *
+   * Installed once per turn, which deliberately makes a SUB-AGENT's memory read
+   * count for the parent turn too: the sub-agent's answer feeds the orchestrator's,
+   * so memory did reach the user either way.
    */
-  memoryFileRead?: boolean;
+  memoryFileRead?: { value: boolean };
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();

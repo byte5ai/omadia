@@ -37,12 +37,16 @@ export interface SemanticAnswer {
   verifier?: VerifierBadge;
 
   /**
-   * True when this turn's answer could have been influenced by persisted
-   * memory: an injected prior-context block (session tail + FTS + entity
-   * recall) or a `memory`-tool call by the orchestrator. Connectors use this
-   * to gate memory-bypass affordances (Teams' "🔄 Fresh Check" button) —
-   * absent/false means a re-run without memory would be a no-op, so the
-   * affordance should not be offered.
+   * True when persisted memory could actually have CHANGED this answer —
+   * topical recall (an entity / FTS hit from outside the live conversation
+   * window), a cross-session plan / process / insight, or a successful read of
+   * a memory file. Connectors use it to gate memory-bypass affordances (Teams'
+   * "🔄 Fresh Check" button).
+   *
+   * The verbatim tail of the running conversation and the read-convention's
+   * `/memories` directory listing do NOT set it: they occur on nearly every
+   * turn and a memory-free re-run would not change the answer on either.
+   * Absent/false therefore means the affordance should not be offered.
    */
   memoryUsed?: boolean;
 

@@ -543,12 +543,18 @@ export interface ChatTurnResult {
    */
   recalled?: RecalledContext;
   /**
-   * True when this turn's answer could have been influenced by persisted
-   * memory: an injected prior-context block (session tail + FTS + entity
-   * recall) or a `memory`-tool call by the orchestrator. `toSemanticAnswer`
-   * forwards it to `SemanticAnswer.memoryUsed` so channels can gate their
-   * memory-bypass affordances (Teams' "🔄 Fresh Check" button). Omitted when
-   * no memory contributed — a fresh check would then be a no-op.
+   * True when persisted memory could actually have CHANGED this answer —
+   * topical recall (an entity / FTS hit from outside the live conversation
+   * window), a cross-session plan / process / insight, or a successful read of
+   * a memory file. `toSemanticAnswer` forwards it to
+   * `SemanticAnswer.memoryUsed` so channels can gate their memory-bypass
+   * affordances (Teams' "🔄 Fresh Check" button).
+   *
+   * Deliberately NOT set by the two things that happen on nearly every turn:
+   * the verbatim tail of the running conversation, and the read-convention's
+   * `/memories` directory listing. Neither would change under a memory-free
+   * re-run, so treating them as memory left the affordance permanently on.
+   * Omitted when nothing qualified — a fresh check would then be a no-op.
    */
   memoryUsed?: boolean;
   /**
