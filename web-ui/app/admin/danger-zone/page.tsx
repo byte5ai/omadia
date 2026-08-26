@@ -20,8 +20,16 @@ import {
  * Admin → Danger Zone (memory purge).
  *
  * Two-stage destructive surface for wiping memory along an axis:
- *   - 'all'                       → Agent-Scratch + Knowledge-Graph
- *   - 'agent' | 'user' | 'team' | 'channel' → Knowledge-Graph only
+ *   - 'all'     → Agent-Scratch + Knowledge-Graph
+ *   - 'agent'   → Knowledge-Graph + /memories/contexts/<slug>
+ *   - 'user' | 'team' | 'channel'
+ *               → Knowledge-Graph + /memories/contexts/<any-agent>/<axis>/<ctxKey>
+ *
+ * Selector semantics for the three context axes changed with the chat-context
+ * memory ACL (design #870 §7): the value is a context key
+ * (`<channelType>~<safeKey>`) or the raw native id, which the backend derives
+ * the key from. It is no longer a KG-only selector — it now deletes scratch
+ * memory too, which is why the placeholders and hints spell the format out.
  *
  * Flow: pick axis (+ selector) → Vorschau (POST /preview, dry-run counts)
  * → type the confirm phrase → Löschen (DELETE /, irreversible). The delete
@@ -186,6 +194,11 @@ export default function DangerZonePage(): React.ReactElement {
         <p>
           {t.rich('note', {
             strong: (chunks) => <strong>{chunks}</strong>,
+            code: (chunks) => (
+              <code className="font-mono text-[color:var(--danger)]">
+                {chunks}
+              </code>
+            ),
           })}
         </p>
         {warning !== null && (
@@ -229,8 +242,11 @@ export default function DangerZonePage(): React.ReactElement {
                 onChange={(e) => { onSelectorChange(e.target.value); }}
                 placeholder={t(`selectorPlaceholder.${axis}`)}
                 disabled={deleting}
-                className="rounded border border-[color:var(--border)] px-2 py-1 text-sm"
+                className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-sm"
               />
+              <span className="text-[11px] text-[color:var(--fg-muted)]">
+                {t(`selectorHint.${axis}`)}
+              </span>
             </label>
           )}
         </div>

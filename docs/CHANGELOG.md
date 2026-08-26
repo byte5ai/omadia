@@ -18,6 +18,31 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — web-ui operator surface for the chat-context memory ACL (W5, #870/#873)
+
+- `/memory` gained a **context dimension**. The browser no longer shows one flat
+  agent tree: a tree in the sidebar lists, per agent, the agent tier
+  (`/memories/orchestrators/<slug>`) and one branch per context axis
+  (`/memories/contexts/<slug>/{team,channel,user}/<ctxKey>`). The tree is derived
+  from the store listing itself, so it can never claim a context tree that does
+  not exist. Context keys render as `channelType · nativeId`; a KG display name
+  replaces that when `GET …/memory/contexts` resolves one — that call is
+  best-effort and a 404 degrades to the decoded key.
+- **Promote…** on a file inside a context tree opens a dialog with target tier
+  (channel → team or agent; team/user → agent), mode (copy/move), an optional
+  target path, and a **mandatory reason**. It posts
+  `POST /api/v1/operator/agents/:slug/memory/promotions`.
+- New **Audit** tab reads `GET /api/v1/operator/agents/:slug/memory/promotions`
+  (the `/memories/core/audit/memory-promotions.jsonl` log) for the agent in hand.
+- **Danger Zone**: the `user`/`team`/`channel` selectors now document that their
+  value is a context key (`<channelType>~<safeKey>`) or the raw native id, and
+  that those axes gained a scratch footprint — they delete the matching context
+  tree across every agent, not just knowledge-graph rows. Copy updated in both
+  locales; new `adminDangerZone.selectorHint.*` keys.
+- Client: `promoteMemory`, `listMemoryPromotions`, `listMemoryContextLabels` in
+  `web-ui/app/_lib/api.ts`. Verified by
+  `web-ui/app/memory/__tests__/page.contexts.test.tsx`.
+
 ### Added — agent factory: Teams identity provisioning via teamsProvisioner@1 (W1a, #860)
 
 - New CORE migration `0049_agent_teams_identities.sql`: one Teams identity per agent

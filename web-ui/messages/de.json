@@ -4167,8 +4167,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",
-    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel wirken nur im Knowledge-Graph. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
-    "note": "<strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur im Knowledge-Graph — der Agent-Scratch ist agent-scoped.",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel treffen den Knowledge-Graph und den passenden Kontext-Baum unter /memories/contexts. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
+    "note": "<strong>Hinweis:</strong> Der Selector für User / Team / Channel ist ein Kontext-Key (<code>channelType~id</code>) oder die rohe native Id — er adressiert einen Kontext-Baum über alle Agenten hinweg.",
     "targetTitle": "Ziel",
     "axisLabel": "Achse",
     "axes": {
@@ -4181,9 +4181,9 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "user-id oder Selector",
-      "team": "team-id oder Selector",
-      "channel": "channel-id oder Selector"
+      "user": "teams~29-1a2b… oder rohe User-Id",
+      "team": "teams~19-abc… oder rohe Team-Id",
+      "channel": "telegram~-1001234567890 oder rohe Conversation-Id"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
     "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
@@ -4201,7 +4201,13 @@
     "deleteButton": "Unwiderruflich löschen",
     "deleteError": "Lösch-Fehler: {message}",
     "deletedTitle": "Gelöscht",
-    "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte."
+    "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
+    "selectorHint": {
+      "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
+      "user": "Kontext-Key (channelType~id) oder die rohe native User-Id — löscht das User-Tier über alle Agenten.",
+      "team": "Kontext-Key (channelType~id) oder die rohe native Team-Id — löscht das Team-Tier über alle Agenten.",
+      "channel": "Kontext-Key (channelType~id) oder die rohe native Conversation-Id — löscht das Kanal-Tier über alle Agenten."
+    }
   },
   "adminDuplicates": {
     "list": {
@@ -4713,7 +4719,65 @@
     "loading": "lädt…",
     "empty": "leer",
     "selectEntry": "Eintrag links wählen…",
-    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber."
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
+    "tab": {
+      "file": "Datei",
+      "audit": "Audit"
+    },
+    "contexts": {
+      "title": "Kontexte",
+      "loading": "lädt…",
+      "error": "Kontext-Baum konnte nicht geladen werden.",
+      "empty": "Noch kein Agent-Memory vorhanden.",
+      "agentTier": "Agent-Tier (in Kontext-Turns read-only)",
+      "axis": {
+        "team": "Teams ({count})",
+        "channel": "Kanäle ({count})",
+        "user": "Users ({count})"
+      }
+    },
+    "promote": {
+      "openButton": "Promote…",
+      "title": "Memory promoten",
+      "intro": "Kopiert oder verschiebt diese Notiz in ein weiteres Tier desselben Agents. Nie agentübergreifend, immer auditiert.",
+      "sourceLabel": "Quelle",
+      "targetPreviewLabel": "Ziel",
+      "tierLabel": "Ziel-Tier",
+      "tier": {
+        "agent": "Agent-Tier (alle Kontexte)",
+        "team": "Team-Tier"
+      },
+      "modeLabel": "Modus",
+      "mode": {
+        "copy": "Kopieren (Quelle bleibt)",
+        "move": "Verschieben (Quelle entfällt)"
+      },
+      "targetCtxKeyLabel": "Ziel-Team-Key",
+      "targetCtxKeyPlaceholder": "teams~19-abc-thread-tacv2-a1b2c3d4",
+      "targetPathLabel": "Ziel-Pfad (relativ zum Tier)",
+      "reasonLabel": "Begründung",
+      "reasonPlaceholder": "Warum darf dieses Wissen seinen Kontext verlassen?",
+      "reasonHint": "Pflichtfeld — die Begründung landet im Audit-Log.",
+      "cancel": "Abbrechen",
+      "submit": "Promoten",
+      "submitting": "promotet…",
+      "forbidden": "Nicht berechtigt (403) — Promoten erfordert Operator-Rechte.",
+      "unavailable": "Der Promote-Endpoint ist auf dieser Middleware nicht verfügbar (404).",
+      "success": "Nach {path} promotet."
+    },
+    "audit": {
+      "loading": "Audit-Log lädt…",
+      "empty": "Für diesen Agent sind keine Promotions verzeichnet.",
+      "selectAgent": "Links einen Agent oder Kontext wählen, um dessen Audit-Log zu lesen.",
+      "unavailable": "Der Audit-Endpoint ist auf dieser Middleware nicht verfügbar (404).",
+      "forbidden": "Nicht berechtigt (403) — das Audit-Log erfordert Operator-Rechte.",
+      "mode": {
+        "copy": "copy",
+        "move": "move"
+      },
+      "bytes": "{bytes} B",
+      "noReason": "Keine Begründung hinterlegt."
+    }
   },
   "memories": {
     "kinds": {
