@@ -62,6 +62,8 @@ interface AgentPluginCatalogEntry {
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
  *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
  *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
+ *   POST   /api/v1/operator/agents/:slug/teams-identity   create-or-provision Teams identity (async, W1a #860)
+ *   GET    /api/v1/operator/agents/:slug/teams-identity   Teams identity provisioning status
  *   PUT    /api/v1/operator/agents/:slug/bindings        replace agent channel bindings
  *   PUT    /api/v1/operator/agents/fallback              set platform fallback (body: { slug | null })
  *   POST   /api/v1/operator/agents/:slug/drain           drain + clear session snapshots
@@ -126,6 +128,113 @@ const ResolveChannelSchema = z.object({
   channel_key: z.string().min(1).max(500),
 });
 
+/** W1a (#860) — create-or-provision a Teams identity. `team_id` is the Teams
+ *  team (group) id the generated app is installed into. `bot_slug` /
+ *  `display_name` are only honored on FIRST creation — one identity per
+ *  agent (unique agent_id), later POSTs re-run provisioning on the
+ *  existing row. */
+const TeamsIdentityProvisionSchema = z.object({
+  team_id: z.string().min(1).max(200),
+  bot_slug: z
+    .string()
+    .regex(
+      /^[a-z0-9][a-z0-9-]{0,63}$/,
+      'lowercase letters, digits and dashes; must start alphanumeric',
+    )
+    .optional(),
+  display_name: z.string().min(1).max(120).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// W1a (#860) — Teams identity ports.
+//
+// Structural subsets of the modules built in parallel units of this wave:
+// the `agent_teams_identities` store (migration 0049) and the
+// `TeamsProvisioningJobRunner` of `services/teamsProvisioningJob.ts`. The
+// router consumes them late-bound (like the config store) so it stays
+// testable with stubs and degrades to 503 until the boot wiring registers
+// the real implementations.
+// ---------------------------------------------------------------------------
+
+/** One `agent_teams_identities` row, camelCase — mirrors the job runner's
+ *  `TeamsIdentityJobRecord` plus timestamps. `state` follows the
+ *  provisioning chain: pending → app_registered → bot_created →
+ *  package_built → catalog_uploaded → installed (terminal: failed). */
+export interface OperatorTeamsIdentityRecord {
+  readonly agentId: string;
+  readonly botSlug: string;
+  readonly displayName: string;
+  readonly state: string;
+  readonly appId: string | null;
+  readonly tenantId: string | null;
+  readonly teamsAppId: string | null;
+  readonly teamsAppExternalId: string | null;
+  readonly lastError: string | null;
+  readonly createdAt?: Date;
+  readonly updatedAt?: Date;
+}
+
+export interface OperatorTeamsIdentityStore {
+  getByAgentId(
+    agentId: string,
+  ): Promise<OperatorTeamsIdentityRecord | undefined>;
+  /** Create-if-absent. The unique agent_id constraint makes this the
+   *  one-identity-per-agent gate: an existing row is returned as-is
+   *  (bot_slug/display_name of the request are NOT applied to it). */
+  ensureForAgent(input: {
+    readonly agentId: string;
+    readonly botSlug: string;
+    readonly displayName: string;
+  }): Promise<OperatorTeamsIdentityRecord>;
+}
+
+/** Structural subset of `TeamsProvisioningJobRunner` — enqueue is
+ *  fire-and-forget from the route's perspective; the returned promise is
+ *  the run's eventual result and is deliberately not awaited. */
+export interface OperatorTeamsProvisioningRunner {
+  enqueue(request: {
+    readonly agentId: string;
+    readonly teamId: string;
+  }): Promise<unknown>;
+  isRunning(agentId: string): boolean;
+}
+
+export interface OperatorTeamsIdentityDeps {
+  readonly store: OperatorTeamsIdentityStore;
+  readonly runner: OperatorTeamsProvisioningRunner;
+  /** Live check whether the M365 connector currently publishes
+   *  `teamsProvisioner@1`. POST 503s without it; GET only reports it. */
+  readonly isProvisionerInstalled: () => boolean;
+  /** Credential-store ref under which the identity's bot app password
+   *  (the addClientSecret output) is held — surfaced by the status
+   *  endpoint INSTEAD of the secret itself. Defaults to
+   *  {@link defaultTeamsBotSecretRef}. */
+  readonly clientSecretRef?: (record: OperatorTeamsIdentityRecord) => string;
+}
+
+/**
+ * Custody convention for the provisioned bot's app password: the
+ * `agent_teams_identities` table stores NO secret material — the client
+ * secret produced during app registration lives in the credential store
+ * (`postgresCredentialStore.ts`, migration 0042) under this ref. The status
+ * endpoint returns the ref so channel-teams' `teams_bots[]` sync (follow-up,
+ * out of scope for W1a) can resolve it without the secret ever appearing in
+ * an HTTP response.
+ */
+export function defaultTeamsBotSecretRef(botSlug: string): string {
+  return `teams-bot/${botSlug}/app-password`;
+}
+
+/** Derive a URL- and Azure-safe default bot slug from an agent slug. */
+function deriveBotSlug(agentSlug: string): string {
+  const slug = agentSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug.length > 0 ? slug : 'agent';
+}
+
 export interface OperatorAgentsRouterOptions {
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
@@ -146,6 +255,11 @@ export interface OperatorAgentsRouterOptions {
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
    *  the graph store. */
   readonly getAgentGraphStore?: () => AgentGraphStore | undefined;
+  /** W1a (#860) — Teams identity provisioning dependencies (identity store +
+   *  job runner + provisioner availability). Late-bound like the config
+   *  store; the teams-identity routes 503 while it returns undefined (boot
+   *  wiring not registered yet, tests / minimal mounts). */
+  readonly getTeamsIdentity?: () => OperatorTeamsIdentityDeps | undefined;
 }
 
 export function createOperatorAgentsRouter(
@@ -530,6 +644,141 @@ export function createOperatorAgentsRouter(
           granted_by: g.grantedBy,
           granted_at: g.grantedAt,
         })),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── Teams identity: create-or-provision + status (W1a, #860) ────────
+  // POST is ASYNC by contract: it ensures the identity row (one per agent,
+  // unique agent_id) and hands the chain off to the provisioning job
+  // runner, returning immediately — it never blocks on Graph/ARM. GET
+  // projects the store row, including everything channel-teams'
+  // `teams_bots[]` needs; the bot app password is surfaced as a
+  // credential-store REF, never as secret material. Automatic sync into
+  // the channel-teams plugin config is a documented follow-up, not part
+  // of this wave.
+
+  function teamsIdentity(res: Response): OperatorTeamsIdentityDeps | undefined {
+    const deps = options.getTeamsIdentity?.();
+    if (!deps) {
+      res.status(503).json({
+        error: 'teams_identity_unavailable',
+        message:
+          'Teams identity provisioning is not wired — the identity store and job runner register once DATABASE_URL is set and the agent-factory boot wiring ran.',
+      });
+      return undefined;
+    }
+    return deps;
+  }
+
+  router.post('/:slug/teams-identity', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = teamsIdentity(res);
+    if (!deps) return;
+    if (!deps.isProvisionerInstalled()) {
+      // Mirror of unavailable(): the mount-level 503 shape, for the
+      // provisioner capability instead of the orchestrator registry.
+      res.status(503).json({
+        error: 'teams_provisioner_unavailable',
+        message:
+          'teamsProvisioner@1 is not installed — install and activate the M365 connector plugin (>= 0.3.0) before provisioning Teams identities.',
+      });
+      return;
+    }
+    try {
+      const body = TeamsIdentityProvisionSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const row = await deps.store.ensureForAgent({
+        agentId: existing.id,
+        botSlug: body.bot_slug ?? deriveBotSlug(existing.slug),
+        displayName: body.display_name ?? existing.name,
+      });
+      // Fire-and-forget: the runner resolves the run in the background and
+      // never rejects by contract; the catch is a stub/regression guard so
+      // an enqueue failure can never surface as an unhandled rejection.
+      void Promise.resolve(
+        deps.runner.enqueue({ agentId: existing.id, teamId: body.team_id }),
+      ).catch((err: unknown) => {
+        console.error(
+          `[operator-agents] teams-identity enqueue for '${slug}' failed:`,
+          err,
+        );
+      });
+      res.status(202).json({
+        ok: true,
+        agent: existing.slug,
+        bot_slug: row.botSlug,
+        state: row.state,
+        running: true,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.get('/:slug/teams-identity', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = teamsIdentity(res);
+    if (!deps) return;
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const existing = await live.store.getAgentBySlug(slug);
+      if (!existing) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const row = await deps.store.getByAgentId(existing.id);
+      if (!row) {
+        res.status(404).json({ error: 'teams_identity_not_found' });
+        return;
+      }
+      const secretRef =
+        deps.clientSecretRef?.(row) ?? defaultTeamsBotSecretRef(row.botSlug);
+      // `teams_bot` is the channel-teams `teams_bots[]` projection — only
+      // complete once the Entra app exists. SingleTenant matches the
+      // epic's provisioning approach (new MultiTenant registrations are
+      // deprecated); the password stays in the credential store, the
+      // entry carries its ref.
+      const teamsBot =
+        row.appId && row.tenantId
+          ? {
+              slug: row.botSlug,
+              display_name: row.displayName,
+              app_id: row.appId,
+              app_type: 'SingleTenant' as const,
+              tenant_id: row.tenantId,
+              app_password_secret_ref: secretRef,
+            }
+          : null;
+      res.json({
+        ok: true,
+        agent: existing.slug,
+        state: row.state,
+        running: deps.runner.isRunning(existing.id),
+        provisioner_installed: deps.isProvisionerInstalled(),
+        identity: {
+          bot_slug: row.botSlug,
+          display_name: row.displayName,
+          app_id: row.appId,
+          tenant_id: row.tenantId,
+          teams_app_id: row.teamsAppId,
+          teams_app_external_id: row.teamsAppExternalId,
+          last_error: row.lastError,
+          created_at: row.createdAt ?? null,
+          updated_at: row.updatedAt ?? null,
+        },
+        teams_bot: teamsBot,
       });
     } catch (err) {
       badRequest(res, err);

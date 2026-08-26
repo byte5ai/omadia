@@ -36,7 +36,11 @@ import { resolvePlatform } from './update/platform.js';
 import { resolveAppVersion } from './update/version.js';
 import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
-import { createOperatorAgentsRouter } from './routes/operatorAgents.js';
+import {
+  createOperatorAgentsRouter,
+  type OperatorTeamsIdentityStore,
+  type OperatorTeamsProvisioningRunner,
+} from './routes/operatorAgents.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
@@ -3171,10 +3175,35 @@ async function main(): Promise<void> {
       // no DATABASE_URL is set the route degrades to its own 503.
       getAgentGraphStore: () =>
         graphPool ? new AgentGraphStore(graphPool) : undefined,
+      // W1a (#860) — Teams identity provisioning. Resolved live through the
+      // service registry: the agent-factory boot wiring registers the
+      // identity store ('agentTeamsIdentityStore', backed by migration 0049)
+      // and the provisioning job runner ('teamsProvisioningJobRunner',
+      // services/teamsProvisioningJob.ts) once DATABASE_URL is set; the M365
+      // connector publishes 'teamsProvisioner' when installed. Until both
+      // kernel pieces are registered the routes degrade to their own 503,
+      // same shape as the graph-store fallback above. Kernel-side resolution
+      // via serviceRegistry.get carries KERNEL_SERVICE_CALLER, so the
+      // plugin-facing SERVICE grant gate is not involved here.
+      getTeamsIdentity: () => {
+        const identityStore = serviceRegistry.get<OperatorTeamsIdentityStore>(
+          'agentTeamsIdentityStore',
+        );
+        const provisioningRunner =
+          serviceRegistry.get<OperatorTeamsProvisioningRunner>(
+            'teamsProvisioningJobRunner',
+          );
+        if (!identityStore || !provisioningRunner) return undefined;
+        return {
+          store: identityStore,
+          runner: provisioningRunner,
+          isProvisionerInstalled: () => serviceRegistry.has('teamsProvisioner'),
+        };
+      },
     }),
   );
   console.log(
-    '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated)',
+    '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated, incl. teams-identity provisioning)',
   );
 
   // Phase B+ — operator channels dashboard.
