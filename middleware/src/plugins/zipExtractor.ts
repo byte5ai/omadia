@@ -68,6 +68,27 @@ const UI_BUNDLE_EXTENSIONS: ReadonlySet<string> = new Set(['.woff2']);
 /** Matches `ui/...` at the root or below a single wrapper directory. */
 const UI_BUNDLE_PATH = /(?:^|\/)ui\//;
 
+/**
+ * Extensions accepted ONLY below an `appPackage/` directory (#860 W1a).
+ *
+ * `@omadia/channel-teams` ships the Teams app-package manifest as a TEMPLATE
+ * (`appPackage/manifest.json.template`); the agent factory reads it verbatim
+ * and substitutes the per-agent identity before zipping a real Teams app. The
+ * file is inert on our side — `teamsAppPackageAssets` reads it with
+ * `readFile(…, 'utf8')` and treats it as text; nothing loads or executes it,
+ * which puts it in the same class as the `.txt` / `.md` already allowed
+ * globally.
+ *
+ * Scoped rather than global for the same reason as {@link UI_BUNDLE_EXTENSIONS}:
+ * `.template` says nothing about content, so widening the whole ingest surface
+ * to accept it everywhere buys reach this feature does not need. One directory,
+ * one purpose.
+ */
+const APP_PACKAGE_EXTENSIONS: ReadonlySet<string> = new Set(['.template']);
+
+/** Matches `appPackage/...` at the root or below a single wrapper directory. */
+const APP_PACKAGE_PATH = /(?:^|\/)appPackage\//;
+
 export interface ExtractLimits {
   maxEntries: number;
   maxExtractedBytes: number;
@@ -187,10 +208,14 @@ export async function extractZipToDir(
               baseName === '.npmignore';
             const uiBundleAllowed =
               UI_BUNDLE_EXTENSIONS.has(ext) && UI_BUNDLE_PATH.test(relativeName);
+            const appPackageAllowed =
+              APP_PACKAGE_EXTENSIONS.has(ext) &&
+              APP_PACKAGE_PATH.test(relativeName);
             if (
               !EXTENSION_ALLOWLIST.has(ext) &&
               !DECL_EXTENSIONS.has(ext) &&
               !uiBundleAllowed &&
+              !appPackageAllowed &&
               !isTopLevelLike
             ) {
               throw new ZipExtractionError(

@@ -18,6 +18,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
+
+2026-08-26 — A store update to `@omadia/channel-teams` 0.21.0 failed on the live
+instance with `entry appPackage/manifest.json.template has a disallowed
+extension (.template)`. Producer, gatekeeper and consumer are all in-house and
+disagreed, so the agent factory could not install its template anywhere:
+
+- the published 0.21.0 artifact ships `appPackage/manifest.json.template`
+  (verified against the hub zip's central directory),
+- `zipExtractor`'s `EXTENSION_ALLOWLIST` is deny-by-default and had no
+  `.template`, so ingest rejected the whole package,
+- `teamsAppPackageAssets` reads exactly that filename and requires it by name.
+
+`.template` is now accepted, scoped to `appPackage/` — the same construction
+`.woff2` uses under `ui/`. Scoped rather than global because the extension says
+nothing about content: the file is read as text and never loaded or executed,
+which puts it in the class of the already-allowed `.txt` / `.md`, but only the
+one directory has a reason to carry it. Renaming to an allowed extension was the
+alternative and is worse: the consumer name is compiled into the running
+release, so a renamed plugin would blind the factory until the middleware caught
+up — an ordering constraint for no security gain.
+
+The real gap was in the process, not the deploy: nothing ever held the published
+package layout against the ingest gate (`npm run package` checks the zip builds,
+the drift-guard checks versions). `pluginPackageTemplateAllowlist.test.ts` now
+pushes the actual `appPackage/` layout through the extractor and pins the scope
+in both directions.
+
 ### Fixed — Teams answer card: honest badges and a Fresh-Check button that means something (#859, #878)
 
 2026-08-25/26 — Field report on a bare `ping` → `Pong.` turn: the card claimed
