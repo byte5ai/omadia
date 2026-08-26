@@ -41,6 +41,16 @@ import {
   type OperatorTeamsIdentityStore,
   type OperatorTeamsProvisioningRunner,
 } from './routes/operatorAgents.js';
+import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
+import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
+import {
+  buildTeamsBotMessagingEndpoint,
+  requireTeamsProvisioner,
+} from './platform/teamsProvisionerService.js';
+import {
+  CHANNEL_TEAMS_PLUGIN_ID,
+  createTeamsAppPackageAssetLoader,
+} from './services/teamsAppPackageAssets.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
@@ -1855,6 +1865,73 @@ async function main(): Promise<void> {
     }
     audienceGrantStoreRef = audienceGrantStore;
     attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
+  }
+
+  // W1a (#860) — agent factory: Teams identity provisioning. Registers the
+  // two kernel boot services the operator teams-identity routes resolve
+  // late-bound (see the /api/v1/operator/agents mount): the identity store
+  // (`agentTeamsIdentityStore`, migration 0049) and the provisioning job
+  // runner (`teamsProvisioningJobRunner`). Requires Postgres — without
+  // DATABASE_URL the routes answer their own 503
+  // (teams_identity_unavailable). The `teamsProvisioner@1` capability itself
+  // is published by the M365 connector plugin (>= 0.3.1) and resolved
+  // lazily PER RUN through the accessor choke point, so installing the
+  // connector after boot is picked up without a restart; until then runs
+  // fail retryable, never crash. No Graph/ARM call happens in this process.
+  if (graphPool) {
+    const agentTeamsIdentityStore = new AgentTeamsIdentityStore(graphPool);
+    serviceRegistry.provide('agentTeamsIdentityStore', agentTeamsIdentityStore);
+    // TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL — the binding contract of
+    // config.ts; resolved per call so a config reload wins over boot state.
+    const teamsPublicBaseUrl = (): string =>
+      config.TEAMS_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
+    const teamsProvisioningRunner = new TeamsProvisioningJobRunner({
+      store: agentTeamsIdentityStore,
+      getProvisioner: () => requireTeamsProvisioner(serviceRegistry),
+      // The accessor module's URL builder, bound to the public base — the
+      // runner never composes the messaging endpoint itself.
+      buildMessagingEndpoint: (botSlug) =>
+        buildTeamsBotMessagingEndpoint(teamsPublicBaseUrl(), botSlug),
+      loadPackageAssets: createTeamsAppPackageAssetLoader({
+        getChannelTeamsPackageRoot: () => {
+          const entry = pluginCatalog.get(CHANNEL_TEAMS_PLUGIN_ID);
+          return entry ? path.dirname(entry.source_path) : undefined;
+        },
+        getPublicBaseUrl: teamsPublicBaseUrl,
+      }),
+    });
+    serviceRegistry.provide('teamsProvisioningJobRunner', teamsProvisioningRunner);
+    backgroundJobRegistry.register(teamsProvisioningRunner.asBackgroundJob());
+    // Resume interrupted provisioning: rows that recorded an install target
+    // but neither completed nor terminally failed re-enqueue once at boot.
+    // Idempotent — the runner re-enters at the persisted state and leans on
+    // the provisioner's already-existed signals. Fire-and-forget: a scan
+    // failure logs and never blocks boot.
+    void agentTeamsIdentityStore
+      .listResumable()
+      .then((rows) => {
+        for (const row of rows) {
+          if (!row.teamId) continue;
+          void teamsProvisioningRunner.enqueue({
+            agentId: row.agentId,
+            teamId: row.teamId,
+          });
+        }
+        if (rows.length > 0) {
+          console.log(
+            `[middleware] teams-identity provisioning: resumed ${rows.length} interrupted job(s)`,
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          '[middleware] teams-identity provisioning resume scan failed:',
+          err,
+        );
+      });
+    console.log(
+      '[middleware] agent factory ready: agentTeamsIdentityStore + teamsProvisioningJobRunner registered (teamsProvisioner@1 resolved per run)',
+    );
   }
 
   // Issue #560 — now that graphPool is known, back the long-running task seam

@@ -190,6 +190,7 @@ function makeRunner(opts: {
   behaviour?: StubBehaviour;
   maxAttempts?: number;
   baseRetryDelayMs?: number;
+  maxRetryDelayMs?: number;
   getProvisioner?: () => TeamsProvisionerPort;
 } = {}): RunnerFixture {
   const store = makeStore(opts.storeOverrides);
@@ -204,6 +205,9 @@ function makeRunner(opts: {
     timers,
     maxAttempts: opts.maxAttempts ?? 5,
     baseRetryDelayMs: opts.baseRetryDelayMs ?? 1000,
+    ...(opts.maxRetryDelayMs !== undefined
+      ? { maxRetryDelayMs: opts.maxRetryDelayMs }
+      : {}),
     log: () => {},
   });
   return { runner, store, provisioner, timers };
@@ -602,5 +606,107 @@ describe('TeamsProvisioningJobRunner — in-process job semantics', () => {
     assert.equal(result.status, 'stopped');
     assert.equal(failures, 1, 'no further attempts after stop');
     assert.equal(store.row?.state, 'pending', 'stop must not fabricate progress');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wave-integration hardening (review findings of the W1a unit reviews)
+// ---------------------------------------------------------------------------
+
+describe('TeamsProvisioningJobRunner — wave-integration hardening', () => {
+  it('caps a ProvisioningThrottledError hint at maxRetryDelayMs', async () => {
+    let uploads = 0;
+    const { runner, timers } = makeRunner({
+      maxRetryDelayMs: 30_000,
+      behaviour: {
+        uploadToCatalog: () => {
+          uploads += 1;
+          if (uploads === 1) {
+            return Promise.reject(
+              namedError('ProvisioningThrottledError', '429 from Graph', {
+                resource: 'graph',
+                // An hour-scale hint (and far beyond the 32-bit setTimeout
+                // ceiling when multiplied) must not park the run.
+                retryAfterSeconds: 3_000_000,
+              }),
+            );
+          }
+          return undefined;
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.deepEqual(
+      timers.delays,
+      [30_000],
+      'the hint is honored only within the configured delay cap',
+    );
+  });
+
+  it('a stopAll → start cycle re-arms the runner (BackgroundJobRegistry restart)', async () => {
+    const { runner, provisioner } = makeRunner();
+    const job = runner.asBackgroundJob();
+    const handle = await job.start();
+    await handle.stop();
+    const stopped = await runner.enqueue(REQUEST);
+    assert.equal(stopped.status, 'stopped', 'stopped runner refuses work');
+    // Registry restart: start() must clear the stop flag.
+    await job.start();
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.ok(
+      provisioner.calls.some((c) => c.startsWith('installToTeam')),
+      'the re-armed runner drives the chain again',
+    );
+  });
+
+  it('a concurrent enqueue for a DIFFERENT team is rejected, never handed the in-flight result', async () => {
+    let release: (() => void) | undefined;
+    const parked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runner, provisioner } = makeRunner({
+      behaviour: { createAppRegistration: () => parked },
+    });
+    const first = runner.enqueue(REQUEST);
+    await Promise.resolve();
+    const conflicting = await runner.enqueue({
+      agentId: REQUEST.agentId,
+      teamId: 'team-OTHER',
+    });
+    assert.equal(conflicting.status, 'rejected');
+    assert.ok(
+      conflicting.status === 'rejected' && conflicting.reason === 'team_conflict',
+    );
+    release!();
+    const result = await first;
+    assert.equal(result.status, 'installed');
+    // Exactly one install, and it targeted the FIRST request's team.
+    const installs = provisioner.calls.filter((c) => c.startsWith('installToTeam'));
+    assert.deepEqual(installs, ['installToTeam:team-42:catalog-77']);
+  });
+
+  it('stop() during an in-flight accessor call ends the run at the next step boundary', async () => {
+    let release: (() => void) | undefined;
+    const parked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runner, store, provisioner } = makeRunner({
+      behaviour: { createAppRegistration: () => parked },
+    });
+    const run = runner.enqueue(REQUEST);
+    await Promise.resolve();
+    runner.stop();
+    release!();
+    const result = await run;
+    assert.equal(result.status, 'stopped');
+    // Step 1 completed (its own store write lands), but no later step ran.
+    assert.equal(store.row?.state, 'app_registered');
+    assert.equal(
+      provisioner.calls.filter((c) => c.startsWith('createBot')).length,
+      0,
+      'no step starts after stop()',
+    );
   });
 });

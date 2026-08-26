@@ -18,6 +18,32 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — agent factory: Teams identity provisioning via teamsProvisioner@1 (W1a, #860)
+
+- New CORE migration `0049_agent_teams_identities.sql`: one Teams identity per agent
+  (unique `agent_id`), globally unique `bot_slug`, a seven-state provisioning CHECK
+  (`pending → app_registered → bot_created → package_built → catalog_uploaded →
+  installed`, terminal `failed`), step-evidence columns and a `team_id` install target
+  for boot-time resume. Deliberately NO secret column — the bot's client secret stays
+  in the M365 connector's vault (opaque ref `teams_bot_password:<appId>`).
+- New operator endpoints on the agents router: `POST
+  /api/v1/operator/agents/:slug/teams-identity` (create-or-provision, async — answers
+  202 immediately and hands the chain to the in-process provisioning job runner) and
+  `GET …/teams-identity` (status incl. a paste-ready camelCase `teams_bots[]` entry
+  for channel-teams, `last_error`, and an honest `running` flag). 503 with
+  `teams_provisioner_unavailable` while the connector is not installed; 409
+  `bot_slug_taken` on cross-agent slug collisions.
+- Every Graph/ARM call happens inside the `@omadia/integration-microsoft365`
+  connector plugin (**>= 0.3.1 required**), consumed through the kernel service
+  registry via the new `platform/teamsProvisionerService.ts` choke point (typed
+  errors, secret-stripping boundary, SingleTenant guard, per-bot messaging-endpoint
+  URL builder honoring `TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL`). Without the
+  connector, provisioning jobs stay retryable-pending — never a crash.
+- Boot wiring registers `agentTeamsIdentityStore` + `teamsProvisioningJobRunner`
+  (Postgres required) and resumes interrupted provisioning runs idempotently; the
+  Teams app package is rendered from the installed channel-teams package's
+  `appPackage/` template with a deterministic per-agent catalog id.
+
 ### Fixed — facilitation lens read the verdict from a context key that never exists
 
 - The facilitation admin lens read the latest assess verdict from `ctx.stepResult` — but

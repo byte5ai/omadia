@@ -2370,3 +2370,40 @@ im Render-Pfad, stale-while-revalidate ab `observe()`, degradiert ohne
 Graph-App-Permissions lautlos auf die Bot-Framework-Labels. Benötigte
 Application-Permissions (Admin-Consent im Tenant): `Chat.Read.All`,
 `ChatMember.Read.All`, `TeamMember.Read.All`, `Organization.Read.All`.
+
+
+## Agent Factory: Teams-Identity-Provisioning (W1a, 2026-08-26)
+
+Epic #860, Wave W1a. Ein Agent bekommt per Operator-API eine eigene Microsoft-Teams-
+Identität — Entra-App-Registration → Azure Bot → Teams-App-Package → Tenant-Katalog →
+Team-Install — ohne dass die Middleware selbst je Graph/ARM spricht.
+
+**Architektur (ein Choke-Point, ein Writer, eine State-Quelle):**
+
+| Baustein | Datei | Rolle |
+|---|---|---|
+| Migration | `middleware/migrations/0049_agent_teams_identities.sql` | 1 Identity/Agent (PK `agent_id`), global unique `bot_slug`, State-CHECK (7 Werte), Evidence-Spalten, `team_id` als Resume-Ziel. KEINE Secret-Spalte. |
+| Store | `middleware/src/platform/agentTeamsIdentityStore.ts` | Einziger Writer von `state`/`last_error`; exportiert DIE State-Union (`TEAMS_PROVISIONING_STATES`), die Runner+Router importieren. Query-Fehler surfacen (kein stilles `pending`). |
+| Accessor | `middleware/src/platform/teamsProvisionerService.ts` | Einzige `serviceRegistry.get('teamsProvisioner')`-Stelle (KERNEL_SERVICE_CALLER), gespiegelter Connector-Contract v0.3.1 (inkl. `getCatalogApp`), Duck-typed Error-Guards, Secret-Stripping, SingleTenant-Guard, `buildTeamsBotMessagingEndpoint()` → `https://<base>/api/teams/<botSlug>/messages`. |
+| Job-Runner | `middleware/src/services/teamsProvisioningJob.ts` | Async in-process, idempotenter Resume ab persistiertem State, bounded Retries (Throttle-Hint ≤ `maxRetryDelayMs`), ConsentMissing→`failed`+Scopes, ArmNotConfigured→bleibt `app_registered`+actionable `last_error`; Team-Konflikt-Enqueue wird `rejected`, nie fremdes Ergebnis. `asBackgroundJob()` (Registry-Lifecycle, start() re-armt nach stop()). |
+| Package-Assets | `middleware/src/services/teamsAppPackageAssets.ts` | Liest `appPackage/{manifest.json.template,color.png,outline.png}` aus dem installierten channel-teams-Package, füllt Platzhalter template-getrieben, deterministische Teams-App-GUID pro Agent (Katalog-Idempotenz). |
+| Endpoints | `middleware/src/routes/operatorAgents.ts` | `POST/GET /api/v1/operator/agents/:slug/teams-identity` — 202-async, `{ ok: true }`-Envelope, camelCase `teams_bot`-Projektion (paste-ready für `teams_bots[]`), 503/404/400/409-Reihenfolge korrekt, ehrliches `running`, Enqueue-Fehler landen in `last_error`. |
+| Boot-Wiring | `middleware/src/index.ts` (nach graphPool-Resolution) | Registriert `agentTeamsIdentityStore` + `teamsProvisioningJobRunner`, bindet `TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL` in den URL-Builder, `backgroundJobRegistry`, Resume offener Jobs (`listResumable`, nur mit `team_id`, `failed` bleibt geparkt). |
+
+**Secret-Custody:** Das Bot-Passwort verlässt den M365-Connector NIE — dessen Vault hält
+es unter `teams_bot_password:<appId>`; die Status-Projektion leitet den Ref
+deterministisch aus `app_id` ab (nichts wird gespeichert, nichts geloggt).
+
+**Deploy-Voraussetzungen:** Connector-Plugin `@omadia/integration-microsoft365` ≥ 0.3.1
+(publiziert `teamsProvisioner@1`), channel-teams-Package mit `appPackage/` (W0a) für den
+Package-Schritt, Postgres (`DATABASE_URL`). Fehlt der Connector: Jobs bleiben
+retryable-pending, POST antwortet 503 `teams_provisioner_unavailable`.
+
+**Out of scope / Follow-ups:** Automatischer Sync der fertigen Identity in die
+channel-teams-Plugin-Config (`teams_bots[]`) ist dokumentierter Follow-up; Extraktion der
+Teams-Identity-Routen aus `operatorAgents.ts` (Datei > 800 Zeilen) bei nächster Gelegenheit.
+
+**Tests:** `test/teamsProvisioningJob.test.ts` (24), `test/teamsProvisionerService.test.ts`
+(22), `test/operatorAgentsRouter.test.ts` (42), `test/agentTeamsIdentityStore.pg.test.ts`
+(9, gegen echtes Postgres, wendet Migration 0049 doppelt an), `coreMigrations.pg.test.ts`
+(Double-Apply aller 49 Files).

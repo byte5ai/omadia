@@ -52,6 +52,10 @@
  * this wave. The real implementations satisfy these ports as-is.
  */
 
+import {
+  TEAMS_PROVISIONING_STATES,
+  type TeamsProvisioningState,
+} from '../platform/agentTeamsIdentityStore.js';
 import type { TimerSeam } from '../plugins/jobScheduler.js';
 import type {
   BackgroundJob,
@@ -59,21 +63,13 @@ import type {
 } from '../platform/backgroundJobRegistry.js';
 
 // ---------------------------------------------------------------------------
-// State vocabulary — mirrors the CHECK constraint of agent_teams_identities
-// (migration 0049) exactly; the store unit exports the same union.
+// State vocabulary — the CHECK constraint of agent_teams_identities
+// (migration 0049): imported from the store module, which owns the single
+// exported union (wave reconciliation of the parallel-unit mirror), and
+// re-exported here for the runner's existing consumers.
 // ---------------------------------------------------------------------------
 
-export const TEAMS_PROVISIONING_STATES = [
-  'pending',
-  'app_registered',
-  'bot_created',
-  'package_built',
-  'catalog_uploaded',
-  'installed',
-  'failed',
-] as const;
-
-export type TeamsProvisioningState = (typeof TEAMS_PROVISIONING_STATES)[number];
+export { TEAMS_PROVISIONING_STATES, type TeamsProvisioningState };
 
 /** Progress rank; 'failed' ranks below everything so a resume re-checks each
  *  step (evidence columns + idempotent calls make that safe). */
@@ -291,6 +287,15 @@ export type ProvisioningRunResult =
       readonly agentId: string;
       readonly detail: string;
     }
+  | {
+      /** A run for the SAME agent but a DIFFERENT team is in flight — this
+       *  request was refused outright (nothing enqueued, nothing joined), so
+       *  a caller can never be handed the other team's success. */
+      readonly status: 'rejected';
+      readonly agentId: string;
+      readonly reason: 'team_conflict';
+      readonly detail: string;
+    }
   | { readonly status: 'stopped'; readonly agentId: string };
 
 export interface TeamsProvisioningJobOptions {
@@ -317,6 +322,9 @@ export interface TeamsProvisioningJobOptions {
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BASE_RETRY_DELAY_MS = 5_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
+/** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
+ *  to ~1 ms and burn the whole retry budget instantly. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 const REAL_TIMERS: TimerSeam = {
   setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
@@ -337,7 +345,10 @@ export class TeamsProvisioningJobRunner {
   private readonly timers: TimerSeam;
   private readonly log: (msg: string) => void;
 
-  private readonly inFlight = new Map<string, Promise<ProvisioningRunResult>>();
+  private readonly inFlight = new Map<
+    string,
+    { readonly teamId: string; readonly run: Promise<ProvisioningRunResult> }
+  >();
   private readonly pendingSleeps = new Set<() => void>();
   private stopped = false;
 
@@ -349,7 +360,10 @@ export class TeamsProvisioningJobRunner {
     this.tenantMode = opts.tenantMode ?? 'customer';
     this.maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this.baseRetryDelayMs = opts.baseRetryDelayMs ?? DEFAULT_BASE_RETRY_DELAY_MS;
-    this.maxRetryDelayMs = opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+    this.maxRetryDelayMs = Math.min(
+      opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
+      MAX_TIMER_DELAY_MS,
+    );
     this.timers = opts.timers ?? REAL_TIMERS;
     this.log = opts.log ?? ((m) => console.log(m));
   }
@@ -357,11 +371,21 @@ export class TeamsProvisioningJobRunner {
   /**
    * Fire-and-forget entry point for the operator endpoint: starts (or joins)
    * the run for this agent and returns immediately. One run per agent at a
-   * time — a concurrent enqueue joins the in-flight run instead of racing it.
+   * time — a concurrent enqueue for the SAME team joins the in-flight run; a
+   * concurrent enqueue for a DIFFERENT team is refused with a 'rejected'
+   * result (never silently handed the other team's outcome).
    */
   enqueue(request: ProvisionTeamsIdentityRequest): Promise<ProvisioningRunResult> {
     const existing = this.inFlight.get(request.agentId);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.teamId === request.teamId) return existing.run;
+      return Promise.resolve({
+        status: 'rejected',
+        agentId: request.agentId,
+        reason: 'team_conflict',
+        detail: `a provisioning run targeting team '${existing.teamId}' is already in flight for this agent — wait for it to finish, then re-run for team '${request.teamId}'`,
+      });
+    }
     const run = this.runWithRetries(request)
       .catch((err): ProvisioningRunResult => {
         // Defensive: runWithRetries handles its own failures; a throw here is
@@ -379,7 +403,7 @@ export class TeamsProvisioningJobRunner {
       .finally(() => {
         this.inFlight.delete(request.agentId);
       });
-    this.inFlight.set(request.agentId, run);
+    this.inFlight.set(request.agentId, { teamId: request.teamId, run });
     return run;
   }
 
@@ -387,21 +411,29 @@ export class TeamsProvisioningJobRunner {
     return this.inFlight.has(agentId);
   }
 
-  /** Stop accepting work and release every pending retry delay. In-flight
-   *  accessor calls finish on their own; their runs end at the next
-   *  stop-check without touching the store. Idempotent. */
+  /** Stop accepting work and release every pending retry delay. An
+   *  in-flight accessor call finishes on its own; its run then ends at the
+   *  next stop-check between chain steps (that step's own store write has
+   *  already landed; no further step starts). Idempotent; a later
+   *  {@link asBackgroundJob} start() re-arms the runner. */
   stop(): void {
     this.stopped = true;
     for (const release of [...this.pendingSleeps]) release();
     this.pendingSleeps.clear();
   }
 
-  /** Adapter for the BackgroundJobRegistry lifecycle precedent. */
+  /** Adapter for the BackgroundJobRegistry lifecycle precedent. start()
+   *  clears a previous stop() so a stopAll → start cycle (registry restart)
+   *  yields a working runner again instead of one that answers every
+   *  enqueue with 'stopped'. */
   asBackgroundJob(): BackgroundJob {
     const handle: BackgroundJobHandle = { stop: () => this.stop() };
     return {
       name: 'teams-identity-provisioning',
-      start: () => handle,
+      start: () => {
+        this.stopped = false;
+        return handle;
+      },
     };
   }
 
@@ -475,9 +507,12 @@ export class TeamsProvisioningJobRunner {
       return { status: 'failed', agentId, reason: 'error', detail };
     }
 
+    // The hint wins over the exponential backoff but never over the cap:
+    // maxRetryDelayMs bounds EVERY delay (a hint of hours would otherwise
+    // park the attempt loop — and overflow Node's 32-bit setTimeout).
     const delayMs =
       throttle?.retryAfterSeconds !== undefined
-        ? throttle.retryAfterSeconds * 1_000
+        ? Math.min(throttle.retryAfterSeconds * 1_000, this.maxRetryDelayMs)
         : this.backoffDelayMs(attempt);
     this.log(
       `[teams-provisioning] ${agentId} attempt ${attempt}/${this.maxAttempts} failed (${errorMessage(err)}); retrying in ${delayMs}ms`,
@@ -543,6 +578,7 @@ export class TeamsProvisioningJobRunner {
       );
     }
     if (row.state === 'installed') return { status: 'installed', agentId };
+    if (this.stopped) return { status: 'stopped', agentId };
 
     const provisioner = this.getProvisioner();
 
@@ -566,6 +602,8 @@ export class TeamsProvisioningJobRunner {
         lastError: null,
       });
     }
+
+    if (this.stopped) return { status: 'stopped', agentId };
 
     // Step 2 — Azure bot (idempotent by bot handle). The endpoint is built by
     // the accessor module's URL builder, injected — never composed here.
@@ -592,6 +630,8 @@ export class TeamsProvisioningJobRunner {
       }
       row = await this.store.update(agentId, { state: 'bot_created', lastError: null });
     }
+
+    if (this.stopped) return { status: 'stopped', agentId };
 
     // Steps 3+4 — app package + catalog upload (idempotent by externalId).
     if (STATE_RANK[row.state] < STATE_RANK.catalog_uploaded || !row.teamsAppId) {
@@ -629,6 +669,8 @@ export class TeamsProvisioningJobRunner {
         lastError: null,
       });
     }
+
+    if (this.stopped) return { status: 'stopped', agentId };
 
     // Step 5 — install into the team (idempotent on Graph's side).
     await provisioner.installToTeam({

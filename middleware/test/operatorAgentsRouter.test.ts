@@ -269,8 +269,15 @@ interface TeamsIdentityMem {
 
 class FakeTeamsIdentityStore {
   rows = new Map<string, TeamsIdentityMem>();
-  ensureCalls: Array<{ agentId: string; botSlug: string; displayName: string }> =
-    [];
+  ensureCalls: Array<{
+    agentId: string;
+    botSlug: string;
+    displayName: string;
+    teamId?: string;
+  }> = [];
+  enqueueFailures: Array<{ agentId: string; message: string }> = [];
+  /** When set, ensureForAgent throws it (bot_slug_taken shape). */
+  ensureError: Error | undefined;
 
   getByAgentId(agentId: string): Promise<OperatorTeamsIdentityRecord | undefined> {
     return Promise.resolve(this.rows.get(agentId));
@@ -279,8 +286,10 @@ class FakeTeamsIdentityStore {
     agentId: string;
     botSlug: string;
     displayName: string;
+    teamId?: string;
   }): Promise<OperatorTeamsIdentityRecord> {
     this.ensureCalls.push({ ...input });
+    if (this.ensureError) return Promise.reject(this.ensureError);
     const existing = this.rows.get(input.agentId);
     if (existing) return Promise.resolve(existing);
     const row: TeamsIdentityMem = {
@@ -297,6 +306,12 @@ class FakeTeamsIdentityStore {
     this.rows.set(input.agentId, row);
     return Promise.resolve(row);
   }
+  recordEnqueueFailure(agentId: string, message: string): Promise<void> {
+    this.enqueueFailures.push({ agentId, message });
+    const row = this.rows.get(agentId);
+    if (row) row.lastError = `enqueue_failed: ${message}`;
+    return Promise.resolve();
+  }
 }
 
 /** W1a (#860) — stubbed provisioning job runner. `enqueue` returns a promise
@@ -305,9 +320,15 @@ class FakeTeamsIdentityStore {
 class FakeTeamsRunner {
   enqueueCalls: Array<{ agentId: string; teamId: string }> = [];
   running = new Set<string>();
+  /** When set, enqueue rejects with it (and registers nothing in-flight). */
+  enqueueError: Error | undefined;
 
   enqueue(request: { agentId: string; teamId: string }): Promise<unknown> {
     this.enqueueCalls.push({ ...request });
+    if (this.enqueueError) return Promise.reject(this.enqueueError);
+    // Mirrors the real runner: a successful enqueue synchronously holds an
+    // in-flight run, so the POST's `running` flag reads true.
+    this.running.add(request.agentId);
     return new Promise<unknown>(() => {});
   }
   isRunning(agentId: string): boolean {
@@ -931,7 +952,12 @@ describe('createOperatorAgentsRouter', () => {
     ]);
     assert.equal(teamsStore.rows.size, 1);
     assert.deepEqual(teamsStore.ensureCalls, [
-      { agentId: agent.id, botSlug: 'sales', displayName: 'Sales Agent' },
+      {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales Agent',
+        teamId: '19:team-abc',
+      },
     ]);
   });
 
@@ -1011,6 +1037,85 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(teamsRunner.enqueueCalls.length, 0, 'nothing enqueued');
   });
 
+  it('POST /:slug/teams-identity: client errors win over the provisioner 503 (404/400 first)', async () => {
+    provisionerInstalled = false;
+    // Unknown agent → 404, not 503: the operator's mistake is named even
+    // while the connector is inactive.
+    let res = await fetch(`${baseUrl}/ghost/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 404);
+    // Malformed body → 400, not 503.
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_body');
+  });
+
+  it('POST /:slug/teams-identity rejects a bot_slug longer than 63 chars (channel-teams bound)', async () => {
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(64) }),
+    });
+    assert.equal(res.status, 400, 'BOT_SLUG_PATTERN allows at most 63 chars');
+    const ok = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(63) }),
+    });
+    assert.equal(ok.status, 202);
+  });
+
+  it('POST /:slug/teams-identity → 409 when the bot slug is taken by another agent', async () => {
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const err = new Error("bot slug 'sales-bot' is already used by another agent");
+    (err as Error & { code?: string }).code = 'bot_slug_taken';
+    teamsStore.ensureError = err;
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'sales-bot' }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { error: string }).error, 'bot_slug_taken');
+    assert.equal(teamsRunner.enqueueCalls.length, 0, 'nothing enqueued');
+  });
+
+  it('POST /:slug/teams-identity reports running honestly and persists a failed enqueue', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsRunner.enqueueError = new Error('queue down');
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { running: boolean };
+    assert.equal(
+      body.running,
+      false,
+      'a rejected enqueue must not be reported as a started run',
+    );
+    // The fire-and-forget catch persists the failure so GET can surface it.
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(teamsStore.enqueueFailures, [
+      { agentId: agent.id, message: 'queue down' },
+    ]);
+    const status = await fetch(`${baseUrl}/sales/teams-identity`);
+    const statusBody = (await status.json()) as {
+      identity: { last_error: string | null };
+    };
+    assert.equal(statusBody.identity.last_error, 'enqueue_failed: queue down');
+  });
+
   it('GET /:slug/teams-identity projects the row incl. the teams_bots[] entry with a secret ref', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     teamsStore.rows.set(agent.id, {
@@ -1043,16 +1148,22 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(body.provisioner_installed, true);
     assert.equal(body.identity['teams_app_id'], 'teams-app-789');
     assert.equal(body.identity['teams_app_external_id'], 'ext-000');
-    // Everything channel-teams' teams_bots[] needs — with the app password
-    // as a credential-store REF, never as secret material.
+    // Everything channel-teams' teams_bots[] needs — shaped exactly like a
+    // parseTeamsBotsConfig entry (camelCase), with the app password as the
+    // connector's opaque vault REF, never as secret material.
     assert.deepEqual(body.teams_bot, {
-      slug: 'sales-bot',
-      display_name: 'Sales Bot',
-      app_id: 'app-123',
-      app_type: 'SingleTenant',
-      tenant_id: 'tenant-456',
-      app_password_secret_ref: defaultTeamsBotSecretRef('sales-bot'),
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      appId: 'app-123',
+      appType: 'SingleTenant',
+      tenantId: 'tenant-456',
+      appPasswordSecretRef: defaultTeamsBotSecretRef({ appId: 'app-123' }),
     });
+    assert.equal(
+      defaultTeamsBotSecretRef({ appId: 'app-123' }),
+      'teams_bot_password:app-123',
+      'the connector-vault ref is derived from the appId, not the bot slug',
+    );
   });
 
   it('GET /:slug/teams-identity: teams_bot stays null before the app registration exists; 404 without a row', async () => {
