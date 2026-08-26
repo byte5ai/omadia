@@ -287,3 +287,60 @@ export function scopeGraphKey(rawScope: string): string {
   // keeps the key well-formed without collapsing it onto `'unscoped'`.
   return `${stem.length > 0 ? stem : 'scope'}-${digest}`;
 }
+
+/** Path-segment budget for the id half of a context key. Shorter than the graph
+ *  key's 80 because a context key is one segment of a nested memory path. */
+const CONTEXT_ID_MAX_LEN = 64;
+const CONTEXT_ID_SAFE = /^[a-z0-9_-]{1,64}$/;
+
+/** Separator between the channel type and the sanitised native id. Outside the
+ *  safe alphabet on BOTH halves, so the split is unambiguous. */
+const CONTEXT_KEY_SEPARATOR = '~';
+
+/**
+ * Context-memory partition key — `${channelType}~${safeKey(nativeId)}`.
+ *
+ * The scratch-memory ACL (design: chat-context memory ACL, §3) partitions
+ * `/memories/contexts/<agent>/<axis>/<ctxKey>/…` by chat context. That key is a
+ * SECURITY boundary — two contexts that must not see each other's notes must
+ * never share one — so it needs exactly the injectivity argument
+ * {@link scopeGraphKey} makes for the graph partition, and it is built the same
+ * way for the same reason:
+ *
+ *  - A native id that is ALREADY lossless (`/^[a-z0-9_-]{1,64}$/`) is kept
+ *    byte-identically, which is what makes this function IDEMPOTENT on a key it
+ *    produced itself: `memoryContextKey('teams', safe)` → `teams~safe`, and
+ *    re-deriving from the two halves yields the same string. Callers that take
+ *    an operator-typed selector (`services/memoryPurge.ts`) rely on that.
+ *  - Anything else keeps a readable sanitised stem and gains a digest of the
+ *    RAW id, so `19:abc@thread.tacv2` and `19-abc-thread-tacv2` — which collapse
+ *    onto one sanitised stem — stay distinct partitions.
+ *
+ * The result never contains `:`, so it cannot break the `team:<ctxKey>:*`
+ * pattern grammar, and it contains exactly one `~`, so `channelType` and id are
+ * recoverable by splitting at the FIRST separator.
+ */
+export function memoryContextKey(channelType: string, nativeId: string): string {
+  // The type half is sanitised WITHOUT a digest on purpose: it is a small
+  // closed vocabulary of plugin ids ('teams', 'telegram', 'http', 'api'), not
+  // attacker-controlled, and keeping it plain is what makes the key readable in
+  // a path. Stripping `~` here is what guarantees a single separator.
+  const type = (channelType ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const raw = nativeId?.trim() ?? '';
+  const prefix = type.length > 0 ? type : 'unknown';
+
+  if (raw.length === 0) return `${prefix}${CONTEXT_KEY_SEPARATOR}unscoped`;
+  if (CONTEXT_ID_SAFE.test(raw)) return `${prefix}${CONTEXT_KEY_SEPARATOR}${raw}`;
+
+  const digest = createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, DIGEST_LEN);
+  const stem = raw
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .slice(0, CONTEXT_ID_MAX_LEN - DIGEST_LEN - 1);
+  return `${prefix}${CONTEXT_KEY_SEPARATOR}${stem.length > 0 ? stem : 'id'}-${digest}`;
+}

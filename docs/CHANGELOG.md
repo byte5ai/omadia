@@ -18,6 +18,33 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Danger-Zone purge: a scratch footprint for the team/channel/user axes (W5, #860)
+
+- `memoryPurge.resolvePurgeTargets` now knows the chat-context memory trees under
+  `/memories/contexts/<agent>/<axis>/<ctxKey>`. `axis: 'team' | 'channel' | 'user'`
+  had no scratch footprint at all before (it acted on the Knowledge-Graph only);
+  it now deletes exactly that context tree across EVERY agent, enumerated via
+  `store.list('/memories/contexts')` — list + delete only, so it stays
+  backend-agnostic across the filesystem and Postgres stores.
+- `axis: 'agent'` additionally takes the agent's whole `/memories/contexts/<slug>`
+  forest with it. `axis: 'all'` picks `contexts` up for free: it is ordinary
+  scratch and deliberately NOT in `PROTECTED_SEED_ENTRIES`.
+- New `memoryContextKey(channelType, nativeId)` in `@omadia/channel-sdk`
+  (`scopeId.ts`, next to `scopeGraphKey`): `${channelType}~${safeKey(nativeId)}`,
+  injective via a sha256 digest of the raw id and idempotent on an already-safe
+  one, so an operator may type either the raw native id (`teams~19:x@thread.tacv2`)
+  or the derived key. Single sanitiser — the purge service does not roll its own.
+- **Behaviour change in the preview count:** `previewMemoryPurge` counts targets,
+  so an `agent` purge of an agent that has context trees now previews as 2, and a
+  team present in three agents previews as 3. Preview and execute share
+  `resolvePurgeTargets`, so the number the Danger Zone shows is the number the
+  delete acts on.
+- The route's warning for team/channel read backwards once the trees existed
+  ("only scratch memory is affected"). It now says which half is untouched — the
+  Knowledge-Graph — and no KG filter is invented for those axes. Server-side
+  type-to-confirm still checks the selector the operator TYPED, never the derived
+  `ctxKey`.
+
 ### Added — agent factory: Teams identity provisioning via teamsProvisioner@1 (W1a, #860)
 
 - New CORE migration `0049_agent_teams_identities.sql`: one Teams identity per agent
