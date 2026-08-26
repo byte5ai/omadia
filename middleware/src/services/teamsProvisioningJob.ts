@@ -548,6 +548,7 @@ export class TeamsProvisioningJobRunner {
       }
       // `handle` is assigned after setTimeout returns; a synchronous test
       // seam may fire `release` before that, hence the guards.
+      // eslint-disable-next-line prefer-const
       let handle: unknown;
       let done = false;
       const release = (): void => {
