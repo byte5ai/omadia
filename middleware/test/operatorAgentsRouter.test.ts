@@ -17,6 +17,11 @@
  *     global config, unassigned+disable → 404); GET /:slug/grants returns
  *     the agent's tool grants (grant epoch included) + the plugin MCP
  *     grants of its assigned plugins, and 503s without a graph store.
+ * 10. W1a (#860): POST /:slug/teams-identity ensures the identity row (one
+ *     per agent) and enqueues the provisioning job WITHOUT awaiting it;
+ *     GET /:slug/teams-identity projects the row incl. the teams_bots[]
+ *     entry with a secret REF (never secret material); both 503 when the
+ *     deps are unwired, POST 503s when teamsProvisioner@1 is missing.
  */
 
 import { strict as assert } from 'node:assert';
@@ -34,7 +39,11 @@ import {
   type ConfigStore,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
-import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
+import {
+  createOperatorAgentsRouter,
+  defaultTeamsBotSecretRef,
+  type OperatorTeamsIdentityRecord,
+} from '../src/routes/operatorAgents.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 interface AgentMem {
@@ -243,6 +252,90 @@ class FakeGraphStore {
   }
 }
 
+/** W1a (#860) — in-memory `agent_teams_identities` store stub. */
+interface TeamsIdentityMem {
+  agentId: string;
+  botSlug: string;
+  displayName: string;
+  state: string;
+  appId: string | null;
+  tenantId: string | null;
+  teamsAppId: string | null;
+  teamsAppExternalId: string | null;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+class FakeTeamsIdentityStore {
+  rows = new Map<string, TeamsIdentityMem>();
+  ensureCalls: Array<{
+    agentId: string;
+    botSlug: string;
+    displayName: string;
+    teamId?: string;
+  }> = [];
+  enqueueFailures: Array<{ agentId: string; message: string }> = [];
+  /** When set, ensureForAgent throws it (bot_slug_taken shape). */
+  ensureError: Error | undefined;
+
+  getByAgentId(agentId: string): Promise<OperatorTeamsIdentityRecord | undefined> {
+    return Promise.resolve(this.rows.get(agentId));
+  }
+  ensureForAgent(input: {
+    agentId: string;
+    botSlug: string;
+    displayName: string;
+    teamId?: string;
+  }): Promise<OperatorTeamsIdentityRecord> {
+    this.ensureCalls.push({ ...input });
+    if (this.ensureError) return Promise.reject(this.ensureError);
+    const existing = this.rows.get(input.agentId);
+    if (existing) return Promise.resolve(existing);
+    const row: TeamsIdentityMem = {
+      ...input,
+      state: 'pending',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.rows.set(input.agentId, row);
+    return Promise.resolve(row);
+  }
+  recordEnqueueFailure(agentId: string, message: string): Promise<void> {
+    this.enqueueFailures.push({ agentId, message });
+    const row = this.rows.get(agentId);
+    if (row) row.lastError = `enqueue_failed: ${message}`;
+    return Promise.resolve();
+  }
+}
+
+/** W1a (#860) — stubbed provisioning job runner. `enqueue` returns a promise
+ *  that NEVER settles: if the POST handler awaited the run, its test would
+ *  hang into the suite timeout, so a green run proves the async contract. */
+class FakeTeamsRunner {
+  enqueueCalls: Array<{ agentId: string; teamId: string }> = [];
+  running = new Set<string>();
+  /** When set, enqueue rejects with it (and registers nothing in-flight). */
+  enqueueError: Error | undefined;
+
+  enqueue(request: { agentId: string; teamId: string }): Promise<unknown> {
+    this.enqueueCalls.push({ ...request });
+    if (this.enqueueError) return Promise.reject(this.enqueueError);
+    // Mirrors the real runner: a successful enqueue synchronously holds an
+    // in-flight run, so the POST's `running` flag reads true.
+    this.running.add(request.agentId);
+    return new Promise<unknown>(() => {});
+  }
+  isRunning(agentId: string): boolean {
+    return this.running.has(agentId);
+  }
+}
+
 class FakeRegistry {
   reloadCalls = 0;
   invalidateCalls: Array<{ slug: string; mode: 'drain' | 'kill' }> = [];
@@ -270,12 +363,18 @@ describe('createOperatorAgentsRouter', () => {
   let registry: FakeRegistry;
   let graph: FakeGraphStore;
   let sessionStore: { list: () => Promise<unknown[]> };
+  let teamsStore: FakeTeamsIdentityStore;
+  let teamsRunner: FakeTeamsRunner;
+  let provisionerInstalled: boolean;
 
   before(async () => {
     store = new FakeConfigStore();
     registry = new FakeRegistry();
     graph = new FakeGraphStore();
     sessionStore = { list: () => Promise.resolve([]) };
+    teamsStore = new FakeTeamsIdentityStore();
+    teamsRunner = new FakeTeamsRunner();
+    provisionerInstalled = true;
     const app = express();
     app.use(express.json());
     app.use(
@@ -285,6 +384,12 @@ describe('createOperatorAgentsRouter', () => {
         getRegistry: () => registry as unknown as OrchestratorRegistry,
         getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
         getAgentGraphStore: () => graph as unknown as AgentGraphStore,
+        // W1a (#860) — getters read the CURRENT fakes so afterEach resets apply.
+        getTeamsIdentity: () => ({
+          store: teamsStore,
+          runner: teamsRunner,
+          isProvisionerInstalled: () => provisionerInstalled,
+        }),
       }),
     );
     server = await listenLoopback(app);
@@ -301,6 +406,9 @@ describe('createOperatorAgentsRouter', () => {
     graph = new FakeGraphStore();
     registry.reloadCalls = 0;
     registry.invalidateCalls = [];
+    teamsStore = new FakeTeamsIdentityStore();
+    teamsRunner = new FakeTeamsRunner();
+    provisionerInstalled = true;
   });
 
   it('POST / creates an agent and triggers a reload', async () => {
@@ -736,6 +844,36 @@ describe('createOperatorAgentsRouter', () => {
     assert.match(mount, /new AgentGraphStore\(graphPool\)/, 'the option must construct the real store from graphPool');
   });
 
+  it('index.ts supplies getTeamsIdentity to the operator-agents mount (wiring pin, W1a #860)', async () => {
+    // Same rationale as the getAgentGraphStore pin above: the route tests
+    // inject their own deps and cannot see a missing option at the REAL
+    // mount. Pin the wiring statically so the teams-identity routes cannot
+    // silently degrade to a permanent 503.
+    const indexSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const mount = /createOperatorAgentsRouter\(\{([\s\S]*?)\}\)/.exec(indexSource)?.[1];
+    assert.ok(mount, 'index.ts no longer mounts createOperatorAgentsRouter — update this pin');
+    assert.match(
+      mount,
+      /getTeamsIdentity:/,
+      'index.ts must pass getTeamsIdentity to createOperatorAgentsRouter — without it every /:slug/teams-identity request 503s',
+    );
+    assert.match(
+      mount,
+      /'agentTeamsIdentityStore'/,
+      'the option must resolve the identity store through the service registry',
+    );
+    assert.match(
+      mount,
+      /'teamsProvisioningJobRunner'/,
+      'the option must resolve the provisioning job runner through the service registry',
+    );
+    assert.match(
+      mount,
+      /serviceRegistry\.has\('teamsProvisioner'\)/,
+      'provisioner availability must come live from the service registry',
+    );
+  });
+
   it('GET /:slug/grants → grant_epoch null when no grant was ever bumped', async () => {
     const agent = await store.createAgent({ slug: 'public', name: 'Public' });
     graph.toolGrants = [
@@ -779,6 +917,323 @@ describe('createOperatorAgentsRouter', () => {
       assert.equal(
         ((await res.json()) as { error: string }).error,
         'agent_graph_store_unavailable',
+      );
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  // ── W1a (#860): Teams identity provisioning endpoints ───────────────
+
+  it('POST /:slug/teams-identity ensures the row, enqueues, and answers 202 without awaiting the run', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales Agent' });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-abc' }),
+    });
+    // FakeTeamsRunner.enqueue never settles — reaching these assertions at
+    // all proves the handler returned without awaiting the provisioning run.
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as {
+      ok: boolean;
+      agent: string;
+      bot_slug: string;
+      state: string;
+      running: boolean;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.agent, 'sales');
+    assert.equal(body.bot_slug, 'sales');
+    assert.equal(body.state, 'pending');
+    assert.equal(body.running, true);
+    assert.deepEqual(teamsRunner.enqueueCalls, [
+      { agentId: agent.id, teamId: '19:team-abc' },
+    ]);
+    assert.equal(teamsStore.rows.size, 1);
+    assert.deepEqual(teamsStore.ensureCalls, [
+      {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales Agent',
+        teamId: '19:team-abc',
+      },
+    ]);
+  });
+
+  it('POST /:slug/teams-identity derives a URL-safe bot slug and honors overrides on first creation', async () => {
+    await store.createAgent({ slug: 'My_Sales.Agent', name: 'Sales' });
+    const res = await fetch(
+      `${baseUrl}/${encodeURIComponent('My_Sales.Agent')}/teams-identity`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          team_id: '19:t',
+          display_name: 'Sales Bot',
+        }),
+      },
+    );
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { bot_slug: string };
+    assert.equal(body.bot_slug, 'my-sales-agent', 'sanitized from the agent slug');
+    assert.equal(teamsStore.ensureCalls[0]!.displayName, 'Sales Bot');
+  });
+
+  it('POST /:slug/teams-identity is create-or-provision: one identity per agent, a re-POST reuses the row', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const first = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'sales-bot' }),
+    });
+    assert.equal(first.status, 202);
+    const second = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'other-bot' }),
+    });
+    assert.equal(second.status, 202);
+    const body = (await second.json()) as { bot_slug: string };
+    assert.equal(body.bot_slug, 'sales-bot', 'existing row wins over the re-POST');
+    assert.equal(teamsStore.rows.size, 1, 'unique agent_id — no second row');
+    assert.equal(teamsRunner.enqueueCalls.length, 2, 're-POST re-runs provisioning');
+    assert.equal(teamsRunner.enqueueCalls[1]!.agentId, agent.id);
+  });
+
+  it('POST /:slug/teams-identity → 404 for an unknown agent, 400 without team_id', async () => {
+    let res = await fetch(`${baseUrl}/ghost/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 404);
+
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_body');
+    assert.equal(teamsRunner.enqueueCalls.length, 0, 'nothing enqueued');
+  });
+
+  it('POST /:slug/teams-identity 503s when teamsProvisioner@1 is not installed', async () => {
+    provisionerInstalled = false;
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 503);
+    assert.equal(
+      ((await res.json()) as { error: string }).error,
+      'teams_provisioner_unavailable',
+    );
+    assert.equal(teamsStore.rows.size, 0, 'no row created');
+    assert.equal(teamsRunner.enqueueCalls.length, 0, 'nothing enqueued');
+  });
+
+  it('POST /:slug/teams-identity: client errors win over the provisioner 503 (404/400 first)', async () => {
+    provisionerInstalled = false;
+    // Unknown agent → 404, not 503: the operator's mistake is named even
+    // while the connector is inactive.
+    let res = await fetch(`${baseUrl}/ghost/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 404);
+    // Malformed body → 400, not 503.
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_body');
+  });
+
+  it('POST /:slug/teams-identity rejects a bot_slug longer than 63 chars (channel-teams bound)', async () => {
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(64) }),
+    });
+    assert.equal(res.status, 400, 'BOT_SLUG_PATTERN allows at most 63 chars');
+    const ok = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(63) }),
+    });
+    assert.equal(ok.status, 202);
+  });
+
+  it('POST /:slug/teams-identity → 409 when the bot slug is taken by another agent', async () => {
+    await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const err = new Error("bot slug 'sales-bot' is already used by another agent");
+    (err as Error & { code?: string }).code = 'bot_slug_taken';
+    teamsStore.ensureError = err;
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t', bot_slug: 'sales-bot' }),
+    });
+    assert.equal(res.status, 409);
+    assert.equal(((await res.json()) as { error: string }).error, 'bot_slug_taken');
+    assert.equal(teamsRunner.enqueueCalls.length, 0, 'nothing enqueued');
+  });
+
+  it('POST /:slug/teams-identity reports running honestly and persists a failed enqueue', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsRunner.enqueueError = new Error('queue down');
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:t' }),
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { running: boolean };
+    assert.equal(
+      body.running,
+      false,
+      'a rejected enqueue must not be reported as a started run',
+    );
+    // The fire-and-forget catch persists the failure so GET can surface it.
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(teamsStore.enqueueFailures, [
+      { agentId: agent.id, message: 'queue down' },
+    ]);
+    const status = await fetch(`${baseUrl}/sales/teams-identity`);
+    const statusBody = (await status.json()) as {
+      identity: { last_error: string | null };
+    };
+    assert.equal(statusBody.identity.last_error, 'enqueue_failed: queue down');
+  });
+
+  it('GET /:slug/teams-identity projects the row incl. the teams_bots[] entry with a secret ref', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    teamsRunner.running.add(agent.id);
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      state: string;
+      running: boolean;
+      provisioner_installed: boolean;
+      identity: Record<string, unknown>;
+      teams_bot: Record<string, unknown>;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.state, 'installed');
+    assert.equal(body.running, true);
+    assert.equal(body.provisioner_installed, true);
+    assert.equal(body.identity['teams_app_id'], 'teams-app-789');
+    assert.equal(body.identity['teams_app_external_id'], 'ext-000');
+    // Everything channel-teams' teams_bots[] needs — shaped exactly like a
+    // parseTeamsBotsConfig entry (camelCase), with the app password as the
+    // connector's opaque vault REF, never as secret material.
+    assert.deepEqual(body.teams_bot, {
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      appId: 'app-123',
+      appType: 'SingleTenant',
+      tenantId: 'tenant-456',
+      appPasswordSecretRef: defaultTeamsBotSecretRef({ appId: 'app-123' }),
+    });
+    assert.equal(
+      defaultTeamsBotSecretRef({ appId: 'app-123' }),
+      'teams_bot_password:app-123',
+      'the connector-vault ref is derived from the appId, not the bot slug',
+    );
+  });
+
+  it('GET /:slug/teams-identity: teams_bot stays null before the app registration exists; 404 without a row', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    let res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 404);
+    assert.equal(
+      ((await res.json()) as { error: string }).error,
+      'teams_identity_not_found',
+    );
+
+    provisionerInstalled = false; // status stays readable without the connector
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'pending',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: 'consent_missing: admin consent required',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      provisioner_installed: boolean;
+      running: boolean;
+      identity: { last_error: string };
+      teams_bot: unknown;
+    };
+    assert.equal(body.teams_bot, null);
+    assert.equal(body.provisioner_installed, false);
+    assert.equal(body.running, false);
+    assert.equal(body.identity.last_error, 'consent_missing: admin consent required');
+  });
+
+  it('teams-identity routes 503 when the deps are not wired', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => store as unknown as ConfigStore,
+        getRegistry: () => registry as unknown as OrchestratorRegistry,
+        getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      await store.createAgent({ slug: 'sales', name: 'Sales' });
+      const addr = s.address() as AddressInfo;
+      const local = `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`;
+      const post = await fetch(`${local}/sales/teams-identity`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ team_id: '19:t' }),
+      });
+      assert.equal(post.status, 503);
+      assert.equal(
+        ((await post.json()) as { error: string }).error,
+        'teams_identity_unavailable',
+      );
+      const get = await fetch(`${local}/sales/teams-identity`);
+      assert.equal(get.status, 503);
+      assert.equal(
+        ((await get.json()) as { error: string }).error,
+        'teams_identity_unavailable',
       );
     } finally {
       await new Promise<void>((r) => s.close(() => r()));

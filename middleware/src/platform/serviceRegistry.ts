@@ -67,6 +67,15 @@ export type ServiceName =
   | 'diagrams'
   | 'attachments'
   | 'memory'
+  // W1a (#860) — named for documented intent (the open union below would
+  // accept them anyway): 'teamsProvisioner' is PROVIDED by the M365
+  // connector (teamsProvisioner@1, >= 0.3.0) and consumed kernel-side by
+  // the agent factory; 'agentTeamsIdentityStore' and
+  // 'teamsProvisioningJobRunner' are kernel boot registrations the
+  // operator teams-identity routes resolve late-bound.
+  | 'teamsProvisioner'
+  | 'agentTeamsIdentityStore'
+  | 'teamsProvisioningJobRunner'
   | (string & {});
 
 /** A registration remembered for its owner so `disposeBySource` can unwind

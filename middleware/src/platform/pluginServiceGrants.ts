@@ -254,6 +254,17 @@ export const STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   // retires when channel-teams declares `permissions.sql` and the operator
   // grants it (C7 / omadia#787), which is independent of #838.
   '@omadia/channel-teams': Object.freeze(['graphPool']),
+
+  // W1a (#860) — 'teamsProvisioner' decision, recorded so nobody re-audits:
+  // NO row is needed for the Teams agent factory. The consumer is the KERNEL
+  // (operator teams-identity routes + provisioning job runner resolve the
+  // accessor through `serviceRegistry.get`, attributed to
+  // KERNEL_SERVICE_CALLER), and this gate sits in front of PLUGIN consumers
+  // (`ctx.services.get`) only. The M365 connector PROVIDES the capability and
+  // declares it in its manifest (`provides: ["teamsProvisioner@1"]`), which
+  // per the #788 rule grants its own readback once registered. A row would be
+  // required only if a plugin other than the provider started consuming
+  // 'teamsProvisioner' without declaring it — none does.
 });
 
 /**
