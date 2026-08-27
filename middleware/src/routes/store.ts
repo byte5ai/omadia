@@ -13,7 +13,11 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import { parseSetupProfile } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
-import { withReadiness, type ReadinessVault } from '../plugins/readiness.js';
+import {
+  withReadiness,
+  type ReadinessLlmProbe,
+  type ReadinessVault,
+} from '../plugins/readiness.js';
 import { findProvidesCollision } from '../plugins/capabilityResolver.js';
 import type {
   RegistryClient,
@@ -40,6 +44,11 @@ interface StoreDeps {
    *  without it, secret-typed fields are assumed satisfied and readiness still
    *  reports config/errored state from the registry alone. */
   vault?: ReadinessVault;
+  /** #884 — resolves whether the LLM provider a plugin routes through holds a
+   *  VERIFIED credential. Without it the store counted a plugin as ready while
+   *  every chat turn through it would fail on a missing key. Optional, so an
+   *  older composition root keeps the pre-#884 behaviour. */
+  llmReadiness?: ReadinessLlmProbe;
 }
 
 /** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
@@ -140,6 +149,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
             withActionStatus(p, deps.pluginStatusRegistry),
             deps.registry,
             deps.vault,
+            deps.llmReadiness,
           ),
         ),
       );
@@ -260,7 +270,12 @@ export function createStoreRouter(deps: StoreDeps): Router {
       const installAvailable = plugin.install_state === 'available' && !collision;
       plugin = withActionStatus(plugin, deps.pluginStatusRegistry);
       // OM-16 — see the list handler. Orthogonal to install_state.
-      plugin = await withReadiness(plugin, deps.registry, deps.vault);
+      plugin = await withReadiness(
+        plugin,
+        deps.registry,
+        deps.vault,
+        deps.llmReadiness,
+      );
       // Issue #453 — decorate with the advisory code-scan verdict. Pure
       // lookup (never triggers a scan); a store hiccup degrades to "no
       // verdict shown", never a 500.

@@ -3296,6 +3296,7 @@
       "incompatible": "Inkompatibel",
       "migrationNeeded": "Migration nötig",
       "configRequired": "Konfiguration erforderlich",
+      "awaitingLlm": "Konfiguriert – wartet auf LLM-Zugang",
       "errored": "Aktivierung fehlgeschlagen",
       "readyVerified": "Aktiv · konfiguriert {time}",
       "missingFields": "Fehlt: {fields}"
@@ -3326,6 +3327,7 @@
       "installedNext": "\"{name}\" installiert — jetzt an einen Orchestrator anhängen.",
       "toOrchestrators": "An Orchestrator anhängen",
       "toSetup": "Einrichtung abschließen ({count} fehlen)",
+      "toLlmProvider": "LLM-Zugang einrichten",
       "toChat": "Im Chat ausprobieren",
       "uninstallAria": "{name} deinstallieren",
       "uninstall": "Deinstallieren",

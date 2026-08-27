@@ -197,10 +197,13 @@ export interface PluginActionStatus {
 /** OM-16 — kernel-derived plugin readiness (mirror of middleware admin-v1).
  *  `install_state` answers "is it present?", readiness answers "can it
  *  actually work?". Unlike `PluginActionStatus` (push-only, from plugins that
- *  call `ctx.status`), this is computed for every plugin. */
+ *  call `ctx.status`), this is computed for every plugin. `awaiting_llm`
+ *  means the plugin's own fields are satisfied, but its assigned LLM provider
+ *  has no verified credential and must be fixed on the providers admin page. */
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  | 'awaiting_llm'
   | 'ready'
   | 'errored';
 
