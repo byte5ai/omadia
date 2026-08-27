@@ -91,6 +91,22 @@ describe('<DashboardOnboarding /> — OM-01/12 step model', () => {
     expect(screen.queryByTestId('onboarding-step-1-check')).toBeNull();
   });
 
+  it('shows both step-1 CTAs for API keys and subscriptions', () => {
+    renderCard();
+
+    const step1 = screen.getByTestId('onboarding-step-1');
+    const links = Array.from(step1.querySelectorAll('a'));
+    expect(links).toHaveLength(2);
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(
+      expect.arrayContaining([
+        '/admin/providers',
+        '/admin/providers?tab=subscriptions',
+      ]),
+    );
+    expect(screen.getByText(/API-Schlüssel hinterlegen/)).toBeTruthy();
+    expect(screen.getByText(/Abo verwenden/)).toBeTruthy();
+  });
+
   it('a logged-in subscription CLI also satisfies step 1', () => {
     renderCard({ cliLoggedIn: true });
 

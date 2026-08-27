@@ -108,7 +108,8 @@
         "missingHint": "Noch nicht im Hub"
       },
       "llmStep": {
-        "connect": "LLM-Zugang öffnen",
+        "connectApiKey": "API-Schlüssel hinterlegen",
+        "connectSubscription": "Abo verwenden",
         "title": "LLM verbinden",
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
         "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
