@@ -22,6 +22,12 @@
  * do by accident — the goal is removing the accidental foot-gun from the
  * menu, not fighting intentional diagnostics.
  *
+ * The other gap was updates: packaged builds had no manual "check now" surface
+ * anywhere, so Windows and Linux users had no honest way to ask the updater for
+ * a visible result. A top-level Help menu fixes that on every platform without
+ * overloading the macOS app menu, which should stay reserved for OS-conventional
+ * items such as About/Hide/Quit.
+ *
  * Everything else mirrors the default template closely (edit roles, window
  * roles, zoom) so muscle memory and localized role labels keep working —
  * Electron localizes `role:` items with the OS language for free, which
@@ -29,7 +35,11 @@
  */
 import { Menu, app, type MenuItemConstructorOptions } from 'electron';
 
-export function installApplicationMenu(): void {
+export interface MenuActions {
+  checkForUpdates: () => void;
+}
+
+export function installApplicationMenu(actions: MenuActions): void {
   const isMac = process.platform === 'darwin';
   const showDevTools = !app.isPackaged;
 
@@ -97,6 +107,10 @@ export function installApplicationMenu(): void {
           ? ([{ type: 'separator' }, { role: 'front' }] as MenuItemConstructorOptions[])
           : ([{ role: 'close' }] as MenuItemConstructorOptions[])),
       ],
+    },
+    {
+      label: 'Help',
+      submenu: [{ label: 'Check for Updates…', click: () => actions.checkForUpdates() }],
     },
   ];
 
