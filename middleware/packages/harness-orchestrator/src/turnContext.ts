@@ -270,6 +270,35 @@ export interface TurnContextValue {
    * so memory did reach the user either way.
    */
   memoryFileRead?: { value: boolean };
+  /**
+   * #904 — the memory-tool handler bound to the turn that is currently
+   * delegating to a sub-agent.
+   *
+   * Installed by `dispatchToolInner` in a nested scope around a SINGLE
+   * domain-tool dispatch, and read by the `memory` tool an operator granted to
+   * that sub-agent. It carries the very handler the parent's own dispatch uses
+   * for this turn — the turn-bound stack `MemoryBinder.forOrigin` produced, or
+   * the build-time agent-scoped one when context memory is off — so the
+   * sub-agent writes inside the same scope as its parent instead of into the
+   * undecorated root store the memory provider plugin registered.
+   *
+   * Undefined outside a domain-tool dispatch, and that means the sub-agent's
+   * memory tool REFUSES the call. Deny, never widen: this is the whole reason
+   * an ambient field is acceptable for a security boundary that #903
+   * deliberately threaded as an explicit parameter elsewhere — losing this
+   * scope closes the tool, whereas losing `turnMemory` in the orchestrator
+   * would have silently reopened a wider store.
+   */
+  subAgentMemoryHandler?: SubAgentMemoryHandler;
+}
+
+/**
+ * Structural view of `MemoryToolHandler` (`@omadia/memory`). Declared here
+ * rather than imported so `turnContext` — which every layer imports — keeps its
+ * dependency-free shape.
+ */
+export interface SubAgentMemoryHandler {
+  handle(input: unknown): Promise<string>;
 }
 
 const storage = new AsyncLocalStorage<TurnContextValue>();
@@ -369,6 +398,17 @@ export const turnContext = {
    */
   currentTurnDate(): string {
     return storage.getStore()?.turnDate ?? today();
+  },
+  /**
+   * #904 — the scoped memory handler of the turn delegating to the sub-agent
+   * that is executing right now, or `undefined` outside a domain-tool dispatch.
+   *
+   * Callers MUST treat `undefined` as "refuse the memory call". Falling back to
+   * a registry-resolved handler here would restore exactly the bypass this
+   * accessor exists to close.
+   */
+  currentSubAgentMemoryHandler(): SubAgentMemoryHandler | undefined {
+    return storage.getStore()?.subAgentMemoryHandler;
   },
 };
 

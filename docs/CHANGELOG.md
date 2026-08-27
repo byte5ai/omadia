@@ -28,6 +28,39 @@ way, even fully logged in. A shell alias masked the symptom in manual
 terminal testing (`which`/`command -v` resolve aliases; `child_process.spawn`
 never does). `resolveAugmentedPath()` now also checks `~/.local/bin`.
 
+### Fixed — a granted `memory` tool no longer lets a sub-agent write past its parent's scope (#904, part of #860)
+
+2026-08-27 — A sub-agent that had been granted the native `memory` tool resolved
+its handler out of the process-wide `NativeToolRegistry`. That entry belongs to
+the memory *provider* plugin (`@omadia/memory`, `@omadia/memory-postgres`) and is
+bound to the **undecorated** root store — the one below every scoping wrapper. A
+sub-agent reaching it read and wrote outside its parent agent's
+`orchestrator:<slug>:*` subtree, and, with the chat-context ACL from #881
+enabled, outside its team's and channel's tiers too. Granting a sub-agent the
+memory tool is ordinary operator configuration, and the per-agent boundary it
+crossed predates the memory-ACL epic entirely.
+
+The grant is now served by a tool bound to the same turn-scoped store the
+parent's own dispatch uses: `Orchestrator.dispatchToolInner` publishes that
+handler for the lifetime of a domain-tool dispatch, and
+`adaptNativeToolForSubAgent` takes the resolver as a **required** parameter, so a
+call site that forgets to thread it fails `typecheck` instead of silently
+degrading to the unscoped store — the same hardening #903 applied to
+`dispatchTool` / `dispatchToolDeadlined` / `dispatchToolInner`.
+
+Two consequences worth knowing:
+
+- The grant used to be a **silent no-op** on a default install: the shipped
+  providers register handler-only (no wire-spec) and the adapter dropped such
+  entries. It is now honoured — with the parent turn's scope.
+- **Fail-closed, never fallback.** With no turn-bound store — a detached
+  `ask_<slug>_start` runner, or any call outside an orchestrator turn — the tool
+  refuses instead of reaching for a wider one.
+
+Unchanged and still true: the `claude-cli` provider never constructs the
+`Orchestrator`, so `context_memory` remains inert there (#899).
+
+
 ### Added — team uninstall for provisioned agent identities (#900, part of #860)
 
 2026-08-27 — Assigning an agent to a Team was one-way: `DELETE

@@ -1015,9 +1015,21 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 - **Der Schalter wirkt nur auf dem Orchestrator-Pfad.** Läuft ein Agent über den
   `claude-cli`-Provider, beantwortet ein `CliChatAgent` den Turn, nicht der
   `Orchestrator` — die Bindung wird dort nie gebildet, und der Modus bleibt folgenlos.
-  Ebenso greift die ACL nicht für ein **Sub-Agent**, dem das native `memory`-Tool
-  direkt zugeteilt wurde: dessen Handler zeigt auf den undekorierten Store. Beides ist
-  älter als diese Wave und in #899 dokumentiert (siehe dort den Befund im PR).
+  Das ist älter als diese Wave und in #899 dokumentiert (siehe dort den Befund im PR).
+- **Sub-Agenten mit `memory`-Grant: seit #904 geschlossen.** Ein Sub-Agent, dem das
+  native `memory`-Tool zugeteilt ist, bekam seinen Handler früher aus der
+  prozessweiten `NativeToolRegistry` — und der gehört dem Memory-*Provider*-Plugin und
+  hängt am **undekorierten** Store. Damit lag der Schreibzugriff nicht nur außerhalb
+  der Kontext-ACL, sondern auch außerhalb der älteren Pro-Agent-Isolation
+  (`orchestrator:<slug>:*`). Der Grant läuft jetzt über genau den turn-gebundenen,
+  gescopten Store, den auch der Dispatch des Elternagenten benutzt. Zwei Folgen, die
+  man kennen sollte:
+  - Der Grant war vorher faktisch **wirkungslos** (die beiden ausgelieferten
+    Memory-Provider registrieren handler-only, ohne Wire-Spec, und der Adapter ließ
+    solche Einträge fallen). Ab jetzt ist er wirksam — mit dem Scope des Elternturns.
+  - **Fail-closed statt Fallback:** Ist kein turn-gebundener Store da — etwa in einem
+    abgekoppelten `ask_<slug>_start`-Runner oder außerhalb eines Orchestrator-Turns —
+    verweigert das Tool den Aufruf, statt auf einen weiteren Store auszuweichen.
 
 ### Was in Arbeit ist
 
