@@ -2407,3 +2407,168 @@ Teams-Identity-Routen aus `operatorAgents.ts` (Datei > 800 Zeilen) bei nächster
 (22), `test/operatorAgentsRouter.test.ts` (42), `test/agentTeamsIdentityStore.pg.test.ts`
 (9, gegen echtes Postgres, wendet Migration 0049 doppelt an), `coreMigrations.pg.test.ts`
 (Double-Apply aller 49 Files).
+
+## Chat-Kontext-Memory-ACL (W5, #860 / #870, 2026-08-27)
+
+**Das Problem.** Agent-Memory war pro AGENT isoliert (`ScopedMemoryStore` über
+`['core', 'orchestrator:<slug>:*']`), nicht pro CHAT-KONTEXT. Was ein Agent in Teams-Team A
+lernte, landete im agent-globalen Baum und war im nächsten Turn in Team B zitierbar. W5
+partitioniert diesen Baum nach Chat-Kontext.
+
+### Scope-Grammatik
+
+`ScopedMemoryStore` versteht drei neue Tokens plus einen Modifier. Physische Wurzeln kommen
+ausschliesslich aus `contextTierRoot(agentSlug, axis, ctxKey)` — eine zweite Schreibweise
+wäre eine Partition, die der kompilierte Scope nicht gewährt:
+
+| Token | matcht |
+|---|---|
+| `team:<ctxKey>:*` | `/memories/contexts/<slug>/team/<ctxKey>/…` |
+| `channel:<ctxKey>:*` | `/memories/contexts/<slug>/channel/<ctxKey>/…` |
+| `user:<ctxKey>:*` | `/memories/contexts/<slug>/user/<ctxKey>/…` |
+| `ro:<pattern>` | Access-Modifier: read/list/exists ja, write/delete/rename → `MemoryScopeViolation` |
+
+`/memories/contexts/` ist ein **neues Top-Level-Segment**, nicht ein Unterbaum von
+`/memories/orchestrators/`. Das ist das strukturelle Kollisionsfreiheits-Argument:
+`orchestrator:<slug>:*` matcht ausschliesslich den Agent-Baum, also erreicht kein Alt-Scope
+einen Kontextbaum und kein Kontext-Scope den Agent-Baum. **Nicht "aufräumen".**
+
+`ro:` ist ein **Veto**, kein schwaches Grant: matcht ein `ro:`-Pattern den Pfad, wird der
+Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-öffnet jedes
+überlappende Pattern still das Tier, das `ro:` quarantänisieren soll.
+
+`/memories/core/audit/` ist für **jeden** Agent unbeschreibbar (Deny-Prefix vor jeder
+positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
+jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
+überschreiben, was ein Operator mit seinem Memory gemacht hat.
+
+### Kontext-Key
+
+`memoryContextKey(channelType, nativeId)` (`harness-channel-sdk/src/scopeId.ts`) ist der
+**einzige** Sanitizer: `${channelType}~${safeKey(nativeId)}`. Jeder `<ctxKey>` in der
+Grammatik, jeder physische Pfad, jeder Purge-Selector und die Promote-Route gehen da durch.
+Ein Ad-hoc-`replace(/[^a-z0-9]/g,'-')` irgendwo anders reisst das Loch wieder auf, das
+`scopeGraphKey` geschlossen hat: eine Teams-Conversation-Id ist `19:abc@thread.tacv2`, und
+plain sanitisiert kollidiert sie mit dem Literal `19-abc-thread-tacv2`.
+
+Zwei Eigenschaften sind sicherheitstragend:
+
+- **Injektiv.** Ein bereits verlustfreier Id (`/^[a-z0-9_-]{1,64}$/`) geht byte-identisch
+  durch, alles andere bekommt Stem + 64-Bit-sha256-Digest des ROHEN Strings. Die beiden
+  Ausgaberäume sind **disjunkt** — ein Id, der wie ein Digest aussieht (`…-<16 hex>`), wird
+  selbst gehasht. Ohne das könnte jemand, der seine eigene Conversation-Id benennen kann,
+  den Key eines gehashten Kontexts vorbilden und in dessen Baum landen.
+- **`~` liegt ausserhalb des Safe-Alphabets** → die Zerlegung ist eindeutig und ein Key kann
+  nie ein `:` tragen, das das `team:<key>:*`-Format bräche.
+
+`memoryAxesForOrigin` keyt **nicht** auf `formatSessionScope(scope)`, sondern auf eine
+injektive JSON-Tupel-Kodierung der strukturellen Scope-Teile. Die Wire-Form ist nur über der
+Teilmenge injektiv, die `parseSessionScope` emittiert — und Adapter bauen Scopes direkt.
+Sonst teilen sich `{kind:'group',groupRef:'x'}` und
+`{kind:'conversation',conversationId:'group:x'}` ein Tier.
+
+### Effective Scope (statisch ∩ dynamisch)
+
+```
+scope = axes.isContextFree
+  ? ['core', `orchestrator:${slug}:*`]                        // exakt heute
+  : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]  // enforce
+  : ['ro:core', …axes.patterns]                               // enforce-strict
+```
+
+- **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
+  unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum
+  erreichbar. `axes.patterns` ist eine **Allowlist**: alles ausserhalb der drei Tier-Tokens
+  wird verworfen und geloggt, denn diese Liste kommt über eine Paketgrenze aus einem
+  unabhängig versionierten Channel-Plugin.
+- **Agent-Tier ist read-only.** Sonst wäre "notiere das global" ein permanenter Leak-Kanal
+  von Team A nach Team B.
+- **`ro:core`, nicht `core`.** Die Shared-Bäume (`core`, `sessions`, `chat-sessions`,
+  Top-Level `_*`) reicht der Namespacer unverändert durch — sie sind die EINE modellseitige
+  Fläche, die zwei Kontexte unter demselben Pfad ansprechen. Schreibbar wäre
+  `/memories/core/notes.md` ein Einzeiler-Bypass der ganzen ACL.
+- **Nie ein Throw auf dem Message-Pfad.** Kaputte Axes degradieren auf den Agent-Privat-Scope
+  und loggen laut (`[security-audit]`) — in BEIDEN Modi, weil ein Plugin-Bug sonst unsichtbar
+  bleibt.
+
+### Turn-Bindung
+
+`MemoryBinder.forOrigin(origin)` liefert synchron und LRU-gecacht (Cap 256) den Stack
+`DurableRulesMemoryStore?( ContextMemoryNamespacer( ScopedMemoryStore(scope, rootStore) ) )`.
+Der Orchestrator ruft das **einmal am Turn-Anfang** und reicht das Ergebnis als **expliziten
+Parameter** bis `dispatchToolInner` durch — ausdrücklich **nicht** über `turnContext`
+(AsyncLocalStorage). Ein Generator wird im Async-Kontext seines Aufrufers fortgesetzt; genau
+so hat `turnContext.enter` vor W3-A auf jedem Streaming-Turn den Kontext still verloren. Eine
+so verlorene Bindung würde nicht fehlschlagen, sie würde leise den Scope weiten.
+
+Modellseitig (nur im Kontext-Modus, sonst byte-identischer Prompt):
+
+```
+/memories/…         → engstes Tier des Turns (Kanal bzw. User)
+/memories/~team/…   → Team-Tier (rw, nur wenn eine Team-Achse existiert)
+/memories/~agent/…  → Agent-Baum (ro; Enforcement macht der Store, nicht der Mapper)
+```
+
+`~` ist kollisionsfrei, weil der bestehende Namespacer nie `~`-Segmente nach aussen emittiert.
+
+### Rollout
+
+`agents.context_memory` (Migration `0050_agent_context_memory_flag.sql`), `off` | `enforce` |
+`enforce-strict`, **Default `off`**. `off` plus optionales `origin` ⇒ jede Kombination aus
+alter/neuer Middleware und altem/neuem Channel-Plugin verhält sich wie heute, bis ein
+Operator umschaltet. Kein Flag-Day. Unbekannte/NULL-Werte lesen sich als `off`
+(deny-default), damit ein Rollback das Memory-Routing nicht ändert.
+
+`buildOrchestrator` baut den Binder **unbedingt** und gated per Modus — `off` und der heutige
+Stack sind ein Codepfad, damit der Schalter nicht von dem wegdriftet, was er schaltet.
+`ChatSessionStore`/`SessionLogger` bleiben auf dem statischen `scopedStore`: Session-
+Transkripte bleiben geteilt unter `core/sessions` (Entscheidung A3a).
+
+HTTP/API-Turns emittieren **kein** `origin` (Koordinator-Entscheidung 1). Deren
+Scope-Strings (`http-<scope>`, client-gewählte `sessionId`, das geteilte `'http-default'`)
+sind vom Caller gelieferte Transkript-Labels — daraus eine Memory-Partition abzuleiten hiesse,
+jedem API-Client das Tier eines anderen benennbar zu machen.
+
+### Purge & Promote
+
+**Purge** (`/api/v1/admin/memory/purge`): `axis:'team'|'channel'|'user'` hat erstmals einen
+Scratch-Footprint und löscht den Kontextbaum über ALLE Agenten (Enumeration via
+`store.list('/memories/contexts')`, nur list+delete, also backend-agnostisch). `axis:'agent'`
+nimmt `/memories/contexts/<slug>` mit, `axis:'all'` erfasst `contexts` gratis (nicht in
+`PROTECTED_SEED_ENTRIES`). Selector-Semantik: **immer** `<channelType>~<id>`; ohne `~` →
+400 `invalid_selector`, denn eine Danger-Zone-Geste, die nichts löscht und Erfolg meldet, ist
+schlimmer als ein Fehler. Beide Lesarten (verbatim Key / roher Native-Id) werden aufgelöst
+und die Vereinigung der real existierenden Bäume gelöscht — `memoryContextKey` ist auf seiner
+eigenen Digest-Form bewusst nicht idempotent. Das server-seitige Type-to-confirm prüft
+weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
+
+**Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
+und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers
+EINES Agenten. Das ist der einzige Weg, auf dem Wissen eine Kontextgrenze überschreitet.
+Audit dreifach: JSONL-Zeile in `/memories/core/audit/memory-promotions.jsonl`,
+Provenance-Frontmatter (`promoted-from`/`-by`/`-at`) im Ziel-File, `[security-audit]`-Logzeile.
+Läuft auf dem ROOT-Store (undekoriert), Präzedenz `memoryPurge`.
+
+Zwei Fallen, die real waren: `move` löscht nur die Files, die es auch geschrieben hat — der
+rekursive `delete(sourceRoot)` hätte Dotfiles vernichtet, die `store.list()` gar nicht
+aufzählt (der Walk überspringt `.`-Namen, in-memory wie Postgres). Und ein Ziel, das im
+Quellbaum liegt (oder umgekehrt), wird abgelehnt: `move` hätte das frisch geschriebene Ziel
+mit der Quelle zusammen gelöscht und Erfolg gemeldet.
+
+### Tests (Store-Level, kein LLM-Output; Per-Test-Fixtures)
+
+`test/memoryContextKey.test.ts` (Injektivität, Pre-Image-Schutz),
+`test/memoryAxesForOrigin.test.ts` (§2-Tabelle als Cases + Cross-Kind-Kollisionen),
+`test/scopedMemoryStore.contexts.test.ts` (Token-Matrix × read/write, `ro:`,
+Kollisionsfreiheit), `test/effectiveMemoryScope.test.ts` (fail-closed + Golden gegen
+`orchestratorMemoryScope`), `test/contextMemoryNamespacer.test.ts` (Bijektion),
+`test/memoryContextIsolation.test.ts` (**der Abnahmetest**: Team A ↮ Team B, Kanal ↮ Kanal,
+User ↮ User, Shared-Namespace als Seitenkanal, Audit-Log, `off`-Golden, `enforce-strict`),
+`test/memoryBinder.cache.test.ts` (LRU + Key-Kollisionsfreiheit),
+`test/memoryPurge*.test.ts`, `test/memoryPromote*.test.ts`.
+
+**Offene Follow-ups:** Der Memory-Browser im web-ui liest die Kontext-Bäume noch über den
+dev-only `GET /bot-api/dev/memory/list` — in Produktion nicht gemountet, also dort inert. Eine
+operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächste Schritt.
+Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
+in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.

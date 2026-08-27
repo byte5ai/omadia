@@ -287,3 +287,101 @@ export function scopeGraphKey(rawScope: string): string {
   // keeps the key well-formed without collapsing it onto `'unscoped'`.
   return `${stem.length > 0 ? stem : 'scope'}-${digest}`;
 }
+
+/**
+ * Context-key constraints. Same construction as `scopeGraphKey` above, a
+ * tighter budget: a context key is a PATH SEGMENT under
+ * `/memories/contexts/<slug>/<axis>/`, and it is embedded in the scope pattern
+ * `` `team:<ctxKey>:*` `` — so it must stay short and must never carry a `:`.
+ */
+const CONTEXT_KEY_MAX_LEN = 64;
+const CONTEXT_KEY_SAFE = /^[a-z0-9_-]{1,64}$/;
+
+/**
+ * The channel-type / id separator. Deliberately OUTSIDE the safe alphabet, so
+ * splitting a key at its first `~` recovers exactly the two parts that made it.
+ */
+const CONTEXT_KEY_SEPARATOR = '~';
+
+/**
+ * Placeholder stem for an id that sanitizes to nothing (punctuation-only, or
+ * empty). Keeps the segment well-formed; the digest still carries the identity.
+ */
+const CONTEXT_KEY_EMPTY_STEM = 'id';
+
+/**
+ * The shape the digest branch below always produces: `…-<16 lowercase hex>`.
+ *
+ * Load-bearing for injectivity, not cosmetic. The two branches of
+ * {@link safeContextSegment} would otherwise share one output space: an
+ * already-safe id spelled `x-61d6ea9c6d461bda` is carried through verbatim by
+ * the passthrough branch and is ALSO what the digest branch emits for the
+ * unsafe id `X!` (sha256('X!').slice(0,16) === '61d6ea9c6d461bda'). A caller
+ * who can name their own conversation id could then pre-image another
+ * context's key and land in its memory tree. Forcing every raw id of this
+ * shape down the digest branch makes the two output spaces disjoint, so the
+ * segment function is injective wherever sha256-16 is collision-free.
+ */
+const CONTEXT_KEY_DIGEST_SHAPE = new RegExp(`-[0-9a-f]{${DIGEST_LEN}}$`);
+
+/**
+ * One key segment: byte-identical when it is already lossless AND cannot be
+ * confused with a digest, stem + digest otherwise. This is `scopeGraphKey`'s
+ * body with the context budget — kept as its own function rather than a
+ * parameter on `scopeGraphKey` because the two keys must be free to diverge
+ * without silently moving graph partitions.
+ */
+function safeContextSegment(raw: string): string {
+  if (CONTEXT_KEY_SAFE.test(raw) && !CONTEXT_KEY_DIGEST_SHAPE.test(raw)) return raw;
+
+  const digest = createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, DIGEST_LEN);
+  const stem = raw
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase()
+    .slice(0, CONTEXT_KEY_MAX_LEN - DIGEST_LEN - 1);
+  return `${stem.length > 0 ? stem : CONTEXT_KEY_EMPTY_STEM}-${digest}`;
+}
+
+/**
+ * W5 memory-ACL — the partition key for a chat context's memory tree.
+ *
+ * Every `<ctxKey>` in the store grammar (`team:<ctxKey>:*`, `channel:<ctxKey>:*`,
+ * `user:<ctxKey>:*`), every physical path under
+ * `/memories/contexts/<slug>/<axis>/<ctxKey>/`, every purge selector and the
+ * promote route go through THIS function. It is the single choke point on
+ * purpose: an ad-hoc `replace(/[^a-z0-9]/g, '-')` anywhere else re-opens the
+ * hole `scopeGraphKey` was written to close.
+ *
+ * Why a digest at all: the old `sanitizeScope` collapse is not injective, and
+ * that stops being a recall nuisance the moment the key is a SECURITY boundary.
+ * A Teams conversation id is `19:abc@thread.tacv2` — it carries `:` and `@`, so
+ * plain sanitizing maps it onto the same key as the literal `19-abc-thread-tacv2`
+ * and onto every sibling that differs only in punctuation. Two teams that must
+ * not see each other's notes would then share one memory tree while every
+ * equality check still passes.
+ *
+ * The shape is `` `${lower(channelType)}~${safeKey(nativeId)}` ``:
+ *
+ *  - `channelType` is a TYPE TOKEN, so it is case- and whitespace-normalised
+ *    before hashing — `'Teams'`, `'teams'` and `' teams '` are the same channel.
+ *  - `nativeId` is IDENTITY, so it is hashed byte-exact: `' c1'` and `'c1'` are
+ *    two ids and get two partitions. Over-partitioning is the safe direction.
+ *  - `~` is outside the safe alphabet, so the split back into channel type and
+ *    id is unambiguous, and the result can never contain a `:` that would break
+ *    the `` /^team:([^:]+):\*$/ `` pattern format.
+ *
+ * Injective wherever a 64-bit sha256 prefix is collision-free: an already-safe
+ * id is carried through byte-identically, anything else keeps a 64-bit digest
+ * of the RAW input beside its readable stem, and the two output spaces are kept
+ * DISJOINT by {@link CONTEXT_KEY_DIGEST_SHAPE} — without that a safe id spelled
+ * in the digest branch's own shape would pre-image a hashed context's key.
+ *
+ * Examples: `teams~19-abc-thread-tacv2-a1b2c3d4e5f60718`,
+ * `telegram~-1001234567890`, `api~tenant-acme`.
+ */
+export function memoryContextKey(channelType: string, nativeId: string): string {
+  const type = safeContextSegment((channelType ?? '').trim().toLowerCase());
+  const id = safeContextSegment(nativeId ?? '');
+  return `${type}${CONTEXT_KEY_SEPARATOR}${id}`;
+}

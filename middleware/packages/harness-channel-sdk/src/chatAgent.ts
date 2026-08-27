@@ -9,6 +9,7 @@ import type {
 } from './outgoing.js';
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
 import type { EnvelopeProvenance } from './provenance.js';
+import type { TurnOrigin } from './turnOrigin.js';
 
 /**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
@@ -407,6 +408,20 @@ export interface ChatTurnInput {
    * Set only by the canvas channel; absent → the skeleton path is unchanged.
    */
   canvasState?: { basedOnRevision: string; currentTree: unknown };
+  /**
+   * Kontext-Herkunft des Turns. Fehlt → kontextfreier Memory-Scope (fail-closed).
+   *
+   * W5 memory-ACL (design #870 §4/§5): the one contract extension the
+   * chat-context memory ACL needs. `ChatAgent.chat()` is the only surface every
+   * channel adapter shares, so this is where "which team / channel / user is
+   * this turn from" can be stated once instead of per connector. The
+   * orchestrator resolves it to memory axes at the start of the turn
+   * (`memoryAxesForOrigin`) and never lets the model see it.
+   *
+   * Optional on purpose — an older channel plugin sends nothing, resolves to
+   * the context-free axes and behaves exactly as it does today.
+   */
+  origin?: TurnOrigin;
 }
 
 /**

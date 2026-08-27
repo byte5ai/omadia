@@ -3866,10 +3866,31 @@ export async function resetChatSession(
 //   - DELETE /        → irreversible purge, gated by a confirm phrase
 //
 // Axis semantics: 'all' wipes both the agent-scratch (per-agent Turn store)
-// and the Knowledge-Graph. The scoped axes (agent/user/team/channel) only
-// touch the Knowledge-Graph — the agent-scratch is agent-scoped and is not
-// reachable by a user/team/channel selector. The backend surfaces that as a
-// `warning` on the response, which the UI renders verbatim.
+// and the Knowledge-Graph.
+//
+// Since the chat-context memory ACL (design #870 §7) the scoped axes reach the
+// agent-scratch too: `agent` additionally removes /memories/contexts/<slug>,
+// and `user`/`team`/`channel` delete /memories/contexts/<agent>/<axis>/<ctxKey>
+// across every agent. The old "scratch is agent-scoped" caveat therefore no
+// longer holds for those axes — the backend still surfaces whatever caveat
+// applies as a `warning` on the response, which the UI renders verbatim.
+//
+// Selector semantics for user/team/channel: the value MUST carry a channel-type
+// half. Two spellings are accepted, and the backend resolves both:
+//
+//   - the derived context key copied out of the memory browser
+//     (`teams~19-abc-thread-tacv2-a1b2c3d4e5f60718`), or
+//   - the channel type plus the platform's RAW native id
+//     (`teams~19:abc@thread.tacv2`), which is the form an operator can copy out
+//     of a chat client.
+//
+// A selector with NO `~` is rejected with `invalid_selector` (400) rather than
+// silently matching nothing: a Danger-Zone gesture that deletes nothing while
+// reporting success is the worst possible answer here. The two spellings are
+// NOT interchangeable through one derivation — `memoryContextKey` is
+// deliberately not idempotent on its own digest shape, since that would make a
+// hashed context pre-imageable — so the backend resolves both readings and
+// purges the union of the trees they actually name.
 // -----------------------------------------------------------------------------
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
@@ -3931,6 +3952,114 @@ export async function purgeMemory(body: {
     );
   }
   return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Memory promote — the explicit, audited operator act that moves knowledge
+// across context tiers of ONE agent (design #870 §6). Never agent-crossing.
+//
+//   POST <base>/memory/promotions   copy|move a file/subtree upwards
+//   GET  <base>/memory/promotions   read the audit log
+//
+// `<base>` is the operator agent route this repo already exposes
+// (/api/v1/operator/agents/:slug) — the design sketch wrote
+// `/api/agents/:slug`, which is not a mount point that exists here. Kept in
+// ONE helper so the path is a single edit if the backend lands elsewhere.
+// -----------------------------------------------------------------------------
+
+export type MemoryContextAxis = 'team' | 'channel' | 'user';
+export type MemoryPromoteTier = 'agent' | 'team';
+export type MemoryPromoteMode = 'copy' | 'move';
+
+export interface MemoryPromoteRequest {
+  /** Source is always a context tier; `path` is relative to that tier root. */
+  source: { axis: MemoryContextAxis; ctxKey: string; path: string };
+  /** Target tier; `path` defaults to the source path server-side. */
+  target: { tier: MemoryPromoteTier; ctxKey?: string; path?: string };
+  mode: MemoryPromoteMode;
+  /** Mandatory in the UI — an unexplained promote is not auditable. */
+  reason: string;
+}
+
+/** One line of /memories/core/audit/memory-promotions.jsonl. */
+export interface MemoryPromotionReceipt {
+  ts: string;
+  agentSlug: string;
+  actor: string;
+  mode: MemoryPromoteMode;
+  sourcePath: string;
+  targetPath: string;
+  reason?: string;
+  bytes: number;
+}
+
+/** A context tree with its display name, when something could resolve one. */
+export interface MemoryContextLabel {
+  axis: MemoryContextAxis;
+  ctxKey: string;
+  displayName?: string;
+}
+
+/**
+ * The promotion endpoint, on the SAME prefix and gate as the Danger-Zone purge
+ * (`/api/v1/admin/memory/purge`, cookie session JWT). Promotion is the one way
+ * knowledge crosses a chat-context boundary, so it is a Danger-Zone-class
+ * operator action and shares that surface rather than introducing a third one.
+ */
+function memoryPromotionsPath(agentSlug: string): string {
+  return `/v1/admin/memory/promotions/${encodeURIComponent(agentSlug)}`;
+}
+
+/** Copy or move a memory file/subtree into a wider tier of the same agent. */
+export async function promoteMemory(
+  agentSlug: string,
+  req: MemoryPromoteRequest,
+): Promise<MemoryPromotionReceipt> {
+  const res = await postJson<{ receipt?: MemoryPromotionReceipt }>(
+    memoryPromotionsPath(agentSlug),
+    req,
+  );
+  // The route answers `{ receipt }`, not a bare receipt. `postJson` is an
+  // unchecked cast, so validate at the boundary: without this a shape change
+  // surfaces as a render-time TypeError on `receipt.targetPath` rather than as
+  // a handled error.
+  const receipt = res?.receipt;
+  if (!receipt || typeof receipt !== 'object') {
+    throw new Error('memory_promote_unexpected_response');
+  }
+  return receipt;
+}
+
+/** Read the promote audit log, newest first. */
+export async function listMemoryPromotions(
+  agentSlug: string,
+  opts: { limit?: number } = {},
+): Promise<{ entries: MemoryPromotionReceipt[] }> {
+  const qs =
+    opts.limit === undefined ? '' : `?limit=${encodeURIComponent(String(opts.limit))}`;
+  const res = await getJson<{ entries?: unknown }>(
+    `${memoryPromotionsPath(agentSlug)}${qs}`,
+  );
+  // Same reason as above, and the failure is worse here: `setEntries(undefined)`
+  // followed by `entries.length` throws during render and white-screens the
+  // whole /memory page, which the panel's own error state cannot catch.
+  return { entries: Array.isArray(res?.entries) ? (res.entries as MemoryPromotionReceipt[]) : [] };
+}
+
+/**
+ * Best-effort display names for an agent's context keys ("aufgelöste
+ * Display-Namen aus dem KG, wo vorhanden", design §6). A context key is a
+ * digest by construction, so it is unreadable on purpose — but the KG only
+ * knows a name for contexts it has actually seen. Callers MUST tolerate a
+ * rejection (404 while the resolver is not deployed, 403 for a non-operator)
+ * and fall back to the decoded key.
+ */
+export async function listMemoryContextLabels(
+  agentSlug: string,
+): Promise<{ contexts: MemoryContextLabel[] }> {
+  return getJson<{ contexts: MemoryContextLabel[] }>(
+    `/v1/operator/agents/${encodeURIComponent(agentSlug)}/memory/contexts`,
+  );
 }
 
 // -----------------------------------------------------------------------------

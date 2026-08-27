@@ -4167,8 +4167,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory Purge",
-    "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes only affect the knowledge graph. There is no undo — always check the preview first.",
-    "note": "<strong>Note:</strong> Deleting per user / team / channel only affects the knowledge graph — the agent scratch is agent-scoped.",
+    "intro": "Deletes memory irreversibly along one axis. <strong>Everything</strong> wipes agent scratch <em>and</em> knowledge graph; the user / team / channel axes hit the knowledge graph and the matching context tree under /memories/contexts. There is no undo — always check the preview first.",
+    "note": "<strong>Note:</strong> The user / team / channel selector is a context key (<code>channelType~id</code>) or the raw native id — it addresses one context tree across every agent.",
     "targetTitle": "Target",
     "axisLabel": "Axis",
     "axes": {
@@ -4181,9 +4181,9 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "user id or selector",
-      "team": "team id or selector",
-      "channel": "channel id or selector"
+      "user": "teams~29-1a2b… (never a bare id)",
+      "team": "teams~19-abc… (never a bare id)",
+      "channel": "telegram~-1001234567890 (never a bare id)"
     },
     "selectorRequired": "Selector required for this axis.",
     "reseedLabel": "Re-seed default memories after deletion (re-seed defaults)",
@@ -4201,7 +4201,13 @@
     "deleteButton": "Delete irreversibly",
     "deleteError": "Delete error: {message}",
     "deletedTitle": "Deleted",
-    "forbiddenError": "Not authorized (403) — memory purge requires admin rights."
+    "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
+    "selectorHint": {
+      "agent": "Agent slug. Also removes that agent’s context trees under /memories/contexts.",
+      "user": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw user id. Deletes the user tier across all agents.",
+      "team": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw team id. Deletes the team tier across all agents.",
+      "channel": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw conversation id. Deletes the channel tier across all agents."
+    }
   },
   "adminDuplicates": {
     "list": {
@@ -4713,7 +4719,65 @@
     "loading": "Loading…",
     "empty": "empty",
     "selectEntry": "Select an entry on the left…",
-    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator."
+    "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
+    "tab": {
+      "file": "File",
+      "audit": "Audit"
+    },
+    "contexts": {
+      "title": "Contexts",
+      "loading": "Loading…",
+      "error": "Context tree could not be loaded.",
+      "empty": "No agent memory yet.",
+      "agentTier": "Agent tier (read-only in context turns)",
+      "axis": {
+        "team": "Teams ({count})",
+        "channel": "Channels ({count})",
+        "user": "Users ({count})"
+      }
+    },
+    "promote": {
+      "openButton": "Promote…",
+      "title": "Promote memory",
+      "intro": "Copies or moves this note into a wider tier of the same agent. Never across agents, always audited.",
+      "sourceLabel": "Source",
+      "targetPreviewLabel": "Target",
+      "tierLabel": "Target tier",
+      "tier": {
+        "agent": "Agent tier (all contexts)",
+        "team": "Team tier"
+      },
+      "modeLabel": "Mode",
+      "mode": {
+        "copy": "Copy (keep source)",
+        "move": "Move (remove source)"
+      },
+      "targetCtxKeyLabel": "Target team key",
+      "targetCtxKeyPlaceholder": "teams~19-abc-thread-tacv2-a1b2c3d4",
+      "targetPathLabel": "Target path (relative to the tier)",
+      "reasonLabel": "Reason",
+      "reasonPlaceholder": "Why may this knowledge leave its context?",
+      "reasonHint": "Required — the reason goes into the audit log.",
+      "cancel": "Cancel",
+      "submit": "Promote",
+      "submitting": "promoting…",
+      "forbidden": "Not authorized (403) — promoting memory requires operator rights.",
+      "unavailable": "The promote endpoint is not available on this middleware (404).",
+      "success": "Promoted to {path}."
+    },
+    "audit": {
+      "loading": "Loading audit log…",
+      "empty": "No promotions recorded for this agent.",
+      "selectAgent": "Select an agent or a context on the left to read its audit log.",
+      "unavailable": "The audit endpoint is not available on this middleware (404).",
+      "forbidden": "Not authorized (403) — the audit log requires operator rights.",
+      "mode": {
+        "copy": "copy",
+        "move": "move"
+      },
+      "bytes": "{bytes} B",
+      "noReason": "No reason recorded."
+    }
   },
   "memories": {
     "kinds": {

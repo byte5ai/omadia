@@ -67,6 +67,7 @@ import {
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
 import type { MemoryToolHandler } from '@omadia/memory';
+import type { MemoryBinder } from './memoryBinder.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -426,6 +427,24 @@ export interface OrchestratorOptions {
    * handler is used exactly as before. Wired by `buildOrchestratorForAgent`.
    */
   memoryToolHandler?: MemoryToolHandler;
+  /**
+   * W5 memory-ACL — per-CHAT-CONTEXT memory isolation, one level narrower than
+   * `memoryToolHandler`.
+   *
+   * `memoryToolHandler` is resolved once at build time, so everything an Agent
+   * notes lands in one agent-global tree and is quotable in every other chat
+   * that Agent serves. When a binder is set, the handler is resolved instead at
+   * the START OF EACH TURN from `ChatTurnInput.origin`
+   * (`MemoryBinder.forOrigin`) and threaded down to `dispatchTool` as an
+   * explicit turn parameter — deliberately NOT through `turnContext`
+   * (AsyncLocalStorage), because a security decision that can be silently lost
+   * at an await boundary is not a security decision.
+   *
+   * Absent → `memoryToolHandler` is used exactly as before, and so it is for
+   * every turn whose origin resolves context-free. Wired by
+   * `buildOrchestratorForAgent`.
+   */
+  memoryBinder?: MemoryBinder;
   /**
    * Optional. When set, retrieves conversational context (verbatim tail of
    * the active chat + entity-anchored and full-text hits from other chats of
@@ -1293,6 +1312,33 @@ function withUnscreenedMarker(input: ChatTurnInput): ChatTurnInput {
 const DEFAULT_ASSISTANT_IDENTITY =
   'Du bist ein KI-Assistent, der Anfragen beantwortet, indem er an spezialisierte Fach-Agenten delegiert und Lernpunkte über Sessions hinweg persistent merkt.';
 
+/**
+ * W5 memory-ACL — one turn's resolved memory binding.
+ *
+ * Threaded as an explicit parameter from the turn entry point down to
+ * `dispatchToolInner`, never read back out of `turnContext`. `contextBound`
+ * says whether the turn actually landed in a chat-context tier: it selects the
+ * matching system-prompt convention, so the model is never told about
+ * `/memories/~team/` on a turn where that path is not mapped.
+ */
+interface TurnMemoryBinding {
+  readonly handler: MemoryToolHandler | undefined;
+  readonly contextBound: boolean;
+}
+
+/**
+ * The memory-namespace convention a CONTEXT-BOUND turn gets, replacing the
+ * "global for this agent" sentence of the default prompt — which is false the
+ * moment the binder is active and would invite the model to expect notes from
+ * another chat.
+ */
+const CONTEXT_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (dieser Chat):**
+- Deine Notizen unter \`/memories/\` gelten für DIESEN Chat-Kontext — was du hier schreibst, ist in anderen Teams/Kanälen nicht sichtbar, und umgekehrt.
+- Team-weites Wissen liegt unter \`/memories/~team/\` (lesen und schreiben) — nur dorthin schreiben, wenn es für das ganze Team gilt.
+- Agent-weites Alt-Wissen liegt **read-only** unter \`/memories/~agent/\`. Schreibversuche dorthin schlagen fehl; wenn etwas dauerhaft agent-weit gelten soll, sag es dem Nutzer, statt es zu erzwingen — ein Operator hebt es dann bewusst hoch.
+
+`;
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -1304,7 +1350,11 @@ function buildSystemPrompt(
   hasCalendar: boolean,
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
+  contextBoundMemory = false,
 ): string {
+  // W5 — off by default, so a turn that is not context-bound produces a
+  // byte-identical prompt (and therefore a byte-identical prompt-cache key).
+  const contextMemoryBlock = contextBoundMemory ? CONTEXT_MEMORY_PROMPT_BLOCK : '';
   const domainList = domainTools.length
     ? domainTools.map((t) => `- \`${t.name}\`: ${t.spec.description}`).join('\n')
     : '- (keine Fach-Agenten konfiguriert)';
@@ -1379,7 +1429,7 @@ Memory-Namensräume (Konvention):
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
 - /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen.
 
-**Regel für /memories/_rules/ lesen:**
+${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 - Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
 - Bei einem **Follow-up** im selben Chat (Variante, Bereinigung, Klarifikation, Nachfrage zum letzten Turn wie "und das Ganze nochmal ohne X", "und für Q4?", "zeig das als Line-Chart") **NICHT erneut** die Regeln lesen — der Verbatim-Tail im Gesprächskontext hat bereits den relevanten Stand. Direkt antworten (ggf. mit \`render_diagram\` für Chart-Varianten). Regel erneut lesen nur, wenn die Follow-up eine fachlich neue Dimension einführt (z. B. "jetzt das Gleiche auf HR-Ebene").
 - Heuristik: enthält der Kontext-Block einen \`## Letzte Turns in diesem Chat\`-Abschnitt und bezieht sich die aktuelle Frage auf einen dieser Turns → Memory-Read überspringen.
@@ -1763,6 +1813,8 @@ export class Orchestrator {
   private readonly maxTurnMs: number;
   /** Per-Agent scoped memory-tool handler; overrides the global one. */
   private readonly memoryToolHandler: MemoryToolHandler | undefined;
+  /** W5 — per-chat-context binder; overrides `memoryToolHandler` per turn. */
+  private readonly memoryBinder: MemoryBinder | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
@@ -1881,6 +1933,7 @@ export class Orchestrator {
         ? Math.trunc(options.maxTurnSeconds * 1000)
         : 0;
     this.memoryToolHandler = options.memoryToolHandler;
+    this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
@@ -3196,6 +3249,43 @@ export class Orchestrator {
     return aiDisclosure ? { ...result, aiDisclosure } : result;
   }
 
+  /**
+   * W5 memory-ACL — resolve the memory-tool handler for ONE turn.
+   *
+   * Called exactly once per turn, at the turn's start, from `runTurnCore` and
+   * from the streaming mirror. The result is passed down the dispatch chain as
+   * an explicit parameter, never read back out of ambient state.
+   *
+   * Three fallbacks, all in the same direction:
+   *
+   *  - no binder configured → the build-time `memoryToolHandler` (today);
+   *  - a binder, but an origin that resolves context-free (no `origin` at all,
+   *    an unknown channel type, an `unscoped`/`system` scope, or the per-agent
+   *    rollout flag still `'off'`) → `forOrigin` itself returns the
+   *    agent-private stack, byte-identical to today;
+   *  - a binder that throws → today's handler, plus a loud log. A binding is
+   *    configuration over a store, so a throw here means a programming error,
+   *    not a hostile input — and dropping the user's turn over it would be the
+   *    wrong trade. The fallback is the NARROWER scope, never a wider one.
+   */
+  private bindTurnMemory(input: ChatTurnInput): TurnMemoryBinding {
+    const fallback: TurnMemoryBinding = {
+      handler: this.memoryToolHandler,
+      contextBound: false,
+    };
+    if (!this.memoryBinder) return fallback;
+    try {
+      const bound = this.memoryBinder.forOrigin(input.origin);
+      return { handler: bound.handler, contextBound: !bound.axes.isContextFree };
+    } catch (err) {
+      console.error(
+        '[security-audit] orchestrator: MemoryBinder.forOrigin threw — falling back to the agent-private memory stack:',
+        err,
+      );
+      return fallback;
+    }
+  }
+
   private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
     const turnId = randomUUID();
     // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
@@ -3359,10 +3449,16 @@ export class Orchestrator {
         // by the harness; the orchestrator LLM never runs. Still flows through
         // the privacy-finalize block below so the verbatim answer is PII-masked
         // (Pitfall 3) and a receipt is attached.
-        const direct = await this.executeDirectLine(input, turnId);
+        // W5 memory-ACL — resolve THIS turn's memory binding exactly once, at
+        // the turn's start, and hand the result down as an explicit parameter.
+        // `input` is final here: the MCP-envelope normalisation and the
+        // inbound-screening gate above have both already re-bound it, so the
+        // origin the binding is derived from is the origin the turn ran with.
+        const turnMemory = this.bindTurnMemory(input);
+        const direct = await this.executeDirectLine(input, turnId, turnMemory);
         let result: ChatTurnResult;
         try {
-          result = direct ?? (await this.chatInContext(input, turnId));
+          result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
           // binding would have produced a sticky dispatch), so stamp the
           // negative. Without it a client could never learn a binding ended.
@@ -3484,6 +3580,7 @@ export class Orchestrator {
   private async executeDirectLine(
     input: ChatTurnInput,
     turnId: string,
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult | undefined> {
     // Candidates = THIS orchestrator's whitelisted sub-agents (OB-29-1 gating).
     const candidates: DirectLineCandidate[] = Array.from(
@@ -3643,6 +3740,7 @@ export class Orchestrator {
         tool.name,
         { question: wirePayload },
         handle.observer,
+        turnMemory,
       );
       // `createDomainTool.handle` does not throw on a sub-agent failure — it
       // returns an `Error …` string. Treat that as a faithful failure too.
@@ -4023,10 +4121,11 @@ export class Orchestrator {
   private async chatInContext(
     input: ChatTurnInput,
     turnId: string,
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult> {
     this.applyTurnAuthContext(input);
     try {
-      const result = await this.chatInContextInner(input, turnId);
+      const result = await this.chatInContextInner(input, turnId, turnMemory);
       await this.fireTurnHook(
         'onAfterTurn',
         turnId,
@@ -4132,6 +4231,7 @@ export class Orchestrator {
   private async chatInContextInner(
     input: ChatTurnInput,
     turnId: string,
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult> {
     await this.fireTurnHook('onBeforeTurn', turnId, input, {
       userMessage: input.userMessage,
@@ -4312,7 +4412,7 @@ export class Orchestrator {
           model: turnModel,
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, turnPersonaBody),
+            this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
             priorContext,
             withFinalizeHint(
               effectiveExtraSystemHint,
@@ -4561,7 +4661,7 @@ export class Orchestrator {
         });
         const settled = await Promise.allSettled(
           toolUses.map((use: ContentBlock, i: number) =>
-            this.dispatchTool(use.name, use.input, invocations[i]?.observer),
+            this.dispatchTool(use.name, use.input, invocations[i]?.observer, turnMemory),
           ),
         );
         const toolResults: ContentBlock[] = toolUses.map((use: ContentBlock, i: number) => {
@@ -4996,13 +5096,21 @@ export class Orchestrator {
     // inject extra user messages keyed by the same session scope. The inner
     // loop drains them at each iteration boundary; `endTurn` clears the buffer.
     steeringBus.beginTurn(sessionId);
+    // W5 memory-ACL — the streaming mirror of `runTurnCore`: bind once, thread
+    // explicitly. The streaming path is exactly why this is a parameter and not
+    // an AsyncLocalStorage lookup — a generator is resumed in the async context
+    // of whoever calls `.next()`, which is how `turnContext.enter` was silently
+    // losing the turn context on every streaming turn before W3-A (see the
+    // comment at the top of `chatStream`). A binding lost that way would not
+    // fail; it would quietly fall back to the agent-global tree.
+    const turnMemory = this.bindTurnMemory(input);
     try {
       // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
       // A user-directed specialist turn is dispatched deterministically by the
       // harness; the orchestrator LLM never runs. We synthesize the `done`
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
-      const direct = await this.executeDirectLine(input, turnId);
+      const direct = await this.executeDirectLine(input, turnId, turnMemory);
       if (direct) {
         const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
@@ -5059,7 +5167,7 @@ export class Orchestrator {
       // generator throws before any model call when masking cannot be
       // guaranteed; convert that into a graceful privacy-error `done` event
       // instead of tearing the stream down with a raw 500.
-      const inner = this.chatStreamInner(input, turnId, observer);
+      const inner = this.chatStreamInner(input, turnId, observer, turnMemory);
       const guardedInner = (async function* () {
         try {
           yield* inner;
@@ -5186,6 +5294,7 @@ export class Orchestrator {
     input: ChatTurnInput,
     turnId: string,
     observer: AskObserver | undefined,
+    turnMemory: TurnMemoryBinding | undefined,
   ): AsyncGenerator<ChatStreamEvent> {
     // #361 — wire-bound prompt masking; see chatInContextInner for the full
     // rationale. Same seam, streaming path.
@@ -5427,7 +5536,7 @@ export class Orchestrator {
             model: turnModel,
             max_tokens: this.maxTokens,
             system: buildSystemBlocks(
-              this.composeStableSystemPrompt(prependRules, turnPersonaBody),
+              this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
               priorContext,
               withFinalizeHint(
                 effectiveExtraSystemHint,
@@ -5677,7 +5786,7 @@ export class Orchestrator {
         const HEARTBEAT_MS = 5_000;
         const TICK_MS = 1_000;
         const slots: ParallelSlot[] = toolUses.map((use: ContentBlock, idx: number) =>
-          this.prepareStreamSlot(use, idx, traceCollector),
+          this.prepareStreamSlot(use, idx, traceCollector, turnMemory),
         );
 
         while (slots.some((s: ParallelSlot) => !s.settled)) {
@@ -6091,6 +6200,7 @@ export class Orchestrator {
     use: ContentBlock,
     idx: number,
     traceCollector: RunTraceCollector | undefined,
+    turnMemory: TurnMemoryBinding | undefined,
   ): ParallelSlot {
     const subEvents: ChatStreamEvent[] = [];
     const isNative = this.nativeTools.has(use.name);
@@ -6103,7 +6213,7 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer);
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory);
     return {
       idx,
       use,
@@ -6207,6 +6317,7 @@ export class Orchestrator {
     name: string,
     input: unknown,
     observer?: AskObserver,
+    turnMemory?: TurnMemoryBinding,
   ): Promise<string> {
     // #575 — the audience floor's egress guard, at the ONE choke point every
     // tool dispatch passes through. Placed before the deadline machinery so a
@@ -6229,7 +6340,7 @@ export class Orchestrator {
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {
       // Deadline explicitly disabled by the operator — legacy behaviour.
-      return this.dispatchToolDeadlined(name, input, observer);
+      return this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory);
     }
     const controller = new AbortController();
     const work = this.dispatchToolDeadlined(
@@ -6237,6 +6348,7 @@ export class Orchestrator {
       input,
       abortGuardedObserver(observer, controller.signal),
       controller.signal,
+      turnMemory,
     );
     // A dispatch that rejects AFTER the deadline already resolved the race
     // would otherwise surface as an unhandled rejection and kill the process.
@@ -6265,6 +6377,7 @@ export class Orchestrator {
     input: unknown,
     observer?: AskObserver,
     deadlineSignal?: AbortSignal,
+    turnMemory?: TurnMemoryBinding,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -6320,7 +6433,7 @@ export class Orchestrator {
             ? { subAgentOwnerPluginId: domainToolAgentId }
             : {}),
         },
-        () => this.dispatchToolInner(name, input, observer),
+        () => this.dispatchToolInner(name, input, observer, turnMemory),
       );
     } else if (privacy !== undefined && ctx !== undefined) {
       // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
@@ -6330,10 +6443,10 @@ export class Orchestrator {
       // context plus the receipt.
       result = await turnContext.run(
         { ...ctx, mcpInputSentinelMint },
-        () => this.dispatchToolInner(name, input, observer),
+        () => this.dispatchToolInner(name, input, observer, turnMemory),
       );
     } else {
-      result = await this.dispatchToolInner(name, input, observer);
+      result = await this.dispatchToolInner(name, input, observer, turnMemory);
     }
     // W0-2 — late-result firewall. The deadline already fired for this slot:
     // the turn took `toolDeadlineError` and moved on. Everything below this
@@ -6641,6 +6754,7 @@ export class Orchestrator {
     name: string,
     input: unknown,
     observer?: AskObserver,
+    turnMemory?: TurnMemoryBinding,
   ): Promise<string> {
     // Per-orchestrator memory isolation: when this Agent has a scoped
     // memory-tool handler, it MUST shadow the globally-registered `memory`
@@ -6658,12 +6772,20 @@ export class Orchestrator {
     // registered `memory` via a plugin) keeps its `agentId === undefined ⇒
     // always-available` default, so the two current always-ready memory
     // plugins are unaffected as long as they haven't reported not-ready.
-    if (name === MEMORY_TOOL_NAME && this.memoryToolHandler) {
+    // W5 — `turnMemory` is the handler `MemoryBinder.forOrigin` produced for
+    // THIS turn, handed down as an explicit parameter from the turn entry
+    // point. It wins over the build-time `memoryToolHandler` whenever it is
+    // present. It is a parameter and not an ambient lookup on purpose: a
+    // context binding that can be lost at an await boundary is a leak, and
+    // "unlikely" is not the standard for the axis that keeps team A's notes
+    // out of team B.
+    const memoryHandler = turnMemory ? turnMemory.handler : this.memoryToolHandler;
+    if (name === MEMORY_TOOL_NAME && memoryHandler) {
       const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
       if (!this.isToolAvailable(memoryAgentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
       }
-      const result = await this.memoryToolHandler.handle(input);
+      const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
       // Checked after the handler so a `view` of a missing/invalid path — which
       // contributed nothing — does not mark the answer as memory-fed.
@@ -6741,7 +6863,10 @@ export class Orchestrator {
    * rules, Fach-Agent routing) is unaffected, so a persona skill can change
    * *who* answers but never *how* tools/privacy rules are enforced.
    */
-  private getSystemPrompt(personaOverride?: string): string {
+  private getSystemPrompt(
+    personaOverride?: string,
+    contextBoundMemory = false,
+  ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
     // for their tools; plugin docs land in a separate bullet list so both
@@ -6775,6 +6900,7 @@ export class Orchestrator {
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
       this.privacyGuard?.() !== undefined,
       extraDocs,
+      contextBoundMemory,
     );
   }
 
@@ -6826,8 +6952,9 @@ export class Orchestrator {
   private composeStableSystemPrompt(
     prependRules: string,
     personaOverride?: string,
+    contextBoundMemory = false,
   ): string {
-    const body = this.getSystemPrompt(personaOverride);
+    const body = this.getSystemPrompt(personaOverride, contextBoundMemory);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }

@@ -170,6 +170,23 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
       };
 
       try {
+        // W5 memory-ACL (#860), coordinator decision 1 — this router emits NO
+        // `metadata.origin`, so an API turn resolves context-free and gets the
+        // agent-private memory stack, byte-identical to today. Deliberate:
+        //
+        //  - An API key is its own identity, not a delegate for a human in a
+        //    team or a channel (issue #438, see below), so there is no team or
+        //    channel this turn could honestly be said to belong to.
+        //  - `conversationId` is caller-supplied and only becomes safe after
+        //    the `internalConversationId` hash below. Deriving a memory
+        //    partition from the pre-hash value would let one caller name
+        //    another's tier; deriving it from the post-hash value would create
+        //    a per-key tier that no operator surface can list or purge by any
+        //    name a human knows.
+        //
+        // Giving API callers context memory means resolving a real tenant from
+        // the key and emitting an explicit `origin` — a deliberate change, not
+        // something to inherit by accident.
         const turn: IncomingTurn = {
           channelId: deps.channelId,
           // Namespaced by key identity: CoreApi derives its scope as

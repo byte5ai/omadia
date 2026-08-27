@@ -18,6 +18,52 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
+
+2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent
+learned in Teams team A landed in one agent-global tree and was quotable in team B on the
+next turn. This wave partitions that tree by chat context, fail-closed.
+
+- **Scope grammar.** `ScopedMemoryStore` gains `team:<ctxKey>:*`, `channel:<ctxKey>:*` and
+  `user:<ctxKey>:*`, plus an `ro:<pattern>` access modifier. The context trees live under a
+  NEW top-level segment `/memories/contexts/`, deliberately not under
+  `/memories/orchestrators/<slug>/`: `orchestrator:<slug>:*` matches only the agent tree, so
+  no legacy scope reaches a context tree and no context scope reaches the agent tree. `ro:`
+  is a veto rather than a weak grant — an overlapping pattern cannot silently re-grant write
+  to a path it protects.
+- **Context key.** `memoryContextKey(channelType, nativeId)` is the single sanitiser behind
+  every `<ctxKey>`, every physical path, every purge selector and the promote route. A
+  lossless id passes through byte-identically; anything else keeps a readable stem plus a
+  64-bit digest of the RAW input, and the two output spaces are kept disjoint so an id
+  spelled like a digest cannot pre-image another context's tree. The axes derivation keys on
+  an injective tuple of the scope's structural parts, not on its wire form — `group:x` as a
+  group ref and as a conversation id are two contexts, not one.
+- **Per-turn binding.** `MemoryBinder.forOrigin()` resolves one stack per chat context
+  (LRU-cached) at the start of each turn, and the orchestrator threads it to `dispatchTool`
+  as an explicit parameter — never through AsyncLocalStorage, where a generator resumed in
+  its caller's context would lose it silently and widen the scope rather than fail.
+- **What a context turn may do.** Write its own tier; read the agent tier (`ro:`); read but
+  NOT write the shared trees (`core`, `sessions`, `chat-sessions`, `_*`), which are the one
+  model-facing surface two contexts address by the same path. New knowledge leaves a context
+  only through the operator promote action.
+- **Operator surfaces.** The Danger-Zone purge axes `user`/`team`/`channel` get a scratch
+  footprint for the first time and delete the named context tree across every agent; a
+  selector without a `<channelType>~` half is now refused with `invalid_selector` instead of
+  silently matching nothing. New `POST|GET /api/v1/admin/memory/promotions/:slug` copies or
+  moves knowledge between an agent's tiers, on the same auth gate as purge, audited three
+  ways (JSONL log, provenance frontmatter, `[security-audit]` line). The memory browser gains
+  a context dimension, a promote dialog and an audit tab.
+- **No flag day.** Per-agent `agents.context_memory` (`off` | `enforce` | `enforce-strict`,
+  migration 0050) defaults to `off`, and `ChatTurnInput.origin` is optional. Every
+  combination of old/new middleware and old/new channel plugin behaves exactly as it does
+  today until an operator switches an agent over; unknown and NULL flag values read as `off`.
+
+Two properties are worth remembering because they cost a rewrite each. `formatSessionScope`
+is injective only over the strings `parseSessionScope` emits, while the design has channel
+adapters build scopes directly — so it cannot be used to key a security boundary. And a
+sanitise-or-hash key function is not injective unless the two branches have disjoint output
+spaces; without that, the hash branch is pre-imageable by anyone who can name their own id.
+
 ### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
 
 2026-08-26 — A store update to `@omadia/channel-teams` 0.21.0 failed on the live
