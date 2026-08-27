@@ -38,6 +38,7 @@ import type {
   PluginReadiness,
   PluginSetupField,
 } from '../api/admin-v1.js';
+import type { ProviderVerification } from '../platform/providerCredentialVerifier.js';
 import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
 
 export type { PluginReadiness } from '../api/admin-v1.js';
@@ -46,6 +47,17 @@ export type { PluginReadiness } from '../api/admin-v1.js';
  *  tests can pass a two-line stub and the real vault fits without a cast. */
 export interface ReadinessVault {
   listKeys(agentId: string): Promise<string[]>;
+}
+
+/** #884 — "does the LLM provider this plugin routes through actually have a
+ *  working credential?". Structural for the same reason `ReadinessVault` is:
+ *  a test passes a one-line stub and the real resolver fits without a cast.
+ *  Returns `undefined` for a plugin that consumes no LLM at all. */
+export interface ReadinessLlmProbe {
+  resolve(
+    pluginId: string,
+    config: Record<string, unknown> | undefined,
+  ): Promise<ProviderVerification | undefined>;
 }
 
 /** Kernel-injected synthetic setup fields (`_privacy_mode`,
@@ -94,7 +106,9 @@ function verifiedAt(entry: InstalledAgent): string | null {
  *   1. not in the installed registry              → 'not_installed'
  *   2. registry entry status === 'errored'        → 'errored' (+ error detail)
  *   3. a required, checkable setup field is empty → 'config_required'
- *   4. otherwise                                  → 'ready'
+ *   4. the plugin's assigned LLM provider has no
+ *      VERIFIED credential                        → 'awaiting_llm'
+ *   5. otherwise                                  → 'ready'
  *
  * Never rejects: a vault failure degrades to 'ready'.
  */
@@ -102,6 +116,7 @@ export async function computeReadiness(
   plugin: Pick<Plugin, 'id' | 'setup_fields'>,
   registry: InstalledRegistry,
   vault?: ReadinessVault,
+  llmProbe?: ReadinessLlmProbe,
 ): Promise<PluginReadiness> {
   const entry = registry.get(plugin.id);
   if (!entry) {
@@ -147,6 +162,21 @@ export async function computeReadiness(
   if (missing.length > 0) {
     return { state: 'config_required', missing_fields: missing, verified_at: null };
   }
+
+  if (!llmProbe) {
+    return { state: 'ready', missing_fields: [], verified_at: verifiedAt(entry) };
+  }
+
+  try {
+    const verdict = await llmProbe.resolve(plugin.id, entry.config);
+    if (verdict !== undefined && verdict.status !== 'verified') {
+      return { state: 'awaiting_llm', missing_fields: [], verified_at: null };
+    }
+  } catch {
+    // Same rule as the vault: a provider-probe hiccup must not flip the whole
+    // catalog away from "ready" based on an infrastructure-side failure.
+  }
+
   return { state: 'ready', missing_fields: [], verified_at: verifiedAt(entry) };
 }
 
@@ -157,9 +187,10 @@ export async function withReadiness(
   plugin: Plugin,
   registry: InstalledRegistry,
   vault?: ReadinessVault,
+  llmProbe?: ReadinessLlmProbe,
 ): Promise<Plugin> {
   try {
-    const readiness = await computeReadiness(plugin, registry, vault);
+    const readiness = await computeReadiness(plugin, registry, vault, llmProbe);
     return { ...plugin, readiness };
   } catch {
     return plugin;

@@ -13,11 +13,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { computeReadiness } from '../src/plugins/readiness.js';
+import type { ReadinessLlmProbe } from '../src/plugins/readiness.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { InstalledAgent } from '../src/plugins/installedRegistry.js';
 import type { Plugin, PluginSetupField } from '../src/api/admin-v1.js';
+import { resolvePluginLlmReadiness } from '../src/platform/pluginLlmReadiness.js';
+import type { ProviderVerification } from '../src/platform/providerCredentialVerifier.js';
 
 const PLUGIN_ID = 'de.byte5.integration.google-workspace';
+const LLM_PLUGIN_ID = '@omadia/orchestrator';
 
 function field(over: Partial<PluginSetupField> & { key: string }): PluginSetupField {
   return {
@@ -29,6 +33,12 @@ function field(over: Partial<PluginSetupField> & { key: string }): PluginSetupFi
 
 function plugin(fields: PluginSetupField[]): Pick<Plugin, 'id' | 'setup_fields'> {
   return { id: PLUGIN_ID, setup_fields: fields };
+}
+
+function llmPlugin(
+  fields: PluginSetupField[],
+): Pick<Plugin, 'id' | 'setup_fields'> {
+  return { id: LLM_PLUGIN_ID, setup_fields: fields };
 }
 
 async function registryWith(entry: Partial<InstalledAgent>) {
@@ -44,9 +54,35 @@ async function registryWith(entry: Partial<InstalledAgent>) {
   return registry;
 }
 
+async function llmRegistryWith(entry: Partial<InstalledAgent>) {
+  const registry = new InMemoryInstalledRegistry();
+  await registry.register({
+    id: LLM_PLUGIN_ID,
+    installed_version: '1.0.0',
+    installed_at: '2026-01-01T00:00:00.000Z',
+    status: 'active',
+    config: {},
+    ...entry,
+  });
+  return registry;
+}
+
 /** Minimal structural vault: only `listKeys` is used, never a value read. */
 function vaultWith(keys: string[]) {
   return { listKeys: async (): Promise<string[]> => keys };
+}
+
+function probeReturning(
+  verdict: ProviderVerification | undefined,
+): ReadinessLlmProbe & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    resolve: async (pluginId) => {
+      calls.push(pluginId);
+      return verdict;
+    },
+  };
 }
 
 test('a plugin absent from the installed registry is not_installed', async () => {
@@ -220,4 +256,157 @@ test('no vault wired at all → secret fields assumed satisfied, config still ch
   );
   assert.equal(r.state, 'config_required');
   assert.deepEqual(r.missing_fields, ['client_id']);
+});
+
+/**
+ * #884 — a plugin can be installed and locally configured while still lacking a
+ * working provider credential. The Hub must expose that separately from the
+ * older install/config projections.
+ */
+
+test('an LLM plugin stays ready when the 4th computeReadiness argument is omitted', async () => {
+  const registry = await llmRegistryWith({
+    config: { workspace: 'acme' },
+  });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+  );
+  assert.equal(r.state, 'ready');
+});
+
+test('an LLM plugin with a provider verdict of no_key becomes awaiting_llm', async () => {
+  const registry = await llmRegistryWith({ config: { workspace: 'acme' } });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probeReturning({ status: 'no_key' }),
+  );
+  assert.equal(r.state, 'awaiting_llm');
+  assert.deepEqual(r.missing_fields, []);
+  assert.equal(r.verified_at, null);
+});
+
+test('an LLM plugin with an unverified provider verdict becomes awaiting_llm', async () => {
+  const registry = await llmRegistryWith({ config: { workspace: 'acme' } });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probeReturning({ status: 'unverified' }),
+  );
+  assert.equal(r.state, 'awaiting_llm');
+});
+
+test('an LLM plugin with an invalid provider verdict becomes awaiting_llm', async () => {
+  const registry = await llmRegistryWith({ config: { workspace: 'acme' } });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    // A stored key the provider rejects is exactly the state the operator was
+    // being lied to about, so it must not read as ready.
+    probeReturning({ status: 'invalid' }),
+  );
+  assert.equal(r.state, 'awaiting_llm');
+});
+
+test('a verified provider verdict keeps an LLM plugin ready and preserves verified_at', async () => {
+  const registry = await llmRegistryWith({
+    config: { workspace: 'acme' },
+    last_activated_at: '2026-04-04T08:30:00.000Z',
+  });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probeReturning({ status: 'verified', verifiedAt: '2026-04-03T00:00:00.000Z' }),
+  );
+  assert.equal(r.state, 'ready');
+  assert.equal(r.verified_at, '2026-04-04T08:30:00.000Z');
+});
+
+test('the real LLM readiness resolver returns undefined for non-LLM plugins without touching deps', async () => {
+  const registry = await registryWith({ config: { client_id: 'abc' } });
+  const explodingVault = {
+    get: async (): Promise<string | undefined> => {
+      throw new Error('vault should not be touched');
+    },
+  };
+  const explodingCatalog = {
+    get: (): never => {
+      throw new Error('catalog should not be touched');
+    },
+  };
+  const r = await computeReadiness(
+    plugin([field({ key: 'client_id' })]),
+    registry,
+    vaultWith([]),
+    {
+      resolve: (id, cfg) =>
+        resolvePluginLlmReadiness(id, cfg, {
+          vault: explodingVault,
+          llmProviderCatalog: explodingCatalog,
+        }),
+    },
+  );
+  assert.equal(r.state, 'ready');
+});
+
+test('a throwing LLM readiness probe degrades to ready', async () => {
+  const registry = await llmRegistryWith({ config: { workspace: 'acme' } });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    {
+      resolve: async (): Promise<ProviderVerification | undefined> => {
+        throw new Error('probe failed');
+      },
+    },
+  );
+  assert.equal(r.state, 'ready');
+});
+
+test('config_required wins over awaiting_llm for an LLM plugin', async () => {
+  const registry = await llmRegistryWith({ config: {} });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probeReturning({ status: 'no_key' }),
+  );
+  assert.equal(r.state, 'config_required');
+  assert.deepEqual(r.missing_fields, ['workspace']);
+});
+
+test('errored wins over awaiting_llm for an LLM plugin', async () => {
+  const registry = await llmRegistryWith({
+    status: 'errored',
+    config: { workspace: 'acme' },
+    last_activation_error: 'activation failed',
+  });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probeReturning({ status: 'no_key' }),
+  );
+  assert.equal(r.state, 'errored');
+  assert.equal(r.error_detail, 'activation failed');
+});
+
+test('the LLM readiness probe is skipped for a not_installed plugin', async () => {
+  const registry = new InMemoryInstalledRegistry();
+  const probe = probeReturning({ status: 'no_key' });
+  const r = await computeReadiness(
+    llmPlugin([field({ key: 'workspace' })]),
+    registry,
+    vaultWith([]),
+    probe,
+  );
+  assert.equal(r.state, 'not_installed');
+  assert.deepEqual(probe.calls, []);
 });

@@ -259,3 +259,82 @@ describe('store router · readiness projection (OM-16)', () => {
     }
   });
 });
+
+describe('store router · LLM readiness projection (#884)', () => {
+  const LLM_PLUGIN_ID = '@omadia/orchestrator';
+
+  async function serveWithLlmVerdict(
+    state: 'no_key' | 'verified',
+  ): Promise<{ server: Server; base: string }> {
+    const catalog = fakeCatalog([
+      plugin(LLM_PLUGIN_ID, {
+        setup_fields: [configField],
+      }),
+    ]);
+    const registry = new InMemoryInstalledRegistry();
+    await registry.register({
+      id: LLM_PLUGIN_ID,
+      installed_version: '1.0.0',
+      installed_at: '2026-01-01T00:00:00.000Z',
+      status: 'active',
+      config: { workspace: 'acme' },
+    });
+
+    const app = express();
+    app.use(
+      '/store/plugins',
+      createStoreRouter({
+        catalog,
+        registry,
+        llmReadiness: {
+          resolve: async () => ({ status: state }),
+        },
+      }),
+    );
+    const server = await listenLoopback(app);
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    return { server, base };
+  }
+
+  it('projects awaiting_llm on list and detail while keeping install_state installed', async () => {
+    const { server, base } = await serveWithLlmVerdict('no_key');
+    try {
+      const listRes = await fetch(`${base}/store/plugins`);
+      assert.equal(listRes.status, 200);
+      const listBody = (await listRes.json()) as { items: Plugin[] };
+      assert.equal(listBody.items[0]?.readiness?.state, 'awaiting_llm');
+      assert.equal(listBody.items[0]?.install_state, 'installed');
+
+      const detailRes = await fetch(
+        `${base}/store/plugins/${encodeURIComponent(LLM_PLUGIN_ID)}`,
+      );
+      assert.equal(detailRes.status, 200);
+      const detailBody = (await detailRes.json()) as { plugin: Plugin };
+      assert.equal(detailBody.plugin.readiness?.state, 'awaiting_llm');
+      assert.equal(detailBody.plugin.install_state, 'installed');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('projects ready on list and detail when the LLM provider is verified', async () => {
+    const { server, base } = await serveWithLlmVerdict('verified');
+    try {
+      const listRes = await fetch(`${base}/store/plugins`);
+      assert.equal(listRes.status, 200);
+      const listBody = (await listRes.json()) as { items: Plugin[] };
+      assert.equal(listBody.items[0]?.readiness?.state, 'ready');
+      assert.equal(listBody.items[0]?.install_state, 'installed');
+
+      const detailRes = await fetch(
+        `${base}/store/plugins/${encodeURIComponent(LLM_PLUGIN_ID)}`,
+      );
+      assert.equal(detailRes.status, 200);
+      const detailBody = (await detailRes.json()) as { plugin: Plugin };
+      assert.equal(detailBody.plugin.readiness?.state, 'ready');
+      assert.equal(detailBody.plugin.install_state, 'installed');
+    } finally {
+      server.close();
+    }
+  });
+});

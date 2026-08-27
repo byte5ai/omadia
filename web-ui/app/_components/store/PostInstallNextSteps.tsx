@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Check, KeyRound, MessageSquare, Plug } from 'lucide-react';
+import { Check, KeyRound, MessageSquare, Plug, Sparkles } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import type { PluginReadiness } from '../../_lib/storeTypes';
@@ -9,7 +9,10 @@ import type { PluginReadiness } from '../../_lib/storeTypes';
 interface PostInstallNextStepsProps {
   pluginName: string;
   /** OM-16 — when the freshly-installed plugin still needs credentials, the
-   *  setup link is the FIRST thing offered and carries the missing count. */
+   *  setup link is the FIRST thing offered and carries the missing count.
+   *  #884 — `awaiting_llm` is the same idea one level out: nothing is left to
+   *  fill in on this plugin's own form, so the CTA points at the providers
+   *  admin page instead of the anchor. */
   readiness?: PluginReadiness;
 }
 
@@ -32,6 +35,7 @@ export function PostInstallNextSteps({
 }: PostInstallNextStepsProps): React.ReactElement {
   const t = useTranslations('store.install');
   const needsSetup = readiness?.state === 'config_required';
+  const needsLlmProvider = readiness?.state === 'awaiting_llm';
   const missingCount = readiness?.missing_fields.length ?? 0;
 
   return (
@@ -49,6 +53,12 @@ export function PostInstallNextSteps({
             <KeyRound className="size-3.5" aria-hidden />
             {t('toSetup', { count: missingCount })}
           </a>
+        ) : null}
+        {needsLlmProvider ? (
+          <Link href="/admin/providers" className={LINK_CLASS}>
+            <Sparkles className="size-3.5" aria-hidden />
+            {t('toLlmProvider')}
+          </Link>
         ) : null}
         <Link href="/operator/agents" className={LINK_CLASS}>
           <Plug className="size-3.5" aria-hidden />

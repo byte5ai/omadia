@@ -425,10 +425,18 @@ export interface PluginActionStatus {
  * Unlike `PluginActionStatus` (push-only, plugins that call `ctx.status`),
  * readiness is computed by the kernel and therefore also covers the majority
  * of plugins that never report status at all.
+ *
+ * `awaiting_llm` (#884) is deliberately NOT folded into `config_required`. The
+ * plugin's own manifest-required fields are all satisfied; what is missing is a
+ * VERIFIED credential on the LLM provider it was assigned, and that lives on a
+ * different page (`/admin/providers`) entirely. Saying "configuration required"
+ * would send the operator to the plugin's own setup form, where there is
+ * nothing left to fill in.
  */
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  | 'awaiting_llm'
   | 'ready'
   | 'errored';
 

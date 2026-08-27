@@ -428,7 +428,8 @@ function InstalledPanel({
   const readinessTone: 'ok' | 'warning' | 'danger' =
     readiness?.state === 'errored'
       ? 'danger'
-      : readiness?.state === 'config_required'
+      : readiness?.state === 'config_required' ||
+          readiness?.state === 'awaiting_llm'
         ? 'warning'
         : 'ok';
   const readinessLabel =
@@ -436,7 +437,9 @@ function InstalledPanel({
       ? tState('errored')
       : readiness?.state === 'config_required'
         ? tState('configRequired')
-        : t('active');
+        : readiness?.state === 'awaiting_llm'
+          ? tState('awaitingLlm')
+          : t('active');
   const missingFieldsTitle =
     readiness?.state === 'config_required' &&
     readiness.missing_fields.length > 0
