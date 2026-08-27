@@ -64,6 +64,26 @@ adapters build scopes directly — so it cannot be used to key a security bounda
 sanitise-or-hash key function is not injective unless the two branches have disjoint output
 spaces; without that, the hash branch is pre-imageable by anyone who can name their own id.
 
+### Changed — the memory context browser reads the operator endpoint (#860 W2a)
+
+2026-08-27 — W5 shipped the context browser on `/bot-api/dev/memory/{list,file}`
+(`packages/harness-memory/src/devMemoryRouter.ts`), which the memory plugin only mounts when
+`dev_memory_endpoints_enabled` resolves truthy — a flag the kernel forbids in production. The
+panel was therefore dead exactly where an operator needs it, and it explained itself with
+"set `DEV_ENDPOINTS_ENABLED`", advice no production operator can act on.
+
+- **Both call sites move** to `GET /api/v1/operator/memory/contexts/{list,file}`
+  (`middleware/src/routes/operatorMemoryContexts.ts`), `requireAuth`-gated on the same cookie
+  session as the Danger-Zone purge. The wire shape is unchanged, so only the URL moves.
+- **The page is now a CONTEXT browser.** That endpoint is structurally unable to read outside
+  `/memories/contexts`, so the root, the breadcrumbs and "up" all stop there and the tree no
+  longer offers an agent-tier node — a node that always errors is worse than an absent one.
+  Promotion still TARGETS the agent tier; that is a write on the audited promote route.
+- **401/403 read as words.** They are ordinary answers on a gated route, so they get their own
+  copy instead of a bare "Listing failed (HTTP 401)". `memory.errorDevEndpointUnavailable` is
+  gone, replaced by `errorUnauthenticated` / `errorForbidden` / `errorPathNotFound` /
+  `errorOutOfScope`. The browser stays strictly READ-ONLY.
+
 ### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
 
 2026-08-26 — A store update to `@omadia/channel-teams` 0.21.0 failed on the live

@@ -4707,13 +4707,16 @@
     }
   },
   "memory": {
-    "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
+    "errorUnauthenticated": "Not signed in (HTTP 401). The memory browser reads an operator-authenticated endpoint — sign in again, then reload this page.",
+    "errorForbidden": "Not authorized (HTTP 403) — browsing chat-context memory requires operator rights.",
+    "errorPathNotFound": "This path no longer exists in the memory store (HTTP 404).",
+    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint.",
     "backendInMemory": "In-memory · volatile",
-    "descriptionInMemory": "Live browser of the active memory store (RAM, empty after restart).",
-    "descriptionPostgres": "Live browser of the active memory store (persistent in Postgres).",
-    "description": "Live browser of the active memory store.",
+    "descriptionInMemory": "Read-only browser of the chat-context memory trees (RAM, empty after restart).",
+    "descriptionPostgres": "Read-only browser of the chat-context memory trees (persistent in Postgres).",
+    "description": "Read-only browser of the chat-context memory trees.",
     "pathLabel": "Path",
     "reload": "↻ Reload",
     "loading": "Loading…",
@@ -4729,7 +4732,6 @@
       "loading": "Loading…",
       "error": "Context tree could not be loaded.",
       "empty": "No agent memory yet.",
-      "agentTier": "Agent tier (read-only in context turns)",
       "axis": {
         "team": "Teams ({count})",
         "channel": "Channels ({count})",

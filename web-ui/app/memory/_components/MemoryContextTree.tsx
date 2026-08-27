@@ -8,8 +8,6 @@ import { listMemoryContextLabels, type MemoryContextAxis } from '@/app/_lib/api'
 import {
   CONTEXTS_ROOT,
   MEMORY_CONTEXT_AXES,
-  ORCHESTRATORS_ROOT,
-  agentTierRoot,
   basename,
   contextAxisRoot,
   contextTierRoot,
@@ -19,23 +17,30 @@ import {
 /**
  * Context dimension of the memory browser (design #870 §6).
  *
- * The tree is derived from the store itself — `/memories/orchestrators/*` for
- * the agent tier, `/memories/contexts/<slug>/<axis>/*` for the context tiers —
- * so it shows exactly what exists rather than what a registry believes exists.
+ * The tree is derived from the store itself — `/memories/contexts/<slug>/<axis>/*`
+ * — so it shows exactly what exists rather than what a registry believes exists.
  * Display names are an OPTIONAL enrichment: when nothing resolves a key, the
  * `<channelType>~<safeKey>` context key is shown, which is the form the purge
  * selector accepts.
  *
- * KNOWN LIMITATION — this surface is DEV-ONLY today. `listDir` is backed by
- * `GET /bot-api/dev/memory/list` (`createDevMemoryRouter`), which is
- * unauthenticated and mounted only when the plugin's
- * `dev_memory_endpoints_enabled` flag resolves truthy; the kernel enforces that
- * the flag is never set in production. §9 of the design puts the operator UI
- * outside this wave, so no operator-authenticated listing endpoint exists yet.
- * What this component guarantees in the meantime is that the absence is
- * VISIBLE: a non-404 failure reaches the error state instead of rendering as an
- * empty tree. Backing it with an operator-gated listing (matching the purge
- * gate) is the follow-up.
+ * SCOPE — contexts only, on purpose
+ * ---------------------------------
+ * `listDir` is now backed by `GET /bot-api/v1/operator/memory/contexts/list`
+ * (`middleware/src/routes/operatorMemoryContexts.ts`), which is `requireAuth`-
+ * gated and structurally unable to read outside `/memories/contexts`. It
+ * replaces the unauthenticated `/bot-api/dev/memory/list`, which the memory
+ * plugin only mounted behind `dev_memory_endpoints_enabled` — a flag the kernel
+ * forbids in production, so this tree used to be dead precisely where an
+ * operator needs it.
+ *
+ * The agent tier (`/memories/orchestrators/<slug>`) is consequently NOT a node
+ * here any more: it lies outside the one subtree this gate can serve, and a
+ * node that always errors is worse than an absent one. Promotion still targets
+ * the agent tier — that is a write on the audited promote route, not a read.
+ *
+ * A non-404 failure still reaches the error state instead of rendering as an
+ * empty tree, so an unreachable middleware or an expired session can never be
+ * mistaken for "no context memory yet".
  */
 
 export interface DirEntry {
@@ -47,10 +52,7 @@ export type ListDir = (path: string) => Promise<DirEntry[]>;
 
 export interface MemoryContextTreeProps {
   listDir: ListDir;
-  /** Agent whose agent-tier root is currently browsed, if any. */
-  activeAgentTier: string | null;
   activeContext: MemoryContextRef | null;
-  onSelectAgentTier: (agentSlug: string) => void;
   onSelectContext: (ref: MemoryContextRef) => void;
 }
 
@@ -65,9 +67,7 @@ function dirNames(entries: DirEntry[], parent: string): string[] {
 
 export function MemoryContextTree({
   listDir,
-  activeAgentTier,
   activeContext,
-  onSelectAgentTier,
   onSelectContext,
 }: MemoryContextTreeProps): React.ReactElement {
   const t = useTranslations('memory.contexts');
@@ -82,24 +82,18 @@ export function MemoryContextTree({
     let cancelled = false;
     async function loadAgents(): Promise<void> {
       try {
-        // Both roots are optional — a store with no context trees yet has no
+        // The root is optional — a store with no context trees yet has no
         // `contexts` directory at all — but that "optional" is the CALLER's
         // 404-to-empty rule, not a blanket catch here. Swallowing every
         // rejection would make the error state below unreachable, so a
         // middleware that is down or a 401 from an expired session would
         // render as "No agent memory yet" and an operator would conclude the
         // context trees do not exist. Let a real failure through.
-        const [ctx, orch] = await Promise.all([
-          listDir(CONTEXTS_ROOT),
-          listDir(ORCHESTRATORS_ROOT),
-        ]);
+        const ctx = await listDir(CONTEXTS_ROOT);
         if (cancelled) return;
-        const merged = [
-          ...new Set([
-            ...dirNames(ctx, CONTEXTS_ROOT),
-            ...dirNames(orch, ORCHESTRATORS_ROOT),
-          ]),
-        ].sort((a, b) => a.localeCompare(b));
+        const merged = dirNames(ctx, CONTEXTS_ROOT).sort((a, b) =>
+          a.localeCompare(b),
+        );
         setAgents(merged);
         setExpanded(merged[0] ?? null);
       } catch (err) {
@@ -197,21 +191,6 @@ export function MemoryContextTree({
               </button>
               {isOpen && (
                 <div className="ml-3 flex flex-col gap-0.5 border-l border-[color:var(--border)] pl-2">
-                  {/* eslint-disable-next-line no-restricted-syntax -- tree selection row, not a text CTA */}
-                  <button
-                    type="button"
-                    onClick={() => { onSelectAgentTier(slug); }}
-                    aria-current={activeAgentTier === slug ? 'true' : undefined}
-                    title={agentTierRoot(slug)}
-                    className={[
-                      'rounded px-1 py-1 text-left text-[11px]',
-                      activeAgentTier === slug
-                        ? 'bg-[color:var(--bg-soft)] text-[color:var(--fg-strong)]'
-                        : 'text-[color:var(--fg-muted)] hover:bg-[color:var(--bg-soft)]',
-                    ].join(' ')}
-                  >
-                    {t('agentTier')}
-                  </button>
                   {axes === undefined ? (
                     <span className="px-1 py-1 text-[11px] text-[color:var(--fg-muted)]">
                       {t('loading')}

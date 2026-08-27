@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Markdown } from '../_components/Markdown';
 import { Button } from '@/app/_components/ui/Button';
-import { getMemoryBackend, type MemoryBackend } from '../_lib/api';
+import {
+  getMemoryBackend,
+  operatorMemoryContextsFileUrl,
+  operatorMemoryContextsListUrl,
+  type MemoryBackend,
+  type MemoryDirEntry,
+  type MemoryListResponse,
+} from '../_lib/api';
 
 import {
   MemoryContextTree,
@@ -12,16 +19,16 @@ import {
 } from './_components/MemoryContextTree';
 import { PromoteDialog } from './_components/PromoteDialog';
 import { PromotionAuditPanel } from './_components/PromotionAuditPanel';
+import { looksLikeErrorPage, memoryErrorKey } from './_lib/memoryErrors';
 import {
-  MEMORY_ROOT,
-  agentTierRoot,
+  CONTEXTS_ROOT,
   basename,
   contextAxisRoot,
   contextTierRoot,
   cwdToCrumbs,
   formatSize,
+  isInsideContexts,
   parentOf,
-  parseAgentTierPath,
   parseContextPath,
   type MemoryContextRef,
 } from './_lib/memoryPaths';
@@ -34,28 +41,35 @@ import {
  * crosses those boundaries through an explicit, audited promote. This page is
  * the operator surface for exactly that — browse a context, promote out of it,
  * read the audit log.
+ *
+ * READS THE OPERATOR ENDPOINT, NOT THE DEV ONE
+ * --------------------------------------------
+ * Both fetches go to `/bot-api/v1/operator/memory/contexts/{list,file}`
+ * (`middleware/src/routes/operatorMemoryContexts.ts`). They used to go to
+ * `/bot-api/dev/memory/{list,file}`, which the memory plugin only mounts when
+ * `dev_memory_endpoints_enabled` is truthy — a flag the kernel forbids in
+ * production. This whole panel was therefore dead exactly where an operator
+ * needs it, and its own "dev endpoint unavailable, set DEV_ENDPOINTS_ENABLED"
+ * error was advice no production operator could act on.
+ *
+ * SCOPE — the page is now a CONTEXT browser
+ * -----------------------------------------
+ * The operator endpoint can only ever read `/memories/contexts`; the agent tier
+ * (`/memories/orchestrators/<slug>`) and the shared kernel are outside it by
+ * construction, because this is the surface that reads memory the chat-context
+ * ACL exists to partition. The browser mirrors that instead of pretending:
+ * the root is `CONTEXTS_ROOT`, breadcrumbs and "up" stop there, and the context
+ * tree no longer offers an agent-tier node. Promotion still TARGETS the agent
+ * tier — that is a write on the audited promote route, not a read here.
  */
 
-interface Entry {
-  virtualPath: string;
-  isDirectory: boolean;
-  sizeBytes: number;
-}
-
-interface ListResponse {
-  path: string;
-  entries: Entry[];
-}
+type Entry = MemoryDirEntry;
 
 type RightTab = 'file' | 'audit';
 
-function listUrl(path: string): string {
-  return `/bot-api/dev/memory/list?path=${encodeURIComponent(path)}`;
-}
-
 export default function MemoryPage(): React.ReactElement {
   const t = useTranslations('memory');
-  const [cwd, setCwd] = useState<string>(MEMORY_ROOT);
+  const [cwd, setCwd] = useState<string>(CONTEXTS_ROOT);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<string>('');
@@ -71,34 +85,33 @@ export default function MemoryPage(): React.ReactElement {
   const [auditToken, setAuditToken] = useState(0);
 
   const loadDir = useCallback(async (path: string): Promise<void> => {
+    if (!isInsideContexts(path)) {
+      // Never ask the endpoint for a path it would refuse with a bare 400 —
+      // say WHY the path is unreachable from this surface instead.
+      setListError(t('errorOutOfScope'));
+      setEntries([]);
+      return;
+    }
     setLoadingList(true);
     setListError(null);
     try {
-      const res = await fetch(listUrl(path));
+      const res = await fetch(operatorMemoryContextsListUrl(path));
       if (!res.ok) {
         const contentType = res.headers.get('content-type') ?? '';
         const body = await res.text().catch(() => '');
-        const looksHtml =
-          contentType.includes('text/html') ||
-          body.trimStart().toLowerCase().startsWith('<!doctype');
-        if (res.status === 500 && looksHtml) {
-          // #667 — same misdiagnosis as the chat path: a 500 means something
-          // answered, so "middleware unreachable" (on a hardcoded dev host) is
-          // an assertion this code never checked.
-          setListError(t('errorUpstreamErrorPage'));
-        } else if (res.status === 404) {
-          setListError(t('errorDevEndpointUnavailable'));
+        const looksHtml = looksLikeErrorPage(contentType, body);
+        const key = memoryErrorKey(res.status, looksHtml);
+        if (key !== null) {
+          setListError(t(key));
+        } else if (body.length > 0 && !looksHtml) {
+          setListError(body);
         } else {
-          setListError(
-            body && !looksHtml
-              ? body
-              : t('errorListFailed', { status: String(res.status) }),
-          );
+          setListError(t('errorListFailed', { status: String(res.status) }));
         }
         setEntries([]);
         return;
       }
-      const data = (await res.json()) as ListResponse;
+      const data = (await res.json()) as MemoryListResponse;
       // Exclude the "self" entry (the listed directory itself) and sort:
       // directories first, then files, each alphabetically.
       const visible = data.entries
@@ -123,28 +136,39 @@ export default function MemoryPage(): React.ReactElement {
    * written a context tree genuinely has no `/memories/contexts` directory —
    * that is an empty branch, not a failure. Every other status throws, and the
    * tree turns it into a visible error. The distinction is load-bearing: with a
-   * blanket catch, a middleware that is down, a 401 from an expired session, or
-   * a production deploy where this dev-only endpoint is not mounted at all all
-   * render as "no agent memory yet" — an operator would conclude no context
-   * trees exist when the store was merely unreachable.
+   * blanket catch, a middleware that is down or a 401 from an expired session
+   * would render as "no agent memory yet" — an operator would conclude no
+   * context trees exist when the store was merely unreachable or the session
+   * merely stale.
    */
   const listDir = useCallback(async (path: string): Promise<DirEntry[]> => {
-    const res = await fetch(listUrl(path));
+    // A path outside `/memories/contexts` is not a failure to report: the
+    // operator endpoint structurally has no such branch, so it is empty here.
+    if (!isInsideContexts(path)) return [];
+    const res = await fetch(operatorMemoryContextsListUrl(path));
     if (res.status === 404) return [];
     if (!res.ok) throw new Error(`list ${path}: ${String(res.status)}`);
-    const data = (await res.json()) as ListResponse;
+    const data = (await res.json()) as MemoryListResponse;
     return data.entries;
   }, []);
 
   const loadFile = useCallback(async (path: string): Promise<void> => {
+    if (!isInsideContexts(path)) {
+      setFileError(t('errorOutOfScope'));
+      setContent('');
+      return;
+    }
     setLoadingFile(true);
     setFileError(null);
     try {
-      const res = await fetch(
-        `/bot-api/dev/memory/file?path=${encodeURIComponent(path)}`,
-      );
+      const res = await fetch(operatorMemoryContextsFileUrl(path));
       if (!res.ok) {
-        setFileError(t('errorFileFailed', { status: String(res.status) }));
+        const key = memoryErrorKey(res.status, false);
+        setFileError(
+          key !== null
+            ? t(key)
+            : t('errorFileFailed', { status: String(res.status) }),
+        );
         setContent('');
         return;
       }
@@ -159,9 +183,10 @@ export default function MemoryPage(): React.ReactElement {
   }, [t]);
 
   useEffect(() => {
-    // Best-effort backend badge — needs an authed session; the dev memory
-    // browser itself runs unauthenticated, so swallow failures and just
-    // omit the badge.
+    // Best-effort backend badge. It is a decoration, not the panel's subject:
+    // the listing below reports an unauthenticated session in its own words, so
+    // a failure here is swallowed and the badge simply omitted rather than
+    // duplicating that message in a second voice.
     void getMemoryBackend()
       .then((s) => setBackend(s.current))
       .catch(() => setBackend(null));
@@ -181,8 +206,12 @@ export default function MemoryPage(): React.ReactElement {
     if (selected) void loadFile(selected);
   }, [selected, loadFile]);
 
-  const crumbs = cwdToCrumbs(cwd);
-  const parent = parentOf(cwd);
+  // Navigation stops at the contexts root in BOTH directions: the crumb for
+  // `/memories` and an "up" out of `/memories/contexts` would both address a
+  // path this endpoint cannot serve, so offering them would be an invitation
+  // to an error rather than a way out of one.
+  const crumbs = cwdToCrumbs(cwd).filter((c) => isInsideContexts(c.path));
+  const parent = cwd === CONTEXTS_ROOT ? null : parentOf(cwd);
   const isMarkdown = selected?.endsWith('.md') ?? false;
 
   const cwdContext = useMemo(() => parseContextPath(cwd), [cwd]);
@@ -190,11 +219,10 @@ export default function MemoryPage(): React.ReactElement {
     () => (selected === null ? null : parseContextPath(selected)),
     [selected],
   );
-  const activeAgentTier = useMemo(() => parseAgentTierPath(cwd), [cwd]);
   const activeContext: MemoryContextRef | null = cwdContext;
   // Whose audit log the tab shows: the file in hand wins over the folder.
   const auditAgentSlug =
-    selectedContext?.agentSlug ?? cwdContext?.agentSlug ?? activeAgentTier;
+    selectedContext?.agentSlug ?? cwdContext?.agentSlug ?? null;
   const canPromote =
     selectedContext !== null && selectedContext.relPath.length > 0;
 
@@ -252,9 +280,7 @@ export default function MemoryPage(): React.ReactElement {
 
         <MemoryContextTree
           listDir={listDir}
-          activeAgentTier={activeAgentTier}
           activeContext={activeContext}
-          onSelectAgentTier={(slug) => { navigateTo(agentTierRoot(slug)); }}
           onSelectContext={(ref) => { navigateTo(contextTierRoot(ref)); }}
         />
 
