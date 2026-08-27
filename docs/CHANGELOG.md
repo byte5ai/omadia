@@ -18,6 +18,15 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — dashboard onboarding step 1 now exposes both LLM access paths (#889)
+
+2026-08-27 — The web-ui onboarding card promised a choice between API-provider
+setup and a subscription CLI, but step 1 only rendered one CTA to
+`/admin/providers`. The step now shows the existing filled API-key pill and a
+matching accent-outline subscription pill that deep-links to
+`/admin/providers?tab=subscriptions`, with aligned EN/DE catalog keys and a
+dashboard test that pins both labels and both hrefs.
+
 ### Fixed — plugin readiness no longer calls a plugin ready without a verified LLM credential (#884)
 
 2026-08-27 — The Hub reported "14 von 14 einsatzbereit" while no LLM provider

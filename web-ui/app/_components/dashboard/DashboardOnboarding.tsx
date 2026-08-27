@@ -343,12 +343,21 @@ export function DashboardOnboarding({
             <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
               {t('llmStep.description')}
             </p>
-            <div className="mt-4">
+            {/* Step 1 offers both supported LLM access paths directly so the
+                CTA matches the promise in the copy above. */}
+            <div className="mt-4 flex flex-wrap items-center gap-3">
               <Link
                 href="/admin/providers"
                 className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
               >
-                {t('llmStep.connect')}
+                {t('llmStep.connectApiKey')}
+                <ArrowRight className="size-3.5" aria-hidden />
+              </Link>
+              <Link
+                href="/admin/providers?tab=subscriptions"
+                className="inline-flex items-center gap-2 rounded-full border border-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent-subtle)]"
+              >
+                {t('llmStep.connectSubscription')}
                 <ArrowRight className="size-3.5" aria-hidden />
               </Link>
             </div>
