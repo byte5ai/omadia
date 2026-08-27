@@ -26,10 +26,15 @@ import {
  *               → Knowledge-Graph + /memories/contexts/<any-agent>/<axis>/<ctxKey>
  *
  * Selector semantics for the three context axes changed with the chat-context
- * memory ACL (design #870 §7): the value is a context key
- * (`<channelType>~<safeKey>`) or the raw native id, which the backend derives
- * the key from. It is no longer a KG-only selector — it now deletes scratch
- * memory too, which is why the placeholders and hints spell the format out.
+ * memory ACL (design #870 §7). The value must ALWAYS carry a channel-type half:
+ * either the context key copied out of the memory browser
+ * (`<channelType>~<safeKey>`) or the channel type plus the platform's raw
+ * native id. A selector without a `~` is refused by the backend with
+ * `invalid_selector` rather than quietly matching nothing — which is why the
+ * placeholders and hints spell the format out and say "never a bare id".
+ *
+ * It is also no longer a KG-only selector: these axes now delete scratch memory
+ * too, across every agent that holds the named context.
  *
  * Flow: pick axis (+ selector) → Vorschau (POST /preview, dry-run counts)
  * → type the confirm phrase → Löschen (DELETE /, irreversible). The delete

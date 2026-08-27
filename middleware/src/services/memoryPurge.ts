@@ -262,7 +262,13 @@ export async function previewMemoryPurge(
 export async function purgeMemory(
   store: MemoryStore,
   axis: MemoryPurgeAxis,
-  selector: string | undefined,
+  // Optional, matching `previewMemoryPurge` — the two share
+  // `resolvePurgeTargets`, so a caller that may omit the selector for one
+  // (`axis: 'all'` ignores it) must be able to omit it for the other. The
+  // asymmetry made `purgeMemory(store, 'all')` a type error while
+  // `previewMemoryPurge(store, 'all')` was fine, which is how the test tree
+  // accumulated the errors the ratchet was tracking.
+  selector?: string,
   options: PurgeMemoryOptions = {},
 ): Promise<number> {
   const targets = await resolvePurgeTargets(
