@@ -45,15 +45,21 @@ import type { TurnOrigin } from '../../packages/harness-channel-sdk/src/turnOrig
 const AGENT_SLUG = 'w5-agent';
 const AGENT_ROOT = `/memories/orchestrators/${AGENT_SLUG}`;
 
-/** A Teams turn in team `t-alpha`, channel `c-1` — the origin a channel
- *  plugin builds. `memoryAxesForOrigin` resolves it to a channel tier with a
- *  team tier above it. */
-function teamsOrigin(): TurnOrigin {
+/**
+ * A Teams turn in a channel of team `teamId` — the shape
+ * `omadia-channel-teams` builds beside its `sessionScope`.
+ * `memoryAxesForOrigin` resolves it to a channel tier with a team tier above.
+ *
+ * Built structurally, with no cast: a cast here would let a malformed origin
+ * silently degrade to context-free and turn these tests into assertions about
+ * the fallback rather than about the threading.
+ */
+function teamsOrigin(conversationId = 'c-1', teamId = 't-alpha'): TurnOrigin {
   return {
     channelType: 'teams',
-    scope: { kind: 'channel', id: 'c-1' },
-    container: { kind: 'team', id: 't-alpha' },
-  } as TurnOrigin;
+    scope: { kind: 'conversation', channelId: 'msteams', conversationId },
+    container: { kind: 'team', id: teamId },
+  };
 }
 
 // ── scripted provider ───────────────────────────────────────────────────────
@@ -260,11 +266,7 @@ describe('W5 TurnOrigin threading — a real turn (#899)', () => {
     const alphaPaths = alpha.root.writes;
 
     const beta = harness('enforce', writeThenAnswer('/memories/note.md', 'beta-secret'));
-    await drain(beta.orchestrator, {
-      channelType: 'teams',
-      scope: { kind: 'channel', id: 'c-2' },
-      container: { kind: 'team', id: 't-beta' },
-    } as TurnOrigin);
+    await drain(beta.orchestrator, teamsOrigin('c-2', 't-beta'));
     const betaPaths = beta.root.writes;
 
     assert.equal(alphaPaths.length, 1);
@@ -309,10 +311,9 @@ describe('W5 fail-closed on a real turn (#899)', () => {
     // completes — a dropped user turn would be the wrong trade — but narrower.
     const h = harness('enforce', writeThenAnswer('/memories/note.md', 'x'));
     await drain(h.orchestrator, {
+      ...teamsOrigin(),
       channelType: 'carrier-pigeon',
-      scope: { kind: 'channel', id: 'c-1' },
-      container: { kind: 'team', id: 't-alpha' },
-    } as unknown as TurnOrigin);
+    });
     assert.deepEqual(h.root.writes, [`${AGENT_ROOT}/note.md`]);
   });
 });
