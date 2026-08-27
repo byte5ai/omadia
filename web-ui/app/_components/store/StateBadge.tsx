@@ -96,6 +96,16 @@ export function StateBadge({
     );
   }
 
+  // Both warning states mean "installed but not usable yet".
+  // The label names which admin form the operator must fix.
+  if (isPresent && readiness?.state === 'awaiting_llm') {
+    return (
+      <span className={cn(PILL, WARNING_STYLE, className)}>
+        {t('awaitingLlm')}
+      </span>
+    );
+  }
+
   if (isPresent && readiness?.state === 'ready' && readiness.verified_at) {
     const at = new Date(readiness.verified_at);
     if (!Number.isNaN(at.getTime())) {

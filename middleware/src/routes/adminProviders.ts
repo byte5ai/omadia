@@ -30,15 +30,11 @@
  */
 import {
   exchangeAuthorizationCode,
-  isProviderOAuthReconnectRequired,
-  legacyProviderApiKeyVaultKey,
   listModels,
   listModelsByProvider,
   OPENAI_CODEX_OAUTH,
   pollDeviceToken,
   primeProviderOAuthTokens,
-  providerApiKeyVaultKey,
-  readProviderOAuthTokens,
   requestUserCode,
   resolveModelRef,
   writeProviderOAuthTokens,
@@ -56,15 +52,20 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { detectCliBackends } from '../platform/cliBackendDetector.js';
 import {
-  decodeVerifiedRecord,
   encodeVerifiedRecord,
-  getCachedVerification,
   keyFingerprint,
-  primeVerification,
   providerVerifiedAtVaultKey,
   verifyProviderCredential,
   type ProviderVerification,
 } from '../platform/providerCredentialVerifier.js';
+import {
+  DEFAULT_PROVIDER,
+  LLM_PLUGINS,
+  findProviderKey,
+  readStringConfig,
+  resolveProviderVerification,
+  type LlmProviderCatalogView,
+} from '../platform/pluginLlmReadiness.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -73,80 +74,13 @@ export interface AdminProvidersDeps {
   readonly reactivate?: (agentId: string) => Promise<void>;
   /** Provider catalog — supplies display labels + data-protection policy hints
    *  for the admin UI (structural, to avoid a hard dep on the catalog class). */
-  readonly llmProviderCatalog?: {
-    get(id: string):
-      | {
-          readonly label: string;
-          readonly wireFormat?: string;
-          readonly baseURL?: string;
-          readonly policy?: {
-            readonly requiresAvvDisclosure?: boolean;
-            readonly euHosted?: boolean;
-            readonly requiresApiKey?: boolean;
-            readonly subscriptionNotice?: boolean;
-          };
-          readonly oauth?: { readonly kind: 'device' };
-        }
-      | undefined;
-  };
+  readonly llmProviderCatalog?: LlmProviderCatalogView;
   /** OAuth client config for the device flow. Defaults to the OpenAI Codex
    *  client; a test injects a fake pointing at a mock issuer. */
   readonly oauthConfig?: OAuthClientConfig;
   /** Injected fetch for the device-flow HTTP calls (test seam). */
   readonly oauthFetch?: typeof fetch;
 }
-
-/** The subset of a catalog descriptor the credential probe needs. */
-type ProviderDescriptorView = NonNullable<
-  ReturnType<NonNullable<AdminProvidersDeps['llmProviderCatalog']>['get']>
->;
-
-/**
- * LLM-consuming plugins whose provider/model is operator-selectable. The
- * provider key is the standardized `llm_provider` (S4b) for all; the model key
- * differs per plugin. `extraOnSwitch` is applied when assigning — e.g. the
- * orchestrator's per-turn model routing must be OFF for a non-Anthropic
- * provider, else it would emit Claude model ids to a non-Claude provider.
- */
-interface LlmPluginDesc {
-  readonly id: string;
-  readonly label: string;
-  /** Model config keys to set (first is the primary shown in the UI). */
-  readonly modelKeys: readonly string[];
-  /** Extra config to apply on a non-Anthropic assignment. */
-  readonly extraOnNonAnthropic?: Readonly<Record<string, string>>;
-  /** This plugin drives a tool loop, so a tool-less provider (e.g. the
-   *  `claude-cli` Shape-2 backend) must NOT be assignable to it — that would
-   *  silently disable its tools. Tool-less plugins (extractors/classifiers)
-   *  omit this. */
-  readonly requiresTools?: boolean;
-}
-
-const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
-  {
-    id: '@omadia/orchestrator',
-    label: 'Orchestrator',
-    modelKeys: ['orchestrator_model'],
-    // Per-turn Sonnet/Opus routing only makes sense within Anthropic; the
-    // default chatAgent path now accepts the subscription CLI via Shape 3.
-    extraOnNonAnthropic: { orchestrator_model_routing: 'false' },
-  },
-  {
-    id: '@omadia/verifier',
-    label: 'Verifier',
-    modelKeys: ['verifier_model'],
-    // The verifier uses FORCED single-tool structured output (claimExtractor /
-    // evidenceJudge), which the claude-cli provider now supports via a
-    // JSON-schema prompt — so the subscription CLI is a valid choice here.
-  },
-  {
-    id: '@omadia/orchestrator-extras',
-    label: 'Background-Scorer',
-    modelKeys: ['fact_extractor_model', 'topic_classifier_model'],
-  },
-];
-
-const DEFAULT_PROVIDER: ProviderId = 'anthropic';
 
 function providerLabel(id: ProviderId): string {
   switch (id) {
@@ -161,51 +95,6 @@ function providerLabel(id: ProviderId): string {
     default:
       return id;
   }
-}
-
-interface StoredProviderKey {
-  /** The LLM-plugin vault scope the key was found in. Durable verification
-   *  records are written to (and read from) this same scope, so the two never
-   *  disagree about which scope owns the provider's state. */
-  readonly scope: string;
-  readonly apiKey: string;
-}
-
-/** First LLM-plugin scope holding this provider's API key (canonical, or the
- *  legacy flat key for Anthropic), or `undefined` if no scope has one. */
-async function findProviderKey(
-  vault: SecretVault | undefined,
-  provider: ProviderId,
-): Promise<StoredProviderKey | undefined> {
-  if (!vault) return undefined;
-  const canonical = providerApiKeyVaultKey(provider);
-  const legacy = legacyProviderApiKeyVaultKey(provider);
-  for (const desc of LLM_PLUGINS) {
-    for (const key of legacy === undefined ? [canonical] : [canonical, legacy]) {
-      const v = await vault.get(desc.id, key);
-      if (typeof v === 'string' && v.trim().length > 0) {
-        return { scope: desc.id, apiKey: v.trim() };
-      }
-    }
-  }
-  return undefined;
-}
-
-/** True when any LLM-plugin scope holds an OAuth access token for the provider
- *  (#294). "Connected via Sign in with ChatGPT" is exactly this. */
-async function isProviderOAuthConnected(
-  vault: SecretVault | undefined,
-  provider: ProviderId,
-): Promise<boolean> {
-  if (!vault) return false;
-  for (const desc of LLM_PLUGINS) {
-    const tokens = await readProviderOAuthTokens(
-      (k) => vault.get(desc.id, k),
-      provider,
-    );
-    if (tokens !== undefined) return true;
-  }
-  return false;
 }
 
 /** Fan a provider's OAuth tokens out to EVERY LLM-plugin scope with one shared
@@ -238,51 +127,6 @@ async function fanOutProviderOAuthTokens(
 }
 
 /**
- * The provider's credential verdict, WITHOUT touching the network:
- *   - no key in any scope                       → `no_key`
- *   - keyless provider (local/self-hosted)      → `verified`
- *   - a fresh cached probe for THIS key         → that verdict
- *   - a durable `verified_at` record for THIS key → `verified`
- *   - otherwise                                 → `unverified`
- *
- * `unverified` is the honest default: a key exists, but nothing has ever proved
- * it works. That is precisely the state the old boolean rendered as "connected".
- */
-async function resolveStatus(
-  vault: SecretVault | undefined,
-  provider: ProviderId,
-  descriptor: ProviderDescriptorView | undefined,
-): Promise<ProviderVerification> {
-  // Local / self-hosted providers have no credential to reject.
-  if (descriptor?.policy?.requiresApiKey === false) {
-    return { status: 'verified' };
-  }
-  const found = await findProviderKey(vault, provider);
-  if (found === undefined) return { status: 'no_key' };
-
-  const cached = getCachedVerification(provider, found.apiKey);
-  if (cached !== undefined) return cached;
-
-  // Cold cache (fresh process). A durable record proves an earlier probe
-  // succeeded — but only if it was written for the key that is stored NOW.
-  const raw = await vault?.get(
-    found.scope,
-    providerVerifiedAtVaultKey(provider),
-  );
-  const verifiedAt = decodeVerifiedRecord(raw, found.apiKey);
-  if (verifiedAt !== undefined) {
-    const verification: ProviderVerification = {
-      status: 'verified',
-      verifiedAt,
-      checkedAt: verifiedAt,
-    };
-    primeVerification(provider, found.apiKey, verification);
-    return verification;
-  }
-  return { status: 'unverified' };
-}
-
-/**
  * Stable provider ordering (OM-10b). `listModels()` returns providers in plugin
  * ACTIVATION order, and `reactivate()` after a key save disposes + re-registers
  * that plugin's models — moving the provider the operator just configured to the
@@ -303,14 +147,6 @@ function compareProviders(
   return a.id < b.id ? -1 : 1;
 }
 
-function readStringConfig(
-  cfg: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const v = cfg[key];
-  return typeof v === 'string' && v.length > 0 ? v : undefined;
-}
-
 export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
   const router = Router();
 
@@ -322,8 +158,6 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       // #309: a CLI-backed provider is keyless — "connected" means the local CLI
       // is installed AND logged in (host capability), not a vault key. Detect once.
       const cliSnap = await detectCliBackends().catch(() => undefined);
-      const cliConnected = (cliId: string): boolean =>
-        cliSnap?.backends.find((b) => b.id === cliId)?.loggedIn === 'yes';
       // OM-11: "is the host binary this provider needs actually present?".
       // Distinct from `connected` — a CLI that is absent can never be logged
       // into, and the UI must not offer "Anmelden" as if it could. Detection
@@ -339,23 +173,11 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // #294: an OAuth provider is "connected" when device-flow tokens are
           // stored — the login IS the credential, so there is no key to probe.
           const oauthConnect = descriptor?.oauth !== undefined;
-          // #309: a CLI-backed provider is keyless — its "does it work" probe is
-          // the CLI login check above, not a credential probe.
-          const verification: ProviderVerification =
-            id === 'claude-cli'
-              ? cliConnected('claude')
-                ? { status: 'verified' }
-                : { status: 'no_key' }
-              : oauthConnect
-                ? // A dead grant (terminal refresh failure) leaves stale tokens
-                  // in the vault; the process-wide latch is the truth. Report
-                  // `no_key` so the row shows "Reconnect" instead of a green
-                  // chip that lies while every call throws.
-                  isProviderOAuthReconnectRequired(id) ||
-                  !(await isProviderOAuthConnected(deps.vault, id))
-                  ? { status: 'no_key' }
-                  : { status: 'verified' }
-                : await resolveStatus(deps.vault, id, descriptor);
+          const verification = await resolveProviderVerification(id, {
+            vault: deps.vault,
+            llmProviderCatalog: deps.llmProviderCatalog,
+            cliSnapshot: cliSnap,
+          });
           return {
           id,
           label: descriptor?.label ?? providerLabel(id),

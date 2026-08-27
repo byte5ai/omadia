@@ -108,7 +108,8 @@
         "missingHint": "Not in the Hub yet"
       },
       "llmStep": {
-        "connect": "Open LLM access",
+        "connectApiKey": "Enter an API key",
+        "connectSubscription": "Use a subscription",
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
         "doneViaProvider": "An LLM provider is connected and its key has been verified.",
@@ -3457,6 +3458,7 @@
       "incompatible": "Incompatible",
       "migrationNeeded": "Migration needed",
       "configRequired": "Configuration required",
+      "awaitingLlm": "Configured – waiting for LLM access",
       "errored": "Activation failed",
       "readyVerified": "Active · configured {time}",
       "missingFields": "Missing: {fields}"
@@ -3487,6 +3489,7 @@
       "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
       "toOrchestrators": "Attach to an orchestrator",
       "toSetup": "Complete setup ({count} missing)",
+      "toLlmProvider": "Connect an LLM provider",
       "toChat": "Try it in chat",
       "uninstallAria": "Uninstall {name}",
       "uninstall": "Uninstall",

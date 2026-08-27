@@ -149,6 +149,7 @@ import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvi
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
+import { resolvePluginLlmReadiness } from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
@@ -4185,6 +4186,18 @@ async function main(): Promise<void> {
       // Issue #453 — read-only code-scan verdict on the detail response
       // plus the operator ack endpoint. Lookup only, never scans on GET.
       verdicts: pluginVerdictLookup,
+      // #884 — the Hub's "X of Y ready" count called every plugin ready while
+      // the LLM provider it routes through had no verified credential. This is
+      // the probe that lets readiness see that dependency. Reuses the vault and
+      // catalog already constructed above; a second instance of either would
+      // read a different view of the same state.
+      llmReadiness: {
+        resolve: (pluginId, config) =>
+          resolvePluginLlmReadiness(pluginId, config, {
+            vault: secretVault,
+            llmProviderCatalog,
+          }),
+      },
     }),
   );
   console.log('[middleware] plugin store endpoints ready at /api/v1/store/plugins (auth: required)');

@@ -18,6 +18,35 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — dashboard onboarding step 1 now exposes both LLM access paths (#889)
+
+2026-08-27 — The web-ui onboarding card promised a choice between API-provider
+setup and a subscription CLI, but step 1 only rendered one CTA to
+`/admin/providers`. The step now shows the existing filled API-key pill and a
+matching accent-outline subscription pill that deep-links to
+`/admin/providers?tab=subscriptions`, with aligned EN/DE catalog keys and a
+dashboard test that pins both labels and both hrefs.
+
+### Fixed — plugin readiness no longer calls a plugin ready without a verified LLM credential (#884)
+
+2026-08-27 — The Hub reported "14 von 14 einsatzbereit" while no LLM provider
+held a verified credential, because `computeReadiness()` only ever checked a
+plugin's own manifest-required setup fields and had no concept of the provider
+it routes through. The per-provider verdict logic that the providers-admin page
+already computed inline (CLI login, OAuth grant, or key-based cache/durable
+record) is now extracted to `middleware/src/platform/pluginLlmReadiness.ts` and
+shared, so the two surfaces can no longer disagree about the same credential.
+Readiness gained a fifth state, `awaiting_llm`, returned only for an
+LLM-consuming plugin that would otherwise be `ready` and whose assigned
+provider's verdict is anything other than `verified`. The check runs after the
+existing `not_installed`/`errored`/`config_required` steps and degrades to
+`ready` on any probe failure, matching the file's existing rule that an
+infrastructure hiccup must never manufacture a false negative. The web-ui
+mirrors the new state as a warning-toned "Konfiguriert – wartet auf LLM-Zugang"
+badge plus a post-install CTA to `/admin/providers`; the Hub count, the
+dashboard tile and the plugin tiles needed no change, because all three already
+read the shared `isReady` predicate.
+
 ### Fixed — desktop first-run wizard no longer forces API-key entry (#890)
 
 2026-08-27 — The Electron desktop wizard hard-blocked every first-time setup on
