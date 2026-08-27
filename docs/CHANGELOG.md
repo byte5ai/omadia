@@ -18,6 +18,19 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — dashboard onboarding step 3 no longer contradicts its own done badge (#886)
+
+2026-08-27 — Step 3 "Plugins installieren" ticked its INSTALLIERT badge from
+`hasInstalledPlugin` but picked its body copy from `selectedCase === null`, so
+clearing the business case turned a completed step back into "Wähle oben einen
+Business-Case, um passende Empfehlungen zu sehen." The body now reads off the
+same `done` signal as the badge and states the result instead — a new
+`dashboard.onboarding.installStep.done` key (EN/DE, ICU plural) counted with the
+shared OM-27 `isInstalled` predicate over the `plugins` array the component
+already receives, so `update-available` counts as installed and the sentence
+cannot drift from the health tile. The recommendation list for a selected case
+is untouched.
+
 ### Added — Nutzungs-Doku: mehrere benannte Agent-Bots in Teams (#860)
 
 2026-08-27 — Neue Operator-Doku `docs/teams-multi-agent-identities.md`, verlinkt aus

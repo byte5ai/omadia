@@ -136,7 +136,8 @@
       "caseChosen": "Business case: {name}",
       "installStep": {
         "title": "Install plugins",
-        "pickCaseFirst": "Pick a business case above to see matching recommendations."
+        "pickCaseFirst": "Pick a business case above to see matching recommendations.",
+        "done": "{count, plural, one {# plugin installed} other {# plugins installed}}"
       }
     }
   },

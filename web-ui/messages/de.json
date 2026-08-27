@@ -136,7 +136,8 @@
       "caseChosen": "Business-Case: {name}",
       "installStep": {
         "title": "Plugins installieren",
-        "pickCaseFirst": "Wähle oben einen Business-Case, um passende Empfehlungen zu sehen."
+        "pickCaseFirst": "Wähle oben einen Business-Case, um passende Empfehlungen zu sehen.",
+        "done": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}"
       }
     }
   },

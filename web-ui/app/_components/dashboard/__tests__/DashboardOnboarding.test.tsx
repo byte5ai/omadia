@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../_lib/test-utils';
+import type { Plugin } from '../../../_lib/storeTypes';
 import {
   DashboardOnboarding,
   __resetOnboardingStores,
@@ -33,8 +34,24 @@ vi.mock('../../admin/SkillImportModal', () => ({
   SkillImportModal: (): React.ReactElement => <div />,
 }));
 
+function plugin(over: Partial<Plugin> = {}): Plugin {
+  return {
+    id: '@omadia/channel-telegram',
+    kind: 'channel',
+    name: 'Telegram',
+    version: '1.0.0',
+    latest_version: '1.0.0',
+    description: 'Telegram channel.',
+    categories: [],
+    integrations_summary: [],
+    install_state: 'installed',
+    ...over,
+  } as Plugin;
+}
+
 function renderCard(
   over: Partial<{
+    plugins: Plugin[] | null;
     llmVerified: boolean;
     cliLoggedIn: boolean;
     hasInstalledPlugin: boolean;
@@ -135,5 +152,43 @@ describe('<DashboardOnboarding /> — OM-01/12 step model', () => {
     renderCard({ llmVerified: true });
     expect(screen.getByTestId('onboarding-step-2').dataset['done']).toBe('true');
     expect(screen.getByText(/Business-Case: Vertrieb & CRM/)).toBeTruthy();
+  });
+
+  /**
+   * #886 — step 3's badge said INSTALLIERT while the copy right underneath it
+   * still said "Wähle oben einen Business-Case …", because the body ternary was
+   * keyed on `selectedCase === null` instead of on the step's `done` signal.
+   * `update-available` counts as installed (OM-27), which is why the fixture
+   * mixes both states and the expected count is 2.
+   */
+  it('step 3 reports the installed count instead of the CTA once done', () => {
+    renderCard({
+      hasInstalledPlugin: true,
+      plugins: [
+        plugin({ id: '@omadia/channel-telegram', install_state: 'installed' }),
+        plugin({
+          id: '@omadia/integration-odoo',
+          install_state: 'update-available',
+        }),
+        plugin({ id: '@omadia/notion', install_state: 'available' }),
+      ],
+    });
+
+    const step3 = screen.getByTestId('onboarding-step-3');
+    expect(step3.dataset['done']).toBe('true');
+    expect(screen.getByText(/2 Plugins installiert/)).toBeTruthy();
+    expect(screen.queryByText(/Wähle oben einen Business-Case/)).toBeNull();
+  });
+
+  it('step 3 still asks for a business case while nothing is installed', () => {
+    renderCard({
+      hasInstalledPlugin: false,
+      plugins: [plugin({ install_state: 'available' })],
+    });
+
+    const step3 = screen.getByTestId('onboarding-step-3');
+    expect(step3.dataset['done']).toBe('false');
+    expect(screen.getByText(/Wähle oben einen Business-Case/)).toBeTruthy();
+    expect(screen.queryByText(/Plugins? installiert/)).toBeNull();
   });
 });
