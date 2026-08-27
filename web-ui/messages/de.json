@@ -1896,6 +1896,103 @@
         "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
+    },
+    "teamsIdentity": {
+      "heading": "Teams-Identität",
+      "hint": "Dieser Orchestrator bekommt eine eigene Teams-Bot-Identität: Bot-Slug, Anzeigename und optional ein Ziel-Team. Das Provisioning registriert die Entra-App, legt den Bot an, baut das Teams-App-Paket, lädt es hoch und installiert es.",
+      "loading": "Teams-Identität wird geladen…",
+      "refresh": "Aktualisieren",
+      "createHint": "Alle drei Felder sind optional — bleiben sie leer, leitet der Server Bot-Slug und Anzeigename aus diesem Orchestrator ab.",
+      "fieldBotSlug": "Bot-Slug",
+      "fieldBotSlugHint": "Kleinbuchstaben, Ziffern und Bindestriche. Muss über alle Orchestratoren hinweg eindeutig sein.",
+      "fieldDisplayName": "Anzeigename",
+      "fieldDisplayNameHint": "Der Name, den Menschen in Teams sehen.",
+      "fieldTeamId": "Ziel-Team-ID",
+      "fieldTeamIdHint": "Das Team, in das die App installiert wird. Leer lassen, um nur die Identität zu registrieren.",
+      "submit": "Provisioning starten",
+      "submitBusy": "Startet",
+      "rerun": "Provisioning erneut ausführen",
+      "started": "Provisioning für {botSlug} gestartet.",
+      "progressLabel": "Provisioning-Fortschritt",
+      "stateSummary": "Status: {state}",
+      "running": "Ein Provisioning-Lauf ist gerade aktiv.",
+      "idle": "Aktuell läuft kein Provisioning.",
+      "botSlug": "Bot-Slug",
+      "displayName": "Anzeigename",
+      "appId": "Anwendungs-ID (Client)",
+      "tenantId": "Tenant-ID",
+      "teamsAppId": "Teams-App-ID",
+      "teamsAppExternalId": "Externe Teams-App-ID",
+      "notYet": "noch nicht vergeben",
+      "updatedAt": "Letzte Änderung: {date}",
+      "lastErrorHeading": "Letzter Provisioning-Fehler",
+      "lastErrorTechnical": "Technisches Detail",
+      "states": {
+        "pending": "ausstehend",
+        "app_registered": "App registriert",
+        "bot_created": "Bot angelegt",
+        "package_built": "Paket gebaut",
+        "catalog_uploaded": "Katalog hochgeladen",
+        "installed": "installiert",
+        "failed": "fehlgeschlagen"
+      },
+      "notice": {
+        "teams_identity_unavailable": "Das Teams-Identitäts-Provisioning ist in diesem Deployment nicht verdrahtet — Identitätsspeicher und Job-Runner registrieren sich, sobald eine Datenbank konfiguriert ist und die Orchestrator-Factory gebootet hat.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere und aktiviere das Microsoft-365-Connector-Plugin (0.3.1 oder neuer) und lade die Seite neu."
+      },
+      "lastError": {
+        "consent_missing": "Für diese Graph-Scopes fehlt die Admin-Zustimmung: {scopes}. Erteile sie im Kunden-Tenant und starte das Provisioning erneut.",
+        "arm_not_configured": "Dem Microsoft-365-Connector fehlen noch diese Setup-Felder, bevor ein Bot angelegt werden kann: {fields}. Konfiguriere sie und starte das Provisioning erneut — die App-Registrierung bleibt erhalten.",
+        "throttled": "Microsoft hat den Provisioning-Lauf gedrosselt. Ein neuer Versuch ist in etwa {seconds} Sekunden möglich.",
+        "unknown": "Das Provisioning meldet einen Fehler: {detail}"
+      },
+      "routeErrors": {
+        "bot_slug_taken": "Dieser Bot-Slug gehört bereits zu einem anderen Orchestrator — wähle einen anderen.",
+        "invalid_body": "Der Server hat die Anfrage-Daten abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "teams_identity_not_found": "Dieser Orchestrator hat noch keine Teams-Identität.",
+        "teams_identity_unavailable": "Das Teams-Identitäts-Provisioning ist in diesem Deployment nicht verdrahtet.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
+        "unknown": "Die Teams-Identitäts-Anfrage ist fehlgeschlagen: {detail}"
+      },
+      "progress": "Schritt {step} von {total}",
+      "errors": {
+        "technicalDetail": "Technisches Detail: {raw}",
+        "consent_missing": {
+          "what": "Microsoft hat die Anfrage abgelehnt, weil eine Tenant-Administration die Admin-Zustimmung für die benötigten Berechtigungen noch nicht erteilt hat.",
+          "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
+          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts.",
+          "consentLink": "So wird die Admin-Zustimmung in Microsoft Entra ID erteilt"
+        },
+        "arm_not_configured": {
+          "what": "Die Entra-App-Registrierung wurde angelegt, für den Bot selbst fehlen aber Azure-Setup-Felder, die am M365-Connector noch leer sind.",
+          "fields": "Fehlende Setup-Felder ({count}): {fields}",
+          "next": "Fülle diese Felder am M365-Connector aus und starte das Provisioning erneut — es setzt auf der App-Registrierung auf.",
+          "keepsRegistration": "Hier stehenzubleiben ist völlig in Ordnung. Die App-Registrierung bleibt bestehen, es muss nichts aufgeräumt werden, und der Agent ist nicht kaputt — er hat nur noch keinen Teams-Bot."
+        },
+        "throttled": {
+          "what": "Microsoft hat die Provisioning-Anfragen gedrosselt, deshalb hat der Lauf vor dem Ende aufgegeben.",
+          "retryAfter": "Microsoft bittet um {seconds} Sekunden Wartezeit.",
+          "next": "An der Konfiguration ist nichts falsch. Starte das Provisioning in ein paar Minuten erneut; es setzt beim letzten erfolgreichen Schritt auf."
+        },
+        "unknown": {
+          "what": "Das Provisioning wurde aus einem Grund gestoppt, den omadia nicht einordnen kann.",
+          "next": "Sieh dir das technische Detail unten an, behebe die Ursache und starte das Provisioning erneut."
+        }
+      },
+      "teamsBot": {
+        "heading": "Konfiguration für das Teams-Channel-Plugin",
+        "notReady": "Es gibt noch keine Bot-Konfiguration — sie erscheint, sobald die Entra-App-Registrierung existiert.",
+        "manualStep": "Ein manueller Schritt bleibt: Dieser Block muss von Hand in das Teams-Channel-Plugin eingetragen werden.",
+        "instructions": "Kopiere den Block, füge ihn im Setup-Feld {field} des Teams-Channel-Plugins ein und speichere.",
+        "secretRefNote": "Der Block enthält nur eine Referenz auf das Bot-Passwort, niemals das Passwort selbst — das Geheimnis bleibt im Vault des M365-Connectors.",
+        "followUp": "Diese Konfiguration automatisch zu schreiben ist als Folgeschritt geplant und passiert heute nicht.",
+        "blockLabel": "teams_bots-Konfigurationsblock für {botSlug}",
+        "copy": "Kopieren",
+        "copied": "Kopiert"
+      }
     }
   },
   "builder": {
