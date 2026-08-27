@@ -47,6 +47,11 @@ export function resolveAugmentedPath(
     ...(platform === 'linux' ? ['/snap/bin'] : []),
     path.join(homeDir, '.volta', 'bin'),
     path.join(homeDir, '.asdf', 'shims'),
+    // Covers pip --user, pipx, and — decisively — Claude Code's own native
+    // installer (claude.ai/install.sh), which symlinks `claude` here. That
+    // install path is entirely independent of Homebrew/npm/nvm/volta/asdf, so
+    // none of the checks above would ever find it.
+    path.join(homeDir, '.local', 'bin'),
   ];
   const extraDirs = existingDirs(candidateDirs);
   const nvmBinDir = resolveNvmBinDir(homeDir);

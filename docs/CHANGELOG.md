@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
+
+2026-08-27 — #882's PATH augmentation checked Homebrew, Volta, asdf, and nvm,
+but not `~/.local/bin` — where Claude Code's own native installer symlinks the
+`claude` binary, independent of any Node package manager. A subscription-CLI
+chat turn still failed with `spawn claude ENOENT` for anyone installed that
+way, even fully logged in. A shell alias masked the symptom in manual
+terminal testing (`which`/`command -v` resolve aliases; `child_process.spawn`
+never does). `resolveAugmentedPath()` now also checks `~/.local/bin`.
+
 ### Fixed — a granted `memory` tool no longer lets a sub-agent write past its parent's scope (#904, part of #860)
 
 2026-08-27 — A sub-agent that had been granted the native `memory` tool resolved
