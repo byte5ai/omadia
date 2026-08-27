@@ -274,6 +274,7 @@ export {
   SYSTEM_SCOPE_ORIGINS,
   formatSessionScope,
   isAddressableScope,
+  memoryContextKey,
   parseSessionScope,
   scopeGraphKey,
   unsharedConversationScope,

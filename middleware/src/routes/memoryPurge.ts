@@ -22,7 +22,10 @@ import {
  * is no client-side `ADMIN_TOKEN`.
  *
  * Bulk-deletes memory across both layers:
- *   - scratch (`MemoryStore`) via `previewMemoryPurge` / `purgeMemory`
+ *   - scratch (`MemoryStore`) via `previewMemoryPurge` / `purgeMemory` —
+ *     including, since the chat-context memory ACL, the per-context trees under
+ *     `/memories/contexts`, which is what gives the team/channel/user axes a
+ *     scratch footprint at all
  *   - Knowledge-Graph `MemorableKnowledge` via `count/purgeMemorableKnowledge`
  * Type-to-confirm is enforced server-side; a single `memory_purge_audit`
  * row is written per executed purge.
@@ -56,9 +59,33 @@ export interface MemoryPurgeDeps {
   tenantId?: string;
 }
 
+/**
+ * Warning surfaced for an axis whose Knowledge-Graph half is not modelled.
+ *
+ * This used to read "only scratch memory is affected", which was misleading in
+ * BOTH directions: at the time a team/channel purge touched no scratch memory
+ * either (the axes had no `/memories` footprint at all), so the sentence
+ * promised an effect that did not happen. Now that the context trees exist the
+ * scratch half is real, and the part that needs saying is the OTHER half: the
+ * Knowledge-Graph is deliberately left alone. Modelling a team/channel KG
+ * partition is a follow-up, not something to fake with an invented filter.
+ */
+function kgUnmodelledWarning(axis: MemoryPurgeAxis, past: boolean): string {
+  return (
+    `${axis}-scoped Knowledge-Graph purge is not yet modeled (no KG column), ` +
+    `so the Knowledge-Graph ${past ? 'was' : 'is'} left untouched. ` +
+    `Only the /memories/contexts scratch trees ${past ? 'were' : 'are'} affected.`
+  );
+}
+
 /** Map a purge axis+selector to the KG MemorableKnowledge filter. Returns
  *  null for axes that have no KG column yet (team/channel) so the caller can
- *  surface a warning instead of fabricating a filter. */
+ *  surface a warning instead of fabricating a filter.
+ *
+ *  NOTE: for `user` the selector doubles as the KG `aclOwner` AND — via
+ *  `memoryContextKey` inside the purge service — as the scratch context key.
+ *  Reconciling those two spellings belongs to the KG team-axis follow-up; this
+ *  router deliberately does not invent a mapping between them. */
 function axisToKgFilter(
   axis: MemoryPurgeAxis,
   selector: string | undefined,
@@ -145,7 +172,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       let warning: string | undefined;
       const filter = axisToKgFilter(axis, selector, tenantId);
       if (filter === null) {
-        warning = `${axis}-scoped Knowledge-Graph purge is not yet modeled (no KG column); only scratch memory is affected.`;
+        warning = kgUnmodelledWarning(axis, false);
       } else if (deps.knowledgeGraph) {
         kgCount = (await deps.knowledgeGraph.countMemorableKnowledge(filter))
           .count;
@@ -170,6 +197,12 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
 
     // Server-side type-to-confirm: 'all' demands the fixed phrase; every
     // other axis demands the selector be re-typed verbatim.
+    //
+    // "Verbatim" means the string the OPERATOR typed, never the `ctxKey` the
+    // purge service derives from it. Confirming against the derived key would
+    // make the gesture unperformable (the operator cannot type a sha256 stem)
+    // and would silently accept two different selectors that normalise to one
+    // key — the confirmation must guard the input, not the normalisation.
     const expected = axis === 'all' ? CONFIRM_ALL : (selector ?? '');
     if (confirm !== expected || (axis !== 'all' && expected.length === 0)) {
       res.status(400).json({ error: 'confirmation_mismatch' });
@@ -185,7 +218,7 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       let warning: string | undefined;
       const filter = axisToKgFilter(axis, selector, tenantId);
       if (filter === null) {
-        warning = `${axis}-scoped Knowledge-Graph purge is not yet modeled (no KG column); only scratch memory was affected.`;
+        warning = kgUnmodelledWarning(axis, true);
       } else if (deps.knowledgeGraph) {
         kgDeleted = (await deps.knowledgeGraph.purgeMemorableKnowledge(filter))
           .deletedNodes;
