@@ -9,6 +9,12 @@ import MemoryPage from '../page';
 /**
  * Operator surface for the chat-context memory ACL (design #870 §6/§7).
  *
+ * The fetch stub answers the OPERATOR endpoint
+ * (`/bot-api/v1/operator/memory/contexts/{list,file}`) and nothing else, so a
+ * regression back to the dev endpoint fails here as a 404-shaped store miss
+ * rather than passing silently. `MemoryContextBrowser.test.tsx` asserts the URL
+ * itself; this file exercises the behaviour on top of it.
+ *
  * What these tests pin down:
  *   - the memory browser has a CONTEXT dimension, derived from the store's own
  *     `/memories/contexts/<slug>/<axis>/<ctxKey>` layout — not from a registry,
@@ -32,6 +38,13 @@ const AGENT = 'de.byte5.agent.hr';
 const TEAM_KEY = 'teams~19-abc-thread-tacv2-a1b2c3d4';
 const CHANNEL_KEY = 'teams~19-chan-thread-tacv2-c3d4e5f6';
 const CHANNEL_ROOT = `/memories/contexts/${AGENT}/channel/${CHANNEL_KEY}`;
+
+// Hoisted with the mocks: the factory below runs while the module graph is
+// still being imported, so plain module-level consts would be in the TDZ.
+const { LIST_ENDPOINT, FILE_ENDPOINT } = vi.hoisted(() => ({
+  LIST_ENDPOINT: '/bot-api/v1/operator/memory/contexts/list',
+  FILE_ENDPOINT: '/bot-api/v1/operator/memory/contexts/file',
+}));
 
 const {
   MockApiError,
@@ -67,16 +80,25 @@ vi.mock('@/app/_lib/api', () => ({
   promoteMemory: mockPromoteMemory,
   previewMemoryPurge: mockPreviewMemoryPurge,
   purgeMemory: mockPurgeMemory,
+  operatorMemoryContextsListUrl: (path: string) =>
+    `${LIST_ENDPOINT}?path=${encodeURIComponent(path)}`,
+  operatorMemoryContextsFileUrl: (path: string) =>
+    `${FILE_ENDPOINT}?path=${encodeURIComponent(path)}`,
 }));
 
-/** Directory fixture: path → child names, `+` prefix marks a file. */
+/**
+ * Directory fixture: path → child names, `+` prefix marks a file.
+ *
+ * Deliberately contexts-only. `/memories/orchestrators` is NOT in here because
+ * the operator endpoint cannot serve it, and a fixture that answered it would
+ * hide a page that still asks.
+ */
 function buildStore(): Record<string, string[]> {
   return {
-    '/memories': ['contexts', 'orchestrators'],
-    '/memories/orchestrators': [AGENT],
-    [`/memories/orchestrators/${AGENT}`]: ['+global.md'],
     '/memories/contexts': [AGENT],
-    [`/memories/contexts/${AGENT}`]: ['team', 'channel', 'user'],
+    // The stray file is the one thing in a context tree that is NOT promotable:
+    // it sits above any tier, so it names no source context.
+    [`/memories/contexts/${AGENT}`]: ['team', 'channel', 'user', '+notes.md'],
     [`/memories/contexts/${AGENT}/team`]: [TEAM_KEY],
     [`/memories/contexts/${AGENT}/channel`]: [CHANNEL_KEY],
     [`/memories/contexts/${AGENT}/user`]: [],
@@ -91,7 +113,7 @@ function installFetch(store: Record<string, string[]>): void {
     vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), 'http://localhost');
       const path = url.searchParams.get('path') ?? '';
-      if (url.pathname === '/bot-api/dev/memory/file') {
+      if (url.pathname === FILE_ENDPOINT) {
         return Promise.resolve(
           new Response('# Vacation policy\n', { status: 200 }),
         );
@@ -146,13 +168,16 @@ describe('memory browser — context dimension', () => {
     vi.clearAllMocks();
   });
 
-  it('renders the agent tier and one branch per context axis', async () => {
+  it('renders one branch per context axis and no agent-tier node', async () => {
     renderWithIntl(<MemoryPage />);
 
     await screen.findByRole('button', { name: AGENT });
+    // The agent tier lies outside `/memories/contexts`, which is the only
+    // subtree the operator endpoint can read — a node that always errors is
+    // worse than an absent one.
     expect(
-      await screen.findByRole('button', { name: /agent tier/i }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /agent tier/i }),
+    ).not.toBeInTheDocument();
     expect(await screen.findByText('Teams (1)')).toBeInTheDocument();
     expect(await screen.findByText('Channels (1)')).toBeInTheDocument();
     // The empty axis is still shown — "no user context" is information.
@@ -216,9 +241,17 @@ describe('memory browser — promote', () => {
     const user = userEvent.setup();
     renderWithIntl(<MemoryPage />);
 
-    // Agent-tier file: promoting it would have no source context.
-    await user.click(await screen.findByRole('button', { name: /agent tier/i }));
-    await user.click(await screen.findByRole('button', { name: /global\.md/ }));
+    // A file ABOVE any tier (directly under the agent's contexts root) names no
+    // source context, so promoting it would have nothing to promote out of.
+    // Walked to via "..", which also pins that going up stays in scope.
+    await user.click(
+      await screen.findByRole('button', {
+        name: /teams~19-chan-thread-tacv2-c3d4e5f6/i,
+      }),
+    );
+    await user.click(await screen.findByRole('button', { name: '← ..' }));
+    await user.click(await screen.findByRole('button', { name: '← ..' }));
+    await user.click(await screen.findByRole('button', { name: /notes\.md/ }));
     expect(
       screen.queryByRole('button', { name: /promote…/i }),
     ).not.toBeInTheDocument();

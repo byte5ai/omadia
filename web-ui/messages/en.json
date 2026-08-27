@@ -1907,6 +1907,167 @@
         "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
         "unknown": "Loading grants failed: {detail}"
       }
+    },
+    "teamsInstalls": {
+      "heading": "Teams assignment",
+      "hint": "Which Microsoft Teams team this orchestrator's app is installed in, and whether the tenant has consented to the permissions the install needs.",
+      "loading": "Loading the team assignment…",
+      "refresh": "Refresh",
+      "noIdentity": "This orchestrator has no Teams identity yet. Create one in the Teams identity section before assigning it to a team.",
+      "installedHeading": "Installed in",
+      "installedEmpty": "This orchestrator's app is not installed in any team yet.",
+      "appIdLabel": "Teams app: {appId}",
+      "appIdNone": "not uploaded yet",
+      "installedAt": "recorded {date}",
+      "installedAtUnknown": "no timestamp recorded",
+      "pendingHint": "A provisioning run is targeting team {teamId}. It counts as an install once the chain reaches the install step.",
+      "consentHeading": "Admin consent",
+      "consentStatus": {
+        "granted": "granted",
+        "missing": "missing",
+        "unknown": "not established"
+      },
+      "consentScopes": "Waiting on {count} permission(s): {scopes}",
+      "consentSource": {
+        "last_error": "Read from the last recorded provisioning failure.",
+        "provisioning_state": "Inferred from steps the run could not have passed without consent.",
+        "none": "Nothing has been observed yet that would prove consent either way."
+      },
+      "consentPointer": "The Teams identity section above explains what to do about it.",
+      "installHeading": "Install into a team",
+      "fieldTeamId": "Team ID",
+      "fieldTeamIdHint": "The Microsoft Teams group id of the target team.",
+      "install": "Install",
+      "installBusy": "Installing",
+      "installStarted": "Installing into team {teamId} — the provisioning run continues in the background.",
+      "alreadyInstalled": "Already installed in team {teamId}; nothing to do.",
+      "provisionerMissing": "The Teams provisioner capability is missing, so no install can be started right now.",
+      "uninstall": "Uninstall",
+      "uninstallBusy": "Uninstalling",
+      "uninstallTitle": "Remove the app from this team?",
+      "uninstallBody": "The orchestrator's app is removed from team {teamId} and stops answering there.",
+      "uninstallConfirm": "Remove",
+      "uninstalled": "Removed the app from team {teamId}.",
+      "cancel": "Cancel",
+      "unsupported": {
+        "install": "Installing into a team is not available in this deployment.",
+        "uninstall": "Removing the app from a team is a manual Teams-admin step — the Microsoft 365 connector publishes no uninstall, so omadia cannot do it for you.",
+        "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
+        "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused."
+      },
+      "unsupportedTechnical": "Server reason: {detail}",
+      "notice": {
+        "teams_identity_unavailable": "Teams provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
+      },
+      "errors": {
+        "invalid_body": "The server rejected the request payload.",
+        "invalid_slug": "This orchestrator slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
+        "not_found": "This orchestrator does not exist anymore — reload the page.",
+        "team_install_conflict": "This orchestrator is already assigned to another team. Remove that assignment first — one orchestrator is tracked in one team.",
+        "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
+        "teams_identity_unavailable": "Teams provisioning is not wired in this deployment.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
+        "teams_uninstall_unsupported": "Removing the app from a team has to be done by a Teams administrator — the connector publishes no uninstall.",
+        "unknown": "The team assignment request failed: {detail}"
+      },
+      "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error."
+    },
+    "personaHeading": "Persona and behaviour",
+    "personaHint": "Persona, tone and behaviour are designed in the Agent Builder. This page only assigns capabilities to the orchestrator.",
+    "personaOpenBuilder": "Open the Agent Builder",
+    "personaNoDraftHint": "No single builder draft could be matched to this orchestrator, so the link opens the builder overview.",
+    "teamsIdentity": {
+      "heading": "Teams identity",
+      "hint": "Give this orchestrator its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
+      "loading": "Loading the Teams identity…",
+      "refresh": "Refresh",
+      "createHint": "The bot slug and the display name are optional — omit them and the server derives both from the orchestrator. The target team is required: provisioning installs the app into it.",
+      "fieldBotSlug": "Bot slug",
+      "fieldBotSlugHint": "Lowercase letters, digits and dashes. Must be unique across orchestrators.",
+      "fieldDisplayName": "Display name",
+      "fieldDisplayNameHint": "The name people see in Teams.",
+      "fieldTeamId": "Target team ID",
+      "fieldTeamIdHint": "Required. The Teams team (group) id the app is installed into.",
+      "submit": "Start provisioning",
+      "submitBusy": "Starting",
+      "rerun": "Re-run provisioning",
+      "started": "Provisioning started for {botSlug}.",
+      "progressLabel": "Provisioning progress",
+      "stateSummary": "State: {state}",
+      "running": "A provisioning run is in progress.",
+      "idle": "No provisioning run is active right now.",
+      "botSlug": "Bot slug",
+      "displayName": "Display name",
+      "appId": "Application (client) ID",
+      "tenantId": "Tenant ID",
+      "teamsAppId": "Teams app ID",
+      "teamsAppExternalId": "Teams app external ID",
+      "notYet": "not assigned yet",
+      "updatedAt": "Last update: {date}",
+      "lastErrorHeading": "Last provisioning error",
+      "lastErrorTechnical": "Technical detail",
+      "states": {
+        "pending": "pending",
+        "app_registered": "app registered",
+        "bot_created": "bot created",
+        "package_built": "package built",
+        "catalog_uploaded": "catalog uploaded",
+        "installed": "installed",
+        "failed": "failed"
+      },
+      "notice": {
+        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
+      },
+      "routeErrors": {
+        "bot_slug_taken": "That bot slug already belongs to another orchestrator — pick a different one.",
+        "invalid_body": "The server rejected the request payload.",
+        "invalid_slug": "This orchestrator slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
+        "not_found": "This orchestrator does not exist anymore — reload the page.",
+        "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
+        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
+        "unknown": "The Teams identity request failed: {detail}"
+      },
+      "errors": {
+        "technicalDetail": "Technical detail: {raw}",
+        "consent_missing": {
+          "what": "Microsoft refused the request because a tenant administrator has not granted admin consent for the permissions the provisioning needs.",
+          "scopes": "Missing permissions ({count}): {scopes}",
+          "next": "Ask a Global Administrator of the customer tenant to grant admin consent for these permissions, then start provisioning again. Running it again without the consent changes nothing.",
+          "consentLink": "How to grant admin consent in Microsoft Entra ID"
+        },
+        "arm_not_configured": {
+          "what": "The Entra app registration was created, but the bot itself needs Azure setup fields that are still empty on the M365 connector.",
+          "fields": "Missing setup fields ({count}): {fields}",
+          "next": "Fill these fields on the M365 connector, then start provisioning again — it resumes from the app registration.",
+          "keepsRegistration": "This is a valid place to stop. The app registration is kept, nothing has to be cleaned up, and the agent is not broken — it simply has no Teams bot yet."
+        },
+        "throttled": {
+          "what": "Microsoft throttled the provisioning requests, so the run gave up before finishing.",
+          "retryAfter": "Microsoft asked us to wait {seconds} seconds.",
+          "next": "Nothing is wrong with the configuration. Start provisioning again in a few minutes; it resumes from the last step that succeeded."
+        },
+        "unknown": {
+          "what": "Provisioning stopped for a reason omadia cannot classify.",
+          "next": "Read the technical detail below, fix the cause, then start provisioning again."
+        }
+      },
+      "teamsBot": {
+        "heading": "Teams channel plugin configuration",
+        "notReady": "There is no bot configuration yet — it appears once the Entra app registration exists.",
+        "manualStep": "One manual step is left: this block has to be pasted into the Teams channel plugin by hand.",
+        "instructions": "Copy the block and paste it into the {field} setup field of the Teams channel plugin, then save.",
+        "secretRefNote": "The block carries only a reference to the bot password, never the password itself — the secret stays in the M365 connector's vault.",
+        "followUp": "Writing this configuration automatically is a planned follow-up and does not happen today.",
+        "blockLabel": "teams_bots configuration block for {botSlug}",
+        "copy": "Copy",
+        "copied": "Copied"
+      },
+      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here."
     }
   },
   "builder": {
@@ -4720,13 +4881,12 @@
     }
   },
   "memory": {
-    "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware.",
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
     "backendInMemory": "In-memory · volatile",
-    "descriptionInMemory": "Live browser of the active memory store (RAM, empty after restart).",
-    "descriptionPostgres": "Live browser of the active memory store (persistent in Postgres).",
-    "description": "Live browser of the active memory store.",
+    "descriptionInMemory": "Read-only browser of the chat-context memory trees (RAM, empty after restart).",
+    "descriptionPostgres": "Read-only browser of the chat-context memory trees (persistent in Postgres).",
+    "description": "Read-only browser of the chat-context memory trees.",
     "pathLabel": "Path",
     "reload": "↻ Reload",
     "loading": "Loading…",
@@ -4742,7 +4902,6 @@
       "loading": "Loading…",
       "error": "Context tree could not be loaded.",
       "empty": "No agent memory yet.",
-      "agentTier": "Agent tier (read-only in context turns)",
       "axis": {
         "team": "Teams ({count})",
         "channel": "Channels ({count})",
@@ -4790,7 +4949,12 @@
       },
       "bytes": "{bytes} B",
       "noReason": "No reason recorded."
-    }
+    },
+    "errorUnauthenticated": "Not signed in (HTTP 401). The memory browser reads an operator-authenticated endpoint — sign in again, then reload this page.",
+    "errorForbidden": "Not authorized (HTTP 403) — browsing chat-context memory requires operator rights.",
+    "errorPathNotFound": "This path no longer exists in the memory store (HTTP 404).",
+    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint.",
+    "errorEndpointUnreachable": "The operator memory endpoint did not answer (HTTP 404). The memory-contexts router is most likely not mounted in this deployment — this is not a statement about what the store contains."
   },
   "memories": {
     "kinds": {

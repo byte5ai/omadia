@@ -3,6 +3,10 @@ import { describe, it } from 'node:test';
 
 import type { TimerSeam } from '../src/plugins/jobScheduler.js';
 import {
+  armNotConfiguredDetail,
+  classifyTeamsProvisioningError,
+  consentMissingDetail,
+  throttledDetail,
   TeamsProvisioningJobRunner,
   type ProvisionTeamsIdentityRequest,
   type TeamsAppPackageAssets,
@@ -708,5 +712,107 @@ describe('TeamsProvisioningJobRunner — wave-integration hardening', () => {
       0,
       'no step starts after stop()',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// last_error classifier (W2a, epic #860)
+//
+// The point of colocating these with the producers: the runner is the only
+// writer of last_error, and the operator UI renders from the DECODED form.
+// If someone edits a sentence and forgets the classifier, these round-trips
+// fail HERE instead of the UI quietly degrading to raw English in production.
+// ---------------------------------------------------------------------------
+
+describe('classifyTeamsProvisioningError', () => {
+  it('round-trips the consent_missing sentence the runner writes', async () => {
+    const scopes = ['Application.ReadWrite.All', 'AppCatalog.ReadWrite.All'];
+    const { runner, store } = makeRunner({
+      behaviour: {
+        createAppRegistration: () =>
+          Promise.reject(
+            namedError('ConsentMissingError', '403 from Graph', {
+              missingScopes: scopes,
+              resource: 'graph',
+            }),
+          ),
+      },
+    });
+    await runner.enqueue(REQUEST);
+    const raw = store.row?.lastError;
+    assert.ok(raw, 'the runner must have recorded a last_error');
+    assert.deepEqual(classifyTeamsProvisioningError(raw), {
+      code: 'consent_missing',
+      scopes,
+      raw,
+    });
+  });
+
+  it('round-trips the arm_not_configured sentence the runner writes', async () => {
+    const { runner, store } = makeRunner({
+      behaviour: { createBot: 'registration-only' },
+    });
+    await runner.enqueue(REQUEST);
+    const raw = store.row?.lastError;
+    assert.ok(raw, 'the runner must have recorded a last_error');
+    const detail = classifyTeamsProvisioningError(raw);
+    assert.equal(detail.code, 'arm_not_configured');
+    assert.ok(
+      detail.fields?.includes('azureSubscriptionId'),
+      'the missing setup fields must survive the round-trip',
+    );
+    assert.equal(detail.raw, raw);
+  });
+
+  it('round-trips the throttled sentence incl. the Retry-After hint', async () => {
+    const { runner, store } = makeRunner({
+      maxAttempts: 2,
+      behaviour: {
+        installToTeam: () =>
+          Promise.reject(
+            namedError('ProvisioningThrottledError', '429 from Graph', {
+              resource: 'graph',
+              retryAfterSeconds: 42,
+            }),
+          ),
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'retries_exhausted');
+    const raw = store.row?.lastError;
+    assert.ok(raw, 'the runner must have recorded a last_error');
+    assert.deepEqual(classifyTeamsProvisioningError(raw), {
+      code: 'throttled',
+      retryAfterSeconds: 42,
+      raw,
+    });
+  });
+
+  it('omits retryAfterSeconds when the connector gave no hint', () => {
+    const raw = throttledDetail('429', 3);
+    assert.deepEqual(classifyTeamsProvisioningError(raw), { code: 'throttled', raw });
+  });
+
+  it('maps the empty-field sentinel back to an empty list', () => {
+    const detail = classifyTeamsProvisioningError(armNotConfiguredDetail([]));
+    assert.equal(detail.code, 'arm_not_configured');
+    assert.deepEqual(detail.fields, []);
+  });
+
+  it('keeps scopes an empty list when the connector named none', () => {
+    const detail = classifyTeamsProvisioningError(consentMissingDetail([]));
+    assert.equal(detail.code, 'consent_missing');
+    assert.deepEqual(detail.scopes, []);
+  });
+
+  it('is total: unrecognized sentences classify as unknown with the raw text kept', () => {
+    for (const raw of [
+      'enqueue_failed: queue down',
+      'boom (gave up after 3 attempts)',
+      '',
+      'consent missing but not the code prefix',
+    ]) {
+      assert.deepEqual(classifyTeamsProvisioningError(raw), { code: 'unknown', raw });
+    }
   });
 });

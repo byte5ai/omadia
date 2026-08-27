@@ -4065,6 +4065,62 @@ export async function listMemoryContextLabels(
 }
 
 // -----------------------------------------------------------------------------
+// Operator memory-contexts browser (READ-ONLY). Backed by the operator router
+// at /api/v1/operator/memory/contexts, surfaced to the browser as
+// /bot-api/v1/operator/memory/contexts:
+//
+//   GET /list?path=/memories/contexts[/...]  → { path, entries: [...] }
+//   GET /file?path=/memories/contexts/...    → text/plain
+//
+// This REPLACES `/bot-api/dev/memory/{list,file}` for the memory browser. That
+// dev router is unauthenticated and only mounted when the memory plugin's
+// `dev_memory_endpoints_enabled` flag is truthy, which the kernel forbids in
+// production — so the browser it backed was dead exactly where an operator
+// needs it. The operator router is requireAuth-gated (cookie session JWT, the
+// same gate as the Danger-Zone purge) and is structurally unable to leave
+// `/memories/contexts`.
+//
+// The wire shape is byte-compatible with the dev router's, which is why the
+// page's `Entry`/`ListResponse` handling carries over unchanged and only the
+// URL moves. See middleware/src/routes/operatorMemoryContexts.ts.
+//
+// Deliberately NOT routed through `getJson`: that helper bounces the browser to
+// /login on 401, and this page must RENDER an unauthenticated state instead —
+// a memory browser that silently navigates away cannot tell an operator whether
+// the tree is empty or their session expired. The page therefore fetches these
+// URLs itself and maps the status codes into catalog strings.
+// -----------------------------------------------------------------------------
+
+/** One entry of an operator memory listing (identical to the dev router's). */
+export interface MemoryDirEntry {
+  virtualPath: string;
+  isDirectory: boolean;
+  sizeBytes: number;
+}
+
+/** Body of `GET /v1/operator/memory/contexts/list`. */
+export interface MemoryListResponse {
+  path: string;
+  entries: MemoryDirEntry[];
+}
+
+function operatorMemoryContextsUrl(verb: 'list' | 'file', path: string): string {
+  return botApi(
+    `/v1/operator/memory/contexts/${verb}?path=${encodeURIComponent(path)}`,
+  );
+}
+
+/** Absolute URL of the directory listing for `path`. */
+export function operatorMemoryContextsListUrl(path: string): string {
+  return operatorMemoryContextsUrl('list', path);
+}
+
+/** Absolute URL of the file content for `path`. */
+export function operatorMemoryContextsFileUrl(path: string): string {
+  return operatorMemoryContextsUrl('file', path);
+}
+
+// -----------------------------------------------------------------------------
 // Memory storage backend switch (postgres ↔ inmemory). Backed by the admin
 // router at /api/v1/admin/memory/backend, surfaced to the browser as
 // /bot-api/v1/admin/memory/backend. The PUT only PERSISTS the choice — the

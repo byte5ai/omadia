@@ -325,6 +325,266 @@ export function parseOperatorAgentErrorCode(
   }
 }
 
+// ── W2a (#860) — per-agent Teams bot identity ──────────────────────────
+
+/**
+ * Provisioning-chain vocabulary, mirroring `TEAMS_PROVISIONING_STATES` in
+ * `middleware/src/platform/agentTeamsIdentityStore.ts` (itself the CHECK
+ * constraint of migration 0049, verbatim). Structural contract, same
+ * arrangement as {@link FALLBACK_AGENT_SLUG}: the middleware owns the
+ * vocabulary, this module only recognises it, neither imports the other.
+ *
+ * Order is significant — the panel renders the array as the progress chain,
+ * so `installed` and `failed` (the two terminals) sit last on purpose.
+ */
+export const TEAMS_PROVISIONING_STATES = [
+  'pending',
+  'app_registered',
+  'bot_created',
+  'package_built',
+  'catalog_uploaded',
+  'installed',
+  'failed',
+] as const;
+
+export type TeamsProvisioningState = (typeof TEAMS_PROVISIONING_STATES)[number];
+
+/** The chain a healthy run walks, without the `failed` sink — the ordered
+ *  steps a progress display shows. */
+export const TEAMS_PROVISIONING_CHAIN = TEAMS_PROVISIONING_STATES.filter(
+  (s): s is Exclude<TeamsProvisioningState, 'failed'> => s !== 'failed',
+);
+
+/** Polling contract: only these two states end the run. Everything else —
+ *  including a non-terminal `app_registered` carrying a `last_error` — means
+ *  the runner may still advance, so the panel keeps polling. */
+export function isTerminalTeamsProvisioningState(
+  state: TeamsProvisioningState,
+): boolean {
+  return state === 'installed' || state === 'failed';
+}
+
+/**
+ * Machine codes of the classifier the middleware runs over `last_error`
+ * server-side, next to the job runner that WRITES those sentences
+ * (`services/teamsProvisioningJob.ts`).
+ *
+ * Deliberately NOT parsed here: an English-sentence parser in web-ui would
+ * silently degrade in production the day someone rewords a message, whereas
+ * a classifier colocated with the producer breaks a unit test instead. This
+ * module only narrows the already-structured projection.
+ */
+export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
+  'consent_missing',
+  'arm_not_configured',
+  'throttled',
+  'unknown',
+] as const;
+
+export type TeamsIdentityLastErrorCode =
+  (typeof TEAMS_IDENTITY_LAST_ERROR_CODES)[number];
+
+const TEAMS_IDENTITY_LAST_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_IDENTITY_LAST_ERROR_CODES,
+);
+
+/** Server-side projection of `last_error` (route field `last_error_detail`).
+ *  `raw` is the original sentence — renderable only as a secondary technical
+ *  detail, never as the primary user-facing copy. */
+export interface TeamsIdentityLastErrorDetailDto {
+  code: TeamsIdentityLastErrorCode;
+  /** Graph scopes still awaiting admin consent (`consent_missing`). */
+  scopes?: string[];
+  /** Connector setup fields still missing (`arm_not_configured`). */
+  fields?: string[];
+  /** Backoff hint (`throttled`). */
+  retryAfterSeconds?: number;
+  raw: string;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.every((v) => typeof v === 'string')
+    ? (value as string[])
+    : undefined;
+}
+
+/**
+ * Narrow `identity.last_error_detail` at the boundary.
+ *
+ * Total by construction, and deliberately tolerant: a middleware that does
+ * not emit the field yet (or emits a shape this client does not know) still
+ * yields a usable `{ code: 'unknown', raw }` so the panel renders the
+ * localized fallback with the sentence as a technical argument instead of
+ * losing the error entirely. Returns `null` only when there is no error.
+ */
+export function parseTeamsIdentityLastErrorDetail(
+  detail: unknown,
+  lastError: string | null,
+): TeamsIdentityLastErrorDetailDto | null {
+  if (lastError === null || lastError === '') return null;
+  const obj =
+    detail !== null && typeof detail === 'object'
+      ? (detail as Record<string, unknown>)
+      : null;
+  const rawCode = obj?.['code'];
+  const code: TeamsIdentityLastErrorCode =
+    typeof rawCode === 'string' && TEAMS_IDENTITY_LAST_ERROR_CODE_SET.has(rawCode)
+      ? (rawCode as TeamsIdentityLastErrorCode)
+      : 'unknown';
+  const scopes = stringList(obj?.['scopes']);
+  const fields = stringList(obj?.['fields']);
+  const retry = obj?.['retryAfterSeconds'];
+  const rawText = obj?.['raw'];
+  return {
+    code,
+    ...(scopes ? { scopes } : {}),
+    ...(fields ? { fields } : {}),
+    ...(typeof retry === 'number' && Number.isFinite(retry)
+      ? { retryAfterSeconds: retry }
+      : {}),
+    raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
+  };
+}
+
+/** `agent_teams_identities` row as the status route projects it. Snake_case
+ *  mirrors the REST payload verbatim, like the other operator DTOs here. */
+export interface TeamsIdentityDto {
+  bot_slug: string;
+  display_name: string;
+  app_id: string | null;
+  tenant_id: string | null;
+  teams_app_id: string | null;
+  teams_app_external_id: string | null;
+  /** Recorded install target. The POST REQUIRES `team_id` and has no
+   *  fall-back-to-stored path on the server, so a re-run has to resend this
+   *  value. `null` on a row created before a target was known. */
+  team_id: string | null;
+  last_error: string | null;
+  /** Server-side classification of `last_error` — additive, so a middleware
+   *  predating the projection simply omits it. */
+  last_error_detail?: unknown;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * The channel-teams `teams_bots[]` projection — shaped EXACTLY like a
+ * `parseTeamsBotsConfig` entry (hence camelCase inside an otherwise
+ * snake_case payload), so an operator can paste it into the channel-teams
+ * config verbatim. Null until the Entra app exists. Never carries secret
+ * material: `appPasswordSecretRef` is an opaque credential-store ref.
+ */
+export interface TeamsBotConfigEntryDto {
+  botSlug: string;
+  displayName: string;
+  appId: string;
+  appType: 'SingleTenant';
+  tenantId: string;
+  appPasswordSecretRef: string;
+}
+
+export interface TeamsIdentityStatusDto {
+  ok: boolean;
+  agent: string;
+  state: TeamsProvisioningState;
+  /** Honest signal: true only while the runner actually holds a run for this
+   *  agent — a rejected enqueue leaves it false even in a `pending` row. */
+  running: boolean;
+  provisioner_installed: boolean;
+  identity: TeamsIdentityDto;
+  teams_bot: TeamsBotConfigEntryDto | null;
+}
+
+/** `GET /v1/operator/agents/:slug/teams-identity`. Rejects with a 404
+ *  `teams_identity_not_found` when the agent has no identity row yet — that
+ *  is the "show the create form" signal, not an error. */
+export async function getAgentTeamsIdentity(
+  slug: string,
+): Promise<TeamsIdentityStatusDto> {
+  return callJson<TeamsIdentityStatusDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity`,
+  );
+}
+
+/**
+ * `team_id` is REQUIRED — `TeamsIdentityProvisionSchema` in
+ * `middleware/src/routes/operatorAgents.ts` declares it `z.string().min(1)`
+ * and the runner port types `enqueue({ agentId, teamId: string })`. Only
+ * `bot_slug` and `display_name` are optional; the server derives them from
+ * the agent when omitted, and ignores them on a re-run.
+ */
+export interface ProvisionTeamsIdentityInput {
+  bot_slug?: string;
+  display_name?: string;
+  team_id: string;
+}
+
+export interface ProvisionTeamsIdentityResponse {
+  ok: boolean;
+  agent: string;
+  bot_slug: string;
+  state: TeamsProvisioningState;
+  running: boolean;
+}
+
+/** `POST /v1/operator/agents/:slug/teams-identity` — 202, create-if-absent
+ *  plus a fire-and-forget provisioning run. Idempotent on the server. */
+export async function provisionAgentTeamsIdentity(
+  slug: string,
+  input: ProvisionTeamsIdentityInput,
+): Promise<ProvisionTeamsIdentityResponse> {
+  return callJson<ProvisionTeamsIdentityResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+/**
+ * Machine codes the teams-identity routes emit as `{ error: '<code>' }`.
+ *
+ * A separate union from {@link OPERATOR_AGENT_ERROR_CODES} on purpose: these
+ * routes add codes (`bot_slug_taken`, the two 503 capability gates, the
+ * `teams_identity_not_found` control signal) that the plugin/grant catalogues
+ * have no copy for, and widening the shared union would force every existing
+ * `detailErrors.*` / `grants.errors.*` catalogue to grow keys it never
+ * renders.
+ */
+export const TEAMS_IDENTITY_ERROR_CODES = [
+  'bot_slug_taken',
+  'invalid_body',
+  'invalid_slug',
+  'multi_orchestrator_unavailable',
+  'not_found',
+  'teams_identity_not_found',
+  'teams_identity_unavailable',
+  'teams_provisioner_unavailable',
+] as const;
+
+export type TeamsIdentityErrorCode =
+  (typeof TEAMS_IDENTITY_ERROR_CODES)[number];
+
+const TEAMS_IDENTITY_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_IDENTITY_ERROR_CODES,
+);
+
+/** Same contract as {@link parseOperatorAgentErrorCode}: total, `null` for
+ *  anything this client does not recognise. */
+export function parseTeamsIdentityErrorCode(
+  err: unknown,
+): TeamsIdentityErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      TEAMS_IDENTITY_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as TeamsIdentityErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,
@@ -536,4 +796,231 @@ export function isSeededAgentDescription(
   description: string | null | undefined,
 ): boolean {
   return description?.trim() === FALLBACK_AGENT_SEED_DESCRIPTION;
+}
+
+// ── W2a (#860) — team↔agent assignment read model ───────────────────────
+//
+// Backed by the wave's install routes in `routes/operatorAgents.ts`:
+//
+//   GET    /v1/operator/agents/:slug/teams
+//   POST   /v1/operator/agents/:slug/teams
+//   DELETE /v1/operator/agents/:slug/teams/:teamId
+//
+// The read model is DERIVED from the agent's `agent_teams_identities` row,
+// not enumerated from Graph: `teamsProvisioner@1` publishes no listing and no
+// uninstall method, and migration 0049 stores ONE `team_id` per agent. The
+// route therefore ships those limits as data (`capabilities`) so this client
+// — and the panel above it — can disable a control instead of discovering the
+// gap through a failed request.
+
+/** One team the agent's Teams app is known to be installed in. */
+export interface InstalledTeamDto {
+  team_id: string;
+  /** Catalog id of the installed app; null until the upload step ran. */
+  teams_app_id: string | null;
+  /** ISO timestamp of the row write that recorded the install — NOT a Graph
+   *  timestamp, the connector reports none. */
+  installed_at: string | null;
+  /** Where the entry comes from. Derived, never enumerated. */
+  evidence: 'identity_row';
+}
+
+export type TeamsConsentStatus = 'granted' | 'missing' | 'unknown';
+
+/** Admin-consent verdict for the tenant the identity is provisioned in.
+ *  There is no live probe, so `source` names what the verdict rests on. */
+export interface TeamsConsentDto {
+  status: TeamsConsentStatus;
+  missing_scopes: string[];
+  source: 'last_error' | 'provisioning_state' | 'none';
+}
+
+/** Capability keys the route reports, in render order. `unsupported_reason`
+ *  is keyed by these; the UI renders its OWN localized reason per key and may
+ *  show the server sentence only as a secondary technical detail. */
+export const TEAMS_ASSIGNMENT_CAPABILITY_KEYS = [
+  'install',
+  'uninstall',
+  'enumerate',
+  'multi_team',
+] as const;
+
+export type TeamsAssignmentCapabilityKey =
+  (typeof TEAMS_ASSIGNMENT_CAPABILITY_KEYS)[number];
+
+export type TeamsAssignmentCapabilitiesDto = Record<
+  TeamsAssignmentCapabilityKey,
+  boolean
+> & {
+  unsupported_reason: Record<string, string>;
+};
+
+export interface AgentTeamsDto {
+  ok: boolean;
+  agent: string;
+  /** Provisioning-chain state. Its vocabulary belongs to the Teams identity
+   *  panel, which owns the localized state copy — this client carries it as
+   *  an opaque marker so the assignment panel never renders a raw state. */
+  state: string;
+  running: boolean;
+  provisioner_installed: boolean;
+  teams: InstalledTeamDto[];
+  /** The recorded install TARGET while the chain has not reached
+   *  `installed` — a run in flight (or a stalled one), never an install. */
+  pending_team_id: string | null;
+  consent: TeamsConsentDto;
+  last_error: string | null;
+  capabilities: TeamsAssignmentCapabilitiesDto;
+}
+
+/** Fail-closed capability default: a middleware that does not report
+ *  capabilities gets every control disabled, never an enabled one that then
+ *  fails against a route it cannot serve. */
+const TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED: TeamsAssignmentCapabilitiesDto = {
+  install: false,
+  uninstall: false,
+  enumerate: false,
+  multi_team: false,
+  unsupported_reason: {},
+};
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (value === null || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
+}
+
+/**
+ * Narrow the capability block at the boundary.
+ *
+ * Total by construction and fail-closed: an absent block, a partial one, or a
+ * non-boolean flag all collapse to "not supported". The UI then renders a
+ * disabled control with its reason instead of a button that 501s.
+ */
+export function parseTeamsAssignmentCapabilities(
+  value: unknown,
+): TeamsAssignmentCapabilitiesDto {
+  if (value === null || typeof value !== 'object') {
+    return TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED;
+  }
+  const obj = value as Record<string, unknown>;
+  const flags = Object.fromEntries(
+    TEAMS_ASSIGNMENT_CAPABILITY_KEYS.map((key) => [key, obj[key] === true]),
+  ) as Record<TeamsAssignmentCapabilityKey, boolean>;
+  return { ...flags, unsupported_reason: stringRecord(obj['unsupported_reason']) };
+}
+
+/**
+ * `GET /v1/operator/agents/:slug/teams` — the teams the agent's app is
+ * installed in, plus consent status and what the platform can actually do.
+ *
+ * Rejects with 404 `teams_identity_not_found` when the agent has no identity
+ * row yet; that is the "there is nothing to assign yet" signal, and the panel
+ * treats it as an empty state rather than an error.
+ */
+export async function getAgentTeams(slug: string): Promise<AgentTeamsDto> {
+  const dto = await callJson<AgentTeamsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
+  );
+  return {
+    ...dto,
+    teams: Array.isArray(dto.teams) ? dto.teams : [],
+    capabilities: parseTeamsAssignmentCapabilities(dto.capabilities),
+  };
+}
+
+export interface InstallAgentTeamResponse {
+  ok: boolean;
+  agent: string;
+  team_id: string;
+  state: string;
+  /** True when the app was already installed in exactly this team — the POST
+   *  is idempotent for that case and starts no second run. */
+  already_installed: boolean;
+  running: boolean;
+}
+
+/**
+ * `POST /v1/operator/agents/:slug/teams` — record the target team and hand
+ * the chain to the provisioning runner (202). Answers 409
+ * `team_install_conflict` for a SECOND team: migration 0049 records one
+ * `team_id`, and no uninstall exists, so re-targeting would leave an
+ * untracked install behind.
+ */
+export async function installAgentTeam(
+  slug: string,
+  teamId: string,
+): Promise<InstallAgentTeamResponse> {
+  return callJson<InstallAgentTeamResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
+    { method: 'POST', body: JSON.stringify({ team_id: teamId }) },
+  );
+}
+
+/**
+ * `DELETE /v1/operator/agents/:slug/teams/:teamId`.
+ *
+ * Gated on `capabilities.uninstall`, which is `false` for as long as
+ * `teamsProvisioner@1` publishes no uninstall method — the route answers 501
+ * `teams_uninstall_unsupported` then. The call exists so the panel is
+ * capability-driven rather than hard-coded: the day the connector contract
+ * gains an uninstall, the control lights up with no UI change.
+ */
+export async function uninstallAgentTeam(
+  slug: string,
+  teamId: string,
+): Promise<void> {
+  await callJson(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * Machine codes the team-assignment routes emit as `{ error: '<code>' }`.
+ *
+ * A union of its own, like the identity routes': these add
+ * `team_install_conflict` and `teams_uninstall_unsupported`, which no other
+ * catalogue on this page has copy for.
+ *
+ * i18n HARD RULE: none of these are user-facing text — each maps to a
+ * `teamsInstalls.errors.*` key and the raw body never reaches the UI.
+ */
+export const TEAMS_ASSIGNMENT_ERROR_CODES = [
+  'invalid_body',
+  'invalid_slug',
+  'multi_orchestrator_unavailable',
+  'not_found',
+  'team_install_conflict',
+  'teams_identity_not_found',
+  'teams_identity_unavailable',
+  'teams_provisioner_unavailable',
+  'teams_uninstall_unsupported',
+] as const;
+
+export type TeamsAssignmentErrorCode =
+  (typeof TEAMS_ASSIGNMENT_ERROR_CODES)[number];
+
+const TEAMS_ASSIGNMENT_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_ASSIGNMENT_ERROR_CODES,
+);
+
+/** Same contract as {@link parseOperatorAgentErrorCode}: total, `null` for
+ *  anything this client does not recognise. */
+export function parseTeamsAssignmentErrorCode(
+  err: unknown,
+): TeamsAssignmentErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      TEAMS_ASSIGNMENT_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as TeamsAssignmentErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
 }

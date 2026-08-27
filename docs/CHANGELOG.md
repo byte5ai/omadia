@@ -116,6 +116,118 @@ could never detect a newer release.
   dialog for every outcome — found (downloading), already up to date, or the check failed —
   without changing the silent startup check's existing (dialog-free) behavior.
 
+### Added — operator UI for Teams agent identities, team assignment and context memory (#866, epic #860 W2a)
+
+2026-08-27 — The provisioning chain built in W1a had no operator surface: everything ran
+through curl. The agent detail page now owns the whole loop.
+
+- **Teams identity panel.** Create the identity, watch the state machine advance live
+  (`pending → app_registered → bot_created → package_built → catalog_uploaded → installed`),
+  and read a failure as something actionable: the middleware classifies `last_error`
+  server-side and the panel renders what happened, which scopes or setup fields are
+  missing, and what to do next — with the raw English sentence demoted to a technical
+  detail. Registration-only (`arm_not_configured` on `app_registered`) reads as a valid
+  stop, not as a broken agent.
+- **The `teams_bot` block, and the honesty about it.** The channel-teams `teams_bots[]`
+  entry is shown ready to copy, together with a plain statement that pasting it into the
+  plugin's setup field is a MANUAL step — nothing syncs it. Automatic config sync stays a
+  documented follow-up.
+- **Team assignment.** The teams an agent's app is installed in, with consent status,
+  install, and an honest 501 for uninstall (`teamsProvisioner@1` publishes none).
+- **Agent Builder link.** Persona and behaviour design stays in the native builder; the
+  detail page deep-links to the draft that published this orchestrator's agent plugin, or
+  to the overview when no single draft matches — never to a guessed id.
+- **Memory context browser off the dev endpoint.** `/memory` now reads the new
+  authenticated `GET /api/v1/operator/memory/contexts/{list,file}`, whose path guard
+  normalizes every request into the `/memories/contexts` subtree segment-wise and rejects
+  traversal before the store is touched. The browser is no longer dev-only.
+
+Integration decisions worth recording, because two parallel units disagreed:
+
+- **One owner for `identity.last_error_detail`.** Two units projected the same key with
+  different wire shapes (camelCase vs snake_case). The camelCase
+  `TeamsProvisioningErrorDetail` — produced by `classifyTeamsProvisioningError` next to the
+  sentences it decodes — is the single owner; the duplicate snake_case projection and the
+  duplicate web-ui sentence parser (`app/_lib/teamsIdentityErrors.ts`) are gone. One
+  classifier, pinned by a round-trip test against the real producers.
+- **`team_id` is required, and the UI now says so.** `TeamsIdentityProvisionSchema` declares
+  it `z.string().min(1)` and the runner needs it to reach `installToTeam`, but the create
+  form invited an empty value and the re-run action posted `{}` — both a guaranteed 400.
+  The form requires the field, `GET …/teams-identity` additionally returns the recorded
+  `team_id`, and a re-run resends it.
+- **A retarget can no longer fabricate an install.** `agent_teams_identities` keeps ONE
+  `team_id`, and the runner refuses a second enqueue with a RESOLVED `{status:'rejected'}`
+  that a fire-and-forget caller never sees. Both POSTs now refuse a conflicting retarget
+  with 409 BEFORE writing — for an already-installed row and for a run in flight toward
+  another team (`TeamsProvisioningJobRunner.runningTeamId`) — and a refused enqueue is
+  recorded instead of dropped.
+
+### Changed — one `teams_bot` projection + a decoded `last_error` for the operator UI (#860 W2a)
+
+2026-08-27 — Groundwork for the operator-facing team↔agent screens, no schema change and
+no new route.
+
+- **Single projection choke point.** The channel-teams `teams_bots[]` entry that
+  `GET /api/v1/operator/agents/:slug/teams-identity` returns was assembled inline in the
+  handler. It is now the exported `projectTeamsBotConfig()` of
+  `middleware/src/routes/operatorAgents.ts`, so every further team↔agent route emits a
+  byte-identical block. The entry is a config contract with channel-teams — a second,
+  drifting copy would hand operators a config the plugin silently refuses to parse. The
+  invariants are unchanged: `null` unless BOTH `app_id` and `tenant_id` are known,
+  `appType` always `SingleTenant`, and the bot password only ever as the opaque vault ref
+  `teams_bot_password:<appId>`. Pasting that block into channel-teams' `teams_bots` setup
+  field stays a MANUAL operator step; automatic config sync remains a follow-up.
+- **`last_error_detail` (additive).** The GET now also returns the identity's `last_error`
+  in structured form: `{ code: consent_missing | arm_not_configured | throttled | unknown,
+  scopes?, fields?, retryAfterSeconds?, raw }`. `last_error` itself is unchanged. The
+  decoder (`classifyTeamsProvisioningError`) sits in
+  `middleware/src/services/teamsProvisioningJob.ts` — next to the only code that WRITES
+  those sentences — so changing a message and forgetting the decoder breaks a colocated
+  round-trip test instead of degrading the operator UI in production. The UI renders from
+  `code` plus the typed arguments; `raw` is a secondary technical detail only.
+- **New sentence:** an exhausted throttle budget is now recorded as
+  `throttled: … (gave up after N attempts; retry after Ns)` instead of an un-prefixed
+  message, so "come back later" is machine-readable. Follow-up worth doing: persist the
+  structured code as its own column from the start.
+### Added — Teams E2E smoke STAGE 2 + server-side `last_error` classification (#860 W2a, #874)
+
+2026-08-27 — The Teams identity provisioning chain had unit coverage but nothing that drove
+it end to end against a real tenant, and the operator UI had no way to act on a failure
+except to show an untranslated English backend sentence.
+
+- **STAGE 2 of the Teams E2E smoke** (`middleware/scripts/smoke-teams-e2e.ts`, gitignored —
+  it hits byte5-internal endpoints) drives the live chain: `POST
+  /api/v1/operator/agents/:slug/teams-identity` (202), then polls `GET …/teams-identity`
+  through `pending → app_registered → bot_created → package_built → catalog_uploaded →
+  installed`, asserts the `teams_bot` projection and `teams_app_id` are complete, and
+  verifies the new bot's `/api/teams/<botSlug>/messages` route is live and rejects an
+  unsigned payload. It runs on the environment STAGE 1 establishes.
+- **Production-write guard, fail-closed.** A provisioning call persists an
+  `agent_teams_identities` row and creates real Entra/Azure/Teams objects, so STAGE 2 has no
+  default target: it skips entirely without an explicit opt-in, requires the caller to echo
+  the target host back, refuses known production hosts with no override, and aborts when the
+  shell carries a non-scratch `DATABASE_URL`.
+- **Registration-only is a pass.** With no ARM setup fields on the M365 connector the chain
+  legitimately stops at `app_registered` with `arm_not_configured: …`; the run reports
+  success-with-caveat rather than failing, matching the job runner's partial-success
+  contract. Missing admin consent stays a hard stop, with the missing scopes named.
+- **`identity.last_error_detail`** is emitted alongside `last_error` by `GET …/teams-identity`
+  — `{ code: consent_missing | arm_not_configured | throttled | unknown, scopes?, fields?,
+  retryAfterSeconds?, raw }`. Additive; no schema change, no migration. The classifier
+  lives next to the code that writes those sentences
+  (`services/teamsProvisioningJob.ts`), with a round-trip test
+  (`test/teamsProvisioningLastError.test.ts`) so rewording a message without updating the
+  parser breaks a colocated test instead of silently degrading the operator UI. Clients must
+  render from the structured object, never parse the English sentence.
+- **Docs:** `docs/middleware-agent-handoff.md` gains a section on pointing the smoke at a
+  scratch tenant and what it needs (connector plugin installed and active, admin consent,
+  ARM fields for the full chain, registration-only otherwise).
+
+Known limitation: the smoke does not send a genuine Bot Framework turn — signing one needs
+the freshly created app's secret, which never leaves the connector's vault. The visible
+reply in Teams stays a one-line manual step the run prints out. Follow-up: the job runner
+should persist a structured error code from the start, which needs its own migration.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent
@@ -161,6 +273,26 @@ is injective only over the strings `parseSessionScope` emits, while the design h
 adapters build scopes directly — so it cannot be used to key a security boundary. And a
 sanitise-or-hash key function is not injective unless the two branches have disjoint output
 spaces; without that, the hash branch is pre-imageable by anyone who can name their own id.
+
+### Changed — the memory context browser reads the operator endpoint (#860 W2a)
+
+2026-08-27 — W5 shipped the context browser on `/bot-api/dev/memory/{list,file}`
+(`packages/harness-memory/src/devMemoryRouter.ts`), which the memory plugin only mounts when
+`dev_memory_endpoints_enabled` resolves truthy — a flag the kernel forbids in production. The
+panel was therefore dead exactly where an operator needs it, and it explained itself with
+"set `DEV_ENDPOINTS_ENABLED`", advice no production operator can act on.
+
+- **Both call sites move** to `GET /api/v1/operator/memory/contexts/{list,file}`
+  (`middleware/src/routes/operatorMemoryContexts.ts`), `requireAuth`-gated on the same cookie
+  session as the Danger-Zone purge. The wire shape is unchanged, so only the URL moves.
+- **The page is now a CONTEXT browser.** That endpoint is structurally unable to read outside
+  `/memories/contexts`, so the root, the breadcrumbs and "up" all stop there and the tree no
+  longer offers an agent-tier node — a node that always errors is worse than an absent one.
+  Promotion still TARGETS the agent tier; that is a write on the audited promote route.
+- **401/403 read as words.** They are ordinary answers on a gated route, so they get their own
+  copy instead of a bare "Listing failed (HTTP 401)". `memory.errorDevEndpointUnavailable` is
+  gone, replaced by `errorUnauthenticated` / `errorForbidden` / `errorPathNotFound` /
+  `errorOutOfScope`. The browser stays strictly READ-ONLY.
 
 ### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
 
