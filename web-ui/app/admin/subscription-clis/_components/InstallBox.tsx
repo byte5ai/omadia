@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react';
 import type { useTranslations } from 'next-intl';
 
+import { ErrorHelp } from '../../../_components/ErrorHelp';
 import { Button } from '../../../_components/ui/Button';
 import {
   ApiError,
@@ -33,9 +34,11 @@ type T = ReturnType<typeof useTranslations>;
  */
 export function ManualInstallSteps({
   b,
+  cliToolsDir,
   t,
 }: {
   b: CliBackendStatus;
+  cliToolsDir: string;
   t: T;
 }): React.ReactElement {
   return (
@@ -43,7 +46,7 @@ export function ManualInstallSteps({
       <li>
         {t('connect.step1')}{' '}
         <code className="select-all text-[color:var(--fg-strong)]">
-          {t('connect.installCmd')}
+          {t('connect.installCmd', { prefix: cliToolsDir })}
         </code>
       </li>
       <li>
@@ -61,19 +64,31 @@ type InstallPhase =
   | { phase: 'idle' }
   | { phase: 'starting' }
   | { phase: 'running' }
-  | { phase: 'failed'; detail?: string; logTail?: string };
+  | { phase: 'failed'; code?: string; detail?: string; logTail?: string };
 
 /** How often the panel asks the backend whether a running install finished. */
 const INSTALL_POLL_INTERVAL_MS = 3000;
 /** Stop polling after this many consecutive errors (e.g. an expired session). */
 const MAX_POLL_FAILURES = 5;
 
+function combineInstallDetail(
+  detail?: string,
+  logTail?: string,
+): string | undefined {
+  if (detail && logTail) {
+    return detail === logTail ? detail : `${detail}\n\n${logTail}`;
+  }
+  return detail ?? logTail;
+}
+
 export function InstallBox({
   b,
+  cliToolsDir,
   t,
   onChanged,
 }: {
   b: CliBackendStatus;
+  cliToolsDir: string;
   t: T;
   onChanged: () => void;
 }): React.ReactElement {
@@ -96,6 +111,7 @@ export function InstallBox({
             clearInterval(timer);
             setPhase({
               phase: 'failed',
+              ...(s.code ? { code: s.code } : {}),
               ...(s.error ? { detail: s.error } : {}),
               ...(s.logTail ? { logTail: s.logTail } : {}),
             });
@@ -162,15 +178,11 @@ export function InstallBox({
 
       {phase.phase === 'failed' && (
         <div className="mt-3">
-          <p className="text-sm text-[color:var(--danger)]">{t('install.failed')}</p>
-          {phase.detail ? (
-            <p className="mt-1 text-[12px] text-[color:var(--fg-muted)]">{phase.detail}</p>
-          ) : null}
-          {phase.logTail ? (
-            <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-[color:var(--bg)] p-2 text-[11px] text-[color:var(--fg-muted)]">
-              {phase.logTail}
-            </pre>
-          ) : null}
+          <ErrorHelp
+            code={phase.code ?? null}
+            rawDetail={combineInstallDetail(phase.detail, phase.logTail)}
+            fallback={t('install.failed')}
+          />
         </div>
       )}
 
@@ -178,7 +190,7 @@ export function InstallBox({
         <summary className="cursor-pointer text-[12px] text-[color:var(--fg-muted)]">
           {t('install.manualSummary')}
         </summary>
-        <ManualInstallSteps b={b} t={t} />
+        <ManualInstallSteps b={b} cliToolsDir={cliToolsDir} t={t} />
       </details>
     </div>
   );

@@ -13,6 +13,9 @@ import { findFreePorts, isPortFree } from './ports';
 import { startEmbeddedDb, EmbeddedDb } from './embeddedDb';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
+import { resolveAugmentedPath } from './pathEnv';
+
+const augmentedPath = resolveAugmentedPath(process.env['PATH']);
 
 export type BootPhase =
   | 'starting-db'
@@ -140,6 +143,7 @@ export class Supervisor extends EventEmitter {
   private kernelEnv(port: number): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       PORT: String(port),
@@ -178,6 +182,7 @@ export class Supervisor extends EventEmitter {
   private uiEnv(uiPort: number, kernelPort: number): NodeJS.ProcessEnv {
     return {
       ...process.env,
+      PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       PORT: String(uiPort),

@@ -70,10 +70,18 @@ const COVERED_ROUTE_FILES = [
  * covering it would silently claim copy for every one of the ~20 `package.*`
  * codes the ingest service can emit, and a coverage guard that overclaims is
  * worse than one with an honest boundary.
+ *
+ * `cli_install.no_output` and `cli_install.npm_failed` are set by
+ * `startCliInstall` in `middleware/src/platform/cliInstallService.ts` and
+ * reach the UI on the `GET /v1/admin/cli-backends/:id/install/status` poll
+ * response, not on an error envelope from a covered route file. A route scan
+ * can therefore never discover them.
  */
 const NON_ROUTE_CODES = [
   'providers.key_rejected',
   'package.id_conflict_bundled',
+  'cli_install.no_output',
+  'cli_install.npm_failed',
 ] as const;
 
 /**

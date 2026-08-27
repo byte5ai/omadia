@@ -15,14 +15,15 @@
  * code-to-copy indirection as `SCAN_FAILURE_CODES` in scanFailure.ts — no
  * third pattern is invented here.
  *
- * SCOPE. The catalogue covers the codes emitted by five route files:
- * `install.ts`, `runtime.ts`, `adminProviders.ts`, `store.ts` and
- * `adminSettings.ts`, plus `providers.key_rejected`, which the credential
- * verifier sets rather than a route. The rest of the middleware's codes are
- * deliberately not covered yet.
+ * SCOPE. The catalogue covers the codes emitted by six route files:
+ * `install.ts`, `runtime.ts`, `runtimeGrants.ts`, `adminProviders.ts`,
+ * `store.ts` and `adminSettings.ts`, plus the non-route codes
+ * `providers.key_rejected`, `package.id_conflict_bundled` and
+ * `cli_install.*`, which their services set rather than a route file. The
+ * rest of the middleware's codes are deliberately not covered yet.
  *
  * `__tests__/errorHelpCoverage.test.ts` holds the scope to that promise. It
- * reads `code: '…'` literals out of the five files, FOLLOWS `install.ts`'s
+ * reads `code: '…'` literals out of the six files, FOLLOWS `install.ts`'s
  * `handleError` into `plugins/installService.ts` for the codes it re-emits
  * from a thrown `InstallError`, and fails on any `code:` in a covered file
  * that is neither a literal nor a registered, explained non-literal. Within
@@ -55,6 +56,11 @@ export const ERROR_HELP_CODES = [
   'install.not_installed',
   'install.unexpected',
   'install.wrong_state',
+  // cli_install.* — set by startCliInstall in
+  // middleware/src/platform/cliInstallService.ts and returned on the
+  // install-status poll response, not on an error envelope.
+  'cli_install.no_output',
+  'cli_install.npm_failed',
   // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
   'providers.apply_failed',
   'providers.invalid_request',

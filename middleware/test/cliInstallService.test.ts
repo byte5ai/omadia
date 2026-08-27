@@ -48,6 +48,7 @@ const NOTHING_INSTALLED = {
       installable: true,
     },
   ],
+  cliToolsDir: cliToolsDir(),
   generatedAt: 0,
 };
 
@@ -122,13 +123,27 @@ describe('cliInstallService', () => {
     assert.deepEqual(seenArgs, ['install', '-g', '--prefix', dir, '@openai/codex@1.2.3']);
   });
 
-  it('a failed npm run surfaces status failed with a diagnosable log tail', async () => {
+  it('a failed npm run with log output reports npm_failed and preserves the log-tail message', async () => {
     __setCliInstallRunner(async () => ({ ok: false, output: 'npm ERR! EAI_AGAIN registry' }));
     await startCliInstall('codex', '1.2.3');
     const done = await waitForTerminal('codex');
     assert.equal(done.status, 'failed');
-    assert.ok(done.error);
+    assert.equal(done.code, 'cli_install.npm_failed');
+    assert.equal(done.error, 'npm install failed — see the log tail.');
     assert.match(done.logTail ?? '', /EAI_AGAIN/);
+  });
+
+  it('a failed npm run with no output reports no_output instead of pointing at an empty log tail', async () => {
+    __setCliInstallRunner(async () => ({ ok: false, output: '' }));
+    await startCliInstall('codex', '1.2.3');
+    const done = await waitForTerminal('codex');
+    assert.equal(done.status, 'failed');
+    assert.equal(done.code, 'cli_install.no_output');
+    assert.equal(
+      done.error,
+      'npm install failed — no output at all; npm was most likely not found.',
+    );
+    assert.equal(done.logTail, undefined);
   });
 
   it('reserves the single-flight slot across the idempotency probe (no TOCTOU race)', async () => {

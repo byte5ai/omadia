@@ -185,7 +185,13 @@ export function SubscriptionClisPanel({
           </div>
           <ul className="flex flex-col gap-3">
             {state.data.backends.map((b) => (
-              <CliRow key={b.id} b={b} t={t} onChanged={() => void load(true)} />
+              <CliRow
+                key={b.id}
+                b={b}
+                cliToolsDir={state.data.cliToolsDir}
+                t={t}
+                onChanged={() => void load(true)}
+              />
             ))}
           </ul>
         </section>
@@ -203,10 +209,12 @@ type LoginPhase =
 
 function CliRow({
   b,
+  cliToolsDir,
   t,
   onChanged,
 }: {
   b: CliBackendStatus;
+  cliToolsDir: string;
   t: T;
   onChanged: () => void;
 }): React.ReactElement {
@@ -317,11 +325,16 @@ function CliRow({
             {t('install.heading')}
           </div>
           {b.installable ? (
-            <InstallBox b={b} t={t} onChanged={onChanged} />
+            <InstallBox
+              b={b}
+              cliToolsDir={cliToolsDir}
+              t={t}
+              onChanged={onChanged}
+            />
           ) : (
             <>
               <p className="mt-2 text-sm text-[color:var(--fg-muted)]">{t('install.intro')}</p>
-              <ManualInstallSteps b={b} t={t} />
+              <ManualInstallSteps b={b} cliToolsDir={cliToolsDir} t={t} />
             </>
           )}
         </div>
@@ -348,7 +361,7 @@ function CliRow({
                 <summary className="cursor-pointer text-[12px] text-[color:var(--fg-muted)]">
                   {t('connect.manualSummary')}
                 </summary>
-                <ManualInstallSteps b={b} t={t} />
+                <ManualInstallSteps b={b} cliToolsDir={cliToolsDir} t={t} />
               </details>
             </div>
           )}

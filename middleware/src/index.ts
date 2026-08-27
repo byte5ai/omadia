@@ -4718,6 +4718,9 @@ async function main(): Promise<void> {
       console.error(`[builder] build template setup failed: ${message}`);
       throw err;
     });
+  // Mark the same boot-time promise as observed so Node does not emit a
+  // spurious unhandledRejection before BuildPipeline.run() awaits it later.
+  void templateReady.catch(() => {});
 
   const builderBuildPipeline = new BuildPipeline({
     draftStore,
