@@ -21,6 +21,10 @@ import {
   classifyTeamsProvisioningError,
   type TeamsProvisioningErrorDetail,
 } from '../services/teamsProvisioningJob.js';
+import {
+  supportsTeamUninstall,
+  type TeamsProvisionerAccessor,
+} from '../platform/teamsProvisionerService.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -73,7 +77,7 @@ interface AgentPluginCatalogEntry {
  *   GET    /api/v1/operator/agents/:slug/teams-identity   Teams identity provisioning status
  *   GET    /api/v1/operator/agents/:slug/teams            teams the agent's app is installed in (derived, W2a #860)
  *   POST   /api/v1/operator/agents/:slug/teams            install the agent's app into a team (async)
- *   DELETE /api/v1/operator/agents/:slug/teams/:teamId    501 — the connector publishes no uninstall
+ *   DELETE /api/v1/operator/agents/:slug/teams/:teamId    remove the agent's app from a team (#900; 501 on a connector < 0.4.0)
  *   PUT    /api/v1/operator/agents/:slug/bindings        replace agent channel bindings
  *   PUT    /api/v1/operator/agents/fallback              set platform fallback (body: { slug | null })
  *   POST   /api/v1/operator/agents/:slug/drain           drain + clear session snapshots
@@ -241,6 +245,18 @@ export interface OperatorTeamsIdentityStore {
    *  run in flight'. Best-effort — called from the POST fire-and-forget
    *  catch. */
   recordEnqueueFailure?(agentId: string, message: string): Promise<void>;
+  /**
+   * Forget the recorded team install after a successful uninstall
+   * (byte5ai/omadia#900) — the row drops back to `catalog_uploaded` with a
+   * null `team_id`.
+   *
+   * Optional so a store implementation that predates the uninstall route
+   * still satisfies this interface; the route refuses (501) rather than
+   * removing an install it cannot then record as removed, because a
+   * middleware that forgot the removal would keep reporting a team the app
+   * is no longer in.
+   */
+  clearTeamInstall?(agentId: string): Promise<OperatorTeamsIdentityRecord>;
 }
 
 /** Structural subset of `TeamsProvisioningJobRunner` — enqueue is
@@ -267,6 +283,20 @@ export interface OperatorTeamsIdentityDeps {
   /** Live check whether the M365 connector currently publishes
    *  `teamsProvisioner@1`. POST 503s without it; GET only reports it. */
   readonly isProvisionerInstalled: () => boolean;
+  /**
+   * The live provisioner, for the operations the ROUTE performs itself
+   * (today: the team uninstall of byte5ai/omadia#900). Everything in the
+   * provisioning CHAIN still belongs to the job runner — this is not a
+   * second path into it.
+   *
+   * Optional, and `undefined` is a first-class answer: a wiring that does
+   * not bind it, or a connector that is not installed, both mean "no
+   * uninstall", which the route reports as a capability rather than a crash.
+   * `uninstallFromTeam` itself is optional on the accessor too (connector
+   * >= 0.4.0), so callers go through
+   * {@link supportsTeamUninstall}.
+   */
+  readonly getProvisioner?: () => TeamsProvisionerAccessor | undefined;
   /** Vault ref under which the bot's app password is held — surfaced by the
    *  status endpoint INSTEAD of the secret itself. Defaults to
    *  {@link defaultTeamsBotSecretRef} (the connector's deterministic ref).
@@ -424,7 +454,8 @@ export function projectInstalledTeams(
 export interface TeamsAssignmentCapabilities {
   /** Install into a team by resuming the provisioning chain. */
   readonly install: boolean;
-  /** Remove an install — the connector publishes no uninstall method. */
+  /** Remove an install — requires a connector that publishes
+   *  `uninstallFromTeam` (M365 connector >= 0.4.0). */
   readonly uninstall: boolean;
   /** Enumerate installs live — the connector publishes no listing method. */
   readonly enumerate: boolean;
@@ -434,20 +465,59 @@ export interface TeamsAssignmentCapabilities {
   readonly unsupported_reason: Readonly<Record<string, string>>;
 }
 
-export const TEAMS_ASSIGNMENT_CAPABILITIES: TeamsAssignmentCapabilities = {
-  install: true,
-  uninstall: false,
-  enumerate: false,
-  multi_team: false,
-  unsupported_reason: {
-    uninstall:
-      'teamsProvisioner@1 publishes no uninstall method (createAppRegistration/createBot/buildAppPackage/uploadToCatalog/getCatalogApp/installToTeam only) — removing the app from a team is a manual Teams-admin step until the connector contract gains one.',
-    enumerate:
-      'teamsProvisioner@1 publishes no installation-listing method — the team list is derived from the agent_teams_identities row, not enumerated from Graph.',
-    multi_team:
-      'agent_teams_identities stores ONE team_id per agent (migration 0049) — tracking an install set needs a schema change, which is out of scope for this wave.',
-  },
+/** Minimum connector version whose `teamsProvisioner@1` publishes an
+ *  uninstall. Quoted in the operator-facing reason so the fix is actionable
+ *  ("upgrade the plugin"), not just a refusal. */
+export const TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION = '0.4.0';
+
+/** Reason text for a capability that is off because the INSTALLED connector
+ *  is too old — a version skew an operator can fix, unlike the structural
+ *  gaps below. */
+export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no uninstallFromTeam method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a team is a manual Teams-admin step.`;
+
+const STRUCTURAL_UNSUPPORTED_REASONS: Readonly<Record<string, string>> = {
+  enumerate:
+    'teamsProvisioner@1 publishes no installation-listing method — the team list is derived from the agent_teams_identities row, not enumerated from Graph.',
+  multi_team:
+    'agent_teams_identities stores ONE team_id per agent (migration 0049) — tracking an install set needs a schema change, which is out of scope for this wave.',
 };
+
+/**
+ * The capability block for ONE request.
+ *
+ * `uninstall` is the only entry that varies at runtime: it mirrors whether
+ * the connector installed RIGHT NOW publishes `uninstallFromTeam`
+ * (byte5ai/omadia#900). Everything else is a structural property of this
+ * middleware's schema and the capability contract, so it stays constant.
+ *
+ * A `false` always ships with its reason, and the reason distinguishes the
+ * two kinds: a fixable version skew ("upgrade the connector") versus a
+ * structural gap the operator cannot do anything about.
+ */
+export function teamsAssignmentCapabilities(
+  canUninstall: boolean,
+): TeamsAssignmentCapabilities {
+  return {
+    install: true,
+    uninstall: canUninstall,
+    enumerate: false,
+    multi_team: false,
+    unsupported_reason: canUninstall
+      ? STRUCTURAL_UNSUPPORTED_REASONS
+      : {
+          uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+          ...STRUCTURAL_UNSUPPORTED_REASONS,
+        },
+  };
+}
+
+/**
+ * The block for a connector that cannot uninstall — the pre-#900 shape, kept
+ * as the named baseline the tests and the UI contract refer to.
+ */
+export const TEAMS_ASSIGNMENT_CAPABILITIES: TeamsAssignmentCapabilities =
+  teamsAssignmentCapabilities(false);
 
 export type TeamsConsentStatus = 'granted' | 'missing' | 'unknown';
 
@@ -1252,12 +1322,27 @@ export function createOperatorAgentsRouter(
     }
   });
 
-  // ── Team ↔ agent assignment (W2a, #860) ─────────────────────────────
+  // ── Team ↔ agent assignment (W2a, #860; uninstall #900) ─────────────
   // The read model is DERIVED from the identity row (see
   // projectInstalledTeams): the schema stores one team per agent and the
-  // connector publishes neither an installation listing nor an uninstall,
-  // so this surface reports what the middleware provably knows and
-  // advertises the rest as an unsupported capability rather than guessing.
+  // connector publishes no installation listing, so this surface reports
+  // what the middleware provably knows and advertises the rest as an
+  // unsupported capability rather than guessing. Uninstall is no longer in
+  // that set — it is a RUNTIME capability now, true exactly when the
+  // installed connector publishes `uninstallFromTeam` (>= 0.4.0).
+
+  /**
+   * Can this middleware remove an install RIGHT NOW? Both halves have to
+   * hold: the connector must publish `uninstallFromTeam` (>= 0.4.0), and
+   * this store must be able to record the removal. Reporting `true` while
+   * either is missing would light up a button that answers 501.
+   */
+  function canUninstallTeams(deps: OperatorTeamsIdentityDeps): boolean {
+    return (
+      typeof deps.store.clearTeamInstall === 'function' &&
+      supportsTeamUninstall(deps.getProvisioner?.())
+    );
+  }
 
   /** Resolve agent + identity row for the team routes, answering the shared
    *  404s. `undefined` means a response was already sent. */
@@ -1310,7 +1395,7 @@ export function createOperatorAgentsRouter(
         consent: projectTeamsConsent(row),
         last_error: row.lastError,
         last_error_detail: projectTeamsIdentityErrorDetail(row),
-        capabilities: TEAMS_ASSIGNMENT_CAPABILITIES,
+        capabilities: teamsAssignmentCapabilities(canUninstallTeams(deps)),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
         teams_bot: projectTeamsBotConfig(row, deps.clientSecretRef),
@@ -1386,6 +1471,23 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  /**
+   * Remove the agent's Teams app from one team (byte5ai/omadia#900).
+   *
+   * FEATURE-DETECTED, not assumed. The middleware mirrors the connector
+   * contract structurally rather than importing it, so a connector below
+   * 0.4.0 has no `uninstallFromTeam` — that install keeps answering the
+   * historical 501 with a reason naming the version to upgrade to, exactly
+   * as it did before this route learned to remove anything. The capability
+   * block on `GET /:slug/teams` reports the same verdict, so the operator UI
+   * renders a disabled control instead of discovering it from a failure.
+   *
+   * ORDER MATTERS. Graph first, row second: the connector's removal is
+   * idempotent (`already-absent` is success), so a crash between the two
+   * leaves a retry that still converges. Clearing the row first and then
+   * failing the Graph call would strand a live install nothing tracks — the
+   * exact state this route refused to create back when it answered 501.
+   */
   router.delete('/:slug/teams/:teamId', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -1394,17 +1496,103 @@ export function createOperatorAgentsRouter(
     try {
       const found = await teamsIdentityRow(req, res, live, deps);
       if (!found) return;
-      // NOT implemented, and deliberately not faked: `teamsProvisioner@1`
-      // publishes no uninstall, and clearing `team_id` would only make the
-      // middleware forget an install that is still live in Teams. 501 (with
-      // the reason) lets the operator UI render a disabled control instead of
-      // interpreting a 404 as "no such route" or, worse, calling something
-      // that lies. Widening the connector contract is a separate decision.
-      res.status(501).json({
-        error: 'teams_uninstall_unsupported',
-        message: TEAMS_ASSIGNMENT_CAPABILITIES.unsupported_reason['uninstall'],
-        agent: found.agent.slug,
-        team_id: req.params['teamId'] ?? null,
+      const { agent, row } = found;
+      const teamId = req.params['teamId'] ?? null;
+
+      if (!deps.isProvisionerInstalled()) {
+        res.status(503).json({
+          error: 'teams_provisioner_unavailable',
+          message:
+            'teamsProvisioner@1 is not installed — install and activate the M365 connector plugin before removing an agent from a team.',
+        });
+        return;
+      }
+      const provisioner = deps.getProvisioner?.();
+      const clearTeamInstall = deps.store.clearTeamInstall;
+      if (!supportsTeamUninstall(provisioner) || typeof clearTeamInstall !== 'function') {
+        res.status(501).json({
+          error: 'teams_uninstall_unsupported',
+          message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+          min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
+
+      // A run in flight owns this row's team_id and would re-install right
+      // behind us. Refuse rather than race the job runner.
+      if (deps.runner.isRunning(agent.id)) {
+        res.status(409).json({
+          error: 'teams_provisioning_running',
+          message: `agent '${agent.slug}' has a provisioning run in flight — wait for it to finish before removing the app from a team.`,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
+
+      // The read model only ever reports `row.teamId` on an `installed` row
+      // (projectInstalledTeams), so anything else addresses an install this
+      // middleware does not have. Saying so beats issuing a Graph delete for
+      // a team the operator never installed into through omadia.
+      if (row.state !== 'installed' || row.teamId === null || row.teamId !== teamId) {
+        res.status(404).json({
+          error: 'team_install_not_found',
+          message: `agent '${agent.slug}' has no recorded install in team '${String(teamId)}' — GET /:slug/teams lists what can be removed.`,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
+      if (!row.teamsAppId) {
+        // An 'installed' row without a catalog app id cannot be addressed in
+        // Graph. Inconsistent rather than unsupported — say which.
+        res.status(409).json({
+          error: 'teams_app_id_missing',
+          message: `agent '${agent.slug}' is recorded as installed in team '${row.teamId}' but carries no teams_app_id — the row cannot address the installation in Graph.`,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
+
+      // Snapshot before any write. `row` is whatever the store handed back,
+      // and a store that patches its rows IN PLACE would otherwise have this
+      // response report the CLEARED value — a 200 claiming `team_id: null`
+      // for the team it just removed the app from.
+      const installedTeamId = row.teamId;
+      const installedAppId = row.teamsAppId;
+
+      const uninstall = provisioner?.uninstallFromTeam;
+      if (uninstall === undefined) {
+        // Unreachable after supportsTeamUninstall; narrows for the compiler
+        // without a non-null assertion.
+        res.status(501).json({
+          error: 'teams_uninstall_unsupported',
+          message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+          min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
+      const result = await uninstall.call(provisioner, {
+        teamId: installedTeamId,
+        teamsAppId: installedAppId,
+      });
+      const updated = await clearTeamInstall.call(deps.store, agent.id);
+
+      res.json({
+        ok: true,
+        agent: agent.slug,
+        team_id: installedTeamId,
+        // 'already-absent' is the connector's idempotent success: the app was
+        // not in the team. The row is cleared either way — that is the point
+        // of an idempotent remove.
+        outcome: result.outcome,
+        already_absent: result.outcome === 'already-absent',
+        state: updated.state,
       });
     } catch (err) {
       badRequest(res, err);

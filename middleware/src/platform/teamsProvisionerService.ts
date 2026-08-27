@@ -20,11 +20,21 @@
  * `TeamsProvisionerAccessor` surface and its typed error taxonomy are
  * mirrored here from the connector repo (`omadia-m365-connector`,
  * `src/teamsProvisioner/{index,types,errors,appRegistration,botService,
- * catalog,install,appPackage,secretStore}.ts`, v0.3.1). Keep in sync when
+ * catalog,install,appPackage,secretStore}.ts`, v0.4.0). Keep in sync when
  * the connector's surface changes. Mirroring the SHIPPED accessor — NOT the
  * deprecated `TeamsProvisioner` sketch (`registerApplication`/
  * `addClientSecret`): the connector's own types.ts deprecates that sketch
  * ("coding against THIS interface compiles but fails at runtime").
+ *
+ * VERSION SKEW IS THE NORMAL CASE. The contract is mirrored, not imported,
+ * so this middleware can be NEWER than the connector installed next to it —
+ * an operator upgrades the two independently. Methods the connector gained
+ * after the oldest supported version are therefore declared OPTIONAL here
+ * and callers must FEATURE-DETECT instead of assuming.
+ * {@link supportsTeamUninstall} is the guard for the first such method,
+ * `uninstallFromTeam` (connector >= 0.4.0, byte5ai/omadia#900): against an
+ * older connector the operator route keeps answering its 501 rather than
+ * crashing on an undefined call.
  *
  * SECRET CUSTODY. The shipped contract never lets a cleartext client secret
  * cross the service boundary: `createAppRegistration` persists the generated
@@ -253,23 +263,45 @@ export interface TeamAppInstallation {
   readonly installationId?: string;
 }
 
+/** Input for the uninstall step — the same key `installToTeam` is idempotent on. */
+export interface UninstallFromTeamInput {
+  readonly teamId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`) — NOT the installation id. */
+  readonly teamsAppId: string;
+}
+
+/**
+ * Idempotency signal of the uninstall direction (connector >= 0.4.0):
+ * `'uninstalled'` when the call removed the installation, `'already-absent'`
+ * when the app was not installed in the team. BOTH are success — the
+ * connector never throws for "not installed".
+ */
+export type UninstallFromTeamOutcome = 'uninstalled' | 'already-absent';
+
+export interface UninstallFromTeamResult {
+  readonly outcome: UninstallFromTeamOutcome;
+  readonly value: TeamAppInstallation;
+}
+
 /**
  * The service object the connector publishes under the registry key
  * `'teamsProvisioner'` — one method per chain step; the caller (the agent
  * factory's job runner) owns ordering, persistence and retries.
  *
- * SURFACE GAP (verified against connector v0.3.1, W2a of epic #860). Team
- * installs are one-way here: `installToTeam` has NO counterpart. There is
- *   - no uninstall / removal method, and
- *   - no way to LIST the teams an app is installed in
- *     (`getCatalogApp` answers tenant-catalog presence, never a team
- *     install).
- * The operator's team↔agent read model therefore derives what it reports
- * from `agent_teams_identities` and marks uninstall/enumeration as
- * unsupported (`routes/operatorAgents.ts` →
- * `TEAMS_ASSIGNMENT_CAPABILITIES`). Widening this mirrored contract is a
- * connector change, not a middleware one: add the methods there first, then
- * mirror them here.
+ * SURFACE GAP (verified against connector v0.4.0, W2a of epic #860). Team
+ * installs are no longer one-way — `uninstallFromTeam` is the counterpart of
+ * `installToTeam` since connector 0.4.0 (byte5ai/omadia#900) — but there is
+ * still no way to LIST the teams an app is installed in (`getCatalogApp`
+ * answers tenant-catalog presence, never a team install). The operator's
+ * team<->agent read model therefore still DERIVES what it reports from
+ * `agent_teams_identities` and marks enumeration as unsupported
+ * (`routes/operatorAgents.ts` -> `teamsAssignmentCapabilities`). Widening
+ * this mirrored contract is a connector change, not a middleware one: add
+ * the methods there first, then mirror them here.
+ *
+ * `uninstallFromTeam` is OPTIONAL on this interface on purpose — see the
+ * module doc's version-skew note. Never call it without
+ * {@link supportsTeamUninstall}.
  */
 export interface TeamsProvisionerAccessor {
   readonly tenantMode: TenantMode;
@@ -298,6 +330,28 @@ export interface TeamsProvisionerAccessor {
   getCatalogApp(input: GetCatalogAppInput): Promise<GetCatalogAppResult>;
 
   installToTeam(input: InstallToTeamRequest): Promise<Idempotent<TeamAppInstallation>>;
+
+  /**
+   * Connector >= 0.4.0 only — ABSENT on older installs. Guard every call
+   * with {@link supportsTeamUninstall}.
+   */
+  uninstallFromTeam?(input: UninstallFromTeamInput): Promise<UninstallFromTeamResult>;
+}
+
+/**
+ * Does the CURRENTLY INSTALLED connector publish the team-uninstall
+ * operation (connector >= 0.4.0)? The one feature-detection predicate for
+ * `uninstallFromTeam`; routers and jobs must consult it instead of calling
+ * an optional method and hoping.
+ *
+ * Deliberately tolerant of `undefined` so a caller can chain it straight
+ * onto {@link getTeamsProvisioner} without a second null check: no
+ * connector at all is also no uninstall.
+ */
+export function supportsTeamUninstall(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.uninstallFromTeam === 'function';
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +540,19 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
     uploadToCatalog: (input) => raw.uploadToCatalog(input),
     getCatalogApp: (input) => raw.getCatalogApp(input),
     installToTeam: (input) => raw.installToTeam(input),
+    // Forwarded ONLY when the raw provider has it, so the wrapper's own
+    // shape answers `supportsTeamUninstall` truthfully. A `uninstallFromTeam:
+    // (input) => raw.uninstallFromTeam?.(input)` here would make every
+    // connector look capable and turn an old one's 501 into a silent
+    // `undefined` at the call site.
+    ...(typeof raw.uninstallFromTeam === 'function'
+      ? {
+          uninstallFromTeam: (input: UninstallFromTeamInput) =>
+            (raw.uninstallFromTeam as NonNullable<
+              TeamsProvisionerAccessor['uninstallFromTeam']
+            >).call(raw, input),
+        }
+      : {}),
   };
 }
 

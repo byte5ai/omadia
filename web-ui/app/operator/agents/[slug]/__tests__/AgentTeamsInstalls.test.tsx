@@ -61,7 +61,8 @@ function capabilities(
     enumerate: false,
     multi_team: false,
     unsupported_reason: {
-      uninstall: 'teamsProvisioner@1 publishes no uninstall method',
+      uninstall:
+        'the installed teamsProvisioner@1 publishes no uninstallFromTeam method',
       enumerate: 'teamsProvisioner@1 publishes no installation-listing method',
       multi_team: 'agent_teams_identities stores ONE team_id per agent',
     },
@@ -153,21 +154,23 @@ describe('AgentTeamsInstalls (#866)', () => {
     ).toBeTruthy();
   });
 
-  it('disables uninstall and states why while the connector publishes none', async () => {
+  it('disables uninstall and names the fix when the connector is too old (#900)', async () => {
     await renderPanel();
 
     const button = await screen.findByRole('button', { name: 'Uninstall' });
     expect((button as HTMLButtonElement).disabled).toBe(true);
+    // The copy has to be actionable: this is a version skew the operator can
+    // fix by upgrading the plugin, not a platform limit they must live with.
     expect(
       screen.getByText(
-        'Removing the app from a team is a manual Teams-admin step — the Microsoft 365 connector publishes no uninstall, so omadia cannot do it for you.',
+        'Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.',
       ),
     ).toBeTruthy();
     // The server's English engineering sentence may appear only as a
     // secondary technical detail, never as the operator-facing copy.
     expect(
       screen.getByText(
-        'Server reason: teamsProvisioner@1 publishes no uninstall method',
+        'Server reason: the installed teamsProvisioner@1 publishes no uninstallFromTeam method',
       ),
     ).toBeTruthy();
   });
@@ -253,7 +256,14 @@ describe('AgentTeamsInstalls (#866)', () => {
     mockGetAgentTeams.mockResolvedValue(
       view({ capabilities: capabilities({ uninstall: true }) }),
     );
-    mockUninstall.mockResolvedValue(undefined);
+    mockUninstall.mockResolvedValue({
+      ok: true,
+      agent: 'odoo',
+      team_id: 'team-abc',
+      outcome: 'uninstalled',
+      already_absent: false,
+      state: 'catalog_uploaded',
+    });
     const user = await renderPanel();
 
     await user.click(await screen.findByRole('button', { name: 'Uninstall' }));
@@ -263,6 +273,56 @@ describe('AgentTeamsInstalls (#866)', () => {
 
     await waitFor(() => expect(mockUninstall).toHaveBeenCalledWith('odoo', 'team-abc'));
     expect(await screen.findByText('Removed the app from team team-abc.')).toBeTruthy();
+    // The capability is on, so no disabled-reason note is rendered with it.
+    expect(screen.queryByText(/upgrade the plugin/)).toBeNull();
+  });
+
+  it('reports the idempotent already-absent removal as its own outcome (#900)', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({ capabilities: capabilities({ uninstall: true }) }),
+    );
+    mockUninstall.mockResolvedValue({
+      ok: true,
+      agent: 'odoo',
+      team_id: 'team-abc',
+      outcome: 'already-absent',
+      already_absent: true,
+      state: 'catalog_uploaded',
+    });
+    const user = await renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Uninstall' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(mockUninstall).toHaveBeenCalledWith('odoo', 'team-abc'));
+    // Saying "removed" here would claim an action that did not happen: the
+    // app was not in the team, only the record was stale.
+    expect(
+      await screen.findByText(
+        'The app was not installed in team team-abc — the assignment has been cleared.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Removed the app from team team-abc.')).toBeNull();
+  });
+
+  it('localizes a 501 from a too-old connector instead of showing the raw body', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({ capabilities: capabilities({ uninstall: true }) }),
+    );
+    mockUninstall.mockRejectedValue(
+      new ApiError(501, 'Not Implemented', '{"error":"teams_uninstall_unsupported"}'),
+    );
+    const user = await renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Uninstall' }));
+    await user.click(screen.getByRole('button', { name: 'Remove' }));
+
+    expect(
+      await screen.findByText(
+        'The Microsoft 365 connector installed here is too old to remove an app from a team. Upgrade it to 0.4.0 or newer, or have a Teams administrator remove the app manually.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/teams_uninstall_unsupported/)).toBeNull();
   });
 
   it('renders 404 teams_identity_not_found as an empty state, not an error', async () => {

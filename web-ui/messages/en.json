@@ -1977,11 +1977,12 @@
       "uninstallTitle": "Remove the app from this team?",
       "uninstallBody": "The orchestrator's app is removed from team {teamId} and stops answering there.",
       "uninstallConfirm": "Remove",
+      "uninstallAlreadyAbsent": "The app was not installed in team {teamId} — the assignment has been cleared.",
       "uninstalled": "Removed the app from team {teamId}.",
       "cancel": "Cancel",
       "unsupported": {
         "install": "Installing into a team is not available in this deployment.",
-        "uninstall": "Removing the app from a team is a manual Teams-admin step — the Microsoft 365 connector publishes no uninstall, so omadia cannot do it for you.",
+        "uninstall": "Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.",
         "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
         "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused."
       },
@@ -1996,10 +1997,13 @@
         "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
         "not_found": "This orchestrator does not exist anymore — reload the page.",
         "team_install_conflict": "This orchestrator is already assigned to another team. Remove that assignment first — one orchestrator is tracked in one team.",
+        "team_install_not_found": "There is no recorded install in this team — reload the page to see what can be removed.",
+        "teams_app_id_missing": "This orchestrator is recorded as installed but carries no Teams app id, so the install cannot be addressed. Run provisioning again.",
         "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
         "teams_identity_unavailable": "Teams provisioning is not wired in this deployment.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
-        "teams_uninstall_unsupported": "Removing the app from a team has to be done by a Teams administrator — the connector publishes no uninstall.",
+        "teams_provisioning_running": "A provisioning run is still in flight for this orchestrator. Wait for it to finish, then try again.",
+        "teams_uninstall_unsupported": "The Microsoft 365 connector installed here is too old to remove an app from a team. Upgrade it to 0.4.0 or newer, or have a Teams administrator remove the app manually.",
         "unknown": "The team assignment request failed: {detail}"
       },
       "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error."

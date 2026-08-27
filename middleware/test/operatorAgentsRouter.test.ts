@@ -57,8 +57,11 @@ import {
   projectTeamsBotConfig,
   projectTeamsConsent,
   TEAMS_ASSIGNMENT_CAPABILITIES,
+  TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+  teamsAssignmentCapabilities,
   type OperatorTeamsIdentityRecord,
 } from '../src/routes/operatorAgents.js';
+import type { TeamsProvisionerAccessor } from '../src/platform/teamsProvisionerService.js';
 import {
   armNotConfiguredDetail,
   consentMissingDetail,
@@ -345,7 +348,46 @@ class FakeTeamsIdentityStore {
     if (row) row.lastError = `enqueue_failed: ${message}`;
     return Promise.resolve();
   }
+  /** #900 — mirrors AgentTeamsIdentityStore.clearTeamInstall. */
+  clearTeamInstalls: string[] = [];
+  clearTeamInstall(agentId: string): Promise<OperatorTeamsIdentityRecord> {
+    this.clearTeamInstalls.push(agentId);
+    const row = this.rows.get(agentId);
+    if (!row) return Promise.reject(new Error(`no identity row for ${agentId}`));
+    row.state = 'catalog_uploaded';
+    row.teamId = null;
+    row.lastError = null;
+    return Promise.resolve(row);
+  }
 }
+
+/**
+ * #900 — the connector's `uninstallFromTeam`, and the ability to LEAVE IT
+ * OUT. A connector < 0.4.0 publishes an accessor without the method at all,
+ * which is exactly what the route has to feature-detect, so the fake models
+ * absence as a missing property rather than a method that throws.
+ */
+class FakeTeamsProvisioner {
+  calls: Array<{ teamId: string; teamsAppId: string }> = [];
+  outcome: 'uninstalled' | 'already-absent' = 'uninstalled';
+  /** When set, uninstallFromTeam rejects with it (e.g. ConsentMissingError). */
+  error: Error | undefined;
+
+  uninstallFromTeam(input: {
+    readonly teamId: string;
+    readonly teamsAppId: string;
+  }): Promise<{
+    readonly outcome: 'uninstalled' | 'already-absent';
+    readonly value: { readonly teamId: string; readonly teamsAppId: string };
+  }> {
+    this.calls.push({ ...input });
+    if (this.error) return Promise.reject(this.error);
+    return Promise.resolve({ outcome: this.outcome, value: { ...input } });
+  }
+}
+
+/** A connector too old to know about uninstalls: no method, not a stub. */
+class LegacyTeamsProvisioner {}
 
 /** W1a (#860) — stubbed provisioning job runner. `enqueue` returns a promise
  *  that NEVER settles: if the POST handler awaited the run, its test would
@@ -422,6 +464,9 @@ describe('createOperatorAgentsRouter', () => {
   let teamsStore: FakeTeamsIdentityStore;
   let teamsRunner: FakeTeamsRunner;
   let provisionerInstalled: boolean;
+  /** #900 — the accessor the route feature-detects on. `undefined` models a
+   *  connector that is not installed at all. */
+  let provisioner: FakeTeamsProvisioner | LegacyTeamsProvisioner | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -431,6 +476,7 @@ describe('createOperatorAgentsRouter', () => {
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
+    provisioner = new FakeTeamsProvisioner();
     const app = express();
     app.use(express.json());
     app.use(
@@ -445,6 +491,8 @@ describe('createOperatorAgentsRouter', () => {
           store: teamsStore,
           runner: teamsRunner,
           isProvisionerInstalled: () => provisionerInstalled,
+          getProvisioner: () =>
+            provisioner as unknown as TeamsProvisionerAccessor | undefined,
         }),
       }),
     );
@@ -465,6 +513,7 @@ describe('createOperatorAgentsRouter', () => {
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
+    provisioner = new FakeTeamsProvisioner();
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
@@ -1829,10 +1878,12 @@ describe('createOperatorAgentsRouter', () => {
     });
     // The UI must not have to discover the platform's limits by failing.
     assert.equal(body.capabilities.install, true);
-    assert.equal(body.capabilities.uninstall, false);
+    // #900 — the seeded provisioner publishes uninstallFromTeam, so the
+    // capability is ON and ships no reason for it.
+    assert.equal(body.capabilities.uninstall, true);
+    assert.equal(body.capabilities.unsupported_reason['uninstall'], undefined);
     assert.equal(body.capabilities.enumerate, false);
     assert.equal(body.capabilities.multi_team, false);
-    assert.match(body.capabilities.unsupported_reason['uninstall'] ?? '', /no uninstall/);
     // Same choke point as GET /:slug/teams-identity — byte-identical entry.
     assert.deepEqual(body.teams_bot, projectTeamsBotConfig(row));
   });
@@ -2013,23 +2064,208 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(teamsRunner.enqueueCalls, []);
   });
 
-  it('DELETE /:slug/teams/:teamId → 501: the connector publishes no uninstall', async () => {
-    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
-    const res = await fetch(`${baseUrl}/sales/teams/${encodeURIComponent('19:team-a')}`, {
+  // ── DELETE /:slug/teams/:teamId (#900) ──────────────────────────────
+  // The route removes the app through the connector's uninstallFromTeam
+  // (>= 0.4.0) and only then forgets the install. A connector without the
+  // method keeps the historical 501 — that is the whole feature-detection
+  // contract, and both halves are pinned below.
+
+  const deleteTeam = (slug: string, teamId: string): Promise<globalThis.Response> =>
+    fetch(`${baseUrl}/${slug}/teams/${encodeURIComponent(teamId)}`, {
       method: 'DELETE',
     });
+
+  it('DELETE /:slug/teams/:teamId removes the install and clears the row', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', '19:team-a');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      agent: string;
+      team_id: string;
+      outcome: string;
+      already_absent: boolean;
+      state: string;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.agent, 'sales');
+    assert.equal(body.team_id, '19:team-a');
+    assert.equal(body.outcome, 'uninstalled');
+    assert.equal(body.already_absent, false);
+
+    // Graph got the CATALOG app id, not the installation id — resolving the
+    // latter is the connector's job.
+    assert.deepEqual(fake.calls, [
+      { teamId: '19:team-a', teamsAppId: 'teams-app-789' },
+    ]);
+    // The row drops back to catalog_uploaded with no team — the app, bot and
+    // catalog entry all still exist, only the install is gone.
+    assert.deepEqual(teamsStore.clearTeamInstalls, [agent.id]);
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, null);
+    assert.equal(teamsStore.rows.get(agent.id)?.state, 'catalog_uploaded');
+    assert.equal(body.state, 'catalog_uploaded');
+  });
+
+  it('DELETE /:slug/teams/:teamId reports the idempotent already-absent outcome', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    const fake = provisioner as FakeTeamsProvisioner;
+    fake.outcome = 'already-absent';
+
+    const res = await deleteTeam('sales', '19:team-a');
+    assert.equal(res.status, 200, 'not installed is success, not a failure');
+    const body = (await res.json()) as { outcome: string; already_absent: boolean };
+    assert.equal(body.outcome, 'already-absent');
+    assert.equal(body.already_absent, true);
+    // The row is cleared either way — that is what makes the remove converge.
+    assert.deepEqual(teamsStore.clearTeamInstalls, [agent.id]);
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, null);
+  });
+
+  it('DELETE /:slug/teams/:teamId → 501 when the connector is too old (no uninstallFromTeam)', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    // A connector < 0.4.0: the accessor simply has no such method.
+    provisioner = new LegacyTeamsProvisioner();
+
+    const res = await deleteTeam('sales', '19:team-a');
     assert.equal(res.status, 501);
     const body = (await res.json()) as {
       error: string;
       message: string;
+      min_connector_version: string;
       team_id: string;
     };
     assert.equal(body.error, 'teams_uninstall_unsupported');
     assert.equal(body.team_id, '19:team-a');
-    assert.match(body.message, /teamsProvisioner@1 publishes no uninstall method/);
+    assert.equal(body.min_connector_version, TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION);
+    // The reason names the fix, not just the refusal.
+    assert.match(body.message, /upgrade @omadia\/integration-microsoft365/);
     // Above all: the row is untouched. "Forgetting" the install would leave
     // the app live in Teams with nothing recording it.
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+  });
+
+  it('GET /:slug/teams reports uninstall: false against a connector that is too old', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+    provisioner = new LegacyTeamsProvisioner();
+
+    const res = await fetch(`${baseUrl}/sales/teams`);
+    const body = (await res.json()) as {
+      capabilities: typeof TEAMS_ASSIGNMENT_CAPABILITIES;
+    };
+    // Same verdict the DELETE would give — the UI disables the control
+    // instead of discovering the 501 by pressing it.
+    assert.equal(body.capabilities.uninstall, false);
+    assert.match(
+      body.capabilities.unsupported_reason['uninstall'] ?? '',
+      /upgrade @omadia\/integration-microsoft365/,
+    );
+    // The structural gaps are unaffected by the connector version.
+    assert.equal(body.capabilities.enumerate, false);
+    assert.equal(body.capabilities.multi_team, false);
+    assert.deepEqual(body.capabilities, TEAMS_ASSIGNMENT_CAPABILITIES);
+  });
+
+  it('teamsAssignmentCapabilities ships a reason for every false', () => {
+    for (const canUninstall of [true, false]) {
+      const caps = teamsAssignmentCapabilities(canUninstall);
+      for (const key of ['install', 'uninstall', 'enumerate', 'multi_team'] as const) {
+        if (caps[key]) {
+          assert.equal(
+            caps.unsupported_reason[key],
+            undefined,
+            `${key} is true — it must not carry an unsupported reason`,
+          );
+        } else {
+          assert.ok(
+            (caps.unsupported_reason[key] ?? '').length > 0,
+            `${key} is false — it must ship a reason`,
+          );
+        }
+      }
+    }
+  });
+
+  it('DELETE /:slug/teams/:teamId → 404 for a team the middleware has no install for', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', '19:team-b');
+    assert.equal(res.status, 404);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, 'team_install_not_found');
+    // No Graph call for an install we never recorded.
+    assert.deepEqual(fake.calls, []);
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+  });
+
+  it('DELETE /:slug/teams/:teamId → 404 while the chain has not reached installed', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'catalog_uploaded', teamId: '19:team-a' });
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', '19:team-a');
+    assert.equal(res.status, 404);
+    // A recorded team below 'installed' is a TARGET, not an install — the
+    // read model does not list it, so the route must not remove it either.
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+  });
+
+  it('DELETE /:slug/teams/:teamId → 409 while a provisioning run is in flight', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    teamsRunner.running.set(agent.id, '19:team-a');
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', '19:team-a');
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string };
+    assert.equal(body.error, 'teams_provisioning_running');
+    // Racing the runner would let it re-install right behind the removal.
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+    teamsRunner.running.delete(agent.id);
+  });
+
+  it('DELETE /:slug/teams/:teamId → 503 when the connector is not installed at all', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    provisionerInstalled = false;
+    provisioner = undefined;
+    try {
+      const res = await deleteTeam('sales', '19:team-a');
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as { error: string };
+      assert.equal(body.error, 'teams_provisioner_unavailable');
+    } finally {
+      provisionerInstalled = true;
+    }
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+  });
+
+  it('DELETE /:slug/teams/:teamId keeps the row when the connector call fails', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    const fake = provisioner as FakeTeamsProvisioner;
+    const consent = new Error('403 from graph');
+    consent.name = 'ConsentMissingError';
+    fake.error = consent;
+
+    const res = await deleteTeam('sales', '19:team-a');
+    assert.notEqual(res.status, 200);
+    // Graph first, row second: a failed removal must not make the middleware
+    // forget an install that is still live in Teams.
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
     assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
     assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
   });

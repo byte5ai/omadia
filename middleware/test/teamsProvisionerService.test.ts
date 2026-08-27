@@ -24,6 +24,7 @@ import {
   isTeamsProvisionerError,
   requireTeamsProvisioner,
   SingleTenantViolationError,
+  supportsTeamUninstall,
   TEAMS_PROVISIONER_SERVICE_NAME,
   TeamsMessagingEndpointError,
   TeamsProvisionerUnavailableError,
@@ -118,6 +119,46 @@ describe('teamsProvisioner resolution', () => {
 // ---------------------------------------------------------------------------
 // SingleTenant boundary guard
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Feature detection — connector version skew (#900)
+// ---------------------------------------------------------------------------
+
+describe('supportsTeamUninstall — connector version skew', () => {
+  it('is true for a connector that publishes uninstallFromTeam (>= 0.4.0)', async () => {
+    const stub = createStubTeamsProvisioner();
+    const provisioner = requireTeamsProvisioner(registryWith(stub.accessor));
+
+    assert.equal(supportsTeamUninstall(provisioner), true);
+    const result = await provisioner.uninstallFromTeam?.({
+      teamId: '19:team-a',
+      teamsAppId: 'catalog-0000',
+    });
+    assert.equal(result?.outcome, 'uninstalled');
+    assert.deepEqual(
+      stub.calls.map((call) => call.method),
+      ['uninstallFromTeam'],
+    );
+  });
+
+  it('is false for an older connector — and the guarded accessor OMITS the method', () => {
+    // A connector < 0.4.0 has no such property at all.
+    const stub = createStubTeamsProvisioner({ uninstallFromTeam: undefined });
+    const provisioner = requireTeamsProvisioner(registryWith(stub.accessor));
+
+    assert.equal(supportsTeamUninstall(provisioner), false);
+    // The wrapper must not manufacture a method the connector lacks: a
+    // forwarding stub would make every connector look capable and turn the
+    // route's 501 into an `undefined` at the call site.
+    assert.equal('uninstallFromTeam' in provisioner, false);
+    assert.equal(provisioner.uninstallFromTeam, undefined);
+  });
+
+  it('is false when no connector is installed at all', () => {
+    assert.equal(supportsTeamUninstall(getTeamsProvisioner(new ServiceRegistry())), false);
+    assert.equal(supportsTeamUninstall(undefined), false);
+  });
+});
 
 describe('single-tenant guard', () => {
   it('accepts customer/home tenant modes on createAppRegistration', async () => {

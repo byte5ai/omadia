@@ -28,15 +28,22 @@ import { ApiError } from '../../../../_lib/api';
  * (`DELETE`).
  *
  * The panel is CAPABILITY-DRIVEN, never hard-coded to today's platform
- * limits. `teamsProvisioner@1` publishes neither an installation listing nor
- * an uninstall, and migration 0049 records ONE `team_id` per agent, so the
- * route ships those limits as `capabilities.*` plus a reason per `false`.
- * Every control here reads that block: a `false` renders a DISABLED control
- * with a localized reason instead of a button that answers 501, and the day
- * the connector contract grows an uninstall the same control lights up with
- * no change on this side. An absent or partial block is parsed fail-closed
- * (`parseTeamsAssignmentCapabilities`), so a middleware that never learned to
- * report capabilities disables everything rather than enabling a lie.
+ * limits. `teamsProvisioner@1` publishes no installation listing, and
+ * migration 0049 records ONE `team_id` per agent, so the route ships those
+ * limits as `capabilities.*` plus a reason per `false`. Every control here
+ * reads that block: a `false` renders a DISABLED control with a localized
+ * reason instead of a button that answers 501. An absent or partial block is
+ * parsed fail-closed (`parseTeamsAssignmentCapabilities`), so a middleware
+ * that never learned to report capabilities disables everything rather than
+ * enabling a lie.
+ *
+ * That design is what made the uninstall of byte5ai/omadia#900 a no-op here:
+ * the control was already wired and already read `capabilities.uninstall`,
+ * so a connector that publishes `uninstallFromTeam` (>= 0.4.0) lights it up
+ * on its own. `capabilities.uninstall` is now a RUNTIME verdict about the
+ * INSTALLED connector rather than a constant, so the disabled state means
+ * "your connector is too old" — an upgrade the operator can perform — and
+ * the copy says so.
  *
  * Deliberately NOT rendered here: the provisioning state vocabulary and the
  * `last_error` remediation copy. Both belong to the Teams identity panel
@@ -442,8 +449,13 @@ export function AgentTeamsInstalls({
           setConfirmUninstall(null);
           if (target === null) return;
           void run(`uninstall:${target.team_id}`, async () => {
-            await uninstallAgentTeam(slug, target.team_id);
-            return t('uninstalled', { teamId: target.team_id });
+            const res = await uninstallAgentTeam(slug, target.team_id);
+            // 'already-absent' is success, but a different truth: the app was
+            // not in the team, so saying "removed" would claim an action that
+            // did not happen. The record is cleared either way.
+            return res.already_absent
+              ? t('uninstallAlreadyAbsent', { teamId: target.team_id })
+              : t('uninstalled', { teamId: target.team_id });
           });
         }}
       />
