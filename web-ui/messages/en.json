@@ -1745,6 +1745,10 @@
     "detailAssignedHint": "Enable or disable a plugin for this orchestrator only — the switch is saved immediately. Attach or detach plugins in the editor below.",
     "detailAssignedEmpty": "No plugins are assigned to this orchestrator yet. Attach one in the editor below.",
     "detailToggleAria": "Enable or disable {plugin}",
+    "personaHeading": "Persona and behaviour",
+    "personaHint": "Persona, tone and behaviour are designed in the Agent Builder. This page only assigns capabilities to the orchestrator.",
+    "personaOpenBuilder": "Open the Agent Builder",
+    "personaNoDraftHint": "No single builder draft could be matched to this orchestrator, so the link opens the builder overview.",
     "detailErrors": {
       "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
       "config_validation": "The server rejected the plugin configuration.",
