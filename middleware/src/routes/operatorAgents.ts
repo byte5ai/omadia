@@ -16,6 +16,9 @@ import {
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+// The ONLY reader of `last_error`'s sentence shape, colocated with the job
+// runner that writes it — the operator UI must never parse the string itself.
+import { classifyTeamsProvisioningError } from '../services/teamsProvisioningJob.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -243,6 +246,34 @@ export function defaultTeamsBotSecretRef(record: {
     );
   }
   return `teams_bot_password:${record.appId}`;
+}
+
+/** Wire shape of `identity.last_error_detail` — the snake_case projection of
+ *  {@link classifyTeamsProvisioningError}. Optional members are omitted (not
+ *  null) so the payload stays as small as the classification is specific. */
+export interface OperatorTeamsLastErrorDetail {
+  readonly code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown';
+  readonly scopes?: readonly string[];
+  readonly fields?: readonly string[];
+  readonly retry_after_seconds?: number;
+  readonly raw: string;
+}
+
+/** Project a stored `last_error` for the operator UI. Null in, null out. */
+export function teamsLastErrorDetail(
+  lastError: string | null,
+): OperatorTeamsLastErrorDetail | null {
+  const detail = classifyTeamsProvisioningError(lastError);
+  if (!detail) return null;
+  return {
+    code: detail.code,
+    ...(detail.scopes ? { scopes: detail.scopes } : {}),
+    ...(detail.fields ? { fields: detail.fields } : {}),
+    ...(detail.retryAfterSeconds !== undefined
+      ? { retry_after_seconds: detail.retryAfterSeconds }
+      : {}),
+    raw: detail.raw,
+  };
 }
 
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
@@ -827,6 +858,13 @@ export function createOperatorAgentsRouter(
           teams_app_id: row.teamsAppId,
           teams_app_external_id: row.teamsAppExternalId,
           last_error: row.lastError,
+          // Additive projection of the SAME failure, classified server-side
+          // next to the producer (services/teamsProvisioningJob.ts). The UI
+          // renders `code` + `scopes`/`fields`/`retry_after_seconds` through
+          // its own i18n keys and may show `raw` only as a technical detail;
+          // it must not parse the English sentence itself. `null` whenever
+          // `last_error` is null — no schema change, no migration.
+          last_error_detail: teamsLastErrorDetail(row.lastError),
           created_at: row.createdAt ?? null,
           updated_at: row.updatedAt ?? null,
         },

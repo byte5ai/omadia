@@ -18,6 +18,45 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Teams E2E smoke STAGE 2 + server-side `last_error` classification (#860 W2a, #874)
+
+2026-08-27 — The Teams identity provisioning chain had unit coverage but nothing that drove
+it end to end against a real tenant, and the operator UI had no way to act on a failure
+except to show an untranslated English backend sentence.
+
+- **STAGE 2 of the Teams E2E smoke** (`middleware/scripts/smoke-teams-e2e.ts`, gitignored —
+  it hits byte5-internal endpoints) drives the live chain: `POST
+  /api/v1/operator/agents/:slug/teams-identity` (202), then polls `GET …/teams-identity`
+  through `pending → app_registered → bot_created → package_built → catalog_uploaded →
+  installed`, asserts the `teams_bot` projection and `teams_app_id` are complete, and
+  verifies the new bot's `/api/teams/<botSlug>/messages` route is live and rejects an
+  unsigned payload. It runs on the environment STAGE 1 establishes.
+- **Production-write guard, fail-closed.** A provisioning call persists an
+  `agent_teams_identities` row and creates real Entra/Azure/Teams objects, so STAGE 2 has no
+  default target: it skips entirely without an explicit opt-in, requires the caller to echo
+  the target host back, refuses known production hosts with no override, and aborts when the
+  shell carries a non-scratch `DATABASE_URL`.
+- **Registration-only is a pass.** With no ARM setup fields on the M365 connector the chain
+  legitimately stops at `app_registered` with `arm_not_configured: …`; the run reports
+  success-with-caveat rather than failing, matching the job runner's partial-success
+  contract. Missing admin consent stays a hard stop, with the missing scopes named.
+- **`identity.last_error_detail`** is emitted alongside `last_error` by `GET …/teams-identity`
+  — `{ code: consent_missing | arm_not_configured | throttled | unknown, scopes?, fields?,
+  retry_after_seconds?, raw }`. Additive; no schema change, no migration. The classifier
+  lives next to the code that writes those sentences
+  (`services/teamsProvisioningJob.ts`), with a round-trip test
+  (`test/teamsProvisioningLastError.test.ts`) so rewording a message without updating the
+  parser breaks a colocated test instead of silently degrading the operator UI. Clients must
+  render from the structured object, never parse the English sentence.
+- **Docs:** `docs/middleware-agent-handoff.md` gains a section on pointing the smoke at a
+  scratch tenant and what it needs (connector plugin installed and active, admin consent,
+  ARM fields for the full chain, registration-only otherwise).
+
+Known limitation: the smoke does not send a genuine Bot Framework turn — signing one needs
+the freshly created app's secret, which never leaves the connector's vault. The visible
+reply in Teams stays a one-line manual step the run prints out. Follow-up: the job runner
+should persist a structured error code from the start, which needs its own migration.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent

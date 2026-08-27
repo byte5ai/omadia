@@ -472,7 +472,7 @@ export class TeamsProvisioningJobRunner {
     const scopes = missingScopesOf(err);
     if (scopes !== undefined) {
       // TERMINAL — an admin has to consent; retrying is pointless.
-      const detail = `consent_missing: admin consent required for scopes [${scopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
+      const detail = consentMissingDetail(scopes);
       await this.recordError(agentId, { state: 'failed', lastError: detail });
       return { status: 'failed', agentId, reason: 'consent_missing', detail };
     }
@@ -496,7 +496,7 @@ export class TeamsProvisioningJobRunner {
     const retryable = throttle !== undefined || isProvisionerUnavailable(err);
 
     if (attempt >= this.maxAttempts) {
-      const detail = `${errorMessage(err)} (gave up after ${attempt} attempts)`;
+      const detail = retriesExhaustedDetail(err, attempt, throttle);
       if (retryable) {
         // Progress states are real — keep them, record why the run stopped so
         // a later re-run resumes from the same point.
@@ -683,8 +683,139 @@ export class TeamsProvisioningJobRunner {
   }
 }
 
+// ---------------------------------------------------------------------------
+// last_error — producers and the classifier that reads them back
+//
+// `last_error` is an English sentence written for a human operator, and the
+// operator UI needs a machine-readable version of the SAME failure so it can
+// render a localized, actionable hint instead of an untranslated backend
+// string. The classifier lives HERE, right next to the producers, on purpose:
+// the round-trip test in `test/teamsProvisioningLastError.test.ts` builds a
+// sentence with a producer and classifies it back, so editing a message
+// without touching the parser breaks a colocated unit test instead of
+// silently degrading the operator UI in production.
+//
+// FOLLOW-UP (deliberately out of scope here): the runner should persist a
+// structured code alongside the sentence from the start — that needs a
+// migration on `agent_teams_identities` and therefore its own unit. Until
+// then this classifier is the single reader of these strings; nothing else
+// may parse `last_error`.
+// ---------------------------------------------------------------------------
+
+/** Machine-readable failure classes behind a `last_error` sentence. */
+export type TeamsProvisioningErrorCode =
+  | 'consent_missing'
+  | 'arm_not_configured'
+  | 'throttled'
+  | 'unknown';
+
+/** Structured projection of one `last_error` sentence. */
+export interface TeamsProvisioningErrorDetail {
+  readonly code: TeamsProvisioningErrorCode;
+  /** `consent_missing`: the Graph/ARM scopes an admin still has to grant. */
+  readonly scopes?: readonly string[];
+  /** `arm_not_configured`: the connector setup fields that are still empty. */
+  readonly fields?: readonly string[];
+  /** `throttled`: the API's `Retry-After` hint, when it provided one. */
+  readonly retryAfterSeconds?: number;
+  /** The original sentence — the UI may show it as a technical detail. */
+  readonly raw: string;
+}
+
+const CONSENT_MISSING_PREFIX = 'consent_missing: ';
+const ARM_NOT_CONFIGURED_PREFIX = 'arm_not_configured: ';
+const THROTTLED_PREFIX = 'throttled: ';
+const RETRY_AFTER_MARKER = 'retry_after_seconds=';
+
+/** TERMINAL: Graph/ARM answered 403 and an admin has to consent. */
+function consentMissingDetail(missingScopes: readonly string[]): string {
+  return `${CONSENT_MISSING_PREFIX}admin consent required for scopes [${missingScopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
+}
+
+/** NOT terminal: the app registration exists, only the ARM leg is unconfigured. */
 function armNotConfiguredDetail(missingSetupFields: readonly string[]): string {
   const fields =
     missingSetupFields.length > 0 ? missingSetupFields.join(', ') : 'ARM setup fields';
-  return `arm_not_configured: bot creation needs the ARM setup fields [${fields}] on the M365 connector — configure them, then re-run provisioning (the app registration is kept)`;
+  return `${ARM_NOT_CONFIGURED_PREFIX}bot creation needs the ARM setup fields [${fields}] on the M365 connector — configure them, then re-run provisioning (the app registration is kept)`;
 }
+
+/**
+ * The retry budget is spent. A throttle gets the `throttled:` prefix so the
+ * operator UI can offer "retry later" instead of "something broke"; every
+ * other exhausted error keeps its bare message and classifies as `unknown`.
+ */
+function retriesExhaustedDetail(
+  err: unknown,
+  attempt: number,
+  throttle: { retryAfterSeconds?: number } | undefined,
+): string {
+  const base = `${errorMessage(err)} (gave up after ${attempt} attempts)`;
+  if (throttle === undefined) return base;
+  const hint =
+    throttle.retryAfterSeconds !== undefined
+      ? `${RETRY_AFTER_MARKER}${throttle.retryAfterSeconds}`
+      : 'no Retry-After hint';
+  return `${THROTTLED_PREFIX}the Microsoft API rate-limited provisioning (${hint}) — ${base}`;
+}
+
+/** `[a, b, c]` → `['a', 'b', 'c']`; anything else → `[]`. */
+function parseBracketList(raw: string): readonly string[] {
+  const start = raw.indexOf('[');
+  const end = raw.indexOf(']', start + 1);
+  if (start < 0 || end < 0) return [];
+  return raw
+    .slice(start + 1, end)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function parseRetryAfterSeconds(raw: string): number | undefined {
+  const at = raw.indexOf(RETRY_AFTER_MARKER);
+  if (at < 0) return undefined;
+  const digits = /^\d+/.exec(raw.slice(at + RETRY_AFTER_MARKER.length));
+  if (!digits) return undefined;
+  const seconds = Number(digits[0]);
+  return Number.isSafeInteger(seconds) ? seconds : undefined;
+}
+
+/**
+ * Project a stored `last_error` onto {@link TeamsProvisioningErrorDetail}.
+ *
+ * Total by construction: an unrecognized sentence (including one written by
+ * `recordEnqueueFailure`, which never uses these prefixes) classifies as
+ * `unknown` with the raw text preserved — the UI always has something to
+ * show, and a new message shape degrades to "technical detail" rather than
+ * to a crash.
+ */
+export function classifyTeamsProvisioningError(
+  lastError: string | null | undefined,
+): TeamsProvisioningErrorDetail | null {
+  if (typeof lastError !== 'string') return null;
+  const raw = lastError.trim();
+  if (raw.length === 0) return null;
+
+  if (raw.startsWith(CONSENT_MISSING_PREFIX)) {
+    return { code: 'consent_missing', scopes: parseBracketList(raw), raw };
+  }
+  if (raw.startsWith(ARM_NOT_CONFIGURED_PREFIX)) {
+    return { code: 'arm_not_configured', fields: parseBracketList(raw), raw };
+  }
+  if (raw.startsWith(THROTTLED_PREFIX)) {
+    const retryAfterSeconds = parseRetryAfterSeconds(raw);
+    return {
+      code: 'throttled',
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      raw,
+    };
+  }
+  return { code: 'unknown', raw };
+}
+
+/** Test-only re-export of the producers, so the round-trip test can not drift
+ *  from the sentences the runner actually writes. */
+export const teamsProvisioningLastErrorProducers = {
+  consentMissingDetail,
+  armNotConfiguredDetail,
+  retriesExhaustedDetail,
+} as const;

@@ -2572,3 +2572,97 @@ dev-only `GET /bot-api/dev/memory/list` — in Produktion nicht gemountet, also 
 operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächste Schritt.
 Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
 in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
+
+## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
+
+`middleware/scripts/smoke-teams-e2e.ts` (+ `-stage2.ts`, beide gitignored, weil sie
+byte5-interne Endpunkte treffen). Zwei Stufen in einem Entrypoint:
+
+| Stufe | Was sie beweist | Netz/Seiteneffekte |
+|---|---|---|
+| **STAGE 1** | Das auf dem Hub publizierte channel-teams-Artefakt kommt durch das *produktive* Ingest-Gate (`RegistryClient` → sha256 → `extractZipToDir` mit den Limits aus `packageUploadService.ts:165-167`). Der Check, der bei 0.21.0 gefehlt hat (#880). | nur lesend, nur der Hub |
+| **STAGE 2** | Die Live-Kette: `POST /api/v1/operator/agents/:slug/teams-identity` (202) → Polling `GET …/teams-identity` durch `pending → app_registered → bot_created → package_built → catalog_uploaded → installed` → Messaging-Endpoint des neuen Bots ist gebunden. | **schreibend** — siehe Guard |
+
+### ⚠ Production-Write-Guard (fail-closed, kein Default-Ziel)
+
+STAGE 2 persistiert eine `agent_teams_identities`-Zeile und legt im Ziel-Tenant eine echte
+Entra-App, einen echten Azure-Bot und einen echten Katalog-Eintrag an. Deshalb:
+
+- **Ohne Opt-in läuft STAGE 2 gar nicht** (Skip, kein Fehler) — Default jeder Maschine.
+- `SMOKE_TEAMS_E2E_ALLOW_WRITES` muss **exakt** `yes-throwaway-environment` sein.
+- `SMOKE_MW_BASE_URL` hat **keinen Default**. Ein Default zeigt irgendwann auf Produktion.
+- `SMOKE_TEAMS_E2E_TARGET` muss den Host aus `SMOKE_MW_BASE_URL` **wiederholen**
+  (Echo-Back). Ein aus fremder Shell-History kopierter Befehl scheitert dadurch, statt
+  still auf ein anderes Ziel zu schreiben.
+- Produktions-Hosts (`omadia.ai`, `app.omadia.ai`, `hub.omadia.ai`, …) werden
+  **ohne Override-Schalter** abgelehnt.
+- Ist in der Shell ein `DATABASE_URL` gesetzt, das den Marker `scratch` nicht enthält,
+  bricht der Lauf ab (`SMOKE_SCRATCH_DB_MARKER` passt den Marker an). Das Script öffnet
+  selbst nie eine DB — die Prüfung fängt den Fall "Shell hält Prod-Credentials".
+
+Einen Guard-Abbruch **niemals** durch Aufweichen des Guards "reparieren".
+
+### Auf einen Scratch-Tenant zeigen — was gebraucht wird
+
+1. **Wegwerf-Middleware** (eigene DB, eigener `PUBLIC_BASE_URL`), erreichbar unter
+   `SMOKE_MW_BASE_URL`.
+2. **Connector-Plugin installiert UND aktiv:** `@omadia/integration-microsoft365` ≥ 0.3.1
+   (liefert `teamsProvisioner@1`). Fehlt es, antwortet der POST 503
+   `teams_provisioner_unavailable` — das Script sagt das explizit.
+3. **channel-teams mit `appPackage/`** (das Artefakt aus STAGE 1) für den Package-Schritt.
+4. **Scratch-Microsoft-Tenant** mit erteiltem Admin-Consent für die Provisioning-Scopes.
+   Fehlt der Consent, endet der Lauf hart mit `consent_missing` und den fehlenden Scopes.
+5. **ARM-Setup-Felder am Connector** (`azureSubscriptionId`, `azureResourceGroup`, …) —
+   **nur für die volle Kette**. Ohne sie ist **Registration-only ein PASS**: die Kette hält
+   nach `app_registered` an, `last_error` trägt `arm_not_configured: …`, und der Lauf meldet
+   *PASSED WITH CAVEAT*. Das ist der dokumentierte Teilerfolg des Job-Runners, kein Fehler.
+6. **Operator-Session:** `SMOKE_MW_SESSION` = Wert des `omadia_session`-Cookies der
+   Scratch-Instanz (DevTools → Application → Cookies).
+7. **Scratch-Team:** `SMOKE_TEAMS_TEAM_ID`, plus `SMOKE_AGENT_SLUG` als Wegwerf-Agent.
+
+```bash
+cd middleware
+SMOKE_TEAMS_E2E_ALLOW_WRITES=yes-throwaway-environment \
+SMOKE_MW_BASE_URL=https://mw-scratch.example.internal \
+SMOKE_TEAMS_E2E_TARGET=mw-scratch.example.internal \
+SMOKE_MW_SESSION=<omadia_session-Cookie> \
+SMOKE_AGENT_SLUG=smoke-agent \
+SMOKE_TEAMS_TEAM_ID=19:...@thread.tacv2 \
+npx tsx scripts/smoke-teams-e2e.ts
+```
+
+Optional: `SMOKE_BOT_SLUG`, `SMOKE_BOT_DISPLAY_NAME`, `SMOKE_PROVISION_TIMEOUT_MS`
+(Default 900000), `SMOKE_POLL_INTERVAL_MS` (5000), `SMOKE_SCRATCH_DB_MARKER`.
+
+### Was das Script bewusst NICHT tut
+
+Es sendet keinen echten Bot-Framework-Turn. Das Signieren bräuchte das Client-Secret der
+frisch angelegten App, und das verlässt den Connector-Vault nie
+(`agentTeamsIdentityStore.ts` — *NO SECRET MATERIAL*). Stattdessen prüft es, dass
+`POST /api/teams/<botSlug>/messages` existiert und ein unsigniertes Payload ablehnt (404 =
+channel-teams kennt den Bot nicht → `teams_bots[]` nicht synchronisiert, echter Fehler;
+2xx = Auth nicht erzwungen, ebenfalls Fehler). Die sichtbare Antwort im Team bleibt ein
+einzeiliger manueller Schritt, den der Lauf am Ende ausdruckt.
+
+### Ein Lauf pro Agent
+
+Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-406`); ein
+zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
+`running` und bricht ab, statt in einen Team-Konflikt zu laufen.
+
+### `last_error_detail` — Klassifikation serverseitig
+
+`GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
+strukturiertes `last_error_detail`:
+`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
+Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
+die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
+Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
+Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
+und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
+Operator-UI in Produktion zu verschlechtern.
+
+**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
+persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
+Unit.
