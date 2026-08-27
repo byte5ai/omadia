@@ -325,6 +325,257 @@ export function parseOperatorAgentErrorCode(
   }
 }
 
+// ── W2a (#860) — per-agent Teams bot identity ──────────────────────────
+
+/**
+ * Provisioning-chain vocabulary, mirroring `TEAMS_PROVISIONING_STATES` in
+ * `middleware/src/platform/agentTeamsIdentityStore.ts` (itself the CHECK
+ * constraint of migration 0049, verbatim). Structural contract, same
+ * arrangement as {@link FALLBACK_AGENT_SLUG}: the middleware owns the
+ * vocabulary, this module only recognises it, neither imports the other.
+ *
+ * Order is significant — the panel renders the array as the progress chain,
+ * so `installed` and `failed` (the two terminals) sit last on purpose.
+ */
+export const TEAMS_PROVISIONING_STATES = [
+  'pending',
+  'app_registered',
+  'bot_created',
+  'package_built',
+  'catalog_uploaded',
+  'installed',
+  'failed',
+] as const;
+
+export type TeamsProvisioningState = (typeof TEAMS_PROVISIONING_STATES)[number];
+
+/** The chain a healthy run walks, without the `failed` sink — the ordered
+ *  steps a progress display shows. */
+export const TEAMS_PROVISIONING_CHAIN = TEAMS_PROVISIONING_STATES.filter(
+  (s): s is Exclude<TeamsProvisioningState, 'failed'> => s !== 'failed',
+);
+
+/** Polling contract: only these two states end the run. Everything else —
+ *  including a non-terminal `app_registered` carrying a `last_error` — means
+ *  the runner may still advance, so the panel keeps polling. */
+export function isTerminalTeamsProvisioningState(
+  state: TeamsProvisioningState,
+): boolean {
+  return state === 'installed' || state === 'failed';
+}
+
+/**
+ * Machine codes of the classifier the middleware runs over `last_error`
+ * server-side, next to the job runner that WRITES those sentences
+ * (`services/teamsProvisioningJob.ts`).
+ *
+ * Deliberately NOT parsed here: an English-sentence parser in web-ui would
+ * silently degrade in production the day someone rewords a message, whereas
+ * a classifier colocated with the producer breaks a unit test instead. This
+ * module only narrows the already-structured projection.
+ */
+export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
+  'consent_missing',
+  'arm_not_configured',
+  'throttled',
+  'unknown',
+] as const;
+
+export type TeamsIdentityLastErrorCode =
+  (typeof TEAMS_IDENTITY_LAST_ERROR_CODES)[number];
+
+const TEAMS_IDENTITY_LAST_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_IDENTITY_LAST_ERROR_CODES,
+);
+
+/** Server-side projection of `last_error` (route field `last_error_detail`).
+ *  `raw` is the original sentence — renderable only as a secondary technical
+ *  detail, never as the primary user-facing copy. */
+export interface TeamsIdentityLastErrorDetailDto {
+  code: TeamsIdentityLastErrorCode;
+  /** Graph scopes still awaiting admin consent (`consent_missing`). */
+  scopes?: string[];
+  /** Connector setup fields still missing (`arm_not_configured`). */
+  fields?: string[];
+  /** Backoff hint (`throttled`). */
+  retryAfterSeconds?: number;
+  raw: string;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  return value.every((v) => typeof v === 'string')
+    ? (value as string[])
+    : undefined;
+}
+
+/**
+ * Narrow `identity.last_error_detail` at the boundary.
+ *
+ * Total by construction, and deliberately tolerant: a middleware that does
+ * not emit the field yet (or emits a shape this client does not know) still
+ * yields a usable `{ code: 'unknown', raw }` so the panel renders the
+ * localized fallback with the sentence as a technical argument instead of
+ * losing the error entirely. Returns `null` only when there is no error.
+ */
+export function parseTeamsIdentityLastErrorDetail(
+  detail: unknown,
+  lastError: string | null,
+): TeamsIdentityLastErrorDetailDto | null {
+  if (lastError === null || lastError === '') return null;
+  const obj =
+    detail !== null && typeof detail === 'object'
+      ? (detail as Record<string, unknown>)
+      : null;
+  const rawCode = obj?.['code'];
+  const code: TeamsIdentityLastErrorCode =
+    typeof rawCode === 'string' && TEAMS_IDENTITY_LAST_ERROR_CODE_SET.has(rawCode)
+      ? (rawCode as TeamsIdentityLastErrorCode)
+      : 'unknown';
+  const scopes = stringList(obj?.['scopes']);
+  const fields = stringList(obj?.['fields']);
+  const retry = obj?.['retryAfterSeconds'];
+  const rawText = obj?.['raw'];
+  return {
+    code,
+    ...(scopes ? { scopes } : {}),
+    ...(fields ? { fields } : {}),
+    ...(typeof retry === 'number' && Number.isFinite(retry)
+      ? { retryAfterSeconds: retry }
+      : {}),
+    raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
+  };
+}
+
+/** `agent_teams_identities` row as the status route projects it. Snake_case
+ *  mirrors the REST payload verbatim, like the other operator DTOs here. */
+export interface TeamsIdentityDto {
+  bot_slug: string;
+  display_name: string;
+  app_id: string | null;
+  tenant_id: string | null;
+  teams_app_id: string | null;
+  teams_app_external_id: string | null;
+  last_error: string | null;
+  /** Server-side classification of `last_error` — additive, so a middleware
+   *  predating the projection simply omits it. */
+  last_error_detail?: unknown;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/**
+ * The channel-teams `teams_bots[]` projection — shaped EXACTLY like a
+ * `parseTeamsBotsConfig` entry (hence camelCase inside an otherwise
+ * snake_case payload), so an operator can paste it into the channel-teams
+ * config verbatim. Null until the Entra app exists. Never carries secret
+ * material: `appPasswordSecretRef` is an opaque credential-store ref.
+ */
+export interface TeamsBotConfigEntryDto {
+  botSlug: string;
+  displayName: string;
+  appId: string;
+  appType: 'SingleTenant';
+  tenantId: string;
+  appPasswordSecretRef: string;
+}
+
+export interface TeamsIdentityStatusDto {
+  ok: boolean;
+  agent: string;
+  state: TeamsProvisioningState;
+  /** Honest signal: true only while the runner actually holds a run for this
+   *  agent — a rejected enqueue leaves it false even in a `pending` row. */
+  running: boolean;
+  provisioner_installed: boolean;
+  identity: TeamsIdentityDto;
+  teams_bot: TeamsBotConfigEntryDto | null;
+}
+
+/** `GET /v1/operator/agents/:slug/teams-identity`. Rejects with a 404
+ *  `teams_identity_not_found` when the agent has no identity row yet — that
+ *  is the "show the create form" signal, not an error. */
+export async function getAgentTeamsIdentity(
+  slug: string,
+): Promise<TeamsIdentityStatusDto> {
+  return callJson<TeamsIdentityStatusDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity`,
+  );
+}
+
+/** All three fields are optional — the server derives the bot slug and the
+ *  display name from the agent when they are omitted. */
+export interface ProvisionTeamsIdentityInput {
+  bot_slug?: string;
+  display_name?: string;
+  team_id?: string;
+}
+
+export interface ProvisionTeamsIdentityResponse {
+  ok: boolean;
+  agent: string;
+  bot_slug: string;
+  state: TeamsProvisioningState;
+  running: boolean;
+}
+
+/** `POST /v1/operator/agents/:slug/teams-identity` — 202, create-if-absent
+ *  plus a fire-and-forget provisioning run. Idempotent on the server. */
+export async function provisionAgentTeamsIdentity(
+  slug: string,
+  input: ProvisionTeamsIdentityInput = {},
+): Promise<ProvisionTeamsIdentityResponse> {
+  return callJson<ProvisionTeamsIdentityResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity`,
+    { method: 'POST', body: JSON.stringify(input) },
+  );
+}
+
+/**
+ * Machine codes the teams-identity routes emit as `{ error: '<code>' }`.
+ *
+ * A separate union from {@link OPERATOR_AGENT_ERROR_CODES} on purpose: these
+ * routes add codes (`bot_slug_taken`, the two 503 capability gates, the
+ * `teams_identity_not_found` control signal) that the plugin/grant catalogues
+ * have no copy for, and widening the shared union would force every existing
+ * `detailErrors.*` / `grants.errors.*` catalogue to grow keys it never
+ * renders.
+ */
+export const TEAMS_IDENTITY_ERROR_CODES = [
+  'bot_slug_taken',
+  'invalid_body',
+  'invalid_slug',
+  'multi_orchestrator_unavailable',
+  'not_found',
+  'teams_identity_not_found',
+  'teams_identity_unavailable',
+  'teams_provisioner_unavailable',
+] as const;
+
+export type TeamsIdentityErrorCode =
+  (typeof TEAMS_IDENTITY_ERROR_CODES)[number];
+
+const TEAMS_IDENTITY_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_IDENTITY_ERROR_CODES,
+);
+
+/** Same contract as {@link parseOperatorAgentErrorCode}: total, `null` for
+ *  anything this client does not recognise. */
+export function parseTeamsIdentityErrorCode(
+  err: unknown,
+): TeamsIdentityErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      TEAMS_IDENTITY_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as TeamsIdentityErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function replaceAgentPlugins(
   slug: string,
   plugins: Array<{ id: string; config?: Record<string, unknown>; enabled?: boolean }>,

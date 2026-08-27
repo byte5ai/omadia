@@ -14,6 +14,7 @@ import {
 } from '../../../../_lib/agents';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { PluginsDnd } from '../../_components/PluginsDnd';
+import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
@@ -140,6 +141,12 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
           {t('catalogError', { message: catalogError })}
         </div>
       )}
+
+      {/* Teams sections (epic #860, wave W2a). This component is the single
+          composition point for them, so the sibling Teams units (config
+          block, installs panel, builder link) extend one file instead of
+          racing over the page shell. */}
+      <AgentTeamsIdentity slug={props.agent.slug} />
 
       <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
         <h2 className="mb-1 text-lg font-medium">
