@@ -173,6 +173,13 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # desktop/package-lock.json mirrors package.json's version field, so write
+      # the release tag AFTER npm ci validated the lockfile and BEFORE the build
+      # and pack steps consume that version for metadata and artifact names.
+      - name: Set desktop app version from release tag
+        working-directory: desktop
+        run: node scripts/set-desktop-version.mjs "$TAG"
+
       # Verify the middleware's native modules load under Electron's Node (the
       # kernel runs via ELECTRON_RUN_AS_NODE). All three are N-API → ABI-stable
       # across node/electron, so their shipped binaries already work and NONE of

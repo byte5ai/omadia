@@ -59,6 +59,24 @@ bare `npm install -g …` that installs somewhere the server never looks, so
 `detectCliBackends()` now exposes `cliToolsDir` and the shown command carries
 `--prefix <cliToolsDir>`.
 
+### Fixed — desktop app version was hardcoded to 0.1.0 (#883, OM-51/47/52)
+
+`desktop/package.json` shipped every release at the placeholder version `0.1.0`, which
+electron-builder reads for three release-facing surfaces at once: the packaged app's
+"About omadia" panel, the generated artifact filenames, and the version electron-updater
+compares against the release feed — so every build claimed to be `0.1.0` and the updater
+could never detect a newer release.
+
+- **CI now writes the real version before packaging.** A new `desktop/scripts/set-desktop-version.mjs`
+  derives a bare semver from the release tag and rewrites `desktop/package.json` in a new
+  `.github/workflows/desktop-apps.yml` step, placed after `npm ci` (so the lockfile's own
+  `version` field is validated first) and before the build/pack steps that consume it.
+- **Manual "Check for Updates".** Packaged builds previously only checked once, silently, at
+  startup, with no way to ask again and no visible result either way. Both the tray menu and
+  a new cross-platform Help menu now expose a "Check for Updates…" action that shows a
+  dialog for every outcome — found (downloading), already up to date, or the check failed —
+  without changing the silent startup check's existing (dialog-free) behavior.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent
