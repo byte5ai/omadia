@@ -25,6 +25,7 @@ import {
 import { useTranslations } from 'next-intl';
 
 import type { Plugin } from '../../_lib/storeTypes';
+import { isInstalled } from '../../_lib/pluginCounts';
 import {
   BUSINESS_CASES,
   PLUGIN_CATEGORIES,
@@ -281,6 +282,11 @@ export function DashboardOnboarding({
     { id: 'install', done: hasInstalledPlugin },
   ];
   const llmDone = steps[0].done;
+  // #886 — step 3's RESULT copy. Counted here with the same OM-27 predicate the
+  // dashboard health tile uses, over the same `plugins` array `page.tsx` derives
+  // `hasInstalledPlugin` from — so the badge and the sentence underneath it read
+  // off one source and cannot contradict each other.
+  const installedCount = (plugins ?? []).filter(isInstalled).length;
 
   return (
     <section
@@ -402,8 +408,15 @@ export function DashboardOnboarding({
         title={t('installStep.title')}
       >
         {selectedCase === null ? (
+          // #886 — this branch used to hand out "pick a business case first"
+          // unconditionally, so a card whose step-3 badge already said
+          // INSTALLIERT still told the operator to start over the moment the
+          // case selection was cleared. `done` decides the copy now, exactly as
+          // it decides the badge; the CTA is only for the not-yet-done case.
           <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
-            {t('installStep.pickCaseFirst')}
+            {steps[2].done
+              ? t('installStep.done', { count: installedCount })
+              : t('installStep.pickCaseFirst')}
           </p>
         ) : (
           <Recommendations
