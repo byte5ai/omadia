@@ -121,11 +121,12 @@ const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
  *
  * ```
  * scope = axes.isContextFree
- *   ? ['core', `orchestrator:${slug}:*`]                      // exactly today
- *   : ['core', `ro:orchestrator:${slug}:*`, …axes.patterns]   // e.g. team:…, channel:…
+ *   ? ['core',    `orchestrator:${slug}:*`]                       // exactly today
+ *   : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]    // enforce
+ *   : ['ro:core',                              …axes.patterns]    // enforce-strict
  * ```
  *
- * Three properties are the whole point, and each fails in the safe direction:
+ * Four properties are the whole point, and each fails in the safe direction:
  *
  *  1. **Fail-closed.** A missing `origin`, an `unscoped` scope, an unknown
  *     `channelType` — every one of them reaches this function as
@@ -139,7 +140,14 @@ const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
  *     modifier, "note this globally" in team A would be a permanent leak
  *     channel into team B — the exact hole this design closes. New knowledge
  *     leaves a context only through the operator promote action.
- *  3. **Never a throw on the message path.** A malformed `axes` is a bug in a
+ *  3. **The shared trees are read-only from context turns.** `ro:core`, not
+ *     `core`: the namespacer passes `/memories/core`, `sessions`,
+ *     `chat-sessions` and top-level `_*` through untouched, so they are the ONE
+ *     model-facing surface that two different chat contexts address by the same
+ *     path. Writable, `/memories/core/notes.md` would be a one-line bypass of
+ *     every tier boundary below it. They stay writable from a context-FREE turn
+ *     (operator, CLI, pre-W5 plugin).
+ *  4. **Never a throw on the message path.** A malformed `axes` is a bug in a
  *     channel plugin, not a reason to drop a user's turn; it degrades to the
  *     agent-private scope and says so in the log. Never a throw, never a wider
  *     scope.
