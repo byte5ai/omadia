@@ -3301,8 +3301,8 @@
       "installed": "installed",
       "needsLogin": "needs login",
       "loggedIn": "logged in",
-      "subscription": "subscription",
-      "needsVerification": "needs verification"
+      "subscription": "Billing: subscription",
+      "needsVerification": "Billing: needs verification"
     },
     "lastChecked": "Last checked at {time}",
     "refreshed": "Updated just now",
