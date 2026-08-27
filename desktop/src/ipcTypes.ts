@@ -22,8 +22,10 @@ export interface AppState {
   version: string;
 }
 
+export type ApiKeyProvider = 'anthropic' | 'openai';
+
 export interface TestLlmKeyRequest {
-  provider: 'anthropic' | 'openai';
+  provider: ApiKeyProvider;
   apiKey: string;
 }
 
@@ -33,7 +35,8 @@ export interface TestLlmKeyResult {
 }
 
 export interface WizardConfig {
-  provider: 'anthropic' | 'openai';
+  /** `subscription` stores no API key; Claude/Codex CLI is connected after boot. */
+  provider: ApiKeyProvider | 'subscription';
   apiKey: string;
   capabilities: {
     embeddings: boolean;

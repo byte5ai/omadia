@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop first-run wizard no longer forces API-key entry (#890)
+
+2026-08-27 — The Electron desktop wizard hard-blocked every first-time setup on
+an API key, even though the app can boot without one and wire a Claude/Codex
+CLI subscription afterwards. Step 1 now offers two explicit paths: the existing
+API-key flow remains the default with its current verification behavior intact,
+and a new subscription path persists `llmProvider: "subscription"` without
+storing a key. The desktop main-process types and setup validation now treat
+that provider as a first-class value instead of an unsupported edge case.
+
 ### Fixed — desktop app augments PATH for forked children (#882)
 
 2026-08-27 — The Electron desktop supervisor used the OS launcher's inherited

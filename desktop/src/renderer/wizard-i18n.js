@@ -39,15 +39,21 @@
       'welcome.lead':
         'omadia installiert einen vollständigen lokalen Stack — den Kernel, die Verwaltungsoberfläche und eine eingebettete Postgres-Datenbank — und betreibt alles auf diesem Computer. Kein Docker, kein Cloud-Konto. Deine Daten und dein KI-Schlüssel verlassen den Rechner nicht.',
       'welcome.fact1': 'Eingebettete Datenbank mit Vektor-Suche, lokal gespeichert.',
-      'welcome.fact2': 'Du bringst deinen eigenen KI-Anbieter-Schlüssel mit.',
+      'welcome.fact2': 'Nutze deinen eigenen KI-Anbieter-Schlüssel oder ein vorhandenes Claude/Codex-Abo.',
       'welcome.fact3': 'Bei einer Deinstallation wird alles sauber entfernt.',
       // step 1
       'provider.title': 'KI-Anbieter verbinden',
       'provider.lead':
-        'omadia nutzt deinen eigenen Schlüssel. Er wird verschlüsselt im Schlüsselbund deines Betriebssystems gespeichert.',
+        'Nutze jetzt einen API-Schlüssel oder starte ohne ihn und verbinde dein Claude- oder Codex-Abo später. Gespeicherte API-Schlüssel werden verschlüsselt im Schlüsselbund deines Betriebssystems abgelegt.',
+      'provider.mode.apiKey': 'API-Schlüssel eingeben',
+      'provider.mode.apiKeyHint': 'Einen Anthropic- oder OpenAI-API-Schlüssel jetzt verwenden und prüfen.',
+      'provider.mode.subscription': 'Ich habe bereits ein Claude/Codex-Abo',
+      'provider.mode.subscriptionHint': 'omadia jetzt starten und das CLI-Abo danach verbinden.',
       'provider.label': 'Anbieter',
       'provider.keyLabel': 'API-Schlüssel',
       'provider.test': 'Schlüssel testen',
+      'provider.subscriptionHint':
+        'omadia startet ohne API-Schlüssel. Verbinde deine Claude- oder Codex-CLI danach unter Admin → LLM-Zugang → Abos.',
       // step 2
       'caps.title': 'Optionale Funktionen',
       'caps.lead':

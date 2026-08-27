@@ -17,6 +17,9 @@ const LAST_STEP = 4;
 const state = {
   step: 0,
   dataDir: null,
+  /* Step 1 mode: `apiKey` keeps the existing flow; `subscription` skips key
+     entry now and expects Claude/Codex CLI setup after boot. */
+  providerMode: 'apiKey',
   /* True only after `testLlmKey` came back ok for the CURRENTLY entered
      provider+key. Reset on every edit below — a verdict about a previous key
      says nothing about this one. */
@@ -75,6 +78,14 @@ function renderNav() {
   $('#next').textContent = state.step === LAST_STEP ? wt('nav.finish', 'Finish & start omadia') : wt('nav.continue', 'Continue');
 }
 
+function renderProviderMode() {
+  const isSubscription = state.providerMode === 'subscription';
+  $('#modeApiKey').checked = !isSubscription;
+  $('#modeSubscription').checked = isSubscription;
+  $('#apiKeyFields').classList.toggle('hidden', isSubscription);
+  $('#subscriptionHint').classList.toggle('hidden', !isSubscription);
+}
+
 function goto(step) {
   state.step = step;
   show(step);
@@ -84,6 +95,7 @@ function goto(step) {
 
 function validateCurrent() {
   if (state.step === 1) {
+    if (state.providerMode === 'subscription') return true;
     const key = $('#apiKey').value.trim();
     if (key.length < 8) {
       flashTest('Please enter your API key first.', false);
@@ -121,10 +133,18 @@ function flashTest(msg, ok) {
   el.className = 'test-result ' + (ok ? 'ok' : 'err');
 }
 
+function clearTestFeedback() {
+  const el = $('#testResult');
+  el.textContent = '';
+  el.className = 'test-result';
+}
+
 function collectConfig() {
+  const provider = state.providerMode === 'subscription' ? 'subscription' : $('#provider').value;
+  const apiKey = state.providerMode === 'subscription' ? '' : $('#apiKey').value.trim();
   return {
-    provider: $('#provider').value,
-    apiKey: $('#apiKey').value.trim(),
+    provider,
+    apiKey,
     capabilities: {
       attachments: $('#capAttachments').checked,
       embeddings: $('#capEmbeddings').checked,
@@ -210,11 +230,24 @@ $('#back').addEventListener('click', () => {
   if (state.step > 0) goto(state.step - 1);
 });
 
+document.querySelectorAll('input[name="providerMode"]').forEach((el) => {
+  el.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !target.checked) return;
+    if (target.value !== 'apiKey' && target.value !== 'subscription') return;
+    state.providerMode = target.value;
+    resetKeyVerification();
+    clearTestFeedback();
+    renderProviderMode();
+  });
+});
+
 $('#apiKey').addEventListener('input', resetKeyVerification);
 $('#provider').addEventListener('change', resetKeyVerification);
 
 $('#testKey').addEventListener('click', async () => {
   if (!bridgeOk()) return;
+  if (state.providerMode === 'subscription') return;
   const provider = $('#provider').value;
   const apiKey = $('#apiKey').value.trim();
   if (apiKey.length < 8) {
@@ -270,6 +303,7 @@ $('#revealKey').addEventListener('click', async () => {
   }
 });
 
+renderProviderMode();
 goto(0);
 // Fail loud, not silent, if the preload bridge is missing.
 if (!bridge) bridgeOk();
