@@ -4879,6 +4879,10 @@
   "memory": {
     "errorListFailed": "List fehlgeschlagen (HTTP {status})",
     "errorFileFailed": "File fehlgeschlagen (HTTP {status})",
+    "errorUnauthenticated": "Nicht angemeldet (HTTP 401). Der Memory-Browser liest einen Operator-authentifizierten Endpoint — melde dich neu an und lade die Seite neu.",
+    "errorForbidden": "Nicht berechtigt (HTTP 403) — das Browsen von Chat-Kontext-Memory erfordert Operator-Rechte.",
+    "errorPathNotFound": "Diesen Pfad gibt es im Memory-Store nicht mehr (HTTP 404).",
+    "errorOutOfScope": "Außerhalb des Chat-Kontext-Memory. Dieser Browser liest nur /memories/contexts; Agent-Tier und geteilter Kernel werden vom Operator-Endpoint nicht ausgeliefert.",
     "backendInMemory": "In-Memory · flüchtig",
     "descriptionInMemory": "Read-only-Browser der Chat-Kontext-Memory-Bäume (RAM, beim Neustart leer).",
     "descriptionPostgres": "Read-only-Browser der Chat-Kontext-Memory-Bäume (persistent in Postgres).",
