@@ -272,9 +272,10 @@ describe('Builder pipeline (B.1 codegen → B.2 build)', () => {
       const slots = minimalSpec['slots'] as Record<string, string>;
       const { slots: _ignored, ...specInput } = minimalSpec;
       void _ignored;
+      const spec = parseAgentSpec(specInput);
       const draft = await store.create('alice@example.com', 'Weather');
       await store.update('alice@example.com', draft.id, {
-        spec: specInput,
+        spec,
         slots,
       });
 

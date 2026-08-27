@@ -48,6 +48,7 @@ const NOTHING_INSTALLED = {
       installable: true,
     },
   ],
+  cliToolsDir: cliToolsDir(),
   generatedAt: 0,
 };
 
