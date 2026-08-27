@@ -200,12 +200,14 @@ test('two contexts of one agent do not collide at the same model path', async ()
   assert.equal(await teamB.readFile('/memories/secret.md'), 'from-b');
 });
 
-test('context-free construction reproduces the legacy namespacer exactly', async () => {
+test('context-free construction matches the legacy namespacer on non-reserved paths', async () => {
   const legacyStore = new InMemoryMemoryStore();
   const legacy = new OrchestratorMemoryNamespacer(SLUG, legacyStore);
   const ctxStore = new InMemoryMemoryStore();
-  // No team/agent root → no reserved segment is bound, so every path behaves
-  // like today: privatized into the Agent tree, shared segments pass through.
+  // No team/agent root → no reserved segment is bound, so every NON-reserved
+  // path behaves like today: privatized into the Agent tree, shared segments
+  // pass through. `~team` / `~agent` are the documented exception, asserted
+  // separately below.
   const ctx = new ContextMemoryNamespacer({ privateRoot: AGENT_ROOT }, ctxStore);
 
   for (const p of ['/memories/notes.md', '/memories/core/rules.md']) {
@@ -220,6 +222,34 @@ test('context-free construction reproduces the legacy namespacer exactly', async
     (await ctx.list('/memories')).map((e) => e.virtualPath).sort(),
     (await legacy.list('/memories')).map((e) => e.virtualPath).sort(),
   );
+});
+
+test('the reserved segments are where the two namespacers deliberately diverge', async () => {
+  // The legacy class privatizes `~team` like any other segment; the context
+  // class always reserves it, so an UNBOUND `~team` stays in the outer
+  // namespace and is denied by the ScopedMemoryStore underneath. This is why
+  // MemoryBinder routes context-free turns through OrchestratorMemoryNamespacer
+  // rather than through ContextMemoryNamespacer with the agent root — an agent
+  // holding a top-level `~team` entry must not silently lose access to it.
+  const legacyStore = new InMemoryMemoryStore();
+  const legacy = new OrchestratorMemoryNamespacer(SLUG, legacyStore);
+  const ctxStore = new InMemoryMemoryStore();
+  const ctx = new ContextMemoryNamespacer({ privateRoot: AGENT_ROOT }, ctxStore);
+
+  for (const p of ['/memories/~team/g.md', '/memories/~agent/h.md']) {
+    await legacy.writeFile(p, 'v');
+    await ctx.writeFile(p, 'v');
+  }
+
+  assert.deepEqual((await collectFiles(legacyStore)).sort(), [
+    `${AGENT_ROOT}/~agent/h.md`,
+    `${AGENT_ROOT}/~team/g.md`,
+  ]);
+  // Unmapped — outside any compiled context scope, so the store below denies it.
+  assert.deepEqual((await collectFiles(ctxStore)).sort(), [
+    '/memories/~agent/h.md',
+    '/memories/~team/g.md',
+  ]);
 });
 
 test('rename maps both sides and can move across tiers', async () => {

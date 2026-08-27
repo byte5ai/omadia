@@ -310,13 +310,29 @@ const CONTEXT_KEY_SEPARATOR = '~';
 const CONTEXT_KEY_EMPTY_STEM = 'id';
 
 /**
- * One key segment: byte-identical when it is already lossless, stem + digest
- * otherwise. This is `scopeGraphKey`'s body with the context budget — kept as
- * its own function rather than a parameter on `scopeGraphKey` because the two
- * keys must be free to diverge without silently moving graph partitions.
+ * The shape the digest branch below always produces: `…-<16 lowercase hex>`.
+ *
+ * Load-bearing for injectivity, not cosmetic. The two branches of
+ * {@link safeContextSegment} would otherwise share one output space: an
+ * already-safe id spelled `x-61d6ea9c6d461bda` is carried through verbatim by
+ * the passthrough branch and is ALSO what the digest branch emits for the
+ * unsafe id `X!` (sha256('X!').slice(0,16) === '61d6ea9c6d461bda'). A caller
+ * who can name their own conversation id could then pre-image another
+ * context's key and land in its memory tree. Forcing every raw id of this
+ * shape down the digest branch makes the two output spaces disjoint, so the
+ * segment function is injective wherever sha256-16 is collision-free.
+ */
+const CONTEXT_KEY_DIGEST_SHAPE = new RegExp(`-[0-9a-f]{${DIGEST_LEN}}$`);
+
+/**
+ * One key segment: byte-identical when it is already lossless AND cannot be
+ * confused with a digest, stem + digest otherwise. This is `scopeGraphKey`'s
+ * body with the context budget — kept as its own function rather than a
+ * parameter on `scopeGraphKey` because the two keys must be free to diverge
+ * without silently moving graph partitions.
  */
 function safeContextSegment(raw: string): string {
-  if (CONTEXT_KEY_SAFE.test(raw)) return raw;
+  if (CONTEXT_KEY_SAFE.test(raw) && !CONTEXT_KEY_DIGEST_SHAPE.test(raw)) return raw;
 
   const digest = createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, DIGEST_LEN);
   const stem = raw
@@ -355,9 +371,11 @@ function safeContextSegment(raw: string): string {
  *    id is unambiguous, and the result can never contain a `:` that would break
  *    the `` /^team:([^:]+):\*$/ `` pattern format.
  *
- * Injective in practice, by the same argument as `scopeGraphKey`: an already-safe
- * id is carried through byte-identically, and anything else keeps a 64-bit
- * digest of the RAW input beside its readable stem.
+ * Injective wherever a 64-bit sha256 prefix is collision-free: an already-safe
+ * id is carried through byte-identically, anything else keeps a 64-bit digest
+ * of the RAW input beside its readable stem, and the two output spaces are kept
+ * DISJOINT by {@link CONTEXT_KEY_DIGEST_SHAPE} — without that a safe id spelled
+ * in the digest branch's own shape would pre-image a hashed context's key.
  *
  * Examples: `teams~19-abc-thread-tacv2-a1b2c3d4e5f60718`,
  * `telegram~-1001234567890`, `api~tenant-acme`.

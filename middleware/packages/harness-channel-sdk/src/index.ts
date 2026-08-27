@@ -292,6 +292,7 @@ export {
   CONTEXT_FREE_MEMORY_AXES,
   CONTEXT_MEMORY_CHANNEL_TYPES,
   memoryAxesForOrigin,
+  teamAxisKey,
   type MemoryAxes,
   type MemoryAxis,
   type TurnOrigin,

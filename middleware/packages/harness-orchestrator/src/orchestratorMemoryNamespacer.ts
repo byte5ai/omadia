@@ -191,9 +191,16 @@ export interface ContextMemoryNamespacerOptions {
   /**
    * Physical root the model's bare `/memories/...` maps to — the NARROWEST
    * tier of the turn, e.g. `/memories/contexts/<slug>/channel/<ctxKey>` or
-   * `/memories/contexts/<slug>/user/<ctxKey>`. A context-FREE turn passes the
-   * Agent tree (`/memories/orchestrators/<slug>`) here and then behaves
-   * exactly like `OrchestratorMemoryNamespacer`.
+   * `/memories/contexts/<slug>/user/<ctxKey>`.
+   *
+   * Passing the Agent tree (`/memories/orchestrators/<slug>`) here reproduces
+   * `OrchestratorMemoryNamespacer` for every path EXCEPT a literal `~team` /
+   * `~agent` first segment: this class always reserves those two segments, so
+   * an unbound one is left in the outer namespace (and denied by
+   * `ScopedMemoryStore`) where the legacy class would have privatised it. That
+   * divergence is why `MemoryBinder` routes context-free turns through
+   * `OrchestratorMemoryNamespacer` itself rather than through this class with
+   * the agent root — an agent holding a top-level `~team` entry keeps it.
    */
   readonly privateRoot: string;
   /**

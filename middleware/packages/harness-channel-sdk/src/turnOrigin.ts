@@ -131,13 +131,15 @@ function contextKeyFor(
  * The per-conversation axis of a scope: `channel` for conversation/group scopes,
  * `user` for personal ones, none for anything else.
  *
- * Conversation and group scopes key on `formatSessionScope(scope)` — the
- * canonical wire form. That is injective for the values this can see, because
- * the design has the producer build the scope with `parseSessionScope`, and
- * format∘parse is the identity on every string the tree emits (asserted in
- * `test/scopeId.test.ts`): two different raw scopes therefore never format to
- * one string, and a conversation scope that carries a `channelId` keeps it in
- * the key instead of collapsing onto its bare conversation id.
+ * Conversation and group scopes key on `` `${scope.kind}:${formatSessionScope(scope)}` ``.
+ * The kind discriminator is not decoration: `formatSessionScope` is injective
+ * only over the string subset `parseSessionScope` emits, and §4 has the
+ * Telegram adapter construct conversation scopes DIRECTLY, so that precondition
+ * is not guaranteed. Without the prefix `{kind:'group', groupRef:'x'}` and
+ * `{kind:'conversation', conversationId:'group:x'}` both format to `group:x`
+ * and share one memory tier — structurally different chat contexts reading each
+ * other's notes. Prefixing puts each kind in its own key space, mirroring how
+ * `teamKeyFor` already composes `${container.kind}:${container.id}`.
  *
  * A personal scope keys on `userId` alone rather than on `personal:<userId>`,
  * because the user tier is about the PERSON: the same human's private chat
@@ -157,7 +159,11 @@ function narrowAxisFor(
 
   if (scope.kind === 'conversation' || scope.kind === 'group') {
     const identity = scope.kind === 'conversation' ? scope.conversationId : scope.groupRef;
-    const ctxKey = contextKeyFor(channelType, identity, formatSessionScope(scope));
+    const ctxKey = contextKeyFor(
+      channelType,
+      identity,
+      `${scope.kind}:${formatSessionScope(scope)}`,
+    );
     return ctxKey === undefined ? undefined : { axis: 'channel', ctxKey };
   }
 
@@ -224,4 +230,23 @@ export function memoryAxesForOrigin(origin: TurnOrigin | undefined): MemoryAxes 
     patterns: Object.freeze(patterns) as readonly string[],
     narrowest: narrow ?? ({ axis: 'team', ctxKey: teamKey as string } as const),
   });
+}
+
+/** `team:<ctxKey>:*` — the pattern token for one context tier. */
+const TEAM_PATTERN = /^team:([^:]+):\*$/;
+
+/**
+ * The team-tier key these axes grant, if any.
+ *
+ * Read back off the emitted patterns rather than recomputed, so the `~team`
+ * alias the namespacer exposes can never point at a tier the compiled scope
+ * does not actually grant.
+ */
+export function teamAxisKey(axes: MemoryAxes | undefined): string | undefined {
+  if (axes === undefined) return undefined;
+  for (const p of axes.patterns) {
+    const m = TEAM_PATTERN.exec(p);
+    if (m) return m[1]!;
+  }
+  return undefined;
 }

@@ -1,3 +1,4 @@
+import type { MemoryAxes } from '@omadia/channel-sdk';
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 
 /**
@@ -67,37 +68,14 @@ export function orchestratorMemoryScope(agentSlug: string): readonly string[] {
   return ['core', `orchestrator:${agentSlug}:*`];
 }
 
-/** The three context tiers a turn can reach (design #870 §2). */
-export type MemoryAxis = 'team' | 'channel' | 'user';
-
 /**
- * The memory axes a turn may reach, in the scope grammar of design #870 §3.
- *
- * **This is a structural mirror of `MemoryAxes` in `@omadia/channel-sdk`
- * (`src/turnOrigin.ts`), not a second definition of it.** The canonical type
- * and its only producer — `memoryAxesForOrigin` — belong to the channel SDK,
- * because the axes are derived from a `TurnOrigin` that only a channel adapter
- * can build. This module CONSUMES them.
- *
- * It is declared here rather than imported because the SDK-side contract lands
- * in a sibling change; TypeScript is structural, so the SDK's `MemoryAxes` is
- * assignable to this one and the swap is a one-line diff:
- *
- * ```ts
- * import type { MemoryAxes } from '@omadia/channel-sdk';
- * ```
- *
- * Keep the two shapes in lockstep until then — and note which way a drift
- * fails: an axis this module cannot recognise is dropped, never honoured
- * (see {@link effectiveMemoryScope}).
+ * The axes a turn may reach come from `@omadia/channel-sdk`: they are derived
+ * from a `TurnOrigin` that only a channel adapter can build, so the canonical
+ * type and its only producer (`memoryAxesForOrigin`) live there and this module
+ * CONSUMES them. Re-exported so orchestrator-side callers do not have to reach
+ * into the SDK for a type they only ever hand to `effectiveMemoryScope`.
  */
-export interface MemoryAxes {
-  readonly isContextFree: boolean;
-  /** Scope patterns in the §3 grammar, e.g. `['channel:teams~…:*', 'team:teams~…:*']`. */
-  readonly patterns: readonly string[];
-  /** Narrowest tier — drives the namespacer's `privateRoot`. */
-  readonly narrowest?: { readonly axis: MemoryAxis; readonly ctxKey: string };
-}
+export type { MemoryAxes, MemoryAxis } from '@omadia/channel-sdk';
 
 /**
  * How strictly a context turn is quarantined from the agent-global tree.
@@ -188,10 +166,17 @@ export function effectiveMemoryScope(
   // matches nothing — fail-closed, and identical to how
   // `orchestratorMemoryScope` already behaves for such a slug.
   const contextFree = (reason: string): readonly string[] => {
-    if (strict) {
+    // `context-free` is a legitimate turn shape — the operator UI, the CLI and
+    // every pre-W5 channel plugin land here by design, so auditing it in the
+    // default mode would be pure noise. `axes-missing` and
+    // `no-usable-context-pattern` are NOT legitimate: they only happen when a
+    // channel plugin emits a broken axes object, and this log line is the sole
+    // signal an operator gets that context memory silently stopped working.
+    // Those two are therefore audited in BOTH modes.
+    if (strict || reason !== 'context-free') {
       options.log?.(
         '[security-audit] effectiveMemoryScope: no resolvable turn context — agent-private scope',
-        { agentSlug, reason, mode: 'enforce-strict' },
+        { agentSlug, reason, mode: strict ? 'enforce-strict' : 'enforce' },
       );
     }
     return orchestratorMemoryScope(agentSlug);
@@ -226,9 +211,18 @@ export function effectiveMemoryScope(
   // named no tier at all. Both take row 1.
   if (patterns.length === 0) return contextFree('no-usable-context-pattern');
 
+  // `ro:core`, NOT `core`. The shared trees (`/memories/core`, `sessions`,
+  // `chat-sessions`, top-level `_*`) are passed through untouched by the
+  // namespacer, so they are the ONE model-facing surface that two different
+  // chat contexts address by the same path. Leaving them writable would make
+  // `/memories/core/notes.md` a one-line bypass of the entire ACL: team A
+  // writes, team B reads, and every tier boundary below is irrelevant. Shared
+  // trees stay writable from a context-FREE turn (operator, CLI, pre-W5
+  // plugin); new knowledge leaves a context only through the operator promote
+  // action (coordinator decision 2).
   return strict
-    ? ['core', ...patterns]
-    : ['core', `ro:orchestrator:${agentSlug}:*`, ...patterns];
+    ? ['ro:core', ...patterns]
+    : ['ro:core', `ro:orchestrator:${agentSlug}:*`, ...patterns];
 }
 
 export class MemoryScopeViolation extends Error {
@@ -260,6 +254,25 @@ const CONTEXT_TOKEN = /^(team|channel|user):([^:]+):\*$/;
 
 /** Root of the chat-context trees — a top-level segment of its own. */
 const CONTEXTS_ROOT = '/memories/contexts';
+
+/** The three chat-context tiers, in the order the design spec lists them. */
+export const CONTEXT_AXES = Object.freeze(['team', 'channel', 'user'] as const);
+export type ContextAxis = (typeof CONTEXT_AXES)[number];
+
+/**
+ * Physical root of one context tier for one Agent — the SINGLE source of truth
+ * shared by the pattern compiler here and by `ContextMemoryNamespacer`, which
+ * rewrites the model-facing `/memories/…` namespace into it. Two spellings of
+ * this path would mean the namespacer could emit a path the compiler does not
+ * grant (or, worse, one it grants for a different context).
+ */
+export function contextTierRoot(
+  agentSlug: string,
+  axis: ContextAxis,
+  ctxKey: string,
+): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
+}
 
 interface CompiledPattern {
   match(path: string): boolean;
@@ -323,12 +336,12 @@ function compileAccessPattern(
   // key alone can never address another agent's tree.
   const ctxMatch = CONTEXT_TOKEN.exec(pattern);
   if (ctxMatch) {
-    const axis = ctxMatch[1]!;
+    const axis = ctxMatch[1] as ContextAxis;
     const ctxKey = ctxMatch[2]!;
     return {
       source: pattern,
       readOnly: false,
-      match: prefixMatcher(`${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}/`),
+      match: prefixMatcher(`${contextTierRoot(agentSlug, axis, ctxKey)}/`),
     };
   }
   // Per-orchestrator isolation (strict): an Agent's own private tree —
@@ -408,15 +421,22 @@ export class ScopedMemoryStore implements MemoryStore {
   }
 
   /**
-   * Write access — `ro:` patterns are skipped, so a path that is only
-   * covered by a read-only pattern raises `MemoryScopeViolation` on
-   * write / delete / rename. Denial is always HARD here.
+   * Write access — `ro:` is a VETO, not a weak grant. A matching read-only
+   * pattern rejects the write even when another pattern in the same scope
+   * would have granted it; without that precedence a scope such as
+   * `['ro:orchestrator:hr:*', '/memories/orchestrators/hr/notes.md']` would
+   * silently re-open the tier the `ro:` token exists to quarantine, and the
+   * grammar is an exported primitive other scopes compose against.
+   * Denial is always HARD here.
    */
   private allowedWrite(virtualPath: string): boolean {
+    let granted = false;
     for (const p of this.patterns) {
-      if (!p.readOnly && p.match(virtualPath)) return true;
+      if (!p.match(virtualPath)) continue;
+      if (p.readOnly) return false;
+      granted = true;
     }
-    return false;
+    return granted;
   }
 
   list(virtualPath: string): Promise<MemoryEntry[]> {
