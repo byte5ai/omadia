@@ -201,6 +201,7 @@ import type {
 } from './llmProviderSeam.js';
 import { streamMessageEvents } from './streaming.js';
 import { steeringBus } from './steeringBus.js';
+import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
 import {
   buildDateHeader,
   today,
@@ -1129,7 +1130,10 @@ async function restoreFollowUpsForUser(
   return out;
 }
 
-const MEMORY_TOOL_NAME = 'memory';
+// `MEMORY_TOOL_NAME` now lives in `registry/subAgentMemoryTool.ts` so the
+// orchestrator's dispatch and the sub-agent grant adapter cannot drift apart
+// (#904) — a sub-agent path keyed on a different literal would silently reopen
+// the unscoped-store bypass.
 const MEMORY_TOOL_TYPE = 'memory_20250818';
 const MEMORY_BETA_HEADER = 'context-management-2025-06-27';
 
@@ -6864,7 +6868,28 @@ export class Orchestrator {
       if (!this.isToolAvailable(domainTool.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
       }
-      return domainTool.handle(input, observer);
+      // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
+      // above: the turn-bound stack when one is bound, the build-time
+      // agent-scoped one otherwise) for the lifetime of the delegation, so a
+      // sub-agent granted the native `memory` tool writes through the same
+      // store the parent's own dispatch uses. Without it the sub-agent resolved
+      // `memory` from the process-wide registry, whose handler is the memory
+      // PROVIDER plugin's — bound to the undecorated root, i.e. outside both
+      // the per-agent `orchestrator:<slug>:*` subtree and the chat-context ACL.
+      //
+      // Ambient here, an explicit parameter in `dispatchTool*`: `DomainTool`'s
+      // contract is `handle(input, observer)` and has no seam for a third
+      // argument. What makes that acceptable is the direction of failure — a
+      // lost scope makes the sub-agent's memory tool REFUSE the call
+      // (`SUB_AGENT_MEMORY_UNBOUND_ERROR`), it never falls back to anything
+      // wider. Deny on loss, never widen.
+      const ctx = turnContext.current();
+      if (memoryHandler === undefined || ctx === undefined) {
+        return domainTool.handle(input, observer);
+      }
+      return turnContext.run({ ...ctx, subAgentMemoryHandler: memoryHandler }, () =>
+        Promise.resolve(domainTool.handle(input, observer)),
+      );
     }
     return `Error: unknown tool \`${name}\`.`;
   }

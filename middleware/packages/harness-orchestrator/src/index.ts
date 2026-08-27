@@ -259,6 +259,14 @@ export type {
   SubAgentGraph,
   SubAgentToolDeps,
 } from './registry/subAgentTools.js';
+// #904 — the scoped `memory` tool a granted sub-agent gets, and the tool name
+// both the orchestrator's dispatch and the grant adapter key on.
+export {
+  createScopedMemorySubAgentTool,
+  MEMORY_TOOL_NAME,
+  SUB_AGENT_MEMORY_UNBOUND_ERROR,
+} from './registry/subAgentMemoryTool.js';
+export type { SubAgentMemoryResolver } from './registry/subAgentMemoryTool.js';
 export {
   DEFAULT_ORCHESTRATOR_MODEL,
   resolveAgentModelRouting,
@@ -525,7 +533,10 @@ export {
   // Teardown failures are reported, never thrown — see `runGeneratorInContext`.
   onTurnTeardownError,
 } from './turnContext.js';
-export type { TurnContextValue } from './turnContext.js';
+export type {
+  SubAgentMemoryHandler,
+  TurnContextValue,
+} from './turnContext.js';
 export {
   setMcpPrivacyBypassServers,
   isMcpServerPrivacyBypassed,

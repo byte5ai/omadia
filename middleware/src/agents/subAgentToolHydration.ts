@@ -20,10 +20,12 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
   createLongRunningSubAgentTool,
+  createScopedMemorySubAgentTool,
   mcpNativeHandler,
   mcpToolNameFromRef,
   mcpToolToNativeSpec,
   turnContext,
+  MEMORY_TOOL_NAME,
   type DomainTool,
   type ResumableTaskSource,
   type TaskStore,
@@ -35,6 +37,7 @@ import {
   type McpToolDescriptor,
   type NativeToolRegistry,
   type SkillRow,
+  type SubAgentMemoryResolver,
   type SkillToolBindingRow,
   type SubAgentRow,
   type ToolGrantRow,
@@ -185,11 +188,41 @@ export function mcpRowToConfig(row: McpServerRow): McpServerConfig {
   };
 }
 
-/** Adapt a top-level native tool (handler + spec) into a sub-agent tool. */
+/**
+ * The production resolver: the memory handler bound to the turn that is
+ * delegating to this sub-agent right now, installed by
+ * `Orchestrator.dispatchToolInner` around the domain-tool dispatch. Outside a
+ * delegation it returns `undefined` and the memory tool refuses the call.
+ */
+export const turnScopedMemoryResolver: SubAgentMemoryResolver = () =>
+  turnContext.currentSubAgentMemoryHandler();
+
+/**
+ * Adapt a top-level native tool (handler + spec) into a sub-agent tool.
+ *
+ * `resolveTurnMemory` is REQUIRED, not optional, and that is the point (#904).
+ * The `memory` grant must never be served from `registry` — that entry is the
+ * memory provider plugin's handler on the UNDECORATED root store, and a
+ * sub-agent dispatching through it reads and writes outside its parent agent's
+ * `orchestrator:<slug>:*` subtree and, with the chat-context ACL on, outside
+ * its team's and channel's tiers too. A required parameter means a new call
+ * site that forgets to thread the scoped store fails `typecheck` instead of
+ * silently degrading to the unscoped one — the same hardening #903 applied to
+ * `dispatchTool` / `dispatchToolDeadlined` / `dispatchToolInner`.
+ */
 export function adaptNativeToolForSubAgent(
   registry: NativeToolRegistry,
   toolRef: string,
+  resolveTurnMemory: SubAgentMemoryResolver,
 ): LocalSubAgentTool | undefined {
+  // Checked BEFORE the registry lookup: `memory` must not be resolvable from
+  // the process-wide registry on ANY registration shape. The two shipped
+  // providers register handler-only (no `spec`), which the guard below happened
+  // to drop — an accident of spec assembly, not a boundary, and one that a
+  // single `register()` with a spec would have removed.
+  if (toolRef === MEMORY_TOOL_NAME) {
+    return createScopedMemorySubAgentTool(resolveTurnMemory);
+  }
   const reg = registry.get(toolRef);
   if (!reg?.handler || !reg.spec) return undefined;
   const handler = reg.handler;
@@ -312,7 +345,12 @@ export function registerDbSubAgentTools(
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
           mcpManager: deps.mcpManager,
           mcpServersById,
-          nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
+          nativeTool: (ref) =>
+            adaptNativeToolForSubAgent(
+              deps.nativeToolRegistry,
+              ref,
+              turnScopedMemoryResolver,
+            ),
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
