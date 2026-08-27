@@ -83,6 +83,12 @@
     "system.vaultStatus.bucket": "loanword",
     "chat.routing.bucketFallback": "loanword",
     "layout.tagline": "brand",
-    "login.tagline": "brand"
+    "login.tagline": "brand",
+    "memory.contexts.axis.team": "loanword",
+    "memory.contexts.axis.user": "loanword",
+    "memory.promote.openButton": "glossary",
+    "memory.promote.targetCtxKeyPlaceholder": "placeholder",
+    "memory.audit.mode.copy": "diagnostic",
+    "memory.audit.mode.move": "diagnostic"
   }
 }
