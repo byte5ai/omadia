@@ -89,7 +89,9 @@ export interface EnsureAgentTeamsIdentityInput {
 
 export interface AgentTeamsIdentityUpdate {
   readonly state?: TeamsProvisioningState;
-  readonly teamId?: string;
+  /** `null` clears the recorded install target — what an uninstall leaves
+   *  behind (byte5ai/omadia#900). The column is nullable (migration 0049). */
+  readonly teamId?: string | null;
   readonly appId?: string;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
@@ -275,6 +277,27 @@ export class AgentTeamsIdentityStore {
     const row = res.rows[0];
     if (row === undefined) throw new AgentTeamsIdentityNotFoundError(agentId);
     return mapRow(row);
+  }
+
+  /**
+   * Forget the recorded team install after the connector removed the app
+   * from the team (byte5ai/omadia#900).
+   *
+   * The row drops back to `catalog_uploaded`, NOT to `pending`: the Entra
+   * app, the Azure bot and the tenant catalog entry all still exist and are
+   * still this agent's — only the team install is gone. That is exactly the
+   * state a fresh `POST /:slug/teams` resumes from, so re-installing later
+   * costs one Graph call instead of re-running the whole chain.
+   *
+   * `lastError` is cleared with it: whatever failed before, the operator has
+   * just successfully driven the row to a clean state.
+   */
+  async clearTeamInstall(agentId: string): Promise<AgentTeamsIdentityRecord> {
+    return this.update(agentId, {
+      state: 'catalog_uploaded',
+      teamId: null,
+      lastError: null,
+    });
   }
 
   /** Persist an enqueue failure so the status endpoint can show WHY nothing

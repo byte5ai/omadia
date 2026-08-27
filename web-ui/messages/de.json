@@ -1977,11 +1977,12 @@
       "uninstallTitle": "App aus diesem Team entfernen?",
       "uninstallBody": "Die App des Orchestrators wird aus Team {teamId} entfernt und antwortet dort nicht mehr.",
       "uninstallConfirm": "Entfernen",
+      "uninstallAlreadyAbsent": "Die App war nicht in Team {teamId} installiert — die Zuordnung wurde aufgehoben.",
       "uninstalled": "App aus Team {teamId} entfernt.",
       "cancel": "Abbrechen",
       "unsupported": {
         "install": "Die Installation in ein Team ist in dieser Installation nicht verfügbar.",
-        "uninstall": "Das Entfernen der App aus einem Team ist ein manueller Schritt für Teams-Admins — der Microsoft-365-Connector veröffentlicht keine Deinstallation, omadia kann es dir also nicht abnehmen.",
+        "uninstall": "Das Entfernen der App aus einem Team braucht den Microsoft-365-Connector 0.4.0 oder neuer. Der hier installierte Connector ist älter und veröffentlicht keine Deinstallation — aktualisiere das Plugin, oder lass die App von einem Teams-Admin manuell entfernen.",
         "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
         "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt."
       },
@@ -1996,10 +1997,13 @@
         "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
         "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
         "team_install_conflict": "Dieser Orchestrator ist bereits einem anderen Team zugeordnet. Löse diese Zuordnung zuerst — pro Orchestrator wird ein Team geführt.",
+        "team_install_not_found": "Für dieses Team ist keine Installation verzeichnet — lade die Seite neu, um zu sehen, was entfernt werden kann.",
+        "teams_app_id_missing": "Dieser Orchestrator gilt als installiert, trägt aber keine Teams-App-ID — die Installation lässt sich damit nicht ansprechen. Provisionierung erneut ausführen.",
         "teams_identity_not_found": "Dieser Orchestrator hat noch keine Teams-Identität.",
         "teams_identity_unavailable": "Die Teams-Provisionierung ist in dieser Installation nicht verdrahtet.",
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
-        "teams_uninstall_unsupported": "Das Entfernen der App aus einem Team muss ein Teams-Admin erledigen — der Connector veröffentlicht keine Deinstallation.",
+        "teams_provisioning_running": "Für diesen Orchestrator läuft noch eine Provisionierung. Warte, bis sie fertig ist, und versuche es dann erneut.",
+        "teams_uninstall_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App aus einem Team zu entfernen. Aktualisiere ihn auf 0.4.0 oder neuer, oder lass die App von einem Teams-Admin manuell entfernen.",
         "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
       },
       "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."

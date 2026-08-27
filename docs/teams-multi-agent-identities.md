@@ -69,7 +69,7 @@ aus omadia:
 
 | Plugin | Mindestversion | Warum |
 |---|---|---|
-| `@omadia/integration-microsoft365` | **0.3.1** | stellt die Capability `teamsProvisioner@1` bereit; ab 0.3.1 zusätzlich `getCatalogApp` (Katalog-Lookup ohne Upload) |
+| `@omadia/integration-microsoft365` | **0.3.1** (für Team-Deinstallation: **0.4.0**) | stellt die Capability `teamsProvisioner@1` bereit; ab 0.3.1 zusätzlich `getCatalogApp` (Katalog-Lookup ohne Upload), ab 0.4.0 `uninstallFromTeam` (App wieder aus einem Team entfernen, siehe 5.1) |
 | `@omadia/channel-teams` | **0.21.0** | `teams_bots[]` (Multi-Bot ab 0.20.0), `teams_agent_apps[]` + Auto-Invite (0.21.0) |
 | omadia-Middleware | **v0.136.2** | ältere Versionen lehnen das Plugin-Paket von channel-teams 0.21.0 am Ingest-Gate ab (siehe Troubleshooting) |
 
@@ -543,6 +543,8 @@ Der Abschnitt **„Teams-Zuordnung"** auf der Agent-Detailseite zeigt
   Sie ist leer, solange die Kette nicht `installed` erreicht hat — ein `team_id` auf
   einem früheren Zustand ist das *Ziel* eines laufenden Laufs, keine Installation.
 - **In ein Team installieren**: Feld „Team-ID" (Pflicht) plus Button „Installieren".
+- **Deinstallieren**: pro installiertem Team ein Button — aktiv ab
+  M365-Connector **0.4.0** (siehe unten).
 
 Die zugehörigen Endpunkte:
 
@@ -550,7 +552,7 @@ Die zugehörigen Endpunkte:
 |---|---|
 | `GET /api/v1/operator/agents/:slug/teams` | abgeleitetes Read-Model + `consent` + `capabilities` + `teams_bot` |
 | `POST /api/v1/operator/agents/:slug/teams` | Body `{"team_id":"…"}` → `202`, setzt das Ziel und lässt die Kette weiterlaufen |
-| `DELETE /api/v1/operator/agents/:slug/teams/:teamId` | **`501 teams_uninstall_unsupported`** — siehe unten |
+| `DELETE /api/v1/operator/agents/:slug/teams/:teamId` | entfernt die App aus dem Team (ab Connector 0.4.0) — siehe unten |
 
 `GET …/teams` liefert ein `capabilities`-Objekt, aus dem die UI ableitet, was sie
 anbieten darf, statt es aus fehlgeschlagenen Requests zu lernen:
@@ -558,16 +560,49 @@ anbieten darf, statt es aus fehlgeschlagenen Requests zu lernen:
 | Capability | Wert | Begründung |
 |---|---|---|
 | `install` | `true` | Installation durch Fortsetzen der Provisioning-Kette |
-| `uninstall` | `false` | `teamsProvisioner@1` veröffentlicht keine Deinstallation |
+| `uninstall` | **abhängig vom Connector** | `true`, sobald das installierte `teamsProvisioner@1` `uninstallFromTeam` veröffentlicht (M365-Connector ≥ 0.4.0); sonst `false` |
 | `enumerate` | `false` | der Connector veröffentlicht keine Installations-Auflistung — die Liste ist abgeleitet, nicht live |
 | `multi_team` | `false` | `agent_teams_identities` speichert **ein** `team_id` pro Agent |
 
-**Der Deinstallieren-Button existiert, ist aber deaktiviert.** Die UI erklärt das:
-„Das Entfernen der App aus einem Team ist ein manueller Schritt für Teams-Admins — der
-Microsoft-365-Connector veröffentlicht keine Deinstallation, omadia kann es dir also
-nicht abnehmen." Die Route würde `501` antworten. Das ist bewusst so gebaut: einen
-`team_id`-Eintrag zu löschen, würde die Middleware nur eine Installation *vergessen*
-lassen, die in Teams weiterläuft.
+#### Deinstallieren (ab Connector 0.4.0)
+
+**Was passiert.** Der Button steht hinter einem Bestätigungsdialog. Bestätigt man,
+ruft die Middleware `uninstallFromTeam({teamId, teamsAppId})` des Connectors auf. Der
+löst die Graph-**Installations-ID** auf
+(`GET /teams/{id}/installedApps?$expand=teamsApp&$filter=teamsApp/id eq '…'`) und
+löscht sie (`DELETE /teams/{id}/installedApps/{installationId}`). Erst **danach** wird
+die Zeile aufgeräumt: `state` fällt auf `catalog_uploaded` zurück, `team_id` wird
+`NULL`. Entra-App, Azure-Bot und Katalog-Eintrag bleiben bestehen — ein späterer
+`POST …/teams` setzt genau dort wieder auf und kostet einen einzigen Graph-Call.
+
+Die Reihenfolge ist Absicht: Graph zuerst, Zeile danach. Bricht etwas dazwischen ab,
+konvergiert ein Retry (die Entfernung ist idempotent). Andersherum bliebe eine noch
+laufende Installation zurück, die nichts mehr führt.
+
+**War die App gar nicht im Team**, ist das trotzdem ein Erfolg: die Antwort trägt
+`outcome: "already-absent"`, die UI meldet „Die App war nicht in Team … installiert —
+die Zuordnung wurde aufgehoben", und die Zeile wird genauso aufgeräumt.
+
+**Ist der Connector älter als 0.4.0**, antwortet die Route weiterhin
+**`501 teams_uninstall_unsupported`** (mit `min_connector_version: "0.4.0"`) — und die
+UI zeigt den Button erst gar nicht aktiv an, weil `capabilities.uninstall` denselben
+Befund meldet. Der Hinweistext nennt die Lösung: *„Das Entfernen der App aus einem Team
+braucht den Microsoft-365-Connector 0.4.0 oder neuer … aktualisiere das Plugin, oder
+lass die App von einem Teams-Admin manuell entfernen."* Die Middleware spiegelt den
+Connector-Contract strukturell statt ihn zu importieren, deshalb ist das eine
+Laufzeit-Feature-Detection (`typeof provisioner.uninstallFromTeam === 'function'`) und
+kein Versionsvergleich.
+
+Weitere Antworten der Route:
+
+| Status | Code | Wann |
+|---|---|---|
+| `200` | — | entfernt (`outcome: "uninstalled"`) oder war nicht installiert (`"already-absent"`) |
+| `404` | `team_install_not_found` | für dieses Team ist keine Installation verzeichnet (auch: Zeile noch nicht `installed`) |
+| `409` | `teams_provisioning_running` | ein Provisioning-Lauf ist unterwegs und würde direkt wieder installieren |
+| `409` | `teams_app_id_missing` | Zeile gilt als `installed`, trägt aber keine `teams_app_id` |
+| `501` | `teams_uninstall_unsupported` | Connector < 0.4.0 |
+| `503` | `teams_provisioner_unavailable` | M365-Connector gar nicht installiert/aktiv |
 
 **`409 team_install_conflict`.** Ein Retarget wird **vor jedem Schreibvorgang**
 abgelehnt — sowohl bei einer bereits `installed`-Zeile mit anderem Team als auch bei
@@ -932,7 +967,7 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 | Bot antwortet nicht, obwohl der Slug stimmt | `teams_bots[]` wurde nie befüllt — die Provisionierung synct die Identität nicht in die Plugin-Config | `teams_bot`-Block aus der UI kopieren (oder aus `GET …/teams-identity`) und in `teams_bots` einfügen, Plugin-Config speichern |
 | `409 bot_slug_taken` beim POST | Der Slug gehört bereits einer **anderen** Agent-Identität (`UNIQUE (bot_slug)`) | Anderen `bot_slug` wählen — zwei Agenten dürfen sich niemals eine Bot-Identität und deren Credential-Namensraum teilen |
 | `409 team_install_conflict` beim POST | Retarget auf ein anderes Team, während die Zeile schon `installed` ist oder ein Lauf auf ein anderes Team fliegt | Auf den laufenden Lauf warten. Bei bereits installierter App: die alte Installation manuell in Teams entfernen — omadia führt genau ein Team pro Agent |
-| „Deinstallieren" ist ausgegraut / `501 teams_uninstall_unsupported` | `teamsProvisioner@1` veröffentlicht keine Deinstallation | Die App im Teams-Admin manuell aus dem Team entfernen. omadia täuscht das bewusst nicht vor |
+| „Deinstallieren" ist ausgegraut / `501 teams_uninstall_unsupported` | der installierte M365-Connector ist älter als **0.4.0** und veröffentlicht kein `uninstallFromTeam` | `@omadia/integration-microsoft365` auf ≥ 0.4.0 aktualisieren (Middleware-Neustart nicht nötig — die Capability wird pro Request aufgelöst). Bis dahin: App im Teams-Admin manuell entfernen |
 | Card meldet „nicht im Teams-App-Katalog gefunden" | Weder `teamsAppId` konfiguriert noch über `getCatalogApp` auflösbar (App nicht publiziert, oder Connector 0.3.0 ohne Lookup) | App in den Org-Katalog hochladen oder `teamsAppId` in `teams_agent_apps[]` eintragen; danach „🔄 Prüfen" klicken |
 | Nachrichten landen beim falschen Bot / Conversation-Refs kollidieren | Deployment ohne KG-Migration `0031` (`teams_conversation_refs.bot_app_id`) | `0031` einspielen (passiert beim nächsten Boot automatisch). Bis dahin ist Multi-Bot-Betrieb nicht sauber isoliert |
 | `last_error` endet auf `(gave up after N attempts)`, State ist **nicht** `failed` | 429-Drosselung oder Connector zeitweise weg; Retry-Budget (5 Versuche) erschöpft | Später erneut POSTen. Der erreichte Fortschritt bleibt erhalten und wird nicht wiederholt |
@@ -952,11 +987,12 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
   Identität in den Kernel, nicht in `teams_bots[]` von channel-teams. Der Eintrag muss
   manuell übernommen werden; die UI sagt das ausdrücklich.
 - **Ein Team pro Identität.** `agent_teams_identities` speichert genau ein `team_id`
-  (Migration `0049`), und der Connector veröffentlicht keine Deinstallation. Multi-Team
-  ist deshalb **strukturell noch nicht möglich** — dafür braucht es eine
-  Schema-Änderung (eigene Tabelle für das Installations-Set). Ein Retarget wird
-  konsequent mit `409` abgelehnt, statt ein Read-Model zu erzeugen, das eine
-  Installation behauptet, die nie stattgefunden hat.
+  (Migration `0049`). Multi-Team ist deshalb **strukturell noch nicht möglich** — dafür
+  braucht es eine Schema-Änderung (eigene Tabelle für das Installations-Set). Ein
+  Retarget wird konsequent mit `409` abgelehnt, statt ein Read-Model zu erzeugen, das
+  eine Installation behauptet, die nie stattgefunden hat. Seit Connector 0.4.0 ist der
+  Wechsel aber kein Sackgasse mehr: erst deinstallieren (5.1), dann in das neue Team
+  installieren.
 - **Eine Identität pro Agent, ein Agent pro Bot-Slug.** Beides ist als
   Datenbank-Constraint festgeschrieben (`PRIMARY KEY (agent_id)`, `UNIQUE (bot_slug)`)
   und scheitert laut statt still.
@@ -994,8 +1030,10 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
   — die ACL ist also aktivierbar, aber ohne Producer folgenlos.
 - **Operator-Route für Kontext-Labels.** Der Memory-Browser fällt auf den dekodierten
   Kontext-Key zurück, solange kein Label-Resolver deployed ist.
-- **Deinstallation** setzt eine Erweiterung des `teamsProvisioner@1`-Vertrags voraus —
-  eine eigene Entscheidung, kein Nachziehen.
+- **Deinstallation ist erledigt** (#900): `teamsProvisioner@1` veröffentlicht seit
+  M365-Connector **0.4.0** `uninstallFromTeam`, die Route und der UI-Button sind
+  aktiv. Offen bleibt die **Live-Enumeration** von Installationen — dafür fehlt dem
+  Connector-Vertrag weiterhin eine Auflistungs-Methode.
 
 ---
 

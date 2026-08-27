@@ -1042,11 +1042,23 @@ export async function installAgentTeam(
  * capability-driven rather than hard-coded: the day the connector contract
  * gains an uninstall, the control lights up with no UI change.
  */
+export interface UninstallAgentTeamResponse {
+  ok: boolean;
+  agent: string;
+  team_id: string;
+  /** `'uninstalled'` when this call removed the install, `'already-absent'`
+   *  when the app was not in the team. Both are success. */
+  outcome: 'uninstalled' | 'already-absent';
+  already_absent: boolean;
+  /** Provisioning state the row dropped back to (`catalog_uploaded`). */
+  state: string;
+}
+
 export async function uninstallAgentTeam(
   slug: string,
   teamId: string,
-): Promise<void> {
-  await callJson(
+): Promise<UninstallAgentTeamResponse> {
+  return callJson<UninstallAgentTeamResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamId)}`,
     { method: 'DELETE' },
   );
@@ -1056,8 +1068,12 @@ export async function uninstallAgentTeam(
  * Machine codes the team-assignment routes emit as `{ error: '<code>' }`.
  *
  * A union of its own, like the identity routes': these add
- * `team_install_conflict` and `teams_uninstall_unsupported`, which no other
- * catalogue on this page has copy for.
+ * `team_install_conflict` and the uninstall codes, which no other catalogue
+ * on this page has copy for.
+ *
+ * `teams_uninstall_unsupported` is NOT dead now that the uninstall works: it
+ * is what a middleware answers when the installed M365 connector is older
+ * than 0.4.0 and publishes no `uninstallFromTeam`.
  *
  * i18n HARD RULE: none of these are user-facing text — each maps to a
  * `teamsInstalls.errors.*` key and the raw body never reaches the UI.
@@ -1068,9 +1084,12 @@ export const TEAMS_ASSIGNMENT_ERROR_CODES = [
   'multi_orchestrator_unavailable',
   'not_found',
   'team_install_conflict',
+  'team_install_not_found',
+  'teams_app_id_missing',
   'teams_identity_not_found',
   'teams_identity_unavailable',
   'teams_provisioner_unavailable',
+  'teams_provisioning_running',
   'teams_uninstall_unsupported',
 ] as const;
 

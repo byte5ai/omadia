@@ -46,6 +46,7 @@ import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
 import {
   buildTeamsBotMessagingEndpoint,
+  getTeamsProvisioner,
   requireTeamsProvisioner,
 } from './platform/teamsProvisionerService.js';
 import {
@@ -3296,6 +3297,10 @@ async function main(): Promise<void> {
           store: identityStore,
           runner: provisioningRunner,
           isProvisionerInstalled: () => serviceRegistry.has('teamsProvisioner'),
+          // Resolved per call, never cached: the connector can be installed,
+          // upgraded or removed while the process runs, and the team-uninstall
+          // capability (#900) has to follow it.
+          getProvisioner: () => getTeamsProvisioner(serviceRegistry),
         };
       },
     }),

@@ -18,6 +18,36 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — team uninstall for provisioned agent identities (#900, part of #860)
+
+2026-08-27 — Assigning an agent to a Team was one-way: `DELETE
+/api/v1/operator/agents/:slug/teams/:teamId` answered `501
+teams_uninstall_unsupported` and the operator UI shipped the control disabled,
+because `teamsProvisioner@1` published an install but no uninstall. Removing an
+agent bot from a team meant going to the Teams admin center.
+
+`@omadia/integration-microsoft365` **0.4.0** adds `uninstallFromTeam({ teamId,
+teamsAppId })` — Graph deletes an installation by its *installation* id, so the
+connector resolves it first
+(`GET /teams/{id}/installedApps?$expand=teamsApp&$filter=teamsApp/id eq '…'`)
+and then deletes it. "Not installed" is an idempotent success
+(`outcome: 'already-absent'`), 403 maps to the same `ConsentMissingError` and
+the same scope as the install direction — **no new Graph permission** — and 429
+rides the shared `Retry-After` backoff.
+
+The middleware mirrors the connector contract structurally rather than
+importing it, so the route **feature-detects**: with a connector `< 0.4.0` it
+keeps answering `501` (now carrying `min_connector_version`), and
+`GET …/teams` reports `capabilities.uninstall: false` with a reason that names
+the fix, so the UI renders a disabled control instead of a button that fails.
+The panel was already capability-driven, so a new-enough connector lights the
+button up on its own.
+
+Graph first, row second: the identity row is only cleared after the connector
+confirms the removal (state back to `catalog_uploaded`, `team_id` `NULL`), so a
+failure mid-way never leaves a live install that nothing tracks. Re-installing
+later resumes from the catalog entry — one Graph call, not the whole chain.
+
 ### Fixed — billing-posture badge on "Erkannte CLIs" no longer reads as a second status (#887)
 
 2026-08-27 — Each CLI row on Admin → LLM-Zugang → Abo-CLIs showed a detection
