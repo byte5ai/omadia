@@ -1939,6 +1939,67 @@
         "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
         "unknown": "Loading grants failed: {detail}"
       }
+    },
+    "teamsIdentity": {
+      "heading": "Teams identity",
+      "hint": "Give this orchestrator its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
+      "loading": "Loading the Teams identity…",
+      "refresh": "Refresh",
+      "createHint": "All three fields are optional — the server derives the bot slug and the display name from this orchestrator when you leave them empty.",
+      "fieldBotSlug": "Bot slug",
+      "fieldBotSlugHint": "Lowercase letters, digits and dashes. Must be unique across orchestrators.",
+      "fieldDisplayName": "Display name",
+      "fieldDisplayNameHint": "The name people see in Teams.",
+      "fieldTeamId": "Target team ID",
+      "fieldTeamIdHint": "The team the app is installed into. Leave empty to only register the identity.",
+      "submit": "Start provisioning",
+      "submitBusy": "Starting",
+      "rerun": "Re-run provisioning",
+      "started": "Provisioning started for {botSlug}.",
+      "progressLabel": "Provisioning progress",
+      "stateSummary": "State: {state}",
+      "running": "A provisioning run is in progress.",
+      "idle": "No provisioning run is active right now.",
+      "botSlug": "Bot slug",
+      "displayName": "Display name",
+      "appId": "Application (client) ID",
+      "tenantId": "Tenant ID",
+      "teamsAppId": "Teams app ID",
+      "teamsAppExternalId": "Teams app external ID",
+      "notYet": "not assigned yet",
+      "updatedAt": "Last update: {date}",
+      "lastErrorHeading": "Last provisioning error",
+      "lastErrorTechnical": "Technical detail",
+      "states": {
+        "pending": "pending",
+        "app_registered": "app registered",
+        "bot_created": "bot created",
+        "package_built": "package built",
+        "catalog_uploaded": "catalog uploaded",
+        "installed": "installed",
+        "failed": "failed"
+      },
+      "notice": {
+        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
+      },
+      "lastError": {
+        "consent_missing": "Admin consent is missing for these Graph scopes: {scopes}. Grant them in the customer tenant, then re-run provisioning.",
+        "arm_not_configured": "The Microsoft 365 connector still needs these setup fields before a bot can be created: {fields}. Configure them, then re-run provisioning — the app registration is kept.",
+        "throttled": "Microsoft throttled the provisioning run. It can be retried in about {seconds} seconds.",
+        "unknown": "Provisioning reported an error: {detail}"
+      },
+      "errors": {
+        "bot_slug_taken": "That bot slug already belongs to another orchestrator — pick a different one.",
+        "invalid_body": "The server rejected the request payload.",
+        "invalid_slug": "This orchestrator slug is not valid.",
+        "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
+        "not_found": "This orchestrator does not exist anymore — reload the page.",
+        "teams_identity_not_found": "This orchestrator has no Teams identity yet.",
+        "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment.",
+        "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
+        "unknown": "The Teams identity request failed: {detail}"
+      }
     }
   },
   "builder": {
