@@ -471,6 +471,12 @@ function InstallBadge({
   );
 }
 
+/**
+ * OM-48 (#887) — this sits beside InstallBadge.
+ * Without an "Abrechnung:"/"Billing:" prefix, the pair can read like
+ * conflicting detection statuses, even though this badge describes billing
+ * posture rather than whether the CLI was found.
+ */
 function BillingBadge({
   billing,
   t,

@@ -3272,8 +3272,8 @@
       "installed": "installiert",
       "needsLogin": "Anmeldung nötig",
       "loggedIn": "angemeldet",
-      "subscription": "Abo",
-      "needsVerification": "Prüfung nötig"
+      "subscription": "Abrechnung: Abo",
+      "needsVerification": "Abrechnung: noch zu prüfen"
     },
     "lastChecked": "Zuletzt geprüft um {time}",
     "refreshed": "Gerade aktualisiert",

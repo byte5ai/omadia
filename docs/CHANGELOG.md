@@ -18,6 +18,16 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — billing-posture badge on "Erkannte CLIs" no longer reads as a second status (#887)
+
+2026-08-27 — Each CLI row on Admin → LLM-Zugang → Abo-CLIs showed a detection
+badge ("NICHT GEFUNDEN") next to a billing badge ("Abo" / "Prüfung nötig") with
+nothing distinguishing the two — two entries both "not found" could still show
+different second badges, reading like conflicting statuses. The billing badge
+now carries an explicit "Abrechnung:"/"Billing:" prefix so it's unmistakably a
+billing-model label, not a second detection state. Display-string change only —
+`cliBackendDetector.ts`'s `CliBillingPosture` type and wire field are unchanged.
+
 ### Fixed — dashboard onboarding step 3 no longer contradicts its own done badge (#886)
 
 2026-08-27 — Step 3 "Plugins installieren" ticked its INSTALLIERT badge from
