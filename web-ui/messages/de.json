@@ -1745,6 +1745,10 @@
     "detailAssignedHint": "Plugin nur für diesen Orchestrator aktivieren oder deaktivieren — der Schalter wird sofort gespeichert. Plugins anhängen oder lösen geht im Editor darunter.",
     "detailAssignedEmpty": "Diesem Orchestrator sind noch keine Plugins zugewiesen. Häng im Editor darunter eins an.",
     "detailToggleAria": "{plugin} aktivieren oder deaktivieren",
+    "personaHeading": "Persona und Verhalten",
+    "personaHint": "Persona, Tonalität und Verhalten werden im Agent Builder entworfen. Diese Seite weist dem Orchestrator nur Fähigkeiten zu.",
+    "personaOpenBuilder": "Agent Builder öffnen",
+    "personaNoDraftHint": "Es ließ sich kein eindeutiger Builder-Entwurf zu diesem Orchestrator zuordnen — der Link öffnet deshalb die Builder-Übersicht.",
     "detailErrors": {
       "agent_graph_store_unavailable": "Die Orchestrator-Registry ist gerade nicht erreichbar. Versuch es gleich nochmal.",
       "config_validation": "Der Server hat die Plugin-Konfiguration abgelehnt.",

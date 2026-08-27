@@ -7,6 +7,7 @@ import type {
   OperatorAgentDto,
   PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
+import type { DraftSummary } from '../../../../_lib/builderTypes';
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import { AgentDetail } from '../_components/AgentDetail';
 
@@ -26,19 +27,45 @@ import { AgentDetail } from '../_components/AgentDetail';
  *
  * PluginsDnd itself (dnd-kit drag) stays out of jsdom scope per the
  * vitest.config note — it is stubbed and driven via its onReplace callback.
+ *
+ * Wave W2a adds the Agent-Builder link. Persona design lives in the native
+ * builder, so what is worth guarding is the HREF: the deep link when exactly
+ * one builder draft published one of this orchestrator's agent plugins, and
+ * the builder overview — never a guessed `[id]` that would 404 — otherwise.
  */
 
-const { mockCatalog, mockToggle, mockReplace, mockRefresh } = vi.hoisted(
-  () => ({
-    mockCatalog: vi.fn(),
-    mockToggle: vi.fn(),
-    mockReplace: vi.fn(),
-    mockRefresh: vi.fn(),
-  }),
-);
+const {
+  mockCatalog,
+  mockToggle,
+  mockReplace,
+  mockRefresh,
+  mockListDrafts,
+} = vi.hoisted(() => ({
+  mockCatalog: vi.fn(),
+  mockToggle: vi.fn(),
+  mockReplace: vi.fn(),
+  mockRefresh: vi.fn(),
+  mockListDrafts: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: mockRefresh }),
+}));
+
+vi.mock('next/link', () => ({
+  default: ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }): React.ReactElement => <a href={href}>{children}</a>,
+}));
+
+// Only the drafts listing is stubbed; everything else in _lib/api stays real.
+vi.mock('../../../../_lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../_lib/api')>()),
+  listBuilderDrafts: mockListDrafts,
 }));
 
 // Spread the real module so parseOperatorAgentErrorCode (the code→copy
@@ -129,11 +156,44 @@ function catalogEntry(
   };
 }
 
+function draft(over: Partial<DraftSummary> = {}): DraftSummary {
+  return {
+    id: 'draft-1',
+    name: 'HR persona',
+    status: 'published',
+    codegenModel: 'sonnet',
+    previewModel: 'haiku',
+    publishedAgentId: 'de.byte5.agent.hr',
+    updatedAt: 1_700_000_000_000,
+    createdAt: 1_700_000_000_000,
+    ...over,
+  };
+}
+
+/** An orchestrator whose assigned set contains a builder-published agent. */
+function agentWithBuilderPlugin(): OperatorAgentDto {
+  return agent({
+    plugins: [{ id: 'de.byte5.agent.hr', config: {}, enabled: true }],
+  });
+}
+
+const AGENT_KIND_CATALOG = {
+  items: [
+    catalogEntry({
+      id: 'de.byte5.agent.hr',
+      name: 'HR Agent',
+      kind: 'agent',
+    }),
+  ],
+};
+
 beforeEach(() => {
   mockCatalog.mockReset();
   mockToggle.mockReset();
   mockReplace.mockReset();
   mockRefresh.mockReset();
+  mockListDrafts.mockReset();
+  mockListDrafts.mockResolvedValue({ items: [], quota: null });
   mockCatalog.mockResolvedValue({
     items: [
       catalogEntry({}),
@@ -271,5 +331,88 @@ describe('AgentDetail plugin assignment', () => {
     await waitFor(() =>
       expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('clean'),
     );
+  });
+});
+
+describe('AgentDetail Agent-Builder link', () => {
+  async function builderLink(): Promise<HTMLAnchorElement> {
+    return (await screen.findByRole('link', {
+      name: /Open the Agent Builder/,
+    })) as HTMLAnchorElement;
+  }
+
+  it('deep-links to the draft that published this orchestrator’s agent plugin', async () => {
+    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
+    mockListDrafts.mockResolvedValue({
+      items: [
+        draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' }),
+        draft({ id: 'draft-2', publishedAgentId: 'de.byte5.agent.other' }),
+        draft({ id: 'draft-3', publishedAgentId: null }),
+      ],
+      quota: null,
+    });
+
+    renderWithIntl(
+      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
+    );
+
+    const link = await builderLink();
+    await waitFor(() =>
+      expect(link.getAttribute('href')).toBe('/store/builder/draft-1'),
+    );
+    // The deep link resolved, so the "overview instead" hint must be gone.
+    expect(screen.queryByText(/opens the builder overview/)).toBeNull();
+  });
+
+  it('falls back to the builder overview when no draft matches — never a 404 id', async () => {
+    // Default fixtures: two integration plugins, no drafts at all.
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+
+    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
+    expect(
+      await screen.findByText(/opens the builder overview/),
+    ).toBeInTheDocument();
+  });
+
+  it('falls back to the overview when the match is ambiguous', async () => {
+    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
+    mockListDrafts.mockResolvedValue({
+      items: [
+        draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' }),
+        // A second draft pinned to the SAME published agent — guessing one of
+        // them would send the operator to the wrong persona.
+        draft({ id: 'draft-2', publishedAgentId: 'de.byte5.agent.hr' }),
+      ],
+      quota: null,
+    });
+
+    renderWithIntl(
+      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
+    );
+
+    await screen.findByText(/opens the builder overview/);
+    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
+  });
+
+  it('still renders the link when the drafts listing fails', async () => {
+    mockListDrafts.mockRejectedValue(new Error('boom'));
+
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+
+    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
+    // A drafts-fetch failure is not one of this page's write errors.
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not render a persona editor — design happens in the builder', async () => {
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+
+    await builderLink();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(
+      screen.getByText(
+        /Persona, tone and behaviour are designed in the Agent Builder/,
+      ),
+    ).toBeInTheDocument();
   });
 });
