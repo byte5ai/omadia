@@ -223,4 +223,43 @@ describe('<SubscriptionClisPanel />', () => {
     // redacted support disclosure.
     expect(screen.getByText('Details for support')).toBeTruthy();
   }, 20_000);
+
+  /**
+   * OM-48 (#887) — both rows can legitimately share the same install-state
+   * badge, so the billing badge copy must self-identify as billing data
+   * instead of reading like a second, contradictory detection result.
+   */
+  it('OM-48: prefixes billing badges so they cannot be read as install-state badges', async () => {
+    mockGetCliBackends.mockResolvedValue({
+      backends: [
+        backend({
+          id: 'claude',
+          installed: false,
+          billing: 'needs-verification',
+          detail: 'claude is not installed in this environment.',
+        }),
+        backend({
+          id: 'codex',
+          label: 'Codex',
+          bin: 'codex',
+          installed: false,
+          billing: 'subscription',
+          detail: 'codex is not installed in this environment.',
+        }),
+      ],
+      cliToolsDir: CLI_TOOLS_DIR,
+      generatedAt: Date.now(),
+    });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    expect(await screen.findAllByText(/^nicht gefunden$/i)).toHaveLength(2);
+
+    await waitFor(() => {
+      expect(screen.getByText(/^Abrechnung: noch zu prüfen$/)).toBeTruthy();
+      expect(screen.getByText(/^Abrechnung: Abo$/)).toBeTruthy();
+    });
+  });
 });
