@@ -18,6 +18,21 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — Nutzungs-Doku: mehrere benannte Agent-Bots in Teams (#860)
+
+2026-08-27 — Neue Operator-Doku `docs/teams-multi-agent-identities.md`, verlinkt aus
+`docs/README.md`. Sie führt von null zu mehreren omadia-Agenten, die in Microsoft Teams
+als jeweils eigener Bot auftreten, und deckt die Waves W0a/W0b/W1a/W2a/W5 ab:
+Voraussetzungen (Plugin-Versionen, Migrationen `0049`/`0050` Core und `0031` KG,
+Graph-Scopes samt der Consent-Fallstricke), Setup von M365-Connector und channel-teams,
+Anlegen einer Teams-Identität über die Operator-UI (#896) mit den REST-Endpunkten als
+Alternative, Team-Zuordnung inklusive `409 team_install_conflict` und der nicht
+unterstützten Deinstallation, Rechte pro Agent, Persona im nativen Agent Builder,
+Kontext-Memory-ACL (#881) mit dem standardmäßig ausgeschalteten Rollout-Flag, eine
+Troubleshooting-Tabelle (u. a. der `.template`-Ingest-Fall aus #880, behoben ab
+v0.136.2) sowie Grenzen und Ausblick. Jede API-Angabe ist gegen den Code auf `main`
+verifiziert; nicht Belegbares steht als `VERIFY`-Kommentar statt als Behauptung.
+
 ### Fixed — dashboard onboarding step 1 now exposes both LLM access paths (#889)
 
 2026-08-27 — The web-ui onboarding card promised a choice between API-provider
