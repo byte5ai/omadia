@@ -472,7 +472,7 @@ export class TeamsProvisioningJobRunner {
     const scopes = missingScopesOf(err);
     if (scopes !== undefined) {
       // TERMINAL — an admin has to consent; retrying is pointless.
-      const detail = `consent_missing: admin consent required for scopes [${scopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
+      const detail = consentMissingDetail(scopes);
       await this.recordError(agentId, { state: 'failed', lastError: detail });
       return { status: 'failed', agentId, reason: 'consent_missing', detail };
     }
@@ -496,7 +496,12 @@ export class TeamsProvisioningJobRunner {
     const retryable = throttle !== undefined || isProvisionerUnavailable(err);
 
     if (attempt >= this.maxAttempts) {
-      const detail = `${errorMessage(err)} (gave up after ${attempt} attempts)`;
+      // A throttle exhaustion is its OWN code — the operator can simply come
+      // back later, so the UI must be able to say that without reading prose.
+      const detail =
+        throttle !== undefined
+          ? throttledDetail(errorMessage(err), attempt, throttle.retryAfterSeconds)
+          : `${errorMessage(err)} (gave up after ${attempt} attempts)`;
       if (retryable) {
         // Progress states are real — keep them, record why the run stopped so
         // a later re-run resumes from the same point.
@@ -683,8 +688,111 @@ export class TeamsProvisioningJobRunner {
   }
 }
 
-function armNotConfiguredDetail(missingSetupFields: readonly string[]): string {
+// ---------------------------------------------------------------------------
+// last_error sentences + their classifier (W2a, epic #860)
+//
+// The runner is the ONLY writer of `agent_teams_identities.last_error`, and
+// every sentence it writes starts with a machine-readable code. The operator
+// UI must not re-derive meaning from English prose, so the classifier that
+// decodes those sentences lives HERE, next to the producers: changing a
+// message and forgetting the decoder breaks the colocated round-trip test
+// instead of silently degrading the operator UI in production.
+//
+// Follow-up (out of scope here): persist the structured code as its own
+// column from the start, so the sentence stays purely human-facing.
+// ---------------------------------------------------------------------------
+
+/** Bracket filler used when the connector named no ARM field. Shared by the
+ *  producer and the classifier so the empty case round-trips to `[]`. */
+const ARM_FIELDS_UNSPECIFIED = 'ARM setup fields';
+
+export function consentMissingDetail(missingScopes: readonly string[]): string {
+  return `consent_missing: admin consent required for scopes [${missingScopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
+}
+
+export function armNotConfiguredDetail(missingSetupFields: readonly string[]): string {
   const fields =
-    missingSetupFields.length > 0 ? missingSetupFields.join(', ') : 'ARM setup fields';
+    missingSetupFields.length > 0
+      ? missingSetupFields.join(', ')
+      : ARM_FIELDS_UNSPECIFIED;
   return `arm_not_configured: bot creation needs the ARM setup fields [${fields}] on the M365 connector — configure them, then re-run provisioning (the app registration is kept)`;
+}
+
+/** Throttle budget exhausted. The reached state is KEPT — this is a "come
+ *  back later", not a failure — so the sentence carries the connector's
+ *  `Retry-After` hint when it had one. */
+export function throttledDetail(
+  message: string,
+  attempts: number,
+  retryAfterSeconds?: number,
+): string {
+  const hint =
+    retryAfterSeconds !== undefined ? `; retry after ${String(retryAfterSeconds)}s` : '';
+  return `throttled: ${message} (gave up after ${String(attempts)} attempts${hint})`;
+}
+
+export type TeamsProvisioningErrorCode =
+  | 'consent_missing'
+  | 'arm_not_configured'
+  | 'throttled'
+  | 'unknown';
+
+/** Structured projection of one `last_error` sentence. `raw` is always the
+ *  untouched original — a UI may show it as a secondary technical detail,
+ *  but it must render its message from `code` + the typed arguments. */
+export interface TeamsProvisioningErrorDetail {
+  readonly code: TeamsProvisioningErrorCode;
+  /** Graph/ARM scopes still awaiting admin consent (`consent_missing`). */
+  readonly scopes?: readonly string[];
+  /** M365-connector setup fields still unconfigured (`arm_not_configured`). */
+  readonly fields?: readonly string[];
+  /** Connector `Retry-After` hint in seconds (`throttled`), when it had one. */
+  readonly retryAfterSeconds?: number;
+  readonly raw: string;
+}
+
+/** Content of the first `[...]` group, split into trimmed entries. The
+ *  sentinel maps back to the empty list the producer started from. */
+function bracketList(sentence: string, sentinel?: string): readonly string[] {
+  const inner = /\[([^\]]*)\]/.exec(sentence)?.[1];
+  if (inner === undefined) return [];
+  const entries = inner
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (sentinel !== undefined && entries.length === 1 && entries[0] === sentinel) {
+    return [];
+  }
+  return entries;
+}
+
+/**
+ * Decode a `last_error` sentence written by this runner into the structured
+ * form the operator UI renders from. Pure and total: an unrecognized sentence
+ * (an older row, a store-level write such as `enqueue_failed: …`) classifies
+ * as `unknown` with the raw text preserved — never throws, never guesses.
+ */
+export function classifyTeamsProvisioningError(
+  raw: string,
+): TeamsProvisioningErrorDetail {
+  const sentence = raw.trim();
+  if (sentence.startsWith('consent_missing:')) {
+    return { code: 'consent_missing', scopes: bracketList(sentence), raw };
+  }
+  if (sentence.startsWith('arm_not_configured:')) {
+    return {
+      code: 'arm_not_configured',
+      fields: bracketList(sentence, ARM_FIELDS_UNSPECIFIED),
+      raw,
+    };
+  }
+  if (sentence.startsWith('throttled:')) {
+    const hint = /; retry after (\d+)s\)?/.exec(sentence)?.[1];
+    return {
+      code: 'throttled',
+      ...(hint !== undefined ? { retryAfterSeconds: Number(hint) } : {}),
+      raw,
+    };
+  }
+  return { code: 'unknown', raw };
 }

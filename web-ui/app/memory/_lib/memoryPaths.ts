@@ -99,17 +99,21 @@ export function parseContextPath(path: string): MemoryContextLocation | null {
 }
 
 /**
- * Agent slug of a path inside the agent tier, or null when the path is not
- * under `/memories/orchestrators/<slug>`.
+ * True when `path` IS `/memories/contexts` or sits below it.
+ *
+ * This is the client-side mirror of the operator listing endpoint's own scope
+ * guard (`middleware/src/routes/operatorMemoryContexts.ts` →
+ * `resolveContextPath`): that router can only ever read this subtree, so a
+ * browser that asks it for `/memories/orchestrators` gets a 400 rather than a
+ * listing. Testing SEGMENT-WISE rather than with `startsWith` matters for the
+ * same reason it does server-side — `/memories/contextsX` is not a context
+ * path, and a prefix test would let it through.
  */
-export function parseAgentTierPath(path: string): string | null {
+export function isInsideContexts(path: string): boolean {
   const segs = segments(path);
-  const rootSegs = segments(ORCHESTRATORS_ROOT);
-  if (segs.length < rootSegs.length + 1) return null;
-  for (const [i, expected] of rootSegs.entries()) {
-    if (segs[i] !== expected) return null;
-  }
-  return segs[rootSegs.length] ?? null;
+  const rootSegs = segments(CONTEXTS_ROOT);
+  if (segs.length < rootSegs.length) return false;
+  return rootSegs.every((expected, i) => segs[i] === expected);
 }
 
 /**

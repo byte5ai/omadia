@@ -32,6 +32,7 @@ import {
   type TeamsProvisioningState,
 } from '../src/platform/agentTeamsIdentityStore.js';
 import type { TeamsIdentityJobStore } from '../src/services/teamsProvisioningJob.js';
+import type { OperatorTeamsIdentityStore } from '../src/routes/operatorAgents.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'agentTeamsIdentityStore',
@@ -83,6 +84,15 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
     // Compile-time pin: the runner's structural port must stay satisfied.
     const jobStore: TeamsIdentityJobStore = store;
     assert.ok(jobStore);
+  });
+
+  it('is a drop-in OperatorTeamsIdentityStore for the operator router (W2a #860)', () => {
+    // Compile-time pin, the counterpart of the job-store one above: the
+    // team↔agent read model derives the installed team from `teamId`, so a
+    // store that stopped exposing it would leave GET /:slug/teams reporting
+    // "no installs" forever instead of failing.
+    const routerStore: OperatorTeamsIdentityStore = store;
+    assert.ok(routerStore);
   });
 
   it('getByAgentId returns undefined for an agent without an identity', async () => {

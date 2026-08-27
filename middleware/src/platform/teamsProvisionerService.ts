@@ -257,6 +257,19 @@ export interface TeamAppInstallation {
  * The service object the connector publishes under the registry key
  * `'teamsProvisioner'` — one method per chain step; the caller (the agent
  * factory's job runner) owns ordering, persistence and retries.
+ *
+ * SURFACE GAP (verified against connector v0.3.1, W2a of epic #860). Team
+ * installs are one-way here: `installToTeam` has NO counterpart. There is
+ *   - no uninstall / removal method, and
+ *   - no way to LIST the teams an app is installed in
+ *     (`getCatalogApp` answers tenant-catalog presence, never a team
+ *     install).
+ * The operator's team↔agent read model therefore derives what it reports
+ * from `agent_teams_identities` and marks uninstall/enumeration as
+ * unsupported (`routes/operatorAgents.ts` →
+ * `TEAMS_ASSIGNMENT_CAPABILITIES`). Widening this mirrored contract is a
+ * connector change, not a middleware one: add the methods there first, then
+ * mirror them here.
  */
 export interface TeamsProvisionerAccessor {
   readonly tenantMode: TenantMode;

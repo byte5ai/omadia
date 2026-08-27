@@ -87,6 +87,34 @@ could never detect a newer release.
   dialog for every outcome — found (downloading), already up to date, or the check failed —
   without changing the silent startup check's existing (dialog-free) behavior.
 
+### Changed — one `teams_bot` projection + a decoded `last_error` for the operator UI (#860 W2a)
+
+2026-08-27 — Groundwork for the operator-facing team↔agent screens, no schema change and
+no new route.
+
+- **Single projection choke point.** The channel-teams `teams_bots[]` entry that
+  `GET /api/v1/operator/agents/:slug/teams-identity` returns was assembled inline in the
+  handler. It is now the exported `projectTeamsBotConfig()` of
+  `middleware/src/routes/operatorAgents.ts`, so every further team↔agent route emits a
+  byte-identical block. The entry is a config contract with channel-teams — a second,
+  drifting copy would hand operators a config the plugin silently refuses to parse. The
+  invariants are unchanged: `null` unless BOTH `app_id` and `tenant_id` are known,
+  `appType` always `SingleTenant`, and the bot password only ever as the opaque vault ref
+  `teams_bot_password:<appId>`. Pasting that block into channel-teams' `teams_bots` setup
+  field stays a MANUAL operator step; automatic config sync remains a follow-up.
+- **`last_error_detail` (additive).** The GET now also returns the identity's `last_error`
+  in structured form: `{ code: consent_missing | arm_not_configured | throttled | unknown,
+  scopes?, fields?, retryAfterSeconds?, raw }`. `last_error` itself is unchanged. The
+  decoder (`classifyTeamsProvisioningError`) sits in
+  `middleware/src/services/teamsProvisioningJob.ts` — next to the only code that WRITES
+  those sentences — so changing a message and forgetting the decoder breaks a colocated
+  round-trip test instead of degrading the operator UI in production. The UI renders from
+  `code` plus the typed arguments; `raw` is a secondary technical detail only.
+- **New sentence:** an exhausted throttle budget is now recorded as
+  `throttled: … (gave up after N attempts; retry after Ns)` instead of an un-prefixed
+  message, so "come back later" is machine-readable. Follow-up worth doing: persist the
+  structured code as its own column from the start.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent
@@ -132,6 +160,26 @@ is injective only over the strings `parseSessionScope` emits, while the design h
 adapters build scopes directly — so it cannot be used to key a security boundary. And a
 sanitise-or-hash key function is not injective unless the two branches have disjoint output
 spaces; without that, the hash branch is pre-imageable by anyone who can name their own id.
+
+### Changed — the memory context browser reads the operator endpoint (#860 W2a)
+
+2026-08-27 — W5 shipped the context browser on `/bot-api/dev/memory/{list,file}`
+(`packages/harness-memory/src/devMemoryRouter.ts`), which the memory plugin only mounts when
+`dev_memory_endpoints_enabled` resolves truthy — a flag the kernel forbids in production. The
+panel was therefore dead exactly where an operator needs it, and it explained itself with
+"set `DEV_ENDPOINTS_ENABLED`", advice no production operator can act on.
+
+- **Both call sites move** to `GET /api/v1/operator/memory/contexts/{list,file}`
+  (`middleware/src/routes/operatorMemoryContexts.ts`), `requireAuth`-gated on the same cookie
+  session as the Danger-Zone purge. The wire shape is unchanged, so only the URL moves.
+- **The page is now a CONTEXT browser.** That endpoint is structurally unable to read outside
+  `/memories/contexts`, so the root, the breadcrumbs and "up" all stop there and the tree no
+  longer offers an agent-tier node — a node that always errors is worse than an absent one.
+  Promotion still TARGETS the agent tier; that is a write on the audited promote route.
+- **401/403 read as words.** They are ordinary answers on a gated route, so they get their own
+  copy instead of a bare "Listing failed (HTTP 401)". `memory.errorDevEndpointUnavailable` is
+  gone, replaced by `errorUnauthenticated` / `errorForbidden` / `errorPathNotFound` /
+  `errorOutOfScope`. The browser stays strictly READ-ONLY.
 
 ### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
 
