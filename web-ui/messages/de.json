@@ -1896,6 +1896,71 @@
         "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
+    },
+    "teamsInstalls": {
+      "heading": "Teams-Zuordnung",
+      "hint": "In welchem Microsoft-Teams-Team die App dieses Orchestrators installiert ist und ob der Tenant den dafür nötigen Berechtigungen zugestimmt hat.",
+      "loading": "Teams-Zuordnung wird geladen…",
+      "refresh": "Aktualisieren",
+      "noIdentity": "Dieser Orchestrator hat noch keine Teams-Identität. Lege sie im Abschnitt Teams-Identität an, bevor du ihn einem Team zuordnest.",
+      "installedHeading": "Installiert in",
+      "installedEmpty": "Die App dieses Orchestrators ist noch in keinem Team installiert.",
+      "appIdLabel": "Teams-App: {appId}",
+      "appIdNone": "noch nicht hochgeladen",
+      "installedAt": "erfasst am {date}",
+      "installedAtUnknown": "kein Zeitstempel erfasst",
+      "pendingHint": "Ein Provisionierungslauf zielt auf Team {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
+      "consentHeading": "Admin-Zustimmung",
+      "consentStatus": {
+        "granted": "erteilt",
+        "missing": "fehlt",
+        "unknown": "nicht belegt"
+      },
+      "consentScopes": "Ausstehend sind {count} Berechtigung(en): {scopes}",
+      "consentSource": {
+        "last_error": "Aus dem zuletzt erfassten Provisionierungsfehler gelesen.",
+        "provisioning_state": "Abgeleitet aus Schritten, die der Lauf ohne Zustimmung nicht hätte passieren können.",
+        "none": "Bisher wurde nichts beobachtet, was die Zustimmung in die eine oder andere Richtung belegen würde."
+      },
+      "consentPointer": "Was dagegen zu tun ist, steht oben im Abschnitt Teams-Identität.",
+      "installHeading": "In ein Team installieren",
+      "fieldTeamId": "Team-ID",
+      "fieldTeamIdHint": "Die Microsoft-Teams-Gruppen-Id des Ziel-Teams.",
+      "install": "Installieren",
+      "installBusy": "Wird installiert",
+      "installStarted": "Installation in Team {teamId} gestartet — der Provisionierungslauf läuft im Hintergrund weiter.",
+      "alreadyInstalled": "Bereits in Team {teamId} installiert; nichts zu tun.",
+      "provisionerMissing": "Die Teams-Provisioner-Fähigkeit fehlt, deshalb lässt sich gerade keine Installation starten.",
+      "uninstall": "Deinstallieren",
+      "uninstallBusy": "Wird deinstalliert",
+      "uninstallTitle": "App aus diesem Team entfernen?",
+      "uninstallBody": "Die App des Orchestrators wird aus Team {teamId} entfernt und antwortet dort nicht mehr.",
+      "uninstallConfirm": "Entfernen",
+      "uninstalled": "App aus Team {teamId} entfernt.",
+      "cancel": "Abbrechen",
+      "unsupported": {
+        "install": "Die Installation in ein Team ist in dieser Installation nicht verfügbar.",
+        "uninstall": "Das Entfernen der App aus einem Team ist ein manueller Schritt für Teams-Admins — der Microsoft-365-Connector veröffentlicht keine Deinstallation, omadia kann es dir also nicht abnehmen.",
+        "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
+        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt."
+      },
+      "unsupportedTechnical": "Server-Begründung: {detail}",
+      "notice": {
+        "teams_identity_unavailable": "Die Teams-Provisionierung ist in dieser Installation nicht verdrahtet — Identitäts-Store und Job-Runner registrieren sich, sobald eine Datenbank konfiguriert ist und die Orchestrator-Factory gebootet hat.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere und aktiviere das Microsoft-365-Connector-Plugin (0.3.1 oder neuer) und lade die Seite neu."
+      },
+      "errors": {
+        "invalid_body": "Der Server hat den Anfrage-Payload abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "team_install_conflict": "Dieser Orchestrator ist bereits einem anderen Team zugeordnet. Löse diese Zuordnung zuerst — pro Orchestrator wird ein Team geführt.",
+        "teams_identity_not_found": "Dieser Orchestrator hat noch keine Teams-Identität.",
+        "teams_identity_unavailable": "Die Teams-Provisionierung ist in dieser Installation nicht verdrahtet.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
+        "teams_uninstall_unsupported": "Das Entfernen der App aus einem Team muss ein Teams-Admin erledigen — der Connector veröffentlicht keine Deinstallation.",
+        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
+      }
     }
   },
   "builder": {
