@@ -282,6 +282,20 @@ export {
   type UnscopedReason,
 } from './scopeId.js';
 
+// W5 memory-ACL — where a turn came from, and the memory axes that follow.
+// Re-exported from the package root because the PRODUCERS live outside this
+// repository: `omadia-channel-teams` and `omadia-channel-telegram` resolve
+// `@omadia/channel-sdk` to this package's built `dist/index.d.ts`, so a type
+// that is not named here cannot be named by a channel plugin at all.
+export {
+  CONTEXT_FREE_MEMORY_AXES,
+  CONTEXT_MEMORY_CHANNEL_TYPES,
+  memoryAxesForOrigin,
+  type MemoryAxes,
+  type MemoryAxis,
+  type TurnOrigin,
+} from './turnOrigin.js';
+
 // #333 Phase 1 — the typed principal. Same home as `ScopeId` and for the same
 // reason: Conductor (`middleware/src`), the orchestrator and the kernel all
 // depend on this package and it depends on none of them. `Principal` says WHO;
