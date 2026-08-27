@@ -29,6 +29,7 @@ import type { Draft } from './types.js';
  *   - `draft_not_found` — store returned null (auth scope check)
  *   - `spec_invalid`    — Zod parse failed
  *   - `codegen_failed`  — CodegenError from generate()
+ *   - `template_not_ready` — boot-time build-template install failed
  *   - `staging_failed`  — disk-write or symlink error during prepareStagingDir
  *
  * `run()` does NOT throw on tsc failures — those surface as
@@ -100,7 +101,8 @@ export interface BuildStatusSnapshot {
    * `complete` on success; the failure stage otherwise. For build-produced
    * failures this is the `BuildFailureReason` (`tsc` | `timeout` | …); for
    * pre-build throws it is the `BuildPipelineError` code (`codegen_failed` |
-   * `staging_failed` | `spec_invalid` | `draft_not_found`) or `unknown`.
+   * `template_not_ready` | `staging_failed` | `spec_invalid` |
+   * `draft_not_found`) or `unknown`.
    */
   phase: string;
   /** Monotonic build counter for the build this snapshot describes; absent
@@ -119,6 +121,7 @@ export class BuildPipelineError extends Error {
     | 'draft_not_found'
     | 'spec_invalid'
     | 'codegen_failed'
+    | 'template_not_ready'
     | 'staging_failed';
   override readonly cause?: unknown;
   constructor(
@@ -257,7 +260,15 @@ export class BuildPipeline {
     const buildN = ++this.buildCounter;
 
     if (this.templateReady) {
-      await this.templateReady;
+      try {
+        await this.templateReady;
+      } catch (err) {
+        throw new BuildPipelineError(
+          'template_not_ready',
+          `BuildPipeline: build template not ready for draft '${opts.draftId}' (buildN=${String(buildN)}); boot-time npm install likely failed`,
+          err,
+        );
+      }
     }
 
     let stagingDir: string;

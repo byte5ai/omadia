@@ -18,6 +18,47 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop app augments PATH for forked children (#882)
+
+2026-08-27 — The Electron desktop supervisor used the OS launcher's inherited
+environment as-is when spawning the kernel and web-ui children. On macOS that
+can mean launchd's minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), so bare
+`npm` lookups inside the kernel failed with `ENOENT` even when Node tooling was
+installed through Homebrew, Volta, asdf, or nvm. The desktop package now
+computes one augmented PATH at app start, merges existing entries first, adds
+only existing well-known tool directories, best-effort resolves nvm's default
+version without shelling out, and injects the result into both child-process
+env builders so every `execFile('npm', ...)` inside the kernel inherits the
+same corrected lookup path.
+
+### Fixed — builder boot observes template install failures and classifies them (#882)
+
+2026-08-27 — The Plugin Builder boot path started `ensureBuildTemplate(...)`
+eagerly, but the promise's logging `.catch(...)` re-threw before any observer
+was attached. When the boot-time template `npm install` failed, Node emitted a
+spurious `unhandledRejection` long before the first real build awaited the same
+promise. The boot wiring now attaches a separate no-op observer to mark that
+promise as handled without altering it, and `BuildPipeline.run()` re-throws a
+rejected `templateReady` gate as `BuildPipelineError('template_not_ready', …)`.
+That keeps the original cause for the real consumer while recording the failure
+phase honestly instead of degrading to `unknown`.
+
+### Fixed — CLI install failure says what actually happened, manual steps carry the prefix (#882)
+
+2026-08-27 — When the kernel could not find `npm` at all, the subscription-CLI
+install failed with no output, and the UI still rendered "npm install failed —
+see the log tail." above an empty `<pre>`: it pointed the operator at a log that
+did not exist. `cliInstallService` now classifies the failure —
+`cli_install.no_output` when npm produced nothing (the command was most likely
+not found) and `cli_install.npm_failed` when it ran and failed — and returns the
+code on the install-status poll. The install box renders through the shared
+`<ErrorHelp>` catalogue instead of its own raw-log block, so both cases get a
+localized what/next line with the server's text moved into the redacted support
+disclosure. The manual-install instructions were also incomplete: they showed a
+bare `npm install -g …` that installs somewhere the server never looks, so
+`detectCliBackends()` now exposes `cliToolsDir` and the shown command carries
+`--prefix <cliToolsDir>`.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent

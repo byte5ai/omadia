@@ -22,7 +22,12 @@ import {
   build,
   type BuildExecutionResult,
 } from '../../src/plugins/builder/buildSandbox.js';
+import {
+  BuildPipeline,
+  BuildPipelineError,
+} from '../../src/plugins/builder/buildPipeline.js';
 import { BuildQueue } from '../../src/plugins/builder/buildQueue.js';
+import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 
 /**
  * End-to-end smoke test for the Builder pipeline:
@@ -242,6 +247,83 @@ describe('Builder pipeline (B.1 codegen → B.2 build)', () => {
       assert.equal(buildResult.errors[1]?.code, 'TS7006');
       assert.equal(buildResult.errors[0]?.path, 'toolkit.ts');
       assert.equal(buildResult.errors[0]?.line, 169);
+    }
+  });
+
+  it('classifies a rejected templateReady gate without leaking an unhandled rejection', async () => {
+    const dbPath = path.join(
+      tmp,
+      `drafts-${String(Date.now())}-${String(Math.random())}.db`,
+    );
+    const store = new DraftStore({ dbPath });
+    await store.open();
+    const onUnhandledRejectionReasons: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      onUnhandledRejectionReasons.push(reason);
+    };
+
+    try {
+      const minimalSpec = JSON.parse(
+        readFileSync(
+          path.join(import.meta.dirname, 'fixtures', 'minimal-spec.json'),
+          'utf-8',
+        ),
+      ) as Record<string, unknown>;
+      const slots = minimalSpec['slots'] as Record<string, string>;
+      const { slots: _ignored, ...specInput } = minimalSpec;
+      void _ignored;
+      const draft = await store.create('alice@example.com', 'Weather');
+      await store.update('alice@example.com', draft.id, {
+        spec: specInput,
+        slots,
+      });
+
+      const templateError = new Error('boot-time npm install failed');
+      const templateReady = Promise.reject(templateError);
+      void templateReady.catch(() => {});
+      process.on('unhandledRejection', onUnhandledRejection);
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      let sandboxCalls = 0;
+      const pipeline = new BuildPipeline({
+        draftStore: store,
+        buildQueue: new BuildQueue({ concurrency: 1 }),
+        templateRoot: path.join(tmp, 'template-not-ready-root'),
+        stagingBaseDir: path.join(tmp, 'template-not-ready-staging'),
+        templateReady,
+        buildSandbox: async () => {
+          sandboxCalls += 1;
+          return {
+            ok: true,
+            zip: Buffer.from('PK-stub'),
+            zipPath: '/tmp/fake.zip',
+            durationMs: 5,
+          };
+        },
+        logger: () => {},
+      });
+
+      await assert.rejects(
+        pipeline.run({
+          userEmail: 'alice@example.com',
+          draftId: draft.id,
+        }),
+        (err: unknown) => {
+          assert.ok(err instanceof BuildPipelineError);
+          assert.equal(err.code, 'template_not_ready');
+          assert.equal(err.cause, templateError);
+          assert.match(err.message, /boot-time npm install likely failed/);
+          return true;
+        },
+      );
+
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(sandboxCalls, 0);
+      assert.deepEqual(onUnhandledRejectionReasons, []);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      await store.close();
     }
   });
 });

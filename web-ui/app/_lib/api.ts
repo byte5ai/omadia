@@ -529,6 +529,7 @@ export interface CliBackendStatus {
 
 export interface CliBackendsResponse {
   backends: CliBackendStatus[];
+  cliToolsDir: string;
   generatedAt: number;
 }
 
@@ -584,6 +585,7 @@ export type CliInstallState = 'idle' | 'running' | 'succeeded' | 'failed';
 export interface CliInstallStatus {
   cliId: string;
   status: CliInstallState;
+  code?: string;
   error?: string;
   logTail?: string;
 }

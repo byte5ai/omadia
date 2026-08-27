@@ -8,6 +8,7 @@ import { CLI_ENV_SCRUB_KEYS } from '../packages/harness-orchestrator/src/cliChat
 
 import {
   detectCliBackends,
+  cliToolsDir,
   scrubbedEnv,
   __resetCliBackendCache,
 } from '../src/platform/cliBackendDetector.js';
@@ -69,6 +70,11 @@ describe('cliBackendDetector', () => {
       assert.equal(b.loggedIn, 'no');
       assert.ok(snap.generatedAt > 0, `generatedAt missing while ${b.id} is absent`);
     }
+  });
+
+  it('includes the runtime install prefix in every snapshot', async () => {
+    const snap = await detectCliBackends({ force: true });
+    assert.equal(snap.cliToolsDir, cliToolsDir());
   });
 
   it('caches within the TTL and re-detects on force', async () => {

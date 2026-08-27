@@ -1008,6 +1008,16 @@
         "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
       }
     },
+    "cli_install": {
+      "no_output": {
+        "what": "npm hat gar keine Ausgabe geliefert — der npm-Befehl selbst konnte auf dem Server nicht gestartet werden.",
+        "next": "Installiere die CLI mit dem angezeigten Befehl manuell oder stelle sicher, dass Node und npm auf dem Server im PATH liegen."
+      },
+      "npm_failed": {
+        "what": "npm wurde ausgeführt, aber die Installation ist fehlgeschlagen.",
+        "next": "Prüfe die Log-Details unten und starte die Installation danach erneut."
+      }
+    },
     "package": {
       "id_conflict_bundled": {
         "what": "Diese Plugin-ID gehört zu einem Plugin, das mit omadia ausgeliefert wird — der Upload wurde abgelehnt.",
@@ -3084,7 +3094,7 @@
       "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
       "manualSummary": "Lieber das Terminal?",
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
-      "installCmd": "npm install -g @anthropic-ai/claude-code",
+      "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",
       "step2": "Melde dich mit deinem Abo-Konto an:",
       "loginCmd": "{bin} auth login",
       "step3": "Komm hierher zurück und drücke Erneut prüfen. Eine angemeldete CLI zeigt ein grünes Badge."

@@ -39,6 +39,8 @@ export interface CliInstallStatus {
   readonly cliId: string;
   readonly status: CliInstallState;
   readonly error?: string;
+  /** Machine-readable classifier the UI maps to install-help text. */
+  readonly code?: string;
   /** Last lines of npm output — enough to diagnose a failure from the UI. */
   readonly logTail?: string;
   readonly startedAt?: number;
@@ -65,6 +67,7 @@ interface InstallJob {
   readonly startedAt: number;
   finishedAt?: number;
   error?: string;
+  code?: string;
   logTail?: string;
 }
 
@@ -168,12 +171,21 @@ export async function startCliInstall(
         }
       } else {
         job.status = 'failed';
-        job.error = 'npm install failed — see the log tail.';
+        if (job.logTail) {
+          job.code = 'cli_install.npm_failed';
+          job.error = 'npm install failed — see the log tail.';
+        } else {
+          job.code = 'cli_install.no_output';
+          job.error = 'npm install failed — no output at all; npm was most likely not found.';
+        }
       }
     })
     .catch((err: unknown) => {
       job.finishedAt = Date.now();
       job.status = 'failed';
+      // A thrown runner error still has a concrete failure message, so keep it
+      // on the generic npm-failed help path rather than the "no output" one.
+      job.code = 'cli_install.npm_failed';
       job.error = err instanceof Error ? err.message : String(err);
     });
 
@@ -189,6 +201,7 @@ export function getCliInstallStatus(cliId: string): CliInstallStatus {
     cliId,
     status: current.status,
     ...(current.error ? { error: current.error } : {}),
+    ...(current.code ? { code: current.code } : {}),
     ...(current.logTail ? { logTail: current.logTail } : {}),
     startedAt: current.startedAt,
     ...(current.finishedAt ? { finishedAt: current.finishedAt } : {}),

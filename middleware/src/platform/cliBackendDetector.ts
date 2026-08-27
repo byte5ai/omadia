@@ -281,6 +281,8 @@ export interface CliBackendsSnapshot {
   readonly backends: ReadonlyArray<CliBackendStatus>;
   /** Epoch ms when this snapshot was produced. */
   readonly generatedAt: number;
+  /** Runtime install prefix so the UI can show accurate manual-install instructions. */
+  readonly cliToolsDir: string;
 }
 
 let cache: CliBackendsSnapshot | undefined;
@@ -298,7 +300,7 @@ export async function detectCliBackends(
     return cache;
   }
   const backends = await Promise.all(CLI_BACKENDS.map((s) => detectOne(s)));
-  cache = { backends, generatedAt: now };
+  cache = { backends, generatedAt: now, cliToolsDir: cliToolsDir() };
   return cache;
 }
 
