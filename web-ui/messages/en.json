@@ -1745,10 +1745,6 @@
     "detailAssignedHint": "Enable or disable a plugin for this orchestrator only — the switch is saved immediately. Attach or detach plugins in the editor below.",
     "detailAssignedEmpty": "No plugins are assigned to this orchestrator yet. Attach one in the editor below.",
     "detailToggleAria": "Enable or disable {plugin}",
-    "personaHeading": "Persona and behaviour",
-    "personaHint": "Persona, tone and behaviour are designed in the Agent Builder. This page only assigns capabilities to the orchestrator.",
-    "personaOpenBuilder": "Open the Agent Builder",
-    "personaNoDraftHint": "No single builder draft could be matched to this orchestrator, so the link opens the builder overview.",
     "detailErrors": {
       "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
       "config_validation": "The server rejected the plugin configuration.",
@@ -4879,10 +4875,6 @@
   "memory": {
     "errorListFailed": "Listing failed (HTTP {status})",
     "errorFileFailed": "File load failed (HTTP {status})",
-    "errorUnauthenticated": "Not signed in (HTTP 401). The memory browser reads an operator-authenticated endpoint — sign in again, then reload this page.",
-    "errorForbidden": "Not authorized (HTTP 403) — browsing chat-context memory requires operator rights.",
-    "errorPathNotFound": "This path no longer exists in the memory store (HTTP 404).",
-    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint.",
     "backendInMemory": "In-memory · volatile",
     "descriptionInMemory": "Read-only browser of the chat-context memory trees (RAM, empty after restart).",
     "descriptionPostgres": "Read-only browser of the chat-context memory trees (persistent in Postgres).",
@@ -4906,8 +4898,7 @@
         "team": "Teams ({count})",
         "channel": "Channels ({count})",
         "user": "Users ({count})"
-      },
-      "agentTier": "Agent tier (read-only in context turns)"
+      }
     },
     "promote": {
       "openButton": "Promote…",
@@ -4954,8 +4945,7 @@
     "errorUnauthenticated": "Not signed in (HTTP 401). The memory browser reads an operator-authenticated endpoint — sign in again, then reload this page.",
     "errorForbidden": "Not authorized (HTTP 403) — browsing chat-context memory requires operator rights.",
     "errorPathNotFound": "This path no longer exists in the memory store (HTTP 404).",
-    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint.",
-    "errorDevEndpointUnavailable": "Dev memory endpoint unavailable. Set DEV_ENDPOINTS_ENABLED=true in middleware/.env and restart the middleware."
+    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint."
   },
   "memories": {
     "kinds": {

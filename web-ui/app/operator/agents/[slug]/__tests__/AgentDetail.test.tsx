@@ -77,6 +77,21 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   replaceAgentPlugins: mockReplace,
 }));
 
+// W2a wiring: AgentDetail is the single composition point for the Teams
+// sections, so both panels mount here. They fetch their own read models and
+// render their own `role="alert"` banners on failure — which is THEIR
+// contract, covered by AgentTeamsIdentity*.test.tsx and
+// AgentTeamsInstalls.test.tsx. Stubbing them keeps this suite's alert
+// assertions about AgentDetail's OWN write errors, exactly as the PluginsDnd
+// stub below keeps the dnd editor out of scope.
+vi.mock('../_components/AgentTeamsIdentity', () => ({
+  AgentTeamsIdentity: () => <div data-testid="agent-teams-identity" />,
+}));
+
+vi.mock('../_components/AgentTeamsInstalls', () => ({
+  AgentTeamsInstalls: () => <div data-testid="agent-teams-installs" />,
+}));
+
 vi.mock('../../_components/PluginsDnd', async () => {
   const { useState } = await import('react');
   return {

@@ -63,6 +63,7 @@ import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoi
 import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
 import { createOperatorChannelsRouter } from './routes/operatorChannels.js';
+import { createOperatorMemoryContextsRouter } from './routes/operatorMemoryContexts.js';
 import { createAgentBuilderRouter } from './routes/agentBuilder.js';
 import {
   isMcpGrantBlocked,
@@ -3316,6 +3317,29 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-channels endpoints ready at /api/v1/operator/channels/* (auth-gated)',
+  );
+
+  // W2a (#860) — read-only operator browser for the chat-context memory trees.
+  // Same gate and same prefix as its operator siblings above (`requireAuth`,
+  // cookie session JWT), NOT the machine-to-machine ADMIN_TOKEN surface in
+  // `admin.ts`: the memory browser in web-ui authenticates as a logged-in
+  // admin user. It replaces `/bot-api/dev/memory/*` (the @omadia/memory dev
+  // router), which is unauthenticated, exposes the WHOLE `/memories` tree and
+  // is forbidden in production — so before this mount the browser had no
+  // production endpoint at all.
+  //
+  // The ROOT (undecorated) `memoryStore` is handed in on purpose: the router's
+  // own `createRootedMemoryAccessor` is the scope choke point and cannot emit
+  // a path outside `/memories/contexts`. It re-checks the session itself too,
+  // so a future re-mount that drops `requireAuth` cannot silently open the
+  // tree.
+  app.use(
+    '/api/v1/operator/memory/contexts',
+    requireAuth,
+    createOperatorMemoryContextsRouter({ store: memoryStore }),
+  );
+  console.log(
+    '[middleware] operator memory-contexts endpoints ready at /api/v1/operator/memory/contexts/{list,file} (auth-gated, read-only)',
   );
 
   // The orchestrator's single configured LLM provider id, live-read from the

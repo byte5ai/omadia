@@ -39,6 +39,7 @@
     "smoke:diagrams": "tsx scripts/smoke-diagrams.ts",
     "smoke:privacy-v2": "tsx scripts/smoke-privacy-v2.ts",
     "smoke:package-roundtrip": "tsx scripts/smoke-package-roundtrip.ts",
+    "smoke:teams-e2e": "tsx scripts/smoke-teams-e2e.ts",
     "eval:golden": "node --import tsx test/golden/goldenSet.eval.ts",
     "eval:adversarial": "node --import tsx test/adversarial/adversarialSuite.eval.ts",
     "setup:tigris-lifecycle": "tsx scripts/setup-tigris-lifecycle.ts",
