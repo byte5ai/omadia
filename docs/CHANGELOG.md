@@ -18,6 +18,34 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Changed — one `teams_bot` projection + a decoded `last_error` for the operator UI (#860 W2a)
+
+2026-08-27 — Groundwork for the operator-facing team↔agent screens, no schema change and
+no new route.
+
+- **Single projection choke point.** The channel-teams `teams_bots[]` entry that
+  `GET /api/v1/operator/agents/:slug/teams-identity` returns was assembled inline in the
+  handler. It is now the exported `projectTeamsBotConfig()` of
+  `middleware/src/routes/operatorAgents.ts`, so every further team↔agent route emits a
+  byte-identical block. The entry is a config contract with channel-teams — a second,
+  drifting copy would hand operators a config the plugin silently refuses to parse. The
+  invariants are unchanged: `null` unless BOTH `app_id` and `tenant_id` are known,
+  `appType` always `SingleTenant`, and the bot password only ever as the opaque vault ref
+  `teams_bot_password:<appId>`. Pasting that block into channel-teams' `teams_bots` setup
+  field stays a MANUAL operator step; automatic config sync remains a follow-up.
+- **`last_error_detail` (additive).** The GET now also returns the identity's `last_error`
+  in structured form: `{ code: consent_missing | arm_not_configured | throttled | unknown,
+  scopes?, fields?, retryAfterSeconds?, raw }`. `last_error` itself is unchanged. The
+  decoder (`classifyTeamsProvisioningError`) sits in
+  `middleware/src/services/teamsProvisioningJob.ts` — next to the only code that WRITES
+  those sentences — so changing a message and forgetting the decoder breaks a colocated
+  round-trip test instead of degrading the operator UI in production. The UI renders from
+  `code` plus the typed arguments; `raw` is a secondary technical detail only.
+- **New sentence:** an exhausted throttle budget is now recorded as
+  `throttled: … (gave up after N attempts; retry after Ns)` instead of an un-prefixed
+  message, so "come back later" is machine-readable. Follow-up worth doing: persist the
+  structured code as its own column from the start.
+
 ### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
 
 2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent

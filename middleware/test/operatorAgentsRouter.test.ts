@@ -22,6 +22,10 @@
  *     GET /:slug/teams-identity projects the row incl. the teams_bots[]
  *     entry with a secret REF (never secret material); both 503 when the
  *     deps are unwired, POST 503s when teamsProvisioner@1 is missing.
+ * 11. W2a (#860): projectTeamsBotConfig is the router's SINGLE teams_bot
+ *     projection (GET must emit exactly its output), and the GET adds
+ *     `last_error_detail` — the runner's own classifier decoding the
+ *     last_error sentence, so the UI never parses English.
  */
 
 import { strict as assert } from 'node:assert';
@@ -42,8 +46,14 @@ import {
 import {
   createOperatorAgentsRouter,
   defaultTeamsBotSecretRef,
+  projectTeamsBotConfig,
   type OperatorTeamsIdentityRecord,
 } from '../src/routes/operatorAgents.js';
+import {
+  armNotConfiguredDetail,
+  consentMissingDetail,
+  throttledDetail,
+} from '../src/services/teamsProvisioningJob.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 interface AgentMem {
@@ -1201,6 +1211,145 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(body.provisioner_installed, false);
     assert.equal(body.running, false);
     assert.equal(body.identity.last_error, 'consent_missing: admin consent required');
+  });
+
+  // ── W2a (#860): the single teams_bot projection choke point ─────────
+
+  it('projectTeamsBotConfig is the ONE teams_bot projection — GET emits exactly its output', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const row: OperatorTeamsIdentityRecord = {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    teamsStore.rows.set(agent.id, row);
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    const body = (await res.json()) as { teams_bot: unknown };
+    // Any future team↔agent route must project through the same helper —
+    // a second, drifting copy would hand operators a config channel-teams
+    // silently refuses to parse.
+    assert.deepEqual(body.teams_bot, projectTeamsBotConfig(row));
+  });
+
+  it('projectTeamsBotConfig: null unless BOTH appId and tenantId are set', () => {
+    const base: OperatorTeamsIdentityRecord = {
+      agentId: 'a-1',
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'app_registered',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+    };
+    assert.equal(projectTeamsBotConfig(base), null);
+    assert.equal(projectTeamsBotConfig({ ...base, appId: 'app-123' }), null);
+    assert.equal(projectTeamsBotConfig({ ...base, tenantId: 'tenant-456' }), null);
+    const complete = { ...base, appId: 'app-123', tenantId: 'tenant-456' };
+    assert.deepEqual(projectTeamsBotConfig(complete), {
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      appId: 'app-123',
+      appType: 'SingleTenant',
+      tenantId: 'tenant-456',
+      appPasswordSecretRef: 'teams_bot_password:app-123',
+    });
+    // The password NEVER leaves the connector vault — only its opaque ref.
+    assert.equal(
+      JSON.stringify(projectTeamsBotConfig(complete)).includes('password:app-123'),
+      true,
+      'the ref is surfaced',
+    );
+    // An injected ref overrides the default derivation (deps.clientSecretRef).
+    assert.equal(
+      projectTeamsBotConfig(complete, () => 'vault://custom')?.appPasswordSecretRef,
+      'vault://custom',
+    );
+  });
+
+  it('GET /:slug/teams-identity decodes last_error into last_error_detail', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const scopes = ['Application.ReadWrite.All', 'AppCatalog.ReadWrite.All'];
+    const raw = consentMissingDetail(scopes);
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'failed',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: raw,
+    });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      identity: { last_error: string; last_error_detail: unknown };
+    };
+    // Additive: the raw sentence stays byte-identical for existing clients.
+    assert.equal(body.identity.last_error, raw);
+    assert.deepEqual(body.identity.last_error_detail, {
+      code: 'consent_missing',
+      scopes,
+      raw,
+    });
+  });
+
+  it('GET /:slug/teams-identity: last_error_detail covers arm/throttled/unknown, null when clean', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const base: OperatorTeamsIdentityRecord = {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'app_registered',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+    };
+    const cases: ReadonlyArray<{ lastError: string | null; expected: unknown }> = [
+      {
+        lastError: armNotConfiguredDetail(['azureSubscriptionId', 'azureResourceGroup']),
+        expected: {
+          code: 'arm_not_configured',
+          fields: ['azureSubscriptionId', 'azureResourceGroup'],
+          raw: armNotConfiguredDetail(['azureSubscriptionId', 'azureResourceGroup']),
+        },
+      },
+      {
+        lastError: throttledDetail('429 from Graph', 3, 42),
+        expected: {
+          code: 'throttled',
+          retryAfterSeconds: 42,
+          raw: throttledDetail('429 from Graph', 3, 42),
+        },
+      },
+      {
+        // A store-level write the runner does not own → unknown, raw kept.
+        lastError: 'enqueue_failed: queue down',
+        expected: { code: 'unknown', raw: 'enqueue_failed: queue down' },
+      },
+      { lastError: null, expected: null },
+    ];
+    for (const { lastError, expected } of cases) {
+      teamsStore.rows.set(agent.id, { ...base, lastError });
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      const body = (await res.json()) as {
+        identity: { last_error_detail: unknown };
+      };
+      assert.deepEqual(body.identity.last_error_detail, expected);
+    }
   });
 
   it('teams-identity routes 503 when the deps are not wired', async () => {

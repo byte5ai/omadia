@@ -16,6 +16,10 @@ import {
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import {
+  classifyTeamsProvisioningError,
+  type TeamsProvisioningErrorDetail,
+} from '../services/teamsProvisioningJob.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -243,6 +247,65 @@ export function defaultTeamsBotSecretRef(record: {
     );
   }
   return `teams_bot_password:${record.appId}`;
+}
+
+/**
+ * One `teams_bots[]` entry of channel-teams' plugin config — shaped EXACTLY
+ * like a `parseTeamsBotsConfig` entry (camelCase keys), so an operator can
+ * paste it into the plugin's `teams_bots` setup field verbatim.
+ */
+export interface TeamsBotConfigProjection {
+  readonly botSlug: string;
+  readonly displayName: string;
+  readonly appId: string;
+  /** Literal — the epic provisions SingleTenant apps only (new MultiTenant
+   *  registrations are deprecated since 07/2025). */
+  readonly appType: 'SingleTenant';
+  readonly tenantId: string;
+  /** Opaque connector-vault ref (teamsProvisioner contract v0.3.1), NEVER
+   *  the password itself. */
+  readonly appPasswordSecretRef: string;
+}
+
+/**
+ * THE single `teams_bot` projection of this router (W2a, epic #860).
+ *
+ * Every team↔agent route that surfaces a provisioned identity must project
+ * through here rather than re-assembling the block: the entry is a config
+ * contract with channel-teams, and a second, drifting copy of it would hand
+ * operators a config that silently does not parse.
+ *
+ * `null` until BOTH the Entra app and its tenant are known — an incomplete
+ * entry is worse than none, because channel-teams would reject the whole
+ * `teams_bots[]` array over it.
+ *
+ * NOTE (documented follow-up, deliberately out of scope): pasting the block
+ * into channel-teams is a MANUAL operator step. Nothing here syncs it into
+ * the plugin's config automatically.
+ */
+export function projectTeamsBotConfig(
+  record: OperatorTeamsIdentityRecord,
+  clientSecretRef?: (record: OperatorTeamsIdentityRecord) => string,
+): TeamsBotConfigProjection | null {
+  if (!record.appId || !record.tenantId) return null;
+  return {
+    botSlug: record.botSlug,
+    displayName: record.displayName,
+    appId: record.appId,
+    appType: 'SingleTenant',
+    tenantId: record.tenantId,
+    appPasswordSecretRef:
+      clientSecretRef?.(record) ?? defaultTeamsBotSecretRef(record),
+  };
+}
+
+/** Structured form of the identity's `last_error`, decoded by the runner's
+ *  own classifier so the UI renders from a code + typed arguments instead of
+ *  parsing English. `null` while the row carries no error. */
+export function projectTeamsIdentityErrorDetail(
+  record: OperatorTeamsIdentityRecord,
+): TeamsProvisioningErrorDetail | null {
+  return record.lastError ? classifyTeamsProvisioningError(record.lastError) : null;
 }
 
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
@@ -793,26 +856,10 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'teams_identity_not_found' });
         return;
       }
-      // `teams_bot` is the channel-teams `teams_bots[]` projection — only
-      // complete once the Entra app exists, and shaped EXACTLY like a
-      // `parseTeamsBotsConfig` entry (camelCase botSlug/appId/tenantId/
-      // appPasswordSecretRef), so an operator can paste it into the
-      // channel-teams config verbatim. SingleTenant matches the epic's
-      // provisioning approach (new MultiTenant registrations are
-      // deprecated); the password stays in the connector's vault, the
-      // entry carries its opaque ref.
-      const teamsBot =
-        row.appId && row.tenantId
-          ? {
-              botSlug: row.botSlug,
-              displayName: row.displayName,
-              appId: row.appId,
-              appType: 'SingleTenant' as const,
-              tenantId: row.tenantId,
-              appPasswordSecretRef:
-                deps.clientSecretRef?.(row) ?? defaultTeamsBotSecretRef(row),
-            }
-          : null;
+      // `teams_bot` is the channel-teams `teams_bots[]` projection. It goes
+      // through the router's ONE choke point so every team↔agent route
+      // emits a byte-identical entry — see projectTeamsBotConfig.
+      const teamsBot = projectTeamsBotConfig(row, deps.clientSecretRef);
       res.json({
         ok: true,
         agent: existing.slug,
@@ -827,6 +874,11 @@ export function createOperatorAgentsRouter(
           teams_app_id: row.teamsAppId,
           teams_app_external_id: row.teamsAppExternalId,
           last_error: row.lastError,
+          // Additive (W2a): the same failure, decoded by the runner's own
+          // classifier. The UI renders from `code` + the typed arguments and
+          // may show `raw` only as a secondary technical detail — it must
+          // never parse the sentence itself.
+          last_error_detail: projectTeamsIdentityErrorDetail(row),
           created_at: row.createdAt ?? null,
           updated_at: row.updatedAt ?? null,
         },
