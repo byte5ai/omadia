@@ -24,7 +24,19 @@ import {
  * the agent tier, `/memories/contexts/<slug>/<axis>/*` for the context tiers —
  * so it shows exactly what exists rather than what a registry believes exists.
  * Display names are an OPTIONAL enrichment: when nothing resolves a key, the
- * decoded `<channelType>~<nativeId>` is shown, which is still addressable.
+ * `<channelType>~<safeKey>` context key is shown, which is the form the purge
+ * selector accepts.
+ *
+ * KNOWN LIMITATION — this surface is DEV-ONLY today. `listDir` is backed by
+ * `GET /bot-api/dev/memory/list` (`createDevMemoryRouter`), which is
+ * unauthenticated and mounted only when the plugin's
+ * `dev_memory_endpoints_enabled` flag resolves truthy; the kernel enforces that
+ * the flag is never set in production. §9 of the design puts the operator UI
+ * outside this wave, so no operator-authenticated listing endpoint exists yet.
+ * What this component guarantees in the meantime is that the absence is
+ * VISIBLE: a non-404 failure reaches the error state instead of rendering as an
+ * empty tree. Backing it with an operator-gated listing (matching the purge
+ * gate) is the follow-up.
  */
 
 export interface DirEntry {
@@ -71,12 +83,16 @@ export function MemoryContextTree({
     let cancelled = false;
     async function loadAgents(): Promise<void> {
       try {
-        // Both roots are optional: a store with no context trees yet has no
-        // `contexts` directory at all, which the dev endpoint answers with a
-        // 404 — that is an empty branch, not a failure of the whole tree.
+        // Both roots are optional — a store with no context trees yet has no
+        // `contexts` directory at all — but that "optional" is the CALLER's
+        // 404-to-empty rule, not a blanket catch here. Swallowing every
+        // rejection would make the error state below unreachable, so a
+        // middleware that is down or a 401 from an expired session would
+        // render as "No agent memory yet" and an operator would conclude the
+        // context trees do not exist. Let a real failure through.
         const [ctx, orch] = await Promise.all([
-          listDir(CONTEXTS_ROOT).catch(() => [] as DirEntry[]),
-          listDir(ORCHESTRATORS_ROOT).catch(() => [] as DirEntry[]),
+          listDir(CONTEXTS_ROOT),
+          listDir(ORCHESTRATORS_ROOT),
         ]);
         if (cancelled) return;
         const merged = [

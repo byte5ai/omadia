@@ -394,7 +394,14 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
     }
   });
 
-  it('6. DELETE / {axis:user, selector:user-2} → no matching context tree, kgDeleted 1, no warning', async () => {
+  it('6. DELETE / {axis:user, selector:user-2} → 400 invalid_selector, nothing deleted', async () => {
+    // `user-2` is a KG acl-owner id, not a context key: it has no
+    // `<channelType>~` half, so it can never name a context tree. This used to
+    // answer 200 / {scratchDeleted: 0} with a warning claiming the scratch
+    // trees WERE affected — a Danger-Zone gesture reporting success for a
+    // delete that could not possibly have matched. It is now refused loudly,
+    // and the KG leg does not run either: a selector this route cannot resolve
+    // must not half-execute.
     const h = await makeHarness();
     try {
       const res = await postJson(h.baseUrl, 'DELETE', {
@@ -402,31 +409,61 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         selector: 'user-2',
         confirm: 'user-2',
       });
-      assert.equal(res.status, 200, JSON.stringify(res.body));
-      // `user-2` is a KG acl-owner id, not a context key (no channel-type
-      // half), so it names no context tree — the KG leg still runs.
-      assert.equal(res.body['scratchDeleted'], 0);
-      assert.equal(res.body['kgDeleted'], 1);
-      assert.equal(res.body['warning'], undefined, 'user IS modeled — no warning');
+      assert.equal(res.status, 400, JSON.stringify(res.body));
+      assert.equal(res.body['error'], 'invalid_selector');
+      assert.match(String(res.body['message']), /<channelType>~<id>/);
       assert.equal(
         await h.store.fileExists('/memories/contexts/a/user/teams~u-1/n.md'),
         true,
-        'an unrelated user context is untouched',
+        'nothing was deleted',
+      );
+      assert.equal((await h.kg.countMemorableKnowledge({ tenantId: 'default' })).count, 2);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("6b. DELETE / {axis:user, selector:teams~u-1} → the scratch tree goes, and the KG/scratch seam is named", async () => {
+    // The two legs of the user axis consume the selector in INCOMPATIBLE
+    // spellings: the KG matches it raw as an `aclOwner`, the purge service as a
+    // `<channelType>~<id>` context key. At most one can ever match, and the
+    // operator has to be told which half was a no-op instead of reading a 200
+    // as "the user was purged".
+    const h = await makeHarness();
+    try {
+      const res = await postJson(h.baseUrl, 'DELETE', {
+        axis: 'user',
+        selector: 'teams~u-1',
+        confirm: 'teams~u-1',
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body['scratchDeleted'], 1);
+      assert.equal(res.body['kgDeleted'], 0);
+      assert.match(
+        String(res.body['warning']),
+        /Knowledge-Graph rows .* NOT purged/,
+        'the no-op half must be named',
+      );
+      assert.equal(
+        await h.store.fileExists('/memories/contexts/a/user/teams~u-1/n.md'),
+        false,
       );
     } finally {
       await h.close();
     }
   });
 
-  it('7. POST /preview {axis:team, selector:t1} → warning + kgCount 0', async () => {
+  it('7. POST /preview {axis:team} → warning names the KG as the untouched half', async () => {
     const h = await makeHarness();
     try {
       const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
         axis: 'team',
-        selector: 't1',
+        selector: TEAM_KEY,
       });
       assert.equal(res.status, 200, JSON.stringify(res.body));
       assert.equal(res.body['kgCount'], 0);
+      // Team ALPHA lives in both agents, so the honest preview is 2 trees.
+      assert.equal(res.body['scratchCount'], 2);
       const warning = res.body['warning'];
       assert.equal(typeof warning, 'string', 'team not modeled → warning');
       // The warning used to claim "only scratch memory is affected", which read
@@ -434,6 +471,44 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
       // untouched half — and must not imply an invented KG filter.
       assert.match(String(warning), /Knowledge-Graph is left untouched/);
       assert.doesNotMatch(String(warning), /only scratch memory is affected/);
+      assert.match(String(warning), /scratch trees are affected/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7b. POST /preview {axis:team} that matches nothing does NOT claim an effect', async () => {
+    // The same defect class the warning above was written to fix: promising an
+    // effect that did not happen. A well-formed selector that resolves to zero
+    // trees is the likeliest operator mistake on this surface, and it must not
+    // be reported as "the scratch trees were affected".
+    const h = await makeHarness();
+    try {
+      const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
+        axis: 'team',
+        selector: 'teams~does-not-exist',
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body['scratchCount'], 0);
+      const warning = String(res.body['warning']);
+      assert.match(warning, /No matching context tree exists/);
+      assert.doesNotMatch(warning, /scratch trees are affected/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7c. a context selector with no channel-type half is refused, not silently ignored', async () => {
+    const h = await makeHarness();
+    try {
+      for (const axis of ['team', 'channel', 'user'] as const) {
+        const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
+          axis,
+          selector: '19:team-alpha@thread.tacv2',
+        });
+        assert.equal(res.status, 400, `${axis}: ${JSON.stringify(res.body)}`);
+        assert.equal(res.body['error'], 'invalid_selector');
+      }
     } finally {
       await h.close();
     }

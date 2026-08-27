@@ -29,14 +29,20 @@ import {
 import {
   memoryAxesForOrigin,
   type TurnOrigin,
-} from '../packages/harness-orchestrator/src/turnOrigin.js';
+} from '../packages/harness-channel-sdk/src/turnOrigin.js';
 
 const AGENT = 'acme-bot';
 
+/** The separator `memoryBindingCacheKey` joins its parts with (U+001F). */
+const SEP = '\u001f';
+
+/** `mode: 'enforce'` — with the shipped `'off'` default every origin would
+ *  collapse onto ONE binding and the cache properties would be vacuous. */
 function binder(cacheCap?: number): MemoryBinder {
   return new MemoryBinder({
     agentSlug: AGENT,
     root: new InMemoryMemoryStore(),
+    mode: 'enforce',
     ...(cacheCap === undefined ? {} : { cacheCap }),
   });
 }
@@ -136,23 +142,40 @@ test('the cache key does not collide across agents, axes or context keys', () =>
   const contextFree = memoryAxesForOrigin(undefined);
 
   const keys = [
-    memoryBindingCacheKey(AGENT, conversation),
-    memoryBindingCacheKey(AGENT, otherConversation),
-    memoryBindingCacheKey(AGENT, sameConversationOtherTeam),
-    memoryBindingCacheKey(AGENT, personal),
-    memoryBindingCacheKey(AGENT, contextFree),
+    memoryBindingCacheKey(AGENT, conversation, 'enforce'),
+    memoryBindingCacheKey(AGENT, otherConversation, 'enforce'),
+    memoryBindingCacheKey(AGENT, sameConversationOtherTeam, 'enforce'),
+    memoryBindingCacheKey(AGENT, personal, 'enforce'),
+    memoryBindingCacheKey(AGENT, contextFree, 'enforce'),
     // Same axes, different agent — the agent slug is part of the key.
-    memoryBindingCacheKey('other-bot', conversation),
-    memoryBindingCacheKey('other-bot', contextFree),
+    memoryBindingCacheKey('other-bot', conversation, 'enforce'),
+    memoryBindingCacheKey('other-bot', contextFree, 'enforce'),
+    // Same axes, different MODE. 'enforce' and 'enforce-strict' compile
+    // DIFFERENT scopes from one axes object, so sharing a cache entry between
+    // them would hand a strict-mode turn a stack that reads the agent tier.
+    memoryBindingCacheKey(AGENT, conversation, 'enforce-strict'),
+    memoryBindingCacheKey(AGENT, conversation, 'off'),
   ];
 
   assert.equal(new Set(keys).size, keys.length, `keys collided: ${keys.join('\n')}`);
 });
 
+test('the cache key survives a separator-shaped context key', () => {
+  // The key is joined with U+001F. `memoryContextKey` emits only
+  // `[a-z0-9_~-]`, so the separator cannot occur inside a part — but assert it
+  // rather than assume it, because the whole no-collision argument rests on it.
+  const axes = memoryAxesForOrigin(channel('19:chan-a@thread.tacv2', 'team-a'));
+  const key = memoryBindingCacheKey(AGENT, axes, 'enforce');
+  for (const part of [AGENT, axes.narrowest?.ctxKey ?? '', ...axes.patterns]) {
+    assert.ok(!part.includes(SEP), `separator leaked into a key part: ${part}`);
+  }
+  assert.ok(key.includes(SEP));
+});
+
 test('two binders for different agents never share a physical tree', async () => {
   const root = new InMemoryMemoryStore();
-  const one = new MemoryBinder({ agentSlug: 'agent-one', root });
-  const two = new MemoryBinder({ agentSlug: 'agent-two', root });
+  const one = new MemoryBinder({ agentSlug: 'agent-one', root, mode: 'enforce' });
+  const two = new MemoryBinder({ agentSlug: 'agent-two', root, mode: 'enforce' });
   const origin = channel('19:shared-chan@thread.tacv2', 'team-a');
 
   await one

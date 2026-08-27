@@ -31,7 +31,7 @@
  */
 
 import type { Principal } from './principal.js';
-import { formatSessionScope, memoryContextKey, type ScopeId } from './scopeId.js';
+import { memoryContextKey, type ScopeId } from './scopeId.js';
 
 /**
  * The three context tiers a turn can reach, narrowest-first in the sense that
@@ -128,25 +128,47 @@ function contextKeyFor(
 }
 
 /**
+ * An injective string for a tuple of scope parts.
+ *
+ * `JSON.stringify` of an array of strings is unambiguous — every `"` and `\`
+ * inside a part is escaped, so no two different tuples can produce one string.
+ * That is the whole reason it is used here instead of joining with a
+ * separator.
+ *
+ * The alternative, `formatSessionScope(scope)`, is NOT safe for this job even
+ * though it is the canonical wire form. It is injective only over the string
+ * subset `parseSessionScope` emits, while §4 has the Telegram adapter build
+ * conversation scopes DIRECTLY, so that precondition is not guaranteed —
+ * `{kind:'group', groupRef:'x'}` and `{kind:'conversation',
+ * conversationId:'group:x'}` both format to `group:x`, and its
+ * `CONVERSATION_SEPARATOR` is not escaped either, so
+ * `{channelId:'msteams', conversationId:'c'}` and
+ * `{conversationId:'msteams::c'}` also collapse. Each collapse is two
+ * structurally different chats sharing one memory tier.
+ *
+ * The readable stem survives: `["conversation","msteams","c1"]` sanitises to
+ * the stem `conversation-msteams-c1`, so the operator still recognises the
+ * tree — it just carries a digest of the exact tuple beside it.
+ */
+function scopeTuple(...parts: ReadonlyArray<string | undefined>): string {
+  // Absent optional parts are OMITTED rather than encoded as null, purely so
+  // the sanitised stem reads as `conversation-c1` instead of
+  // `conversation-null-c1`. Injectivity is unaffected: JSON arrays of different
+  // length are different strings, and only trailing optionals are ever absent.
+  return JSON.stringify(parts.filter((p): p is string => p !== undefined));
+}
+
+/**
  * The per-conversation axis of a scope: `channel` for conversation/group scopes,
  * `user` for personal ones, none for anything else.
  *
- * Conversation and group scopes key on `` `${scope.kind}:${formatSessionScope(scope)}` ``.
- * The kind discriminator is not decoration: `formatSessionScope` is injective
- * only over the string subset `parseSessionScope` emits, and §4 has the
- * Telegram adapter construct conversation scopes DIRECTLY, so that precondition
- * is not guaranteed. Without the prefix `{kind:'group', groupRef:'x'}` and
- * `{kind:'conversation', conversationId:'group:x'}` both format to `group:x`
- * and share one memory tier — structurally different chat contexts reading each
- * other's notes. Prefixing puts each kind in its own key space, mirroring how
- * `teamKeyFor` already composes `${container.kind}:${container.id}`.
- *
- * A personal scope keys on `userId` alone rather than on `personal:<userId>`,
- * because the user tier is about the PERSON: the same human's private chat
- * should land in one tree whatever the scope spelling. That cannot collide with
- * a conversation key that happens to read the same, since the axis is part of
- * both the pattern (`user:` vs `channel:`) and the physical path
- * (`…/user/<key>` vs `…/channel/<key>`).
+ * A personal scope keys on `userId` alone rather than on a tuple, because the
+ * user tier is about the PERSON: the same human's private chat should land in
+ * one tree whatever the scope spelling, and `userId` is the whole identity of a
+ * personal scope anyway. That cannot collide with a conversation key that
+ * happens to read the same, since the axis is part of both the pattern
+ * (`user:` vs `channel:`) and the physical path (`…/user/<key>` vs
+ * `…/channel/<key>`).
  */
 function narrowAxisFor(
   channelType: string,
@@ -157,12 +179,20 @@ function narrowAxisFor(
     return ctxKey === undefined ? undefined : { axis: 'user', ctxKey };
   }
 
-  if (scope.kind === 'conversation' || scope.kind === 'group') {
-    const identity = scope.kind === 'conversation' ? scope.conversationId : scope.groupRef;
+  if (scope.kind === 'conversation') {
     const ctxKey = contextKeyFor(
       channelType,
-      identity,
-      `${scope.kind}:${formatSessionScope(scope)}`,
+      scope.conversationId,
+      scopeTuple(scope.kind, scope.channelId, scope.conversationId),
+    );
+    return ctxKey === undefined ? undefined : { axis: 'channel', ctxKey };
+  }
+
+  if (scope.kind === 'group') {
+    const ctxKey = contextKeyFor(
+      channelType,
+      scope.groupRef,
+      scopeTuple(scope.kind, scope.groupRef),
     );
     return ctxKey === undefined ? undefined : { axis: 'channel', ctxKey };
   }
@@ -190,12 +220,12 @@ function teamKeyFor(channelType: string, origin: TurnOrigin): string | undefined
     // Defensive: `container.kind` is typed, but this value crosses a plugin
     // boundary from an independently versioned channel package.
     if (container.kind !== 'team' && container.kind !== 'tenant') return undefined;
-    return contextKeyFor(channelType, container.id, `${container.kind}:${container.id}`);
+    return contextKeyFor(channelType, container.id, scopeTuple(container.kind, container.id));
   }
 
   if (origin.scope?.kind === 'org') {
     const orgId = origin.scope.orgId;
-    return contextKeyFor(channelType, orgId, `org:${orgId}`);
+    return contextKeyFor(channelType, orgId, scopeTuple('org', orgId));
   }
 
   return undefined;

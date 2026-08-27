@@ -3875,11 +3875,22 @@ export async function resetChatSession(
 // longer holds for those axes — the backend still surfaces whatever caveat
 // applies as a `warning` on the response, which the UI renders verbatim.
 //
-// Selector semantics for user/team/channel: the value is the derived context
-// key (`<channelType>~<safeKey>`, e.g. `teams~19-abc-thread-tacv2-a1b2c3d4`) OR
-// the raw native id (`19:abc@thread.tacv2`), which the backend runs through
-// `memoryContextKey` itself. Both address the same tree; the raw id is the one
-// an operator can copy out of a chat client.
+// Selector semantics for user/team/channel: the value MUST carry a channel-type
+// half. Two spellings are accepted, and the backend resolves both:
+//
+//   - the derived context key copied out of the memory browser
+//     (`teams~19-abc-thread-tacv2-a1b2c3d4e5f60718`), or
+//   - the channel type plus the platform's RAW native id
+//     (`teams~19:abc@thread.tacv2`), which is the form an operator can copy out
+//     of a chat client.
+//
+// A selector with NO `~` is rejected with `invalid_selector` (400) rather than
+// silently matching nothing: a Danger-Zone gesture that deletes nothing while
+// reporting success is the worst possible answer here. The two spellings are
+// NOT interchangeable through one derivation — `memoryContextKey` is
+// deliberately not idempotent on its own digest shape, since that would make a
+// hashed context pre-imageable — so the backend resolves both readings and
+// purges the union of the trees they actually name.
 // -----------------------------------------------------------------------------
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
@@ -3989,8 +4000,14 @@ export interface MemoryContextLabel {
   displayName?: string;
 }
 
+/**
+ * The promotion endpoint, on the SAME prefix and gate as the Danger-Zone purge
+ * (`/api/v1/admin/memory/purge`, cookie session JWT). Promotion is the one way
+ * knowledge crosses a chat-context boundary, so it is a Danger-Zone-class
+ * operator action and shares that surface rather than introducing a third one.
+ */
 function memoryPromotionsPath(agentSlug: string): string {
-  return `/v1/operator/agents/${encodeURIComponent(agentSlug)}/memory/promotions`;
+  return `/v1/admin/memory/promotions/${encodeURIComponent(agentSlug)}`;
 }
 
 /** Copy or move a memory file/subtree into a wider tier of the same agent. */
@@ -3998,7 +4015,19 @@ export async function promoteMemory(
   agentSlug: string,
   req: MemoryPromoteRequest,
 ): Promise<MemoryPromotionReceipt> {
-  return postJson<MemoryPromotionReceipt>(memoryPromotionsPath(agentSlug), req);
+  const res = await postJson<{ receipt?: MemoryPromotionReceipt }>(
+    memoryPromotionsPath(agentSlug),
+    req,
+  );
+  // The route answers `{ receipt }`, not a bare receipt. `postJson` is an
+  // unchecked cast, so validate at the boundary: without this a shape change
+  // surfaces as a render-time TypeError on `receipt.targetPath` rather than as
+  // a handled error.
+  const receipt = res?.receipt;
+  if (!receipt || typeof receipt !== 'object') {
+    throw new Error('memory_promote_unexpected_response');
+  }
+  return receipt;
 }
 
 /** Read the promote audit log, newest first. */
@@ -4008,9 +4037,13 @@ export async function listMemoryPromotions(
 ): Promise<{ entries: MemoryPromotionReceipt[] }> {
   const qs =
     opts.limit === undefined ? '' : `?limit=${encodeURIComponent(String(opts.limit))}`;
-  return getJson<{ entries: MemoryPromotionReceipt[] }>(
+  const res = await getJson<{ entries?: unknown }>(
     `${memoryPromotionsPath(agentSlug)}${qs}`,
   );
+  // Same reason as above, and the failure is worse here: `setEntries(undefined)`
+  // followed by `entries.length` throws during render and white-screens the
+  // whole /memory page, which the panel's own error state cannot catch.
+  return { entries: Array.isArray(res?.entries) ? (res.entries as MemoryPromotionReceipt[]) : [] };
 }
 
 /**

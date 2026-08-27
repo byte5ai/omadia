@@ -28,15 +28,49 @@ import {
  * inline, and no test mutates env or shared state.
  */
 
-/** Recompute a context key through the real derivation — never hand-spelled. */
-const channelPattern = (channelType: string, nativeId: string): string =>
-  `channel:${memoryContextKey(channelType, nativeId)}:*`;
+/**
+ * The identity string a tier is keyed on: a JSON array of the STRUCTURAL parts
+ * of the scope, not its wire form.
+ *
+ * Spelled out here as a second, independent implementation rather than
+ * imported from the SDK — importing the production helper would make every
+ * assertion below circular. What it must agree with is documented at
+ * `scopeTuple` in `turnOrigin.ts`: JSON array encoding, absent optional parts
+ * omitted, no separator that a part could contain.
+ */
+const tuple = (...parts: ReadonlyArray<string | undefined>): string =>
+  JSON.stringify(parts.filter((p): p is string => p !== undefined));
 
-const teamPattern = (channelType: string, nativeId: string): string =>
-  `team:${memoryContextKey(channelType, nativeId)}:*`;
+/**
+ * Recompute a context key through the real key derivation, but from the
+ * structural parts this test spells itself.
+ *
+ * Deliberately NOT `formatSessionScope(scope)`: that is injective only over
+ * the strings `parseSessionScope` emits, so keying on it lets a `group` scope
+ * and a `conversation` scope whose id spells `group:<ref>` share one tier.
+ */
+const conversationPattern = (
+  channelType: string,
+  conversationId: string,
+  channelId?: string,
+): string =>
+  `channel:${memoryContextKey(channelType, tuple('conversation', channelId, conversationId))}:*`;
 
-const userPattern = (channelType: string, nativeId: string): string =>
-  `user:${memoryContextKey(channelType, nativeId)}:*`;
+const groupPattern = (channelType: string, groupRef: string): string =>
+  `channel:${memoryContextKey(channelType, tuple('group', groupRef))}:*`;
+
+const containerTeamPattern = (
+  channelType: string,
+  kind: 'team' | 'tenant',
+  id: string,
+): string => `team:${memoryContextKey(channelType, tuple(kind, id))}:*`;
+
+const orgTeamPattern = (channelType: string, orgId: string): string =>
+  `team:${memoryContextKey(channelType, tuple('org', orgId))}:*`;
+
+/** A personal scope is keyed on the PERSON alone — see `narrowAxisFor`. */
+const userPattern = (channelType: string, userId: string): string =>
+  `user:${memoryContextKey(channelType, userId)}:*`;
 
 /** Row 1 of the §2 table — the shape every fail-closed path must return. */
 const assertContextFree = (axes: MemoryAxes, because: string): void => {
@@ -62,11 +96,14 @@ describe('W5 memoryAxesForOrigin — §2 row 2: Teams team channel (container pr
     assert.equal(axes.isContextFree, false);
     assert.deepEqual(
       [...axes.patterns],
-      [channelPattern('teams', sessionScope), teamPattern('teams', 'team:19:team-a@thread.tacv2')],
+      [
+        conversationPattern('teams', sessionScope),
+        containerTeamPattern('teams', 'team', '19:team-a@thread.tacv2'),
+      ],
     );
     assert.deepEqual(axes.narrowest, {
       axis: 'channel',
-      ctxKey: memoryContextKey('teams', sessionScope),
+      ctxKey: memoryContextKey('teams', tuple('conversation', sessionScope)),
     });
   });
 
@@ -126,10 +163,10 @@ describe('W5 memoryAxesForOrigin — §2 row 3: group chat without a container',
     const axes = memoryAxesForOrigin({ channelType: 'telegram', scope });
 
     assert.equal(axes.isContextFree, false);
-    assert.deepEqual([...axes.patterns], [channelPattern('telegram', 'telegram::-1001234567890')]);
+    assert.deepEqual([...axes.patterns], [conversationPattern('telegram', '-1001234567890', 'telegram')]);
     assert.deepEqual(axes.narrowest, {
       axis: 'channel',
-      ctxKey: memoryContextKey('telegram', 'telegram::-1001234567890'),
+      ctxKey: memoryContextKey('telegram', tuple('conversation', 'telegram', '-1001234567890')),
     });
   });
 
@@ -139,12 +176,12 @@ describe('W5 memoryAxesForOrigin — §2 row 3: group chat without a container',
       scope: parseSessionScope('group:19:groupchat@thread.v2'),
     });
 
-    assert.deepEqual([...axes.patterns], [channelPattern('teams', 'group:19:groupchat@thread.v2')]);
+    assert.deepEqual([...axes.patterns], [groupPattern('teams', '19:groupchat@thread.v2')]);
     assert.equal(axes.narrowest?.axis, 'channel');
   });
 
   it('keeps a channel-qualified conversation apart from the bare conversation id', () => {
-    // `formatSessionScope` keeps the channelId, so `a::c1` and `c1` are two
+    // The channelId is part of the keyed tuple, so `a::c1` and `c1` are two
     // partitions — collapsing them would merge two platforms' conversations.
     const qualified = memoryAxesForOrigin({
       channelType: 'telegram',
@@ -156,6 +193,43 @@ describe('W5 memoryAxesForOrigin — §2 row 3: group chat without a container',
     });
 
     assert.notEqual(qualified.patterns[0], bare.patterns[0]);
+  });
+
+  it('never lets two structurally different scopes share one tier', () => {
+    // Every pair below formats to the SAME `formatSessionScope` string, which
+    // is exactly why the key is derived from the structural tuple instead.
+    // Design §4 has adapters construct scopes DIRECTLY, so `parseSessionScope`
+    // is not on the path that would have made the wire form injective.
+    const collidingPairs: ReadonlyArray<readonly [TurnOrigin['scope'], TurnOrigin['scope']]> = [
+      // group 'x'  vs  conversation 'group:x'  → both format to `group:x`
+      [
+        { kind: 'group', groupRef: 'x' },
+        { kind: 'conversation', conversationId: 'group:x' },
+      ],
+      // channelId 'msteams' + 'c'  vs  bare 'msteams::c' → the separator is
+      // not escaped in the wire form, so both format to `msteams::c`.
+      [
+        { kind: 'conversation', channelId: 'msteams', conversationId: 'c' },
+        { kind: 'conversation', conversationId: 'msteams::c' },
+      ],
+      // A conversation id that spells another kind's wire form.
+      [
+        { kind: 'conversation', conversationId: 'personal:u1' },
+        { kind: 'group', groupRef: 'personal:u1' },
+      ],
+    ];
+
+    for (const [left, right] of collidingPairs) {
+      const a = memoryAxesForOrigin({ channelType: 'teams', scope: left });
+      const b = memoryAxesForOrigin({ channelType: 'teams', scope: right });
+      assert.equal(a.isContextFree, false);
+      assert.equal(b.isContextFree, false);
+      assert.notEqual(
+        a.narrowest?.ctxKey,
+        b.narrowest?.ctxKey,
+        `${JSON.stringify(left)} and ${JSON.stringify(right)} must not share a tier`,
+      );
+    }
   });
 });
 
@@ -209,7 +283,7 @@ describe('W5 memoryAxesForOrigin — §2 row 4: personal chat', () => {
 
     assert.deepEqual(
       [...axes.patterns],
-      [userPattern('teams', 'aad-oid-1'), teamPattern('teams', 'tenant:acme')],
+      [userPattern('teams', 'aad-oid-1'), containerTeamPattern('teams', 'tenant', 'acme')],
     );
     assert.equal(axes.narrowest?.axis, 'user');
   });
@@ -225,7 +299,10 @@ describe('W5 memoryAxesForOrigin — §2 row 5: API turn with a tenant', () => {
 
     assert.deepEqual(
       [...axes.patterns],
-      [channelPattern('api', 'api::conv-7'), teamPattern('api', 'tenant:acme')],
+      [
+        conversationPattern('api', 'conv-7', 'api'),
+        containerTeamPattern('api', 'tenant', 'acme'),
+      ],
     );
     assert.equal(axes.narrowest?.axis, 'channel');
   });
@@ -240,10 +317,10 @@ describe('W5 memoryAxesForOrigin — §2 row 5: API turn with a tenant', () => {
     });
 
     assert.equal(axes.isContextFree, false);
-    assert.deepEqual([...axes.patterns], [teamPattern('api', 'org:acme')]);
+    assert.deepEqual([...axes.patterns], [orgTeamPattern('api', 'acme')]);
     assert.deepEqual(axes.narrowest, {
       axis: 'team',
-      ctxKey: memoryContextKey('api', 'org:acme'),
+      ctxKey: memoryContextKey('api', tuple('org', 'acme')),
     });
   });
 
@@ -254,7 +331,7 @@ describe('W5 memoryAxesForOrigin — §2 row 5: API turn with a tenant', () => {
       container: { kind: 'tenant', id: 'globex' },
     });
 
-    assert.deepEqual([...axes.patterns], [teamPattern('api', 'tenant:globex')]);
+    assert.deepEqual([...axes.patterns], [containerTeamPattern('api', 'tenant', 'globex')]);
   });
 });
 
@@ -313,7 +390,7 @@ describe('W5 memoryAxesForOrigin — §2 row 1: fail-closed', () => {
     for (const channelType of ['Teams', ' teams ', 'TEAMS']) {
       const axes = memoryAxesForOrigin({ channelType, scope: parseSessionScope('c1') });
       assert.equal(axes.isContextFree, false, channelType);
-      assert.deepEqual([...axes.patterns], [channelPattern('teams', 'c1')], channelType);
+      assert.deepEqual([...axes.patterns], [conversationPattern('teams', 'c1')], channelType);
     }
   });
 
@@ -333,7 +410,7 @@ describe('W5 memoryAxesForOrigin — §2 row 1: fail-closed', () => {
       container: { kind: 'team', id: '  ' },
     });
 
-    assert.deepEqual([...axes.patterns], [channelPattern('teams', 'teams-19:c1@thread.tacv2')]);
+    assert.deepEqual([...axes.patterns], [conversationPattern('teams', 'teams-19:c1@thread.tacv2')]);
     assert.equal(axes.narrowest?.axis, 'channel');
   });
 

@@ -116,10 +116,21 @@ export default function MemoryPage(): React.ReactElement {
     }
   }, [t]);
 
-  /** Raw directory listing for the context tree — throws instead of rendering
-   *  an error, so the tree can treat a missing branch as "empty". */
+  /**
+   * Raw directory listing for the context tree.
+   *
+   * A 404 is returned as an EMPTY listing, because a store that has never
+   * written a context tree genuinely has no `/memories/contexts` directory —
+   * that is an empty branch, not a failure. Every other status throws, and the
+   * tree turns it into a visible error. The distinction is load-bearing: with a
+   * blanket catch, a middleware that is down, a 401 from an expired session, or
+   * a production deploy where this dev-only endpoint is not mounted at all all
+   * render as "no agent memory yet" — an operator would conclude no context
+   * trees exist when the store was merely unreachable.
+   */
   const listDir = useCallback(async (path: string): Promise<DirEntry[]> => {
     const res = await fetch(listUrl(path));
+    if (res.status === 404) return [];
     if (!res.ok) throw new Error(`list ${path}: ${String(res.status)}`);
     const data = (await res.json()) as ListResponse;
     return data.entries;

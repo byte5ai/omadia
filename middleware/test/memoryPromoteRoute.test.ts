@@ -16,8 +16,16 @@ import { listenLoopback } from './_helpers/listenLoopback.js';
 /**
  * HTTP integration test for the memory-promotion router
  * (`createMemoryPromoteRouter`), mounted in prod at
- * `/api/v1/operator/agents` behind `requireAuth` so the live URLs are
- * `POST|GET /api/v1/operator/agents/:slug/memory/promotions`.
+ * `/api/v1/admin/memory/promotions` behind `requireAuth` so the live URLs are
+ * `POST|GET /api/v1/admin/memory/promotions/:slug`.
+ *
+ * That prefix and that gate are deliberately the SAME as the Danger-Zone purge
+ * router's (`/api/v1/admin/memory/purge`, cookie session JWT — NOT the
+ * machine-to-machine ADMIN_TOKEN surface). Promotion is the one way knowledge
+ * crosses a chat-context boundary, so it is an operator judgement call that has
+ * to be attributable to a person; the audit line records that person as its
+ * actor. The design spec's `/api/agents/:slug/memory/promotions` would have
+ * introduced a third auth surface for a Danger-Zone-class action.
  *
  * Drives the REAL router end-to-end over an express `listen(0)` server with a
  * real `InMemoryMemoryStore` (same MemoryStore contract as prod) and the REAL
@@ -32,7 +40,7 @@ import { listenLoopback } from './_helpers/listenLoopback.js';
  * server and its own log buffer — no module-level fixtures, no shared state.
  */
 
-const MOUNT = '/api/v1/operator/agents';
+const MOUNT = '/api/v1/admin/memory/promotions';
 const SLUG = 'atlas';
 const OTHER_SLUG = 'borea';
 const ACTOR = 'operator-user-1';
@@ -98,7 +106,7 @@ async function makeHarness(options: {
   const base = `http://127.0.0.1:${String(port)}${MOUNT}`;
 
   return {
-    url: (slug = SLUG) => `${base}/${slug}/memory/promotions`,
+    url: (slug = SLUG) => `${base}/${slug}`,
     store,
     logs,
     close: async () => {
@@ -258,7 +266,7 @@ describe('memory-promote router (HTTP, end-to-end)', () => {
     }
   });
 
-  it('7. POST for a missing source → 404 source_not_found', async () => {
+  it('7. POST for a missing source → 404 source_not_found, and NOT flagged partial', async () => {
     const h = await makeHarness();
     try {
       const res = await send(
@@ -268,6 +276,54 @@ describe('memory-promote router (HTTP, end-to-end)', () => {
       );
       assert.equal(res.status, 404);
       assert.equal(res.body['error'], 'source_not_found');
+      // A pre-write validation rejection genuinely means both tiers are
+      // untouched, so it must NOT tell the operator to go inspect the target.
+      assert.equal(res.body['partial'], undefined);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7b. a store failure mid-write is reported as PARTIAL, not as "nothing happened"', async () => {
+    // `promoteMemory` writes the planned files in an unguarded loop with no
+    // rollback. A store failure part-way leaves the promotion half applied —
+    // but such an error carries no `code`, so it used to be indistinguishable
+    // from a clean rejection. The operator would retry, hit 409 target_exists
+    // on the files that DID land, and be told there is a conflict on a
+    // promotion the API twice reported as never having started.
+    const h = await makeHarness();
+    try {
+      await h.store.createFile(`${CHANNEL_ROOT}/runbooks/one.md`, 'first\n');
+      await h.store.createFile(`${CHANNEL_ROOT}/runbooks/two.md`, 'second\n');
+
+      // Fail the SECOND payload write; the audit write is a different path.
+      let payloadWrites = 0;
+      const original = h.store.writeFile.bind(h.store);
+      h.store.writeFile = async (path: string, content: string): Promise<void> => {
+        if (path !== PROMOTION_AUDIT_PATH) {
+          payloadWrites += 1;
+          if (payloadWrites === 2) throw new Error('quota exceeded');
+        }
+        await original(path, content);
+      };
+
+      const res = await send(
+        h.url(),
+        'POST',
+        copyBody({
+          source: { axis: 'channel', ctxKey: CHANNEL_KEY, path: 'runbooks' },
+          target: { tier: 'agent', path: 'runbooks' },
+        }),
+      );
+
+      assert.equal(res.status, 500, JSON.stringify(res.body));
+      assert.equal(res.body['error'], 'memory_promote_failed');
+      assert.equal(res.body['partial'], true, 'the ambiguity must be surfaced');
+      assert.match(String(res.body['warning']), /partially applied/);
+
+      // And the state really is half-applied — the flag is not decoration.
+      assert.equal(await h.store.fileExists(`${AGENT_ROOT}/runbooks/one.md`), true);
+      assert.equal(await h.store.fileExists(`${AGENT_ROOT}/runbooks/two.md`), false);
     } finally {
       await h.close();
     }

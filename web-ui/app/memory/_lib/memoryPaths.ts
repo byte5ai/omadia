@@ -117,15 +117,23 @@ export function parseAgentTierPath(path: string): string | null {
  * the safe alphabet, so the first `~` is the only separator and the split is
  * unambiguous. Returns null for keys that were not produced by
  * `memoryContextKey` (older data, hand-written paths).
+ *
+ * The second half is the `safeKey`, NOT the native id — it is a sanitised stem
+ * plus a digest of the raw id, so it is deliberately not round-trippable back
+ * into the platform's own id. Calling it `nativeId` invited a real mistake:
+ * an operator reads `19-abc-thread-tacv2-a1b2c3d4` off a tree node, pastes it
+ * into the Danger-Zone selector as "the raw native id", and the backend derives
+ * a DIFFERENT key from it — a silent no-op on a destructive action. The full
+ * `channelType~safeKey` (i.e. the key itself) is the form the selector accepts.
  */
 export function decodeContextKey(
   ctxKey: string,
-): { channelType: string; nativeId: string } | null {
+): { channelType: string; safeKey: string } | null {
   const idx = ctxKey.indexOf('~');
   if (idx <= 0 || idx === ctxKey.length - 1) return null;
   return {
     channelType: ctxKey.slice(0, idx),
-    nativeId: ctxKey.slice(idx + 1),
+    safeKey: ctxKey.slice(idx + 1),
   };
 }
 

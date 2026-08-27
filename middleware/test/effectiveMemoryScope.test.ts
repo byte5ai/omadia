@@ -101,7 +101,7 @@ test('a channel-context turn adds its tier and downgrades the agent tier to ro:'
 
   // Assert — §4 step 7, verbatim.
   assert.deepStrictEqual(scope, [
-    'core',
+    'ro:core',
     'ro:orchestrator:public:*',
     'channel:teams~c1:*',
   ]);
@@ -139,7 +139,7 @@ test('team and channel tiers keep the narrowest-first order the axes gave them',
 
   // Assert
   assert.deepStrictEqual(scope, [
-    'core',
+    'ro:core',
     'ro:orchestrator:hr:*',
     'channel:teams~c1:*',
     'team:teams~acme:*',
@@ -159,22 +159,32 @@ test('a personal-chat turn reaches the user tier and nothing else', () => {
 
   // Assert
   assert.deepStrictEqual(scope, [
-    'core',
+    'ro:core',
     'ro:orchestrator:public:*',
     'user:telegram~4711:*',
   ]);
 });
 
-test('core stays reachable in every branch', () => {
-  // Arrange / Act / Assert — shared kernel/seed content is unaffected by the
-  // context split (§2, §7).
+test('core stays READABLE in every branch, but writable only context-free', () => {
+  // Shared kernel/seed content stays reachable across the context split (§2,
+  // §7) — but only for reading from a context turn. The shared trees are the
+  // one model-facing surface two contexts address by the same path, so a
+  // writable `core` would be a one-line bypass of the whole ACL: A writes
+  // `/memories/core/notes.md`, B reads it. Writes to the shared trees stay a
+  // context-FREE privilege; knowledge leaves a context via promote (decision 2).
   assert.ok(effectiveMemoryScope('public', contextFreeAxes()).includes('core'));
-  assert.ok(effectiveMemoryScope('public', channelAxes('teams~c1')).includes('core'));
+  assert.ok(effectiveMemoryScope('public', channelAxes('teams~c1')).includes('ro:core'));
   assert.ok(
     effectiveMemoryScope('public', channelAxes('teams~c1'), {
       mode: 'enforce-strict',
-    }).includes('core'),
+    }).includes('ro:core'),
   );
+  // …and the bare, writable token never appears on a context turn.
+  for (const mode of ['enforce', 'enforce-strict'] as const) {
+    assert.ok(
+      !effectiveMemoryScope('public', channelAxes('teams~c1'), { mode }).includes('core'),
+    );
+  }
 });
 
 test('duplicate context patterns collapse so the scope string stays canonical', () => {
@@ -190,7 +200,7 @@ test('duplicate context patterns collapse so the scope string stays canonical', 
 
   // Assert
   assert.deepStrictEqual(scope, [
-    'core',
+    'ro:core',
     'ro:orchestrator:public:*',
     'channel:teams~c1:*',
     'team:teams~acme:*',
@@ -235,7 +245,7 @@ test('patterns outside the three context tiers are dropped and logged', () => {
     // That is precisely why an axis may not be trusted to name it.)
     assert.deepStrictEqual(
       scope,
-      ['core', 'ro:orchestrator:public:*', 'channel:teams~c1:*'],
+      ['ro:core', 'ro:orchestrator:public:*', 'channel:teams~c1:*'],
       `pattern "${bad}" must not survive`,
     );
     assert.equal(lines.length, 1, `pattern "${bad}" must be logged`);
@@ -290,6 +300,7 @@ test('malformed axes never throw on the message path', () => {
     for (const token of scope) {
       assert.ok(
         token === 'core' ||
+          token === 'ro:core' ||
           token === 'orchestrator:public:*' ||
           token === 'ro:orchestrator:public:*' ||
           /^(?:team|channel|user):[^:]+:\*$/.test(token),
@@ -337,7 +348,7 @@ test('the returned scope is a fresh array — callers cannot mutate a shared one
 
   // Assert
   assert.deepStrictEqual(effectiveMemoryScope('public', channelAxes('teams~c1')), [
-    'core',
+    'ro:core',
     'ro:orchestrator:public:*',
     'channel:teams~c1:*',
   ]);
@@ -358,7 +369,7 @@ test('enforce-strict drops the agent tier from context turns entirely', () => {
   const scope = effectiveMemoryScope('public', axes, { mode: 'enforce-strict' });
 
   // Assert — not even read-only.
-  assert.deepStrictEqual(scope, ['core', 'channel:teams~c1:*', 'team:teams~acme:*']);
+  assert.deepStrictEqual(scope, ['ro:core', 'channel:teams~c1:*', 'team:teams~acme:*']);
   assert.ok(!scope.some((p) => p.includes('orchestrator:')));
 });
 
@@ -421,6 +432,42 @@ test('the default mode does not audit context-free turns', () => {
   assert.deepStrictEqual(lines, []);
 });
 
+test('the default mode DOES audit a broken axes object', () => {
+  // `context-free` is a legitimate turn shape and stays quiet above. These two
+  // are not: they only happen when a channel plugin emits a broken axes object,
+  // and the audit line is the only signal an operator gets that context memory
+  // silently stopped working for that plugin. Suppressing them outside strict
+  // mode — the mode production does NOT run — made the JSDoc's promise false
+  // and left the failure invisible.
+  const cases: ReadonlyArray<readonly [unknown, string]> = [
+    [undefined, 'axes-missing'],
+    [null, 'axes-missing'],
+    [{ isContextFree: 'no', patterns: ['channel:teams~c1:*'] }, 'context-free'],
+    [{ isContextFree: false, patterns: [] }, 'no-usable-context-pattern'],
+    [{ isContextFree: false, patterns: ['core'] }, 'no-usable-context-pattern'],
+  ];
+
+  for (const [axes, reason] of cases) {
+    const { lines, log } = sink();
+
+    const scope = effectiveMemoryScope('public', axes as MemoryAxes, { log });
+
+    // Fail-closed either way — the fix is diagnosability, not the scope.
+    assert.deepStrictEqual(scope, orchestratorMemoryScope('public'));
+
+    const audit = lines.filter((l) => l.msg.includes('[security-audit]'));
+    if (reason === 'context-free') {
+      // A wrong-typed flag is read as context-free by design (deny-default),
+      // and the default mode stays quiet about context-free turns.
+      assert.deepStrictEqual(audit, []);
+      continue;
+    }
+    assert.equal(audit.length, 1, `expected one audit line for ${reason}`);
+    assert.equal(audit[0]!.fields?.reason, reason);
+    assert.equal(audit[0]!.fields?.mode, 'enforce');
+  }
+});
+
 test('effectiveMemoryScope is pure — it never mutates the axes it is given', () => {
   // Arrange
   const patterns = ['channel:teams~c1:*', 'core', 'channel:teams~c1:*'];
@@ -447,7 +494,7 @@ test('a frozen axes object is accepted (memoryAxesForOrigin freezes its result)'
 
   // Assert
   assert.deepStrictEqual(scope, [
-    'core',
+    'ro:core',
     'ro:orchestrator:public:*',
     'channel:teams~c1:*',
   ]);

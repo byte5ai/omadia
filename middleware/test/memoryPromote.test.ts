@@ -263,7 +263,7 @@ describe('memoryPromote (operator tier promotion)', () => {
           }),
           options,
         ),
-      hasCode('target_equals_source'),
+      hasCode('target_overlaps_source'),
     );
 
     await assert.rejects(
@@ -276,6 +276,84 @@ describe('memoryPromote (operator tier promotion)', () => {
           options,
         ),
       hasCode('source_not_found'),
+    );
+  });
+
+  it('refuses a target NESTED inside the source, which move would destroy', async () => {
+    // Equality is not enough. A nested target passes every other guard — it is
+    // legitimately under the same agent — and then `move`'s recursive delete of
+    // the source wipes the freshly written target with it: net knowledge
+    // destroyed, reported as a success. Reachable with valid typed input.
+    await store.createFile(`${TEAM_ROOT}/notes/a.md`, 'A');
+    await store.createFile(`${TEAM_ROOT}/notes/b.md`, 'B');
+
+    for (const mode of ['copy', 'move'] as const) {
+      await assert.rejects(
+        () =>
+          promoteMemory(
+            store,
+            baseRequest({
+              mode,
+              source: { axis: 'team', ctxKey: TEAM_KEY, path: 'notes' },
+              target: { tier: 'team', ctxKey: TEAM_KEY, path: 'notes/archive' },
+            }),
+            options,
+          ),
+        hasCode('target_overlaps_source'),
+        `nested target must be refused for mode=${mode}`,
+      );
+      // And the mirror nesting: source inside target.
+      await assert.rejects(
+        () =>
+          promoteMemory(
+            store,
+            baseRequest({
+              mode,
+              source: { axis: 'team', ctxKey: TEAM_KEY, path: 'notes/a.md' },
+              target: { tier: 'team', ctxKey: TEAM_KEY, path: 'notes' },
+            }),
+            options,
+          ),
+        hasCode('target_overlaps_source'),
+        `nested source must be refused for mode=${mode}`,
+      );
+    }
+
+    assert.equal(await store.readFile(`${TEAM_ROOT}/notes/a.md`), 'A');
+    assert.equal(await store.readFile(`${TEAM_ROOT}/notes/b.md`), 'B');
+  });
+
+  it('a move never destroys a file it did not copy', async () => {
+    // `collectFiles` enumerates via `store.list()`, whose walk skips entries
+    // whose name starts with `.` — identically in the in-memory and Postgres
+    // stores. A recursive `delete(sourceRoot)` has no such filter, so a dotfile
+    // was deleted from the source having never been written to the target,
+    // with the receipt and the audit line both reporting success.
+    await store.createFile(`${CHANNEL_ROOT}/runbooks/index.md`, 'visible');
+    await store.createFile(`${CHANNEL_ROOT}/runbooks/.secrets.md`, 'invisible to list()');
+
+    const receipt = await promoteMemory(
+      store,
+      baseRequest({
+        mode: 'move',
+        source: { axis: 'channel', ctxKey: CHANNEL_KEY, path: 'runbooks' },
+        target: { tier: 'agent', path: 'runbooks' },
+      }),
+      options,
+    );
+
+    // What WAS planned moved.
+    assert.deepEqual(
+      receipt.files.map((f) => f.sourcePath),
+      [`${CHANNEL_ROOT}/runbooks/index.md`],
+    );
+    assert.match(await store.readFile(`${AGENT_ROOT}/runbooks/index.md`), /\nvisible$/);
+    assert.equal(await store.fileExists(`${CHANNEL_ROOT}/runbooks/index.md`), false);
+
+    // What was NOT planned is still exactly where it was — never silently gone.
+    assert.equal(
+      await store.readFile(`${CHANNEL_ROOT}/runbooks/.secrets.md`),
+      'invisible to list()',
     );
   });
 
