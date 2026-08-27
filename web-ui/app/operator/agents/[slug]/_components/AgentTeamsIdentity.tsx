@@ -12,6 +12,10 @@ import {
   provisionAgentTeamsIdentity,
   type TeamsIdentityStatusDto,
 } from '../../../../_lib/agents';
+import {
+  formatTeamsBotsConfig,
+  parseTeamsIdentityEnvelope,
+} from '../../../../_lib/teamsIdentity';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   Fact,
@@ -56,8 +60,17 @@ import {
  * English-sentence parser in web-ui would degrade silently in production the
  * day a message is reworded, while a colocated classifier breaks a unit test.
  * Route failures follow the AgentDetail pattern: machine codes narrow onto a
- * `teamsIdentity.errors.*` catalogue, unknown ones hit the localized fallback
- * with the technical detail as an ICU argument (web-ui i18n hard rule).
+ * `teamsIdentity.routeErrors.*` catalogue, unknown ones hit the localized
+ * fallback with the technical detail as an ICU argument (web-ui i18n hard
+ * rule). `teamsIdentity.errors.*` is a DIFFERENT catalogue — the long-form
+ * explanations `_lib/teamsIdentityErrors.ts` emits for a provisioning failure —
+ * so the two never share a key.
+ *
+ * THE `teams_bots` BLOCK. The last mile of provisioning is not automated: the
+ * operator pastes the block into the channel-teams `teams_bots` setup field by
+ * hand. {@link TeamsBotConfigBlock} renders it and says so plainly instead of
+ * letting anyone assume a sync that does not exist. Automatic config sync is
+ * out of scope here and documented as a follow-up.
  */
 
 const POLL_INTERVAL_MS = 3000;
@@ -105,8 +118,10 @@ export function AgentTeamsIdentity(
     (err: unknown): string => {
       const code = parseTeamsIdentityErrorCode(err);
       return code !== null
-        ? t(`teamsIdentity.errors.${code}`)
-        : t('teamsIdentity.errors.unknown', { detail: humanizeApiError(err) });
+        ? t(`teamsIdentity.routeErrors.${code}`)
+        : t('teamsIdentity.routeErrors.unknown', {
+            detail: humanizeApiError(err),
+          });
     },
     [t],
   );
@@ -348,12 +363,104 @@ function ReadyPanel(props: {
         />
       </dl>
 
+      <TeamsBotConfigBlock status={status} />
+
       {status.identity.updated_at && (
         <p className="text-[11px] text-[color:var(--fg-muted)]">
           {t('teamsIdentity.updatedAt', {
             date: props.formatDate(status.identity.updated_at),
           })}
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The `teams_bots` entry to paste into the channel-teams setup field.
+ *
+ * The route already emits `teams_bot` shaped EXACTLY like a
+ * `parseTeamsBotsConfig` entry, so nothing is reshaped here: the payload goes
+ * through {@link parseTeamsIdentityEnvelope} (which also drops a value whose
+ * `appPasswordSecretRef` is not ref-shaped) and straight into
+ * {@link formatTeamsBotsConfig}, key order and all. Reordering or renaming a
+ * key would produce a block the plugin rejects on paste.
+ *
+ * `teams_bot` is `null` until `app_id` AND `tenant_id` exist — i.e. before the
+ * `app_registered` step. That is a normal early state, not missing data, so it
+ * gets an explanatory line rather than an empty box.
+ *
+ * `appPasswordSecretRef` is the opaque vault ref `teams_bot_password:<appId>`,
+ * never the password. Nothing here fetches or reveals a secret value, and the
+ * ref is never logged.
+ */
+function TeamsBotConfigBlock(props: {
+  readonly status: TeamsIdentityStatusDto;
+}): React.ReactElement {
+  const t = useTranslations('operatorAgents');
+  const [copied, setCopied] = useState(false);
+
+  const view = useMemo(
+    () => parseTeamsIdentityEnvelope(props.status),
+    [props.status],
+  );
+  const teamsBot = view?.teamsBot ?? null;
+  const block = useMemo(
+    () => (teamsBot ? formatTeamsBotsConfig([teamsBot]) : null),
+    [teamsBot],
+  );
+
+  const onCopy = useCallback(async (): Promise<void> => {
+    if (block === null) return;
+    try {
+      await navigator.clipboard.writeText(block);
+      setCopied(true);
+    } catch {
+      // Soft failure (permissions, insecure context). The block stays visible
+      // and selectable right below, so it can still be copied by hand — not
+      // worth an error banner.
+      setCopied(false);
+    }
+  }, [block]);
+
+  return (
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">{t('teamsIdentity.teamsBot.heading')}</h3>
+
+      {teamsBot === null || block === null ? (
+        <p className="text-xs text-[color:var(--fg-muted)]">
+          {t('teamsIdentity.teamsBot.notReady')}
+        </p>
+      ) : (
+        <>
+          <p className="text-xs font-medium text-[color:var(--fg-strong)]">
+            {t('teamsIdentity.teamsBot.manualStep')}
+          </p>
+          <p className="text-xs text-[color:var(--fg-muted)]">
+            {t('teamsIdentity.teamsBot.instructions', { field: 'teams_bots' })}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" onClick={() => void onCopy()}>
+              {copied
+                ? t('teamsIdentity.teamsBot.copied')
+                : t('teamsIdentity.teamsBot.copy')}
+            </Button>
+          </div>
+          <pre
+            aria-label={t('teamsIdentity.teamsBot.blockLabel', {
+              botSlug: teamsBot.botSlug,
+            })}
+            className="overflow-x-auto rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3 font-mono text-[11px] text-[color:var(--fg-strong)]"
+          >
+            {block}
+          </pre>
+          <p className="text-xs text-[color:var(--fg-muted)]">
+            {t('teamsIdentity.teamsBot.secretRefNote')}
+          </p>
+          <p className="text-xs text-[color:var(--fg-muted)]">
+            {t('teamsIdentity.teamsBot.followUp')}
+          </p>
+        </>
       )}
     </div>
   );
