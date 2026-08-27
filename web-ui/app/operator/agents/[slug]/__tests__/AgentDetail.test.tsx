@@ -409,6 +409,42 @@ describe('AgentDetail Agent-Builder link', () => {
     expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
   });
 
+  it('states nothing about the match until BOTH sources have settled', async () => {
+    // `builderDrafts` starts as [], which is also the legitimate "no drafts"
+    // answer. Without an explicit settled flag the page asserts, in a
+    // permanent-looking sentence, that no draft matches — on every load, for
+    // orchestrators that DO have one — and a click in that window silently
+    // drops the deep link.
+    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
+    let resolveDrafts: (value: unknown) => void = () => undefined;
+    mockListDrafts.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDrafts = resolve;
+      }),
+    );
+
+    renderWithIntl(
+      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
+    );
+
+    // While resolving: no false negative, and no link that would navigate to
+    // the overview instead of the draft.
+    expect(screen.queryByText(/opens the builder overview/)).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: /Agent Builder/i })).toBeNull(),
+    );
+
+    resolveDrafts({
+      items: [draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' })],
+      quota: null,
+    });
+
+    const link = await builderLink();
+    await waitFor(() =>
+      expect(link.getAttribute('href')).toBe('/store/builder/draft-1'),
+    );
+  });
+
   it('still renders the link when the drafts listing fails', async () => {
     mockListDrafts.mockRejectedValue(new Error('boom'));
 

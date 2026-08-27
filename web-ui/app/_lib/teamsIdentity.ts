@@ -39,9 +39,11 @@
  * `operatorAgents.ts`, "`teams_bots[]` sync (follow-up)").
  */
 
+import type { TeamsIdentityLastErrorDetailDto } from './agents';
+
 /**
  * An i18n key plus its ICU arguments. Every user-facing string this module and
- * {@link module:teamsIdentityErrors} produce is one of these — a key relative
+ * this module produces is one of these — a key relative
  * to the `operatorAgents.teamsIdentity` namespace, never a sentence.
  */
 export interface LocalizedMessage {
@@ -72,65 +74,6 @@ export function isTeamsProvisioningState(
     typeof value === 'string' &&
     (TEAMS_PROVISIONING_STATES as readonly string[]).includes(value)
   );
-}
-
-/**
- * The pipeline in the order the runner walks it. `failed` is deliberately not
- * a step — it is an outcome that can replace any of them, and numbering it
- * would tell the operator they are "at step 7 of 7" when nothing was achieved.
- */
-export const TEAMS_PROVISIONING_STEPS = [
-  'pending',
-  'app_registered',
-  'bot_created',
-  'package_built',
-  'catalog_uploaded',
-  'installed',
-] as const satisfies readonly TeamsProvisioningState[];
-
-/** How the state should READ — the colour/severity axis, not the wording. */
-export type TeamsProvisioningTone =
-  | 'idle'
-  | 'running'
-  | 'done'
-  | 'halted'
-  | 'failed';
-
-/**
- * `halted` is the interesting one: provisioning stopped short of `installed`
- * and no attempt is in flight. That covers the ArmNotConfigured case, which is
- * a LEGITIMATE end state (`app_registered`, registration kept) — so it is not
- * `failed`, and the copy is what explains the difference.
- */
-export function teamsProvisioningTone(input: {
-  readonly state: TeamsProvisioningState;
-  readonly running: boolean;
-  readonly hasError: boolean;
-}): TeamsProvisioningTone {
-  if (input.state === 'failed') return 'failed';
-  if (input.running) return 'running';
-  if (input.state === 'installed') return 'done';
-  if (input.hasError) return 'halted';
-  return input.state === 'pending' ? 'idle' : 'halted';
-}
-
-/** Readable label for a state. */
-export function teamsProvisioningStateMessage(
-  state: TeamsProvisioningState,
-): LocalizedMessage {
-  return { key: `states.${state}` };
-}
-
-/** "Step 3 of 6" — `null` for `failed`, which is not a position in the run. */
-export function teamsProvisioningProgress(
-  state: TeamsProvisioningState,
-): LocalizedMessage | null {
-  const index = (TEAMS_PROVISIONING_STEPS as readonly string[]).indexOf(state);
-  if (index < 0) return null;
-  return {
-    key: 'progress',
-    values: { step: index + 1, total: TEAMS_PROVISIONING_STEPS.length },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -318,4 +261,102 @@ export function teamsBotConfigMessages(
     { key: 'teamsBot.secretRefNote' },
     { key: 'teamsBot.followUp' },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Failure copy — shaped from the SERVER's classification, never from prose
+//
+// The classifier itself lives in the middleware, next to the only code that
+// writes `last_error` (`services/teamsProvisioningJob.ts`), and the route
+// projects its result as `identity.last_error_detail`. What is left for the
+// client is purely presentational: turn the structured detail into an ordered
+// list of i18n keys + ICU arguments. There is deliberately NO second parser
+// here — a reworded sentence must break a colocated middleware test, not
+// degrade this screen silently in production.
+// ---------------------------------------------------------------------------
+
+/**
+ * Microsoft's own instructions for the step a consent failure blocks on. The
+ * copy names the step; this is the link behind it, so the operator does not
+ * have to hunt for the Entra blade.
+ */
+export const ENTRA_ADMIN_CONSENT_DOCS_URL =
+  'https://learn.microsoft.com/entra/identity/enterprise-apps/grant-admin-consent';
+
+export interface TeamsIdentityErrorLink {
+  readonly href: string;
+  /** i18n key of the link label, relative to `operatorAgents.teamsIdentity`. */
+  readonly labelKey: string;
+}
+
+/** The one external step a failure sends the operator to, when there is one. */
+export function teamsIdentityErrorLink(
+  detail: TeamsIdentityLastErrorDetailDto,
+): TeamsIdentityErrorLink | null {
+  return detail.code === 'consent_missing'
+    ? {
+        href: ENTRA_ADMIN_CONSENT_DOCS_URL,
+        labelKey: 'errors.consent_missing.consentLink',
+      }
+    : null;
+}
+
+/**
+ * The localized sentences for a failure, in reading order: what happened, the
+ * captured specifics (named scopes / fields / wait hint), what to do next.
+ *
+ * Keys are relative to the `operatorAgents.teamsIdentity` namespace. The
+ * captured lists are passed as ICU arguments, never concatenated into copy.
+ *
+ * The `retryAfter` line is emitted ONLY when the connector actually sent a
+ * `Retry-After` hint: a throttle can exhaust the retry budget without one
+ * (`throttleHintOf` returns `{}`), and defaulting the argument to 0 would tell
+ * the operator to retry "in about 0 seconds" at the exact moment the system
+ * gave up.
+ */
+export function teamsIdentityErrorMessages(
+  detail: TeamsIdentityLastErrorDetailDto,
+): readonly LocalizedMessage[] {
+  const base = `errors.${detail.code}`;
+  const messages: LocalizedMessage[] = [{ key: `${base}.what` }];
+
+  if (detail.code === 'consent_missing' && (detail.scopes?.length ?? 0) > 0) {
+    const scopes = detail.scopes as readonly string[];
+    messages.push({
+      key: `${base}.scopes`,
+      values: { scopes: scopes.join(', '), count: scopes.length },
+    });
+  }
+
+  if (detail.code === 'arm_not_configured' && (detail.fields?.length ?? 0) > 0) {
+    const fields = detail.fields as readonly string[];
+    messages.push({
+      key: `${base}.fields`,
+      values: { fields: fields.join(', '), count: fields.length },
+    });
+  }
+
+  if (detail.code === 'throttled' && detail.retryAfterSeconds !== undefined) {
+    messages.push({
+      key: `${base}.retryAfter`,
+      values: { seconds: detail.retryAfterSeconds },
+    });
+  }
+
+  messages.push({ key: `${base}.next` });
+
+  // Registration-only is a legitimate END STATE, not a broken agent — say so
+  // last, where a worried operator stops reading.
+  if (detail.code === 'arm_not_configured') {
+    messages.push({ key: `${base}.keepsRegistration` });
+  }
+
+  return messages;
+}
+
+/** The raw sentence, demoted to a secondary technical line. */
+export function teamsIdentityErrorTechnicalDetail(
+  detail: TeamsIdentityLastErrorDetailDto,
+): LocalizedMessage {
+  return { key: 'errors.technicalDetail', values: { raw: detail.raw } };
 }

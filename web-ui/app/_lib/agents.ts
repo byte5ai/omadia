@@ -456,6 +456,10 @@ export interface TeamsIdentityDto {
   tenant_id: string | null;
   teams_app_id: string | null;
   teams_app_external_id: string | null;
+  /** Recorded install target. The POST REQUIRES `team_id` and has no
+   *  fall-back-to-stored path on the server, so a re-run has to resend this
+   *  value. `null` on a row created before a target was known. */
+  team_id: string | null;
   last_error: string | null;
   /** Server-side classification of `last_error` — additive, so a middleware
    *  predating the projection simply omits it. */
@@ -503,12 +507,17 @@ export async function getAgentTeamsIdentity(
   );
 }
 
-/** All three fields are optional — the server derives the bot slug and the
- *  display name from the agent when they are omitted. */
+/**
+ * `team_id` is REQUIRED — `TeamsIdentityProvisionSchema` in
+ * `middleware/src/routes/operatorAgents.ts` declares it `z.string().min(1)`
+ * and the runner port types `enqueue({ agentId, teamId: string })`. Only
+ * `bot_slug` and `display_name` are optional; the server derives them from
+ * the agent when omitted, and ignores them on a re-run.
+ */
 export interface ProvisionTeamsIdentityInput {
   bot_slug?: string;
   display_name?: string;
-  team_id?: string;
+  team_id: string;
 }
 
 export interface ProvisionTeamsIdentityResponse {
@@ -523,7 +532,7 @@ export interface ProvisionTeamsIdentityResponse {
  *  plus a fire-and-forget provisioning run. Idempotent on the server. */
 export async function provisionAgentTeamsIdentity(
   slug: string,
-  input: ProvisionTeamsIdentityInput = {},
+  input: ProvisionTeamsIdentityInput,
 ): Promise<ProvisionTeamsIdentityResponse> {
   return callJson<ProvisionTeamsIdentityResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity`,

@@ -54,6 +54,7 @@ function statusDto(
       tenant_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
       teams_app_id: null,
       teams_app_external_id: null,
+      team_id: '19:team-a',
       last_error: null,
       created_at: '2026-08-27T08:00:00.000Z',
       updated_at: '2026-08-27T08:05:00.000Z',
@@ -209,8 +210,16 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
 
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Admin consent is missing');
+    // What happened, the captured scopes, what to do next — all from the
+    // server's `code` plus its typed arguments, never from the sentence.
+    expect(alert.textContent).toContain('has not granted admin consent');
     expect(alert.textContent).toContain('AppCatalog.ReadWrite.All');
+    expect(alert.textContent).toContain('Ask a Global Administrator');
+    expect(
+      within(alert).getByRole('link', {
+        name: 'How to grant admin consent in Microsoft Entra ID',
+      }),
+    ).toBeTruthy();
     // The raw sentence is a collapsed technical detail, never the message.
     expect(within(alert).getByText('Technical detail')).toBeTruthy();
     expect(
@@ -232,7 +241,10 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
 
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Provisioning reported an error:');
+    expect(alert.textContent).toContain(
+      'Provisioning stopped for a reason omadia cannot classify',
+    );
+    // The sentence still reaches the operator — as the technical detail.
     expect(alert.textContent).toContain('arm subscription lookup timed out');
     // A parked run on a non-terminal state is still in flight.
     expect(screen.getByText('State: app registered')).toBeTruthy();
@@ -267,6 +279,9 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
 
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText(/Bot slug/), 'taken-slug');
+    // `team_id` is required by the server, so the form requires it too — the
+    // submit button stays disabled until it is filled in.
+    await user.type(screen.getByLabelText(/Target team ID/), '19:team-a');
     await user.click(screen.getByRole('button', { name: 'Start provisioning' }));
 
     const alert = await screen.findByRole('alert');
@@ -315,10 +330,34 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     await user.click(
       await screen.findByRole('button', { name: 'Re-run provisioning' }),
     );
-    // Re-run keeps the stored slug/name — an empty body means "as recorded".
+    // The server REQUIRES `team_id` on every POST and has no fall-back-to-
+    // stored path (`ensureForAgent` refreshes it from the request, and the
+    // route hands `body.team_id` straight to the runner), so a re-run has to
+    // resend the recorded target. An empty body would 400 every single time.
     await waitFor(() =>
-      expect(mockProvision).toHaveBeenCalledWith('sales-bot', {}),
+      expect(mockProvision).toHaveBeenCalledWith('sales-bot', {
+        team_id: '19:team-a',
+      }),
     );
+  });
+
+  it('does not offer a re-run that could only 400 — no recorded target, no button', async () => {
+    mockGet.mockResolvedValue(
+      statusDto({
+        state: 'failed',
+        running: false,
+        identity: { ...statusDto().identity, team_id: null },
+      }),
+    );
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    const button = await screen.findByRole('button', {
+      name: 'Re-run provisioning',
+    });
+    expect(button).toHaveProperty('disabled', true);
+    expect(
+      screen.getByText(/No target team is recorded for this identity/),
+    ).toBeTruthy();
   });
 
   it('hides the re-run button while a run is still in flight', async () => {

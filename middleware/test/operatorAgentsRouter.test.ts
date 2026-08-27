@@ -347,20 +347,43 @@ class FakeTeamsIdentityStore {
  *  hang into the suite timeout, so a green run proves the async contract. */
 class FakeTeamsRunner {
   enqueueCalls: Array<{ agentId: string; teamId: string }> = [];
-  running = new Set<string>();
+  /** agentId -> in-flight teamId, mirroring the real runner's `inFlight` map. */
+  running = new Map<string, string>();
   /** When set, enqueue rejects with it (and registers nothing in-flight). */
   enqueueError: Error | undefined;
+  /** When set, enqueue RESOLVES with it instead of staying pending. Models
+   *  the real runner's refusal, which is a resolved `{status:'rejected'}`
+   *  value and NOT a rejected promise — the shape a `.catch()`-only caller
+   *  silently drops. */
+  enqueueResult: unknown | undefined;
 
   enqueue(request: { agentId: string; teamId: string }): Promise<unknown> {
     this.enqueueCalls.push({ ...request });
     if (this.enqueueError) return Promise.reject(this.enqueueError);
+    if (this.enqueueResult !== undefined) {
+      return Promise.resolve(this.enqueueResult);
+    }
     // Mirrors the real runner: a successful enqueue synchronously holds an
     // in-flight run, so the POST's `running` flag reads true.
-    this.running.add(request.agentId);
+    this.running.set(request.agentId, request.teamId);
     return new Promise<unknown>(() => {});
   }
   isRunning(agentId: string): boolean {
     return this.running.has(agentId);
+  }
+  runningTeamId(agentId: string): string | null {
+    return this.running.get(agentId) ?? null;
+  }
+}
+
+/** Poll a predicate until it holds. The routes start a provisioning run
+ *  WITHOUT awaiting it, so anything the outcome handler records lands a
+ *  microtask (or more) after the response. */
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("waitFor: predicate never became true");
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
@@ -1160,7 +1183,7 @@ describe('createOperatorAgentsRouter', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    teamsRunner.running.add(agent.id);
+    teamsRunner.running.set(agent.id, '19:team-a');
     const res = await fetch(`${baseUrl}/sales/teams-identity`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
@@ -1258,6 +1281,203 @@ describe('createOperatorAgentsRouter', () => {
     // a second, drifting copy would hand operators a config channel-teams
     // silently refuses to parse.
     assert.deepEqual(body.teams_bot, projectTeamsBotConfig(row));
+  });
+
+  it('the GET projects through deps.clientSecretRef — not just through the default', async () => {
+    // The pin above deep-equals `projectTeamsBotConfig(row)` (one argument)
+    // against a router built WITHOUT a clientSecretRef, so both sides collapse
+    // to the default ref and agree no matter what the route passes. Dropping
+    // the second argument at the call site would therefore stay green while
+    // the operator pastes a config pointing at a vault key that does not
+    // exist and channel-teams fails bot auth at runtime. This test mounts a
+    // router that DOES override the ref, so the seam is actually held.
+    const overrideStore = new FakeTeamsIdentityStore();
+    const overrideRunner = new FakeTeamsRunner();
+    const overrideConfig = new FakeConfigStore();
+    const agent = await overrideConfig.createAgent({ slug: 'sales', name: 'Sales' });
+    const row: OperatorTeamsIdentityRecord = {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    overrideStore.rows.set(agent.id, row);
+    const clientSecretRef = (r: OperatorTeamsIdentityRecord): string =>
+      `vault://kv/teams/${r.botSlug}`;
+
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => overrideConfig as unknown as ConfigStore,
+        getRegistry: () => registry as unknown as OrchestratorRegistry,
+        getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
+        getAgentGraphStore: () => graph as unknown as AgentGraphStore,
+        getTeamsIdentity: () => ({
+          store: overrideStore,
+          runner: overrideRunner,
+          isProvisionerInstalled: () => true,
+          clientSecretRef,
+        }),
+      }),
+    );
+    const overrideServer = await listenLoopback(app);
+    try {
+      const addr = overrideServer.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents/sales/teams-identity`,
+      );
+      const body = (await res.json()) as {
+        teams_bot: { appPasswordSecretRef: string };
+      };
+      assert.equal(body.teams_bot.appPasswordSecretRef, 'vault://kv/teams/sales-bot');
+      assert.deepEqual(body.teams_bot, projectTeamsBotConfig(row, clientSecretRef));
+    } finally {
+      await new Promise<void>((r) => overrideServer.close(() => r()));
+    }
+  });
+
+  // ── W2a (#860): the team_id column has exactly one honest writer ────
+
+  it('GET /:slug/teams-identity exposes the recorded team_id so a re-run can resend it', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'app_registered',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    const body = (await res.json()) as { identity: { team_id: string | null } };
+    // POST requires `team_id` and has no fall-back-to-stored path, so without
+    // this field the UI's "Re-run provisioning" button could only ever 400.
+    assert.equal(body.identity.team_id, '19:team-a');
+  });
+
+  it('POST /:slug/teams-identity refuses to retarget an installed row instead of rewriting team_id', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-b' }),
+    });
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; installed_team_id: string };
+    assert.equal(body.error, 'team_install_conflict');
+    assert.equal(body.installed_team_id, '19:team-a');
+    // The runner returns early on an 'installed' row, so an accepted retarget
+    // would rewrite team_id with NO install ever happening — and the team read
+    // model would then publish team-b as installed on that column alone.
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.deepEqual(teamsStore.ensureCalls, []);
+    assert.deepEqual(teamsRunner.enqueueCalls, []);
+  });
+
+  it('POST /:slug/teams refuses a retarget while a run toward another team is in flight', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'catalog_uploaded',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    teamsRunner.running.set(agent.id, '19:team-a');
+
+    const res = await fetch(`${baseUrl}/sales/teams`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-b' }),
+    });
+
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as { error: string; pending_team_id: string };
+    assert.equal(body.error, 'team_install_conflict');
+    assert.equal(body.pending_team_id, '19:team-a');
+    // The in-flight run installs into team-a (installToTeam uses the teamId
+    // captured at enqueue) while the runner refuses the second enqueue with a
+    // RESOLVED 'rejected' result the route cannot see. Writing team-b first
+    // would leave the row claiming an install that never happened.
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.deepEqual(teamsStore.ensureCalls, []);
+    assert.deepEqual(teamsRunner.enqueueCalls, []);
+  });
+
+  it("records a RESOLVED { status: 'rejected' } enqueue result instead of dropping it", async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'app_registered',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // The real runner refuses with a resolved value, never a rejection — a
+    // `.catch()`-only caller records nothing and the row keeps looking healthy.
+    teamsRunner.enqueueResult = {
+      status: 'rejected',
+      agentId: agent.id,
+      reason: 'team_conflict',
+      detail: 'a provisioning run targeting team 19:team-a is already in flight',
+    };
+
+    const res = await fetch(`${baseUrl}/sales/teams-identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-a' }),
+    });
+    assert.equal(res.status, 202);
+
+    await waitFor(() => teamsStore.enqueueFailures.length > 0);
+    assert.match(
+      teamsStore.enqueueFailures[0]?.message ?? '',
+      /already in flight/,
+    );
   });
 
   it('projectTeamsBotConfig: null unless BOTH appId and tenantId are set', () => {

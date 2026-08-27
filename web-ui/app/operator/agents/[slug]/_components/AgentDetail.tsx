@@ -108,6 +108,16 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
     [],
   );
   /**
+   * Whether the draft listing has SETTLED — `builderDrafts` alone cannot say.
+   *
+   * It starts as `[]`, which is also the legitimate "this deployment has no
+   * drafts" answer, so without this flag `builderDraftId === null` conflates
+   * "still loading" with "resolved to no match": the page would state, on every
+   * single load, that no draft could be matched — and a click landing in that
+   * window would drop the deep link and open the builder overview instead.
+   */
+  const [draftsSettled, setDraftsSettled] = useState(false);
+  /**
    * Remount key for PluginsDnd, bumped ONLY by the editor's own save path.
    *
    * The dashboard keys PluginsDnd on `pluginsRevisionKey(agent)` (a hash over
@@ -146,6 +156,9 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
       })
       .catch(() => {
         if (!cancelled) setBuilderDrafts([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDraftsSettled(true);
       });
     return () => {
       cancelled = true;
@@ -172,6 +185,11 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
     );
     return resolveBuilderDraftId(agentPluginIds, builderDrafts);
   }, [builderDrafts, catalogById, props.agent.plugins]);
+
+  // The match needs BOTH sources: the catalog says which assigned plugins are
+  // agents, the draft listing says which draft owns them. Until both have
+  // settled there is no answer yet — only an unfinished one.
+  const builderResolving = catalog === null || !draftsSettled;
 
   const builderHref =
     builderDraftId !== null
@@ -235,14 +253,25 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
         <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
           {t('personaHint')}
         </p>
-        <Link
-          href={builderHref}
-          className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)]/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
-        >
-          {t('personaOpenBuilder')}
-          <ArrowRight className="size-3.5" aria-hidden />
-        </Link>
-        {builderDraftId === null && (
+        {builderResolving ? (
+          // No href yet: following the fallback here would silently lose the
+          // deep link that is the whole point of this section.
+          <span
+            aria-busy="true"
+            className="inline-flex items-center gap-2 rounded-md bg-[color:var(--bg-soft)]/60 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)]"
+          >
+            {t('personaOpenBuilder')}
+          </span>
+        ) : (
+          <Link
+            href={builderHref}
+            className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)]/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
+          >
+            {t('personaOpenBuilder')}
+            <ArrowRight className="size-3.5" aria-hidden />
+          </Link>
+        )}
+        {!builderResolving && builderDraftId === null && (
           <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
             {t('personaNoDraftHint')}
           </p>

@@ -7,6 +7,11 @@ import {
   type TeamsIdentityLastErrorDetailDto,
   type TeamsProvisioningState,
 } from '../../../../_lib/agents';
+import {
+  teamsIdentityErrorLink,
+  teamsIdentityErrorMessages,
+  teamsIdentityErrorTechnicalDetail,
+} from '../../../../_lib/teamsIdentity';
 
 /**
  * Presentational parts of the Teams identity panel (epic #860, wave W2a).
@@ -86,63 +91,58 @@ export function StateChain(props: {
 /**
  * The provisioning error, rendered from the SERVER-side classification.
  *
- * The localized sentence built from `detail.code` plus its ICU arguments is
- * the primary copy; `detail.raw` — the English sentence the job runner
- * wrote — is a collapsed technical detail. When the code is `unknown` there
- * is nothing better to say than the raw text, so it becomes the fallback's
- * ICU argument and the disclosure would only repeat it.
+ * `detail.code` plus its typed arguments drive an ordered list of localized
+ * sentences — what happened, the captured specifics, what to do next — and
+ * `detail.raw` (the English sentence the job runner wrote) stays behind a
+ * "technical detail" disclosure. Nothing here parses that sentence: the
+ * classifier lives next to its producer in the middleware, so a reworded
+ * message breaks a colocated test instead of degrading this panel silently.
+ *
+ * Every optional line is emitted only when the server actually supplied its
+ * argument — a throttle with no `Retry-After` hint renders no wait time at
+ * all rather than "retry in about 0 seconds".
  */
 export function LastError(props: {
   readonly detail: TeamsIdentityLastErrorDetailDto;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const { detail } = props;
+  const messages = teamsIdentityErrorMessages(detail);
+  const link = teamsIdentityErrorLink(detail);
+  const technical = teamsIdentityErrorTechnicalDetail(detail);
   return (
     <div
       role="alert"
       className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]"
     >
       <p className="font-medium">{t('teamsIdentity.lastErrorHeading')}</p>
-      <p className="mt-1">{lastErrorMessage(detail, t)}</p>
-      {detail.code !== 'unknown' && (
-        <details className="mt-1">
-          <summary className="cursor-pointer text-[11px]">
-            {t('teamsIdentity.lastErrorTechnical')}
-          </summary>
-          <code className="mt-1 block break-words font-mono text-[11px]">
-            {detail.raw}
-          </code>
-        </details>
+      {messages.map((message) => (
+        <p key={message.key} className="mt-1">
+          {t(`teamsIdentity.${message.key}`, message.values)}
+        </p>
+      ))}
+      {link && (
+        <p className="mt-1">
+          <a
+            href={link.href}
+            target="_blank"
+            rel="noreferrer"
+            className="underline"
+          >
+            {t(`teamsIdentity.${link.labelKey}`)}
+          </a>
+        </p>
       )}
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[11px]">
+          {t('teamsIdentity.lastErrorTechnical')}
+        </summary>
+        <code className="mt-1 block break-words font-mono text-[11px]">
+          {t(`teamsIdentity.${technical.key}`, technical.values)}
+        </code>
+      </details>
     </div>
   );
-}
-
-type Translate = ReturnType<typeof useTranslations<'operatorAgents'>>;
-
-/** Each code carries its own ICU arguments, so the mapping is an explicit
- *  switch rather than a computed key — a new code fails the type check here
- *  instead of rendering a missing-message placeholder. */
-function lastErrorMessage(
-  detail: TeamsIdentityLastErrorDetailDto,
-  t: Translate,
-): string {
-  switch (detail.code) {
-    case 'consent_missing':
-      return t('teamsIdentity.lastError.consent_missing', {
-        scopes: (detail.scopes ?? []).join(', '),
-      });
-    case 'arm_not_configured':
-      return t('teamsIdentity.lastError.arm_not_configured', {
-        fields: (detail.fields ?? []).join(', '),
-      });
-    case 'throttled':
-      return t('teamsIdentity.lastError.throttled', {
-        seconds: detail.retryAfterSeconds ?? 0,
-      });
-    default:
-      return t('teamsIdentity.lastError.unknown', { detail: detail.raw });
-  }
 }
 
 /** One identity field. A `null` value is "not assigned yet" — a real state of
@@ -175,6 +175,7 @@ export function TextField(props: {
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly pattern?: string;
+  readonly required?: boolean;
 }): React.ReactElement {
   return (
     <label className="flex flex-col gap-1">
@@ -186,6 +187,7 @@ export function TextField(props: {
         value={props.value}
         onChange={(e) => props.onChange(e.target.value)}
         {...(props.pattern ? { pattern: props.pattern } : {})}
+        {...(props.required ? { required: true, 'aria-required': true } : {})}
         className="w-full rounded border border-[color:var(--border)] px-2 py-1 text-sm"
       />
       <span className="text-[11px] text-[color:var(--fg-muted)]">

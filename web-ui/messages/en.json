@@ -1970,7 +1970,8 @@
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
         "teams_uninstall_unsupported": "Removing the app from a team has to be done by a Teams administrator — the connector publishes no uninstall.",
         "unknown": "The team assignment request failed: {detail}"
-      }
+      },
+      "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error."
     },
     "personaHeading": "Persona and behaviour",
     "personaHint": "Persona, tone and behaviour are designed in the Agent Builder. This page only assigns capabilities to the orchestrator.",
@@ -1981,13 +1982,13 @@
       "hint": "Give this orchestrator its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
       "loading": "Loading the Teams identity…",
       "refresh": "Refresh",
-      "createHint": "All three fields are optional — the server derives the bot slug and the display name from this orchestrator when you leave them empty.",
+      "createHint": "The bot slug and the display name are optional — omit them and the server derives both from the orchestrator. The target team is required: provisioning installs the app into it.",
       "fieldBotSlug": "Bot slug",
       "fieldBotSlugHint": "Lowercase letters, digits and dashes. Must be unique across orchestrators.",
       "fieldDisplayName": "Display name",
       "fieldDisplayNameHint": "The name people see in Teams.",
       "fieldTeamId": "Target team ID",
-      "fieldTeamIdHint": "The team the app is installed into. Leave empty to only register the identity.",
+      "fieldTeamIdHint": "Required. The Teams team (group) id the app is installed into.",
       "submit": "Start provisioning",
       "submitBusy": "Starting",
       "rerun": "Re-run provisioning",
@@ -2019,12 +2020,6 @@
         "teams_identity_unavailable": "Teams identity provisioning is not wired in this deployment — the identity store and job runner register once a database is configured and the orchestrator factory booted.",
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install and activate the Microsoft 365 connector plugin (0.3.1 or newer), then reload this page."
       },
-      "lastError": {
-        "consent_missing": "Admin consent is missing for these Graph scopes: {scopes}. Grant them in the customer tenant, then re-run provisioning.",
-        "arm_not_configured": "The Microsoft 365 connector still needs these setup fields before a bot can be created: {fields}. Configure them, then re-run provisioning — the app registration is kept.",
-        "throttled": "Microsoft throttled the provisioning run. It can be retried in about {seconds} seconds.",
-        "unknown": "Provisioning reported an error: {detail}"
-      },
       "routeErrors": {
         "bot_slug_taken": "That bot slug already belongs to another orchestrator — pick a different one.",
         "invalid_body": "The server rejected the request payload.",
@@ -2036,7 +2031,6 @@
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
         "unknown": "The Teams identity request failed: {detail}"
       },
-      "progress": "Step {step} of {total}",
       "errors": {
         "technicalDetail": "Technical detail: {raw}",
         "consent_missing": {
@@ -2071,7 +2065,8 @@
         "blockLabel": "teams_bots configuration block for {botSlug}",
         "copy": "Copy",
         "copied": "Copied"
-      }
+      },
+      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here."
     }
   },
   "builder": {
@@ -4955,7 +4950,8 @@
     "errorUnauthenticated": "Not signed in (HTTP 401). The memory browser reads an operator-authenticated endpoint — sign in again, then reload this page.",
     "errorForbidden": "Not authorized (HTTP 403) — browsing chat-context memory requires operator rights.",
     "errorPathNotFound": "This path no longer exists in the memory store (HTTP 404).",
-    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint."
+    "errorOutOfScope": "Outside chat-context memory. This browser reads /memories/contexts only; the agent tier and the shared kernel are not exposed by the operator endpoint.",
+    "errorEndpointUnreachable": "The operator memory endpoint did not answer (HTTP 404). The memory-contexts router is most likely not mounted in this deployment — this is not a statement about what the store contains."
   },
   "memories": {
     "kinds": {

@@ -19,7 +19,11 @@ import {
 } from './_components/MemoryContextTree';
 import { PromoteDialog } from './_components/PromoteDialog';
 import { PromotionAuditPanel } from './_components/PromotionAuditPanel';
-import { looksLikeErrorPage, memoryErrorKey } from './_lib/memoryErrors';
+import {
+  isRouterNotFoundBody,
+  looksLikeErrorPage,
+  memoryErrorKey,
+} from './_lib/memoryErrors';
 import {
   CONTEXTS_ROOT,
   basename,
@@ -100,7 +104,10 @@ export default function MemoryPage(): React.ReactElement {
         const contentType = res.headers.get('content-type') ?? '';
         const body = await res.text().catch(() => '');
         const looksHtml = looksLikeErrorPage(contentType, body);
-        const key = memoryErrorKey(res.status, looksHtml);
+        const key = memoryErrorKey(res.status, looksHtml, {
+          atContextsRoot: path === CONTEXTS_ROOT,
+          isRouterNotFound: isRouterNotFoundBody(body),
+        });
         if (key !== null) {
           setListError(t(key));
         } else if (body.length > 0 && !looksHtml) {
@@ -146,7 +153,11 @@ export default function MemoryPage(): React.ReactElement {
     // operator endpoint structurally has no such branch, so it is empty here.
     if (!isInsideContexts(path)) return [];
     const res = await fetch(operatorMemoryContextsListUrl(path));
-    if (res.status === 404) return [];
+    // A 404 on the ROOT is not an empty branch — a mounted router always
+    // answers it (see memoryErrorKey), so it means the endpoint is not
+    // reachable. Returning [] there would render "No agent memory yet" over a
+    // store full of context trees.
+    if (res.status === 404 && path !== CONTEXTS_ROOT) return [];
     if (!res.ok) throw new Error(`list ${path}: ${String(res.status)}`);
     const data = (await res.json()) as MemoryListResponse;
     return data.entries;

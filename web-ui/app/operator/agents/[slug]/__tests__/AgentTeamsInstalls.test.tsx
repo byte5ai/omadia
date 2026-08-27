@@ -313,4 +313,52 @@ describe('AgentTeamsInstalls (#866)', () => {
       screen.getByText("This orchestrator's app is not installed in any team yet."),
     ).toBeTruthy();
   });
+
+  it('refuses to offer an install while a run is still targeting another team', async () => {
+    // `teams` is EMPTY for every state but `installed`, so gating on
+    // `installed.length` alone leaves the whole in-flight window open. The
+    // route's non-installed branch does not 409 on state: it would overwrite
+    // the only `team_id` column and enqueue a second run, while run #1 still
+    // installs into the original team — an install nothing records and no
+    // uninstall can remove.
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [],
+        state: 'catalog_uploaded',
+        pending_team_id: 'team-a',
+        running: true,
+      }),
+    );
+    await renderPanel();
+
+    expect(screen.getByLabelText('Team ID')).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Install' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+
+  it('does not claim a run is under way for a chain that already stopped', async () => {
+    // `pending_team_id` is set for EVERY non-installed state, terminal
+    // failures included. Only `running` separates "still working on it" from
+    // "stopped here", and this panel renders neither state nor last_error, so
+    // nothing else on it would contradict a false claim.
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [],
+        state: 'failed',
+        pending_team_id: 'team-x',
+        running: false,
+        last_error: 'catalog upload rejected',
+      }),
+    );
+    await renderPanel();
+
+    expect(
+      await screen.findByText(/no provisioning run is active/),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(/A provisioning run is targeting team team-x/),
+    ).toBeNull();
+  });
 });

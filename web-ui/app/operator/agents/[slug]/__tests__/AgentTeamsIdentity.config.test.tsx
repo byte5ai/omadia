@@ -77,6 +77,7 @@ function statusDto(
       tenant_id: TENANT_ID,
       teams_app_id: '99999999-8888-7777-6666-555555555555',
       teams_app_external_id: 'com.byte5.omadia.sales-bot',
+      team_id: '19:team-a',
       last_error: null,
       created_at: '2026-08-27T08:00:00.000Z',
       updated_at: '2026-08-27T08:05:00.000Z',
@@ -232,6 +233,7 @@ describe('AgentTeamsIdentity — teams_bots config block (#860 W2a)', () => {
           tenant_id: null,
           teams_app_id: null,
           teams_app_external_id: null,
+          team_id: '19:team-a',
         },
       }),
     );

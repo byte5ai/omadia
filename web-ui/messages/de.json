@@ -1970,7 +1970,8 @@
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
         "teams_uninstall_unsupported": "Das Entfernen der App aus einem Team muss ein Teams-Admin erledigen — der Connector veröffentlicht keine Deinstallation.",
         "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
-      }
+      },
+      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."
     },
     "personaHeading": "Persona und Verhalten",
     "personaHint": "Persona, Tonalität und Verhalten werden im Agent Builder entworfen. Diese Seite weist dem Orchestrator nur Fähigkeiten zu.",
@@ -1981,13 +1982,13 @@
       "hint": "Dieser Orchestrator bekommt eine eigene Teams-Bot-Identität: Bot-Slug, Anzeigename und optional ein Ziel-Team. Das Provisioning registriert die Entra-App, legt den Bot an, baut das Teams-App-Paket, lädt es hoch und installiert es.",
       "loading": "Teams-Identität wird geladen…",
       "refresh": "Aktualisieren",
-      "createHint": "Alle drei Felder sind optional — bleiben sie leer, leitet der Server Bot-Slug und Anzeigename aus diesem Orchestrator ab.",
+      "createHint": "Bot-Slug und Anzeigename sind optional — ohne Angabe leitet der Server beide aus dem Orchestrator ab. Das Ziel-Team ist Pflicht: Beim Provisioning wird die App dort installiert.",
       "fieldBotSlug": "Bot-Slug",
       "fieldBotSlugHint": "Kleinbuchstaben, Ziffern und Bindestriche. Muss über alle Orchestratoren hinweg eindeutig sein.",
       "fieldDisplayName": "Anzeigename",
       "fieldDisplayNameHint": "Der Name, den Menschen in Teams sehen.",
       "fieldTeamId": "Ziel-Team-ID",
-      "fieldTeamIdHint": "Das Team, in das die App installiert wird. Leer lassen, um nur die Identität zu registrieren.",
+      "fieldTeamIdHint": "Pflichtfeld. Die Teams-Team-(Gruppen-)ID, in die die App installiert wird.",
       "submit": "Provisioning starten",
       "submitBusy": "Startet",
       "rerun": "Provisioning erneut ausführen",
@@ -2019,12 +2020,6 @@
         "teams_identity_unavailable": "Das Teams-Identitäts-Provisioning ist in diesem Deployment nicht verdrahtet — Identitätsspeicher und Job-Runner registrieren sich, sobald eine Datenbank konfiguriert ist und die Orchestrator-Factory gebootet hat.",
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere und aktiviere das Microsoft-365-Connector-Plugin (0.3.1 oder neuer) und lade die Seite neu."
       },
-      "lastError": {
-        "consent_missing": "Für diese Graph-Scopes fehlt die Admin-Zustimmung: {scopes}. Erteile sie im Kunden-Tenant und starte das Provisioning erneut.",
-        "arm_not_configured": "Dem Microsoft-365-Connector fehlen noch diese Setup-Felder, bevor ein Bot angelegt werden kann: {fields}. Konfiguriere sie und starte das Provisioning erneut — die App-Registrierung bleibt erhalten.",
-        "throttled": "Microsoft hat den Provisioning-Lauf gedrosselt. Ein neuer Versuch ist in etwa {seconds} Sekunden möglich.",
-        "unknown": "Das Provisioning meldet einen Fehler: {detail}"
-      },
       "routeErrors": {
         "bot_slug_taken": "Dieser Bot-Slug gehört bereits zu einem anderen Orchestrator — wähle einen anderen.",
         "invalid_body": "Der Server hat die Anfrage-Daten abgelehnt.",
@@ -2036,7 +2031,6 @@
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
         "unknown": "Die Teams-Identitäts-Anfrage ist fehlgeschlagen: {detail}"
       },
-      "progress": "Schritt {step} von {total}",
       "errors": {
         "technicalDetail": "Technisches Detail: {raw}",
         "consent_missing": {
@@ -2071,7 +2065,8 @@
         "blockLabel": "teams_bots-Konfigurationsblock für {botSlug}",
         "copy": "Kopieren",
         "copied": "Kopiert"
-      }
+      },
+      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten."
     }
   },
   "builder": {
@@ -4955,7 +4950,8 @@
     "errorUnauthenticated": "Nicht angemeldet (HTTP 401). Der Memory-Browser liest einen Operator-authentifizierten Endpoint — melde dich neu an und lade die Seite neu.",
     "errorForbidden": "Nicht berechtigt (HTTP 403) — das Browsen von Chat-Kontext-Memory erfordert Operator-Rechte.",
     "errorPathNotFound": "Diesen Pfad gibt es im Memory-Store nicht mehr (HTTP 404).",
-    "errorOutOfScope": "Außerhalb des Chat-Kontext-Memory. Dieser Browser liest nur /memories/contexts; Agent-Tier und geteilter Kernel werden vom Operator-Endpoint nicht ausgeliefert."
+    "errorOutOfScope": "Außerhalb des Chat-Kontext-Memory. Dieser Browser liest nur /memories/contexts; Agent-Tier und geteilter Kernel werden vom Operator-Endpoint nicht ausgeliefert.",
+    "errorEndpointUnreachable": "Der Operator-Memory-Endpunkt hat nicht geantwortet (HTTP 404). Vermutlich ist der Memory-Contexts-Router in dieser Umgebung nicht eingebunden — über den Inhalt des Speichers sagt das nichts aus."
   },
   "memories": {
     "kinds": {

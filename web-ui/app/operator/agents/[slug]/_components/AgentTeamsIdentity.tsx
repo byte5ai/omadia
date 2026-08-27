@@ -166,7 +166,7 @@ export function AgentTeamsIdentity(
   async function provision(input: {
     bot_slug?: string;
     display_name?: string;
-    team_id?: string;
+    team_id: string;
   }): Promise<void> {
     setBusy(true);
     setActionError(null);
@@ -183,12 +183,18 @@ export function AgentTeamsIdentity(
     }
   }
 
+  // `team_id` is required by the server (TeamsIdentityProvisionSchema), so it
+  // is required here too: omitting it produced a guaranteed 400 `invalid_body`
+  // and the primary acceptance path never reached 202.
+  const teamIdReady = teamId.trim().length > 0;
+
   function submitCreate(event: React.FormEvent): void {
     event.preventDefault();
+    if (!teamIdReady) return;
     void provision({
       ...(botSlug.trim() ? { bot_slug: botSlug.trim() } : {}),
       ...(displayName.trim() ? { display_name: displayName.trim() } : {}),
-      ...(teamId.trim() ? { team_id: teamId.trim() } : {}),
+      team_id: teamId.trim(),
     });
   }
 
@@ -268,12 +274,14 @@ export function AgentTeamsIdentity(
             hint={t('teamsIdentity.fieldTeamIdHint')}
             value={teamId}
             onChange={setTeamId}
+            required
           />
           <div className="sm:col-span-3">
             <Button
               type="submit"
               size="sm"
               busy={busy}
+              disabled={!teamIdReady}
               busyLabel={t('teamsIdentity.submitBusy')}
             >
               {t('teamsIdentity.submit')}
@@ -286,7 +294,13 @@ export function AgentTeamsIdentity(
         <ReadyPanel
           status={view.status}
           busy={busy}
-          onRerun={() => void provision({})}
+          // The server has no "as recorded" re-run: `ensureForAgent` refreshes
+          // the stored team from the request and the route hands `team_id`
+          // straight to the runner, so an empty body is a guaranteed 400. The
+          // recorded target comes back on the status projection and is
+          // resent verbatim; without one the affordance is disabled instead
+          // of offered and rejected.
+          onRerun={(recordedTeamId) => void provision({ team_id: recordedTeamId })}
           formatDate={(iso) => formatTimestamp(iso, format)}
         />
       )}
@@ -297,7 +311,7 @@ export function AgentTeamsIdentity(
 function ReadyPanel(props: {
   readonly status: TeamsIdentityStatusDto;
   readonly busy: boolean;
-  readonly onRerun: () => void;
+  readonly onRerun: (teamId: string) => void;
   readonly formatDate: (iso: string) => string;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
@@ -310,6 +324,12 @@ function ReadyPanel(props: {
       ),
     [status.identity.last_error_detail, status.identity.last_error],
   );
+  // A re-run must resend the install target the server already recorded —
+  // it requires `team_id` on every POST.
+  const recordedTeamId =
+    status.identity.team_id !== null && status.identity.team_id !== ''
+      ? status.identity.team_id
+      : null;
 
   return (
     <div className="space-y-3">
@@ -321,13 +341,21 @@ function ReadyPanel(props: {
             : t('teamsIdentity.idle')}
         </span>
         {isTerminalTeamsProvisioningState(status.state) && (
-          <div className="ml-auto">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {recordedTeamId === null && (
+              <span className="text-[11px] text-[color:var(--fg-muted)]">
+                {t('teamsIdentity.rerunNeedsTeam')}
+              </span>
+            )}
             <Button
               size="sm"
               variant="secondary"
               busy={props.busy}
+              disabled={recordedTeamId === null}
               busyLabel={t('teamsIdentity.submitBusy')}
-              onClick={props.onRerun}
+              onClick={() => {
+                if (recordedTeamId !== null) props.onRerun(recordedTeamId);
+              }}
             >
               {t('teamsIdentity.rerun')}
             </Button>

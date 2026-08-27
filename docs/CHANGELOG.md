@@ -87,6 +87,52 @@ could never detect a newer release.
   dialog for every outcome — found (downloading), already up to date, or the check failed —
   without changing the silent startup check's existing (dialog-free) behavior.
 
+### Added — operator UI for Teams agent identities, team assignment and context memory (#866, epic #860 W2a)
+
+2026-08-27 — The provisioning chain built in W1a had no operator surface: everything ran
+through curl. The agent detail page now owns the whole loop.
+
+- **Teams identity panel.** Create the identity, watch the state machine advance live
+  (`pending → app_registered → bot_created → package_built → catalog_uploaded → installed`),
+  and read a failure as something actionable: the middleware classifies `last_error`
+  server-side and the panel renders what happened, which scopes or setup fields are
+  missing, and what to do next — with the raw English sentence demoted to a technical
+  detail. Registration-only (`arm_not_configured` on `app_registered`) reads as a valid
+  stop, not as a broken agent.
+- **The `teams_bot` block, and the honesty about it.** The channel-teams `teams_bots[]`
+  entry is shown ready to copy, together with a plain statement that pasting it into the
+  plugin's setup field is a MANUAL step — nothing syncs it. Automatic config sync stays a
+  documented follow-up.
+- **Team assignment.** The teams an agent's app is installed in, with consent status,
+  install, and an honest 501 for uninstall (`teamsProvisioner@1` publishes none).
+- **Agent Builder link.** Persona and behaviour design stays in the native builder; the
+  detail page deep-links to the draft that published this orchestrator's agent plugin, or
+  to the overview when no single draft matches — never to a guessed id.
+- **Memory context browser off the dev endpoint.** `/memory` now reads the new
+  authenticated `GET /api/v1/operator/memory/contexts/{list,file}`, whose path guard
+  normalizes every request into the `/memories/contexts` subtree segment-wise and rejects
+  traversal before the store is touched. The browser is no longer dev-only.
+
+Integration decisions worth recording, because two parallel units disagreed:
+
+- **One owner for `identity.last_error_detail`.** Two units projected the same key with
+  different wire shapes (camelCase vs snake_case). The camelCase
+  `TeamsProvisioningErrorDetail` — produced by `classifyTeamsProvisioningError` next to the
+  sentences it decodes — is the single owner; the duplicate snake_case projection and the
+  duplicate web-ui sentence parser (`app/_lib/teamsIdentityErrors.ts`) are gone. One
+  classifier, pinned by a round-trip test against the real producers.
+- **`team_id` is required, and the UI now says so.** `TeamsIdentityProvisionSchema` declares
+  it `z.string().min(1)` and the runner needs it to reach `installToTeam`, but the create
+  form invited an empty value and the re-run action posted `{}` — both a guaranteed 400.
+  The form requires the field, `GET …/teams-identity` additionally returns the recorded
+  `team_id`, and a re-run resends it.
+- **A retarget can no longer fabricate an install.** `agent_teams_identities` keeps ONE
+  `team_id`, and the runner refuses a second enqueue with a RESOLVED `{status:'rejected'}`
+  that a fire-and-forget caller never sees. Both POSTs now refuse a conflicting retarget
+  with 409 BEFORE writing — for an already-installed row and for a run in flight toward
+  another team (`TeamsProvisioningJobRunner.runningTeamId`) — and a refused enqueue is
+  recorded instead of dropped.
+
 ### Changed — one `teams_bot` projection + a decoded `last_error` for the operator UI (#860 W2a)
 
 2026-08-27 — Groundwork for the operator-facing team↔agent screens, no schema change and

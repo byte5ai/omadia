@@ -411,6 +411,22 @@ export class TeamsProvisioningJobRunner {
     return this.inFlight.has(agentId);
   }
 
+  /**
+   * The team an in-flight run is installing into, or `null` when nothing is
+   * running for this agent.
+   *
+   * Exposed for the operator routes: `agent_teams_identities` keeps a SINGLE
+   * `team_id` column, so re-targeting a run that is already under way would
+   * overwrite the only record of where the app is actually being installed.
+   * {@link enqueue} refuses that with a `rejected` RESULT — it does NOT
+   * reject the promise — which a fire-and-forget caller cannot observe in
+   * time to answer the request. Reading the in-flight target lets the route
+   * refuse BEFORE it mutates the row.
+   */
+  runningTeamId(agentId: string): string | null {
+    return this.inFlight.get(agentId)?.teamId ?? null;
+  }
+
   /** Stop accepting work and release every pending retry delay. An
    *  in-flight accessor call finishes on its own; its run then ends at the
    *  next stop-check between chain steps (that step's own store write has

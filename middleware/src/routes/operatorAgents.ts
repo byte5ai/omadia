@@ -227,6 +227,13 @@ export interface OperatorTeamsProvisioningRunner {
     readonly teamId: string;
   }): Promise<unknown>;
   isRunning(agentId: string): boolean;
+  /** Install target of the run currently in flight, `null` when idle. The
+   *  routes need it BEFORE they touch the row: a concurrent enqueue for a
+   *  DIFFERENT team is refused by the runner with a RESOLVED
+   *  `{ status: 'rejected' }` result rather than a rejected promise, so a
+   *  fire-and-forget caller cannot learn about the refusal in time. See
+   *  {@link assertTeamRetargetAllowed}. */
+  runningTeamId(agentId: string): string | null;
 }
 
 export interface OperatorTeamsIdentityDeps {
@@ -463,6 +470,117 @@ export function projectTeamsConsent(
     return { status: 'granted', missing_scopes: [], source: 'provisioning_state' };
   }
   return { status: 'unknown', missing_scopes: [], source: 'none' };
+}
+
+/**
+ * Refuse a team retarget that would leave the row asserting an install that
+ * never happened (W2a, epic #860).
+ *
+ * `agent_teams_identities` keeps ONE `team_id` (migration 0049) and
+ * `teamsProvisioner@1` publishes no uninstall, so two writers can corrupt the
+ * team read model:
+ *
+ *  - an already-`installed` row — overwriting `team_id` leaves the real
+ *    install in the old team with nothing recording it, and
+ *    {@link projectInstalledTeams} would then publish the NEW team as
+ *    installed on the strength of that column alone;
+ *  - a run in flight toward another team — `installToTeam` uses the teamId
+ *    captured at enqueue, so the app lands in the OLD team while the row
+ *    claims the new one. The runner does refuse the second enqueue, but as a
+ *    RESOLVED `{ status: 'rejected' }` result, which a fire-and-forget caller
+ *    cannot observe before it answers 202.
+ *
+ * Both are refused with 409 BEFORE any store write. Returns `true` when the
+ * response has been sent — the caller must return immediately.
+ */
+export function refuseConflictingTeamRetarget(
+  res: Response,
+  deps: OperatorTeamsIdentityDeps,
+  agent: { readonly id: string; readonly slug: string },
+  row: OperatorTeamsIdentityRecord,
+  requestedTeamId: string | undefined,
+): boolean {
+  if (requestedTeamId === undefined) return false;
+
+  if (
+    row.state === 'installed' &&
+    row.teamId !== null &&
+    row.teamId !== requestedTeamId
+  ) {
+    res.status(409).json({
+      error: 'team_install_conflict',
+      message: `agent '${agent.slug}' is already installed in team '${row.teamId}' — one team per agent is all migration 0049 records, and the connector publishes no uninstall, so switching teams would leave an untracked install behind.`,
+      installed_team_id: row.teamId,
+      requested_team_id: requestedTeamId,
+    });
+    return true;
+  }
+
+  const inFlightTeamId = deps.runner.runningTeamId(agent.id);
+  if (inFlightTeamId !== null && inFlightTeamId !== requestedTeamId) {
+    res.status(409).json({
+      error: 'team_install_conflict',
+      message: `a provisioning run targeting team '${inFlightTeamId}' is already in flight for agent '${agent.slug}' — wait for it to finish, then re-run for team '${requestedTeamId}'.`,
+      pending_team_id: inFlightTeamId,
+      requested_team_id: requestedTeamId,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+/** A `{ status: 'rejected' }` run result carries its reason in `detail`. The
+ *  runner RESOLVES with it instead of rejecting, so a bare `.catch()` would
+ *  drop it silently. */
+function rejectedRunDetail(result: unknown): string | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const record = result as { status?: unknown; detail?: unknown; reason?: unknown };
+  if (record.status !== 'rejected') return null;
+  if (typeof record.detail === 'string') return record.detail;
+  if (typeof record.reason === 'string') return `provisioning run refused: ${record.reason}`;
+  return 'provisioning run refused';
+}
+
+/**
+ * Start (or resume) the provisioning chain without awaiting the run.
+ *
+ * Fire-and-forget by design — the chain takes minutes — but NOT fire-and-
+ * forget-the-outcome: a refusal arrives as a resolved `{status:'rejected'}`
+ * and a stub/regression bug arrives as a rejection. Both are funnelled into
+ * `recordEnqueueFailure`, so the status endpoint can say WHY nothing is
+ * running instead of looking like a healthy just-enqueued row. A run that
+ * merely FAILS is not recorded here — the runner already wrote `last_error`
+ * with far better detail.
+ */
+function startProvisioningRun(
+  deps: OperatorTeamsIdentityDeps,
+  agent: { readonly id: string; readonly slug: string },
+  teamId: string,
+): void {
+  void Promise.resolve(deps.runner.enqueue({ agentId: agent.id, teamId }))
+    .then((result: unknown) => {
+      const refused = rejectedRunDetail(result);
+      if (refused === null) return;
+      console.warn(
+        `[operator-agents] teams provisioning for '${agent.slug}' was refused: ${refused}`,
+      );
+      void deps.store
+        .recordEnqueueFailure?.(agent.id, refused)
+        .catch(() => undefined);
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `[operator-agents] teams provisioning enqueue for '${agent.slug}' failed:`,
+        err,
+      );
+      void deps.store
+        .recordEnqueueFailure?.(
+          agent.id,
+          err instanceof Error ? err.message : String(err),
+        )
+        .catch(() => undefined);
+    });
 }
 
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
@@ -943,6 +1061,17 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
+      // A re-run may not silently RETARGET the install: this route writes the
+      // same single `team_id` column the team read model publishes, so an
+      // 'installed' row or an in-flight run toward another team is a 409 —
+      // before any write. See refuseConflictingTeamRetarget.
+      const current = await deps.store.getByAgentId(existing.id);
+      if (
+        current &&
+        refuseConflictingTeamRetarget(res, deps, existing, current, body.team_id)
+      ) {
+        return;
+      }
       let row: OperatorTeamsIdentityRecord;
       try {
         row = await deps.store.ensureForAgent({
@@ -962,25 +1091,7 @@ export function createOperatorAgentsRouter(
         }
         throw err;
       }
-      // Fire-and-forget: the runner resolves the run in the background and
-      // never rejects by contract; the catch is a stub/regression guard —
-      // and it persists the failure into last_error (best-effort) so the
-      // status endpoint can show WHY nothing is running instead of looking
-      // like a healthy just-enqueued row.
-      void Promise.resolve(
-        deps.runner.enqueue({ agentId: existing.id, teamId: body.team_id }),
-      ).catch((err: unknown) => {
-        console.error(
-          `[operator-agents] teams-identity enqueue for '${slug}' failed:`,
-          err,
-        );
-        void deps.store
-          .recordEnqueueFailure?.(
-            existing.id,
-            err instanceof Error ? err.message : String(err),
-          )
-          .catch(() => undefined);
-      });
+      startProvisioningRun(deps, existing, body.team_id);
       res.status(202).json({
         ok: true,
         agent: existing.slug,
@@ -1030,6 +1141,12 @@ export function createOperatorAgentsRouter(
           tenant_id: row.tenantId,
           teams_app_id: row.teamsAppId,
           teams_app_external_id: row.teamsAppExternalId,
+          // Additive (W2a): the recorded install target. The operator UI
+          // needs it to re-run provisioning without asking the operator to
+          // retype a team id it already has — the POST schema requires
+          // `team_id` and there is no fall-back-to-stored path on the
+          // server. `null` on a row created before a target was known.
+          team_id: row.teamId,
           last_error: row.lastError,
           // Additive (W2a): the same failure, decoded by the runner's own
           // classifier. The UI renders from `code` + the typed arguments and
@@ -1134,32 +1251,26 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
-      if (row.state === 'installed') {
-        if (row.teamId === body.team_id) {
-          // Idempotent: the app is already installed in exactly this team.
-          res.json({
-            ok: true,
-            agent: agent.slug,
-            team_id: body.team_id,
-            state: row.state,
-            already_installed: true,
-            // Honest, not assumed: a run may still be settling even though
-            // the row already reads 'installed'.
-            running: deps.runner.isRunning(agent.id),
-          });
-          return;
-        }
-        // Re-targeting would overwrite the ONLY team_id the schema has: the
-        // app would stay installed in the tracked team with nothing left
-        // recording it, and no uninstall exists to clean it up. Refuse
-        // instead of silently losing the install — see
-        // TEAMS_ASSIGNMENT_CAPABILITIES.multi_team.
-        res.status(409).json({
-          error: 'team_install_conflict',
-          message: `agent '${agent.slug}' is already installed in team '${row.teamId ?? 'unknown'}' — one team per agent is all migration 0049 records, and the connector publishes no uninstall, so switching teams would leave an untracked install behind.`,
-          installed_team_id: row.teamId,
-          requested_team_id: body.team_id,
+      if (row.state === 'installed' && row.teamId === body.team_id) {
+        // Idempotent: the app is already installed in exactly this team.
+        res.json({
+          ok: true,
+          agent: agent.slug,
+          team_id: body.team_id,
+          state: row.state,
+          already_installed: true,
+          // Honest, not assumed: a run may still be settling even though
+          // the row already reads 'installed'.
+          running: deps.runner.isRunning(agent.id),
         });
+        return;
+      }
+      // Re-targeting would overwrite the ONLY team_id the schema has — for an
+      // already-installed row AND for a run still in flight toward another
+      // team. Both are refused before any write; see
+      // refuseConflictingTeamRetarget and
+      // TEAMS_ASSIGNMENT_CAPABILITIES.multi_team.
+      if (refuseConflictingTeamRetarget(res, deps, agent, row, body.team_id)) {
         return;
       }
       // Record the (new) target through the store's own gate, then let the
@@ -1171,20 +1282,7 @@ export function createOperatorAgentsRouter(
         displayName: row.displayName,
         teamId: body.team_id,
       });
-      void Promise.resolve(
-        deps.runner.enqueue({ agentId: agent.id, teamId: body.team_id }),
-      ).catch((err: unknown) => {
-        console.error(
-          `[operator-agents] team install for '${agent.slug}' failed to enqueue:`,
-          err,
-        );
-        void deps.store
-          .recordEnqueueFailure?.(
-            agent.id,
-            err instanceof Error ? err.message : String(err),
-          )
-          .catch(() => undefined);
-      });
+      startProvisioningRun(deps, agent, body.team_id);
       res.status(202).json({
         ok: true,
         agent: agent.slug,

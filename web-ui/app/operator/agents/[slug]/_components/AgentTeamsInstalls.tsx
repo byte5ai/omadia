@@ -193,10 +193,23 @@ export function AgentTeamsInstalls({
   );
 
   const installed = data?.teams ?? [];
+  /**
+   * A run that has not reached `installed` publishes NO team (the read model
+   * only reports an install once the chain finished), so `installed.length`
+   * alone leaves the whole in-flight and stalled window wide open: the
+   * operator could type a second team, the route would take the
+   * not-yet-installed branch, overwrite the only `team_id` column and enqueue
+   * a second run — while run #1 still installs into the ORIGINAL team, which
+   * nothing then records and no uninstall can remove. `pending_team_id` is the
+   * field that closes it, and the panel already has it in hand.
+   */
+  const pendingTeamId = data?.pending_team_id ?? null;
   const canInstall =
     data !== null &&
     data.capabilities.install &&
     data.provisioner_installed &&
+    pendingTeamId === null &&
+    !data.running &&
     (installed.length === 0 || data.capabilities.multi_team);
   const inFlight = busy !== null;
 
@@ -332,9 +345,16 @@ export function AgentTeamsInstalls({
             ) : null}
           </div>
 
+          {/* `pending_team_id` is set for EVERY non-installed state, terminal
+              failures included, so it alone cannot claim a run is under way.
+              `running` is what separates "still working on it" from "stopped
+              here" — asserting the first about the second leaves an operator
+              waiting for a run that already failed. */}
           {data.pending_team_id !== null ? (
             <div className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] text-[color:var(--fg-muted)]">
-              {t('pendingHint', { teamId: data.pending_team_id })}
+              {data.running
+                ? t('pendingHint', { teamId: data.pending_team_id })
+                : t('pendingStoppedHint', { teamId: data.pending_team_id })}
             </div>
           ) : null}
 
