@@ -10,6 +10,7 @@ import {
   type AgentGraphStore,
   type ChatSessionStore,
   type ConfigStore,
+  type ContextMemoryMode,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 
@@ -66,6 +67,8 @@ interface AgentPluginCatalogEntry {
  *   PUT    /api/v1/operator/agents/:slug/plugins         replace agent plugin set
  *   PATCH  /api/v1/operator/agents/:slug/plugins         enable/disable ONE plugin (body: { id, enabled })
  *   GET    /api/v1/operator/agents/:slug/grants          per-agent tool grants + plugin MCP grants + grant epoch
+ *   GET    /api/v1/operator/agents/:slug/context-memory  read the W5 memory-ACL rollout mode (#899)
+ *   PUT    /api/v1/operator/agents/:slug/context-memory  set the W5 memory-ACL rollout mode (body: { mode })
  *   POST   /api/v1/operator/agents/:slug/teams-identity   create-or-provision Teams identity (async, W1a #860)
  *   GET    /api/v1/operator/agents/:slug/teams-identity   Teams identity provisioning status
  *   GET    /api/v1/operator/agents/:slug/teams            teams the agent's app is installed in (derived, W2a #860)
@@ -97,6 +100,28 @@ const AgentPatchSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
   status: z.enum(['enabled', 'disabled']).optional(),
+});
+
+/**
+ * W5 memory-ACL rollout switch (#899).
+ *
+ * The union is spelled out here rather than imported as a value:
+ * `ContextMemoryMode` is a TYPE-only export, and the persisted column carries
+ * its own CHECK constraint (migration 0050) over the same three values. Both
+ * ends validating independently is the point — an operator must not be able to
+ * write a mode the runtime reads back as `off`, which is exactly the failure
+ * that makes a security switch look enabled while changing nothing.
+ *
+ * The assignment below is a compile-time pin: it stops compiling the moment
+ * this runtime union drifts from the type the orchestrator actually consumes.
+ */
+export const CONTEXT_MEMORY_MODES = ['off', 'enforce', 'enforce-strict'] as const;
+
+const _contextMemoryModesPin: readonly ContextMemoryMode[] = CONTEXT_MEMORY_MODES;
+void _contextMemoryModesPin;
+
+const ContextMemorySchema = z.object({
+  mode: z.enum(CONTEXT_MEMORY_MODES),
 });
 
 const AgentPluginsSchema = z.object({
@@ -843,6 +868,70 @@ export function createOperatorAgentsRouter(
       await live.store.deleteAgent(existing.id);
       await live.registry.reload();
       res.json({ ok: true });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── context-memory rollout switch (W5 memory-ACL, #899) ─────────────
+  // `agents.context_memory` (migration 0050) shipped as a bare column: the
+  // only way to enable the ACL was a hand-written UPDATE. These two routes
+  // are the supported path.
+  //
+  // Read and write are separate endpoints rather than fields on
+  // `PATCH /:slug` on purpose. That handler is the dashboard's rename/enable
+  // surface and sends whatever the form holds; folding a security switch into
+  // it would let an unrelated edit carry a memory-scope change along with it.
+  router.get('/:slug/context-memory', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Deny-default read: the store already narrows an unknown/NULL column to
+      // `'off'`, and repeating it here keeps the UI from rendering a mode the
+      // runtime would not honour.
+      const mode: ContextMemoryMode = normalizeContextMemoryMode(
+        agent.contextMemory,
+      );
+      res.json({ slug: agent.slug, mode, modes: CONTEXT_MEMORY_MODES });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/context-memory', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = ContextMemorySchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const previous = normalizeContextMemoryMode(agent.contextMemory);
+      await live.store.updateAgent(agent.id, { contextMemory: body.mode });
+      // Same reload contract as every other write on this router: the running
+      // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
+      // next turn is already scoped. Without it the switch would only take
+      // effect on the next process restart.
+      await live.registry.reload();
+      if (previous !== body.mode) {
+        // Memory-scope changes are the kind of change an incident review wants
+        // to find in the log, so it gets the shared security-audit prefix.
+        console.warn(
+          `[security-audit] context_memory ${previous} -> ${body.mode} for agent ${agent.slug}`,
+        );
+      }
+      res.json({ ok: true, mode: body.mode });
     } catch (err) {
       badRequest(res, err);
     }
@@ -1661,6 +1750,19 @@ export function createOperatorAgentsRouter(
   });
 
   return router;
+}
+
+/**
+ * Deny-default narrowing for the persisted rollout mode (#899).
+ *
+ * Mirrors `parseContextMemoryMode` in the orchestrator's ConfigStore: an
+ * absent, NULL, or unrecognised value reads as `'off'`. Duplicated rather
+ * than imported because the orchestrator keeps it private, and because the
+ * read surface must never be the place where an unknown value gets promoted
+ * into something the operator sees as "on".
+ */
+function normalizeContextMemoryMode(raw: unknown): ContextMemoryMode {
+  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
 }
 
 function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> {

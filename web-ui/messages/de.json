@@ -1909,6 +1909,35 @@
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
     },
+    "contextMemory": {
+      "heading": "Chat-Kontext-Memory",
+      "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. „Aus“ ist die Voreinstellung und entspricht dem Verhalten vor dieser Funktion.",
+      "loading": "Memory-Einstellung wird geladen…",
+      "stateSummary": "Aktuell: {mode}",
+      "stateUnknown": "Aktuell: unbekannt",
+      "save": "Speichern",
+      "saving": "Wird gespeichert",
+      "unchanged": "Keine ungespeicherte Änderung.",
+      "semanticsHeading": "Vor dem Einschalten lesen",
+      "semanticsTeam": "Ein Turn aus einem Team-Kontext schreibt in seine eigene Ebene und in die gemeinsame Team-Ebene — dort lesen sich Teamkolleginnen und -kollegen gegenseitig.",
+      "semanticsAgent": "Das eigene Memory des Orchestrators bleibt lesbar, wird für Kontext-Turns aber schreibgeschützt. „Merk dir das global“ kann damit kein Wissen mehr von Team A nach Team B tragen.",
+      "semanticsApi": "Turns über die API bringen keinen Chat-Kontext mit und erreichen deshalb nur das private Memory des Orchestrators selbst — nie einen Team- oder Kanal-Baum.",
+      "acknowledge": "Mir ist klar, wie das Memory für diesen Orchestrator aufgeteilt wird.",
+      "modes": {
+        "off": {
+          "label": "Aus",
+          "description": "Ein gemeinsames Memory für alle Turns. Voreinstellung und identisch mit dem Verhalten vor dieser Funktion."
+        },
+        "enforce": {
+          "label": "Je Kontext getrennt",
+          "description": "Jeder Chat-Kontext bekommt ein eigenes Memory. Das eigene Memory des Orchestrators bleibt lesbar, vorhandenes Wissen ist also weiter zitierbar."
+        },
+        "enforce-strict": {
+          "label": "Getrennt und abgeschottet",
+          "description": "Jeder Chat-Kontext bekommt ein eigenes Memory und kann das eigene Memory des Orchestrators gar nicht lesen. Für Kontexte, die nichts teilen dürfen."
+        }
+      }
+    },
     "teamsInstalls": {
       "heading": "Teams-Zuordnung",
       "hint": "In welchem Microsoft-Teams-Team die App dieses Orchestrators installiert ist und ob der Tenant den dafür nötigen Berechtigungen zugestimmt hat.",

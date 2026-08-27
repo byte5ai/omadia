@@ -6316,8 +6316,23 @@ export class Orchestrator {
   private async dispatchTool(
     name: string,
     input: unknown,
-    observer?: AskObserver,
-    turnMemory?: TurnMemoryBinding,
+    observer: AskObserver | undefined,
+    /**
+     * W5 (#899) — REQUIRED position, `| undefined` rather than `?`.
+     *
+     * Every other signature on the threading path takes the binding in a
+     * required position; these three took it optionally, so a call site that
+     * simply forgot the argument still compiled and silently fell back to
+     * `this.memoryToolHandler` — the agent-global stack. That was verified,
+     * not assumed: dropping the argument at the two tool-loop call sites
+     * passed `tsc` cleanly and turned every case in
+     * `test/orchestrator/contextMemoryTurnBinding.test.ts` red at runtime.
+     *
+     * A silent widening of the memory scope is the one failure this wave
+     * exists to prevent, so it should be a compile error, not a test failure.
+     * Callers with genuinely no binding pass an explicit `undefined`.
+     */
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<string> {
     // #575 — the audience floor's egress guard, at the ONE choke point every
     // tool dispatch passes through. Placed before the deadline machinery so a
@@ -6375,9 +6390,10 @@ export class Orchestrator {
   private async dispatchToolDeadlined(
     name: string,
     input: unknown,
-    observer?: AskObserver,
-    deadlineSignal?: AbortSignal,
-    turnMemory?: TurnMemoryBinding,
+    observer: AskObserver | undefined,
+    deadlineSignal: AbortSignal | undefined,
+    /** Required position — see {@link Orchestrator.dispatchTool}. */
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -6753,8 +6769,9 @@ export class Orchestrator {
   private async dispatchToolInner(
     name: string,
     input: unknown,
-    observer?: AskObserver,
-    turnMemory?: TurnMemoryBinding,
+    observer: AskObserver | undefined,
+    /** Required position — see {@link Orchestrator.dispatchTool}. */
+    turnMemory: TurnMemoryBinding | undefined,
   ): Promise<string> {
     // Per-orchestrator memory isolation: when this Agent has a scoped
     // memory-tool handler, it MUST shadow the globally-registered `memory`

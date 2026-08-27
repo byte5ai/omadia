@@ -28,6 +28,39 @@ now carries an explicit "Abrechnung:"/"Billing:" prefix so it's unmistakably a
 billing-model label, not a second detection state. Display-string change only —
 `cliBackendDetector.ts`'s `CliBillingPosture` type and wire field are unchanged.
 
+### Added — der Kontext-Memory-ACL lässt sich aus der Operator-UI einschalten (#899)
+
+2026-08-27 — W5 (#881) hatte die komplette Chat-Kontext-Memory-ACL ausgeliefert, aber
+hinter `agents.context_memory` — einer Spalte ohne UI und ohne API. Einschalten ging nur
+per Hand-`UPDATE`, womit die ganze Wave praktisch inert war. Neu: `GET`/`PUT
+/api/v1/operator/agents/:slug/context-memory` auf dem bestehenden Operator-Router
+(`{ ok: true }`-Envelope, `requireAuth`) und ein Control auf der Agent-Detailseite.
+`PUT` validiert gegen dieselbe Werteliste wie der CHECK-Constraint der Migration `0050`
+(`off` | `enforce` | `enforce-strict`), lehnt Unbekanntes mit `400 invalid_body` ab
+statt es still auf `off` zu mappen, loggt den Wechsel mit `[security-audit]` und löst
+einen `registry.reload()` aus — der nächste Turn läuft bereits im neuen Scope. Der Modus
+liegt bewusst NICHT auf dem Umbenennen-/Aktivieren-`PATCH`, damit eine Änderung am
+Memory-Scope nicht als Beifang einer unabhängigen Bearbeitung mitreist. Die UI zeigt vor
+dem Einschalten die drei Semantiken (Team-Tier read-write, Agent-Tier read-only,
+API-Turns nur agent-privat) und verlangt eine ausdrückliche Bestätigung; Zurückschalten
+auf `off` ist nicht bestätigungspflichtig. Kein Schema-Change. EN/DE vollständig.
+
+### Fixed — die Turn-Bindung der Memory-ACL kann nicht mehr stillschweigend verloren gehen (#899)
+
+2026-08-27 — `dispatchTool`, `dispatchToolDeadlined` und `dispatchToolInner` nahmen die
+`TurnMemoryBinding` in einer OPTIONALEN Position entgegen, während alle sechs übrigen
+Signaturen auf dem Pfad sie verpflichtend führen. Eine Aufrufstelle, die das Argument
+schlicht vergisst, kompilierte damit sauber und fiel zur Laufzeit still auf den
+agent-globalen Memory-Stack zurück — genau die lautlose Scope-Ausweitung, gegen die die
+Wave gebaut ist. Nachgewiesen, nicht vermutet: das Argument an den beiden Tool-Loop-
+Aufrufstellen zu streichen passierte `tsc`. Die drei Parameter sind jetzt required
+(`TurnMemoryBinding | undefined`), Laufzeitverhalten unverändert; dieselbe Mutation
+scheitert nun im Typecheck. Dazu die erste Integrationsabdeckung der Bindung überhaupt
+(`middleware/test/orchestrator/contextMemoryTurnBinding.test.ts`): echte Turns über
+`runTurn` UND `chatStream` mit einem Teams-`TurnOrigin`, die den physischen Schreibpfad
+im Root-Store prüfen — bislang endete jede W5-Suite beim Handler des `MemoryBinder`,
+und der Streaming-Pfad war nie durchlaufen worden.
+
 ### Fixed — dashboard onboarding step 3 no longer contradicts its own done badge (#886)
 
 2026-08-27 — Step 3 "Plugins installieren" ticked its INSTALLIERT badge from

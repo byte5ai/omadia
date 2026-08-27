@@ -220,6 +220,79 @@ export async function toggleAgentPlugin(
   );
 }
 
+// ── W5 memory-ACL rollout switch (#899) ────────────────────────────────
+
+/**
+ * The three modes `agents.context_memory` accepts. Structural contract with
+ * the middleware, same arrangement as {@link TEAMS_PROVISIONING_STATES}: the
+ * column's CHECK constraint (migration 0050) owns the vocabulary, the route
+ * re-states it, and this list mirrors it so the radio group renders without a
+ * round trip. {@link ContextMemoryDto.modes} carries the server's own copy —
+ * the component renders THAT and falls back to this list, so a middleware that
+ * grows a fourth mode does not need a UI release to expose it.
+ */
+export const CONTEXT_MEMORY_MODES = [
+  'off',
+  'enforce',
+  'enforce-strict',
+] as const;
+
+export type ContextMemoryMode = (typeof CONTEXT_MEMORY_MODES)[number];
+
+const CONTEXT_MEMORY_MODE_SET: ReadonlySet<string> = new Set(
+  CONTEXT_MEMORY_MODES,
+);
+
+/**
+ * Narrow an arbitrary string to a known mode, deny-default to `'off'`.
+ *
+ * Mirrors the server's `normalizeContextMemoryMode` and the orchestrator's
+ * `parseContextMemoryMode`: the UI must never claim an agent is enforcing
+ * when the runtime would route it as `off`. A security control that reads
+ * "on" while behaving as "off" is worse than one that is plainly off.
+ */
+export function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
+  return typeof raw === 'string' && CONTEXT_MEMORY_MODE_SET.has(raw)
+    ? (raw as ContextMemoryMode)
+    : 'off';
+}
+
+export interface ContextMemoryDto {
+  slug: string;
+  mode: ContextMemoryMode;
+  /** The union the SERVER accepts. Rendered in preference to the local
+   *  constant so the control follows the middleware, not the bundle. */
+  modes: readonly string[];
+}
+
+/** Read the W5 memory-ACL rollout mode of one agent (issue #899). */
+export async function getAgentContextMemory(
+  slug: string,
+): Promise<ContextMemoryDto> {
+  const res = await callJson<ContextMemoryDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/context-memory`,
+  );
+  return { ...res, mode: parseContextMemoryMode(res.mode) };
+}
+
+/**
+ * Set the W5 memory-ACL rollout mode of one agent (issue #899).
+ *
+ * A dedicated endpoint rather than a field on `patchOperatorAgent`: that call
+ * is the dashboard's rename/enable form and sends whatever it holds, so
+ * folding a memory-scope change into it would let an unrelated edit carry one
+ * along. The server reloads the registry, so the next turn is already scoped.
+ */
+export async function setAgentContextMemory(
+  slug: string,
+  mode: ContextMemoryMode,
+): Promise<{ ok: boolean; mode: ContextMemoryMode }> {
+  return callJson<{ ok: boolean; mode: ContextMemoryMode }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/context-memory`,
+    { method: 'PUT', body: JSON.stringify({ mode }) },
+  );
+}
+
 /** One `agent_tool_grants` row of the per-agent grant read model (issue
  *  #861). Snake_case mirrors the REST payload verbatim, like the other
  *  operator-agents DTOs in this file. */
