@@ -100,6 +100,14 @@ export interface AgentPatch {
   readonly status?: AgentStatus;
   readonly modelRouting?: Record<string, unknown> | null;
   readonly canvasPosition?: CanvasPosition | null;
+  /**
+   * W5 memory-ACL rollout switch (#899). Absent leaves the stored value
+   * untouched: the UPDATE below uses `COALESCE`, so a patch that does not
+   * mention the flag can never silently reset an enforcing agent back to
+   * `'off'`. The column's CHECK constraint (migration 0050) covers the same
+   * three values, so a widened union cannot reach the database either.
+   */
+  readonly contextMemory?: ContextMemoryMode;
 }
 
 export interface AgentPluginInput {
@@ -376,6 +384,7 @@ export class ConfigStore {
          status          = COALESCE($5, status),
          model_routing   = COALESCE($6::jsonb, model_routing),
          canvas_position = COALESCE($7::jsonb, canvas_position),
+         context_memory  = COALESCE($8, context_memory),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -387,6 +396,7 @@ export class ConfigStore {
         patch.status ?? null,
         patch.modelRouting ? JSON.stringify(patch.modelRouting) : null,
         patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
+        patch.contextMemory ?? null,
       ],
     );
     const row = rows[0];

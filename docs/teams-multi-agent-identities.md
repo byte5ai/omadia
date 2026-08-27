@@ -746,9 +746,31 @@ das Memory-Routing nicht verändert. Es gibt **keinen Flag-Day**: jede Kombinati
 alter/neuer Middleware und altem/neuem Channel-Plugin verhält sich wie vorher, bis ein
 Operator einen Agenten bewusst umschaltet.
 
-> **Heute noch von Hand:** Es gibt derzeit **keine Operator-UI und keinen
-> API-Endpunkt**, um `agents.context_memory` zu setzen — der Wert wird direkt in der
-> Datenbank gesetzt. Das ist eine bekannte Lücke, kein Versehen des Rollouts.
+### Wo man den Schalter umlegt
+
+Auf der Agent-Detailseite `/operator/agents/<slug>`, Abschnitt **Chat-Kontext-Memory**,
+neben den anderen Einstellungen des Agenten. Die drei Modi stehen dort als Auswahl;
+beim Wechsel **weg von „Aus"** blendet die Seite die drei Semantiken aus dem nächsten
+Abschnitt ein und verlangt eine ausdrückliche Bestätigung, bevor Speichern aktiv wird.
+Zurück auf „Aus" ist bewusst nicht bestätigungspflichtig — die sichere Richtung darf
+nie schwerer sein als die unsichere.
+
+Dahinter liegen zwei operator-authentifizierte Routen (#899):
+
+```
+GET /api/v1/operator/agents/<slug>/context-memory   → { slug, mode, modes }
+PUT /api/v1/operator/agents/<slug>/context-memory     { mode: 'off' | 'enforce' | 'enforce-strict' }
+```
+
+`PUT` validiert gegen dieselbe Werteliste wie der CHECK-Constraint der Migration `0050`
+— ein unbekannter Modus wird mit `400 invalid_body` **abgelehnt und nicht** still auf
+`off` gemappt — und löst danach einen `registry.reload()` aus. Der nächste Turn läuft
+also bereits im neuen Scope; ein Neustart ist nicht nötig. Der Moduswechsel wird mit
+dem `[security-audit]`-Präfix geloggt.
+
+Der Modus liegt **nicht** auf `PATCH /operator/agents/<slug>` (dem Umbenennen-/
+Aktivieren-Formular). Eine Änderung am Memory-Scope soll nicht als Beifang einer
+unabhängigen Bearbeitung mitreisen.
 
 ### Was Operatoren vor dem Aktivieren wissen müssen
 
@@ -954,8 +976,12 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 - **`promoteMemory` ist nicht atomar.** Validierungsfehler lassen beide Tiers
   unberührt; ein Store-Fehler mitten im Schreiben nicht. Solche Antworten tragen
   `partial: true` (siehe Abschnitt 8).
-- **Kein Schalter für `agents.context_memory` in UI oder API.** Der Rollout-Modus wird
-  heute direkt in der Datenbank gesetzt.
+- **Der Schalter wirkt nur auf dem Orchestrator-Pfad.** Läuft ein Agent über den
+  `claude-cli`-Provider, beantwortet ein `CliChatAgent` den Turn, nicht der
+  `Orchestrator` — die Bindung wird dort nie gebildet, und der Modus bleibt folgenlos.
+  Ebenso greift die ACL nicht für ein **Sub-Agent**, dem das native `memory`-Tool
+  direkt zugeteilt wurde: dessen Handler zeigt auf den undekorierten Store. Beides ist
+  älter als diese Wave und in #899 dokumentiert (siehe dort den Befund im PR).
 
 ### Was in Arbeit ist
 
@@ -984,6 +1010,9 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 | App-Paket-Assets | `middleware/src/services/teamsAppPackageAssets.ts` |
 | Tabelle Teams-Identitäten | `middleware/migrations/0049_agent_teams_identities.sql` |
 | Rollout-Flag Memory-ACL | `middleware/migrations/0050_agent_context_memory_flag.sql` |
+| Schalter (API) | `middleware/src/routes/operatorAgents.ts` → `GET`/`PUT /:slug/context-memory` |
+| Schalter (UI) | `web-ui/app/operator/agents/[slug]/_components/AgentContextMemory.tsx` |
+| Turn-Bindung, echter Turn | `middleware/test/orchestrator/contextMemoryTurnBinding.test.ts` |
 | Conversation-Refs pro Bot | `middleware/packages/harness-knowledge-graph-neon/src/migrations/0031_teams_conversation_refs.sql` |
 | Memory-ACL im Detail | [`middleware-agent-handoff.md`](middleware-agent-handoff.md) → „Chat-Kontext-Memory-ACL" |
 | Operator-UI Teams-Identität | `web-ui/app/operator/agents/[slug]/_components/AgentTeamsIdentity.tsx`, `AgentTeamsInstalls.tsx` |

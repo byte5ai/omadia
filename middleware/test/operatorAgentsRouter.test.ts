@@ -50,6 +50,7 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 import {
+  CONTEXT_MEMORY_MODES,
   createOperatorAgentsRouter,
   defaultTeamsBotSecretRef,
   projectInstalledTeams,
@@ -72,6 +73,9 @@ interface AgentMem {
   description: string | null;
   privacyProfile: 'strict' | 'default';
   status: 'enabled' | 'disabled';
+  /** W5 memory-ACL rollout mode (#899). Optional exactly like the real
+   *  `AgentRow`, so a row seeded without it models a pre-0050 agent. */
+  contextMemory?: 'off' | 'enforce' | 'enforce-strict';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -166,6 +170,7 @@ class FakeConfigStore {
       description: string | null;
       privacyProfile: 'strict' | 'default';
       status: 'enabled' | 'disabled';
+      contextMemory: 'off' | 'enforce' | 'enforce-strict';
     }>,
   ): Promise<AgentMem> {
     const row = this.agents.get(id);
@@ -460,6 +465,130 @@ describe('createOperatorAgentsRouter', () => {
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
+  });
+
+  // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
+  describe('context-memory rollout switch (#899)', () => {
+    it('GET /:slug/context-memory defaults to off and advertises the union', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/context-memory`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        slug: string;
+        mode: string;
+        modes: string[];
+      };
+      assert.equal(body.slug, 'public');
+      assert.equal(body.mode, 'off');
+      // The UI renders its radio group from this list, so the route owns the
+      // union. A drift here would silently drop a mode from the operator's
+      // choices while the runtime still honours it.
+      assert.deepEqual(body.modes, ['off', 'enforce', 'enforce-strict']);
+    });
+
+    it('GET /:slug/context-memory reads an unknown persisted value as off', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      // A value written by a NEWER middleware during a rolling deploy, or by
+      // hand. Deny-default: the operator must not see "on" for a mode this
+      // process would route as off.
+      store.agents.set(agent.id, {
+        ...agent,
+        contextMemory: 'enforce-super-strict' as never,
+      });
+      const res = await fetch(`${baseUrl}/public/context-memory`);
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as { mode: string }).mode, 'off');
+    });
+
+    it('GET /:slug/context-memory 404s for an unknown agent', async () => {
+      const res = await fetch(`${baseUrl}/nope/context-memory`);
+      assert.equal(res.status, 404);
+      assert.equal(((await res.json()) as { error: string }).error, 'not_found');
+    });
+
+    it('PUT /:slug/context-memory persists the mode and triggers a reload', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/context-memory`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'enforce' }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { ok: true, mode: 'enforce' });
+      assert.equal((await store.getAgentBySlug('public'))?.contextMemory, 'enforce');
+      // Without the reload the switch would only take effect on the next
+      // process restart, which is the shape of bug that reads as "it did
+      // nothing" in production.
+      assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('PUT /:slug/context-memory accepts enforce-strict and switches back to off', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      for (const mode of ['enforce-strict', 'off'] as const) {
+        const res = await fetch(`${baseUrl}/public/context-memory`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+        assert.equal(res.status, 200);
+        assert.equal((await store.getAgentBySlug('public'))?.contextMemory, mode);
+      }
+    });
+
+    it('PUT /:slug/context-memory rejects a mode outside the union with 400', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/context-memory`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'enforce-ish' }),
+      });
+      assert.equal(res.status, 400);
+      assert.equal(((await res.json()) as { error: string }).error, 'invalid_body');
+      // Rejected, not coerced: an agent left untouched is auditable, an agent
+      // silently reset to `off` while the UI shows `enforce` is not.
+      assert.equal((await store.getAgentBySlug('public'))?.contextMemory, undefined);
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('PUT /:slug/context-memory 404s for an unknown agent and writes nothing', async () => {
+      const res = await fetch(`${baseUrl}/nope/context-memory`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'enforce' }),
+      });
+      assert.equal(res.status, 404);
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('PATCH /:slug leaves an enforcing agent enforcing', async () => {
+      // The dashboard's rename/enable form sends whatever it holds. It must
+      // not be able to carry a memory-scope change along with a rename.
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, contextMemory: 'enforce' });
+      const res = await fetch(`${baseUrl}/public`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      assert.equal(res.status, 200);
+      const after = await store.getAgentBySlug('public');
+      assert.equal(after?.name, 'Renamed');
+      assert.equal(after?.contextMemory, 'enforce');
+    });
+
+    it('the advertised union matches the CHECK constraint in migration 0050', async () => {
+      // The column's CHECK is the last line of defence. If the route offered a
+      // fourth mode, the write would fail at the database with a 500 instead
+      // of a validation error — so the two unions are pinned to each other.
+      const sql = await readFile(
+        new URL('../migrations/0050_agent_context_memory_flag.sql', import.meta.url),
+        'utf8',
+      );
+      const match = /context_memory\s+IN\s*\(([^)]*)\)/.exec(sql);
+      assert.ok(match, 'migration 0050 must CHECK context_memory against a value list');
+      const fromSql = [...match[1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+      assert.deepEqual(fromSql, [...CONTEXT_MEMORY_MODES]);
+    });
   });
 
   it('POST / creates an agent and triggers a reload', async () => {

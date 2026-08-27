@@ -1909,6 +1909,35 @@
         "unknown": "Loading grants failed: {detail}"
       }
     },
+    "contextMemory": {
+      "heading": "Chat-context memory",
+      "hint": "Controls whether this orchestrator keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
+      "loading": "Loading the memory setting…",
+      "stateSummary": "Current: {mode}",
+      "stateUnknown": "Current: unknown",
+      "save": "Save",
+      "saving": "Saving",
+      "unchanged": "No unsaved change.",
+      "semanticsHeading": "Read this before switching it on",
+      "semanticsTeam": "A turn from a team context writes into its own tier and into the shared team tier — that is the tier teammates read each other in.",
+      "semanticsAgent": "The orchestrator's own memory stays readable but becomes read-only for context turns, so “remember this globally” can no longer carry knowledge from one team to another.",
+      "semanticsApi": "Turns from the API carry no chat context, so they only ever reach the private memory of the orchestrator itself — never a team or channel tree.",
+      "acknowledge": "I understand how memory will be split for this orchestrator.",
+      "modes": {
+        "off": {
+          "label": "Off",
+          "description": "One shared memory tree for every turn. The default, and identical to the behaviour before this feature."
+        },
+        "enforce": {
+          "label": "Separate per context",
+          "description": "Each chat context gets its own memory tree. The orchestrator's own memory stays readable, so existing knowledge can still be quoted."
+        },
+        "enforce-strict": {
+          "label": "Separate and sealed",
+          "description": "Each chat context gets its own memory tree and cannot read the orchestrator's own memory at all. Choose this when contexts must not share anything."
+        }
+      }
+    },
     "teamsInstalls": {
       "heading": "Teams assignment",
       "hint": "Which Microsoft Teams team this orchestrator's app is installed in, and whether the tenant has consented to the permissions the install needs.",

@@ -9,6 +9,7 @@ import {
   listOperatorAgents,
   type OperatorAgentsListDto,
 } from '../../../_lib/agents';
+import { AgentContextMemory } from './_components/AgentContextMemory';
 import { AgentDetail } from './_components/AgentDetail';
 import { AgentMcpServers } from './_components/AgentMcpServers';
 import { AgentToolGrants } from './_components/AgentToolGrants';
@@ -110,6 +111,10 @@ export default async function OperatorAgentDetailPage({
           <div className="mt-8 space-y-8">
             <AgentToolGrants slug={agent.slug} />
             <AgentMcpServers slug={agent.slug} />
+            {/* #899 — the W5 memory-ACL rollout switch. Sits with the other
+                per-agent capability settings rather than in a global admin
+                page: the column is per agent, and so is the blast radius. */}
+            <AgentContextMemory slug={agent.slug} />
           </div>
         </>
       )}
