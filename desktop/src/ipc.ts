@@ -1,6 +1,7 @@
 import { ipcMain, dialog, app, BrowserWindow, WebContents } from 'electron';
 import {
   CH,
+  ApiKeyProvider,
   AppState,
   TestLlmKeyRequest,
   TestLlmKeyResult,
@@ -14,7 +15,7 @@ import { isSetupComplete } from './setupState';
 import { setDataDirOverride } from './paths';
 import { log } from './log';
 
-const PROVIDER_ENV: Record<WizardConfig['provider'], string> = {
+const PROVIDER_ENV: Record<ApiKeyProvider, string> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',
 };
@@ -24,6 +25,18 @@ export interface IpcDeps {
   boot: (forward: (p: BootProgress) => void) => Promise<string>;
   /** Called once the UI is serving so main can swap the wizard for the app window. */
   onReady: (uiUrl: string) => void;
+}
+
+/**
+ * Whether this provider needs an API key stored and validated.
+ *
+ * `subscription` runs on an existing Claude/Codex CLI login, so there is no key
+ * to enter, probe, or persist. A type predicate rather than a plain boolean so
+ * the true branch narrows to the providers `PROVIDER_ENV` actually has an entry
+ * for — the lookup can then never be reached with an unmapped provider.
+ */
+export function requiresApiKey(provider: WizardConfig['provider']): provider is ApiKeyProvider {
+  return provider !== 'subscription';
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -57,8 +70,13 @@ export function registerIpc(deps: IpcDeps): void {
         setDataDirOverride(config.dataDir);
       }
       // Persist the provider key (encrypted) BEFORE writing setup, so a crash
-      // between the two never leaves "configured" without a usable key.
-      setProviderKey(PROVIDER_ENV[config.provider], config.apiKey.trim());
+      // between the two never leaves "configured" without a usable key. A
+      // subscription setup has no key to persist: the kernel boots without one
+      // (both provider vars are optional in the middleware config schema and
+      // `/health` never reads them), and the CLI login is connected after boot.
+      if (requiresApiKey(config.provider)) {
+        setProviderKey(PROVIDER_ENV[config.provider], config.apiKey.trim());
+      }
 
       // Save config as `configured` but NOT yet `completed`: we only mark the
       // install boot-verified once the stack actually comes up, so a failed
@@ -98,10 +116,14 @@ function makeProgressForwarder(sender: WebContents): (p: BootProgress) => void {
 }
 
 function validateConfig(config: WizardConfig): void {
-  if (config.provider !== 'anthropic' && config.provider !== 'openai') {
+  if (
+    config.provider !== 'anthropic' &&
+    config.provider !== 'openai' &&
+    config.provider !== 'subscription'
+  ) {
     throw new Error('Unsupported provider.');
   }
-  if (!config.apiKey || config.apiKey.trim().length < 8) {
+  if (requiresApiKey(config.provider) && (!config.apiKey || config.apiKey.trim().length < 8)) {
     throw new Error('Please enter a valid API key.');
   }
 }

@@ -35,7 +35,7 @@
           </p>
           <ul class="facts">
             <li data-i18n="welcome.fact1">Embedded database with vector search, persisted locally.</li>
-            <li data-i18n="welcome.fact2">You bring your own AI provider key.</li>
+            <li data-i18n="welcome.fact2">Bring your own AI provider key, or use an existing Claude/Codex subscription.</li>
             <li data-i18n="welcome.fact3">Everything is removed cleanly when you uninstall.</li>
           </ul>
         </section>
@@ -43,22 +43,41 @@
         <!-- 1: Provider -->
         <section class="step hidden" data-step="1">
           <h1 data-i18n="provider.title">Connect an AI provider</h1>
-          <p class="lead" data-i18n="provider.lead">omadia uses your own key. It is stored encrypted in your OS keychain.</p>
-          <label class="field">
-            <span data-i18n="provider.label">Provider</span>
-            <select id="provider">
-              <option value="anthropic">Anthropic (Claude)</option>
-              <option value="openai">OpenAI</option>
-            </select>
+          <p class="lead" data-i18n="provider.lead">Use an API key now, or start without one and connect your Claude or Codex subscription later. Saved API keys are stored encrypted in your OS keychain.</p>
+          <label class="toggle">
+            <input type="radio" name="providerMode" id="modeApiKey" value="apiKey" checked />
+            <span>
+              <strong data-i18n="provider.mode.apiKey">Enter an API key</strong>
+              <em data-i18n="provider.mode.apiKeyHint">Use an Anthropic or OpenAI API key and verify it now.</em>
+            </span>
           </label>
-          <label class="field">
-            <span data-i18n="provider.keyLabel">API key</span>
-            <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+          <label class="toggle">
+            <input type="radio" name="providerMode" id="modeSubscription" value="subscription" />
+            <span>
+              <strong data-i18n="provider.mode.subscription">I already have a Claude/Codex subscription</strong>
+              <em data-i18n="provider.mode.subscriptionHint">Start omadia now and connect the CLI subscription afterwards.</em>
+            </span>
           </label>
-          <div class="row">
-            <button id="testKey" class="btn ghost" type="button" data-i18n="provider.test">Test key</button>
-            <span id="testResult" class="test-result"></span>
+          <div id="apiKeyFields">
+            <label class="field">
+              <span data-i18n="provider.label">Provider</span>
+              <select id="provider">
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="provider.keyLabel">API key</span>
+              <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+            </label>
+            <div class="row">
+              <button id="testKey" class="btn ghost" type="button" data-i18n="provider.test">Test key</button>
+              <span id="testResult" class="test-result"></span>
+            </div>
           </div>
+          <p class="hint hidden" id="subscriptionHint" data-i18n="provider.subscriptionHint">
+            omadia will start without an API key. Connect your Claude or Codex CLI afterwards under Admin → LLM access → Subscriptions.
+          </p>
         </section>
 
         <!-- 2: Capabilities -->
