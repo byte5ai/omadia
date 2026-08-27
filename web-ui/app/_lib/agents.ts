@@ -788,3 +788,230 @@ export function isSeededAgentDescription(
 ): boolean {
   return description?.trim() === FALLBACK_AGENT_SEED_DESCRIPTION;
 }
+
+// ── W2a (#860) — team↔agent assignment read model ───────────────────────
+//
+// Backed by the wave's install routes in `routes/operatorAgents.ts`:
+//
+//   GET    /v1/operator/agents/:slug/teams
+//   POST   /v1/operator/agents/:slug/teams
+//   DELETE /v1/operator/agents/:slug/teams/:teamId
+//
+// The read model is DERIVED from the agent's `agent_teams_identities` row,
+// not enumerated from Graph: `teamsProvisioner@1` publishes no listing and no
+// uninstall method, and migration 0049 stores ONE `team_id` per agent. The
+// route therefore ships those limits as data (`capabilities`) so this client
+// — and the panel above it — can disable a control instead of discovering the
+// gap through a failed request.
+
+/** One team the agent's Teams app is known to be installed in. */
+export interface InstalledTeamDto {
+  team_id: string;
+  /** Catalog id of the installed app; null until the upload step ran. */
+  teams_app_id: string | null;
+  /** ISO timestamp of the row write that recorded the install — NOT a Graph
+   *  timestamp, the connector reports none. */
+  installed_at: string | null;
+  /** Where the entry comes from. Derived, never enumerated. */
+  evidence: 'identity_row';
+}
+
+export type TeamsConsentStatus = 'granted' | 'missing' | 'unknown';
+
+/** Admin-consent verdict for the tenant the identity is provisioned in.
+ *  There is no live probe, so `source` names what the verdict rests on. */
+export interface TeamsConsentDto {
+  status: TeamsConsentStatus;
+  missing_scopes: string[];
+  source: 'last_error' | 'provisioning_state' | 'none';
+}
+
+/** Capability keys the route reports, in render order. `unsupported_reason`
+ *  is keyed by these; the UI renders its OWN localized reason per key and may
+ *  show the server sentence only as a secondary technical detail. */
+export const TEAMS_ASSIGNMENT_CAPABILITY_KEYS = [
+  'install',
+  'uninstall',
+  'enumerate',
+  'multi_team',
+] as const;
+
+export type TeamsAssignmentCapabilityKey =
+  (typeof TEAMS_ASSIGNMENT_CAPABILITY_KEYS)[number];
+
+export type TeamsAssignmentCapabilitiesDto = Record<
+  TeamsAssignmentCapabilityKey,
+  boolean
+> & {
+  unsupported_reason: Record<string, string>;
+};
+
+export interface AgentTeamsDto {
+  ok: boolean;
+  agent: string;
+  /** Provisioning-chain state. Its vocabulary belongs to the Teams identity
+   *  panel, which owns the localized state copy — this client carries it as
+   *  an opaque marker so the assignment panel never renders a raw state. */
+  state: string;
+  running: boolean;
+  provisioner_installed: boolean;
+  teams: InstalledTeamDto[];
+  /** The recorded install TARGET while the chain has not reached
+   *  `installed` — a run in flight (or a stalled one), never an install. */
+  pending_team_id: string | null;
+  consent: TeamsConsentDto;
+  last_error: string | null;
+  capabilities: TeamsAssignmentCapabilitiesDto;
+}
+
+/** Fail-closed capability default: a middleware that does not report
+ *  capabilities gets every control disabled, never an enabled one that then
+ *  fails against a route it cannot serve. */
+const TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED: TeamsAssignmentCapabilitiesDto = {
+  install: false,
+  uninstall: false,
+  enumerate: false,
+  multi_team: false,
+  unsupported_reason: {},
+};
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (value === null || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
+}
+
+/**
+ * Narrow the capability block at the boundary.
+ *
+ * Total by construction and fail-closed: an absent block, a partial one, or a
+ * non-boolean flag all collapse to "not supported". The UI then renders a
+ * disabled control with its reason instead of a button that 501s.
+ */
+export function parseTeamsAssignmentCapabilities(
+  value: unknown,
+): TeamsAssignmentCapabilitiesDto {
+  if (value === null || typeof value !== 'object') {
+    return TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED;
+  }
+  const obj = value as Record<string, unknown>;
+  const flags = Object.fromEntries(
+    TEAMS_ASSIGNMENT_CAPABILITY_KEYS.map((key) => [key, obj[key] === true]),
+  ) as Record<TeamsAssignmentCapabilityKey, boolean>;
+  return { ...flags, unsupported_reason: stringRecord(obj['unsupported_reason']) };
+}
+
+/**
+ * `GET /v1/operator/agents/:slug/teams` — the teams the agent's app is
+ * installed in, plus consent status and what the platform can actually do.
+ *
+ * Rejects with 404 `teams_identity_not_found` when the agent has no identity
+ * row yet; that is the "there is nothing to assign yet" signal, and the panel
+ * treats it as an empty state rather than an error.
+ */
+export async function getAgentTeams(slug: string): Promise<AgentTeamsDto> {
+  const dto = await callJson<AgentTeamsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
+  );
+  return {
+    ...dto,
+    teams: Array.isArray(dto.teams) ? dto.teams : [],
+    capabilities: parseTeamsAssignmentCapabilities(dto.capabilities),
+  };
+}
+
+export interface InstallAgentTeamResponse {
+  ok: boolean;
+  agent: string;
+  team_id: string;
+  state: string;
+  /** True when the app was already installed in exactly this team — the POST
+   *  is idempotent for that case and starts no second run. */
+  already_installed: boolean;
+  running: boolean;
+}
+
+/**
+ * `POST /v1/operator/agents/:slug/teams` — record the target team and hand
+ * the chain to the provisioning runner (202). Answers 409
+ * `team_install_conflict` for a SECOND team: migration 0049 records one
+ * `team_id`, and no uninstall exists, so re-targeting would leave an
+ * untracked install behind.
+ */
+export async function installAgentTeam(
+  slug: string,
+  teamId: string,
+): Promise<InstallAgentTeamResponse> {
+  return callJson<InstallAgentTeamResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
+    { method: 'POST', body: JSON.stringify({ team_id: teamId }) },
+  );
+}
+
+/**
+ * `DELETE /v1/operator/agents/:slug/teams/:teamId`.
+ *
+ * Gated on `capabilities.uninstall`, which is `false` for as long as
+ * `teamsProvisioner@1` publishes no uninstall method — the route answers 501
+ * `teams_uninstall_unsupported` then. The call exists so the panel is
+ * capability-driven rather than hard-coded: the day the connector contract
+ * gains an uninstall, the control lights up with no UI change.
+ */
+export async function uninstallAgentTeam(
+  slug: string,
+  teamId: string,
+): Promise<void> {
+  await callJson(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/${encodeURIComponent(teamId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * Machine codes the team-assignment routes emit as `{ error: '<code>' }`.
+ *
+ * A union of its own, like the identity routes': these add
+ * `team_install_conflict` and `teams_uninstall_unsupported`, which no other
+ * catalogue on this page has copy for.
+ *
+ * i18n HARD RULE: none of these are user-facing text — each maps to a
+ * `teamsInstalls.errors.*` key and the raw body never reaches the UI.
+ */
+export const TEAMS_ASSIGNMENT_ERROR_CODES = [
+  'invalid_body',
+  'invalid_slug',
+  'multi_orchestrator_unavailable',
+  'not_found',
+  'team_install_conflict',
+  'teams_identity_not_found',
+  'teams_identity_unavailable',
+  'teams_provisioner_unavailable',
+  'teams_uninstall_unsupported',
+] as const;
+
+export type TeamsAssignmentErrorCode =
+  (typeof TEAMS_ASSIGNMENT_ERROR_CODES)[number];
+
+const TEAMS_ASSIGNMENT_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  TEAMS_ASSIGNMENT_ERROR_CODES,
+);
+
+/** Same contract as {@link parseOperatorAgentErrorCode}: total, `null` for
+ *  anything this client does not recognise. */
+export function parseTeamsAssignmentErrorCode(
+  err: unknown,
+): TeamsAssignmentErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      TEAMS_ASSIGNMENT_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as TeamsAssignmentErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
+}
