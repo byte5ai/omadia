@@ -4181,9 +4181,9 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… or the raw user id",
-      "team": "teams~19-abc… or the raw team id",
-      "channel": "telegram~-1001234567890 or the raw conversation id"
+      "user": "teams~29-1a2b… (never a bare id)",
+      "team": "teams~19-abc… (never a bare id)",
+      "channel": "telegram~-1001234567890 (never a bare id)"
     },
     "selectorRequired": "Selector required for this axis.",
     "reseedLabel": "Re-seed default memories after deletion (re-seed defaults)",
@@ -4204,9 +4204,9 @@
     "forbiddenError": "Not authorized (403) — memory purge requires admin rights.",
     "selectorHint": {
       "agent": "Agent slug. Also removes that agent’s context trees under /memories/contexts.",
-      "user": "Context key (channelType~id) or the raw native user id — deletes the user tier across all agents.",
-      "team": "Context key (channelType~id) or the raw native team id — deletes the team tier across all agents.",
-      "channel": "Context key (channelType~id) or the raw native conversation id — deletes the channel tier across all agents."
+      "user": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw user id. Deletes the user tier across all agents.",
+      "team": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw team id. Deletes the team tier across all agents.",
+      "channel": "Always `channelType~id` — either the context key from the memory browser or the channel type plus the raw conversation id. Deletes the channel tier across all agents."
     }
   },
   "adminDuplicates": {

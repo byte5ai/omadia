@@ -13,7 +13,6 @@ import {
   basename,
   contextAxisRoot,
   contextTierRoot,
-  decodeContextKey,
   type MemoryContextRef,
 } from '../_lib/memoryPaths';
 
@@ -157,8 +156,13 @@ export function MemoryContextTree({
   const labelFor = (slug: string, axis: MemoryContextAxis, key: string): string => {
     const resolved = labels[slug]?.[`${axis}/${key}`];
     if (resolved !== undefined) return resolved;
-    const decoded = decodeContextKey(key);
-    return decoded === null ? key : `${decoded.channelType} · ${decoded.nativeId}`;
+    // Fall back to the key VERBATIM, not to a prettified half of it. The half
+    // after `~` is a sanitised stem plus a digest, so rendering it alone reads
+    // like a native id an operator could paste into the Danger-Zone selector —
+    // where it would derive a different key and silently match nothing on a
+    // destructive action. The full `channelType~safeKey` is exactly the form
+    // that selector accepts, so showing it is both honest and directly usable.
+    return key;
   };
 
   return (

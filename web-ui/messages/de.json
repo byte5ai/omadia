@@ -4181,9 +4181,9 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… oder rohe User-Id",
-      "team": "teams~19-abc… oder rohe Team-Id",
-      "channel": "telegram~-1001234567890 oder rohe Conversation-Id"
+      "user": "teams~29-1a2b… (nie eine nackte Id)",
+      "team": "teams~19-abc… (nie eine nackte Id)",
+      "channel": "telegram~-1001234567890 (nie eine nackte Id)"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
     "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
@@ -4204,9 +4204,9 @@
     "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
     "selectorHint": {
       "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
-      "user": "Kontext-Key (channelType~id) oder die rohe native User-Id — löscht das User-Tier über alle Agenten.",
-      "team": "Kontext-Key (channelType~id) oder die rohe native Team-Id — löscht das Team-Tier über alle Agenten.",
-      "channel": "Kontext-Key (channelType~id) oder die rohe native Conversation-Id — löscht das Kanal-Tier über alle Agenten."
+      "user": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe User-Id. Löscht das User-Tier über alle Agenten.",
+      "team": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Team-Id. Löscht das Team-Tier über alle Agenten.",
+      "channel": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Conversation-Id. Löscht das Kanal-Tier über alle Agenten."
     }
   },
   "adminDuplicates": {

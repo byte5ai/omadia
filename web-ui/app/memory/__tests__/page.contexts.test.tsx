@@ -14,7 +14,8 @@ import MemoryPage from '../page';
  *     `/memories/contexts/<slug>/<axis>/<ctxKey>` layout — not from a registry,
  *     so it can never claim a context tree that does not exist,
  *   - a context key renders as a readable label (KG display name when one
- *     resolves, decoded `channelType · nativeId` otherwise) while still
+ *     resolves, the verbatim `channelType~safeKey` context key otherwise)
+ *     while still
  *     addressing the raw key,
  *   - "Promote…" is offered ONLY for a file inside a context tree, refuses to
  *     submit without a reason, and posts source/target/mode/reason exactly as
@@ -124,7 +125,7 @@ async function selectContextFile(user: ReturnType<typeof userEvent.setup>): Prom
   // Deliberately NOT anchored on the agent node: once the browser has walked
   // into the agent tier, the slug also appears as a breadcrumb button.
   const channelContext = await screen.findByRole('button', {
-    name: /teams · 19-chan-thread-tacv2-c3d4e5f6/i,
+    name: /teams~19-chan-thread-tacv2-c3d4e5f6/i,
   });
   await user.click(channelContext);
   const file = await screen.findByRole('button', { name: /vacation-policy\.md/ });
@@ -158,11 +159,11 @@ describe('memory browser — context dimension', () => {
     expect(await screen.findByText('Users (0)')).toBeInTheDocument();
   });
 
-  it('falls back to the decoded context key when no display name resolves', async () => {
+  it('falls back to the VERBATIM context key when no display name resolves', async () => {
     renderWithIntl(<MemoryPage />);
 
     const label = await screen.findByRole('button', {
-      name: /teams · 19-abc-thread-tacv2-a1b2c3d4/i,
+      name: /teams~19-abc-thread-tacv2-a1b2c3d4/i,
     });
     // The raw key stays addressable via the physical path in the tooltip.
     expect(label).toHaveAttribute(
@@ -187,7 +188,7 @@ describe('memory browser — context dimension', () => {
     renderWithIntl(<MemoryPage />);
 
     const channelContext = await screen.findByRole('button', {
-      name: /teams · 19-chan-thread-tacv2-c3d4e5f6/i,
+      name: /teams~19-chan-thread-tacv2-c3d4e5f6/i,
     });
     await user.click(channelContext);
 
@@ -371,7 +372,11 @@ describe('danger zone — context-key selector semantics', () => {
     vi.clearAllMocks();
   });
 
-  it('documents that the channel selector is a context key or the raw id', async () => {
+  it('tells the operator the channel-type half is mandatory', async () => {
+    // The backend refuses a `~`-less selector with 400 invalid_selector, so the
+    // copy must not invite a bare native id. Before the fix it did exactly
+    // that, and the bare id it invited silently matched nothing while the
+    // response reported the scratch trees as affected.
     const user = userEvent.setup();
     renderWithIntl(<DangerZonePage />);
 
@@ -380,11 +385,9 @@ describe('danger zone — context-key selector semantics', () => {
       'channel',
     );
 
+    expect(screen.getByText(/always `channelType~id`/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/context key \(channelType~id\) or the raw native/i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText('telegram~-1001234567890 or the raw conversation id'),
+      screen.getByPlaceholderText('telegram~-1001234567890 (never a bare id)'),
     ).toBeInTheDocument();
   });
 });
