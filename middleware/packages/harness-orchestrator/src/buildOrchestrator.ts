@@ -65,6 +65,7 @@ import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
 import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
+import { MemoryBinder, type ContextMemoryMode } from './memoryBinder.js';
 import {
   ScopedMemoryStore,
   orchestratorMemoryScope,
@@ -103,6 +104,23 @@ export interface AgentRuntimeConfig {
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
+   * Read from the `agents.context_memory` column (migration 0050).
+   *
+   *  - `'off'` (DEFAULT, and what every existing row reports) — byte-identical
+   *    to today: every turn gets the agent-private memory stack, whether or not
+   *    its channel plugin sends a `TurnOrigin`.
+   *  - `'enforce'` — context turns write into their own tier and READ the
+   *    agent tier read-only, so existing knowledge stays quotable.
+   *  - `'enforce-strict'` — full quarantine: a context turn cannot even read
+   *    the agent tier.
+   *
+   * Off-by-default plus an optional `origin` is what makes this a no-flag-day
+   * change: every combination of old/new middleware and old/new channel plugin
+   * behaves exactly as it does today until an operator flips this.
+   */
+  readonly contextMemory?: ContextMemoryMode;
 }
 
 /**
@@ -302,6 +320,50 @@ export function buildOrchestratorForAgent(
     : namespacedStore;
   const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
+  // W5 memory-ACL — the per-CHAT-CONTEXT binder. `memoryToolHandler` above is
+  // resolved once, here, for the whole process lifetime; the binder resolves a
+  // stack per turn from the turn's `TurnOrigin` instead, so what an Agent
+  // learns in team A is not quotable in team B.
+  //
+  // It is built unconditionally and gated by MODE, not by presence: with
+  // `contextMemory: 'off'` — the default, and what every existing agent row
+  // reports until an operator changes it — `forOrigin` ignores the origin and
+  // returns the context-free stack, which is the same ScopedMemoryStore +
+  // OrchestratorMemoryNamespacer + DurableRulesMemoryStore composition the
+  // lines above build. One code path, so the rollout switch cannot drift away
+  // from the thing it is switching.
+  //
+  // The binder takes `deps.memoryStore` UNDECORATED on purpose: it owns the
+  // whole decorator chain, because the scope it enforces is what decides which
+  // wrappers apply. `chatSessionStore` / `sessionLogger` keep the static
+  // `scopedStore` — session transcripts stay shared under `core/sessions`
+  // (decision A3a) and must not be partitioned by chat context.
+  const memoryBinder = new MemoryBinder({
+    agentSlug: config.agentId,
+    root: deps.memoryStore,
+    mode: config.contextMemory ?? 'off',
+    ...(durableRulesHookEnabled
+      ? {
+          durableRules: {
+            pool: deps.graphPool!,
+            kg: deps.knowledgeGraph,
+            tenantId: deps.graphTenantId ?? 'default',
+            ...(deps.embeddingClient
+              ? { embeddingClient: deps.embeddingClient }
+              : {}),
+            log: (msg: string): void => {
+              console.error(msg);
+            },
+          },
+        }
+      : {}),
+    log: (msg, fields): void => {
+      console.error(
+        `[security-audit] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`,
+      );
+    },
+  });
+
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
   const chatParticipantsTool = new ChatParticipantsTool();
@@ -373,6 +435,7 @@ export function buildOrchestratorForAgent(
     domainTools: [],
     nativeToolRegistry: deps.nativeToolRegistry,
     memoryToolHandler,
+    memoryBinder,
     sessionLogger,
     entityRefBus: deps.entityRefBus,
     knowledgeGraph: deps.knowledgeGraph,

@@ -107,12 +107,37 @@ function statusForCode(code: string): number {
     case 'source_escapes_agent':
     case 'target_escapes_agent':
     case 'target_equals_source':
+    case 'target_overlaps_source':
     case 'source_empty':
       return 400;
     default:
       return 500;
   }
 }
+
+/**
+ * The error codes the service raises BEFORE it writes anything. Only these
+ * license the claim "both tiers are untouched"; every other failure may have
+ * landed some of the files. Kept as one list so the promise and the status
+ * table cannot drift apart.
+ */
+const PRE_WRITE_CODES: ReadonlySet<string> = new Set([
+  'source_not_found',
+  'target_exists',
+  'target_is_directory',
+  'invalid_agent_slug',
+  'invalid_axis',
+  'invalid_tier',
+  'invalid_mode',
+  'invalid_ctx_key',
+  'invalid_path',
+  'actor_required',
+  'source_escapes_agent',
+  'target_escapes_agent',
+  'target_equals_source',
+  'target_overlaps_source',
+  'source_empty',
+]);
 
 function errorCode(err: unknown): string | undefined {
   if (err !== null && typeof err === 'object' && 'code' in err) {
@@ -206,11 +231,27 @@ export function createMemoryPromoteRouter(deps: MemoryPromoteDeps): Router {
       console.error(message);
     });
 
-  // Run a promotion. Every rejection happens before the first byte lands, so
-  // a non-2xx response means both tiers are untouched — except
-  // `audit_write_failed`, which is a completed promotion with a missing audit
-  // line and is reported as such (200 + `warning`), never as a failure.
-  router.post('/:slug/memory/promotions', async (req: Request, res: Response) => {
+  // Run a promotion.
+  //
+  // What IS guaranteed: every VALIDATION rejection — a bad request body, an
+  // escaping path, an overlapping source/target, a pre-existing target — is
+  // decided before the first byte lands, so those codes mean both tiers are
+  // untouched.
+  //
+  // What is NOT guaranteed: the service writes the planned files in an
+  // unguarded loop and, on `mode: 'move'`, deletes the source files after
+  // them. A store failure part-way (quota, transient Postgres error, EACCES)
+  // leaves the promotion HALF APPLIED. Such an error carries no `code`, so it
+  // would otherwise be indistinguishable from a clean rejection — the operator
+  // retries, hits `409 target_exists` on the files that did land, and is told
+  // there is a conflict on a promotion the API twice reported as never having
+  // started. Any error outside the pre-write validation set is therefore
+  // answered with `partial: true`, which is the honest statement: inspect the
+  // target before retrying.
+  //
+  // `audit_write_failed` is the one completed-but-incomplete case with a
+  // receipt, and stays a 200 + `warning`, never a failure.
+  router.post('/:slug', async (req: Request, res: Response) => {
     const actor = requireActor(req, res);
     if (actor === null) return;
 
@@ -251,17 +292,29 @@ export function createMemoryPromoteRouter(deps: MemoryPromoteDeps): Router {
         return;
       }
       const status = statusForCode(code ?? 'memory_promote_failed');
+      // A failure outside the pre-write set may have written some files and,
+      // on `move`, deleted some sources. Say so — the operator's next action
+      // (retry vs. inspect) depends entirely on which of the two it was.
+      const partial = code === undefined || !PRE_WRITE_CODES.has(code);
       if (status >= 500) {
         log(`[memory-promote] promotion failed: ${messageOf(err)}`);
       }
-      res
-        .status(status)
-        .json({ error: code ?? 'memory_promote_failed', message: messageOf(err) });
+      res.status(status).json({
+        error: code ?? 'memory_promote_failed',
+        message: messageOf(err),
+        ...(partial
+          ? {
+              partial: true,
+              warning:
+                'This failure happened after the write loop had started, so the promotion may be partially applied. Inspect the target tier before retrying.',
+            }
+          : {}),
+      });
     }
   });
 
   // Read the promotion audit log for this agent (§6a).
-  router.get('/:slug/memory/promotions', async (req: Request, res: Response) => {
+  router.get('/:slug', async (req: Request, res: Response) => {
     if (requireActor(req, res) === null) return;
 
     const parsed = AuditQuerySchema.safeParse(req.query);

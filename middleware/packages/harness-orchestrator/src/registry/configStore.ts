@@ -2,6 +2,8 @@ import type { Pool } from 'pg';
 
 import { resolveModelRef } from '@omadia/llm-provider';
 
+import type { ContextMemoryMode } from '../memoryBinder.js';
+
 import {
   AgentGraphStore,
   type PersonaSkillRow,
@@ -48,6 +50,17 @@ export interface AgentRow {
   readonly modelRouting?: Record<string, unknown> | null;
   /** Cosmetic canvas coordinate; `null`/absent until first laid out. */
   readonly canvasPosition?: CanvasPosition | null;
+  /**
+   * W5 memory-ACL — per-agent rollout switch for chat-context-scoped memory
+   * (`agents.context_memory`, migration 0050). Lifted into
+   * `AgentRuntimeConfig.contextMemory`, where the `MemoryBinder` consumes it.
+   *
+   * Optional on the row type so pre-existing `AgentRow` fixtures stay valid;
+   * absent and every unrecognised value both resolve to `'off'` — today's
+   * behaviour — in {@link parseContextMemoryMode}. Fail-closed applies to the
+   * flag itself, not just to the scope it controls.
+   */
+  readonly contextMemory?: ContextMemoryMode;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -207,8 +220,24 @@ interface AgentDbRow {
   status: AgentStatus;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
+  /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
+  context_memory?: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Narrow the persisted `context_memory` text to the typed rollout mode.
+ *
+ * Deny-default: anything the running code does not recognise — a NULL from a
+ * pre-0050 database, a value written by a NEWER middleware during a rolling
+ * deploy, a hand-edited row — resolves to `'off'`, which is today's
+ * agent-global behaviour. The alternative failure direction (treating an
+ * unknown value as `'enforce'`) would change memory routing on a rollback, and
+ * the safe direction here is the one that changes nothing.
+ */
+function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
+  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
 }
 
 interface AgentPluginDbRow {
@@ -241,6 +270,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     status: row.status,
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
+    contextMemory: parseContextMemoryMode(row.context_memory),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -113,29 +113,49 @@ async function directChildren(
   return names;
 }
 
+function invalidSelector(): Error {
+  return Object.assign(
+    new Error(
+      'a context selector must be spelled "<channelType>~<id>", e.g. "teams~19:abc@thread.tacv2" (raw native id) or "teams~19-abc-thread-tacv2-a1b2c3d4e5f60718" (the key shown in the memory browser)',
+    ),
+    { code: 'invalid_selector' },
+  );
+}
+
 /**
- * Normalise an operator-typed context selector to the `ctxKey` used as the path
- * segment under `/memories/contexts/<agent>/<axis>/`.
+ * The `ctxKey` candidates an operator-typed context selector may name, as path
+ * segments under `/memories/contexts/<agent>/<axis>/`.
  *
  * A context key is `${channelType}~${safeKey(nativeId)}` (see
- * {@link memoryContextKey}), and the operator may legitimately type EITHER
- * half-shape: the derived key copied out of the memory browser, or the channel
- * type plus the platform's raw native id (`teams~19:abc@thread.tacv2`). Both go
- * through `memoryContextKey`, which is idempotent on an already-safe id — so
- * there is exactly ONE sanitiser in the tree and a round-tripped key resolves
- * to itself rather than to a second, digest-of-a-digest partition.
+ * {@link memoryContextKey}). The operator may legitimately type either
+ * spelling, and the two are NOT interchangeable through one derivation:
  *
- * A selector with no `~` cannot name a context (the channel type is missing),
- * so it is passed through verbatim: it matches nothing, and a purge that
- * deletes nothing is the correct failure for a mistyped Danger-Zone selector.
+ *  - the RAW native id (`teams~19:abc@thread.tacv2`) has to be derived, and
+ *  - the DERIVED key copied out of the memory browser must NOT be derived a
+ *    second time. `memoryContextKey` is deliberately not idempotent on its own
+ *    digest shape — that would make a hashed context pre-imageable, which is
+ *    the hole this key exists to close.
+ *
+ * So both readings are resolved and the union of the trees they actually name
+ * is purged. The candidate set is at most two, both are keys of the requesting
+ * axis, and the preview counts exactly the trees the delete will remove — the
+ * operator sees the real number before confirming.
+ *
+ * A selector with no `~` cannot name a context at all: the channel type is
+ * missing, so nothing could ever match. It is REJECTED rather than passed
+ * through, because a Danger-Zone gesture that silently deletes nothing while
+ * reporting success is worse than an error — the shipped placeholder used to
+ * invite exactly that spelling.
  */
-function contextKeyFromSelector(selector: string | undefined): string {
+function contextKeyCandidates(selector: string | undefined): string[] {
   const raw = (selector ?? '').trim();
   if (raw.length === 0) throw selectorRequired();
 
   const separator = raw.indexOf('~');
-  if (separator <= 0 || separator === raw.length - 1) return raw;
-  return memoryContextKey(raw.slice(0, separator), raw.slice(separator + 1));
+  if (separator <= 0 || separator === raw.length - 1) throw invalidSelector();
+
+  const derived = memoryContextKey(raw.slice(0, separator), raw.slice(separator + 1));
+  return derived === raw ? [raw] : [raw, derived];
 }
 
 /**
@@ -179,11 +199,16 @@ async function resolvePurgeTargets(
   }
 
   if (isContextAxis(axis)) {
-    const ctxKey = contextKeyFromSelector(selector);
+    const ctxKeys = contextKeyCandidates(selector);
     const targets: string[] = [];
+    const seen = new Set<string>();
     for (const agentSlug of await directChildren(store, CONTEXTS_ROOT)) {
-      const target = `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
-      if (await store.directoryExists(target)) targets.push(target);
+      for (const ctxKey of ctxKeys) {
+        const target = `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
+        if (seen.has(target)) continue;
+        seen.add(target);
+        if (await store.directoryExists(target)) targets.push(target);
+      }
     }
     return targets;
   }

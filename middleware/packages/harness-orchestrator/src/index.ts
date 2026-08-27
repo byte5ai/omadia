@@ -78,6 +78,36 @@ export {
   ScopedMemoryStore,
 } from './registry/scopedMemoryStore.js';
 export type { ScopedMemoryStoreOptions } from './registry/scopedMemoryStore.js';
+// W5 (#860) — chat-context memory ACL. The scope resolver and the tier-root
+// helper are exported because they are the contract the promote service, the
+// purge service and the tests all have to agree on: a second spelling of
+// `/memories/contexts/<slug>/<axis>/<key>` anywhere would be a partition the
+// compiled scope does not grant.
+export {
+  CONTEXT_AXES,
+  contextTierRoot,
+  effectiveMemoryScope,
+  orchestratorMemoryScope,
+} from './registry/scopedMemoryStore.js';
+export type {
+  ContextAxis,
+  ContextMemoryEnforcement,
+  EffectiveMemoryScopeOptions,
+  MemoryAxes,
+  MemoryAxis,
+} from './registry/scopedMemoryStore.js';
+export { ContextMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+export type { ContextMemoryNamespacerOptions } from './orchestratorMemoryNamespacer.js';
+export {
+  DEFAULT_BINDER_CACHE_CAP,
+  MemoryBinder,
+  memoryBindingCacheKey,
+} from './memoryBinder.js';
+export type {
+  BoundTurnMemory,
+  ContextMemoryMode,
+  MemoryBinderOptions,
+} from './memoryBinder.js';
 export {
   ConfigStore,
   ConfigValidationError,

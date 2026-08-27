@@ -9,8 +9,13 @@ import type { MemoryStore } from '@omadia/plugin-api';
  * operator action, and it is audited three ways (§6):
  *
  *   (a) an append-only JSONL line in {@link PROMOTION_AUDIT_PATH} — inside the
- *       shared `core` namespace, so agents can read it while the operator has
- *       it in one central place;
+ *       shared `core` namespace, so agents can READ it while the operator has
+ *       it in one central place. Read-only for agents is not a property of
+ *       `core` (which is a read/write grant every agent holds): it is enforced
+ *       by the `/memories/core/audit/` deny prefix in `ScopedMemoryStore`,
+ *       without which any agent could rewrite the record of what an operator
+ *       did to its memory. This service writes it on the ROOT store, which
+ *       never passes through that wrapper;
  *   (b) provenance frontmatter (`promoted-from` / `promoted-by` /
  *       `promoted-at`) in every promoted markdown file;
  *   (c) a structured `[security-audit]` log line, the idiom
@@ -253,8 +258,23 @@ function resolveRequest(req: PromoteRequest): ResolvedRequest {
     }
   }
 
-  if (targetRoot === sourceRoot) {
-    throw fail('target_equals_source', `Target is the source: ${targetRoot}`);
+  // Equality is not enough. A target NESTED INSIDE the source passes every
+  // guard above (it is legitimately under the agent), and on `mode: 'move'` the
+  // recursive `store.delete(sourceRoot)` that runs after the copy then wipes
+  // the freshly written target along with the source — net knowledge destroyed,
+  // with a success receipt and a success audit line. The reverse nesting
+  // (source inside target) is refused for the mirror reason. Reachable with
+  // perfectly valid typed input: `source {axis:'team', ctxKey:K, path:'notes'}`
+  // + `target {tier:'team', ctxKey:K, path:'notes/archive'}`.
+  if (
+    targetRoot === sourceRoot ||
+    targetRoot.startsWith(`${sourceRoot}/`) ||
+    sourceRoot.startsWith(`${targetRoot}/`)
+  ) {
+    throw fail(
+      'target_overlaps_source',
+      `Target and source overlap — one contains the other: source=${sourceRoot} target=${targetRoot}`,
+    );
   }
 
   return {
@@ -412,7 +432,24 @@ export async function promoteMemory(
   }
 
   if (resolved.mode === 'move') {
-    await store.delete(resolved.sourceRoot);
+    // Delete exactly what was copied, file by file — NEVER
+    // `store.delete(sourceRoot)`.
+    //
+    // The recursive delete removes descendants by raw path prefix, while the
+    // enumeration that produced `planned` came from `store.list()`, whose walk
+    // skips every entry whose name starts with `.` (identically in the
+    // in-memory and Postgres stores). A dotfile under the source was therefore
+    // never read, never written to the target — and would have been destroyed
+    // by the recursive delete, with the receipt and the audit line both
+    // reporting success and never mentioning it.
+    //
+    // The cost is that an emptied source DIRECTORY survives the move. That is
+    // the safe direction: a leftover empty directory is visible and harmless,
+    // silent data loss is neither. Anything the walk could not see stays where
+    // it is, still reachable.
+    for (const { source } of planned) {
+      await store.delete(source);
+    }
   }
 
   const bytes = files.reduce((sum, file) => sum + file.bytes, 0);

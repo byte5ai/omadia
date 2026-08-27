@@ -124,10 +124,30 @@ describe('W5 memoryContextKey — idempotence for already-safe ids', () => {
     }
   });
 
-  it('is stable when a produced id segment is fed back in', () => {
+  it('does NOT let a digest-shaped id pre-image a hashed context', () => {
+    // The security property that replaces naive idempotence. If a produced
+    // `<stem>-<16 hex>` segment were carried through verbatim, anyone able to
+    // name their own conversation id could spell another context's key and be
+    // routed into its memory tree. The two branches must stay disjoint, so a
+    // digest-shaped id is itself hashed and lands somewhere else.
     const once = memoryContextKey('teams', '19:abc@thread.tacv2');
     const idSegment = once.slice(once.indexOf('~') + 1);
-    assert.equal(memoryContextKey('teams', idSegment), `teams~${idSegment}`);
+    assert.match(idSegment, /-[0-9a-f]{16}$/);
+    assert.notEqual(memoryContextKey('teams', idSegment), once);
+
+    // The reviewer's concrete pair: sha256('X!').slice(0,16) === '61d6ea9c…'.
+    assert.notEqual(
+      memoryContextKey('teams', 'X!'),
+      memoryContextKey('teams', 'x-61d6ea9c6d461bda'),
+    );
+  });
+
+  it('stays byte-identical for an ordinary already-safe id', () => {
+    // Idempotence is kept where it costs nothing: an id that is already a lossless
+    // path segment AND cannot be mistaken for a digest is carried through as-is.
+    for (const id of ['c1', 'tenant-acme', 'a_b-9', '-1001234567890']) {
+      assert.equal(memoryContextKey('teams', id), `teams~${id}`);
+    }
   });
 
   it('normalises the channel type by case and whitespace — it is a type token, not identity', () => {

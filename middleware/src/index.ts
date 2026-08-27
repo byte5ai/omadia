@@ -28,6 +28,7 @@ import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
 import { createMemoryPurgeRouter } from './routes/memoryPurge.js';
+import { createMemoryPromoteRouter } from './routes/memoryPromote.js';
 import { createAdminUpdateRouter } from './routes/adminUpdate.js';
 import { createUpdateAuditStore } from './update/auditStore.js';
 import { createReleaseLookup } from './update/releaseLookup.js';
@@ -3158,6 +3159,24 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] memory-purge endpoint ready at /api/v1/admin/memory/purge',
+  );
+
+  // W5 (#860) — operator memory promotion: the ONE way knowledge crosses a
+  // chat-context boundary, since a context turn can no longer write into the
+  // agent tier itself. Deliberately on the SAME gate and the SAME prefix as
+  // the purge router above (`requireAuth`, cookie session JWT), not on the
+  // machine-to-machine ADMIN_TOKEN surface in `admin.ts`: promotion is an
+  // operator judgement call that has to be attributable to a person, and the
+  // audit line records that person as its actor. The spec's
+  // `/api/agents/:slug/memory/promotions` would have been a third auth surface
+  // for a Danger-Zone-class action; the deviation is deliberate.
+  app.use(
+    '/api/v1/admin/memory/promotions',
+    requireAuth,
+    createMemoryPromoteRouter({ store: memoryStore }),
+  );
+  console.log(
+    '[middleware] memory-promote endpoint ready at /api/v1/admin/memory/promotions/:slug',
   );
 
   // #575 — audience-floor grants. Cookie-auth admin surface like the routers

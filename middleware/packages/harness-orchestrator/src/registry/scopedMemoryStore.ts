@@ -246,6 +246,27 @@ const CORE_PREFIXES = [
   '/memories/chat-sessions/',
 ];
 
+/**
+ * Subtrees inside `core` that no agent may ever write, whatever else its scope
+ * grants — a deny list, evaluated before any positive pattern.
+ *
+ * `/memories/core/audit/` holds the tamper-evident record of privileged
+ * OPERATOR actions (currently the promotion log written by
+ * `services/memoryPromote.ts`). It was placed under `core` so agents can READ
+ * it, but `core` is a read/write grant every agent holds, so without this
+ * carve-out any agent could overwrite or delete the log that records what an
+ * operator did to its memory — which is precisely the property an audit trail
+ * must not have. It is written by kernel services on the ROOT store, which
+ * never passes through this wrapper, so nothing legitimate loses a write.
+ */
+const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/'];
+
+function isAgentUnwritable(path: string): boolean {
+  return AGENT_UNWRITABLE_PREFIXES.some(
+    (pre) => path === pre.slice(0, -1) || path.startsWith(pre),
+  );
+}
+
 /** Access modifier prefix: `ro:<pattern>` — read/list/exists only. */
 const READ_ONLY_PREFIX = 'ro:';
 
@@ -430,6 +451,7 @@ export class ScopedMemoryStore implements MemoryStore {
    * Denial is always HARD here.
    */
   private allowedWrite(virtualPath: string): boolean {
+    if (isAgentUnwritable(virtualPath)) return false;
     let granted = false;
     for (const p of this.patterns) {
       if (!p.match(virtualPath)) continue;

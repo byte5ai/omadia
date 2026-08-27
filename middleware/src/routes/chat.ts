@@ -48,6 +48,25 @@ const ChatRequestSchema = z.object({
     .optional(),
 });
 
+/**
+ * The orchestrator `sessionScope` for an HTTP turn.
+ *
+ * W5 memory-ACL (#860), coordinator decision 1 — note what this route does NOT
+ * do: it never builds a `TurnOrigin`, so every HTTP turn resolves context-free
+ * and gets the agent-private memory stack, byte-identical to today. That is a
+ * decision, not an omission.
+ *
+ * The scopes this function returns (`http-<scope>`, a client-chosen
+ * `sessionId`, or the shared literal `'http-default'`) are transcript-bucketing
+ * labels supplied by the CALLER. Deriving a memory partition from them would
+ * hand any API client the ability to name — and therefore to read — another
+ * caller's memory tier by sending its scope string, and `'http-default'` would
+ * make one shared tier out of every unlabelled turn. An API caller gets no
+ * implicit team or channel memory; when a genuine tenant identity exists on
+ * this surface it has to be resolved from the authenticated principal and
+ * passed as an explicit `origin`, which is a change to make deliberately, not
+ * to inherit from a debug label.
+ */
 function resolveScope(parsed: z.infer<typeof ChatRequestSchema>): string {
   if (parsed.scope) return `http-${parsed.scope}`;
   if (parsed.sessionId) return parsed.sessionId;

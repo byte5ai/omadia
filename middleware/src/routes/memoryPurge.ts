@@ -70,12 +70,45 @@ export interface MemoryPurgeDeps {
  * Knowledge-Graph is deliberately left alone. Modelling a team/channel KG
  * partition is a follow-up, not something to fake with an invented filter.
  */
-function kgUnmodelledWarning(axis: MemoryPurgeAxis, past: boolean): string {
-  return (
+function kgUnmodelledWarning(
+  axis: MemoryPurgeAxis,
+  past: boolean,
+  scratchTargets: number,
+): string {
+  const kgHalf =
     `${axis}-scoped Knowledge-Graph purge is not yet modeled (no KG column), ` +
-    `so the Knowledge-Graph ${past ? 'was' : 'is'} left untouched. ` +
-    `Only the /memories/contexts scratch trees ${past ? 'were' : 'are'} affected.`
-  );
+    `so the Knowledge-Graph ${past ? 'was' : 'is'} left untouched. `;
+  // Never claim an effect the purge did not have: a selector that resolves to
+  // zero trees is the single most likely operator mistake on this surface, and
+  // reporting "the scratch trees were affected" would hide it behind a 200.
+  const scratchHalf =
+    scratchTargets === 0
+      ? `No matching context tree ${past ? 'was found' : 'exists'} under /memories/contexts either — nothing ${past ? 'was' : 'will be'} deleted.`
+      : `Only the /memories/contexts scratch trees ${past ? 'were' : 'are'} affected.`;
+  return kgHalf + scratchHalf;
+}
+
+/**
+ * Warning for the `user` axis, whose two halves consume the selector in
+ * INCOMPATIBLE spellings: the KG matches it raw as `aclOwner`, while the purge
+ * service resolves it as a `<channelType>~<id>` context key. At most one half
+ * can match any given selector, and without this the operator gets a 200 and a
+ * half-done purge with nothing saying which leg was a no-op.
+ *
+ * Deliberately a warning and not a fix: reconciling the two spellings means
+ * modelling a KG context column, which design §7 puts outside this wave. What
+ * is fixable here is the silence.
+ */
+function userAxisSplitWarning(
+  scratchTargets: number,
+  kgDeleted: number,
+  past: boolean,
+): string | undefined {
+  if (scratchTargets > 0 && kgDeleted > 0) return undefined;
+  if (scratchTargets === 0 && kgDeleted === 0) return undefined;
+  return scratchTargets === 0
+    ? `The Knowledge-Graph half matched, but no context tree under /memories/contexts ${past ? 'did' : 'does'}: the KG matches the selector raw as an ACL owner, while a context tree is named "<channelType>~<id>". The user's scratch memory ${past ? 'was' : 'will be'} NOT purged.`
+    : `The context trees matched, but no Knowledge-Graph row did: the KG matches the selector raw as an ACL owner, not as a "<channelType>~<id>" context key. The user's Knowledge-Graph rows ${past ? 'were' : 'will be'} NOT purged.`;
 }
 
 /** Map a purge axis+selector to the KG MemorableKnowledge filter. Returns
@@ -103,6 +136,17 @@ function axisToKgFilter(
       // No KG column models team/channel scoping yet — do NOT fabricate one.
       return null;
   }
+}
+
+/**
+ * The service's typed error code, when it carried one. Surfacing it instead of
+ * a blanket `memory_purge_failed` is what lets the Danger-Zone UI tell a
+ * mistyped selector (`invalid_selector`) apart from a store failure.
+ */
+function errorCode(err: unknown): string | undefined {
+  if (err === null || typeof err !== 'object' || !('code' in err)) return undefined;
+  const code = (err as { code: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 let auditTableReady: Promise<void> | null = null;
@@ -172,15 +216,19 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       let warning: string | undefined;
       const filter = axisToKgFilter(axis, selector, tenantId);
       if (filter === null) {
-        warning = kgUnmodelledWarning(axis, false);
+        warning = kgUnmodelledWarning(axis, false, scratchCount);
       } else if (deps.knowledgeGraph) {
         kgCount = (await deps.knowledgeGraph.countMemorableKnowledge(filter))
           .count;
       }
+      if (axis === 'user') {
+        warning = userAxisSplitWarning(scratchCount, kgCount, false) ?? warning;
+      }
       res.json({ scratchCount, kgCount, ...(warning ? { warning } : {}) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: 'memory_purge_preview_failed', message });
+      const code = errorCode(err) ?? 'memory_purge_preview_failed';
+      res.status(400).json({ error: code, message });
     }
   });
 
@@ -218,10 +266,13 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       let warning: string | undefined;
       const filter = axisToKgFilter(axis, selector, tenantId);
       if (filter === null) {
-        warning = kgUnmodelledWarning(axis, true);
+        warning = kgUnmodelledWarning(axis, true, scratchDeleted);
       } else if (deps.knowledgeGraph) {
         kgDeleted = (await deps.knowledgeGraph.purgeMemorableKnowledge(filter))
           .deletedNodes;
+      }
+      if (axis === 'user') {
+        warning = userAxisSplitWarning(scratchDeleted, kgDeleted, true) ?? warning;
       }
 
       if (deps.graphPool) {
@@ -244,7 +295,8 @@ export function createMemoryPurgeRouter(deps: MemoryPurgeDeps): Router {
       res.json({ scratchDeleted, kgDeleted, ...(warning ? { warning } : {}) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: 'memory_purge_failed', message });
+      const code = errorCode(err) ?? 'memory_purge_failed';
+      res.status(400).json({ error: code, message });
     }
   });
 
