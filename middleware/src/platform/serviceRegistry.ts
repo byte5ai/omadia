@@ -75,6 +75,9 @@ export type ServiceName =
   // operator teams-identity routes resolve late-bound.
   | 'teamsProvisioner'
   | 'agentTeamsIdentityStore'
+  // Migration 0051 — the persisted team<->agent bindings, consumed by the
+  // operator teams routes and the provisioning runner.
+  | 'agentTeamsInstallStore'
   | 'teamsProvisioningJobRunner'
   | (string & {});
 

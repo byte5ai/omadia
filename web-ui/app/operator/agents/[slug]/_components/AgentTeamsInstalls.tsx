@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
   getAgentTeams,
   installAgentTeam,
+  parseInstalledTeamName,
   parseTeamsAssignmentCapabilities,
   parseTeamsAssignmentErrorCode,
   uninstallAgentTeam,
@@ -310,42 +311,69 @@ export function AgentTeamsInstalls({
                 {t('installedEmpty')}
               </div>
             ) : (
-              installed.map((team) => (
-                <div
-                  key={team.team_id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-[color:var(--border)] px-3 py-2"
-                >
-                  <span className="font-mono text-sm text-[color:var(--fg-strong)]">
-                    {team.team_id}
-                  </span>
-                  <span className="text-[11px] text-[color:var(--fg-muted)]">
-                    {t('appIdLabel', {
-                      appId: team.teams_app_id ?? t('appIdNone'),
-                    })}
-                  </span>
-                  <span className="text-[11px] text-[color:var(--fg-muted)]">
-                    {team.installed_at !== null
-                      ? t('installedAt', {
-                          date: format.dateTime(new Date(team.installed_at), {
-                            dateStyle: 'medium',
-                            timeStyle: 'short',
-                          }),
-                        })
-                      : t('installedAtUnknown')}
-                  </span>
-                  <Button
-                    className="ml-auto"
-                    size="sm"
-                    variant="danger"
-                    disabled={!data.capabilities.uninstall || inFlight}
-                    busy={busy === `uninstall:${team.team_id}`}
-                    busyLabel={t('uninstallBusy')}
-                    onClick={() => setConfirmUninstall(team)}
+              installed.map((team) => {
+                // The NAME is the identity an operator recognises; the GUID is
+                // the address. So the name leads and the id resolves beneath
+                // it — and when no name was ever resolved the id takes the
+                // lead line rather than being paired with an empty label.
+                const name = parseInstalledTeamName(team);
+                return (
+                  <div
+                    key={team.team_id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-[color:var(--border)] px-3 py-2"
                   >
-                    {t('uninstall')}
-                  </Button>
-                </div>
-              ))
+                    <div className="flex min-w-0 flex-col gap-0.5">
+                      {name !== null ? (
+                        <>
+                          <span className="truncate text-sm font-medium text-[color:var(--fg-strong)]">
+                            {name}
+                          </span>
+                          <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">
+                            {team.team_id}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-mono text-sm text-[color:var(--fg-strong)]">
+                            {team.team_id}
+                          </span>
+                          {/* Says why there is no name, so a GUID does not
+                              read as a rendering bug. */}
+                          <span className="text-[11px] text-[color:var(--fg-muted)]">
+                            {t('teamNameUnresolved')}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-[color:var(--fg-muted)]">
+                      {t('appIdLabel', {
+                        appId: team.teams_app_id ?? t('appIdNone'),
+                      })}
+                    </span>
+                    <span className="text-[11px] text-[color:var(--fg-muted)]">
+                      {team.installed_at !== null
+                        ? t('installedAt', {
+                            date: format.dateTime(new Date(team.installed_at), {
+                              dateStyle: 'medium',
+                              timeStyle: 'short',
+                            }),
+                          })
+                        : t('installedAtUnknown')}
+                    </span>
+                    <Button
+                      className="ml-auto"
+                      size="sm"
+                      variant="danger"
+                      disabled={!data.capabilities.uninstall || inFlight}
+                      busy={busy === `uninstall:${team.team_id}`}
+                      busyLabel={t('uninstallBusy')}
+                      onClick={() => setConfirmUninstall(team)}
+                    >
+                      {t('uninstall')}
+                    </Button>
+                  </div>
+                );
+              })
             )}
             {!data.capabilities.uninstall ? (
               <CapabilityNote {...unsupportedReason(data, 'uninstall')} />
@@ -436,8 +464,17 @@ export function AgentTeamsInstalls({
         open={confirmUninstall !== null}
         title={t('uninstallTitle')}
         body={
+          // Confirming a destructive action against a GUID asks the operator
+          // to verify something they cannot read. Name it when we have one,
+          // and keep the id in the copy either way — it is what identifies
+          // the team unambiguously.
           confirmUninstall !== null
-            ? t('uninstallBody', { teamId: confirmUninstall.team_id })
+            ? parseInstalledTeamName(confirmUninstall) !== null
+              ? t('uninstallBodyNamed', {
+                  teamName: parseInstalledTeamName(confirmUninstall) as string,
+                  teamId: confirmUninstall.team_id,
+                })
+              : t('uninstallBody', { teamId: confirmUninstall.team_id })
             : undefined
         }
         confirmLabel={t('uninstallConfirm')}
