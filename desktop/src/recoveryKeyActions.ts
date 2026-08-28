@@ -12,11 +12,14 @@
  *
  * KNOWN GAP, and it is not fixable from this side: viewing the key through this
  * path is the only moment the shell can observe. The wizard's own *Reveal*
- * button goes through the `exportRecoveryKey` IPC handler in `ipc.ts`, which a
- * sibling PR owns, so it cannot mark the flag. A user who did read the key off
- * the wizard's last step therefore sees one extra prompt. That trade is
- * deliberate: one redundant dialog is cheaper than an unrecoverable vault, and
- * the proper fix is one line in that IPC handler.
+ * button goes through the `exportRecoveryKey` IPC handler in `ipc.ts`, which
+ * cannot mark the flag today. A user who did read the key off the wizard's last
+ * step therefore sees one extra prompt. That trade is deliberate: one redundant
+ * dialog is cheaper than an unrecoverable vault, and the reminder only ever
+ * costs a launch of earliness — `needsRecoveryKeyReminder()` gates on
+ * `completed && !recoveryKeyShown`, so a user who genuinely SKIPPED the step is
+ * still caught on the next start. The proper fix is one line in that IPC
+ * handler, and it is commented there so whoever works in `ipc.ts` finds it.
  */
 import { exportRecoveryKey } from './secrets';
 import { log, logFile } from './log';

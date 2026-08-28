@@ -106,6 +106,13 @@ export function registerIpc(deps: IpcDeps): void {
     return chooseDataDirWithSyncWarning(win as BrowserWindow);
   });
 
+  // KNOWN GAP (OM-58), and the one-line fix belongs right here: the wizard's
+  // "Reveal" button reaches the key through this handler, but nothing records
+  // that the user has SEEN it. Only the shell's own Help → "Show recovery key…"
+  // path sets `recoveryKeyShown` (see `recoveryKeyActions.ts`), so a user who
+  // read the key off the wizard's last step still gets one reminder on the next
+  // launch. Calling `markRecoveryKeyShown()` here closes that — it was left out
+  // only because this file belonged to a concurrent PR at the time.
   ipcMain.handle(CH.exportRecoveryKey, (): string => exportRecoveryKey());
 
   ipcMain.handle(CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {
