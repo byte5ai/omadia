@@ -1,7 +1,6 @@
 import { app, dialog, type MessageBoxOptions } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
-import path from 'node:path';
 import { embeddedDbDir, snapshotDir, updateAttemptsFile } from './paths';
 import { getActiveSupervisor } from './supervisor';
 import { log, logFile } from './log';
@@ -12,7 +11,8 @@ import {
   readUpdateAttempts,
   writeUpdateAttempts,
 } from './updateAttempts';
-import { SNAPSHOTS_TO_KEEP, snapshotDirName, snapshotsToPrune } from './snapshotRetention';
+import { SNAPSHOTS_TO_KEEP } from './snapshotRetention';
+import { takeDbSnapshot, type SnapshotIo } from './dbSnapshot';
 import { prepareInstall } from './installPreflight';
 
 let installing = false;
@@ -260,45 +260,25 @@ async function quiesceForInstall(version: string): Promise<boolean> {
 
 /** Copy the embedded DB directory into a snapshot unique to this attempt. */
 function snapshotDbDir(version: string): void {
-  const src = embeddedDbDir();
-  if (!fs.existsSync(src)) return;
-  const root = snapshotDir();
-
-  // Prune BEFORE copying, and to one below the cap, so peak disk usage is
-  // SNAPSHOTS_TO_KEEP clusters rather than one more. Copying first meant a
-  // full disk threw ENOSPC before pruning had ever run, so nothing was
-  // reclaimed and every later update failed identically - a permanent block
-  // instead of the data-loss bug #934 removed. Both orders have to be safe.
-  pruneOldSnapshots(root, Math.max(0, SNAPSHOTS_TO_KEEP - 1));
-
-  // A name per attempt, not per version: the old scheme removed the existing
-  // directory and wrote the same name again, so a second attempt destroyed the
-  // backup the first had made (#934).
-  const dest = path.join(root, snapshotDirName(version, new Date()));
-  try {
-    fs.cpSync(src, dest, { recursive: true });
-  } catch (err) {
-    // A half-copied directory is worse than no directory: it looks like a
-    // backup and would be counted as one by retention.
-    fs.rmSync(dest, { recursive: true, force: true });
-    throw err;
-  }
-  log.info(`[updater] snapshotted DB → ${dest}`);
+  takeDbSnapshot(realSnapshotIo, {
+    sourceDir: embeddedDbDir(),
+    snapshotRoot: snapshotDir(),
+    version,
+    now: new Date(),
+    keep: SNAPSHOTS_TO_KEEP,
+  });
 }
 
-/** Keep the newest few snapshots; each is a full copy of the cluster. */
-function pruneOldSnapshots(root: string, keep: number): void {
-  try {
-    const names = fs.readdirSync(root, { withFileTypes: true })
+/** The real filesystem, behind the snapshot module's port. */
+const realSnapshotIo: SnapshotIo = {
+  exists: (dir) => fs.existsSync(dir),
+  listDirectories: (root) =>
+    fs
+      .readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-    for (const stale of snapshotsToPrune(names, keep)) {
-      fs.rmSync(path.join(root, stale), { recursive: true, force: true });
-      log.info(`[updater] pruned old snapshot ${stale}`);
-    }
-  } catch (err) {
-    // Pruning is housekeeping: a failure here must never abort an update whose
-    // snapshot has already been taken.
-    log.warn(`[updater] snapshot pruning failed: ${String(err)}`);
-  }
-}
+      .map((entry) => entry.name),
+  copy: (source, destination) => fs.cpSync(source, destination, { recursive: true }),
+  remove: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+  info: (message) => log.info(`[updater] ${message}`),
+  error: (message) => log.warn(`[updater] ${message}`),
+};
