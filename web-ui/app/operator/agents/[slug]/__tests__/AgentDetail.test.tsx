@@ -163,19 +163,6 @@ function catalogEntry(
   };
 }
 
-function draft(over: Partial<DraftSummary> = {}): DraftSummary {
-  return {
-    id: 'draft-1',
-    name: 'HR persona',
-    status: 'published',
-    codegenModel: 'sonnet',
-    previewModel: 'haiku',
-    publishedAgentId: 'de.byte5.agent.hr',
-    updatedAt: 1_700_000_000_000,
-    createdAt: 1_700_000_000_000,
-    ...over,
-  };
-}
 
 /** An orchestrator whose assigned set contains a builder-published agent. */
 function agentWithBuilderPlugin(): OperatorAgentDto {
