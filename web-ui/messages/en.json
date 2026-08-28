@@ -2043,6 +2043,62 @@
         "not_needed": "Nothing changed, so there is nothing to publish.",
         "no_installed_app": "Saved. This agent has no installed Teams app yet, so nothing was published.",
         "provisioner_unavailable": "Saved. The M365 connector is not installed right now, so the Teams package could not be republished."
+      },
+      "revision": "Revision {revision}",
+      "tabs": {
+        "profile": "Profile",
+        "character": "Character",
+        "boundaries": "Limits",
+        "prompt": "Prompt"
+      },
+      "prompt": {
+        "hint": "This exact text opens this agent's system prompt — assembled from its behaviour, character axes, limits and anti-flattery guard.",
+        "hintWithFamily": "This exact text opens the system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all.",
+        "stale": "Unsaved changes are not in here yet — save to see them.",
+        "empty": "Nothing set yet. This agent uses the platform-wide default text."
+      },
+      "droppedPresets": "The server does not know these boundary presets: {ids}",
+      "persona": {
+        "template": {
+          "heading": "Archetype",
+          "none": "No archetype picked — every axis sits at neutral.",
+          "active": "Archetype: {name}",
+          "choose": "Pick an archetype",
+          "clear": "Detach"
+        },
+        "culture": {
+          "heading": "Industry calibration",
+          "hint": "Lays an industry profile over the axes. Only the axes the profile sets are overwritten.",
+          "changes": "Moves {count} axes"
+        },
+        "extended": {
+          "toggle": "Fine tuning (4 more axes)"
+        },
+        "notes": {
+          "label": "Own notes",
+          "hint": "Free text carried into the character block verbatim — for everything no slider covers."
+        }
+      },
+      "boundaries": {
+        "presetsHeading": "Limits from the library",
+        "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
+        "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
+        "categories": {
+          "data": "Data",
+          "scope": "Scope",
+          "authority": "Authority",
+          "communication": "Communication"
+        },
+        "customLabel": "Own prohibitions",
+        "customHint": "One rule per line.",
+        "sycophancyLabel": "Anti-flattery guard",
+        "sycophancyHint": "How firmly the agent may disagree instead of telling the user what they want to hear.",
+        "sycophancyLevels": {
+          "off": "Off",
+          "low": "Light",
+          "medium": "Medium",
+          "high": "Strong"
+        }
       }
     },
     "teamsIdentity": {

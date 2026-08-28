@@ -1,6 +1,8 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
+
+import { personaMessageId } from '../../../../_lib/personaTypes';
 import { useCallback, useState, useTransition } from 'react';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -26,11 +28,9 @@ import type { PersonaConfig } from '../../../../_lib/personaTypes';
  * patch resolves successfully.
  */
 
-/** kebab-case template id → camelCase i18n segment (e.g. `customer-service`
- *  → `customerService`) under `builder.persona.gallery.templates.*`. */
-function templateMessageId(id: string): string {
-  return id.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
-}
+/** Shared with the culture dropdown and the agent-identity persona editor —
+ *  see `personaMessageId`. */
+const templateMessageId = personaMessageId;
 
 export interface PersonaTemplateGalleryProps {
   draftId: string;

@@ -45,7 +45,7 @@ import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { composePersonaSection } from './personaCompose.js';
-import type { PersonaModelFamily } from './personaDelta.js';
+import { inferFamilyFromModel } from './personaDelta.js';
 import { compileBoundariesSection } from './builder/boundaryPresets.js';
 import { compileCitationGuard } from './citationGuard.js';
 import { compileSycophancyGuard } from './sycophancyGuard.js';
@@ -1142,16 +1142,12 @@ export async function composePersonaFromAgentMd(
 }
 
 /**
- * Map an Anthropic model id (e.g. `claude-sonnet-4-6`) to one of the
- * three persona-family buckets. Unknown / mis-spelled models default
- * to Sonnet — the safe middle ground for the per-family delta math.
+ * Moved to `personaDelta.ts` (#914 follow-up) so callers that only need the
+ * family — the agent-identity prompt compiler — do not have to import this
+ * whole runtime module. Re-exported here because this file's own callers
+ * have imported it from here since OB-67.
  */
-export function inferFamilyFromModel(modelId: string): PersonaModelFamily {
-  const lower = modelId.toLowerCase();
-  if (lower.includes('haiku')) return 'haiku';
-  if (lower.includes('opus')) return 'opus';
-  return 'sonnet';
-}
+export { inferFamilyFromModel } from './personaDelta.js';
 
 function buildHeader(entry: PluginCatalogEntry): string {
   const manifest = entry.manifest as Record<string, unknown> | undefined;

@@ -331,16 +331,24 @@ function mapPlatformSettings(
 
 /**
  * #914 — every agent read joins the agent's authored identity, so the
- * registry can build an Agent's system prompt from `instructions` without a
- * per-Agent second query. `a.*` keeps the row shape every existing caller
- * already gets; the LEFT JOIN keeps an agent without an identity intact.
+ * registry can build an Agent's system prompt from it without a per-Agent
+ * second query. `a.*` keeps the row shape every existing caller already gets;
+ * the LEFT JOIN keeps an agent without an identity intact.
  *
- * Only the TEXT column is joined. The identity's avatar columns are BYTEA and
- * this query runs on every dashboard load and every registry rebuild.
+ * COALESCE, not a raw column: `composed_prompt` is the identity's authored
+ * text WITH its persona, boundaries and sycophancy sections compiled in
+ * (migration 0053), and it is what the agent should actually speak with. It
+ * is NULL for a row written before those existed, or for one whose settings
+ * compile to nothing — and then the raw `instructions` is exactly right. The
+ * compilers live in the middleware, which this package cannot import; that
+ * is why the composition is stored rather than done here.
+ *
+ * Only text is joined. The identity's avatar columns are BYTEA and this query
+ * runs on every dashboard load and every registry rebuild.
  */
 const AGENT_SELECT =
-  'SELECT a.*, i.instructions AS identity_instructions FROM agents a ' +
-  'LEFT JOIN agent_identities i ON i.agent_id = a.id';
+  'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions ' +
+  'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
 export class ConfigStore {
   constructor(private readonly pool: Pool) {}
