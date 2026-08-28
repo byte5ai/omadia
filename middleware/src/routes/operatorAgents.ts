@@ -306,6 +306,42 @@ export interface OperatorTeamsIdentityDeps {
    *  {@link defaultTeamsBotSecretRef} (the connector's deterministic ref).
    *  Only consulted once the identity carries an `appId`. */
   readonly clientSecretRef?: (record: OperatorTeamsIdentityRecord) => string;
+  /**
+   * The PERSISTED team↔agent bindings (`agent_teams_installs`, migration
+   * 0051). Optional so a minimal mount and the router's stub-based tests keep
+   * working; while it is absent the route falls back to the single derived
+   * entry of {@link projectInstalledTeams} and keeps reporting
+   * `multi_team: false`, i.e. exactly the pre-0051 contract.
+   */
+  readonly installs?: OperatorTeamsInstallStore;
+  /**
+   * Resolve one team id to its Graph display name (`teamsProvisioner@1`
+   * >= 0.5.0), or `null` when the connector cannot answer. Optional and
+   * best-effort: a name is decoration on a binding the route already knows,
+   * never a precondition for reporting it.
+   */
+  readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
+}
+
+/** The subset of `AgentTeamsInstallStore` this router uses. */
+export interface OperatorTeamsInstallStore {
+  listForAgent(agentId: string): Promise<readonly OperatorTeamsInstallRecord[]>;
+  setDisplayName(
+    agentId: string,
+    teamId: string,
+    displayName: string,
+  ): Promise<boolean>;
+  remove(agentId: string, teamId: string): Promise<boolean>;
+}
+
+/** One persisted binding, camelCase — see `platform/agentTeamsInstallStore.ts`. */
+export interface OperatorTeamsInstallRecord {
+  readonly agentId: string;
+  readonly teamId: string;
+  readonly teamsAppId: string | null;
+  readonly teamDisplayName: string | null;
+  readonly displayNameSyncedAt?: Date | null;
+  readonly installedAt: Date;
 }
 
 /**
@@ -351,25 +387,50 @@ export function projectTeamsIdentityErrorDetail(
 //     install, and answering with it would assert something the connector
 //     never told us.
 //
-// So the read model is DERIVED from the identity row and says so in every
-// entry (`evidence: 'identity_row'`). It reports at most one team, and the
-// route advertises that limit through `capabilities` instead of letting the
-// operator UI infer it from an array that never grows.
+// MIGRATION 0051 CLOSED THE FIRST HALF OF THAT GATE. The install SET now has
+// its own table (`agent_teams_installs`), so an agent can be bound to several
+// teams and a binding survives the next request instead of being overwritten —
+// the "bindings do not persist" symptom operators reported. Each entry says
+// where it comes from (`evidence: 'install_row'`, or `'identity_row'` on a
+// mount that has no installs store bound yet), and `multi_team` follows that
+// same fact rather than being a constant.
+//
+// The SECOND half stands: there is still no live enumeration, because the
+// connector publishes no listing method. The list is what omadia recorded
+// doing, and `capabilities.enumerate` stays false so the UI can say so.
 // ---------------------------------------------------------------------------
 
 /** One team an agent's Teams app is known to be installed in. */
 export interface InstalledTeamProjection {
   /** Teams team (group) id. */
   readonly team_id: string;
+  /**
+   * Graph display name of the team, as last resolved — `null` when it was
+   * never resolved (no connector, connector < 0.5.0, or the team is not
+   * visible to the tenant app). The UI shows the id alone in that case rather
+   * than inventing a label. A CACHE: Graph owns the name and renames are not
+   * pushed to us, so `display_name_synced_at` says how old the answer is.
+   */
+  readonly team_display_name: string | null;
+  readonly display_name_synced_at: Date | null;
   /** Catalog id of the installed app, when the upload step already ran. */
   readonly teams_app_id: string | null;
   /** Row timestamp of the write that recorded the install — NOT a Graph
    *  timestamp; the connector reports none. `null` when the store port
    *  carries no timestamps. */
   readonly installed_at: Date | null;
-  /** Where the entry comes from. Derived, never enumerated — see the section
-   *  comment above. */
-  readonly evidence: 'identity_row';
+  /**
+   * Where the entry comes from.
+   *
+   * `install_row` — a persisted binding (`agent_teams_installs`, migration
+   * 0051): omadia performed this install and recorded it.
+   * `identity_row` — the legacy single-column derivation, still used while no
+   * installs store is bound.
+   *
+   * Neither is an enumeration: the connector publishes no listing method, so
+   * both answer "what omadia did", never "what Graph currently holds".
+   */
+  readonly evidence: 'identity_row' | 'install_row';
 }
 
 /**
@@ -387,11 +448,88 @@ export function projectInstalledTeams(
   return [
     {
       team_id: record.teamId,
+      team_display_name: null,
+      display_name_synced_at: null,
       teams_app_id: record.teamsAppId,
       installed_at: record.updatedAt ?? null,
       evidence: 'identity_row',
     },
   ];
+}
+
+/**
+ * The binding list the route publishes.
+ *
+ * PREFERS the persisted table (migration 0051) — the only source that can
+ * hold more than one team and can carry a resolved name. Falls back to the
+ * legacy single-entry derivation while no installs store is bound, so a
+ * partial deployment reports less rather than nothing.
+ *
+ * The name lookup is OPPORTUNISTIC and best-effort: only bindings that have
+ * never been named are resolved, at most {@link MAX_NAME_LOOKUPS_PER_READ}
+ * per request, and any failure leaves the binding as it was. A read of the
+ * operator page must never fail — or hang — because Graph is slow.
+ */
+export async function readInstalledTeams(
+  deps: OperatorTeamsIdentityDeps,
+  agentId: string,
+  record: OperatorTeamsIdentityRecord,
+): Promise<readonly InstalledTeamProjection[]> {
+  const installs = deps.installs;
+  if (!installs) return projectInstalledTeams(record);
+  const rows = await installs.listForAgent(agentId);
+  const named = await resolveMissingTeamNames(deps, agentId, rows);
+  return named.map((row) => ({
+    team_id: row.teamId,
+    team_display_name: row.teamDisplayName,
+    display_name_synced_at: row.displayNameSyncedAt ?? null,
+    teams_app_id: row.teamsAppId,
+    installed_at: row.installedAt,
+    evidence: 'install_row' as const,
+  }));
+}
+
+/** Bound so one operator page load cannot fan out into an unbounded number of
+ *  Graph calls. Un-named bindings beyond it are picked up by the next read —
+ *  the name is a cache, and a cache is allowed to fill in gradually. */
+const MAX_NAME_LOOKUPS_PER_READ = 10;
+
+async function resolveMissingTeamNames(
+  deps: OperatorTeamsIdentityDeps,
+  agentId: string,
+  rows: readonly OperatorTeamsInstallRecord[],
+): Promise<readonly OperatorTeamsInstallRecord[]> {
+  const resolve = deps.resolveTeamName;
+  const installs = deps.installs;
+  if (!resolve || !installs) return rows;
+  const missing = rows
+    .filter((row) => row.teamDisplayName === null)
+    .slice(0, MAX_NAME_LOOKUPS_PER_READ);
+  if (missing.length === 0) return rows;
+
+  const resolved = new Map<string, string>();
+  for (const row of missing) {
+    try {
+      const name = await resolve(row.teamId);
+      if (name === null || name === '') continue;
+      resolved.set(row.teamId, name);
+      // Persist so the next read needs no lookup at all, and so the name
+      // survives a connector that is later removed or downgraded.
+      await installs.setDisplayName(agentId, row.teamId, name);
+    } catch (err) {
+      console.warn(
+        `[operator-agents] team name lookup for '${row.teamId}' failed:`,
+        err,
+      );
+    }
+  }
+  if (resolved.size === 0) return rows;
+  return rows.map((row) => {
+    const name = resolved.get(row.teamId);
+    return name === undefined
+      ? row
+      : { ...row, teamDisplayName: name, displayNameSyncedAt: new Date() };
+  });
 }
 
 /** What the operator router can actually do with team↔agent assignment. Sent
@@ -424,10 +562,14 @@ export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
 
 const STRUCTURAL_UNSUPPORTED_REASONS: Readonly<Record<string, string>> = {
   enumerate:
-    'teamsProvisioner@1 publishes no installation-listing method — the team list is derived from the agent_teams_identities row, not enumerated from Graph.',
-  multi_team:
-    'agent_teams_identities stores ONE team_id per agent (migration 0049) — tracking an install set needs a schema change, which is out of scope for this wave.',
+    'teamsProvisioner@1 publishes no installation-listing method — the team list is what omadia recorded when it installed (agent_teams_installs), not a live enumeration from Graph.',
 };
+
+/** Reason for a mount that has no installs table bound yet — the pre-0051
+ *  single-column world, where a second team could only be recorded by
+ *  overwriting the first. */
+const MULTI_TEAM_UNSUPPORTED_REASON =
+  'this middleware has no agent_teams_installs store bound (migration 0051) — without it only the single agent_teams_identities.team_id exists, and a second team could only be recorded by overwriting the first.';
 
 /**
  * The capability block for ONE request.
@@ -443,18 +585,18 @@ const STRUCTURAL_UNSUPPORTED_REASONS: Readonly<Record<string, string>> = {
  */
 export function teamsAssignmentCapabilities(
   canUninstall: boolean,
+  canMultiTeam = false,
 ): TeamsAssignmentCapabilities {
   return {
     install: true,
     uninstall: canUninstall,
     enumerate: false,
-    multi_team: false,
-    unsupported_reason: canUninstall
-      ? STRUCTURAL_UNSUPPORTED_REASONS
-      : {
-          uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
-          ...STRUCTURAL_UNSUPPORTED_REASONS,
-        },
+    multi_team: canMultiTeam,
+    unsupported_reason: {
+      ...(canUninstall ? {} : { uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON }),
+      ...(canMultiTeam ? {} : { multi_team: MULTI_TEAM_UNSUPPORTED_REASON }),
+      ...STRUCTURAL_UNSUPPORTED_REASONS,
+    },
   };
 }
 
@@ -543,14 +685,20 @@ export function refuseConflictingTeamRetarget(
 ): boolean {
   if (requestedTeamId === undefined) return false;
 
+  // Only a mount WITHOUT the bindings table still has to refuse a second
+  // team: there, `agent_teams_identities.team_id` is the single slot, and
+  // accepting would overwrite the record of an install that stays live in
+  // Graph — an untracked install nothing can then remove. With migration 0051
+  // bound the second team simply gets its own row.
   if (
+    deps.installs === undefined &&
     row.state === 'installed' &&
     row.teamId !== null &&
     row.teamId !== requestedTeamId
   ) {
     res.status(409).json({
       error: 'team_install_conflict',
-      message: `agent '${agent.slug}' is already installed in team '${row.teamId}' — one team per agent is all migration 0049 records, and the connector publishes no uninstall, so switching teams would leave an untracked install behind.`,
+      message: `agent '${agent.slug}' is already installed in team '${row.teamId}' and this middleware has no agent_teams_installs store bound (migration 0051) — a single team_id is all it can record, so switching teams would leave an untracked install behind.`,
       installed_team_id: row.teamId,
       requested_team_id: requestedTeamId,
     });
@@ -1355,14 +1503,17 @@ export function createOperatorAgentsRouter(
         state: row.state,
         running: deps.runner.isRunning(agent.id),
         provisioner_installed: deps.isProvisionerInstalled(),
-        teams: projectInstalledTeams(row),
+        teams: await readInstalledTeams(deps, agent.id, row),
         // The recorded install TARGET while the chain has not reached
         // 'installed' — a run in flight (or a stalled one), never an install.
         pending_team_id: row.state === 'installed' ? null : row.teamId,
         consent: projectTeamsConsent(row),
         last_error: row.lastError,
         last_error_detail: projectTeamsIdentityErrorDetail(row),
-        capabilities: teamsAssignmentCapabilities(canUninstallTeams(deps)),
+        capabilities: teamsAssignmentCapabilities(
+          canUninstallTeams(deps),
+          deps.installs !== undefined,
+        ),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
         teams_bot: projectTeamsBotConfig(row, deps.clientSecretRef),
@@ -1392,7 +1543,15 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
-      if (row.state === 'installed' && row.teamId === body.team_id) {
+      // Already installed HERE? With the bindings table that is a lookup in
+      // it; without one, the identity's single `team_id` is the only record
+      // and the answer degrades to the pre-0051 comparison.
+      const boundTeams = deps.installs
+        ? (await deps.installs.listForAgent(agent.id)).map((entry) => entry.teamId)
+        : row.state === 'installed' && row.teamId !== null
+          ? [row.teamId]
+          : [];
+      if (boundTeams.includes(body.team_id)) {
         // Idempotent: the app is already installed in exactly this team.
         res.json({
           ok: true,
@@ -1406,11 +1565,11 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
-      // Re-targeting would overwrite the ONLY team_id the schema has — for an
-      // already-installed row AND for a run still in flight toward another
-      // team. Both are refused before any write; see
-      // refuseConflictingTeamRetarget and
-      // TEAMS_ASSIGNMENT_CAPABILITIES.multi_team.
+      // A run already in flight toward ANOTHER team is still refused — one
+      // chain per agent, and its `team_id` is the runner's scratch field. What
+      // is no longer refused (with migration 0051 bound) is installing into an
+      // ADDITIONAL team: the binding gets its own row instead of overwriting
+      // the previous one, which is the whole point of the table.
       if (refuseConflictingTeamRetarget(res, deps, agent, row, body.team_id)) {
         return;
       }
@@ -1503,21 +1662,23 @@ export function createOperatorAgentsRouter(
       // (projectInstalledTeams), so anything else addresses an install this
       // middleware does not have. Saying so beats issuing a Graph delete for
       // a team the operator never installed into through omadia.
-      if (row.state !== 'installed' || row.teamId === null || row.teamId !== teamId) {
+      // With migration 0051 the addressable set is the BINDINGS table; the
+      // identity's single `team_id` is only a fallback for a mount without it.
+      const binding =
+        deps.installs && teamId !== null
+          ? (await deps.installs.listForAgent(agent.id)).find(
+              (entry) => entry.teamId === teamId,
+            )
+          : undefined;
+      const hasLegacyInstall =
+        deps.installs === undefined &&
+        row.state === 'installed' &&
+        row.teamId !== null &&
+        row.teamId === teamId;
+      if (binding === undefined && !hasLegacyInstall) {
         res.status(404).json({
           error: 'team_install_not_found',
           message: `agent '${agent.slug}' has no recorded install in team '${String(teamId)}' — GET /:slug/teams lists what can be removed.`,
-          agent: agent.slug,
-          team_id: teamId,
-        });
-        return;
-      }
-      if (!row.teamsAppId) {
-        // An 'installed' row without a catalog app id cannot be addressed in
-        // Graph. Inconsistent rather than unsupported — say which.
-        res.status(409).json({
-          error: 'teams_app_id_missing',
-          message: `agent '${agent.slug}' is recorded as installed in team '${row.teamId}' but carries no teams_app_id — the row cannot address the installation in Graph.`,
           agent: agent.slug,
           team_id: teamId,
         });
@@ -1528,8 +1689,22 @@ export function createOperatorAgentsRouter(
       // and a store that patches its rows IN PLACE would otherwise have this
       // response report the CLEARED value — a 200 claiming `team_id: null`
       // for the team it just removed the app from.
-      const installedTeamId = row.teamId;
-      const installedAppId = row.teamsAppId;
+      const installedTeamId = binding?.teamId ?? (row.teamId as string);
+      // The binding records the catalog app that was installed into THIS team;
+      // the identity's current `teams_app_id` is the fallback (and the only
+      // answer a pre-0051 mount has).
+      const installedAppId = binding?.teamsAppId ?? row.teamsAppId;
+      if (!installedAppId) {
+        // An install with no catalog app id cannot be addressed in Graph.
+        // Inconsistent rather than unsupported — say which.
+        res.status(409).json({
+          error: 'teams_app_id_missing',
+          message: `agent '${agent.slug}' is recorded as installed in team '${installedTeamId}' but carries no teams_app_id — the record cannot address the installation in Graph.`,
+          agent: agent.slug,
+          team_id: teamId,
+        });
+        return;
+      }
 
       const uninstall = provisioner?.uninstallFromTeam;
       if (uninstall === undefined) {
@@ -1548,18 +1723,34 @@ export function createOperatorAgentsRouter(
         teamId: installedTeamId,
         teamsAppId: installedAppId,
       });
-      const updated = await clearTeamInstall.call(deps.store, agent.id);
+
+      // Drop THIS binding. The identity is only walked back to
+      // `catalog_uploaded` when nothing is left bound: an agent still
+      // installed in another team is still installed, and demoting the state
+      // would make the next read report every remaining binding as pending.
+      let remaining: readonly OperatorTeamsInstallRecord[] = [];
+      if (deps.installs) {
+        await deps.installs.remove(agent.id, installedTeamId);
+        remaining = await deps.installs.listForAgent(agent.id);
+      }
+      const clearIdentity =
+        remaining.length === 0 &&
+        (deps.installs === undefined || row.teamId === installedTeamId);
+      const updated = clearIdentity
+        ? await clearTeamInstall.call(deps.store, agent.id)
+        : row;
 
       res.json({
         ok: true,
         agent: agent.slug,
         team_id: installedTeamId,
         // 'already-absent' is the connector's idempotent success: the app was
-        // not in the team. The row is cleared either way — that is the point
-        // of an idempotent remove.
+        // not in the team. The binding is dropped either way — that is the
+        // point of an idempotent remove.
         outcome: result.outcome,
         already_absent: result.outcome === 'already-absent',
         state: updated.state,
+        remaining_team_ids: remaining.map((entry) => entry.teamId),
       });
     } catch (err) {
       badRequest(res, err);

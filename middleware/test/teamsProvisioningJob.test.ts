@@ -14,6 +14,7 @@ import {
   type TeamsIdentityJobRecord,
   type TeamsIdentityJobStore,
   type TeamsIdentityJobUpdate,
+  type TeamsInstallJobStore,
   type TeamsBotsConfigSyncPort,
   type TeamsProvisionerPort,
   type TeamsProvisioningState,
@@ -184,6 +185,32 @@ function namedError(
   return err;
 }
 
+/** Migration 0051 — persisted bindings, in memory. */
+class MemoryInstallStore {
+  rows: Array<{ agentId: string; teamId: string; teamDisplayName: string | null }> = [];
+
+  get(agentId: string, teamId: string): Promise<{ teamId: string } | undefined> {
+    const row = this.rows.find(
+      (entry) => entry.agentId === agentId && entry.teamId === teamId,
+    );
+    return Promise.resolve(row ? { teamId: row.teamId } : undefined);
+  }
+
+  record(input: {
+    agentId: string;
+    teamId: string;
+    teamsAppId?: string | null;
+    teamDisplayName?: string | null;
+  }): Promise<unknown> {
+    this.rows.push({
+      agentId: input.agentId,
+      teamId: input.teamId,
+      teamDisplayName: input.teamDisplayName ?? null,
+    });
+    return Promise.resolve(undefined);
+  }
+}
+
 interface RunnerFixture {
   runner: TeamsProvisioningJobRunner;
   store: MemoryStore;
@@ -199,6 +226,8 @@ function makeRunner(opts: {
   maxRetryDelayMs?: number;
   getProvisioner?: () => TeamsProvisionerPort;
   syncBotConfig?: TeamsBotsConfigSyncPort;
+  installs?: TeamsInstallJobStore;
+  resolveTeamName?: (teamId: string) => Promise<string | null>;
 } = {}): RunnerFixture {
   const store = makeStore(opts.storeOverrides);
   const provisioner = makeProvisioner(opts.behaviour);
@@ -216,6 +245,8 @@ function makeRunner(opts: {
       ? { maxRetryDelayMs: opts.maxRetryDelayMs }
       : {}),
     ...(opts.syncBotConfig ? { syncBotConfig: opts.syncBotConfig } : {}),
+    ...(opts.installs ? { installs: opts.installs } : {}),
+    ...(opts.resolveTeamName ? { resolveTeamName: opts.resolveTeamName } : {}),
     log: () => {},
   });
   return { runner, store, provisioner, timers };
@@ -327,6 +358,67 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     assert.equal(result.status, 'installed');
     assert.deepEqual(provisioner.calls, []);
     assert.deepEqual(store.updates, []);
+  });
+
+  // ── migration 0051: the additional-team run ──────────────────────────
+  //
+  // Steps 1–4 build the agent's Entra app, bot and catalog entry — all
+  // per-AGENT and already done. Only step 5 is per-TEAM. So an `installed`
+  // identity asked for a team it is NOT yet bound to must still run that one
+  // step, instead of returning the no-op success above.
+
+  it('an installed identity still installs into a team it is not bound to', async () => {
+    const installs = new MemoryInstallStore();
+    installs.rows.push({
+      agentId: 'agent-1',
+      teamId: 'team-other',
+      teamDisplayName: null,
+    });
+    const { runner, provisioner } = makeRunner({
+      storeOverrides: { state: 'installed', appId: 'a', tenantId: 't', teamsAppId: 'c' },
+      installs,
+      resolveTeamName: () => Promise.resolve('Marketing'),
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    // Exactly the per-team step — nothing re-registered, nothing re-uploaded.
+    assert.deepEqual(provisioner.calls, ['installToTeam:team-42:c']);
+    // …and the binding is recorded, with the name resolved while we were there.
+    assert.deepEqual(
+      installs.rows.map((row) => [row.teamId, row.teamDisplayName]),
+      [
+        ['team-other', null],
+        ['team-42', 'Marketing'],
+      ],
+    );
+  });
+
+  it('a binding that already exists stays a no-op success', async () => {
+    const installs = new MemoryInstallStore();
+    installs.rows.push({ agentId: 'agent-1', teamId: 'team-42', teamDisplayName: null });
+    const { runner, provisioner } = makeRunner({
+      storeOverrides: { state: 'installed', appId: 'a', tenantId: 't', teamsAppId: 'c' },
+      installs,
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.deepEqual(provisioner.calls, []);
+    assert.equal(installs.rows.length, 1);
+  });
+
+  it('a failing name lookup never fails a run that installed', async () => {
+    const installs = new MemoryInstallStore();
+    const { runner } = makeRunner({
+      installs,
+      resolveTeamName: () => Promise.reject(new Error('graph down')),
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    // The binding is still recorded — nameless, which the UI shows as the id.
+    assert.deepEqual(
+      installs.rows.map((row) => [row.teamId, row.teamDisplayName]),
+      [['team-42', null]],
+    );
   });
 
   it('resumes from failed using evidence columns, without re-creating', async () => {

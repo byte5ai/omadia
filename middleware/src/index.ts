@@ -39,16 +39,20 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import {
   createOperatorAgentsRouter,
+  type OperatorTeamsIdentityDeps,
   type OperatorTeamsIdentityStore,
+  type OperatorTeamsInstallStore,
   type OperatorTeamsProvisioningRunner,
 } from './routes/operatorAgents.js';
 import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
+import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
 import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
 import {
   buildTeamsBotMessagingEndpoint,
   getTeamsProvisioner,
   requireTeamsProvisioner,
+  supportsTeamLookup,
 } from './platform/teamsProvisionerService.js';
 import {
   CHANNEL_TEAMS_PLUGIN_ID,
@@ -1872,6 +1876,23 @@ async function main(): Promise<void> {
     attachmentBindingStoreRef = new PostgresAttachmentBindingStore(graphPool);
   }
 
+  /**
+   * Team display-name lookup, feature-detected per call against whatever
+   * connector is installed RIGHT NOW: `getTeam` arrived in
+   * `@omadia/integration-microsoft365` 0.5.0, so an older one simply yields
+   * `null` and every screen keeps showing the bare team id. Declared out here
+   * because both consumers need it — the provisioning runner (names a binding
+   * as it is created) and the operator router (backfills names on read).
+   */
+  const resolveTeamName = async (teamId: string): Promise<string | null> => {
+    const provisioner = getTeamsProvisioner(serviceRegistry);
+    if (!supportsTeamLookup(provisioner)) return null;
+    const getTeam = provisioner?.getTeam;
+    if (!getTeam) return null;
+    const result = await getTeam.call(provisioner, { teamId });
+    return result.found ? result.displayName : null;
+  };
+
   // W1a (#860) — agent factory: Teams identity provisioning. Registers the
   // two kernel boot services the operator teams-identity routes resolve
   // late-bound (see the /api/v1/operator/agents mount): the identity store
@@ -1886,12 +1907,23 @@ async function main(): Promise<void> {
   if (graphPool) {
     const agentTeamsIdentityStore = new AgentTeamsIdentityStore(graphPool);
     serviceRegistry.provide('agentTeamsIdentityStore', agentTeamsIdentityStore);
+    // Migration 0051 — the PERSISTED team↔agent bindings. Registered next to
+    // the identity store because both the operator routes and the job runner
+    // consume it; without it the pair degrades to the single-column era
+    // (one team per agent, overwritten on re-target).
+    const agentTeamsInstallStore = new AgentTeamsInstallStore(graphPool);
+    serviceRegistry.provide('agentTeamsInstallStore', agentTeamsInstallStore);
     // TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL — the binding contract of
     // config.ts; resolved per call so a config reload wins over boot state.
     const teamsPublicBaseUrl = (): string =>
       config.TEAMS_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
     const teamsProvisioningRunner = new TeamsProvisioningJobRunner({
       store: agentTeamsIdentityStore,
+      // The runner records a binding only AFTER Graph confirmed the install,
+      // and decorates it with the team's name when the connector can resolve
+      // one. Both are best-effort: neither can fail a run that succeeded.
+      installs: agentTeamsInstallStore,
+      resolveTeamName,
       getProvisioner: () => requireTeamsProvisioner(serviceRegistry),
       // The accessor module's URL builder, bound to the public base — the
       // runner never composes the messaging endpoint itself.
@@ -3311,15 +3343,25 @@ async function main(): Promise<void> {
             'teamsProvisioningJobRunner',
           );
         if (!identityStore || !provisioningRunner) return undefined;
-        return {
+        // Migration 0051 — optional on purpose: a middleware whose migrations
+        // have not reached 0051 keeps serving the single-binding read model
+        // and reports `multi_team: false` with its reason, instead of 500ing
+        // against a table that is not there yet.
+        const installStore = serviceRegistry.get<OperatorTeamsInstallStore>(
+          'agentTeamsInstallStore',
+        );
+        const teamsDeps: OperatorTeamsIdentityDeps = {
           store: identityStore,
           runner: provisioningRunner,
+          resolveTeamName,
           isProvisionerInstalled: () => serviceRegistry.has('teamsProvisioner'),
           // Resolved per call, never cached: the connector can be installed,
           // upgraded or removed while the process runs, and the team-uninstall
           // capability (#900) has to follow it.
           getProvisioner: () => getTeamsProvisioner(serviceRegistry),
         };
+        if (installStore === undefined) return teamsDeps;
+        return { ...teamsDeps, installs: installStore };
       },
     }),
   );

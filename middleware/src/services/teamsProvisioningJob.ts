@@ -118,6 +118,32 @@ export interface TeamsIdentityJobStore {
   ): Promise<TeamsIdentityJobRecord>;
 }
 
+/**
+ * Where a COMPLETED install is recorded (`agent_teams_installs`, migration
+ * 0051) — the persisted binding, as opposed to the identity row's `team_id`,
+ * which is only ever the target of the run currently walking the chain.
+ *
+ * Written strictly AFTER Graph confirmed the install: the table answers "which
+ * teams did omadia install this agent into", and a row written on intent would
+ * make it answer a different, less useful question.
+ *
+ * Optional on the runner so a minimal mount (and every existing test) keeps
+ * working; without it the runner behaves exactly as it did before migration
+ * 0051, single-binding and all.
+ */
+export interface TeamsInstallJobStore {
+  get(
+    agentId: string,
+    teamId: string,
+  ): Promise<{ readonly teamId: string } | undefined>;
+  record(input: {
+    readonly agentId: string;
+    readonly teamId: string;
+    readonly teamsAppId?: string | null;
+    readonly teamDisplayName?: string | null;
+  }): Promise<unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioner port (structural subset of TeamsProvisionerAccessor)
 // ---------------------------------------------------------------------------
@@ -345,6 +371,17 @@ export interface TeamsProvisioningJobOptions {
   /** #910 — the finishing move that makes the bot live. Absent means the
    *  operator configures channel-teams by hand, exactly as before. */
   readonly syncBotConfig?: TeamsBotsConfigSyncPort;
+  /** Persisted team↔agent bindings (migration 0051). Absent = pre-0051
+   *  behaviour: the identity row's `team_id` is the only record there is. */
+  readonly installs?: TeamsInstallJobStore;
+  /**
+   * Resolve a team id to its Graph display name, or `null` when the lookup is
+   * unsupported / the team is not visible. Best-effort decoration of the
+   * binding, never a gate on the install: feature detection against the
+   * connector lives in the WIRING (`supportsTeamLookup`), so the runner has
+   * no opinion about connector versions.
+   */
+  readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
   readonly log?: (msg: string) => void;
 }
 
@@ -373,6 +410,10 @@ export class TeamsProvisioningJobRunner {
   private readonly maxRetryDelayMs: number;
   private readonly timers: TimerSeam;
   private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
+  private readonly installs: TeamsInstallJobStore | undefined;
+  private readonly resolveTeamName:
+    | ((teamId: string) => Promise<string | null>)
+    | undefined;
   private readonly log: (msg: string) => void;
 
   private readonly inFlight = new Map<
@@ -396,6 +437,8 @@ export class TeamsProvisioningJobRunner {
     );
     this.timers = opts.timers ?? REAL_TIMERS;
     this.syncBotConfig = opts.syncBotConfig;
+    this.installs = opts.installs;
+    this.resolveTeamName = opts.resolveTeamName;
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -630,7 +673,7 @@ export class TeamsProvisioningJobRunner {
         `no teams identity row for agent '${agentId}' — create it before enqueueing provisioning`,
       );
     }
-    if (row.state === 'installed') {
+    if (row.state === 'installed' && (await this.isBound(row, request.teamId))) {
       // #910 — a re-run of an already-installed identity is the self-healing
       // path: identity fields may have changed (a new display name), or an
       // operator may have removed the entry from the plugin config. The chain
@@ -639,6 +682,11 @@ export class TeamsProvisioningJobRunner {
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
+    // An `installed` identity with an UNRECORDED team is the additional-team
+    // case (migration 0051): the Entra app, the bot and the catalog entry are
+    // per-AGENT and already exist, only the per-TEAM install is missing. The
+    // run falls through — every step below is evidence-guarded and skips
+    // itself at this state rank, so the chain lands directly on step 5.
     if (this.stopped) return { status: 'stopped', agentId };
 
     const provisioner = this.getProvisioner();
@@ -740,12 +788,75 @@ export class TeamsProvisioningJobRunner {
     });
     row = await this.store.update(agentId, { state: 'installed', lastError: null });
 
+    // Step 5b (migration 0051) — PERSIST the binding. Graph has confirmed the
+    // install, so this is the moment the pair becomes a fact rather than an
+    // intent. Before this table existed the only trace was the identity row's
+    // single `team_id`, which the next request overwrote — the reason a
+    // binding never survived a re-target.
+    await this.recordInstall(agentId, request.teamId, row.teamsAppId);
+
     // Step 6 (#910) — the finishing move: write the `teams_bots` entry into
     // channel-teams and reload it, so the bot answers without an operator
     // pasting JSON between two screens. Deliberately AFTER the terminal state
     // write and deliberately unable to change it.
     await this.syncTeamsBotsConfig(row);
     return { status: 'installed', agentId };
+  }
+
+  /**
+   * Is this agent ALREADY recorded as installed in this team? Asked only of
+   * an `installed` identity, to tell "nothing left to do" apart from "the
+   * per-agent chain is done, this team's install is not".
+   *
+   * Without the installs store (pre-0051 mounts, tests) there is no per-team
+   * record to consult, and the runner's own port deliberately does not expose
+   * the identity's `team_id` — so the honest fallback is the pre-0051
+   * answer: an `installed` identity IS the binding. That keeps old mounts
+   * behaving exactly as before rather than re-installing on every run.
+   */
+  private async isBound(
+    row: TeamsIdentityJobRecord,
+    teamId: string,
+  ): Promise<boolean> {
+    const installs = this.installs;
+    if (!installs) return true;
+    return (await installs.get(row.agentId, teamId)) !== undefined;
+  }
+
+  /**
+   * Persist the confirmed binding, decorated with the team's display name
+   * when the connector can resolve one.
+   *
+   * Failure policy mirrors {@link syncTeamsBotsConfig}: the install itself
+   * already happened in Graph, so neither a bookkeeping write nor a cosmetic
+   * name lookup may turn a successful run into a failed one. A write failure
+   * is logged; a name failure leaves the binding nameless, which the operator
+   * UI renders as the bare id.
+   */
+  private async recordInstall(
+    agentId: string,
+    teamId: string,
+    teamsAppId: string | null,
+  ): Promise<void> {
+    const installs = this.installs;
+    if (!installs) return;
+    let displayName: string | null = null;
+    if (this.resolveTeamName) {
+      try {
+        displayName = await this.resolveTeamName(teamId);
+      } catch (err) {
+        this.log(
+          `[teams-provisioning] team name lookup for '${teamId}' failed: ${errorMessage(err)}`,
+        );
+      }
+    }
+    try {
+      await installs.record({ agentId, teamId, teamsAppId, teamDisplayName: displayName });
+    } catch (err) {
+      this.log(
+        `[teams-provisioning] could not record the install of agent '${agentId}' in team '${teamId}': ${errorMessage(err)}`,
+      );
+    }
   }
 
   /**
