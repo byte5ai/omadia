@@ -1,4 +1,5 @@
 import { ApiError } from './api';
+import type { LocalizedMarkdown } from './storeTypes';
 
 /**
  * Typed client for the operator multi-orchestrator REST surface
@@ -462,6 +463,10 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // provisioned and installed, only the automatic `teams_bots` write did not
   // land, so the operator falls back to the copy-paste block.
   'config_sync_failed',
+  // #921 — the Azure bot handle is taken in the GLOBAL Bot Service namespace.
+  // Terminal and deterministic: re-running changes nothing, the operator has
+  // to rename the bot slug.
+  'bot_handle_unavailable',
   'unknown',
 ] as const;
 
@@ -828,9 +833,16 @@ export type SetupFieldType =
 
 export interface PluginSetupFieldDto {
   key: string;
-  label: string;
+  /** #602 (OM-17) — the manifest loader normalises `label` into a
+   *  `{ <locale>: text }` map (`?? { en: key }`), so this is NOT a plain
+   *  string on any current middleware. Rendering it directly threw React #31
+   *  ("Objects are not valid as a React child") and took the whole orchestrator
+   *  page down via the route error boundary. Resolve with `pickLocalized`.
+   *  The bare-string arm covers payloads from a pre-#602 middleware. */
+  label: LocalizedMarkdown | string;
   type: SetupFieldType;
-  help?: string;
+  /** #602 (OM-17) — localized help map; same contract as `label`. */
+  help?: LocalizedMarkdown | string;
   default?: string | string[];
   enum?: Array<{ value: string; label: string }>;
 }

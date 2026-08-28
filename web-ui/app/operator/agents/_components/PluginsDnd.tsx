@@ -21,9 +21,10 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { pickLocalized } from '@/app/_lib/localized';
 import type {
   OperatorAgentDto,
   PluginCatalogEntryDto,
@@ -780,6 +781,14 @@ function PluginConfigField(props: {
   onChange: (value: string | boolean | number | string[]) => void;
 }): React.ReactElement {
   const { field, value, disabled, onChange } = props;
+  const locale = useLocale();
+  // #602 (OM-17) — `label` / `help` arrive as `{ <locale>: text }` maps from
+  // the manifest loader. Rendering the map object straight into JSX threw
+  // React #31 and replaced the whole orchestrator page with the route error
+  // boundary the moment "Config" was clicked. `key` is the loader's own
+  // fallback for a label-less field, so it is the right last resort here too.
+  const label = pickLocalized(field.label, locale) ?? field.key;
+  const help = pickLocalized(field.help, locale);
   const isSecret = field.type === 'secret' || field.type === 'password';
   const isHostList = field.type === 'host_list';
   const isEnum = field.type === 'enum' && (field.enum?.length ?? 0) > 0;
@@ -789,9 +798,9 @@ function PluginConfigField(props: {
   return (
     <label className="flex flex-col gap-0.5">
       <span className="text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
-        {field.label}
-        {field.help && (
-          <span className="ml-1 text-[color:var(--fg-subtle)]">— {field.help}</span>
+        {label}
+        {help && (
+          <span className="ml-1 text-[color:var(--fg-subtle)]">— {help}</span>
         )}
       </span>
       {isSecret ? (
