@@ -72,8 +72,8 @@ export function initUpdater(): void {
     if (!shouldNotify) return;
     void showUpdaterDialog({
       type: 'warning',
-      title: 'Update check keeps failing',
-      message: `omadia could not check for updates on the last ${consecutiveFailures} starts.`,
+      title: 'Updates are not getting through',
+      message: `omadia could not fetch an update on the last ${consecutiveFailures} starts.`,
       detail:
         `You are still running ${app.getVersion()}. omadia will keep trying in the background. ` +
         'If this persists, download the current version from ' +
@@ -83,7 +83,6 @@ export function initUpdater(): void {
   });
   autoUpdater.on('update-available', (info) => {
     log.info(`[updater] update available: ${info.version}`);
-    recordCheckReachedFeed();
     if (!takeManualCheckPending()) return;
     void showUpdaterDialog({
       type: 'info',
@@ -105,6 +104,12 @@ export function initUpdater(): void {
   });
   autoUpdater.on('update-downloaded', async (info) => {
     log.info(`[updater] downloaded ${info.version}`);
+    // Deliberately here and NOT on 'update-available': autoDownload is on, so a
+    // download follows immediately and its failures arrive on the same 'error'
+    // event. Resetting when the update was merely ANNOUNCED would clear the
+    // streak on every start before the download could fail, capping it at 1 and
+    // guaranteeing the warning below never fires for a broken download.
+    recordCheckReachedFeed();
     // This restart decision is intentionally unbounded: installing an update
     // without explicit user consent would be worse than waiting for it here.
     const { response } = await dialog.showMessageBox({
