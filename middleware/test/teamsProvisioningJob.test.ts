@@ -893,6 +893,40 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     assert.deepEqual(store.updates, []);
   });
 
+  it('retires its OWN stale warning when a re-run finally writes the config', async () => {
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        lastError: configSyncFailedDetail('teams_bots was not valid JSON'),
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    // Otherwise the operator who followed the warning's own advice ("re-run
+    // provisioning to retry the write") would still be staring at it.
+    assert.equal(store.row?.lastError, null);
+    assert.equal(store.row?.state, 'installed');
+  });
+
+  it('does NOT clear an unrelated error it did not write', async () => {
+    const stale = consentMissingDetail(['Application.ReadWrite.All']);
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        lastError: stale,
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    assert.equal(store.row?.lastError, stale);
+  });
+
   it('is a no-op when no sync port is wired (the pre-#910 manual path)', async () => {
     const { runner, store } = makeRunner();
     const result = await runner.enqueue(REQUEST);

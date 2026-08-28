@@ -770,6 +770,14 @@ export class TeamsProvisioningJobRunner {
           report.reason !== undefined ? ` (${report.reason})` : ''
         }`,
       );
+      // Retiring OUR OWN stale warning is part of "re-run provisioning to
+      // retry the write": without this, a run that fixed the problem would
+      // leave the operator staring at the warning that sent them here.
+      // Scoped to the `config_sync_failed` prefix on purpose — an unrelated
+      // error on the row is not this method's to clear.
+      if (row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
+        await this.recordError(row.agentId, { lastError: null });
+      }
     } catch (err) {
       const detail = configSyncFailedDetail(errorMessage(err));
       this.log(
@@ -831,6 +839,10 @@ export function throttledDetail(
  * brackets like the other structured sentences, with bracket and newline
  * characters stripped so the classifier's `[...]` group round-trips exactly.
  */
+/** Machine-readable prefix of {@link configSyncFailedDetail}. Shared by the
+ *  producer, the classifier and the runner's stale-warning cleanup. */
+export const CONFIG_SYNC_FAILED_PREFIX = 'config_sync_failed:';
+
 export function configSyncFailedDetail(reason: string): string {
   const safe = reason.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
   return `config_sync_failed: [${safe.length > 0 ? safe : CONFIG_SYNC_REASON_UNSPECIFIED}] — the Teams identity is provisioned and installed; only the automatic teams_bots entry in the Teams channel plugin was not written. Paste the shown block into that setup field to bring the bot online, or re-run provisioning to retry the write`;
@@ -900,7 +912,7 @@ export function classifyTeamsProvisioningError(
       raw,
     };
   }
-  if (sentence.startsWith('config_sync_failed:')) {
+  if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
     return {
       code: 'config_sync_failed',

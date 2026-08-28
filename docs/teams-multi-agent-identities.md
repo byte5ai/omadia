@@ -544,6 +544,7 @@ Was der Schreibweg garantiert:
 | **Re-Run aktualisiert** | Ändert sich ein Identitätsfeld (z. B. der Anzeigename), wird der eigene Eintrag aktualisiert. Ein Lauf gegen eine bereits `installed`-Identität macht nichts anderes als genau diesen Abgleich |
 | **No-op bleibt no-op** | Steht der Eintrag schon exakt so da, wird **weder geschrieben noch reaktiviert** — ein laufendes Channel-Plugin wird nicht grundlos durchgestartet |
 | **Kein Secret** | Geschrieben wird `appPasswordSecretRef` (`teams_bot_password:<appId>`), nie ein Passwort |
+| **Parallele Läufe kollidieren nicht** | Alle Schreibvorgänge im Prozess sind serialisiert. Zwei Agenten, die gleichzeitig fertig werden (z. B. der Resume-Scan beim Boot), überschreiben sich nicht gegenseitig |
 | **Container-Form bleibt** | War der Wert ein JSON-String (Setup-Wizard), bleibt er ein String; war er ein echtes Array (Install-Registry), bleibt er ein Array. Ein leeres Feld wird als JSON-String angelegt |
 
 Wann der Sync **aussetzt** — und was dann passiert:
@@ -559,7 +560,10 @@ Wann der Sync **aussetzt** — und was dann passiert:
 einer erfolgreichen Identität**. Die UI rendert sie als „Die Teams-Identität ist
 provisioniert und installiert — nur das automatische Schreiben … hat nicht geklappt",
 plus Grund und dem Hinweis, den Block einzufügen **oder** das Provisioning erneut
-auszuführen. In Azure muss dabei nichts wiederholt werden.
+auszuführen. In Azure muss dabei nichts wiederholt werden — ein erneuter Lauf gegen
+eine `installed`-Identität macht ausschließlich den Config-Abgleich. Gelingt er,
+**räumt er die eigene Warnung wieder weg**; ein unbeteiligter Fehler auf der Zeile
+(z. B. `consent_missing`) bleibt dabei unangetastet.
 
 **Der manuelle Weg bleibt** — als Fallback und für Operatoren, die explizit
 konfigurieren wollen:

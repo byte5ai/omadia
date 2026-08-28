@@ -326,6 +326,31 @@ export interface TeamsBotsConfigSyncDeps {
 }
 
 /**
+ * Serializes every write in this process.
+ *
+ * The write is a read-modify-write over ONE config value, and two agents can
+ * finish provisioning at the same time (the runner's in-flight guard is
+ * per-agent, and the boot-time resume scan re-enqueues every interrupted row
+ * at once). Interleaved, the second read would miss the first write and drop
+ * that entry on the floor — the exact "never lose an entry you do not own"
+ * guarantee this module exists for. A promise chain is enough: the critical
+ * section is a few microseconds of in-memory work plus one registry write,
+ * and this is a single-process concern.
+ */
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(work: () => Promise<T>): Promise<T> {
+  // `.then` on the tail regardless of how the previous write ended — a
+  // rejected predecessor must not poison the chain for everyone after it.
+  const next = writeQueue.then(work, work);
+  writeQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+/**
  * Write this identity's `teams_bots` entry into the channel-teams plugin
  * config and reload the plugin.
  *
@@ -334,7 +359,14 @@ export interface TeamsBotsConfigSyncDeps {
  * must treat that as a WARNING on an otherwise-successful run — see the module
  * header.
  */
-export async function syncTeamsBotConfig(
+export function syncTeamsBotConfig(
+  deps: TeamsBotsConfigSyncDeps,
+  record: TeamsBotIdentitySource,
+): Promise<TeamsBotsConfigSyncOutcome> {
+  return serialized(() => syncOnce(deps, record));
+}
+
+async function syncOnce(
   deps: TeamsBotsConfigSyncDeps,
   record: TeamsBotIdentitySource,
 ): Promise<TeamsBotsConfigSyncOutcome> {

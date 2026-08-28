@@ -368,6 +368,58 @@ describe('syncTeamsBotConfig', () => {
     assert.equal(storedEntries(registry).length, 1);
   });
 
+  it('serializes concurrent writes so neither agent loses its entry', async () => {
+    // Two agents finishing provisioning at once is normal (the boot-time
+    // resume scan re-enqueues every interrupted row). Unserialized, the second
+    // read-modify-write would read a config the first had not written yet and
+    // silently drop that entry.
+    const registry = registryWith({
+      [TEAMS_BOTS_CONFIG_KEY]: JSON.stringify([LEGACY_ENTRY]),
+    });
+    // A registry whose write does not land until the next macrotask — the
+    // widest interleaving window a real, async registry could open.
+    const slow: InstalledRegistry = {
+      ...registry,
+      get: (id) => registry.get(id),
+      updateConfig: async (id, config) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await registry.updateConfig(id, config);
+      },
+    } as InstalledRegistry;
+    const deps = { getInstalledRegistry: () => slow };
+    await Promise.all([
+      syncTeamsBotConfig(deps, IDENTITY),
+      syncTeamsBotConfig(deps, {
+        botSlug: 'sales-bot-2',
+        displayName: 'Sales Bot 2',
+        appId: 'app-sales-2',
+        tenantId: 'tenant-0001',
+      }),
+      syncTeamsBotConfig(deps, {
+        botSlug: 'ops-bot',
+        displayName: 'Ops Bot',
+        appId: 'app-ops-3',
+        tenantId: 'tenant-0001',
+      }),
+    ]);
+    const slugs = storedEntries(registry).map((entry) => entry['botSlug']);
+    assert.deepEqual(slugs, ['default', 'hr-bot', 'sales-bot-2', 'ops-bot']);
+  });
+
+  it('a failed write does not poison the queue for the next caller', async () => {
+    const broken = registryWith({ [TEAMS_BOTS_CONFIG_KEY]: '{ not json' });
+    const good = registryWith({});
+    await assert.rejects(
+      syncTeamsBotConfig({ getInstalledRegistry: () => broken }, IDENTITY),
+      TeamsBotsConfigSyncError,
+    );
+    const outcome = await syncTeamsBotConfig(
+      { getInstalledRegistry: () => good },
+      IDENTITY,
+    );
+    assert.equal(outcome.status, 'synced');
+  });
+
   it('never writes secret material — only the opaque vault REF', async () => {
     const registry = registryWith({});
     await syncTeamsBotConfig({ getInstalledRegistry: () => registry }, IDENTITY);
