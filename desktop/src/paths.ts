@@ -1,6 +1,9 @@
 import { app } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
+import { detectSyncedLocation } from './syncedPaths';
+import { log } from './log';
 
 /**
  * Resolves every on-disk location the desktop app needs, transparently handling
@@ -16,6 +19,9 @@ import fs from 'node:fs';
  */
 
 const isDev = process.env['OMADIA_DESKTOP_DEV'] === '1' || !app.isPackaged;
+
+/** One notice per launch, not one per snapshot call. */
+let syncedSnapshotNoticeLogged = false;
 
 function runtimeRoot(): string {
   if (isDev) {
@@ -89,11 +95,31 @@ export function setupFile(): string {
   return path.join(dataRoot(), 'setup.json');
 }
 
-/** Where a pre-update DB snapshot is written. */
+/**
+ * Where a pre-update DB snapshot is written.
+ *
+ * Normally next to the data it protects, under the chosen data dir. But when
+ * that dir sits in a cloud-synced folder the snapshots are moved to `userData`
+ * instead: a full copy of the cluster per update attempt is exactly the kind of
+ * bulk a sync client should never be asked to carry, and a backup that a sync
+ * client may evict or fork into a conflict copy is not a backup (#934).
+ */
 export function snapshotDir(): string {
-  const dir = path.join(dataRoot(), 'snapshots');
+  const root = dataRoot();
+  const synced = detectSyncedLocation(root, os.homedir());
+  const base = synced === null ? root : app.getPath('userData');
+  if (synced !== null && !syncedSnapshotNoticeLogged) {
+    syncedSnapshotNoticeLogged = true;
+    log.info(`[paths] data dir is in ${synced}; keeping DB snapshots in userData instead`);
+  }
+  const dir = path.join(base, 'snapshots');
   ensureDir(dir);
   return dir;
+}
+
+/** Marker recording which version we last handed to the installer (#926). */
+export function updateAttemptsFile(): string {
+  return path.join(app.getPath('userData'), 'update-attempts.json');
 }
 
 /** A file under userData recording an operator-chosen alternate data dir. */

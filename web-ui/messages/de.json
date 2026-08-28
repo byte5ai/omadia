@@ -1018,6 +1018,10 @@
       "npm_failed": {
         "what": "npm wurde ausgeführt, aber die Installation ist fehlgeschlagen.",
         "next": "Prüfe die Log-Details unten und starte die Installation danach erneut."
+      },
+      "spawn_failed": {
+        "what": "npm konnte nicht gestartet werden — das Betriebssystem hat die gefundene npm-Datei nicht ausgeführt. npm ist also nie gelaufen, und es wurde nichts installiert.",
+        "next": "Die betroffene Datei steht in den Support-Details. Prüfe, ob sie beschädigt oder nicht ausführbar ist, und installiere Node und npm im Zweifel neu."
       }
     },
     "package": {
@@ -2043,6 +2047,62 @@
         "not_needed": "Nichts verändert — nichts zu veröffentlichen.",
         "no_installed_app": "Gespeichert. Dieser Agent hat noch keine installierte Teams-App, deshalb wird nichts veröffentlicht.",
         "provisioner_unavailable": "Gespeichert. Der M365-Connector ist gerade nicht installiert, deshalb konnte das Teams-Paket nicht neu veröffentlicht werden."
+      },
+      "revision": "Fassung {revision}",
+      "tabs": {
+        "profile": "Steckbrief",
+        "character": "Charakter",
+        "boundaries": "Grenzen",
+        "prompt": "Prompt"
+      },
+      "prompt": {
+        "hint": "Genau dieser Text steht am Anfang des System-Prompts dieses Agenten — aus Verhalten, Charakter-Achsen, Grenzen und Schmeichel-Bremse zusammengesetzt.",
+        "hintWithFamily": "Genau dieser Text steht am Anfang des System-Prompts. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet — nur Abweichungen davon werden überhaupt geschrieben.",
+        "stale": "Ungespeicherte Änderungen sind hier noch nicht drin — erst nach dem Speichern.",
+        "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext."
+      },
+      "droppedPresets": "Diese Grenzen-Vorlagen kennt der Server nicht (mehr): {ids}",
+      "persona": {
+        "template": {
+          "heading": "Archetyp",
+          "none": "Kein Archetyp gewählt — alle Achsen stehen auf neutral.",
+          "active": "Archetyp: {name}",
+          "choose": "Archetyp wählen",
+          "clear": "Lösen"
+        },
+        "culture": {
+          "heading": "Branchen-Kalibrierung",
+          "hint": "Legt ein Branchenprofil über die Achsen. Überschreibt nur die Achsen, die das Profil setzt.",
+          "changes": "Verändert {count} Achsen"
+        },
+        "extended": {
+          "toggle": "Feineinstellung (4 weitere Achsen)"
+        },
+        "notes": {
+          "label": "Eigene Notizen",
+          "hint": "Freitext, der wörtlich in den Charakter-Block wandert — für alles, wofür kein Regler existiert."
+        }
+      },
+      "boundaries": {
+        "presetsHeading": "Grenzen aus der Bibliothek",
+        "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
+        "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
+        "categories": {
+          "data": "Daten",
+          "scope": "Zuständigkeit",
+          "authority": "Befugnis",
+          "communication": "Kommunikation"
+        },
+        "customLabel": "Eigene Verbote",
+        "customHint": "Eine Regel pro Zeile.",
+        "sycophancyLabel": "Schmeichel-Bremse",
+        "sycophancyHint": "Wie deutlich der Agent widersprechen darf, statt dem Nutzer nach dem Mund zu reden.",
+        "sycophancyLevels": {
+          "off": "Aus",
+          "low": "Leicht",
+          "medium": "Mittel",
+          "high": "Stark"
+        }
       }
     },
     "teamsIdentity": {

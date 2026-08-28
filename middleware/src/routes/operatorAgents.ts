@@ -38,9 +38,21 @@ import {
   resolveAgentIdentity,
   type AgentIdentityAvatarBytes,
   type AgentIdentityAvatarInput,
+  type AgentIdentityComposedPrompt,
   type AgentIdentityRecord,
-  type AgentIdentityTextInput,
+  type AgentIdentitySaveInput,
 } from '../platform/agentIdentityStore.js';
+import {
+  PersonaConfigSchema,
+  QualityConfigSchema,
+  type PersonaConfig,
+  type QualityConfig,
+} from '../plugins/builder/agentSpec.js';
+import {
+  composeAgentIdentityPrompt,
+  inferFamilyFromModel,
+} from '../services/agentIdentityPrompt.js';
+import type { PersonaModelFamily } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -907,10 +919,14 @@ function deriveBotSlug(agentSlug: string): string {
 /** Structural subset of `AgentIdentityStore` — the router never learns `pg`. */
 export interface OperatorAgentIdentityStore {
   getByAgentId(agentId: string): Promise<AgentIdentityRecord | undefined>;
-  saveText(
+  save(
     agentId: string,
-    input: AgentIdentityTextInput,
+    input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord>;
+  recompose(
+    agentId: string,
+    composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined>;
   setAvatar(
     agentId: string,
     avatar: AgentIdentityAvatarInput,
@@ -947,6 +963,13 @@ const AgentIdentitySchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
     .nullish(),
+  // The persona and quality blocks are validated by the SPEC's own schemas,
+  // not by a second definition here. They are the same documents the Agent
+  // Builder writes and `agent.md` frontmatter mirrors; a private copy would
+  // drift the moment an axis or a preset is added, and the compilers this
+  // route calls are written against those schemas.
+  persona: PersonaConfigSchema.nullish(),
+  quality: QualityConfigSchema.nullish(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -989,6 +1012,8 @@ export function projectAgentIdentity(
       long_description: identity?.longDescription ?? null,
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
+      persona: identity?.persona ?? null,
+      quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
       avatar:
         identity?.avatar == null
@@ -1000,6 +1025,12 @@ export function projectAgentIdentity(
             },
       updated_at: identity?.updatedAt.toISOString() ?? null,
     },
+    // The compiled prompt is surfaced read-only: it is what the agent
+    // actually speaks with, assembled from four controls that each show only
+    // their own part. An operator tuning axes should be able to read the
+    // result rather than infer it.
+    composed_prompt: identity?.composed.text ?? null,
+    composed_family: identity?.composed.family ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -1009,6 +1040,21 @@ export function projectAgentIdentity(
       has_avatar: resolved.hasAvatar,
     },
   };
+}
+
+/**
+ * Which persona family this agent's persona deltas are computed against.
+ *
+ * `model_routing.main` is the operator's per-agent model choice; without one
+ * the agent runs on the platform default, which this router does not know —
+ * and {@link inferFamilyFromModel} answers `sonnet` for an unknown id, the
+ * documented safe middle ground for the delta math.
+ */
+function agentPersonaFamily(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+}): PersonaModelFamily {
+  const main = agent.modelRouting?.['main'];
+  return inferFamilyFromModel(typeof main === 'string' ? main : '');
 }
 
 /**
@@ -1433,28 +1479,71 @@ export function createOperatorAgentsRouter(
         return;
       }
       const before = await deps.store.getByAgentId(agent.id);
-      const identity = await deps.store.saveText(agent.id, {
+      const persona = (body.persona ?? null) as PersonaConfig | null;
+      const quality = (body.quality ?? null) as QualityConfig | null;
+      // Compile HERE, on the write path: the orchestrator package cannot
+      // import the middleware's compilers, so the prompt an agent speaks
+      // with is stored alongside the settings it was built from. The family
+      // comes from the agent's own model routing — persona axes are deltas
+      // against it, so composing against the wrong one would emit the wrong
+      // traits.
+      const family = agentPersonaFamily(agent);
+      const composed = composeAgentIdentityPrompt({
+        instructions: body.instructions ?? null,
+        persona,
+        quality,
+        family,
+      });
+      const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
         longDescription: body.long_description ?? null,
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
+        persona,
+        quality,
+        composed: { text: composed.text, family },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
       // change the operator can see and the agent never speaks. Same reload
       // contract as every other write on this router; the diff decides whether
       // an Orchestrator is actually rebuilt.
-      if (before?.instructions !== identity.instructions) {
+      // Normalised on both sides: a first save has no `before` at all, and
+      // `undefined !== null` would rebuild every Agent whose operator merely
+      // typed a display name — dropping live sessions for a label change.
+      if ((before?.composed.text ?? null) !== (composed.text ?? null)) {
         await live.registry.reload();
       }
+      // A save whose CONTENT did not change returns the stored row
+      // untouched — including a prompt that may have been compiled against a
+      // model family the agent has since moved off. Recompose covers exactly
+      // that case, and deliberately does not bump the revision: nothing the
+      // operator authored changed.
+      const current =
+        identity.composed.text === composed.text &&
+        identity.composed.family === family
+          ? identity
+          : ((await deps.store.recompose(agent.id, {
+              text: composed.text,
+              family,
+            })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),
         agent,
         before?.revision,
-        identity.revision,
+        current.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity), republish });
+      res.json({
+        ...projectAgentIdentity(agent, current),
+        republish,
+        // Boundary presets this build could not resolve. A rule that silently
+        // stopped applying is worse than one that never existed, so the
+        // operator hears about it on the save that dropped it.
+        ...(composed.droppedBoundaryPresets.length > 0
+          ? { dropped_boundary_presets: composed.droppedBoundaryPresets }
+          : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }

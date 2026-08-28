@@ -5,6 +5,39 @@ name: auto-release
 # tag + a GitHub Release with a categorized changelog (Added/Changed/Fixed,
 # generated from commit subjects by .github/scripts/generate-changelog.mjs).
 #
+# TWO-PHASE PUBLISH (#928). The release is created as a DRAFT and only promoted
+# to published+latest once `desktop-apps` has attached the merged
+# `latest-mac.yml` AND the installers that feed references.
+#
+# The problem: `desktop-apps` runs `needs: release`, and `latest-mac.yml` only
+# exists once both mac architectures finish and merge-mac-update-feed.mjs has
+# combined them — macOS arm64 21 min + Intel >30 min by that workflow's own
+# measurements, plus notarization on Apple's clock. Flagging the release latest
+# up front therefore opened a 30-60 minute window per release in which every
+# macOS install asked for a file that did not exist yet and got a 404. 144
+# releases since 2026-07-06, five on one day.
+#
+# Why a DRAFT rather than just clearing `make_latest`: clearing the flag alone
+# would in fact work today. electron-updater (6.8.9, GitHubProvider) resolves the
+# version through `getLatestTagName()` -> `GET <repo>/releases/latest` with
+# `Accept: application/json`, reading `tag_name` — and that endpoint honours
+# `make_latest`. It also fetches `releases.atom`, but in our configuration only to
+# locate the matching entry for the release notes.
+#
+# A draft is preferred because it is strictly stronger, in two ways that matter:
+#   1. It is absent from BOTH `/releases/latest` and `releases.atom`, so it does
+#      not depend on which of the two the provider happens to consult.
+#   2. That choice is conditional on `allowPrerelease`, which AppUpdater derives
+#      from the running version (`hasPrereleaseComponents`). It is false only
+#      because set-desktop-version.mjs writes plain semver. Adopt any prerelease
+#      version scheme and it flips true, moving version selection onto the atom
+#      feed, where `make_latest` is ignored entirely — and this protection would
+#      silently stop working. (Which atom branch depends on the channel: with no
+#      channel it takes the first entry, with one it scans entries for a match.
+#      Either way the flag is not consulted.) A draft is invisible either way.
+# A draft also keeps a half-built release off the Releases page while it is
+# unusable, rather than showing one nobody can install.
+#
 # HARD RULE: every tagged release gets a clean, categorized changelog with no
 # manual step required — enforced by construction, since it's part of the
 # same job that creates the tag: there is no code path that tags a release
@@ -116,7 +149,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$new" -m "omadia $new"
           git push origin "$new"
-          gh release create "$new" --notes-file /tmp/release-notes.md --title "omadia $new" --latest
+          # --draft, NOT --latest: see TWO-PHASE PUBLISH at the top of this file.
+          # The `promote-release` job below publishes it once macOS clients can
+          # actually resolve an update for it.
+          gh release create "$new" --notes-file /tmp/release-notes.md --title "omadia $new" --draft
           # Hand the new tag to the publish-images job below. A GITHUB_TOKEN
           # release does not fire a `release` event, so the image build must run
           # here in the same workflow rather than via an event trigger.
@@ -147,4 +183,83 @@ jobs:
     uses: ./.github/workflows/desktop-apps.yml
     with:
       tag: ${{ needs.release.outputs.new_tag }}
+      # The release exists by construction here, so a lookup miss is a real
+      # fault: fail rather than silently attaching nothing to it.
+      require_release: true
     secrets: inherit
+
+  # Phase two of TWO-PHASE PUBLISH (#928): flip the draft to published + latest,
+  # but only once the merged macOS update feed is attached to it.
+  #
+  # Gated on desktop-apps' `mac_feed_published` output rather than on its result:
+  # `build` is fail-fast:false, so a broken Windows leg fails the called workflow
+  # while the macOS feed published fine — and withholding the promotion for that
+  # would leave macOS auto-update dead until the next fully green release, which
+  # is the failure mode OM-69 describes rather than a fix for it.
+  #
+  # `always()` so this still evaluates when desktop-apps reports failure.
+  #
+  # Failure semantics, deliberately chosen: if the feed never published, the
+  # release STAYS A DRAFT and this job fails red. The previous release keeps the
+  # latest flag, so existing installs keep updating to the last version that can
+  # actually be downloaded; no release lacking its macOS feed becomes latest.
+  #
+  # Note the limit of that promise: this gate is macOS-only, by the same design
+  # decision as gating on the feed output rather than the job result. A red
+  # WINDOWS leg still promotes, so `latest.yml` can be missing while the release
+  # is flagged latest, and Windows clients then hit OM-69's 404 on their own feed.
+  # That is a deliberate trade — withholding promotion on any red leg would leave
+  # macOS auto-update dead until the next fully green release — not a guarantee.
+  # Extending the assertion to `latest.yml` is the obvious follow-up. The cost
+  # is that the new release notes stay invisible until someone acts, which is why
+  # this job fails loudly instead of exiting 0 — a red run is the signal. Recover
+  # by re-running the desktop-apps job, or publish by hand once the artifacts are
+  # attached: `gh release edit <tag> --draft=false --latest`.
+  #
+  # Do not leave a stuck draft sitting, for two reasons beyond the invisible
+  # notes. `publish-images` only needs `release`, so the container `:latest` tag
+  # ships from a version desktop clients cannot get — the two channels drift
+  # apart for as long as the draft stands. And the changelog range comes from
+  # `git tag -l` while the tag is pushed before the release is created, so the
+  # NEXT release's notes start after the stuck tag: those commits then appear in
+  # no published release notes at all unless the draft is published.
+  #
+  # Note: publishing via GITHUB_TOKEN does NOT fire a `release: published` event
+  # (GitHub's Actions loop protection — the same reason publish-images and
+  # desktop-apps are called in-run here), so this cannot re-trigger
+  # desktop-apps.yml's `release` trigger. Do not "fix" that by switching to a PAT
+  # without re-checking it.
+  promote-release:
+    needs: [release, desktop-apps]
+    if: ${{ always() && needs.release.outputs.new_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft and flag it latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job deliberately has no actions/checkout -- it makes one API
+          # call and a checkout would be pure cost. But `gh` resolves the target
+          # repository from the git remote, so without a repo it fails with
+          # "failed to run git: fatal: not a git repository" AFTER the gate has
+          # already passed, leaving the release stuck as a draft. GH_REPO is how
+          # you tell `gh` the repository without a working tree.
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.new_tag }}
+          MAC_FEED_PUBLISHED: ${{ needs.desktop-apps.outputs.mac_feed_published }}
+          DESKTOP_RESULT: ${{ needs.desktop-apps.result }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MAC_FEED_PUBLISHED" != "true" ]; then
+            echo "::error::$TAG stays a DRAFT: desktop-apps finished $DESKTOP_RESULT without" >&2
+            echo "         attaching a merged latest-mac.yml, so a macOS client could not" >&2
+            echo "         download this version. The previous release keeps the latest flag." >&2
+            echo "         Re-run the desktop-apps job, or once its artifacts are attached:" >&2
+            echo "           gh release edit $TAG --draft=false --latest" >&2
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false --latest
+          echo "published $TAG and flagged it latest (desktop-apps: $DESKTOP_RESULT)"

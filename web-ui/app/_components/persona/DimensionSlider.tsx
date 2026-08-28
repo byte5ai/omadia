@@ -3,8 +3,8 @@
 import { useTranslations } from 'next-intl';
 import { AlertTriangle } from 'lucide-react';
 
-import { cn } from '../../../../_lib/cn';
-import type { ConflictSeverity } from '../../../../_lib/personaConflicts';
+import { cn } from '../../_lib/cn';
+import type { ConflictSeverity } from '../../_lib/personaConflicts';
 
 /**
  * Phase 3 / OB-67 Slice 3 — single 0–100 axis slider.

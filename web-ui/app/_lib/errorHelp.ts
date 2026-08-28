@@ -61,6 +61,7 @@ export const ERROR_HELP_CODES = [
   // install-status poll response, not on an error envelope.
   'cli_install.no_output',
   'cli_install.npm_failed',
+  'cli_install.spawn_failed',
   // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
   'providers.apply_failed',
   'providers.invalid_request',
