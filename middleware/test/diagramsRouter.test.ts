@@ -8,6 +8,7 @@ import {
   signUrl,
   type TigrisStore,
 } from '@omadia/diagrams';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const SECRET = 'z'.repeat(32);
 
@@ -53,11 +54,11 @@ describe('/diagrams router', () => {
   const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const fakePng = Buffer.concat([PNG_MAGIC, Buffer.from('fake-body')]);
 
-  before(() => {
+  before(async () => {
     store.seed('byte5/abc.png', fakePng);
     const app = express();
     app.use('/diagrams', createDiagramsRouter({ store, secret: SECRET }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });

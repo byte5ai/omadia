@@ -223,6 +223,47 @@ function buildSystem(req: LlmRequest): unknown {
   }));
 }
 
+/**
+ * Model families that reject any `temperature` other than the default.
+ *
+ * Measured against the live API on 2026-08-19, because the rule is NOT
+ * derivable from the version number and guessing it wrong fails a security
+ * control silently:
+ *
+ * | model              | omitted | 0   | 0.5 | 1  |
+ * |--------------------|---------|-----|-----|----|
+ * | claude-opus-4-6    | OK      | OK  | OK  | OK |
+ * | claude-opus-4-7    | OK      | 400 | 400 | OK |
+ * | claude-opus-4-8    | OK      | 400 | 400 | OK |
+ * | claude-opus-5      | OK      | 400 | 400 | OK |
+ * | claude-sonnet-4-6  | OK      | OK  | OK  | OK |
+ * | claude-sonnet-5    | OK      | 400 | 400 | OK |
+ * | claude-haiku-4-5   | OK      | OK  | OK  | OK |
+ *
+ * Note `opus-4-6` accepts it while `opus-4-7` does not — so "newer than X"
+ * is not the rule, and a version comparison would be a plausible, wrong gate.
+ * `temperature: 1` is always accepted because it IS the default; the API only
+ * objects to being asked for a value it no longer honours.
+ */
+const TEMPERATURE_UNSUPPORTED = [
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-opus-5',
+  'claude-sonnet-5',
+  'claude-fable-5',
+];
+
+/**
+ * Whether this model still honours `temperature`.
+ *
+ * Exported for the test and for callers that want to know their determinism
+ * request will be dropped. The match is a prefix so dated ids
+ * (`claude-sonnet-5-20260101`) and provider-qualified ids resolve correctly.
+ */
+export function supportsTemperature(model: string): boolean {
+  return !TEMPERATURE_UNSUPPORTED.some((m) => model.includes(m));
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   return {
@@ -230,7 +271,13 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     max_tokens: req.maxTokens,
     messages: toAnthropicMessages(req.messages),
     ...(system !== undefined ? { system } : {}),
-    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    // Sending a temperature a model no longer honours is a hard 400, not a
+    // warning. Callers ask for determinism (`temperature: 0`) on paths where
+    // an exception degrades to fail-open — the security screener is one — so
+    // dropping the parameter is strictly better than raising.
+    ...(req.temperature !== undefined && supportsTemperature(req.model)
+      ? { temperature: req.temperature }
+      : {}),
     ...(req.tools !== undefined && req.tools.length > 0
       ? { tools: toAnthropicTools(req.tools, req.cacheHints) }
       : {}),

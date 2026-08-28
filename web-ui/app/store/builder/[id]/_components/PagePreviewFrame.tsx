@@ -100,6 +100,7 @@ export function PagePreviewFrame({
           {loading ? (
             <span className="text-[color:var(--fg-muted)]">{t('loading')}</span>
           ) : null}
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only refresh control (RefreshCw), no text */}
           <button
             type="button"
             onClick={onRefresh}

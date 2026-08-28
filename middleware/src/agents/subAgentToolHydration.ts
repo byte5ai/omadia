@@ -19,11 +19,16 @@ import {
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import {
   buildSubAgentDomainTools,
+  createLongRunningSubAgentTool,
+  createScopedMemorySubAgentTool,
   mcpNativeHandler,
   mcpToolNameFromRef,
   mcpToolToNativeSpec,
   turnContext,
+  MEMORY_TOOL_NAME,
   type DomainTool,
+  type ResumableTaskSource,
+  type TaskStore,
   type DomainToolSpec,
   type McpConfigField,
   type McpManager,
@@ -32,6 +37,7 @@ import {
   type McpToolDescriptor,
   type NativeToolRegistry,
   type SkillRow,
+  type SubAgentMemoryResolver,
   type SkillToolBindingRow,
   type SubAgentRow,
   type ToolGrantRow,
@@ -71,6 +77,29 @@ export interface HydrateDeps {
   readonly personaSkills?: readonly SkillRow[];
   /** Operator bindings for skill capability contracts (issue #456). */
   readonly skillToolBindings?: readonly SkillToolBindingRow[];
+  /**
+   * W2-2 (issue #543) — sub-agent tool names (`ask_<slug>`) that ALSO get the
+   * non-blocking `<name>_start`/`_status`/`_list` triple, so a slow sub-agent
+   * stops blocking the chat turn it was delegated from.
+   *
+   * Opt-in per sub-agent, and deliberately NOT a DB column: a column needs a
+   * migration, and `0031`/`0032` are taken by parallel units. Sourced from
+   * `LONG_RUNNING_SUBAGENT_TOOLS` config so it is operator-settable today; the
+   * per-sub-agent DB flag is the follow-up that owns the migration.
+   *
+   * The blocking `ask_<slug>` tool stays registered either way — a sub-agent
+   * that answers in seconds is better inline, and the model picks by name.
+   */
+  readonly longRunningSubAgentTools?: readonly string[];
+  /** Shared store backing the deferred sub-agent tasks. Omit ⇒ feature off. */
+  readonly taskStore?: TaskStore;
+  /**
+   * Issue #560 — a caller-owned sink the deferred tool handles are appended to,
+   * so the boot resume driver can re-drive their tasks. A handle is pushed once,
+   * when its triple is newly registered (a rebuild that re-creates an
+   * already-registered tool does not push a duplicate). Omit ⇒ no resume driving.
+   */
+  readonly deferredTaskToolHandles?: ResumableTaskSource[];
   readonly log?: (msg: string) => void;
 }
 
@@ -159,11 +188,41 @@ export function mcpRowToConfig(row: McpServerRow): McpServerConfig {
   };
 }
 
-/** Adapt a top-level native tool (handler + spec) into a sub-agent tool. */
+/**
+ * The production resolver: the memory handler bound to the turn that is
+ * delegating to this sub-agent right now, installed by
+ * `Orchestrator.dispatchToolInner` around the domain-tool dispatch. Outside a
+ * delegation it returns `undefined` and the memory tool refuses the call.
+ */
+export const turnScopedMemoryResolver: SubAgentMemoryResolver = () =>
+  turnContext.currentSubAgentMemoryHandler();
+
+/**
+ * Adapt a top-level native tool (handler + spec) into a sub-agent tool.
+ *
+ * `resolveTurnMemory` is REQUIRED, not optional, and that is the point (#904).
+ * The `memory` grant must never be served from `registry` — that entry is the
+ * memory provider plugin's handler on the UNDECORATED root store, and a
+ * sub-agent dispatching through it reads and writes outside its parent agent's
+ * `orchestrator:<slug>:*` subtree and, with the chat-context ACL on, outside
+ * its team's and channel's tiers too. A required parameter means a new call
+ * site that forgets to thread the scoped store fails `typecheck` instead of
+ * silently degrading to the unscoped one — the same hardening #903 applied to
+ * `dispatchTool` / `dispatchToolDeadlined` / `dispatchToolInner`.
+ */
 export function adaptNativeToolForSubAgent(
   registry: NativeToolRegistry,
   toolRef: string,
+  resolveTurnMemory: SubAgentMemoryResolver,
 ): LocalSubAgentTool | undefined {
+  // Checked BEFORE the registry lookup: `memory` must not be resolvable from
+  // the process-wide registry on ANY registration shape. The two shipped
+  // providers register handler-only (no `spec`), which the guard below happened
+  // to drop — an accident of spec assembly, not a boundary, and one that a
+  // single `register()` with a spec would have removed.
+  if (toolRef === MEMORY_TOOL_NAME) {
+    return createScopedMemorySubAgentTool(resolveTurnMemory);
+  }
   const reg = registry.get(toolRef);
   if (!reg?.handler || !reg.spec) return undefined;
   const handler = reg.handler;
@@ -184,7 +243,12 @@ export function adaptNativeToolForSubAgent(
 /** Resolve the discovered descriptor for a granted tool from the server row,
  *  so the DomainTool spec carries the real description + inputSchema. Falls
  *  back to a name-only descriptor (schema-less, still callable) when the
- *  server has not been re-discovered since the grant. */
+ *  server has not been re-discovered since the grant.
+ *
+ *  Issue #547 (W1-3): also rehydrates the persisted `outputSchema`. That is
+ *  what makes the schema survive a restart — discovery may not run again for
+ *  the lifetime of the process, and the structured-result sidecar reads the
+ *  schema from the descriptor the adapters seed it with. */
 function discoveredDescriptor(
   row: McpServerRow | undefined,
   toolRef: string,
@@ -198,9 +262,19 @@ function discoveredDescriptor(
       ...(hit['inputSchema'] && typeof hit['inputSchema'] === 'object'
         ? { inputSchema: hit['inputSchema'] as Record<string, unknown> }
         : {}),
+      ...(isPlainObject(hit['outputSchema'])
+        ? { outputSchema: hit['outputSchema'] }
+        : {}),
     };
   }
   return { name: toolRef };
+}
+
+/** True for a non-null, non-array object. Arrays are rejected: an
+ *  `outputSchema` is a JSON-Schema object, and a persisted array would be
+ *  corrupt data rather than a lenient variant. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
 /**
@@ -217,6 +291,11 @@ export function mcpGrantToDomainTool(
   cfg: McpServerConfig,
   descriptor: McpToolDescriptor,
 ): DomainTool {
+  // Issue #547 (W1-3): seed the manager's output-schema cache from this
+  // descriptor. `mcpNativeHandler` only closes over a tool NAME, so without
+  // this the sidecar would lose the schema on any process that never ran
+  // discovery itself (i.e. every restart).
+  manager.rememberToolSchema(cfg.id, descriptor);
   const spec = mcpToolToNativeSpec(cfg.name, descriptor);
   const handler = mcpNativeHandler(manager, cfg, descriptor.name);
   return {
@@ -266,7 +345,12 @@ export function registerDbSubAgentTools(
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
           mcpManager: deps.mcpManager,
           mcpServersById,
-          nativeTool: (ref) => adaptNativeToolForSubAgent(deps.nativeToolRegistry, ref),
+          nativeTool: (ref) =>
+            adaptNativeToolForSubAgent(
+              deps.nativeToolRegistry,
+              ref,
+              turnScopedMemoryResolver,
+            ),
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
@@ -363,6 +447,10 @@ export function registerDbSubAgentTools(
               turnDate: current.turnDate,
               ...(current.agentSlug ? { agentSlug: current.agentSlug } : {}),
               ...(current.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+              // W3-A — same carry-over as the plugin accessor: without it a
+              // skill-bound MCP call reaches a `per_user` server with no
+              // identity, audits as `unresolved` and fails closed.
+              ...(current.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
               activePersonaSkillId: skillId,
               mcpCallerKind: 'skill',
               mcpCallerId: skillSlug,
@@ -371,6 +459,58 @@ export function registerDbSubAgentTools(
           );
         },
       });
+    }
+  }
+
+  // W2-2 (issue #543) — deferred sub-agent dispatch. For each opted-in
+  // sub-agent, register the non-blocking triple as NATIVE tools alongside the
+  // blocking `ask_<slug>` DomainTool. Additive: nothing above changes, and with
+  // no allowlist (or no store) this loop does not execute at all.
+  const deferredNames = new Set(deps.longRunningSubAgentTools ?? []);
+  if (deferredNames.size > 0 && deps.taskStore) {
+    const taskStore = deps.taskStore;
+    for (const tool of tools) {
+      if (!deferredNames.has(tool.name)) continue;
+      // Adapt the DomainTool back to an Askable rather than rebuilding the
+      // sub-agent: this reuses the EXACT dispatch path the blocking tool uses
+      // (same LocalSubAgent, same domain logging, same error wrapping), so the
+      // deferred and inline routes cannot drift apart.
+      const handle = createLongRunningSubAgentTool({
+        baseToolName: tool.name,
+        displayName: tool.name.replace(/^ask_/, '') || tool.name,
+        description: tool.spec.description,
+        agent: { ask: (question, observer) => tool.handle({ question }, observer) },
+        store: taskStore,
+        onRunnerError: (err, taskId) => {
+          deps.log?.(
+            `subAgentToolHydration: deferred ${tool.name} task ${taskId} runner failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        },
+      });
+      let registeredNew = 0;
+      for (const r of handle.registrations) {
+        if (deps.nativeToolRegistry.get(r.name)) {
+          deps.log?.(
+            `subAgentToolHydration: deferred tool "${r.name}" already registered — skipped`,
+          );
+          continue;
+        }
+        deps.nativeToolRegistry.register(r.name, {
+          handler: r.handler,
+          spec: r.spec,
+          promptDoc: r.promptDoc,
+        });
+        registeredNew += 1;
+      }
+      // Issue #560 — retain the handle for the resume driver ONLY when this call
+      // actually registered the triple. A later rebuild re-creates the handle but
+      // skips registration (names already present); pushing it then would leave
+      // the driver re-driving through a stale handle whose registrations are dead.
+      if (registeredNew > 0 && deps.deferredTaskToolHandles) {
+        deps.deferredTaskToolHandles.push(handle);
+      }
     }
   }
 

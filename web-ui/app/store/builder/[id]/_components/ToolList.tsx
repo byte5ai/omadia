@@ -298,6 +298,7 @@ function SortableRow({
       )}
     >
       <div className="flex items-center gap-2 px-2 py-2">
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only drag handle; dnd-kit listeners/attributes spread on it */}
         <button
           type="button"
           aria-label={t('reorderHandle')}
@@ -307,6 +308,7 @@ function SortableRow({
         >
           <GripVertical className="size-3.5" aria-hidden />
         </button>
+        {/* eslint-disable-next-line no-restricted-syntax -- expandable list-row header (chevron + tool id), not a CTA */}
         <button
           type="button"
           onClick={onToggle}
@@ -335,6 +337,7 @@ function SortableRow({
           ) : null}
         </button>
         {onTest ? (
+          // eslint-disable-next-line no-restricted-syntax -- icon-only play/test control (Play glyph, no text)
           <button
             type="button"
             onClick={onTest}
@@ -345,6 +348,7 @@ function SortableRow({
             <Play className="size-3" aria-hidden />
           </button>
         ) : null}
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only remove control (X glyph, no text) */}
         <button
           type="button"
           onClick={onRemove}

@@ -17,6 +17,8 @@
 
 import type { Socket } from 'node:net';
 
+import type { WriteCapability } from './writeCapabilities.js';
+
 import type {
   EntityCapturedTurnsHit,
   EntityCapturedTurnsOptions,
@@ -55,6 +57,16 @@ export interface PluginContext {
   readonly secrets: SecretsAccessor;
   readonly config: ConfigAccessor;
   readonly services: ServicesAccessor;
+
+  /** Epic #470 C7 / G4 — plugin-owned Postgres schema. Present ONLY when the
+   *  manifest declares `permissions.sql` AND the operator granted it. A plugin
+   *  that owns tables reaches them through the `graphPool` capability (also
+   *  gated by the same permission); this accessor is the migration side of
+   *  that — a shared, advisory-locked runner so eight plugins do not hand-roll
+   *  eight racy ones. Guard with `if (ctx.sql)`: an older core, an undeclared
+   *  permission and a withheld grant are all indistinguishable from the
+   *  plugin's side, and all three mean "do not touch the database". */
+  readonly sql?: SqlAccessor;
 
   /** True only when the kernel activated this plugin specifically for a
    *  smoke probe (Theme D — admin-route schema check). False during
@@ -169,17 +181,6 @@ export interface PluginContext {
    *  the call audit log (attributed to this plugin). Guard with
    *  `if (ctx.mcp)` — a Hub plugin may land on an older core that lacks it. */
   readonly mcp?: McpAccessor;
-
-  /** Epic #470 W3 — dev-platform access. Present iff the manifest declares
-   *  `permissions.devJobs` AND the host wires the 'devJobs' service. Scoped to
-   *  the repos the operator has EXPLICITLY granted to this plugin
-   *  (`dev_repo_plugin_grants`) — never ambient access to every registered
-   *  repo. Fail-closed like `ctx.mcp`: an ungranted repo (or a job on one)
-   *  throws, and the error never reveals whether an out-of-scope repo/job
-   *  exists. Deliberately CANNOT resolve gates — a human gate must stay
-   *  attributable to a human session, never a model/plugin turn. Guard with
-   *  `if (ctx.devJobs)` — a Hub plugin may land on an older core that lacks it. */
-  readonly devJobs?: DevJobsAccessor;
 
   /** Spec 004 — redirect/callback flow toolkit. Present iff the manifest
    *  declares `permissions.flows: true`. Supplies the three things a plugin
@@ -405,6 +406,212 @@ export function capabilitiesMatch(
   return provider.name === consumer.name && provider.major === consumer.major;
 }
 
+// ---------------------------------------------------------------------------
+// Service resolution — the grant gate and per-caller attribution (epic #470 B1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Who is asking for a service. Every field is the **kernel-known** installed
+ * plugin id — `createPluginContext` fills it from the id the kernel activated
+ * the plugin under, never from an argument the caller supplies. A provider can
+ * therefore trust it for attribution, scoping and per-tenant filtering.
+ *
+ * `agentId` and `pluginId` are the same value under two names: the kernel's
+ * internal term is `agentId`, the manifest/registry term is `pluginId`. Both
+ * are present so a provider can read whichever name its own domain uses
+ * without a lookup table.
+ */
+export interface ServiceCaller {
+  /** Kernel-known installed plugin id (kernel-internal name for it). */
+  readonly agentId: string;
+  /** The same kernel-known id under the manifest's name for it. */
+  readonly pluginId: string;
+}
+
+/** Brand for {@link PerCallerFactory}. A unique symbol, so a plain value a
+ *  plugin happens to register can never be mistaken for a factory — including
+ *  a value that *is* a function, which is why the factory is wrapped in a
+ *  branded object rather than detected by `typeof impl === 'function'`. */
+const PER_CALLER_FACTORY = Symbol.for('@omadia/plugin-api.perCallerService');
+
+/**
+ * A service registration that mints one implementation **per consuming
+ * plugin** instead of sharing a single instance.
+ *
+ * Build one with {@link perCallerService}; it is otherwise opaque. Resolution
+ * is memoized by the FACTORY OBJECT and then by `caller.pluginId`, so one
+ * provider instance is reused for repeat reads by the same consuming plugin,
+ * while a re-registered provider starts cold automatically because it is a
+ * different factory object.
+ */
+export interface PerCallerFactory<T> {
+  readonly [PER_CALLER_FACTORY]: (caller: ServiceCaller) => T;
+}
+
+/**
+ * Per-caller factory cache.
+ *
+ * Keying first on the wrapper object means a provider swap self-invalidates:
+ * `ctx.services.replace(name, perCallerService(...))` registers a fresh object,
+ * so the old cache becomes unreachable without any explicit lifecycle hook.
+ * Keying second on `caller.pluginId` makes the contract literal: one
+ * implementation per consuming plugin.
+ */
+const perCallerFactoryCache = new WeakMap<
+  PerCallerFactory<unknown>,
+  Map<string, unknown>
+>();
+
+/**
+ * Wrap a factory so the kernel invokes it once per consuming plugin, handing
+ * it the {@link ServiceCaller}. The factory must therefore be idempotent for a
+ * given caller: repeat reads by the same plugin receive the cached result, not
+ * a freshly constructed instance.
+ *
+ *   ctx.services.provide(
+ *     'repoGrants',
+ *     perCallerService((caller) => grantsScopedTo(caller.pluginId)),
+ *   );
+ *
+ * Why this exists (epic #470 §2.2): before it, a provider that needed to know
+ * which plugin was calling had exactly one option — take the id as an argument
+ * from the consumer (`listGrantedRepoIds(myOwnPluginId)`). That is
+ * self-attribution: the caller names itself, and nothing stops it naming
+ * someone else. Routing attribution through the kernel closes that by
+ * construction.
+ *
+ * Value providers are unaffected: `provide(name, impl)` with a plain value
+ * keeps returning that exact value to every consumer.
+ */
+export function perCallerService<T>(
+  factory: (caller: ServiceCaller) => T,
+): PerCallerFactory<T> {
+  return { [PER_CALLER_FACTORY]: factory };
+}
+
+/** Narrow an arbitrary registration to a per-caller factory. */
+export function isPerCallerService<T = unknown>(
+  value: unknown,
+): value is PerCallerFactory<T> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Record<symbol, unknown>)[PER_CALLER_FACTORY] === 'function'
+  );
+}
+
+/** Invoke a per-caller factory. Exported for the kernel's registry; plugins
+ *  never need it — `ctx.services.get` already resolves the factory. */
+export function resolvePerCallerService<T>(
+  factory: PerCallerFactory<T>,
+  caller: ServiceCaller,
+): T {
+  let byPlugin = perCallerFactoryCache.get(factory);
+  if (!byPlugin) {
+    byPlugin = new Map<string, unknown>();
+    perCallerFactoryCache.set(factory, byPlugin);
+  }
+  if (byPlugin.has(caller.pluginId)) {
+    return byPlugin.get(caller.pluginId) as T;
+  }
+  const resolved = factory[PER_CALLER_FACTORY](caller);
+  byPlugin.set(caller.pluginId, resolved);
+  return resolved;
+}
+
+/**
+ * Why a `ctx.services.get(name)` call was refused — issue #788.
+ *
+ * The two reasons have different fixers and must not be collapsed:
+ *
+ *  - `undeclared` — the manifest never mentions the capability. The author
+ *    adds a `requires:` / `optional_requires:` line.
+ *  - `provides-not-registered` — the manifest DOES mention it, but only under
+ *    `provides:`, and the plugin has not called `ctx.services.provide(name, …)`
+ *    yet. `provides:` grants read-back of the plugin's OWN registration; until
+ *    that registration exists there is nothing of the plugin's to read back,
+ *    and resolving the name would hand over somebody else's implementation.
+ *    The author either provides it first, or declares it as a dependency.
+ */
+export type ServiceNotDeclaredReason = 'undeclared' | 'provides-not-registered';
+
+/**
+ * Which `ctx.services` verb the gate refused — issue #788 follow-up.
+ *
+ * `get` and `replace` run the SAME grant check but are different mistakes, and
+ * naming the wrong one in the message sends the author to the wrong line:
+ *
+ *  - `get` — the plugin tried to RESOLVE a capability.
+ *  - `replace` — the plugin tried to SWAP OUT the live provider of a
+ *    capability. That is strictly more dangerous than resolving it, because
+ *    every other consumer in the process (core included) resolves the
+ *    replacement afterwards. It is gated on the same declaration for that
+ *    reason: a name a plugin may not read is a name it may not redefine.
+ */
+export type ServiceGateOperation = 'get' | 'replace';
+
+/**
+ * Thrown by `ctx.services.get(name)` / `ctx.services.replace(name, …)` when the
+ * plugin's manifest does not declare `name` as a capability it `requires` — or
+ * declares it only under `provides:` without having provided it (see
+ * {@link ServiceNotDeclaredReason}).
+ *
+ * Typed so a plugin can distinguish "the operator has not installed a
+ * provider" (`get` returns `undefined`) from "I forgot to declare this"
+ * (this throw) — two very different bugs that used to look identical.
+ */
+export class ServiceNotDeclaredError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  /** The manifest field that would grant it. */
+  public readonly manifestField = 'requires';
+  /** #788 — which of the two refusals this is. Defaults to `undeclared` so
+   *  every pre-existing construction site keeps its exact message. */
+  public readonly reason: ServiceNotDeclaredReason;
+  /** Which verb was refused. Defaults to `get`, the only gated verb before
+   *  the `replace` gate landed, so pre-existing call sites are unchanged. */
+  public readonly operation: ServiceGateOperation;
+  constructor(
+    pluginId: string,
+    capability: string,
+    reason: ServiceNotDeclaredReason = 'undeclared',
+    operation: ServiceGateOperation = 'get',
+  ) {
+    const call =
+      operation === 'replace'
+        ? `ctx.services.replace('${capability}', …)`
+        : `ctx.services.get('${capability}')`;
+    // `replace` needs its own remedy sentence. The fix for a refused `get` is
+    // "provide it first, then read it back"; for a refused `replace` on a
+    // provides-only name that advice is impossible — the live registration
+    // belongs to somebody else, and `provide` would throw duplicate-provider
+    // against it. Say what the author can actually do instead.
+    const providesRemedy =
+      operation === 'replace'
+        ? `but the plugin has not called ctx.services.provide('${capability}', …) yet, so the live provider of '${capability}' belongs to somebody else — ` +
+          `a \`provides:\` entry grants a plugin power over ITS OWN registration, not the right to swap out another plugin's. ` +
+          `Wrap your own registration instead, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin legitimately decorates somebody else's implementation`
+        : `but the plugin has not called ctx.services.provide('${capability}', …) yet — ` +
+          `a \`provides:\` entry grants read-back of THIS plugin's own registration, not access to another plugin's service. ` +
+          `Either provide '${capability}' before resolving it, or add '${capability}@<major>' to \`requires:\` ` +
+          `(or \`optional_requires:\` when absence is survivable) if this plugin is a consumer of somebody else's implementation`;
+    super(
+      reason === 'provides-not-registered'
+        ? `plugin '${pluginId}' called ${call} and its manifest declares '${capability}' under \`provides:\`, ` +
+            providesRemedy
+        : `plugin '${pluginId}' called ${call} but its manifest does not declare that capability — ` +
+            `add '${capability}@<major>' to the manifest's \`requires:\` list (or \`optional_requires:\` when absence is survivable, ` +
+            `or \`provides:\` if this plugin is the provider — note that \`provides:\` only grants the name once the plugin has actually provided it)`,
+    );
+    this.name = 'ServiceNotDeclaredError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+    this.reason = reason;
+    this.operation = operation;
+  }
+}
+
 /**
  * Accessor for plugin-bereitgestellte (plugin-provided) services.
  *
@@ -416,6 +623,29 @@ export function capabilitiesMatch(
  *   const graph = ctx.services.get<GraphAccessor>('graph');
  *   if (!graph) { // provider not installed — handle gracefully }
  *
+ * **`get` is manifest-gated (epic #470 B1).** The service-registry key IS the
+ * capability name, so a plugin may only resolve names it declared in its
+ * manifest's `requires:` (or `provides:`, for reading back its own
+ * registration). An undeclared name throws {@link ServiceNotDeclaredError}
+ * instead of handing over the implementation. Before this gate any installed
+ * plugin could ask for any service — including `graphPool`, the same Postgres
+ * pool core uses — with no manifest declaration and nothing in the install
+ * dialog.
+ *
+ * **A `provides:` entry grants the name only once it has been provided
+ * (issue #788).** `provides:` is a self-declaration that costs nothing at
+ * activation — unlike `requires:`, it creates no ordering edge and cannot fail
+ * an activation. A plugin that listed `provides: ["graphPool@1"]` and never
+ * called `provide()` was therefore passing the gate for somebody else's
+ * `graphPool`: an undeclared-capability bypass wearing a declaration's
+ * clothes. The kernel now checks the registry for a live registration owned by
+ * the asking plugin and throws with
+ * `reason: 'provides-not-registered'` until there is one.
+ *
+ * `has` stays ungated: it answers a yes/no existence question and hands over
+ * no capability, so gating it would only turn feature-probing into
+ * exception-handling.
+ *
  * Well-known service names and their accessor interfaces are documented
  * alongside the providing plugin. Plugins that depend on a specific service
  * should declare the provider in their manifest's `depends_on` so the
@@ -423,28 +653,80 @@ export function capabilitiesMatch(
  */
 export interface ServicesAccessor {
   /** Returns the registered provider for the given service, or undefined
-   *  if no provider is installed. */
+   *  if no provider is installed.
+   *
+   *  Throws {@link ServiceNotDeclaredError} when this plugin's manifest does
+   *  not declare `name` — that is a manifest bug, not a missing provider, and
+   *  the two must not be reported the same way. */
   get<T>(name: string): T | undefined;
-  /** Whether a provider is currently registered. */
+  /**
+   * Resolve a capability the plugin declared as OPTIONAL
+   * (`optional_requires:` in the manifest), where "no provider installed"
+   * is a supported steady state rather than a misconfiguration.
+   *
+   * Declaration-gated on exactly the same terms as {@link get}: a name in
+   * neither `requires:`, `optional_requires:` nor `provides:` throws
+   * {@link ServiceNotDeclaredError}, because a typo must not silently
+   * become `undefined`.
+   *
+   * The difference from {@link get} is the contract it advertises, not the
+   * lookup. `get` is paired with `requires:`, which the installer and the
+   * boot loop both treat as a hard prerequisite — so a `get` that returns
+   * `undefined` normally means something upstream failed. `getOptional` is
+   * paired with `optional_requires:`, which neither gate enforces, so
+   * `undefined` here is an expected answer and the caller is expected to
+   * carry a degradation path for it.
+   *
+   * Note the ordering caveat that comes with optionality: an optional
+   * dependency contributes no activation edge, so a provider that IS
+   * installed may not have activated yet when the consumer's `activate()`
+   * runs. Resolve optional services lazily (at first use) rather than
+   * caching the result of a single call during activation.
+   */
+  getOptional<T>(name: string): T | undefined;
+  /** Whether a provider is currently registered. Ungated — see the interface
+   *  doc. */
   has(name: string): boolean;
   /** Register THIS plugin as the provider for the given service name.
    *  Returns a dispose handle — the plugin's `close()` MUST invoke it to
    *  symmetrically unregister the service on deactivate. Throws on
    *  duplicate-provider (two plugins cannot both claim the same name; the
-   *  operator must uninstall one). */
-  provide<T>(name: string, impl: T): () => void;
+   *  operator must uninstall one).
+   *
+   *  `impl` is normally the shared implementation every consumer receives.
+   *  Wrap it in {@link perCallerService} instead to mint one implementation
+   *  per consuming plugin, with the kernel-known caller id supplied by the
+   *  kernel. */
+  provide<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
   /**
    * OB-71 (palaia capture-pipeline): wrap an already-registered provider
    * with a decorator. The previous provider stays live behind the wrapper;
    * the dispose handle restores it on plugin deactivate. Throws if no
    * provider exists yet — use `provide` for the first registration.
    *
-   * Intentionally privileged: only call when this plugin is the canonical
-   * decorator for the named capability (e.g. `harness-orchestrator-extras`
-   * wrapping `knowledgeGraph` with the capture-filter). Treat the swap as
-   * a coordinated handoff, not a competing provider.
+   * Intentionally privileged, and ENFORCED as such: `replace` is
+   * declaration-gated on exactly the same terms as {@link get}. It throws
+   * {@link ServiceNotDeclaredError} with `operation: 'replace'` when the
+   * manifest declares `name` nowhere, and when it declares `name` only under
+   * `provides:` without this plugin holding a live registration for it — in
+   * that case the live provider belongs to somebody else, and taking it would
+   * hand every other consumer in the process an implementation they never
+   * asked for.
+   *
+   * So the canonical decorator declares the capability it wraps under
+   * `requires:`/`optional_requires:` (e.g. `harness-orchestrator-extras`
+   * declares `knowledgeGraph@^1` and wraps it with the capture-filter), and a
+   * plugin re-wrapping its OWN registration is already permitted. Treat the
+   * swap as a coordinated handoff, not a competing provider.
+   *
+   * Note the asymmetry with `provide`, which is NOT gated: `provide` cannot
+   * displace anyone (it throws duplicate-provider instead), whereas `replace`
+   * only succeeds when there is an owner to displace.
+   *
+   * Accepts a {@link perCallerService} wrapper on the same terms as
+   * `provide`.
    */
-  replace<T>(name: string, impl: T): () => void;
+  replace<T>(name: string, impl: T | PerCallerFactory<T>): () => void;
 }
 
 /**
@@ -586,16 +868,99 @@ export interface ToolRegistrationOptions {
   readonly promptDoc?: string;
   /** Per-turn attachment collector. See NativeToolAttachmentSink docs. */
   readonly attachmentSink?: NativeToolAttachmentSink;
+  /**
+   * #542 prerequisite — declare that dispatching this tool may MUTATE data.
+   *
+   * This is the plugin-facing end of the `WriteCapability` contract in
+   * `./writeCapabilities.ts` (see the NOTE under `NativeToolSpec` for why it
+   * rides the options bag rather than the spec: the spec is forwarded verbatim
+   * to Anthropic, which rejects unknown fields). The kernel stores it on the
+   * registry entry, where `ToolDispatchService` reads it.
+   *
+   * Declaring it opts the tool into duplicate-write protection: a dispatch that
+   * carries an idempotency key is deduplicated, and the MCP transport's
+   * transient retry is suppressed for it (a retry cannot tell "failed before
+   * writing" from "wrote, then lost the response"). A tool that mutates data and
+   * omits this gets no such protection — for an Odoo or M365 write reachable from
+   * a public endpoint, that means a duplicate is possible.
+   */
+  readonly writeCapabilities?: readonly WriteCapability[];
+}
+
+/**
+ * Epic #470 C6 / G2 — how a contributed route is authenticated.
+ *
+ *  - `'session'` — **the default**. The kernel composes the same operator
+ *    session gate core mounts at `/api`, per route. Under `/api` that is
+ *    defence-in-depth (the blanket gate already ran); outside `/api`
+ *    (`/diagrams`, `/documents`, `/p/…`) it is the only session gate there is.
+ *    CSRF posture is core's own: a `SameSite=Lax` session cookie, no token
+ *    layer — a browser never attaches the session to a cross-site request.
+ *  - `'public'` — no kernel authentication. Registration THROWS unless the
+ *    prefix lies beneath a path this plugin declared in
+ *    `permissions.public_paths`. Whether it is actually served without a
+ *    session additionally requires operator consent (epic #470 C4/H1).
+ *  - `'custom'` — same registration constraint as `'public'`; the plugin
+ *    asserts it authenticates every request itself. A webhook verifying an
+ *    HMAC over `req.rawBody` is the canonical case.
+ *
+ * There is deliberately no `'none'`: a plugin cannot self-declare its way out
+ * of authentication, only ask the operator for a prefix and be granted it.
+ */
+export type RouteAuthMode = 'session' | 'public' | 'custom';
+
+/**
+ * Epic #470 C6 / G3 — how the request body reaches the contributed router.
+ *
+ *  - `'json'` — **the default**. Parsed JSON at core's own limit (10 MB).
+ *  - `'raw'` — untouched bytes as a `Buffer`, on BOTH `req.body` and
+ *    `req.rawBody`, at a 512 KB default limit. The kernel parses these ahead
+ *    of its global JSON parser, so the bytes an HMAC is computed over are the
+ *    bytes that arrived. Do NOT re-serialise `req.body` to verify a signature.
+ *  - `'none'` — the kernel mounts no parser for this route; the plugin owns the
+ *    stream (uploads, proxying, streaming responses). It does NOT disable the
+ *    kernel's global JSON parser: an `application/json` request has still been
+ *    read upstream. Use `'raw'` when you need the bytes as they arrived.
+ */
+export type RouteBodyMode = 'json' | 'raw' | 'none';
+
+export interface RouteRegisterOptions {
+  /** Default `'session'`. See {@link RouteAuthMode}. */
+  readonly auth?: RouteAuthMode;
+  /** Default `'json'`. See {@link RouteBodyMode}. */
+  readonly body?: RouteBodyMode;
+  /** Express body-parser limit string (`'1mb'`, `'512kb'`). Defaults to 10 MB
+   *  for `'json'` and 512 KB for `'raw'`. Ignored for `'none'`.
+   *
+   *  Only `'raw'` gives it a real effect. Raw bodies are captured before the
+   *  kernel's global parser (they have to be), which is also before the session
+   *  gate — so raising it raises how much an ANONYMOUS caller can make the
+   *  kernel buffer. State a bigger number only when the payload needs it.
+   *
+   *  On `'json'` the kernel's global 10 MB parser has already run, so a larger
+   *  value here cannot raise the effective ceiling. */
+  readonly bodyLimit?: string;
 }
 
 /**
  * Contributes an Express router to the kernel. The kernel mounts it at the
- * given prefix via `app.use(prefix, router)`. Authentication / CORS / rate
- * limiting remain the plugin's responsibility — the kernel does not inject
- * middleware around the contributed router.
+ * given prefix via `app.use(prefix, router)`.
+ *
+ * Since epic #470 C6 the kernel DOES inject middleware around the contributed
+ * router, in a fixed order:
+ *
+ *     [deactivation guard] → [auth] → [body parser] → your router
+ *
+ * The deactivation guard is first, so a deactivated plugin's prefix stops
+ * existing before any authentication or body buffering happens. CORS and rate
+ * limiting remain the plugin's responsibility.
  */
 export interface RoutesAccessor {
-  register(prefix: string, router: unknown): () => void;
+  register(
+    prefix: string,
+    router: unknown,
+    options?: RouteRegisterOptions,
+  ): () => void;
 }
 
 /**
@@ -662,6 +1027,14 @@ export interface PluginActionStatus {
   readonly title?: string;
   /** One-line detail / next step (e.g. "Verbindung in der Admin-UI herstellen"). */
   readonly detail?: string;
+  /**
+   * ISO timestamp of when this status was reported — STAMPED BY THE KERNEL at
+   * `report()` time, never trusted from the plugin, so "geprüft um <Zeit>"
+   * cannot lie about when the check actually ran. Field-test follow-up
+   * (OM-16/24/33): a connection verdict without a time reads as a permanent
+   * fact; with one it reads as what it is — the result of the last probe.
+   */
+  readonly checked_at?: string;
 }
 
 /**
@@ -670,6 +1043,12 @@ export interface PluginActionStatus {
  * and `clear()` once everything is fine. The kernel keeps only the latest
  * value per plugin; there is no history. Reporting another plugin's status is
  * impossible — the accessor is bound to the calling plugin's id.
+ *
+ * `state: 'ok'` semantics: a BARE ok (no `title`) is equivalent to `clear()`
+ * and renders nothing — existing callers keep their behaviour. An ok WITH a
+ * `title` (e.g. "Verbunden") is stored and rendered as a positive badge with
+ * the kernel-stamped `checked_at`, so an integration can surface "connection
+ * verified at <time>" instead of silence.
  */
 export interface StatusAccessor {
   report(status: PluginActionStatus): void;
@@ -754,6 +1133,12 @@ export interface UiRoutesAccessor {
    * web-ui pages (a built-in package) has a nav entry and no uiRoute;
    * a plugin serving its own HTML has both.
    *
+   * Supply either a literal `href` (validated as a canonical in-app path)
+   * or `pluginUi: true`, which asks the kernel to render the canonical
+   * path to this plugin's own bundled UI — the only way a scoped plugin
+   * id can express a nav destination, since that path must be
+   * percent-encoded and a literal href may not be.
+   *
    * Returns a dispose handle the plugin MUST call from its `close()`.
    * The kernel additionally drops every entry by source on deactivate,
    * so a leaked handle cannot outlive the plugin.
@@ -797,11 +1182,32 @@ export interface UiNavEntryInput {
   /** Stable id within the plugin. Combined with pluginId as the key. */
   readonly navId: string;
   /**
-   * Absolute in-app path (e.g. `/admin/dev-platform`). Must start with
-   * exactly one `/` — protocol-relative (`//host`) and scheme-bearing
-   * values are rejected so a manifest cannot point the nav off-origin.
+   * Absolute in-app path (e.g. `/admin/reports`). Must start with exactly
+   * one `/` — protocol-relative (`//host`) and scheme-bearing values are
+   * rejected so a manifest cannot point the nav off-origin. Segments are
+   * confined to the RFC 3986 unreserved set: no query, no fragment, no
+   * percent-encoding, no dot-segments.
+   *
+   * Mutually exclusive with {@link pluginUi}; exactly one of the two must
+   * be supplied.
    */
-  readonly href: string;
+  readonly href?: string;
+  /**
+   * Point the entry at THIS plugin's own bundled UI instead of a literal
+   * path, and let the kernel spell the URL.
+   *
+   * A plugin that ships a compiled SPA is served at `/p/<pluginId>/ui/`
+   * and embedded by the shell's host page at `/plugin-ui/<pluginId>`. For
+   * a scoped id like `@acme/widget` the only URL that resolves is the
+   * percent-encoded one (`%40acme%2Fwidget`) — and percent-encoding is
+   * exactly what the `href` validator refuses, deliberately, because a
+   * literal href has to be comparable to a core path by string equality.
+   *
+   * So the plugin states the intent and the kernel renders the canonical
+   * encoded path from the id it already knows. A plugin never hand-builds
+   * an encoded href, and the literal-href rule stays strict.
+   */
+  readonly pluginUi?: true;
   /**
    * Optional cluster to nest under (e.g. `adminCluster`). Rendered as a
    * top-level entry when omitted, or when the shell has no cluster by
@@ -817,9 +1223,15 @@ export interface UiNavEntryInput {
   readonly label: Readonly<Record<string, string>>;
 }
 
-/** Catalogue-resolved nav entry — pluginId injected by the kernel. */
-export interface UiNavEntry extends UiNavEntryInput {
+/**
+ * Catalogue-resolved nav entry — `pluginId` injected by the kernel, and
+ * `href` no longer optional: a `pluginUi: true` input is resolved to the
+ * canonical host-page path at registration, so every stored entry carries
+ * a concrete destination.
+ */
+export interface UiNavEntry extends Omit<UiNavEntryInput, 'href'> {
   readonly pluginId: string;
+  readonly href: string;
 }
 
 /**
@@ -834,6 +1246,14 @@ export interface ResolvedUiNavEntry {
   readonly cluster?: string;
   readonly order: number;
   readonly label: string;
+  /**
+   * Present iff the entry was registered with `pluginUi: true`. The shell
+   * uses it to re-derive `href` from `pluginId` locally instead of
+   * trusting the transmitted string — the middleware is a separate
+   * deployable, and a percent-encoded href is the one shape the shell's
+   * own defensive href rule cannot check character by character.
+   */
+  readonly pluginUi?: true;
 }
 
 /**
@@ -1398,89 +1818,25 @@ export interface McpAccessor {
 }
 
 // ---------------------------------------------------------------------------
-// Dev-platform access (epic #470 W3, issue #470) — `ctx.devJobs`.
+// A DORMANT CAPABILITY WAS REMOVED HERE.
+//
+// One accessor and its six types used to sit at this point in the file. The
+// backing host service was never provided by anything, so the accessor threw on
+// every invocation, and no manifest in this repo, in the private byte5 plugin
+// set, or in any sibling repo ever declared its permission. It was surface
+// area that only looked like a contract. The exact names are listed once, in
+// `packages/plugin-api/CHANGELOG.md`, so a consumer grepping its own source for
+// a removed type lands on the entry that explains where it went. Per epic
+// #470 (see the spec set under `specs/`) the subsystem that would have used it
+// now lives in its own repository and defines these types for itself.
+//
+// The reason this is a comment and not just a deletion: a plugin that still
+// declares the retired permission installs and activates UNCHANGED. Unknown
+// permission keys are ignored by `adaptManifestV1` and the accessor is simply
+// absent (it was already unusable). That is the property that makes a
+// capability removable at all, and it is regression-tested in
+// `test/manifestRetiredPermissionKey.test.ts`.
 // ---------------------------------------------------------------------------
-
-/** The three job intents a plugin may start (spec §2). */
-export type DevJobKind = 'analyze' | 'fix_issue' | 'implement';
-
-/** Job lifecycle status, mirrored from `dev_jobs.status` (spec §2). */
-export type DevJobStatus =
-  | 'queued'
-  | 'provisioning'
-  | 'running'
-  | 'waiting'
-  | 'applying'
-  | 'done'
-  | 'failed'
-  | 'cancelled'
-  | 'stalled'
-  | 'budget_exceeded';
-
-/** Read-only projection of a dev job handed to plugins. Deliberately omits the
- *  creator, runner token, cost, and raw diff artifacts — the forge PR page is
- *  the review surface (epic non-goal). */
-export interface DevJobDescriptor {
-  readonly id: string;
-  readonly repoId: string;
-  readonly kind: DevJobKind;
-  readonly status: DevJobStatus;
-  readonly phase: string;
-  readonly branch?: string;
-  readonly prUrl?: string;
-  readonly createdAt: string;
-}
-
-export interface DevJobCreateRequest {
-  readonly repoId: string;
-  readonly kind: DevJobKind;
-  readonly brief: string;
-  /** Ticket key, e.g. "PROJ-123" — becomes the job's `sourceRef`. */
-  readonly sourceRef?: string;
-}
-
-export interface DevJobEventRecord {
-  readonly id: number;
-  /** Server-assigned ordering key (event timestamp, ISO 8601). */
-  readonly at: string;
-  readonly type: string;
-  readonly payload: Record<string, unknown>;
-}
-
-/**
- * Dev-platform access for plugins (epic #470 W3). Repo ids are host
- * `dev_repos` ids; only operator-granted repos (`dev_repo_plugin_grants`)
- * resolve — everything else throws a plain `Error` (plugin-api stays
- * dependency-free), with an opaque message that does NOT reveal whether an
- * out-of-scope repo or job exists. Mirrors `McpAccessor`'s fail-closed
- * contract. Gate resolution is deliberately absent from this surface — see the
- * `devJobs?` doc on {@link PluginContext}.
- */
-export interface DevJobsAccessor {
-  /** Repo ids the operator has granted to THIS plugin. Everything else is
-   *  invisible. */
-  listRepos(): Promise<readonly string[]>;
-  /** Start a dev job on a granted repo. Throws on an ungranted repo. */
-  create(req: DevJobCreateRequest): Promise<DevJobDescriptor>;
-  /** Fetch one job. Throws — indistinguishably from not-found — when the job is
-   *  missing OR lives on a repo not granted to this plugin (no existence
-   *  oracle). */
-  get(jobId: string): Promise<DevJobDescriptor>;
-  /** List jobs, scoped to granted repos. A `repoId` filter naming an ungranted
-   *  repo throws. */
-  list(filter?: {
-    repoId?: string;
-    status?: DevJobStatus;
-  }): Promise<readonly DevJobDescriptor[]>;
-  /** Cursor-poll over the append-only event log — no push subscription in v1
-   *  (SSE stays a host/UI concern). Pass the last-seen `afterId` to page.
-   *  Same repo-grant scoping as `get`. */
-  listEvents(jobId: string, afterId?: number): Promise<readonly DevJobEventRecord[]>;
-  /** Cancel a job — only jobs THIS plugin created. Throws on a job created by
-   *  another plugin, and (indistinguishably from not-found) on an
-   *  ungranted/missing job. */
-  cancel(jobId: string): Promise<void>;
-}
 
 export interface LlmCompleteResult {
   /** Concatenated text content of the assistant turn. Tool-use finish reasons
@@ -1632,5 +1988,297 @@ export class MigrationHookError extends Error {
     );
     this.name = 'MigrationHookError';
     this.migrationCause = cause;
+  }
+}
+
+// ── Plugin-owned SQL schema (epic #470 C7 / G4) ─────────────────────────────
+//
+// "Plugins can own tables." Three things had to become true for that sentence
+// to be safe rather than merely possible:
+//
+//   1. Reaching a Postgres pool must be a DECLARED, GRANTED permission — not a
+//      side effect of `ctx.services.get('graphPool')` resolving for anyone who
+//      asked (bug B1). `permissions.sql` is that declaration; the operator's
+//      grant is the other half.
+//   2. The ledger a plugin writes its applied-migration rows into must be
+//      unambiguously ITS ledger. A plugin that could name any table could
+//      forge another plugin's migration history and thereby suppress that
+//      plugin's schema changes at its next boot.
+//   3. Applying migrations must be serialised. `implementation.md` B3 recorded
+//      core migrators racing on multi-replica boot; shipping a fresh pattern
+//      for plugins to copy would have multiplied the bug rather than
+//      contained it.
+//
+// The kernel owns all three. A plugin only ever calls `ctx.sql.runMigrations()`.
+
+/**
+ * The shape of `permissions.sql` in a plugin manifest.
+ *
+ * ```yaml
+ * permissions:
+ *   sql:
+ *     migrations: migrations   # optional; directory inside the package
+ *     ledger: omadia_verifier_migrations
+ *     handoff: handoff-plan.json  # optional; run before `migrations`
+ * ```
+ */
+export interface SqlPermission {
+  /** Directory (relative to the package root) holding `*.sql` / `*.js` /
+   *  `*.mjs` migration files. Defaults to `migrations`. When the manifest
+   *  declares it, the kernel runs the directory automatically at activate. */
+  readonly migrations?: string;
+  /** The plugin-owned table recording which migrations have been applied.
+   *  Must match `^[a-z][a-z0-9_]{2,62}$` AND begin with the plugin's sanitized
+   *  id, so a manifest cannot nominate another plugin's ledger. */
+  readonly ledger: string;
+  /**
+   * Path (relative to the package root) to a JSON ledger-handoff plan the
+   * kernel runs BEFORE {@link SqlPermission.migrations} — epic #470 C15.
+   *
+   * ```json
+ * {
+ *   "entries": [
+ *     { "filename": "0001_x.js", "witnessSql": "SELECT to_regclass('public.x') IS NOT NULL" }
+ *   ],
+ *   "dryRun": false
+   * }
+   * ```
+   *
+   * Same shape {@link SqlAccessor.seedLedger} accepts, and the same shape the
+   * operator CLI (`middleware/scripts/plugin-ledger-handoff.mjs --plan`)
+   * reads, so one file serves all three readers. A shared file MAY carry
+   * `"dryRun": false`; `"dryRun": true` is refused on the kernel-run path.
+   * Preview mode belongs to the CLI flag, not to plugin data: if core read a
+   * plan that asked it to "write nothing", then core's own migration runner
+   * would immediately apply every file underneath it, silently recreating the
+   * exact "0 seeded, 9 already seeded" failure C15 exists to remove.
+   *
+   * DECLARE THIS RATHER THAN CALLING `seedLedger` YOURSELF when the manifest
+   * also declares `migrations`. The kernel runs that directory before your
+   * `activate()`, so a `seedLedger` call inside `activate()` arrives after
+   * every ledger row is already written and can only ever report
+   * `alreadySeeded` — the `skippedNoWitness` alarm never fires. Keeping the
+   * in-`activate` call as well is safe and is the right fallback for older
+   * kernels, where it does the work instead.
+   */
+  readonly handoff?: string;
+}
+
+/** What one `runMigrations` pass did. Returned rather than logged so a plugin
+ *  (and a test) can assert on it instead of grepping stdout. */
+export interface MigrationReport {
+  /** Filenames applied by THIS pass, in the order they ran. */
+  readonly applied: readonly string[];
+  /** Filenames already in the ledger and therefore not re-run. */
+  readonly skipped: readonly string[];
+  /** The ledger table the pass wrote to — echoed back so a caller that took
+   *  the default cannot misreport which table it touched. */
+  readonly ledger: string;
+  /** Wall-clock duration of the pass, including lock wait. */
+  readonly durationMs: number;
+}
+
+/** Options for one `ctx.sql.runMigrations()` call. Every field is optional —
+ *  the manifest already carries the answers. */
+export interface RunMigrationsOptions {
+  /** Override the manifest's `permissions.sql.migrations` directory. Still
+   *  resolved inside the package root and rejected if it escapes. */
+  readonly dir?: string;
+  /**
+   * Accept a file whose content changed after it was applied.
+   *
+   * Off by default, and the default is the point: an edited migration means
+   * the database and the package disagree about what ran, and every
+   * environment that already applied the old bytes is now silently different
+   * from every environment that applies the new ones. The escape hatch exists
+   * for the one legitimate case — a cosmetic edit (a comment, a reformat) the
+   * author has verified is semantically identical.
+   */
+  readonly allowChecksumDrift?: boolean;
+}
+
+// ── Migration handoff (epic #470 C11) ───────────────────────────────────────
+//
+// A plugin extracted from core inherits installations whose schema core
+// already created, recorded in a CORE ledger the plugin cannot see. Its own
+// ledger is empty, so its migration runner would re-apply every file.
+//
+// The naive fix — copy the core rows and skip those files — destroys an
+// installation in one case, silently: rows present, tables ABSENT (a restore,
+// a version-skewed rollback, an operator who dropped a table during an
+// incident). The plugin activates green and every request 500s.
+//
+// So the core ledger is corroboration, never authority. Each file carries a
+// WITNESS: one query against the live catalog that is true only if the schema
+// object that file creates is actually there. The witness decides; the core
+// row is reported so the DISAGREEMENT between the two is visible before
+// anything is written.
+
+/** One file's claim on the core ledger, and the proof that backs it. */
+export interface LedgerSeedEntry {
+  /** The plugin's OWN migration filename, exactly as it ships. Matched against
+   *  the core ledger by stem, so `0022_x.js` adopts core's `0022_x.sql`. */
+  readonly filename: string;
+  /**
+   * A single-row, single-column boolean SELECT that is true only when this
+   * file's schema object exists.
+   *
+   * SQL text rather than a callback on purpose. A callback cannot be printed,
+   * and the whole value of `dryRun` is that an operator reads the plan — WHICH
+   * query proved WHICH file — before a production handoff writes anything.
+   *
+   * It must be safe against a database where the objects are missing, which is
+   * the case it exists to detect: `to_regclass('public.t') IS NOT NULL` is
+   * safe, `'public.t'::regclass` throws. Prefer catalog lookups over casts.
+   */
+  readonly witnessSql: string;
+}
+
+/** Options for one `ctx.sql.seedLedger()` call. */
+export interface SeedLedgerOptions {
+  /** The files to consider. A file absent from this list is never seeded. */
+  readonly entries: readonly LedgerSeedEntry[];
+  /** Compute and report the plan; write nothing. Defaults to false. */
+  readonly dryRun?: boolean;
+  /** Override the manifest's migrations directory, as `runMigrations` does. */
+  readonly dir?: string;
+}
+
+/** What one `seedLedger` pass did, or — under `dryRun` — would have done. */
+export interface LedgerSeedReport {
+  /** Written into this plugin's ledger by this pass. */
+  readonly seeded: readonly string[];
+  /** Everything `runMigrations` still has to apply afterwards. Superset of
+   *  {@link LedgerSeedReport.skippedNoWitness}. */
+  readonly applied: readonly string[];
+  /** The subset that should worry you: the core ledger records these, but
+   *  their witness says the schema object is not there. Empty on a healthy
+   *  installation; non-empty means a restore or a rollback, and the migration
+   *  runner is about to repair it. */
+  readonly skippedNoWitness: readonly string[];
+  /** Already in this plugin's ledger before the pass — a re-run, or a peer
+   *  replica that got there first. */
+  readonly alreadySeeded: readonly string[];
+  /** Which requested files the core ledger actually records. Reported, not
+   *  obeyed. */
+  readonly donorRecorded: readonly string[];
+  /** This plugin's ledger table. */
+  readonly ledger: string;
+  /** The core ledger the rows were read from. Core-supplied — a plugin does
+   *  not name it and cannot choose it. */
+  readonly donorLedger: string;
+  readonly dryRun: boolean;
+  readonly durationMs: number;
+}
+
+/** Plugin-facing migration runner. See {@link PluginContext.sql}. */
+export interface SqlAccessor {
+  /** The ledger table this plugin owns, as resolved from its manifest. */
+  readonly ledger: string;
+  /**
+   * Apply every not-yet-applied migration in the plugin's migrations
+   * directory, in filename order, inside ONE transaction held under an
+   * advisory lock keyed on the ledger.
+   *
+   * `.sql` files are executed verbatim. `.js` / `.mjs` files must
+   * `export default async (client) => { … }` and receive the same
+   * transaction-bound client — that is the codegen target described in
+   * `implementation.md` D6, where a plugin compiles its `.sql` into JS.
+   *
+   * Throws rather than returning a partial result: an empty directory
+   * ({@link SqlMigrationError}) is a misconfiguration, and a checksum change
+   * on an already-applied file is a divergence. Both are conditions where
+   * continuing quietly is worse than failing loudly.
+   */
+  runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
+  /**
+   * Adopt an existing installation's schema: record files as applied when a
+   * witness proves the schema object they create is already there.
+   *
+   * Call this BEFORE {@link SqlAccessor.runMigrations}, and guard it — the
+   * method was added in plugin-api 1.3.0 and is `undefined` on an older core,
+   * where the correct behaviour is simply to let `runMigrations` apply the
+   * (idempotent) files:
+   *
+   * ```ts
+   * await ctx.sql.seedLedger?.({ entries: HANDOFF_ENTRIES });
+   * await ctx.sql.runMigrations();
+   * ```
+   *
+   * Never deletes anything from the core ledger. Those rows are the rollback
+   * path: while core still ships the same files, removing them would make
+   * core's own migrator re-run them on the next boot.
+   */
+  seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
+}
+
+/**
+ * Thrown when a plugin reaches for a database capability it has not been
+ * cleared for.
+ *
+ * Deliberately distinct from {@link ServiceNotDeclaredError}: that one means
+ * "your manifest is missing a line", which the plugin author fixes alone. This
+ * one can additionally mean "the operator has not agreed", which the author
+ * cannot fix at all — so the two must not be reported the same way.
+ */
+export class SqlPermissionError extends Error {
+  public readonly pluginId: string;
+  public readonly capability: string;
+  /** `undeclared` → the manifest lacks `permissions.sql`.
+   *  `ungranted`  → declared, but no operator grant is on record. */
+  public readonly reason: 'undeclared' | 'ungranted';
+  constructor(
+    pluginId: string,
+    capability: string,
+    reason: 'undeclared' | 'ungranted',
+  ) {
+    super(
+      reason === 'undeclared'
+        ? `plugin '${pluginId}' reached for the database capability '${capability}' but its manifest does not declare \`permissions.sql\` — ` +
+            'add a `permissions.sql` block (with a `ledger:` this plugin owns) so the operator can see the request at install time'
+        : `plugin '${pluginId}' declares \`permissions.sql\` but the operator has not granted it — ` +
+            `'${capability}' stays unavailable until the grant is recorded. ` +
+            'Grant it in the admin UI under Plugins \u2192 this plugin \u2192 Permissions, or with ' +
+            `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/grants {"sql":true}`,
+    );
+    this.name = 'SqlPermissionError';
+    this.pluginId = pluginId;
+    this.capability = capability;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Thrown when a manifest nominates a ledger table this plugin may not own.
+ *
+ * The name is interpolated into DDL as a quoted identifier, so it is also the
+ * one plugin-supplied string in this subsystem that reaches SQL outside a bind
+ * parameter. It is validated against a charset allowlist BEFORE it is quoted,
+ * never by escaping afterwards — an allowlist that rejects `"` cannot be
+ * defeated by a cleverer `"`.
+ */
+export class LedgerNameError extends Error {
+  public readonly pluginId: string;
+  public readonly ledger: string;
+  constructor(pluginId: string, ledger: string, why: string) {
+    super(`plugin '${pluginId}' cannot use ledger table '${ledger}': ${why}`);
+    this.name = 'LedgerNameError';
+    this.pluginId = pluginId;
+    this.ledger = ledger;
+  }
+}
+
+/** Thrown for migration-run failures that are the plugin package's fault:
+ *  an empty or missing directory, or a file whose bytes changed after it was
+ *  applied. Both are recoverable by fixing the package, which is why they are
+ *  one type and not folded into a generic Error. */
+export class SqlMigrationError extends Error {
+  public readonly pluginId: string;
+  public readonly ledger: string;
+  constructor(pluginId: string, ledger: string, why: string) {
+    super(`plugin '${pluginId}' migrations (ledger '${ledger}') failed: ${why}`);
+    this.name = 'SqlMigrationError';
+    this.pluginId = pluginId;
+    this.ledger = ledger;
   }
 }

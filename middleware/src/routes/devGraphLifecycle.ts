@@ -9,10 +9,15 @@ interface DevGraphLifecycleDeps {
 
 /**
  * Operator-facing lifecycle admin endpoints (palaia Phase 4 / OB-73, Slice D).
- * Mounted under `/api/dev/graph/lifecycle` only when `DEV_ENDPOINTS_ENABLED`
- * is set. The web-ui page at `/admin/kg-lifecycle` consumes these routes
- * for the Tier-Histogram + manual-trigger buttons. Production deployments
- * never expose this — sweeps run on the cron schedule.
+ *
+ * Mounted at `/api/v1/admin/kg-lifecycle` by `routes/graphRouterMounts.ts`,
+ * behind the operator session gate, whenever `graphLifecycle@1` is published.
+ * Issue #669 moved it here: it used to sit under the unauthenticated
+ * `/api/dev/graph/lifecycle` prefix, which made the three `run-*` routes below
+ * anonymous triggers for destructive sweeps on any internet-reachable
+ * deployment — and made the admin page require `DEV_ENDPOINTS_ENABLED`.
+ * The web-ui page at `/admin/kg-lifecycle` consumes these routes for the
+ * Tier-Histogram + manual-trigger buttons; the sweeps otherwise run on cron.
  *
  *   GET  /stats             — current Tier histogram + decay distribution
  *                             + top scopes by Turn count

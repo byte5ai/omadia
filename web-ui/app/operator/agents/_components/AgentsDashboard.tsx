@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
@@ -15,12 +16,14 @@ import {
   killAgentSessions,
   listAgentPluginCatalog,
   patchOperatorAgent,
+  isSeededAgentDescription,
   rehydrateFallback,
   replaceAgentBindings,
   replaceAgentPlugins,
   resolveAgentForChannel,
   setFallbackAgent,
   triggerAgentReload,
+  FALLBACK_AGENT_SLUG,
   type OperatorAgentDto,
   type OperatorAgentsListDto,
   type PluginCatalogEntryDto,
@@ -29,17 +32,6 @@ import {
 } from '../../../_lib/agents';
 
 import { PluginsDnd } from './PluginsDnd';
-
-/**
- * Slug of the auto-seeded fallback orchestrator (kept in sync with
- * `FALLBACK_AGENT_SLUG` in `@omadia/orchestrator`). The fallback orchestrator
- * is the catch-all for unbound channel traffic, so its Disable/Delete actions
- * are blocked in the UI (and server-side). We treat an orchestrator as the
- * protected fallback when it carries this slug OR is the active platform
- * fallback pointer — the platform pointer may be intentionally unset while the
- * seeded `fallback` row still exists.
- */
-const FALLBACK_AGENT_SLUG = 'fallback';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -517,6 +509,7 @@ function AgentCard(props: {
   return (
     <article className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)]">
       <header className="flex items-start justify-between gap-4 px-4 py-3">
+        {/* eslint-disable-next-line no-restricted-syntax -- chevron expand/collapse card-header toggle (aria-expanded), not a §4.2 CTA */}
         <button
           type="button"
           className="flex flex-1 items-start gap-2 text-left"
@@ -550,7 +543,16 @@ function AgentCard(props: {
           </span>
         </button>
         <div className="flex flex-col items-end gap-2">
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {/* Wiring (#860): the per-agent capability page (plugins, tool
+                grants, MCP assignments) lives on its own route — the card
+                links there instead of growing more inline editors. */}
+            <Link
+              href={`/operator/agents/${encodeURIComponent(agent.slug)}`}
+              className="text-sm text-[color:var(--accent)] hover:underline"
+            >
+              {t('detailOpenLink')}
+            </Link>
             {/* The standard orchestrator is the catch-all for unbound traffic;
                 disabling or deleting it would strand that traffic, so those
                 actions are not offered for it at all. */}
@@ -602,12 +604,23 @@ function AgentCard(props: {
 
       {expanded && (
         <div className="border-t border-[color:var(--border)] px-4 py-4">
-          {agent.description && (
-            <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
+          {/* #679 / I5 — the boot-seeded description is server-written prose
+              with no locale behind it, so the catalogue supplies the sentence.
+              An operator-edited description is their content and is rendered
+              verbatim, in whatever language they wrote it. */}
+          {isSeededAgentDescription(agent.description) ? (
+            <p className="mb-4 text-sm text-[color:var(--fg)]">
+              {t('seededDescription')}
+            </p>
+          ) : (
+            agent.description && (
+              <p className="mb-4 text-sm text-[color:var(--fg)]">{agent.description}</p>
+            )
           )}
 
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <span className="text-xs text-[color:var(--fg-muted)]">{t('sessionsLabel')}</span>
+            {/* eslint-disable-next-line no-restricted-syntax -- warning-outline drain action (§10 no warning variant) */}
             <button
               type="button"
               className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"
@@ -835,8 +848,11 @@ function Field(props: {
  * a save, leaving local state stale. Hash the actual payload instead so a
  * `replaceAgentPlugins` write that produces new server state remounts the
  * editor and reseeds local state from props.
+ *
+ * Exported for the agent detail route (issue #861), which mounts the same
+ * PluginsDnd editor and needs the identical remount-after-save behavior.
  */
-function pluginsRevisionKey(agent: OperatorAgentDto): string {
+export function pluginsRevisionKey(agent: OperatorAgentDto): string {
   const sig = agent.plugins
     .map(
       (p) =>

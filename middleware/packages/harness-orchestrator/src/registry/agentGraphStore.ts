@@ -2,6 +2,8 @@ import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
 import { computeSkillHash } from './skillHash.js';
+import type { McpCallerKind } from '../mcp/mcpClient.js';
+import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
 
 /**
  * Agent Builder graph store (P0).
@@ -212,7 +214,50 @@ export interface McpServerRow {
   /** Epic #459 — NON-SECRET config values `{ key: value }`. Secrets are in the
    *  Vault, not here. */
   readonly config: Record<string, unknown>;
+  /** W0-1 — whose authority MCP calls to this server act under.
+   *  `per_user`: the acting identity must resolve or the call fails closed —
+   *  no silent inheritance of the operator's authority (confused deputy).
+   *  `service`: one shared identity, the explicit opt-in. Migration 0031 sets
+   *  `service` on pre-existing servers that already hold a token so installed
+   *  deployments keep working; only new rows default to `per_user`. */
+  readonly delegation: McpDelegation;
 }
+
+/** How an MCP server resolves the identity a call acts as (W0-1, D2).
+ *
+ *  Scope decision (#860 W0c, resolving #862's "delegation choice per
+ *  assignment"): delegation is a PER-SERVER property and stays one. There is
+ *  deliberately NO per-(agent, server) delegation storage — not on
+ *  `agent_tool_grants`, not on `plugin_mcp_grants`, no bridge table. A
+ *  per-agent assignment view therefore shows the server's mode READ-ONLY and
+ *  links to the per-server setting; changing it there applies to every agent
+ *  holding a grant on that server and must say so.
+ *
+ *  The real escape hatch is NOT a new column: `agent_tool_grants.config`
+ *  (JSONB, migration 0003) could hold a `delegation` key today with zero DDL,
+ *  which is why an SQL-only migration scan cannot see a widening. Storing any
+ *  `config.delegation*` key on a grant row is therefore FORBIDDEN by
+ *  convention — per-assignment delegation needs resolution semantics in
+ *  `resolveMcpUserKey` and its own design pass, not a JSONB side door. Guarded
+ *  twice by the W0c schema-fit gate in
+ *  `middleware/test/mcpDelegationBackfillMigration.pg.test.ts`: a migration
+ *  scan over the grant tables AND a source scan that fails on any code
+ *  reading or writing a delegation key out of grant config. */
+export type McpDelegation = 'per_user' | 'service';
+
+/**
+ * How omadia acquired the OAuth client it uses at an authorization server
+ * (migration 0032, W2-4). All three modes are first-class and PERMANENT:
+ *
+ *  - `cimd`   Client ID Metadata Document — the client_id is an https URL the
+ *             AS dereferences. Replaces DCR at MCP-native brokers only, and
+ *             requires the AS to reach omadia INBOUND.
+ *  - `dcr`    RFC 7591 Dynamic Client Registration. Deprecated by the MCP spec
+ *             on a 12-month clock; still fully supported here.
+ *  - `manual` An operator-registered app. This is the Entra ID / Okta path —
+ *             neither supports CIMD — and it has NO sunset.
+ */
+export type McpOAuthClientAcquisition = 'dcr' | 'manual' | 'cimd';
 
 export interface ToolGrantRow {
   readonly id: string;
@@ -223,6 +268,23 @@ export interface ToolGrantRow {
   readonly mcpServerId: string | null;
   readonly config: Record<string, unknown>;
   readonly createdAt: Date;
+  /** Grant epoch (W0c, #861): `bumpMcpGrantEpoch` stamps `config.verdictEpoch`
+   *  (a `now()::text` timestamp) into the grant's JSONB — there is no epoch
+   *  column. Surfaced here as a typed field so readers (the agent detail UI)
+   *  never dig through the untyped `config`. `null` until the first bump.
+   *  Optional so hand-built fixtures predating the field stay valid; the row
+   *  mapper always populates it. */
+  readonly grantEpoch?: string | null;
+}
+
+/** One `plugin_mcp_grants` row (epic #459 W5, issue #458): the operator's
+ *  explicit plugin → MCP-server grant. Named so the per-agent read model
+ *  (W0c, #861) has a typed row instead of an inline shape. */
+export interface PluginMcpGrantRow {
+  readonly pluginId: string;
+  readonly mcpServerId: string;
+  readonly grantedBy: string;
+  readonly grantedAt: Date;
 }
 
 export interface ScheduleRow {
@@ -435,6 +497,8 @@ interface McpServerDbRow {
   kg_ingest?: boolean;
   config_schema?: McpConfigField[];
   config?: Record<string, unknown>;
+  // W0-1 delegation mode; absent on pre-0031 rows in tests.
+  delegation?: McpDelegation;
 }
 
 interface McpRegistryDbRow {
@@ -507,13 +571,19 @@ export interface McpCallLogRow {
   readonly serverId: string | null;
   readonly serverName: string;
   readonly toolName: string;
-  readonly callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  /** W2-3 (#542) — reuses the shared `McpCallerKind` union rather than a
+   *  retyped copy, which is how the previous copy fell one member behind. */
+  readonly callerKind: McpCallerKind;
   readonly callerAgent: string | null;
   readonly turnId: string | null;
   readonly ok: boolean;
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
+  /** W0-1 — WHOSE authority the call acted under (the resolved MCP user key,
+   *  or `unresolved` when a `per_user` server had no identity to act as).
+   *  `callerAgent` is the orchestrator slug; this is the identity. */
+  readonly actingIdentity: string | null;
 }
 
 interface McpCallLogDbRow {
@@ -528,6 +598,7 @@ interface McpCallLogDbRow {
   error: string | null;
   duration_ms: number;
   called_at: Date;
+  acting_identity?: string | null;
 }
 
 interface ToolGrantDbRow {
@@ -539,6 +610,13 @@ interface ToolGrantDbRow {
   mcp_server_id: string | null;
   config: Record<string, unknown>;
   created_at: Date;
+}
+
+interface PluginMcpGrantDbRow {
+  plugin_id: string;
+  mcp_server_id: string;
+  granted_by: string;
+  granted_at: Date;
 }
 
 interface ScheduleDbRow {
@@ -758,10 +836,16 @@ function mapMcpServer(r: McpServerDbRow): McpServerRow {
     kgIngest: r.kg_ingest ?? false,
     configSchema: Array.isArray(r.config_schema) ? r.config_schema : [],
     config: r.config ?? {},
+    // Pre-0031 rows (and hand-built test fixtures) read as the safe mode; the
+    // migration is what grandfathers real installed servers into 'service'.
+    delegation: r.delegation === 'service' ? 'service' : 'per_user',
   };
 }
 
 function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
+  // `verdictEpoch` is written by bumpMcpGrantEpoch via jsonb_set; anything
+  // that is not a string (absent, or a hand-edited config) reads as null.
+  const epoch = r.config?.['verdictEpoch'];
   return {
     id: r.id,
     agentId: r.agent_id,
@@ -771,6 +855,16 @@ function mapToolGrant(r: ToolGrantDbRow): ToolGrantRow {
     mcpServerId: r.mcp_server_id,
     config: r.config,
     createdAt: r.created_at,
+    grantEpoch: typeof epoch === 'string' ? epoch : null,
+  };
+}
+
+function mapPluginMcpGrant(r: PluginMcpGrantDbRow): PluginMcpGrantRow {
+  return {
+    pluginId: r.plugin_id,
+    mcpServerId: r.mcp_server_id,
+    grantedBy: r.granted_by,
+    grantedAt: r.granted_at,
   };
 }
 
@@ -1360,18 +1454,34 @@ export class AgentGraphStore {
 
   // ── MCP OAuth (epic #459 W9) — provider-agnostic authorization state ────────
 
-  async getMcpOAuthClient(
-    issuer: string,
-  ): Promise<{ issuer: string; clientId: string; clientSecretRef: string | null; registeredVia: 'dcr' | 'manual' } | undefined> {
+  async getMcpOAuthClient(issuer: string): Promise<
+    | {
+        issuer: string;
+        clientId: string;
+        clientSecretRef: string | null;
+        registeredVia: McpOAuthClientAcquisition;
+        /** W2-4: the CIMD document this client_id resolves to. Null for
+         *  'dcr'/'manual' rows and on pre-0032 databases. */
+        clientMetadataUrl: string | null;
+      }
+    | undefined
+  > {
     const { rows } = await this.pool.query<{
       issuer: string;
       client_id: string;
       client_secret_ref: string | null;
-      registered_via: 'dcr' | 'manual';
+      registered_via: McpOAuthClientAcquisition;
+      client_metadata_url?: string | null;
     }>('SELECT * FROM mcp_oauth_clients WHERE issuer = $1', [issuer]);
     const r = rows[0];
     return r
-      ? { issuer: r.issuer, clientId: r.client_id, clientSecretRef: r.client_secret_ref, registeredVia: r.registered_via }
+      ? {
+          issuer: r.issuer,
+          clientId: r.client_id,
+          clientSecretRef: r.client_secret_ref,
+          registeredVia: r.registered_via,
+          clientMetadataUrl: r.client_metadata_url ?? null,
+        }
       : undefined;
   }
 
@@ -1379,16 +1489,26 @@ export class AgentGraphStore {
     issuer: string;
     clientId: string;
     clientSecretRef: string | null;
-    registeredVia: 'dcr' | 'manual';
+    registeredVia: McpOAuthClientAcquisition;
+    /** W2-4: only set for `registeredVia: 'cimd'` — the self-referential
+     *  metadata-document URL the authorization server dereferenced. */
+    clientMetadataUrl?: string | null;
   }): Promise<void> {
     await this.pool.query(
-      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via)
-       VALUES ($1,$2,$3,$4)
+      `INSERT INTO mcp_oauth_clients (issuer, client_id, client_secret_ref, registered_via, client_metadata_url)
+       VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (issuer) DO UPDATE SET
          client_id = EXCLUDED.client_id,
          client_secret_ref = EXCLUDED.client_secret_ref,
-         registered_via = EXCLUDED.registered_via`,
-      [input.issuer, input.clientId, input.clientSecretRef, input.registeredVia],
+         registered_via = EXCLUDED.registered_via,
+         client_metadata_url = EXCLUDED.client_metadata_url`,
+      [
+        input.issuer,
+        input.clientId,
+        input.clientSecretRef,
+        input.registeredVia,
+        input.clientMetadataUrl ?? null,
+      ],
     );
   }
 
@@ -1403,6 +1523,8 @@ export class AgentGraphStore {
         refreshTokenRef: string | null;
         expiresAt: Date | null;
         scopes: string | null;
+        /** Issuer that minted this token (W0-1) — null on pre-0031 rows. */
+        issuer: string | null;
       }
     | undefined
   > {
@@ -1413,6 +1535,7 @@ export class AgentGraphStore {
       refresh_token_ref: string | null;
       expires_at: Date | null;
       scopes: string | null;
+      issuer?: string | null;
     }>('SELECT * FROM mcp_oauth_tokens WHERE server_id = $1 AND user_key = $2', [serverId, userKey]);
     const r = rows[0];
     return r
@@ -1423,6 +1546,7 @@ export class AgentGraphStore {
           refreshTokenRef: r.refresh_token_ref,
           expiresAt: r.expires_at,
           scopes: r.scopes,
+          issuer: r.issuer ?? null,
         }
       : undefined;
   }
@@ -1434,19 +1558,45 @@ export class AgentGraphStore {
     refreshTokenRef: string | null;
     expiresAt: Date | null;
     scopes: string | null;
+    /** Issuer that minted the token (W0-1) — lets a rotated issuer invalidate
+     *  the stored token instead of replaying it against a different AS. */
+    issuer?: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_oauth_tokens
-         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
+         (server_id, user_key, access_token_ref, refresh_token_ref, expires_at, scopes, issuer, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
        ON CONFLICT (server_id, user_key) DO UPDATE SET
          access_token_ref = EXCLUDED.access_token_ref,
          refresh_token_ref = EXCLUDED.refresh_token_ref,
          expires_at = EXCLUDED.expires_at,
          scopes = EXCLUDED.scopes,
+         issuer = EXCLUDED.issuer,
          updated_at = now()`,
-      [input.serverId, input.userKey, input.accessTokenRef, input.refreshTokenRef, input.expiresAt, input.scopes],
+      [
+        input.serverId,
+        input.userKey,
+        input.accessTokenRef,
+        input.refreshTokenRef,
+        input.expiresAt,
+        input.scopes,
+        input.issuer ?? null,
+      ],
     );
+  }
+
+  /** Set the delegation mode for a server (W0-1, D2). Returns the updated row,
+   *  or undefined when the server does not exist. */
+  async setMcpServerDelegation(
+    serverId: string,
+    delegation: McpDelegation,
+  ): Promise<McpServerRow | undefined> {
+    const { rows } = await this.pool.query<McpServerDbRow>(
+      'UPDATE mcp_servers SET delegation = $2, updated_at = now() WHERE id = $1 RETURNING *',
+      [serverId, delegation],
+    );
+    const r = rows[0];
+    return r ? mapMcpServer(r) : undefined;
   }
 
   async deleteMcpOAuthToken(serverId: string, userKey: string): Promise<void> {
@@ -1475,13 +1625,17 @@ export class AgentGraphStore {
     scopes: string | null;
     tokenEndpoint: string;
     authorizationEndpoint: string;
+    /** Whether the AS advertised RFC 9207 `authorization_response_iss_parameter_supported`
+     *  at authorize time (W0-1, D1). Captured HERE, never re-discovered at the
+     *  callback — same reasoning as the endpoint binding in migration 0016. */
+    issRequired?: boolean;
   }): Promise<void> {
     // Opportunistic prune of stale flows (older than 15 min) on each create.
     await this.pool.query("DELETE FROM mcp_oauth_flows WHERE created_at < now() - interval '15 minutes'");
     await this.pool.query(
       `INSERT INTO mcp_oauth_flows
-         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+         (state, server_id, user_key, issuer, code_verifier, redirect_uri, scopes, token_endpoint, authorization_endpoint, iss_required)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [
         input.state,
         input.serverId,
@@ -1492,6 +1646,7 @@ export class AgentGraphStore {
         input.scopes,
         input.tokenEndpoint,
         input.authorizationEndpoint,
+        input.issRequired ?? false,
       ],
     );
   }
@@ -1510,6 +1665,9 @@ export class AgentGraphStore {
         scopes: string | null;
         tokenEndpoint: string | null;
         authorizationEndpoint: string | null;
+        /** The AS advertised RFC 9207 when this flow started (W0-1, D1), so an
+         *  authorization response WITHOUT `iss` must be rejected. */
+        issRequired: boolean;
       }
     | undefined
   > {
@@ -1523,6 +1681,7 @@ export class AgentGraphStore {
       scopes: string | null;
       token_endpoint: string | null;
       authorization_endpoint: string | null;
+      iss_required?: boolean | null;
     }>(
       "DELETE FROM mcp_oauth_flows WHERE state = $1 AND created_at > now() - interval '15 minutes' RETURNING *",
       [state],
@@ -1539,27 +1698,37 @@ export class AgentGraphStore {
           scopes: r.scopes,
           tokenEndpoint: r.token_endpoint,
           authorizationEndpoint: r.authorization_endpoint,
+          // Pre-0031 in-flight flows read false — they are not retroactively
+          // rejected for a missing `iss` (a MISMATCHED one still is).
+          issRequired: r.iss_required === true,
         }
       : undefined;
   }
 
   // ── Plugin → MCP server grants (epic #459 W5, issue #458) ───────────────────
 
-  async listPluginMcpGrants(): Promise<
-    readonly { pluginId: string; mcpServerId: string; grantedBy: string; grantedAt: Date }[]
-  > {
-    const { rows } = await this.pool.query<{
-      plugin_id: string;
-      mcp_server_id: string;
-      granted_by: string;
-      granted_at: Date;
-    }>('SELECT * FROM plugin_mcp_grants');
-    return rows.map((r) => ({
-      pluginId: r.plugin_id,
-      mcpServerId: r.mcp_server_id,
-      grantedBy: r.granted_by,
-      grantedAt: r.granted_at,
-    }));
+  async listPluginMcpGrants(): Promise<readonly PluginMcpGrantRow[]> {
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      'SELECT * FROM plugin_mcp_grants',
+    );
+    return rows.map(mapPluginMcpGrant);
+  }
+
+  /** Plugin-scoped read of `plugin_mcp_grants` (W0c, #861): full grant rows
+   *  for a set of plugin ids — one round-trip for an agent detail page that
+   *  shows the MCP grants of every plugin enabled on that agent. SELECT-only
+   *  by construction (no DDL, no writes). */
+  async listPluginMcpGrantsForPlugins(
+    pluginIds: readonly string[],
+  ): Promise<readonly PluginMcpGrantRow[]> {
+    if (pluginIds.length === 0) return [];
+    const { rows } = await this.pool.query<PluginMcpGrantDbRow>(
+      `SELECT * FROM plugin_mcp_grants
+       WHERE plugin_id = ANY($1::text[])
+       ORDER BY plugin_id, granted_at`,
+      [[...pluginIds]],
+    );
+    return rows.map(mapPluginMcpGrant);
   }
 
   async listGrantedServerIdsForPlugin(pluginId: string): Promise<readonly string[]> {
@@ -1714,11 +1883,15 @@ export class AgentGraphStore {
     readonly error: string | null;
     readonly durationMs: number;
     readonly calledAt: Date;
+    /** W0-1 — the resolved acting identity. Always written (never omitted):
+     *  an audit row with no identity cannot answer "whose credentials was
+     *  this?", which is the whole point of the confused-deputy fix. */
+    readonly actingIdentity: string | null;
   }): Promise<void> {
     await this.pool.query(
       `INSERT INTO mcp_call_log
-         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (server_id, server_name, tool_name, caller_kind, caller_agent, turn_id, ok, error, duration_ms, called_at, acting_identity)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       [
         entry.serverId,
         entry.serverName,
@@ -1730,6 +1903,7 @@ export class AgentGraphStore {
         entry.error,
         entry.durationMs,
         entry.calledAt,
+        entry.actingIdentity,
       ],
     );
   }
@@ -1770,6 +1944,7 @@ export class AgentGraphStore {
       error: r.error,
       durationMs: r.duration_ms,
       calledAt: r.called_at,
+      actingIdentity: r.acting_identity ?? null,
     }));
   }
 
@@ -2148,15 +2323,28 @@ export class AgentGraphStore {
     }
   }
 
+  /**
+   * Persist the discovered-tool descriptors verbatim. `discovered_tools` is a
+   * `jsonb` column and the descriptor is stored whole, so every field a
+   * `McpToolDescriptor` carries round-trips — including the `outputSchema`
+   * added in issue #547 (W1-3). No migration is needed to add descriptor
+   * fields; only the TypeScript shape changes.
+   */
   async setMcpDiscoveredTools(
     id: string,
     tools: readonly unknown[],
   ): Promise<void> {
+    // W0-3 — normalize by name before persisting. An MCP server may return
+    // `tools/list` in a different order on every call; storing that raw makes
+    // each rediscovery rewrite the JSONB with semantically identical content,
+    // churning the row and any grant-epoch diff computed from it. It also
+    // leaks the server's arbitrary ordering into the tool block that
+    // `subAgentToolHydration` later builds from this column.
     await this.pool.query(
       `UPDATE mcp_servers
          SET discovered_tools = $2::jsonb, last_discovered_at = now(), updated_at = now()
        WHERE id = $1`,
-      [id, JSON.stringify(tools)],
+      [id, JSON.stringify(normalizeDiscoveredToolOrder(tools))],
     );
   }
 
@@ -2170,6 +2358,73 @@ export class AgentGraphStore {
       'SELECT * FROM agent_tool_grants ORDER BY created_at',
     );
     return rows.map(mapToolGrant);
+  }
+
+  /** Agent-scoped read of `agent_tool_grants` (W0c, #861): the grants of ONE
+   *  agent, for the agent detail page. Same row shape as `listAllToolGrants`
+   *  (grant epoch included via `grantEpoch`). `agent_tool_grants` is a XOR
+   *  table (0003: `agent_id` OR `subagent_id`), and the codebase attributes a
+   *  sub-agent-held grant to its parent agent everywhere the graph is read
+   *  (`assembleGraph`, `indexGraph.grantsByAgent`, the graph-signature
+   *  filter) — this read matches that rule: rows held directly by the agent
+   *  PLUS rows held by its sub-agents, distinguishable via `subAgentId`.
+   *  SELECT-only by construction (no DDL, no writes). */
+  async listToolGrantsForAgent(agentId: string): Promise<readonly ToolGrantRow[]> {
+    const { rows } = await this.pool.query<ToolGrantDbRow>(
+      `SELECT * FROM agent_tool_grants
+       WHERE agent_id = $1
+          OR subagent_id IN (SELECT id FROM agent_subagents WHERE parent_agent_id = $1)
+       ORDER BY created_at`,
+      [agentId],
+    );
+    return rows.map(mapToolGrant);
+  }
+
+  /**
+   * Transactional bulk edit of an agent's MCP tool allowlist for one server
+   * (W0c, #862). `PUT /mcp-grants` in allowlist mode is N creates + M deletes;
+   * done through the single-row methods a mid-edit failure would leave the
+   * persisted allowlist neither old nor new. Here every write shares one
+   * transaction: a partial failure rolls back and the route's granted/revoked
+   * response always describes what actually persisted. The INSERT keeps
+   * `createToolGrant`'s ON CONFLICT no-op contract (unique index 0014).
+   */
+  async applyMcpToolAllowlist(input: {
+    readonly agentId: string;
+    readonly mcpServerId: string;
+    /** Normalized tool names to grant (rows to INSERT). */
+    readonly grantRefs: readonly string[];
+    /** Grant row ids to revoke (rows to DELETE). */
+    readonly revokeIds: readonly string[];
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const toolRef of input.grantRefs) {
+        await client.query(
+          `INSERT INTO agent_tool_grants
+             (agent_id, subagent_id, tool_kind, tool_ref, mcp_server_id, config)
+           VALUES ($1,NULL,'mcp',$2,$3,'{}'::jsonb)
+           ON CONFLICT (agent_id, mcp_server_id, tool_ref)
+             WHERE agent_id IS NOT NULL AND tool_kind = 'mcp'
+             DO NOTHING`,
+          [input.agentId, toolRef, input.mcpServerId],
+        );
+      }
+      for (const id of input.revokeIds) {
+        await client.query('DELETE FROM agent_tool_grants WHERE id = $1', [id]);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // connection-level failure — the pool discards the client below.
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async createToolGrant(input: ToolGrantInput): Promise<ToolGrantRow> {

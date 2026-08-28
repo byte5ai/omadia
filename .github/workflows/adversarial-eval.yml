@@ -1,0 +1,84 @@
+# Adversarial injection/manipulation eval (#498).
+#
+# `ci.yml` proves plumbing and runs the DETERMINISTIC adversarial tier as part
+# of `npm test` (wire-level: digest boundary, secret scrubber, ticket
+# delimiter). This job adds the BEHAVIORAL tier — the multi-turn conductor +
+# 3-juror Delphi — which spends real Anthropic tokens, so it runs on main
+# pushes + manual dispatch + a weekly cron (cost vs. signal), never on PRs.
+# Forks never attempt it. Gated on ANTHROPIC_API_KEY; skips cleanly with a
+# notice when the secret is absent, so the job stays green where the key is not
+# configured. Scores land in the job summary; a hardening regression (a defense
+# that previously held now breaches, or a baseline scenario that vanished) fails
+# the run against the committed baseline.json.
+
+name: adversarial-eval
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Tuesdays 06:00 UTC — a weekly manipulation-resistance drift canary, offset
+    # a day from golden-eval so the two token-spending jobs don't collide.
+    - cron: '0 6 * * 2'
+
+concurrency:
+  group: adversarial-eval-${{ github.ref }}
+  # Do NOT cancel a running eval when the next commit lands: this is a per-commit
+  # drift canary and cancelling would leave a commit range with no signal (the
+  # gap #498 exists to close). Back-to-back merges queue instead of racing.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  adversarial:
+    name: adversarial injection/manipulation (#498)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: middleware
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      # Guard first so a repo without the secret does zero expensive work.
+      - name: Check ANTHROPIC_API_KEY is configured
+        id: guard
+        working-directory: .
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::notice::ANTHROPIC_API_KEY secret not configured — skipping behavioral adversarial eval (#498)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/checkout@v7
+
+      - if: steps.guard.outputs.run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: middleware/package-lock.json
+
+      - name: npm ci (middleware + workspaces)
+        if: steps.guard.outputs.run == 'true'
+        run: npm ci --include=optional --no-audit --no-fund
+
+      # sharp's native binary is platform-specific and skipped by npm ci on the
+      # linux runner (lockfile generated on darwin-arm64). Mirror ci.yml.
+      - name: Install sharp linux-x64 native binary
+        if: steps.guard.outputs.run == 'true'
+        run: npm install --no-save --no-audit --no-fund --os=linux --cpu=x64 sharp
+
+      - name: Build workspace packages (@omadia/plugin-privacy-guard + adapter dist/)
+        if: steps.guard.outputs.run == 'true'
+        run: npm run build
+
+      - name: Run adversarial eval (deterministic + behavioral)
+        if: steps.guard.outputs.run == 'true'
+        run: npm run eval:adversarial

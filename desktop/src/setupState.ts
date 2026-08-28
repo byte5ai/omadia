@@ -10,7 +10,7 @@ export interface SetupState {
   configured: boolean;
   /** The stack has booted successfully at least once (boot-verified). */
   completed: boolean;
-  llmProvider: 'anthropic' | 'openai';
+  llmProvider: 'anthropic' | 'openai' | 'subscription';
   capabilities: {
     /** in-process embeddings for semantic memory / topic detection */
     embeddings: boolean;

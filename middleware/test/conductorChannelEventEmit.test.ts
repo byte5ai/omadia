@@ -47,7 +47,15 @@ function makeRegistry(catalog: EventCatalogRegistry): DefaultChannelRegistry {
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const deps: any = {
-    catalog: { get: () => entry, has: () => true, list: () => [entry] },
+    catalog: {
+      get: () => entry,
+      has: () => true,
+      list: () => [entry],
+      // #789 — this fixture is @omadia/channel-teams, which ships from the Hub
+      // and is never bundled. Stubbed explicitly because the fixture id IS on
+      // the dated legacy allowlist, so the grant gate reaches for this method.
+      isBundledId: () => false,
+    },
     installedRegistry: { list: () => [], get: () => entry },
     vault: { get: noop, set: noop, list: () => [] },
     serviceRegistry: { get: () => undefined, has: () => false, provide: unsub, replace: unsub },

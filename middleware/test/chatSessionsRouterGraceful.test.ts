@@ -20,6 +20,7 @@ import express from 'express';
 
 import type { ChatSession, ChatSessionStore } from '@omadia/orchestrator';
 import { createChatSessionsRouter } from '../src/routes/chatSessions.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 class FakeStore implements Pick<ChatSessionStore, 'list'> {
   sessions: ChatSession[] = [];
@@ -35,14 +36,14 @@ describe('createChatSessionsRouter — graceful (getStore)', () => {
   // assigning it simulates the orchestrator publishing it after the wizard.
   let liveStore: ChatSessionStore | undefined;
 
-  before(() => {
+  before(async () => {
     const app = express();
     app.use(express.json());
     app.use(
       '/api/chat',
       createChatSessionsRouter({ getStore: () => liveStore }),
     );
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/chat`;
   });

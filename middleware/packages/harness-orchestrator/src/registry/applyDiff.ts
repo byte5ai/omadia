@@ -248,6 +248,12 @@ export function buildForAgent(
       // every Agent the registry builds.
       ...(runtime.directLineSticky ? { directLineSticky: true } : {}),
       ...(personaSkills?.length ? { personaSkills } : {}),
+      // #914 — the agent's authored behaviour text. Blank/absent falls
+      // through to the platform-wide assistant identity, so an agent that
+      // never authored one behaves exactly as it did before.
+      ...(agent.instructions?.trim()
+        ? { identityInstructions: agent.instructions.trim() }
+        : {}),
     },
     deps,
   );
@@ -283,6 +289,13 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
     JSON.stringify(newAgent.modelRouting ?? null)
   ) {
     reasons.push('model_routing');
+  }
+  // #914 — the authored behaviour text IS the opening section of this Agent's
+  // system prompt, so changing it is runtime-relevant. Without this reason the
+  // edit would be stored, reported as saved, and never actually spoken: the
+  // registry would keep serving the Orchestrator built from the old text.
+  if ((oldAgent.instructions ?? '') !== (newAgent.instructions ?? '')) {
+    reasons.push('identity_instructions');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.

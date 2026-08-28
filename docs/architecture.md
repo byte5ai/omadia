@@ -21,6 +21,7 @@ every action they take.
 | **Vault** | Encrypted secret storage (AES-256-GCM file). Holds LLM keys and connector credentials; gated by `VAULT_KEY` in production. |
 | **Ingress channels** | Where conversations enter. Web-chat (the admin UI) is in-tree; Teams and Telegram ship as separate plugin ZIPs. |
 | **Web UI** | The Next.js admin UI: setup wizard, plugin builder, chat, and the call-stack trace viewer. Styled with Lume. |
+| **Conductor** | Deterministic workflow engine (Spec 005): operator-designed graphs of agent / action / human steps. The engine — not the LLM — picks every next step (postcondition → guards → exactly-one-match, else the declared fallback). Human steps open durable awaits with live role-holder authorization; runs are crash-safe (lease-fenced resume worker) and operator-cancellable (#759). Operator API under `/api/v1/operator/conductors`, designer + run trace at `/conductor`. |
 
 ## Data flow
 
@@ -41,8 +42,16 @@ channel  ->  orchestrator  ->  plugin (agent / tool)  ->  knowledge graph / vaul
 3. The **agent** runs, calling **tools** and **capability providers** as
    needed. Reads and writes go through the **knowledge graph**; secrets come
    from the **vault**, never from prompts or config.
-4. The result streams back to the channel, and the full **trace** (every step,
-   tool call, and decision) is stored as the run's audit receipt.
+4. The result streams back to the channel. The **trace** (every step, tool call,
+   and decision) is written to the knowledge graph as **best-effort telemetry** —
+   not an audit receipt. It is not guaranteed per turn: the graph sink is
+   optional, `SessionLogger` skips graph ingest when the Markdown transcript
+   write fails, and `ingestRun` refuses to write when no User-Cluster node
+   exists, which is the ordinary state for every channel except the
+   browser-login flow. A missing trace means "not recorded", never "no such
+   turn". Decided in #684; every drop is counted and logged. The guaranteed
+   surface is the Markdown transcript. See
+   [`ai-act-transparency.md`](ai-act-transparency.md) § Grenzen.
 
 ## Key design decisions
 

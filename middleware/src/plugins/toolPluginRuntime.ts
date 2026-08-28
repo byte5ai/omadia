@@ -3,12 +3,20 @@ import { pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 
 import { createPluginContext } from '../platform/pluginContext.js';
+import {
+  PluginHandoffPlanError,
+  loadHandoffPlan,
+} from '../platform/pluginHandoffPlan.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { PublicPathClaimError } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
@@ -82,6 +90,20 @@ export interface ToolPluginRuntimeDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  /** Epic #470 C4 / H1 — exclusive ownership of manifest-declared public path
+   *  prefixes. Optional so narrow test wiring can omit it; when absent, NO
+   *  prefix is ever claimed and every plugin route stays behind `requireAuth`
+   *  (the fail-closed direction). */
+  publicPathGrants?: PublicPathGrantRegistry;
+  /** Operator consent backing `publicPathGrants`. Optional for the same
+   *  reason, and with the same consequence: no store, no consent, no public
+   *  path. */
+  publicPathGrantStore?: PublicPathGrantStore;
+  /** The core exemption list, injected rather than imported so a declaration
+   *  is checked against the SAME array `requireAuth` runs (see the doc comment
+   *  on `auth/publicPaths.ts`). Optional; absent means "no core exemptions to
+   *  collide with", which only widens what a plugin may declare in tests. */
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
@@ -101,6 +123,10 @@ export interface ToolPluginRuntimeDeps {
    *  deactivate(). Separate from `pluginStatusRegistry` — see
    *  `OAuthReadinessTracker`'s doc comment for why. */
   oauthConnectionTracker?: OAuthReadinessTracker;
+  /** Epic #470 C7 / G4 — durable operator consent for `permissions.sql`, read
+   *  once per activate. Optional so narrow test contexts can omit it; absent
+   *  means ungranted, so a context built without it gets no database access. */
+  sqlGrantStore?: PluginSqlGrantStore;
   /** Event-catalog autodiscovery (US4 Conductor Surface): capability entries declaring
    *  `event_emit: true` are resolved into this registry on (de)activation. This runtime is the
    *  ONLY resolve site for built-in/static tool plugins (landmine K — the dynamic runtime has its
@@ -135,6 +161,23 @@ export interface ToolPluginRuntimeDeps {
   extensionStore?: ExtensionStore;
   log?: (msg: string) => void;
 }
+
+/**
+ * Wall-clock cap on a plugin's boot-time migration batch.
+ *
+ * Larger than the 10s `activate()` cap because applying schema is a different
+ * kind of work: an index build or a backfill on a real table is legitimately
+ * slower than wiring up a plugin's handlers. It is still a cap — the point is
+ * that a hung migration fails this ONE activation through the existing
+ * circuit-breaker instead of hanging middleware boot for everyone.
+ *
+ * Sits above `PLUGIN_MIGRATION_STATEMENT_TIMEOUT_MS` (30s) on purpose: the
+ * server-side budget should be what cancels a runaway statement, because it
+ * cancels it *in Postgres* and rolls the batch back cleanly. This one is the
+ * outer net for the case Postgres cannot see — a connection that never
+ * answers at all.
+ */
+const MIGRATION_TIMEOUT_MS = 60_000;
 
 export class ToolPluginRuntime {
   private readonly active = new Map<string, ActiveEntry>();
@@ -274,12 +317,37 @@ export class ToolPluginRuntime {
       );
     }
 
+    // Epic #470 C7 / G4 — read the operator's SQL grant BEFORE building the
+    // context. `ctx.services.get` is synchronous and cannot await, so this is
+    // the last point where the answer can be obtained honestly; a lookup
+    // deferred into the accessor would have to guess while its cache is cold,
+    // and a permission that is permissive while cold is not a permission.
+    //
+    // The grant must also still MATCH the manifest. An operator granted a
+    // specific ledger; a package that later ships a manifest naming a
+    // different one has not been granted that one, and carrying the stale row
+    // forward would let a plugin update silently move its schema somewhere the
+    // operator never approved.
+    const declaredSql = catalogEntry.plugin.permissions_summary.sql;
+    let sqlGranted = false;
+    if (declaredSql && this.deps.sqlGrantStore) {
+      const grant = await this.deps.sqlGrantStore.get(agentId);
+      sqlGranted = grant?.ledger === declaredSql.ledger;
+      if (grant && !sqlGranted) {
+        log(
+          `[tool-runtime] ${agentId}: permissions.sql grant is for ledger '${grant.ledger}' but the manifest now declares '${declaredSql.ledger}' — treating as ungranted until the operator re-grants`,
+        );
+      }
+    }
+
     const ctx = createPluginContext({
       agentId,
       vault: this.deps.vault,
       registry: this.deps.registry,
       catalog: this.deps.catalog,
       serviceRegistry: this.deps.serviceRegistry,
+      sqlGranted,
+      packageRoot: packagePath,
       nativeToolRegistry: this.deps.nativeToolRegistry,
       routeRegistry: this.deps.pluginRouteRegistry,
       notificationRouter: this.deps.notificationRouter,
@@ -291,6 +359,127 @@ export class ToolPluginRuntime {
       operatorAuth: this.deps.operatorAuth,
       logger: (...args) => console.log(`[${agentId}]`, ...args),
     });
+
+    // Epic #470 C15 — run the declared ledger handoff BEFORE the migration
+    // runner below.
+    //
+    // C11 gave a plugin `ctx.sql.seedLedger` and documented it as "call this
+    // before `runMigrations`", which a plugin cannot honour: the runner below
+    // runs before `activate()`, so the plugin's own call always arrived after
+    // every ledger row was already written. The 2026-08-21 acceptance run
+    // measured `0 seeded, 9 already seeded` on the exact upgrade C11 exists
+    // for, with `skippedNoWitness` — the one alarm it was built to raise —
+    // unreachable. And nothing failed: that log line is indistinguishable
+    // from a healthy re-run.
+    //
+    // The witnesses are knowledge only the plugin has; the ordering is a
+    // decision only core can make. So the plugin declares the plan in its
+    // manifest and core executes it here, through the SAME accessor a plugin
+    // would have called — read-only witness fence, advisory lock, entry
+    // validation and all. `ctx.sql.seedLedger` stays for plugins that manage
+    // their own order; against this core it degrades to `alreadySeeded`,
+    // which is what it should report once the work is done.
+    //
+    // A refusal fails the activation, and deliberately takes the migration
+    // runner with it: running the files anyway would write exactly the ledger
+    // rows the unreadable plan existed to decide on.
+    if (declaredSql?.handoff && ctx.sql) {
+      const plan = await loadHandoffPlan({
+        pluginId: agentId,
+        packageRoot: packagePath,
+        declaredPath: declaredSql.handoff,
+      });
+      if (plan.declaredLedger && plan.declaredLedger !== declaredSql.ledger) {
+        // Not fatal — core's ledger is the granted one and the plan's copy is
+        // advisory. But an operator who previewed the handoff with
+        // `plugin-ledger-handoff.mjs` read a different table than the one
+        // about to be written, and that is worth saying out loud.
+        log(
+          `[tool-runtime] WARN ${agentId}: handoff plan names ledger '${plan.declaredLedger}' but the manifest declares '${declaredSql.ledger}' — the manifest wins; an operator dry-run against the plan's table showed a different database`,
+        );
+      }
+      const seedLedger = ctx.sql.seedLedger;
+      if (!seedLedger) {
+        throw new PluginHandoffPlanError(
+          agentId,
+          declaredSql.handoff,
+          'malformed',
+          'this kernel builds a SQL accessor with no ledger seeder — the handoff cannot run, and running the migrations instead would silently do the thing the plan exists to prevent',
+        );
+      }
+      // Bounded with the same budget as the runner it precedes, and for the
+      // same reason: `seedPluginLedgerFromDonor` sets its timeouts
+      // server-side, but neither covers a connection that never answers, and
+      // this await sits on the boot path. The two steps also share one
+      // advisory lock, so a tighter bound here would only move where the pair
+      // gives up.
+      const report = await withTimeout(
+        seedLedger.call(ctx.sql, {
+          entries: plan.entries,
+        }),
+        MIGRATION_TIMEOUT_MS,
+        `seedLedger(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
+      log(
+        `[tool-runtime] ${agentId}: ledger handoff — ${String(report.seeded.length)} seeded, ` +
+          `${String(report.alreadySeeded.length)} already seeded, ` +
+          `${String(report.applied.length)} left for the migration runner ` +
+          `(ledger '${report.ledger}', donor '${report.donorLedger}', ${String(report.durationMs)}ms)`,
+      );
+      if (report.skippedNoWitness.length > 0) {
+        // THE output this feature exists to produce. The donor ledger records
+        // these, but their witness says the schema object is not there: a
+        // restore from an older snapshot, a rolled-back deploy, a table
+        // dropped during an incident. The runner below repairs it, so this is
+        // a warning rather than a refusal — but the operator has to be told
+        // the database is not the one they think it is, and told WHICH files,
+        // because a count alone gives them nowhere to look.
+        log(
+          `[tool-runtime] WARN ${agentId}: ledger handoff — the donor ledger records ` +
+            `${String(report.skippedNoWitness.length)} file(s) whose witness says the schema object is ABSENT; ` +
+            `the migration runner will apply them, which is the repair — confirm this is the database you think it is: ` +
+            report.skippedNoWitness.join(', '),
+        );
+      }
+    }
+
+    // Epic #470 C7 / G4 — apply the plugin's schema BEFORE its `activate()`
+    // runs. A plugin whose first act is to query its own tables must not have
+    // to remember to migrate first, and the ordering is not a convenience: it
+    // is what makes "the tables exist" an invariant `activate()` can rely on
+    // rather than a race each plugin re-loses in its own way.
+    //
+    // Only when the manifest explicitly declares `permissions.sql.migrations`.
+    // A plugin that declares `permissions.sql` for pool access alone, with no
+    // migrations key, gets `ctx.sql` and decides for itself.
+    //
+    // A failure here fails the activation. That is deliberate: the alternative
+    // is a plugin running against a schema that is not the one it was built
+    // for, which fails later, further away, and with the database in a state
+    // nobody chose. The circuit-breaker in `activateAllInstalled` treats it
+    // like any other activate failure.
+    if (declaredSql?.migrations && ctx.sql) {
+      // Bounded with the SAME helper that caps `activate()`, and for the same
+      // reason. `runPluginMigrations` sets `lock_timeout` and
+      // `statement_timeout` server-side, but neither covers a connection that
+      // never answers — a pool exhausted by another plugin, a database that
+      // accepted the TCP connection and then went away. This await sits on the
+      // boot path ahead of `activate()`, so an unbounded one hangs the whole
+      // middleware rather than just this plugin. The budget is its own
+      // constant because migrating schema is legitimately slower than
+      // activating, and folding it into the 10s activate cap would either
+      // starve real migrations or loosen the activate bound.
+      const report = await withTimeout(
+        ctx.sql.runMigrations(),
+        MIGRATION_TIMEOUT_MS,
+        `runMigrations(${agentId}) timed out after ${String(MIGRATION_TIMEOUT_MS / 1000)}s`,
+      );
+      if (report.applied.length > 0) {
+        log(
+          `[tool-runtime] ${agentId}: applied ${String(report.applied.length)} migration(s) to ledger '${report.ledger}' in ${String(report.durationMs)}ms (${report.applied.join(', ')})`,
+        );
+      }
+    }
 
     let handle: ToolPluginHandle;
     try {
@@ -315,6 +504,75 @@ export class ToolPluginRuntime {
       this.deps.jobScheduler.stopForPlugin(agentId);
       this.deps.pluginStatusRegistry?.clear(agentId);
       throw err;
+    }
+
+    // Epic #470 C4 / H1 — claim the manifest-declared public-path prefixes.
+    //
+    // AFTER activate(), deliberately. The rule "a plugin may only make public
+    // something it actually serves" needs the prefixes the plugin registered,
+    // and those only exist once activate() has run. Claiming earlier would mean
+    // trusting the manifest about which routers exist, which is the same
+    // mistake as trusting it about authentication.
+    //
+    // A rejected claim is a hard activation failure with the SAME rollback the
+    // catch above performs. Half-activating a plugin whose public-path
+    // declaration conflicts with another plugin's is the one outcome worse than
+    // refusing it: the operator would see a healthy plugin serving a prefix
+    // somebody else owns.
+    if (this.deps.publicPathGrants) {
+      const declared = catalogEntry.plugin.permissions_summary?.public_paths ?? [];
+      if (declared.length > 0) {
+        try {
+          const granted =
+            (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
+            new Set<string>();
+          this.deps.publicPathGrants.claim(agentId, declared, {
+            corePublicPaths: this.deps.corePublicPaths ?? [],
+            ownRoutePrefixes: this.deps.pluginRouteRegistry
+              .list()
+              .filter((r) => r.source === agentId && !r.disposed)
+              .map((r) => r.prefix),
+            grantedPrefixes: granted,
+          });
+          const ungranted = declared.filter((p) => !granted.has(p));
+          // Epic #470 C16 (#817) — name the remedy, not just the state.
+          //
+          // An ungranted prefix is deliberately NOT an activation failure: the
+          // claim holds (nobody else can take the prefix) and the route simply
+          // falls through to `requireAuth`, which is the fail-closed direction
+          // and the behaviour every already-installed plugin depends on. But
+          // "declared-but-awaiting-consent" told an operator what was wrong
+          // without telling them where to fix it, and the answer used to be
+          // "there is no UI" — which is precisely what C16 changes.
+          log(
+            `[tool-runtime] public paths for ${agentId}: ${String(granted.size)} granted, ` +
+              `${String(ungranted.length)} declared-but-awaiting-consent` +
+              (ungranted.length > 0
+                ? ` (${ungranted.join(', ')}) — these prefixes stay behind requireAuth until an operator consents ` +
+                  `in the admin UI under Plugins \u2192 ${agentId} \u2192 Permissions, or with ` +
+                  `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
+                : ''),
+          );
+        } catch (err) {
+          this.deps.publicPathGrants.releaseBySource(agentId);
+          this.deps.pluginRouteRegistry.disposeBySource(agentId);
+          this.deps.uiRouteCatalog.disposeBySource(agentId);
+          this.deps.serviceRegistry.disposeBySource(agentId);
+          this.deps.jobScheduler.stopForPlugin(agentId);
+          this.deps.pluginStatusRegistry?.clear(agentId);
+          // The plugin's own close() still has to run — it may hold a socket or
+          // a timer that activate() opened. Best-effort; the claim error is
+          // what propagates.
+          await Promise.resolve(handle.close()).catch(() => undefined);
+          if (err instanceof PublicPathClaimError) {
+            throw new Error(
+              `tool-runtime: ${agentId} cannot activate — ${err.message}`,
+              { cause: err },
+            );
+          }
+          throw err;
+        }
+      }
     }
 
     // Plugin self-extension (Theme B): if the module opted into the selfExtend
@@ -417,6 +675,13 @@ export class ToolPluginRuntime {
     this.deps.pluginRouteRegistry.disposeBySource(agentId);
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.serviceRegistry.disposeBySource(agentId);
+    // Epic #470 C4 / H1 — release the public-path ownership in the SAME breath
+    // as the routers. These two must never drift apart: an ownership claim that
+    // outlives its routers is a granted prefix with nothing behind it, and a
+    // router disposed while the claim stands is a prefix nobody else can take.
+    // (The mount answers 404 for the window in between either way — it resolves
+    // the live router on every request, not once at claim time.)
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     try {
       await withTimeout(
         entry.handle.close(),

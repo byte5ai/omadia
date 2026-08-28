@@ -1,10 +1,11 @@
 import { app, BrowserWindow, dialog } from 'electron';
+import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
 import { registerIpc } from './ipc';
 import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
-import { initUpdater, isUpdateInstalling } from './updater';
+import { checkForUpdatesManually, initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
 import { log, onLog } from './log';
 
@@ -52,6 +53,12 @@ function createWindow(): BrowserWindow {
   return w;
 }
 
+function checkForUpdatesAction(): void {
+  // The updater reports every terminal outcome itself via dialogs/logs, so the
+  // menu and tray can deliberately fire-and-forget the async request.
+  void checkForUpdatesManually();
+}
+
 function trayActions(): TrayActions {
   return {
     open: () => {
@@ -79,6 +86,7 @@ function trayActions(): TrayActions {
         supervisor.off('progress', forwardProgress);
       }
     },
+    checkForUpdates: checkForUpdatesAction,
     quit: () => {
       quitting = true;
       app.quit();
@@ -138,6 +146,9 @@ function startWizard(): void {
 }
 
 async function onReady(): Promise<void> {
+  // OM-41 — replace Electron's default menu (which shipped a second
+  // fullscreen item and a DevTools accelerator into customer builds).
+  installApplicationMenu({ checkForUpdates: checkForUpdatesAction });
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
 

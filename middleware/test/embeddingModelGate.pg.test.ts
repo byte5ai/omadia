@@ -3,6 +3,8 @@ import { after, before, describe, it } from 'node:test';
 
 import { Pool } from 'pg';
 
+import { probePgTest } from './_helpers/pgTestDb.js';
+
 import {
   allowsVectorWrites,
   clearStaleVectors,
@@ -22,28 +24,18 @@ import {
  * leaves the corpus in the state the resume path expects.
  *
  * Self-skips when no Postgres is reachable, same convention as
- * test/devplatform/*.pg.test.ts — never fails the suite on a machine without
+ * every other *.pg.test.ts — never fails the suite on a machine without
  * a database.
  */
 
-const PG_URL =
-  process.env['GRAPH_PG_TEST_URL'] ??
-  process.env['MEMORY_PG_TEST_URL'] ??
-  process.env['DATABASE_URL'] ??
-  'postgres://test:test@127.0.0.1:55438/test';
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'embeddingModelGate',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  requireVector: true,
+  timeoutMs: 1_500,
+});
 
 const SCHEMA = 'embgate_pg_test';
-
-let pgAvailable = true;
-try {
-  const probe = new Pool({ connectionString: PG_URL, connectionTimeoutMillis: 1_500 });
-  await probe.query('SELECT 1');
-  // pgvector is not optional here — a vector(n) column IS the thing under test.
-  await probe.query('CREATE EXTENSION IF NOT EXISTS vector');
-  await probe.end();
-} catch {
-  pgAvailable = false;
-}
 
 const OLLAMA = { modelId: 'ollama:nomic-embed-text', dimensions: 768 };
 const OTHER_768 = { modelId: 'openai:some-768-model', dimensions: 768 };

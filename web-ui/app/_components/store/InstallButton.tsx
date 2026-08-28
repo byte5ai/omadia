@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import {
+  AlertTriangle,
   ArrowRight,
   Check,
     Lock,
@@ -23,17 +24,27 @@ import {
   uninstallPlugin,
   updateInstalledPluginConfig,
   ApiError,
+  getPluginGrants,
 } from '../../_lib/api';
+import type { PluginGrantsView } from '../../_lib/api';
 import type {
   InstallChainResolution,
   InstallJob,
   InstallSetupField,
   InstallValidationError,
   LocalizedMarkdown,
+  PluginReadiness,
 } from '../../_lib/storeTypes';
+import { PostInstallNextSteps } from './PostInstallNextSteps';
+import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
-import { FieldRow, extractValues } from './setupForm';
+import {
+  FieldRow,
+  extractValues,
+  uploadCoveredKeys,
+  type SetupFieldError,
+} from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
 
@@ -57,6 +68,11 @@ interface InstallButtonProps {
    *  drawer, above the credential fields, so the operator sees how to obtain
    *  those values before filling them in. */
   setupGuide?: LocalizedMarkdown;
+  /** OM-16 — kernel-derived readiness for this plugin. Drives the installed
+   *  pill (which used to be an unconditional green "Installiert · AKTIV") and
+   *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
+   *  which case the pill renders as before. */
+  readiness?: PluginReadiness;
 }
 
 type Phase =
@@ -66,6 +82,11 @@ type Phase =
   | { kind: 'submitting'; job: InstallJob; values: Record<string, unknown> }
   | { kind: 'error'; job: InstallJob | null; message: string }
   | { kind: 'wizard'; resolution: InstallChainResolution }
+  /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
+   *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
+   *  never quietly left in the state issue #817 describes: installed, asking
+   *  for the operator's database, with no surface that could answer. */
+  | { kind: 'permissions'; grants: PluginGrantsView }
   | { kind: 'success' };
 
 export function InstallButton({
@@ -78,20 +99,25 @@ export function InstallButton({
   installedVersion,
   availableVersion,
   setupGuide,
+  readiness,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
   const router = useRouter();
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  // OM-17 — the whole validation entry, not just its `message`: `FieldRow`
+  // needs the `code` to recognise a `pattern_mismatch` and swap the server's
+  // English hint for the localized one out of the manifest.
   const [fieldErrors, setFieldErrors] = useState<
-    Record<string, string>
+    Record<string, SetupFieldError>
   >({});
 
   const drawerOpen =
     phase.kind === 'form' ||
     phase.kind === 'submitting' ||
     phase.kind === 'error' ||
+    phase.kind === 'permissions' ||
     phase.kind === 'creating';
 
   // --- visual dispatch -----------------------------------------------------
@@ -101,6 +127,7 @@ export function InstallButton({
       <InstalledPanel
         pluginId={pluginId}
         pluginName={pluginName}
+        {...(readiness ? { readiness } : {})}
         {...(installState === 'update-available' && availableVersion
           ? { update: { from: installedVersion ?? '', to: availableVersion } }
           : {})}
@@ -240,12 +267,63 @@ export function InstallButton({
   }
 
   function handleClose(): void {
+    const wasPermissions = phase.kind === 'permissions';
     setPhase({ kind: 'idle' });
     setFieldErrors({});
+    // #470 C16 — closing the permissions step ends a flow that just changed the
+    // plugin's install state on the server. Without the refresh the page keeps
+    // showing the state from before the grant, which is the same class of lie
+    // this whole item exists to remove.
+    if (wasPermissions) router.refresh();
+  }
+
+  /**
+   * #825 — decide what the operator sees after an install that reached the
+   * registry, for both `active` and `errored`.
+   *
+   * The order matters and is the point of the issue. A grant the manifest asks
+   * for is the ONE thing the operator can act on from this dialog, so it is
+   * offered first, whether or not the plugin managed to come up without it.
+   * Only when there is no grant to ask for does the outcome split:
+   *
+   *   * `active`  → success, as before.
+   *   * `errored` → an error naming the activation failure. Never the success
+   *     toast: the plugin is installed and not running, and #825 exists
+   *     precisely because that state was being reported as a win.
+   *
+   * A FAILED grants read is not fatal for `active` — the plugin IS installed
+   * and the detail page's grants panel asks the same question, so falling
+   * through to `success` is the honest degradation. For `errored` there is
+   * nothing honest to fall through to, so the activation error is shown
+   * instead.
+   */
+  async function settleInstalled(job: InstallJob): Promise<void> {
+    const grants = await getPluginGrants(job.plugin_id).catch(() => null);
+    if (grants && hasGrantsToAsk(grants)) {
+      setPhase({ kind: 'permissions', grants });
+      return;
+    }
+    if (job.state === 'errored') {
+      setPhase({
+        kind: 'error',
+        job,
+        message: t('activationFailed', {
+          message: job.activation_state?.error ?? t('unknownError'),
+        }),
+      });
+      return;
+    }
+    setPhase({ kind: 'success' });
+    // Give the user a moment to see the confirmation, then close + refresh.
+    window.setTimeout(() => {
+      setPhase({ kind: 'idle' });
+      router.refresh();
+    }, 900);
   }
 
   async function handleSubmit(
     values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
   ): Promise<void> {
     if (phase.kind !== 'form' && phase.kind !== 'error') return;
     const job = phase.kind === 'form' ? phase.job : phase.job;
@@ -253,14 +331,14 @@ export function InstallButton({
     setPhase({ kind: 'submitting', job, values });
     setFieldErrors({});
     try {
-      const resp = await configureInstallJob(job.id, values);
-      if (resp.job.state === 'active') {
-        setPhase({ kind: 'success' });
-        // Give the user a moment to see the confirmation, then close + refresh.
-        window.setTimeout(() => {
-          setPhase({ kind: 'idle' });
-          router.refresh();
-        }, 900);
+      const resp = await configureInstallJob(job.id, values, jsonFiles);
+      // #825 — `active` and `errored` both mean INSTALLED; they differ only in
+      // whether the plugin came up. Both land here, because the next screen is
+      // decided by what the manifest still wants, not by which word the job
+      // used. Before #825 the server could only say `active`, so this branch
+      // also covers a middleware older than the fix.
+      if (resp.job.state === 'active' || resp.job.state === 'errored') {
+        await settleInstalled(resp.job);
       } else if (resp.job.state === 'failed' && resp.job.error) {
         applyServerErrors(resp.job.error);
         setPhase({ kind: 'form', job: resp.job });
@@ -304,7 +382,7 @@ export function InstallButton({
 
   function applyDetails(details: unknown): void {
     if (!Array.isArray(details)) return;
-    const next: Record<string, string> = {};
+    const next: Record<string, SetupFieldError> = {};
     for (const entry of details as InstallValidationError[]) {
       if (
         entry &&
@@ -312,7 +390,10 @@ export function InstallButton({
         typeof entry.key === 'string' &&
         typeof entry.message === 'string'
       ) {
-        next[entry.key] = entry.message;
+        next[entry.key] =
+          typeof entry.code === 'string'
+            ? { code: entry.code, message: entry.message }
+            : { message: entry.message };
       }
     }
     setFieldErrors(next);
@@ -330,14 +411,40 @@ function InstalledPanel({
   pluginId,
   pluginName,
   update,
+  readiness,
 }: {
   pluginId: string;
   pluginName: string;
   /** C6 — present when a registry advertises a newer version. */
   update?: { from: string; to: string };
+  /** OM-16 — kernel-derived readiness; drives the state word on the pill. */
+  readiness?: PluginReadiness;
 }): React.ReactElement {
   const t = useTranslations('store.install');
+  const tState = useTranslations('store.stateBadge');
   const router = useRouter();
+  // OM-16 — readiness → pill tone + state word. No readiness (older
+  // middleware) keeps the previous unqualified "active".
+  const readinessTone: 'ok' | 'warning' | 'danger' =
+    readiness?.state === 'errored'
+      ? 'danger'
+      : readiness?.state === 'config_required' ||
+          readiness?.state === 'awaiting_llm'
+        ? 'warning'
+        : 'ok';
+  const readinessLabel =
+    readiness?.state === 'errored'
+      ? tState('errored')
+      : readiness?.state === 'config_required'
+        ? tState('configRequired')
+        : readiness?.state === 'awaiting_llm'
+          ? tState('awaitingLlm')
+          : t('active');
+  const missingFieldsTitle =
+    readiness?.state === 'config_required' &&
+    readiness.missing_fields.length > 0
+      ? tState('missingFields', { fields: readiness.missing_fields.join(', ') })
+      : undefined;
   const [state, setState] = useState<
     | { kind: 'idle' }
     | { kind: 'confirming' }
@@ -441,19 +548,37 @@ function InstalledPanel({
           ) : null}
         </div>
       ) : null}
+      {/* OM-16 — this pill used to read "Installiert · AKTIV" unconditionally,
+          purely because the plugin was in the registry. A plugin whose
+          credentials were all deleted cannot serve one request, so the state
+          word now comes from the kernel's readiness verdict. Lume: state is
+          carried by text + ring colour only, no spinner. */}
       <div
         className={cn(
-          'flex w-full items-center gap-3 rounded-full px-6 py-3',
-          'bg-[color:var(--success)]/10 ring-1 ring-inset ring-[color:var(--success)]/40',
-          'text-[color:var(--success)]',
+          'flex w-full items-center gap-3 rounded-full px-6 py-3 ring-1 ring-inset',
+          readinessTone === 'danger'
+            ? 'bg-[color:var(--danger)]/8 ring-[color:var(--danger)]/40 text-[color:var(--danger)]'
+            : readinessTone === 'warning'
+              ? 'bg-[color:var(--warning)]/12 ring-[color:var(--warning)]/40 text-[color:var(--warning)]'
+              : 'bg-[color:var(--success)]/10 ring-[color:var(--success)]/40 text-[color:var(--success)]',
         )}
+        title={readiness?.error_detail ?? missingFieldsTitle}
       >
-        <Check className="size-5" aria-hidden />
+        {readinessTone === 'ok' ? (
+          <Check className="size-5" aria-hidden />
+        ) : (
+          <AlertTriangle className="size-5" aria-hidden />
+        )}
         <span className="text-[15px] font-semibold">{t('installed')}</span>
-        <span className="ml-auto text-[11px] uppercase tracking-[0.16em] text-[color:var(--success)]/80">
-          {t('active')}
+        <span className="ml-auto text-[11px] uppercase tracking-[0.16em] opacity-80">
+          {readinessLabel}
         </span>
       </div>
+
+      {/* OM-06/07 — installing is not the finish line: a plugin does nothing
+          until it is attached to an orchestrator. Mirrors the skill-import
+          success flow in DashboardOnboarding → BringYourSkills. */}
+      <PostInstallNextSteps pluginName={pluginName} readiness={readiness} />
 
       {/* Slice 2.5 — Privacy-Mode quick-picker. Operator-owned per-plugin
           setting that decides whether the orchestrator dispatch hook
@@ -465,6 +590,7 @@ function InstalledPanel({
       <PrivacyModePicker pluginId={pluginId} />
 
       {state.kind === 'idle' && (
+        // eslint-disable-next-line no-restricted-syntax -- inline text link (bare text + icon, no border/bg)
         <button
           type="button"
           onClick={() => setState({ kind: 'confirming' })}
@@ -540,6 +666,7 @@ function InstalledPanel({
           <p className="text-[12px] text-[color:var(--danger,#b03030)]">
             {t('uninstallFailed', { message: state.message })}
           </p>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
           <button
             type="button"
             onClick={() => setState({ kind: 'idle' })}
@@ -560,9 +687,12 @@ function InstalledPanel({
 interface InstallDrawerProps {
   phase: Phase;
   pluginName: string;
-  fieldErrors: Record<string, string>;
+  fieldErrors: Record<string, SetupFieldError>;
   onClose: () => void;
-  onSubmit: (values: Record<string, unknown>) => void | Promise<void>;
+  onSubmit: (
+    values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
+  ) => void | Promise<void>;
   /** Markdown setup guide rendered above the fields. */
   setupGuide?: string;
 }
@@ -592,6 +722,9 @@ function InstallDrawer({
   const fields = (jobFromPhase?.setup_schema?.fields ?? []).filter(
     (f) => !f.install_hidden,
   );
+  // #603 — fields a json_file upload supplies; their native `required` is off
+  // so the browser cannot silently refuse a submit that has the file attached.
+  const coveredByUpload = uploadCoveredKeys(fields);
   const submitting = phase.kind === 'submitting';
 
   // Portal to <body> so the drawer escapes the store sidebar's
@@ -605,6 +738,7 @@ function InstallDrawer({
       aria-modal="true"
       aria-label={t('drawerAria', { name: pluginName })}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (full-bleed modal backdrop/scrim, no text) */}
       <button
         type="button"
         onClick={onClose}
@@ -636,6 +770,7 @@ function InstallDrawer({
               </p>
             ) : null}
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare uppercase text, no border/bg) */}
           <button
             type="button"
             onClick={onClose}
@@ -650,6 +785,14 @@ function InstallDrawer({
             <span className="lume-busy-dots" aria-hidden />
             <span className="text-sm">{t('creatingJob')}</span>
           </div>
+        ) : phase.kind === 'permissions' ? (
+          /* #470 C16 — the install is done; this step is the manifest's
+             remaining question. Rendered INSTEAD of the setup form, not below
+             it: the credentials are already committed and re-showing them
+             would invite an edit the wizard can no longer apply. */
+          <div className="min-h-0 flex-1 overflow-y-auto p-8">
+            <PermissionsStep grants={phase.grants} onFinish={onClose} />
+          </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
             <InstallErrorBlock message={phase.message} />
@@ -660,9 +803,26 @@ function InstallDrawer({
             onSubmit={(e) => {
               e.preventDefault();
               if (submitting) return;
-              const formData = new FormData(e.currentTarget);
+              const formEl = e.currentTarget;
+              const formData = new FormData(formEl);
               const values = extractValues(fields, formData);
-              void onSubmit(values);
+              // #603 (OM-17) — read any selected json_file uploads and ship the
+              // RAW documents with the configure call. The server parses them
+              // (never the client — its doctrine, see secrets/from-json) and
+              // the derived values run through normal validation. Reading a
+              // File is async, hence the wrapper.
+              void (async () => {
+                const jsonFiles: Record<string, string> = {};
+                for (const field of fields) {
+                  if (field.type !== 'json_file') continue;
+                  const input = formEl.querySelector<HTMLInputElement>(
+                    `[data-json-file-field="${field.key}"]`,
+                  );
+                  const file = input?.files?.[0];
+                  if (file) jsonFiles[field.key] = await file.text();
+                }
+                await onSubmit(values, jsonFiles);
+              })();
             }}
           >
             <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
@@ -686,6 +846,7 @@ function InstallDrawer({
                       key={field.key}
                       field={field}
                       error={fieldErrors[field.key]}
+                      coveredByUpload={coveredByUpload.has(field.key)}
                     />
                   ))}
                 </div>
@@ -888,7 +1049,7 @@ function PrivacyModePicker({
         className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
       >
         <Shield className="size-3.5" aria-hidden />
-        Privacy Mode
+        {t('privacyModeLabel')}
       </label>
       <select
         id={`privacy-mode-${pluginId}`}

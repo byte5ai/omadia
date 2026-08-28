@@ -407,3 +407,175 @@ describe('verifier/pipeline', () => {
     assert.equal(verdict.status, 'approved');
   });
 });
+
+// #129 golden flake — `blocked_deterministic_id_absent`: the extractor types
+// "INV/2026/0099 ist verbucht" as `qualitative` in ~⅓ of samples while still
+// anchoring `odooRecord.ref`. The pipeline must check record existence
+// deterministically BEFORE the judge, independent of the claim type.
+describe('verifier/pipeline - anchored soft claims', () => {
+  function anchoredSoft(): SoftClaim {
+    return softClaim({
+      id: 'c_anchor',
+      text: 'die Rechnung INV/2026/0099 ist im Odoo-Modell account.move verbucht und abgeschlossen',
+      type: 'qualitative',
+      expectedSource: 'odoo',
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+    });
+  }
+
+  function stubDeterministicWithExists(
+    existsVerdict: (c: Claim) => ClaimVerdict,
+  ): DeterministicChecker {
+    return {
+      ...stubDeterministic((c) => ({ status: 'verified', claim: c, source: 'odoo' })),
+      checkRecordExists(c: Claim): Promise<ClaimVerdict> {
+        return Promise.resolve(existsVerdict(c));
+      },
+    } as unknown as DeterministicChecker;
+  }
+
+  it('blocks a qualitative claim whose anchored Odoo record does not exist — judge never asked', async () => {
+    let judgeCalls = 0;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([anchoredSoft()]),
+      deterministic: stubDeterministicWithExists((c) => ({
+        status: 'contradicted',
+        claim: c,
+        truth: null,
+        source: 'odoo',
+        detail: 'no account.move with name="INV/2026/0099"',
+      })),
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'unverified', claim: c, reason: 'no evidence' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_anchor_absent',
+      userMessage: 'Ist die Rechnung INV/2026/0099 bereits verbucht?',
+      answer:
+        'Ja, die Rechnung INV/2026/0099 ist im Odoo-Modell account.move verbucht und abgeschlossen.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(verdict.status, 'blocked');
+    assert.equal(judgeCalls, 0);
+    if (verdict.status === 'blocked') {
+      assert.equal(verdict.contradictions[0]!.claim.type, 'qualitative');
+    }
+  });
+
+  it('hands an anchored qualitative claim to the judge when the record exists', async () => {
+    let judgeCalls = 0;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([anchoredSoft()]),
+      deterministic: stubDeterministicWithExists((c) => ({
+        status: 'verified',
+        claim: c,
+        source: 'odoo',
+      })),
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'unverified', claim: c, reason: 'no evidence' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_anchor_present',
+      userMessage: 'Ist die Rechnung bereits verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht und abgeschlossen.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(judgeCalls, 1);
+    assert.equal(verdict.status, 'approved_with_disclaimer');
+  });
+
+  it('fails open: an unverifiable existence lookup still sends the claim to the judge', async () => {
+    let judgeCalls = 0;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([anchoredSoft()]),
+      deterministic: stubDeterministicWithExists((c) => ({
+        status: 'unverified',
+        claim: c,
+        reason: 're-query error: ECONNRESET',
+      })),
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'verified', claim: c, source: 'odoo' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_anchor_err',
+      userMessage: 'Ist die Rechnung verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(judgeCalls, 1);
+    assert.equal(verdict.status, 'approved');
+  });
+
+  it('skips the existence re-query when a hard id claim already covers the same anchor (no double contradiction)', async () => {
+    let existsCalls = 0;
+    let judgeCalls = 0;
+    const twinId = hardClaim({
+      id: 'c_id',
+      text: 'INV/2026/0099',
+      type: 'id',
+      value: undefined,
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+    });
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([twinId, anchoredSoft()]),
+      deterministic: {
+        ...stubDeterministic((c) => ({
+          status: 'contradicted',
+          claim: c,
+          truth: null,
+          source: 'odoo',
+        })),
+        checkRecordExists(c: Claim): Promise<ClaimVerdict> {
+          existsCalls += 1;
+          return Promise.resolve({ status: 'contradicted', claim: c, truth: null, source: 'odoo' });
+        },
+      } as unknown as DeterministicChecker,
+      judge: stubJudge((c) => {
+        judgeCalls += 1;
+        return { status: 'unverified', claim: c, reason: 'no evidence' };
+      }),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_twin',
+      userMessage: 'Ist die Rechnung INV/2026/0099 bereits verbucht?',
+      answer: 'Ja, die Rechnung INV/2026/0099 ist verbucht und abgeschlossen.',
+      domainToolsCalled: ['query_odoo_accounting'],
+    });
+    assert.equal(existsCalls, 0, 'hard twin owns the record verdict');
+    assert.equal(judgeCalls, 1, 'qualitative twin still judged');
+    assert.equal(verdict.status, 'blocked');
+    if (verdict.status === 'blocked') {
+      assert.equal(verdict.contradictions.length, 1);
+    }
+  });
+
+  it('leaves unanchored soft claims on the judge path untouched', async () => {
+    let existsCalls = 0;
+    const pipeline = new VerifierPipeline({
+      extractor: stubExtractor([softClaim()]),
+      deterministic: stubDeterministicWithExists((c) => {
+        existsCalls += 1;
+        return { status: 'verified', claim: c, source: 'graph' };
+      }),
+      judge: stubJudge((c) => ({ status: 'verified', claim: c, source: 'graph' })),
+      log: SILENT_LOG,
+    });
+    const verdict = await pipeline.verify({
+      runId: 'r_plain',
+      userMessage: 'wer?',
+      answer: 'John Doe ist Senior Dev.',
+    });
+    assert.equal(existsCalls, 0);
+    assert.equal(verdict.status, 'approved');
+  });
+});

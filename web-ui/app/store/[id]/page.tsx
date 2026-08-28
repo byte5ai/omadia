@@ -33,6 +33,7 @@ import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
 import { CredentialsEditor } from '../../_components/store/CredentialsEditor';
+import { GrantsPanel } from '../../_components/store/GrantsPanel';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
 import { SelfExtensionPanel } from '../../_components/store/SelfExtensionPanel';
 import { InstallButton } from '../../_components/store/InstallButton';
@@ -84,7 +85,8 @@ export default async function PluginDetailPage({
     throw err;
   }
 
-  const { plugin, install_available, blocking_reasons } = detail;
+  const { plugin, install_available, blocking_reasons, blocked_by_active_provider } =
+    detail;
   const isLegacy = plugin.categories.includes('legacy');
   const visibleCategories = plugin.categories.filter((c) => c !== 'legacy');
 
@@ -92,6 +94,10 @@ export default async function PluginDetailPage({
   // language so a single-language guide still renders.
   const locale = await getLocale();
   const setupGuideText = pickLocalized(plugin.setup_guide, locale);
+  // OM-28/OM-06 (#602) — the manifest may localize its description; the plain
+  // string stays the fallback for every manifest that never declared a map.
+  const localizedDescription =
+    pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   const t = await getTranslations('store.detail');
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
@@ -126,6 +132,7 @@ export default async function PluginDetailPage({
               iconUrl={plugin.icon_url}
               size="lg"
               tone={isLegacy ? 'legacy' : 'default'}
+              id={plugin.id}
             />
             <div className="min-w-0">
               <div className="flex items-baseline gap-3 text-[11px] font-semibold uppercase tracking-[0.24em] text-[color:var(--fg-subtle)]">
@@ -138,6 +145,7 @@ export default async function PluginDetailPage({
                 <StateBadge
                   state={plugin.install_state}
                   isLegacy={isLegacy}
+                  readiness={plugin.readiness}
                 />
                 <Chip tone="mono">v{plugin.version}</Chip>
                 {plugin.signed ? (
@@ -188,12 +196,10 @@ export default async function PluginDetailPage({
             iframeSrc={adminUiIframeSrc}
             pluginName={plugin.name}
           >
-          <Section label={t('sectionDescription')} numeral="I">
+          <Section label={t('sectionDescription')}>
             <p className="text-[18px] font-semibold leading-[1.6] text-[color:var(--fg)]">
-              {plugin.description ? (
-                <>
-                                    {plugin.description}
-                </>
+              {localizedDescription ? (
+                localizedDescription
               ) : (
                 <span className="text-[color:var(--fg-muted)]">
                   {t('noDescription')}
@@ -209,7 +215,6 @@ export default async function PluginDetailPage({
           {setupGuideText ? (
             <Section
               label={t('sectionSetupGuide')}
-              numeral="I.b"
               icon={<BookOpen className="size-4" aria-hidden />}
             >
               <Markdown source={setupGuideText} />
@@ -219,7 +224,6 @@ export default async function PluginDetailPage({
           {plugin.setup_fields.length > 0 ? (
             <Section
               label={t('sectionSetupFields')}
-              numeral="II"
               meta={t('setupFieldsCount', {
                 count: plugin.setup_fields.length,
               })}
@@ -227,7 +231,7 @@ export default async function PluginDetailPage({
             >
               <div className="divide-y divide-[color:var(--rule)] border-y border-[color:var(--rule)]">
                 {plugin.setup_fields.map((field) => (
-                  <SecretRow key={field.key} field={field} />
+                  <SecretRow key={field.key} field={field} locale={locale} />
                 ))}
               </div>
             </Section>
@@ -244,13 +248,35 @@ export default async function PluginDetailPage({
           plugin.setup_fields.length > 0 ? (
             <Section
               label={t('sectionEditSetupFields')}
-              numeral="II.b"
+              id="setup-fields"
               icon={<KeyRound className="size-4" aria-hidden />}
             >
               <CredentialsEditor
                 pluginId={plugin.id}
                 setupFields={plugin.setup_fields}
               />
+            </Section>
+          ) : null}
+
+          {/* Epic #470 C16 (#817) — operator consent for `permissions.sql` and
+              `permissions.public_paths`.
+
+              Rendered for every INSTALLED plugin, not only for one that
+              declares a grant today: the panel is also where an operator
+              confirms that a plugin asks for NOTHING, and a section that
+              silently disappears cannot answer that question. The panel itself
+              says so when the manifest declares neither.
+
+              `id="grants"` is the deep-link target the install wizard and the
+              activation error message both point at. */}
+          {plugin.install_state === 'installed' ||
+          plugin.install_state === 'update-available' ? (
+            <Section
+              label={t('sectionGrants')}
+              id="grants"
+              icon={<ShieldCheck className="size-4" aria-hidden />}
+            >
+              <GrantsPanel pluginId={plugin.id} />
             </Section>
           ) : null}
 
@@ -261,7 +287,6 @@ export default async function PluginDetailPage({
           plugin.permissions_summary.network_web_scanner === true ? (
             <Section
               label={t('sectionAuditMode')}
-              numeral="II.c"
               icon={<ShieldAlert className="size-4" aria-hidden />}
             >
               <AuditModeSwitch pluginId={plugin.id} />
@@ -275,7 +300,6 @@ export default async function PluginDetailPage({
           {plugin.install_state === 'installed' ? (
             <Section
               label={t('sectionSelfExtension')}
-              numeral="II.d"
               icon={<Sparkles className="size-4" aria-hidden />}
             >
               <SelfExtensionPanel agentId={plugin.id} />
@@ -284,7 +308,6 @@ export default async function PluginDetailPage({
 
           <Section
             label={t('sectionPermissions')}
-            numeral="III"
             icon={<ShieldCheck className="size-4" aria-hidden />}
           >
             <PermissionsBlock
@@ -292,44 +315,63 @@ export default async function PluginDetailPage({
             />
           </Section>
 
-          {(plugin.provides?.length ?? 0) + (plugin.requires?.length ?? 0) >
+          {/* #602 P4 (OM-06/07) — the pure service-contract detail reads as
+              jargon to the operator audience this store serves; it matters to
+              plugin developers wiring capabilities together. Native <details>,
+              collapsed by default, keeps it one click away without burying the
+              user-relevant sections (description, setup, permissions), which
+              stay expanded above. */}
+          {(plugin.provides?.length ?? 0) +
+            (plugin.requires?.length ?? 0) +
+            plugin.integrations_summary.length >
           0 ? (
-            <Section
-              label={t('sectionCapabilities')}
-              numeral="IV"
-              icon={<Plug className="size-4" aria-hidden />}
-              meta={t('capabilitiesMeta', {
-                provides: plugin.provides?.length ?? 0,
-                requires: plugin.requires?.length ?? 0,
-              })}
-            >
-              <CapabilitiesBlock
-                provides={plugin.provides ?? []}
-                requires={plugin.requires ?? []}
-              />
-            </Section>
-          ) : null}
+            <details className="group rounded-lg border border-[color:var(--rule)] px-5 py-4">
+              <summary className="cursor-pointer select-none text-[13px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)] transition-colors hover:text-[color:var(--fg)]">
+                {t('sectionForDevelopers')}
+                <span className="ml-2 normal-case tracking-normal text-[12px] font-normal text-[color:var(--faint-ink)]">
+                  {t('sectionForDevelopersHint')}
+                </span>
+              </summary>
+              <div className="mt-6 space-y-12">
+              {(plugin.provides?.length ?? 0) + (plugin.requires?.length ?? 0) >
+              0 ? (
+                <Section
+                  label={t('sectionCapabilities')}
+                  icon={<Plug className="size-4" aria-hidden />}
+                  meta={t('capabilitiesMeta', {
+                    provides: plugin.provides?.length ?? 0,
+                    requires: plugin.requires?.length ?? 0,
+                  })}
+                >
+                  <CapabilitiesBlock
+                    provides={plugin.provides ?? []}
+                    requires={plugin.requires ?? []}
+                  />
+                </Section>
+              ) : null}
 
-          {plugin.integrations_summary.length > 0 ? (
-            <Section
-              label={t('sectionIntegrations')}
-              numeral="V"
-              icon={<Network className="size-4" aria-hidden />}
-            >
-              <ul className="space-y-2">
-                {plugin.integrations_summary.map((target, idx) => (
-                  <li
-                    key={idx}
-                    className="flex items-center gap-3 border-t border-[color:var(--rule)] py-3 first:border-t-0 first:pt-0"
-                  >
-                    <span className="font-mono-num text-[11px] text-[color:var(--faint-ink)]">
-                      {String(idx + 1).padStart(2, '0')}
-                    </span>
-                    <span className="text-[color:var(--ink)]">{target}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
+              {plugin.integrations_summary.length > 0 ? (
+                <Section
+                  label={t('sectionIntegrations')}
+                  icon={<Network className="size-4" aria-hidden />}
+                >
+                  <ul className="space-y-2">
+                    {plugin.integrations_summary.map((target, idx) => (
+                      <li
+                        key={idx}
+                        className="flex items-center gap-3 border-t border-[color:var(--rule)] py-3 first:border-t-0 first:pt-0"
+                      >
+                        <span className="font-mono-num text-[11px] text-[color:var(--faint-ink)]">
+                          {String(idx + 1).padStart(2, '0')}
+                        </span>
+                        <span className="text-[color:var(--ink)]">{target}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              ) : null}
+              </div>
+            </details>
           ) : null}
 
           {/*
@@ -350,12 +392,37 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            {...(plugin.readiness ? { readiness: plugin.readiness } : {})}
             {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}
             {...(plugin.available_version
               ? { availableVersion: plugin.available_version }
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
           />
+
+          {/* OM-06 / #671 — the capability this plugin provides is already
+              covered by an active plugin, so the install would be refused.
+              `blocking_reasons` above already says so, but only in English and
+              only as a statement of fact. The operator's actual next step is
+              to configure the provider they ALREADY have, which the original
+              report called out as missing: the store offered "install" while
+              the admin area listed the same provider as connected, with no
+              link between the two. */}
+          {blocked_by_active_provider ? (
+            <div className="space-y-2 rounded-lg border border-[color:var(--edge)] p-4">
+              <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
+                {t('alreadyProvided', {
+                  owner: blocked_by_active_provider.owner_id,
+                })}
+              </p>
+              <Link
+                href="/admin/providers"
+                className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--accent)] transition hover:opacity-80"
+              >
+                {t('alreadyProvidedCta')}
+              </Link>
+            </div>
+          ) : null}
 
           {/* Admin-UI Toggle — sidebar control for the plugin-bundled
               operator UI. Visible whenever the plugin declares an
@@ -440,7 +507,7 @@ export default async function PluginDetailPage({
           <BookCheck className="size-3.5" aria-hidden />
           Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
         </span>
-        <span className="font-mono-num">omadia · v1 · Slice 1.1</span>
+        <span className="font-mono-num">omadia · v1</span>
       </footer>
     </main>
   );
@@ -450,25 +517,33 @@ export default async function PluginDetailPage({
 // Small building blocks kept local to this page
 // ---------------------------------------------------------------------------
 
+/**
+ * OM-39 — the numerals are gone.
+ *
+ * The page hardcoded `I, I.b, II, II.b, II.c, II.d, III, IV, V`; `I.a`/`II.a`
+ * never existed and conditional rendering punched gaps in the rest, so the
+ * sequence jumped for every operator. Nothing referenced them (no ToC, no
+ * cross-references, no deep links), and seven of the nine sections already
+ * carry an icon as their visual anchor.
+ */
 function Section({
   label,
-  numeral,
+  id,
   meta,
   icon,
   children,
 }: {
   label: string;
-  numeral: string;
+  /** Optional anchor target, e.g. `setup-fields` for the post-install
+   *  "complete setup" link. */
+  id?: string;
   meta?: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <section>
+    <section {...(id ? { id } : {})}>
       <header className="mb-4 flex items-center gap-3 border-b border-[color:var(--divider)] pb-2">
-        <span className="font-mono-num text-[12px] font-semibold text-[color:var(--accent)]">
-          {numeral}
-        </span>
         <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-[color:var(--fg-muted)]">
           {icon}
           {label}
@@ -487,8 +562,10 @@ function Section({
 
 function SecretRow({
   field,
+  locale,
 }: {
   field: PluginSetupField;
+  locale: string;
 }): React.ReactElement {
   return (
     <div className="flex items-baseline gap-4 py-3">
@@ -496,7 +573,9 @@ function SecretRow({
         {field.key}
       </span>
       <span className="min-w-0 flex-1 text-sm text-[color:var(--muted-ink)]">
-        {field.label}
+        {/* #602 (OM-17) — label is a localized map; resolve at the active
+            locale, fall back to the field key. */}
+        {pickLocalized(field.label, locale) ?? field.key}
       </span>
       <Chip tone={field.type === 'secret' ? 'accent' : 'muted'}>
         {field.type}
@@ -567,7 +646,15 @@ async function PermissionsBlock({
     });
   }
 
-  if (active.length === 0 && flags.length === 0) {
+  // Epic #470 C4 / H1 — the plugin asks to serve these URL prefixes with NO
+  // operator session. Deliberately NOT a chip in the group list above: it is
+  // the single most consequential thing a plugin can request, and burying it
+  // among "memory reads" chips would be the wrong visual weight. Rendered as
+  // its own labelled block, and the copy says plainly that declaring is not
+  // granting.
+  const publicPaths = perms.public_paths ?? [];
+
+  if (active.length === 0 && flags.length === 0 && publicPaths.length === 0) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
         {t('none')}
@@ -577,6 +664,30 @@ async function PermissionsBlock({
 
   return (
     <div className="space-y-4">
+      {publicPaths.length > 0 ? (
+        <div
+          className="rounded-md border border-[color:var(--oxblood)] p-3"
+          data-testid="public-paths-consent"
+        >
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--oxblood)]">
+            <ShieldAlert className="size-3.5" aria-hidden />
+            {t('publicPathsTitle')}
+          </div>
+          <p className="mt-2 text-sm text-[color:var(--muted-ink)]">
+            {t('publicPathsBody')}
+          </p>
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {publicPaths.map((path) => (
+              <Chip key={path} tone="mono">
+                {path}
+              </Chip>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
+            {t('publicPathsNotGranted')}
+          </p>
+        </div>
+      ) : null}
       {flags.length > 0 ? (
         <div>
           <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">

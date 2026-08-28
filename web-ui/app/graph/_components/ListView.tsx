@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import type {
@@ -56,12 +57,19 @@ function TurnCard({
   runState: RunTraceView | 'loading' | 'missing' | undefined;
   onLoadRun: () => void;
 }): React.ReactElement {
+  // #679 / I3 — this component carried three GERMAN literals, which is the
+  // rule in `web-ui/CLAUDE.md` violated twice over: hardcoded, and hardcoded in
+  // the language that is supposed to live only in `messages/de.json`. An
+  // English operator read German here.
+  const t = useTranslations('graph.listView');
   const [open, setOpen] = useState(false);
   const time = String(turn.props['time'] ?? '')
     .replace('T', ' ')
     .slice(0, 19);
   const user = String(turn.props['userMessage'] ?? '');
-  const tools = turn.props['toolCalls'];
+  // `props` is untyped JSON; coerce once and render only when it really is a
+  // number, rather than stringifying whatever came back.
+  const toolCount = Number(turn.props['toolCalls']);
 
   const toggle = (): void => {
     const next = !open;
@@ -73,14 +81,16 @@ function TurnCard({
     <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4 text-sm shadow-sm">
       <div className="mb-2 flex items-center gap-3 text-[11px] text-[color:var(--fg-muted)]">
         <span className="font-mono">{time}</span>
-        {tools !== undefined && <span>tools={String(tools)}</span>}
+        {Number.isFinite(toolCount) && (
+          <span>{t('toolsLabel', { count: toolCount })}</span>
+        )}
         <Button
           variant="secondary"
           size="sm"
           onClick={toggle}
           className="ml-auto px-2 py-0.5 font-mono"
         >
-          {open ? '▾' : '▸'} Run-Trace
+          {open ? '▾' : '▸'} {t('runTrace')}
         </Button>
       </div>
       <div className="mb-2 whitespace-pre-wrap text-[color:var(--fg)]">
@@ -89,6 +99,7 @@ function TurnCard({
       {entities.length > 0 ? (
         <div className="flex flex-wrap gap-1">
           {entities.map((e) => (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke entity pill (per-type accent/success ring), no §4.2 variant
             <button
               key={e.id}
               type="button"
@@ -107,17 +118,19 @@ function TurnCard({
         </div>
       ) : (
         <div className="text-[11px] text-[color:var(--fg-subtle)]">
-          keine Entities in diesem Turn
+          {t('noEntities')}
         </div>
       )}
       {open && (
         <div className="mt-3 border-t border-[color:var(--border)] pt-3">
           {runState === 'loading' && (
-            <div className="text-[11px] text-[color:var(--fg-muted)]">lade Run…</div>
+            <div className="text-[11px] text-[color:var(--fg-muted)]">
+              {t('loadingRun')}
+            </div>
           )}
           {runState === 'missing' && (
             <div className="text-[11px] text-[color:var(--fg-muted)]">
-              keine Run-Trace erfasst
+              {t('noRunTrace')}
             </div>
           )}
           {runState && runState !== 'loading' && runState !== 'missing' && (
@@ -136,6 +149,7 @@ function RunTracePanel({
   run: RunTraceView;
   onEntityClick: (id: string) => void;
 }): React.ReactElement {
+  const t = useTranslations('graph.listView');
   const status = String(run.run.props['status'] ?? 'unknown');
   const duration = Number(run.run.props['durationMs'] ?? 0);
   const iterations = Number(run.run.props['iterations'] ?? 0);
@@ -147,11 +161,11 @@ function RunTracePanel({
         <StatusPill status={status} />
         <span>{formatMs(duration)}</span>
         <span>·</span>
-        <span>{iterations} iter</span>
+        <span>{t('iterations', { count: iterations })}</span>
         {user && (
           <>
             <span>·</span>
-            <span title={`User: ${user}`}>👤 {user.slice(0, 16)}</span>
+            <span title={t('userTooltip', { user })}>👤 {user.slice(0, 16)}</span>
           </>
         )}
       </div>
@@ -159,7 +173,7 @@ function RunTracePanel({
       {run.orchestratorToolCalls.length > 0 && (
         <div className="flex flex-col gap-1 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)] p-2">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-subtle)]">
-            Orchestrator-Tools
+            {t('orchestratorTools')}
           </div>
           {run.orchestratorToolCalls.map((tc) => (
             <ToolCallRow
@@ -191,11 +205,12 @@ function RunTracePanel({
               <span className="font-semibold">🤖 {agentName}</span>
               <span className="text-[color:var(--fg-muted)]">{formatMs(invDur)}</span>
               <span className="text-[color:var(--fg-muted)]">·</span>
-              <span className="text-[color:var(--fg-muted)]">{subIter} iter</span>
+              <span className="text-[color:var(--fg-muted)]">
+                {t('iterations', { count: subIter })}
+              </span>
               <span className="text-[color:var(--fg-muted)]">·</span>
               <span className="text-[color:var(--fg-muted)]">
-                {inv.toolCalls.length} tool-call
-                {inv.toolCalls.length === 1 ? '' : 's'}
+                {t('toolCalls', { count: inv.toolCalls.length })}
               </span>
             </div>
             {inv.toolCalls.length > 0 && (
@@ -216,7 +231,7 @@ function RunTracePanel({
       {run.orchestratorToolCalls.length === 0 &&
         run.agentInvocations.length === 0 && (
           <div className="text-[11px] italic text-[color:var(--fg-subtle)]">
-            Run ohne Tool-Calls (reine Textantwort)
+            {t('noToolCalls')}
           </div>
         )}
     </div>
@@ -247,6 +262,7 @@ function ToolCallRow({
         <span className="flex flex-wrap items-center gap-1">
           <span className="text-[color:var(--fg-subtle)]">↳</span>
           {tc.producedEntities.map((e) => (
+            // eslint-disable-next-line no-restricted-syntax -- bespoke success-tinted entity pill, no §4.2 variant
             <button
               key={e.id}
               type="button"

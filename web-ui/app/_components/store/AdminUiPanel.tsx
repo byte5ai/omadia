@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { Globe } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
 
@@ -44,6 +45,7 @@ function useAdminUi(): AdminUiCtx {
 export function AdminUiToggle(): React.ReactElement {
   const { open, toggle, panelId } = useAdminUi();
   return (
+    // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector (aria-expanded, open/closed variants)
     <button
       type="button"
       onClick={toggle}
@@ -79,6 +81,7 @@ export function AdminUiArticleSwap({
   pluginName: string;
   children: React.ReactNode;
 }): React.ReactElement {
+  const t = useTranslations('store.adminUi');
   const { open, panelId } = useAdminUi();
   const ref = useRef<HTMLElement | null>(null);
 
@@ -107,7 +110,7 @@ export function AdminUiArticleSwap({
       </header>
       <iframe
         src={iframeSrc}
-        title={`${pluginName} Admin UI`}
+        title={t('iframeTitle', { plugin: pluginName })}
         className="h-[1000px] w-full rounded border border-[color:var(--rule)] bg-[color:var(--bg)]"
         loading="lazy"
       />

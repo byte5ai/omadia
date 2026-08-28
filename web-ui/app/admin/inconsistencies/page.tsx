@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import Link from 'next/link';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -43,6 +43,7 @@ const SEVERITY_RANK: Record<InconsistencySeverity, number> = {
 
 export default function InconsistenciesListPage(): React.ReactElement {
   const t = useTranslations('adminInconsistencies.list');
+  const format = useFormatter();
   const [statusFilter, setStatusFilter] = useState<InconsistencyStatus | 'all'>(
     'open',
   );
@@ -300,6 +301,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
 
       <div className="mb-4 flex flex-wrap gap-2">
         {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+          // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
           <button
             key={s}
             type="button"
@@ -366,7 +368,7 @@ export default function InconsistenciesListPage(): React.ReactElement {
                     className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={inc.props.created_at}
                   >
-                    {new Date(inc.props.created_at).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(inc.props.created_at))}
                   </time>
                 </div>
                 <p className="text-sm text-[color:var(--fg-strong)]">

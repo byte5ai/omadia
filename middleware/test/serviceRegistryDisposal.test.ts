@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { Router } from 'express';
 
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
-import { PluginRouteRegistry } from '../src/platform/pluginRouteRegistry.js';
+import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 import { UiRouteCatalog } from '../src/platform/uiRouteCatalog.js';
 import { createPluginContext } from '../src/platform/pluginContext.js';
 import type { CreatePluginContextOptions } from '../src/platform/pluginContext.js';
@@ -151,7 +151,7 @@ describe('PluginContext — service ownership comes from the kernel', () => {
 describe('ToolPluginRuntime.deactivate — service disposal', () => {
   function makeRuntime(serviceRegistry: ServiceRegistry): ToolPluginRuntime {
     const deps = {
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
       jobScheduler: { stopForPlugin: (): void => {} },
@@ -165,14 +165,14 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
     const runtime = makeRuntime(serviceRegistry);
 
     // The leak: the plugin's close() never calls this handle.
-    serviceRegistry.provide('devPlatform', { impl: 1 }, '@plugin/dev');
+    serviceRegistry.provide('examplePlugin', { impl: 1 }, '@plugin/dev');
     seedActive(runtime, '@plugin/dev');
 
-    assert.equal(serviceRegistry.has('devPlatform'), true, 'precondition');
+    assert.equal(serviceRegistry.has('examplePlugin'), true, 'precondition');
 
     await runtime.deactivate('@plugin/dev');
 
-    assert.equal(serviceRegistry.has('devPlatform'), false);
+    assert.equal(serviceRegistry.has('examplePlugin'), false);
   });
 
   it('leaves another plugin\'s services and core\'s own registrations alone', async () => {
@@ -198,7 +198,7 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
     // reasoning as the route disposal.
     const serviceRegistry = new ServiceRegistry();
     const runtime = makeRuntime(serviceRegistry);
-    serviceRegistry.provide('devPlatform', { impl: 1 }, '@plugin/slow');
+    serviceRegistry.provide('examplePlugin', { impl: 1 }, '@plugin/slow');
 
     let stillRegisteredWhenCloseRan: boolean | undefined;
     (runtime as unknown as { active: Map<string, unknown> }).active.set(
@@ -209,7 +209,7 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
         handle: {
           close: (): Promise<void> => {
             stillRegisteredWhenCloseRan =
-              serviceRegistry.has('devPlatform');
+              serviceRegistry.has('examplePlugin');
             return Promise.resolve();
           },
         },
@@ -247,7 +247,7 @@ describe('DynamicAgentRuntime.deactivate — service disposal', () => {
     const serviceRegistry = new ServiceRegistry();
     const deps = {
       serviceRegistry,
-      pluginRouteRegistry: new PluginRouteRegistry(),
+      pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
@@ -281,7 +281,7 @@ describe('DynamicAgentRuntime.deactivate — service disposal', () => {
 
 describe('PluginRouteRegistry — unchanged behaviour alongside the new call', () => {
   it('still disposes routers by source', async () => {
-    const routes = new PluginRouteRegistry();
+    const routes = newTestRouteRegistry();
     const serviceRegistry = new ServiceRegistry();
     const deps = {
       pluginRouteRegistry: routes,
@@ -292,7 +292,7 @@ describe('PluginRouteRegistry — unchanged behaviour alongside the new call', (
     } as unknown as ToolPluginRuntimeDeps;
     const runtime = new ToolPluginRuntime(deps);
 
-    routes.register('/api/v1/dev-runner', Router(), '@plugin/dev');
+    routes.register('/api/v1/example-plugin', Router(), '@plugin/dev');
     seedActive(runtime, '@plugin/dev');
 
     await runtime.deactivate('@plugin/dev');

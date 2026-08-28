@@ -4,14 +4,22 @@ import type {
   ChatStreamEvent,
   ChannelSocketHandler,
   ChannelUserRef,
+  ConversationMembershipEvent,
+  ConversationRosterProvider,
+  ConversationSendProvider,
   CoreApi,
   HttpMethod,
   IncomingTurn,
   LogLevel,
   PlatformIdentity,
+  TargetedSendProvider,
 } from '@omadia/channel-sdk';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
 import type { WebSocketRegistry } from './webSocketRegistry.js';
+import type { ConversationRosterRegistry } from './rosterRegistry.js';
+import type { ConversationEventHub } from './conversationEventHub.js';
+import type { TargetedSendRegistry } from './targetedSendRegistry.js';
+import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 
 /**
  * Orchestrator adapter the CoreApi delegates to. Intentionally narrow — we
@@ -59,6 +67,16 @@ export interface CreateCoreApiOptions {
    * channels feature-detect and non-WS wirings stay untouched.
    */
   webSockets?: WebSocketRegistry;
+  /**
+   * #330 B1 — optional group-conversation registries. Each follows the
+   * `webSockets` pattern: when absent, the corresponding CoreApi method is
+   * simply not defined, so old plugins and non-group wirings stay untouched.
+   */
+  rosterRegistry?: ConversationRosterRegistry;
+  targetedSends?: TargetedSendRegistry;
+  conversationEvents?: ConversationEventHub;
+  /** #330 C3b — conversation-addressed proactive send (group nudges). */
+  conversationSends?: ConversationSendRegistry;
   log?: (level: LogLevel, message: string, context?: Record<string, unknown>) => void;
 }
 
@@ -135,6 +153,33 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       handler: ChannelSocketHandler,
     ): void => {
       webSockets.register(channelId, path, handler);
+    };
+  }
+
+  // #330 B1 — optional group-conversation capabilities, defined only when the
+  // kernel wired the matching registry (the registerWebSocket pattern).
+  if (opts.rosterRegistry) {
+    const rosters = opts.rosterRegistry;
+    api.registerRosterProvider = (channelId: string, provider: ConversationRosterProvider): void => {
+      rosters.register(channelId, provider);
+    };
+  }
+  if (opts.targetedSends) {
+    const targetedSends = opts.targetedSends;
+    api.registerTargetedSendProvider = (channelId: string, provider: TargetedSendProvider): void => {
+      targetedSends.register(channelId, provider);
+    };
+  }
+  if (opts.conversationEvents) {
+    const conversationEvents = opts.conversationEvents;
+    api.emitConversationEvent = (event: ConversationMembershipEvent): void => {
+      conversationEvents.emit(event);
+    };
+  }
+  if (opts.conversationSends) {
+    const conversationSends = opts.conversationSends;
+    api.registerConversationSendProvider = (channelId: string, provider: ConversationSendProvider): void => {
+      conversationSends.register(channelId, provider);
     };
   }
 

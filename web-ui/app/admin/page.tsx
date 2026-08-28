@@ -29,7 +29,7 @@ type CardDef = {
    * Marks a card as belonging to an optional feature: it renders only when
    * *this specific* plugin has contributed a nav entry for this href. Keeps
    * the grid honest about what is actually installed instead of linking to
-   * a page that would answer 403 — see specs/470-dev-platform-plugin.
+   * a page that would answer 403 — see the epic #470 spec set.
    *
    * Matching on the contributing plugin id, not just the href, so an
    * unrelated plugin cannot resurrect a core card by claiming the path.
@@ -47,6 +47,8 @@ const GROUPS: readonly GroupDef[] = [
       // with LLM access. The former standalone "General" group (Configuration +
       // Usage) is gone — provider keys are now entered inline on LLM access.
       { href: '/admin/usage', key: 'usage' },
+      // #584 WS T — live transcription@1 provider switch + consent surface.
+      { href: '/admin/transcription-provider', key: 'transcriptionProvider' },
     ],
   },
   {
@@ -54,6 +56,8 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/kg-lifecycle', key: 'kgLifecycle' },
       { href: '/admin/kg-priorities', key: 'kgPriorities' },
+      // #532 — the admin half of #430's CSV dataset pipeline.
+      { href: '/admin/datasets', key: 'datasets' },
       { href: '/admin/bulk-promote', key: 'bulkPromote' },
       { href: '/admin/inconsistencies', key: 'inconsistencies' },
       { href: '/admin/memory-backend', key: 'memoryBackend' },
@@ -67,14 +71,6 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/domains', key: 'domains' },
       { href: '/admin/registries', key: 'registries' },
       { href: '/admin/mcp', key: 'mcp' },
-      // Dev platform (epic #470) — isolated per-job code runners. Optional:
-      // shown only while the feature is enabled and contributing its nav
-      // entry, so the grid matches the menu.
-      {
-        href: '/admin/dev-platform',
-        key: 'devPlatform',
-        requiresNavFrom: 'core:dev-platform',
-      },
       // Conductor generic webhooks (issue #437) — inbound endpoints + outbound subscriptions.
       { href: '/admin/webhooks', key: 'webhooks' },
     ],
@@ -84,7 +80,15 @@ const GROUPS: readonly GroupDef[] = [
     cards: [
       { href: '/admin/auth', key: 'auth' },
       { href: '/admin/users', key: 'users' },
+      { href: '/admin/api-keys', key: 'apiKeys' },
     ],
+  },
+  {
+    key: 'system',
+    // Rolling self-update (#432). Always shown: even without the opt-in
+    // updater overlay the page is the honest answer to "what version am I
+    // running, and is there a newer one".
+    cards: [{ href: '/admin/update', key: 'update' }],
   },
   {
     key: 'danger',

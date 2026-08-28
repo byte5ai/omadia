@@ -197,6 +197,105 @@ the connection. A subscription URL is also checked at creation time
 (`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
 than only discovering the block on the first delivery attempt.
 
+## 7b. Tamper-evident receipt chain (#758)
+
+The per-turn receipt record (`turn_receipts`, #757) is hash-chained: each
+row's `entry_hash` covers its canonical payload plus the previous row's
+hash, appends serialized through a locked stream head. Editing a row breaks
+the copy of its hash stored in the next row — the chain visibly breaks for
+every later entry. Periodic Ed25519 checkpoints sign the head with a key
+held **only** in env/secret-manager (`AUDIT_SIGNING_KEY`) — never in
+Postgres, or the DB admin the chain defends against could re-sign a
+rewritten chain — optionally anchored to an external append-only file
+(`AUDIT_ANCHOR_PATH`) for WORM storage. Threat model: **detection, not
+prevention** — wholesale destruction shows as sequence gaps and orphaned
+checkpoints; per-row timestamps are anchored by checkpoint cadence, not
+per-row. UPDATE on the table is trigger-forbidden as defence in depth;
+DELETE stays legal for bounded retention. The operator verify surface
+(endpoint, signed export, offline verifier) is #761.
+
+One consequence to state explicitly: because `created_at` sits outside the
+hash and DELETE is legal, an admin who drops the trigger could backdate
+`created_at` and let the reaper delete a row early — presenting the gap as
+legal retention. The mitigation shipped with #761, in the sound direction:
+a signature-valid checkpoint at seq S signed at time T proves every row
+ABOVE S was created after T, so when the youngest reaped row sits above a
+checkpoint younger than the retention window, the verifier flags
+`premature_deletion` — a laundering finding, not retention. (The naive
+inverse — "a checkpoint covering the row bounds its age" — is deliberately
+NOT used: it only upper-bounds creation time and would flag legitimately
+old rows on installs that enabled signing late.) Two structural guards
+accompany it: the retention reaper deletes chained rows only up to the
+greatest checkpointed seq, so a surviving suffix always has a signed
+anchor; and the verifier consults the recorded stream head, so a wiped or
+tail-truncated table can never report green (`empty_chain_with_history`,
+`head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
+verify`, signed export + zero-dependency offline verifier — see
+`docs/provenance-verification.md`.
+
+## 7a. Conductor approvals: strict semantics, cancellation, and the baton audit (#759)
+
+Three properties of the human-approval gate are security decisions, made
+explicit here so a deployment can reason about them:
+
+- **Approval polarity is fail-open by default, opt-in strict per step.** The
+  historical contract (kept for compatibility): only an explicit
+  `{approved:false}` counts as a rejection — an absent or malformed response
+  advances the run as approved. Any human step that gates an irreversible
+  action should set `human.strictApproval: true` (designer checkbox), which
+  inverts the polarity: only an explicit `{approved:true}` approves. The
+  validator flags the dangerous default (`approval_fail_open` warning) when a
+  non-strict human step directly gates an action step; it also flags a
+  deadline fallback that lands on a normal outgoing path
+  (`timeout_equals_approval`) — if that shared path is the approval path, a
+  timeout silently approves.
+- **Run cancellation is an operator surface, not a bypass.** Cancel never
+  skips a gate — it terminates the run. A waiting run's open awaits close as
+  `'cancelled'`; a running run stops at the next step boundary (mid-step
+  kills are not attempted, keeping the at-least-once effect window bounded to
+  one step). The cancel flag columns are deliberately never cleared: they are
+  the load-bearing backstop for every cancel race. Run-ended webhook
+  notifications are at-least-once — in the narrow expire-vs-cancel race a
+  subscriber can see the event twice.
+- **Who may approve is decided by role batons — and every baton move is
+  audited.** Any authenticated operator can assign any role holder, including
+  themselves; in the current single-role system ('admin' until roles split,
+  `src/auth/sessionJwt.ts`) a permission gate on that route would gate
+  nothing, so the control with teeth is the audit trail: every add/remove
+  lands in `admin_audit` as `conductor.role_holders_change` with actor,
+  role, and the resulting holder set.
+  <!-- TODO(roles-split): when user roles split beyond 'admin', add a
+       permission gate on POST/DELETE /roles/:key/holders (four-eyes or
+       admin-only) — the audit trail alone stops being sufficient the moment
+       non-admin operators exist. -->
+- **Role batons now also decide who RECEIVES targeted reports (#330 B3).**
+  The `targetedSend` kernel service resolves `role:<key>` addressees through
+  the SAME holder registry the executor uses for approvals (one instance,
+  exposed from `wireConductor` — "who may approve" and "who gets the report"
+  cannot drift). That widens the blast radius of the unaudited-but-logged
+  self-assignment above: assigning yourself a role means receiving every
+  report addressed to it. The compensating controls are the same baton audit
+  trail plus the delivery report itself (holders, `partial`, per-holder
+  outcomes are all named — no silent recipient). Principal resolution is
+  kernel-only by construction: channel plugins receive one already-resolved
+  user per delivery and can neither enumerate nor widen a role. The
+  `targetedSend` / `conversationRosters` / `conversationEvents` services are
+  deny-by-default like every kernel service, and `conversationEvents` is
+  published subscribe-only — emitting membership events (e.g. the
+  Facilitator's `bot_added` handshake trigger) stays a channel-adapter
+  privilege on the CoreApi, so a granted agent plugin cannot spoof an
+  invitation.
+- **Proactive group posting is conversation-scoped (#330 C3b).** The
+  `conversationSend` service (deny-by-default) lets a granted agent plugin
+  post INTO a group — but only into conversations the calling agent holds an
+  ephemeral attachment for (its own auto-bound facilitation, the same rows
+  the reaper disposes of). Everything else — foreign conversations, guessed
+  thread ids, operator-bound chats — is a named `not_permitted` outcome, and
+  without a database the scope authority is absent and the service **fails
+  closed**. The channel-side provider registries enforce first-registrant
+  ownership per channel type, so a second plugin can neither hijack the
+  delivery path nor speak through another channel's identity.
+
 ## 8. What lives in the vault
 
 At a minimum, your deployment vault holds:
@@ -393,7 +492,85 @@ entry meaningful.
 Telegram, Omadia UI) — no second, parallel response path — so
 privacy-guard's prompt masking and receipt behavior apply identically.
 
-## 10. Reviewer checklist
+**Operator deny-lists and the miss-report queue (#760).** Operators can add
+literal terms and vetted regex patterns (`custom_terms` / `custom_patterns`
+on the privacy plugin) to the masking layer; operator regexes are vetted at
+config time (syntax + escalating pathological probes over letters, digits,
+mixed and unicode input) AND bounded at runtime — a pattern that blows its
+per-turn budget throws, which the service converts into a BLOCKED turn
+(fail-closed; no auto-disable, because skipping the pattern on later turns
+would be fail-open for exactly the values it protects). Values a detector
+missed have a human path back: `privacy_miss_reports` stores the reported
+term **as the reporter typed it** — a deliberate act on an auth-gated
+operator surface, disclosed in the intake UI, and exactly what the reviewer
+needs to build the deny-list rule.
+
+## 10. Operator surfaces vs. dev endpoints (`/api/dev`, issue #669)
+
+Everything under `/api` is gated by one line in `middleware/src/index.ts`:
+
+```ts
+app.use('/api', requireAuth, createChatRouter({ … }));   // OB-106
+```
+
+It runs for **every** `/api/*` request, whichever router ultimately answers it.
+The only way past it is an entry in `middleware/src/auth/publicPaths.ts`, and
+every entry there is a surface that is unauthenticated until its own handler
+says otherwise.
+
+`/api/dev/*` used to hold such an entry, added whenever
+`DEV_ENDPOINTS_ENABLED=true`. That made a single boolean the difference between
+"operator only" and "anyone who knows the path" for:
+
+- `GET /api/dev/graph/*` — raw knowledge-graph browsing (sessions, turns,
+  neighbours, memories, plans)
+- `/api/dev/memory/*` — the memory-store browser contributed by the memory plugin
+- three `POST` routes that **triggered destructive knowledge-graph maintenance
+  sweeps** (decay/rotation, GC eviction, access flush)
+
+Confirmed empirically against a deployment under our control: uncredentialed
+`GET`s returned `200` with real payloads.
+
+**What holds now:**
+
+1. There is no `/api/dev` entry in `publicPaths`, and `publicPaths()` takes no
+   configuration — there is nothing left to flip. Every `/api/dev/*` request
+   needs an operator session, exactly like `/api/v1/admin/*`.
+2. The **operator** surfaces were never dev scaffolding and no longer live
+   behind the flag. They mount unconditionally under the authenticated admin
+   prefix (`middleware/src/routes/graphRouterMounts.ts`):
+
+   | Surface | Path | Mounted when |
+   |---|---|---|
+   | KG lifecycle admin | `/api/v1/admin/kg-lifecycle` | `graphLifecycle@1` is published |
+   | KG per-agent priorities | `/api/v1/admin/kg-priorities` | `agentPriorities@1` is published |
+   | Plugin domains (read-only) | `/api/admin/domains` | always |
+
+   `DEV_ENDPOINTS_ENABLED` is not an input to `mountKnowledgeGraphAdmin` — its
+   deps type has no field to carry it, so the separation is a type, not a
+   convention.
+3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
+   refuses any `/api/dev` request that did not arrive over a loopback socket.
+   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — `trust proxy`
+   is on, so a guard on `req.ip` would be defeated by a header. Leave it off in
+   containerised setups, where the Next.js server proxies from a container
+   address.
+
+**Operating guidance.** `DEV_ENDPOINTS_ENABLED` is dev scaffolding: leave it off
+on deployed environments. It is no longer a security boundary on its own — but
+it is still extra attack surface, and on any middleware build **older than this
+change** it is unsafe on any internet-reachable deployment, with no mitigation
+short of turning it off or blocking `/api/dev` upstream.
+
+Tests: `middleware/test/devEndpoints/` (one no-credentials case per route,
+including all three destructive `POST`s, plus the negative control that
+restores the old allowlist entry and requires the surface to go open again).
+`bash middleware/test/devEndpoints/mutation-check.sh` breaks each guard in
+source and requires the suite to go red.
+
+---
+
+## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
 
@@ -405,7 +582,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
+      itself, and then only the narrowest regex covering that one route (§10).
+- [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
+      operator routers belong under `/api/v1/admin/*` (§10).
 
 ---
 
-*Last reviewed: 2026-05.*
+*Last reviewed: 2026-08 (§10 added with issue #669).*

@@ -96,6 +96,7 @@ export class ChannelDirectoryRegistry {
             key: entry.key,
             label: entry.label,
             ...(entry.hint !== undefined ? { hint: entry.hint } : {}),
+            ...sanitizedMemberFields(entry),
           });
         }
       } catch (err) {
@@ -121,4 +122,35 @@ export class ChannelDirectoryRegistry {
 export interface EnrichedChannelKey extends ChannelKeyEntry {
   readonly channelType: string;
   readonly originPluginId: string;
+}
+
+// Boundary caps for plugin-provided member data. Plugins are asked to cap
+// at 8 themselves (SDK doc); the kernel enforces a hard ceiling so a
+// misbehaving plugin cannot flood the operator API payload / dashboard DOM.
+const MAX_MEMBERS = 16;
+const MAX_MEMBER_NAME_LENGTH = 120;
+
+function sanitizedMemberFields(
+  entry: ChannelKeyEntry,
+): Pick<EnrichedChannelKey, 'members' | 'memberCount'> {
+  const members = Array.isArray(entry.members)
+    ? entry.members
+        .filter((m): m is string => typeof m === 'string' && m.length > 0)
+        .slice(0, MAX_MEMBERS)
+        .map((m) =>
+          m.length > MAX_MEMBER_NAME_LENGTH
+            ? `${m.slice(0, MAX_MEMBER_NAME_LENGTH)}…`
+            : m,
+        )
+    : undefined;
+  const memberCount =
+    typeof entry.memberCount === 'number' &&
+    Number.isFinite(entry.memberCount) &&
+    entry.memberCount >= 0
+      ? Math.floor(entry.memberCount)
+      : undefined;
+  return {
+    ...(members !== undefined && members.length > 0 ? { members } : {}),
+    ...(memberCount !== undefined ? { memberCount } : {}),
+  };
 }

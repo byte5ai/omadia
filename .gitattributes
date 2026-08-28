@@ -6,3 +6,6 @@ docker-entrypoint.sh text eol=lf
 Dockerfile text eol=lf
 *.bash text eol=lf
 Makefile text eol=lf
+
+# Keep committed snapshots on LF
+*.snap text eol=lf

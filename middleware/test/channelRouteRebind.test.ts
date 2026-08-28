@@ -5,6 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import express, { type Express } from 'express';
 
 import { ExpressRouteRegistry } from '../src/channels/routeRegistry.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /** Regression coverage for #395: a plugin hot-reinstall must rebind the
  *  inbound handler in place, not serve the stale first-mounted route. */
@@ -21,8 +22,7 @@ describe('ExpressRouteRegistry · hot-reinstall handler rebind (#395)', () => {
     app = express();
     app.use(express.json());
     registry = new ExpressRouteRegistry(app);
-    server = app.listen(0);
-    await new Promise<void>((resolve) => server.once('listening', resolve));
+    server = await listenLoopback(app);
     const { port } = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${port}`;
   });

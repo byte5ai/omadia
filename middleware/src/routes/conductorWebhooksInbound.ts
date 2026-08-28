@@ -1,7 +1,7 @@
 /**
  * Issue #437 — inbound Conductor webhooks (`POST /api/hooks/:endpointId`).
  *
- * MOUNTING CONTRACT (mirrors `routes/devWebhooks.ts`): this router MUST be mounted
+ * MOUNTING CONTRACT (the same one every raw-body webhook router carries): this router MUST be mounted
  * BEFORE the global `app.use(express.json(...))`. HMAC verification needs the RAW
  * request bytes; once `express.json` has parsed and re-serialised the body, those
  * bytes are gone and every signature check fails. The router attaches its OWN
@@ -16,7 +16,7 @@
  * By the time a real request arrives the server has finished booting and the
  * accessor always resolves.
  *
- * ORDER OF OPERATIONS is security-critical, same as devWebhooks:
+ * ORDER OF OPERATIONS is security-critical:
  *   1. Verify the signature FIRST, before trusting anything about the endpoint.
  *      An unknown endpoint id and a known endpoint with a wrong signature answer
  *      byte-for-byte the same 401 — the acceptance criterion ("invalid secret

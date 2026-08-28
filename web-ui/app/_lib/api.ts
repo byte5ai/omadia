@@ -168,6 +168,25 @@ async function postJson<T>(
 }
 
 /**
+ * The middleware's machine-readable error code, pulled out of a JSON error
+ * body (`{ code, message }`). Returns `null` when the body is not JSON, has
+ * no `code`, or carries one that is not a non-empty string.
+ *
+ * Pure by construction: no module state is read or written, which is what
+ * keeps the constructor invariant documented below intact.
+ */
+function parseErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Deliberately does NOT feed the Create Issue diagnostics buffer (issue
  * #433 review). An earlier version called `recordApiErrorDiagnostic` from
  * this constructor, which made `ApiError` — used by every failed call
@@ -178,8 +197,18 @@ async function postJson<T>(
  * `unhandledrejection` events (see diagnosticsBuffer.ts) — page-level
  * crashes, not the outcome of a specific admin action. See
  * api.test.ts for the regression test enforcing this invariant.
+ *
+ * OM-09: the machine code is parsed here, once, so consumers can reach the
+ * localized catalogue in `errorHelp.ts` instead of each re-deriving it from
+ * `body` with their own `JSON.parse` — or, as several did, rendering the
+ * server's untranslated `message` as the headline. The parse is a pure
+ * string read into a readonly field and touches nothing outside the
+ * instance, so the no-side-effects invariant above still holds.
  */
 export class ApiError extends Error {
+  /** Machine-readable code from the JSON error body; `null` when absent. */
+  public readonly code: string | null;
+
   constructor(
     public readonly status: number,
     message: string,
@@ -187,7 +216,30 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = 'ApiError';
+    this.code = parseErrorCode(body);
   }
+}
+
+/**
+ * Asserts that a list endpoint really returned an array under `key`.
+ *
+ * A 200 response whose body is the wrong shape used to sail straight through
+ * into the page, where the first `.filter()` / `.map()` threw *outside* the
+ * try/catch that was supposed to protect the load — turning a bad payload into
+ * an unrecoverable render crash instead of the page's own error card.
+ * Throwing an ApiError here keeps the failure inside the caller's catch.
+ *
+ * Deliberately hand-rolled: web-ui has no schema-validation dependency and
+ * this file already hand-rolls ApiError / maybeNavigateToLogin / cookie
+ * forwarding. Applied only to the list endpoints whose pages dereference the
+ * array immediately — not retrofitted across every call site.
+ */
+function expectArray<T>(value: unknown, path: string, key: string): T[] {
+  if (Array.isArray(value)) return value as T[];
+  throw new ApiError(
+    200,
+    `GET ${path}: malformed body — "${key}" is not an array`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -284,19 +336,69 @@ export interface AdminProviderModel {
   vision: boolean;
 }
 
+/**
+ * Four-state credential verdict from the middleware (OM-02/03/04):
+ *  - `no_key`     nothing stored
+ *  - `unverified` a key is stored, but no probe has ever proved it works
+ *  - `verified`   a probe against the provider's API succeeded
+ *  - `invalid`    the provider rejected the key (401/403)
+ *
+ * Only `verified` may ever be presented as a working provider. `unverified` is
+ * the state that used to be rendered as a green "connected" badge while every
+ * request failed.
+ */
+export type ProviderCredentialStatus =
+  | 'no_key'
+  | 'unverified'
+  | 'verified'
+  | 'invalid';
+
 export interface AdminProvider {
   id: string;
   label: string;
-  /** True when an API key for this provider is present in the vault. */
+  /** Credential verdict. Prefer this over `connected` everywhere. */
+  status: ProviderCredentialStatus;
+  /** ISO timestamp of the last successful probe (`verified` only). */
+  verifiedAt?: string;
+  /** User-facing rejection reason (`invalid` only). */
+  verifyError?: string;
+  /** OM-09 — machine-readable counterpart to `verifyError`, resolved against
+   *  the localized `errorHelp` catalogue. Present only for `status: 'invalid'`;
+   *  absent on payloads from a pre-#604 middleware, where `verifyError` (an
+   *  English sentence) stays the only thing there is to show. */
+  verifyErrorCode?: string;
+  /** #671 — why the probe could NOT confirm the key (`unverified` only). A
+   *  code (`forbidden` | `non_json_response` | `unexpected_body` |
+   *  `http_error` | `network_error` | `no_probe`), resolved against
+   *  `providers.unverifiedReason.*`. Distinguishes a region/permission block
+   *  from a provider outage — both of which #599 correctly stopped reporting
+   *  as a bad key. Absent on pre-#671 middleware payloads. */
+  verifyReason?: string;
+  /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
+   *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
   requiresAvvDisclosure?: boolean;
+  /** Provider runs on a personal consumer subscription — no AVV/DPA can exist;
+   *  the assignment UI shows a dedicated warning (stronger than the ordinary
+   *  third-party disclosure). */
+  subscriptionNotice?: boolean;
   euHosted?: boolean;
   /** Tool-less Shape-2 CLI provider — cannot drive a tool loop, so the UI
    *  disables it for tool-dependent plugins. */
   toolLess?: boolean;
+  /** OM-11 — is the host capability this provider needs actually present?
+   *  For a CLI-backed provider this is "the binary exists on this server";
+   *  key-based providers need no binary and report `true`. The UI must not
+   *  offer "Anmelden" for a CLI that isn't there. Absent on payloads from a
+   *  pre-OM-11 middleware — treat `undefined` as installed. */
+  installed?: boolean;
+  /** #294 — the provider connects via an OAuth device flow ("Sign in with
+   *  ChatGPT"), so the UI renders a connect button + device-code modal instead
+   *  of a vault key field. Absent on pre-#294 middleware payloads. */
+  oauthConnect?: boolean;
   models: AdminProviderModel[];
 }
 
@@ -342,6 +444,66 @@ export async function assignProvider(
   return postJson<AssignProviderResponse>('/v1/admin/providers/assignment', body);
 }
 
+export interface ProviderVerification {
+  status: ProviderCredentialStatus;
+  verifiedAt?: string;
+  checkedAt?: string;
+  error?: string;
+}
+
+/** Force a live probe of a provider's stored key. This is the only providers
+ *  call that hits the vendor's API — the listing endpoint never does. */
+export async function verifyProvider(
+  providerId: string,
+): Promise<ProviderVerification> {
+  return postJson<ProviderVerification>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
+}
+
+// -----------------------------------------------------------------------------
+// #294 — "Sign in with ChatGPT" OAuth device flow. `start` returns a user code
+// the operator types at the verification URL; `poll` is called on `interval`
+// until it reports complete/expired.
+// -----------------------------------------------------------------------------
+
+export interface ProviderOAuthStart {
+  flowId: string;
+  userCode: string;
+  verificationUri: string;
+  interval: number;
+}
+
+export type ProviderOAuthPollStatus = 'pending' | 'complete' | 'expired' | 'error';
+
+export interface ProviderOAuthPoll {
+  status: ProviderOAuthPollStatus;
+}
+
+/** Begin the device flow for an OAuth provider (defaults to `openai-chatgpt`). */
+export async function startProviderOAuth(
+  provider: string,
+): Promise<ProviderOAuthStart> {
+  return postJson<ProviderOAuthStart>('/v1/admin/providers/oauth/start', { provider });
+}
+
+/** Poll a running device flow once. The server answers a stale/expired flow
+ *  with 404 `{status:'expired'}` and a backend error with 502 `{status:'error'}`;
+ *  both are terminal poll states, so map the thrown ApiError back to them
+ *  instead of surfacing a generic failure. */
+export async function pollProviderOAuth(flowId: string): Promise<ProviderOAuthPoll> {
+  try {
+    return await postJson<ProviderOAuthPoll>('/v1/admin/providers/oauth/poll', { flowId });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      if (err.status === 404) return { status: 'expired' };
+      if (err.status === 502) return { status: 'error' };
+    }
+    throw err;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
 // (Claude/Codex/Gemini) so an operator can run agents on a subscription instead
@@ -361,10 +523,13 @@ export interface CliBackendStatus {
   account?: string;
   billing: CliBillingPosture;
   detail: string;
+  installable: boolean;
+  installedVia?: 'runtime' | 'path';
 }
 
 export interface CliBackendsResponse {
   backends: CliBackendStatus[];
+  cliToolsDir: string;
   generatedAt: number;
 }
 
@@ -413,6 +578,31 @@ export async function cancelCliLogin(id: string): Promise<{ ok: boolean }> {
 /** Log the CLI out (clears the stored subscription session). */
 export async function cliLogout(id: string): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/logout`, {});
+}
+
+export type CliInstallState = 'idle' | 'running' | 'succeeded' | 'failed';
+
+export interface CliInstallStatus {
+  cliId: string;
+  status: CliInstallState;
+  code?: string;
+  error?: string;
+  logTail?: string;
+}
+
+/** Trigger the runtime install of a backend's CLI (202 = started, poll status). */
+export async function startCliInstall(id: string): Promise<{ status: string; alreadyInstalled?: boolean }> {
+  return postJson<{ status: string; alreadyInstalled?: boolean }>(
+    `/v1/admin/cli-backends/${encodeURIComponent(id)}/install`,
+    {},
+  );
+}
+
+/** Poll the state of a running (or finished) runtime install. */
+export async function getCliInstallStatus(id: string): Promise<CliInstallStatus> {
+  return getJson<CliInstallStatus>(
+    `/v1/admin/cli-backends/${encodeURIComponent(id)}/install/status`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -485,7 +675,16 @@ export async function listStorePlugins(
   if (query.search) params.set('search', query.search);
   if (query.category) params.set('category', query.category);
   const suffix = params.toString() ? `?${params.toString()}` : '';
-  return getJson<StoreListResponse>(`/v1/store/plugins${suffix}`);
+  const path = `/v1/store/plugins${suffix}`;
+  const resp = await getJson<StoreListResponse>(path);
+  return {
+    ...resp,
+    items: expectArray<StoreListResponse['items'][number]>(
+      resp?.items,
+      path,
+      'items',
+    ),
+  };
 }
 
 export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
@@ -508,10 +707,16 @@ export async function createInstallJob(
 export async function configureInstallJob(
   jobId: string,
   values: Record<string, unknown>,
+  /** #603 (OM-17) — raw json_file documents keyed by setup-field key. Parsed
+   *  SERVER-side (size cap, `expect` check, path extraction); the derived
+   *  values then run through the same validation as typed input. */
+  jsonFiles?: Record<string, string>,
 ): Promise<InstallConfigureResponse> {
   return postJson<InstallConfigureResponse>(
     `/v1/install/jobs/${encodeURIComponent(jobId)}/configure`,
-    { values },
+    jsonFiles && Object.keys(jsonFiles).length > 0
+      ? { values, json_files: jsonFiles }
+      : { values },
   );
 }
 
@@ -2233,6 +2438,119 @@ export async function setAuditMode(
 }
 
 // -----------------------------------------------------------------------------
+// Plugin grants — epic #470 C16 (#817)
+// -----------------------------------------------------------------------------
+
+/** `permissions.sql` as the manifest declares it. */
+export interface DeclaredSqlPermission {
+  ledger: string;
+  migrations?: string;
+  handoff?: string;
+}
+
+/** One thing the manifest asked for that the operator has not granted. */
+export type MissingGrant =
+  | { kind: 'sql'; ledger: string }
+  | { kind: 'public_path'; path: string };
+
+/**
+ * The whole consent question for one plugin: what the manifest asks for, what
+ * the operator answered, the install state that answer produced, and what is
+ * still outstanding.
+ *
+ * Mirrors `GrantsView` in `middleware/src/routes/runtimeGrants.ts`.
+ */
+export interface PluginGrantsView {
+  id: string;
+  declared: {
+    sql: DeclaredSqlPermission | null;
+    public_paths: string[];
+    optional_requires: string[];
+  };
+  granted: {
+    sql: boolean;
+    /** What is on record, which may be a ledger the manifest no longer
+     *  declares — "not granted" and "granted for a different table" are
+     *  different problems with different fixes. */
+    sql_ledger: string | null;
+    public_paths: string[];
+  };
+  state: 'active' | 'inactive' | 'errored';
+  missing: MissingGrant[];
+  orphaned_public_paths: string[];
+  last_activation_error: string | null;
+  last_activation_error_at: string | null;
+}
+
+function grantsUrl(pluginId: string): string {
+  return botApi(
+    `/v1/admin/runtime/installed/${encodeURIComponent(pluginId)}/grants`,
+  );
+}
+
+/** Read the consent state. Never mutates — safe to call on mount. */
+export async function getPluginGrants(
+  pluginId: string,
+): Promise<PluginGrantsView> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(grantsUrl(pluginId), {
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `GET installed/${pluginId}/grants failed: ${String(res.status)}`,
+      text,
+    );
+  }
+  return (await res.json()) as PluginGrantsView;
+}
+
+/**
+ * Record consent and re-activate the plugin.
+ *
+ * An ABSENT key leaves that grant alone; a PRESENT `public_paths` is the
+ * complete consented set, so omitting a prefix revokes it. Both rules are the
+ * server's — see `runtimeGrants.ts` — and are restated here because a caller
+ * that sends `{ public_paths: [] }` meaning "leave it alone" would revoke
+ * everything.
+ *
+ * The returned view carries the state the plugin is ACTUALLY in afterwards: a
+ * grant can be written successfully and the plugin still come back `errored`
+ * for an unrelated reason, and the caller must show that rather than assume the
+ * 200 meant "working".
+ */
+export async function setPluginGrants(
+  pluginId: string,
+  body: { sql?: boolean; public_paths?: string[] },
+): Promise<PluginGrantsView> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(grantsUrl(pluginId), {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      ...forwarded,
+    },
+    body: JSON.stringify(body),
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new ApiError(
+      res.status,
+      `PUT installed/${pluginId}/grants failed: ${String(res.status)}`,
+      text,
+    );
+  }
+  return (await res.json()) as PluginGrantsView;
+}
+
+// -----------------------------------------------------------------------------
 // Routines (operator dashboard)
 // -----------------------------------------------------------------------------
 
@@ -2306,7 +2624,16 @@ export interface RoutineResponse {
 }
 
 export async function listRoutines(): Promise<ListRoutinesResponse> {
-  return getJson<ListRoutinesResponse>('/v1/routines');
+  const resp = await getJson<ListRoutinesResponse>('/v1/routines');
+  const routines = expectArray<RoutineDto>(
+    resp?.routines,
+    '/v1/routines',
+    'routines',
+  );
+  return {
+    routines,
+    count: typeof resp?.count === 'number' ? resp.count : routines.length,
+  };
 }
 
 export async function setRoutineStatus(
@@ -3358,6 +3685,156 @@ export async function reclusterTopics(opts: {
 }
 
 // -----------------------------------------------------------------------------
+// Structured datasets (#430 / #532). Backed by /api/v1/datasets, gated by
+// `requireAuth` plus a per-route session-user ACL — the same shape as
+// /api/v1/memory above, so a dataset is only ever visible to its importer.
+//
+// The types mirror `DatasetSummary` / `DatasetColumnSchema` / `DatasetQueryResult`
+// in `@omadia/plugin-api` rather than importing them: web-ui does not depend on
+// the middleware workspace, so every backend shape it consumes is re-declared
+// here (same convention as `MemorableKnowledgeNode` above).
+// -----------------------------------------------------------------------------
+
+/** Inferred per-column type from the CSV import. No `unknown` catch-all — a
+ *  column with no confidently-typed values falls back to `'string'`. */
+export type DatasetColumnType = 'string' | 'number' | 'boolean' | 'date';
+
+export interface DatasetColumnSchema {
+  name: string;
+  type: DatasetColumnType;
+  /** First non-empty value seen for this column — schema preview only. */
+  sample?: string;
+}
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  sourceFileName: string;
+  ownerOmadiaUserId: string;
+  rowCount: number;
+  columns: DatasetColumnSchema[];
+  createdAt: string;
+}
+
+/**
+ * `GET /:id/rows` — the unaggregated branch of `queryDatasetRows`, so `rows`
+ * is always populated and `groups` / `aggregateValue` never are. `totalMatched`
+ * is the count BEFORE limit/offset, which is what lets the preview say
+ * "showing 25 of 4,213" instead of silently truncating.
+ */
+export interface DatasetRowsPage {
+  rows?: Array<Record<string, unknown>>;
+  totalMatched: number;
+}
+
+/**
+ * `POST /` — the import receipt. `privacyScan` is the count of cells the
+ * privacy pipeline looked at and masked; surfacing it is the point, since the
+ * REST upload runs the SAME scan as the chat-attachment auto-ingest path.
+ * `truncation` reports cells cut at the 4 000-char per-cell cap.
+ */
+export interface DatasetUploadResponse {
+  dataset: { datasetId: string; rowCount: number; graphNodeId: string };
+  privacyScan: { scannedCells: number; maskedCells: number };
+  truncation: { truncatedCellCount: number; truncatedColumns: string[] };
+}
+
+/**
+ * `GET /` — one page of the caller's datasets. `totalMatched` mirrors the
+ * rows endpoint (count before limit/offset); it is absent only when the
+ * middleware's graph implementation predates the optional `countDatasets`
+ * (#532 pagination follow-up to #430).
+ */
+export interface DatasetListPage {
+  items: DatasetSummary[];
+  totalMatched?: number;
+}
+
+export async function listDatasets(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetListPage> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  const res = await getJson<{ items: DatasetSummary[]; totalMatched?: number }>(
+    `/v1/datasets${suffix}`,
+  );
+  return {
+    items: expectArray<DatasetSummary>(res.items, '/v1/datasets', 'items'),
+    ...(typeof res.totalMatched === 'number'
+      ? { totalMatched: res.totalMatched }
+      : {}),
+  };
+}
+
+export async function getDataset(id: string): Promise<DatasetSummary> {
+  return getJson<DatasetSummary>(`/v1/datasets/${encodeURIComponent(id)}`);
+}
+
+export async function getDatasetRows(
+  id: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<DatasetRowsPage> {
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts.offset !== undefined) qs.set('offset', String(opts.offset));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return getJson<DatasetRowsPage>(
+    `/v1/datasets/${encodeURIComponent(id)}/rows${suffix}`,
+  );
+}
+
+export async function deleteDataset(id: string): Promise<void> {
+  const forwarded = await forwardCookieHeader();
+  const res = await fetch(botApi(`/v1/datasets/${encodeURIComponent(id)}`), {
+    method: 'DELETE',
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  if (res.status === 204) return;
+  const text = await res.text().catch(() => '');
+  maybeNavigateToLogin(res.status);
+  throw new ApiError(
+    res.status,
+    `DELETE datasets/${id} failed: ${res.status}`,
+    text,
+  );
+}
+
+/**
+ * Multipart CSV upload. Same contract as `uploadPackage` above — exactly one
+ * `file` field and NO manual content-type, so the browser writes the boundary.
+ * `name` is optional; the route falls back to the file name when it is absent
+ * or blank.
+ */
+export async function uploadDataset(
+  file: File,
+  name?: string,
+): Promise<DatasetUploadResponse> {
+  const forwarded = await forwardCookieHeader();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  if (name !== undefined && name.trim().length > 0) {
+    form.append('name', name.trim());
+  }
+  const res = await fetch(botApi('/v1/datasets'), {
+    method: 'POST',
+    body: form,
+    headers: { accept: 'application/json', ...forwarded },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `POST /v1/datasets failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as DatasetUploadResponse;
+}
+
+// -----------------------------------------------------------------------------
 // Chat session reset (2026-05-26).
 // -----------------------------------------------------------------------------
 
@@ -3391,10 +3868,31 @@ export async function resetChatSession(
 //   - DELETE /        → irreversible purge, gated by a confirm phrase
 //
 // Axis semantics: 'all' wipes both the agent-scratch (per-agent Turn store)
-// and the Knowledge-Graph. The scoped axes (agent/user/team/channel) only
-// touch the Knowledge-Graph — the agent-scratch is agent-scoped and is not
-// reachable by a user/team/channel selector. The backend surfaces that as a
-// `warning` on the response, which the UI renders verbatim.
+// and the Knowledge-Graph.
+//
+// Since the chat-context memory ACL (design #870 §7) the scoped axes reach the
+// agent-scratch too: `agent` additionally removes /memories/contexts/<slug>,
+// and `user`/`team`/`channel` delete /memories/contexts/<agent>/<axis>/<ctxKey>
+// across every agent. The old "scratch is agent-scoped" caveat therefore no
+// longer holds for those axes — the backend still surfaces whatever caveat
+// applies as a `warning` on the response, which the UI renders verbatim.
+//
+// Selector semantics for user/team/channel: the value MUST carry a channel-type
+// half. Two spellings are accepted, and the backend resolves both:
+//
+//   - the derived context key copied out of the memory browser
+//     (`teams~19-abc-thread-tacv2-a1b2c3d4e5f60718`), or
+//   - the channel type plus the platform's RAW native id
+//     (`teams~19:abc@thread.tacv2`), which is the form an operator can copy out
+//     of a chat client.
+//
+// A selector with NO `~` is rejected with `invalid_selector` (400) rather than
+// silently matching nothing: a Danger-Zone gesture that deletes nothing while
+// reporting success is the worst possible answer here. The two spellings are
+// NOT interchangeable through one derivation — `memoryContextKey` is
+// deliberately not idempotent on its own digest shape, since that would make a
+// hashed context pre-imageable — so the backend resolves both readings and
+// purges the union of the trees they actually name.
 // -----------------------------------------------------------------------------
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
@@ -3456,6 +3954,170 @@ export async function purgeMemory(body: {
     );
   }
   return JSON.parse(text) as MemoryPurgeResult;
+}
+
+// -----------------------------------------------------------------------------
+// Memory promote — the explicit, audited operator act that moves knowledge
+// across context tiers of ONE agent (design #870 §6). Never agent-crossing.
+//
+//   POST <base>/memory/promotions   copy|move a file/subtree upwards
+//   GET  <base>/memory/promotions   read the audit log
+//
+// `<base>` is the operator agent route this repo already exposes
+// (/api/v1/operator/agents/:slug) — the design sketch wrote
+// `/api/agents/:slug`, which is not a mount point that exists here. Kept in
+// ONE helper so the path is a single edit if the backend lands elsewhere.
+// -----------------------------------------------------------------------------
+
+export type MemoryContextAxis = 'team' | 'channel' | 'user';
+export type MemoryPromoteTier = 'agent' | 'team';
+export type MemoryPromoteMode = 'copy' | 'move';
+
+export interface MemoryPromoteRequest {
+  /** Source is always a context tier; `path` is relative to that tier root. */
+  source: { axis: MemoryContextAxis; ctxKey: string; path: string };
+  /** Target tier; `path` defaults to the source path server-side. */
+  target: { tier: MemoryPromoteTier; ctxKey?: string; path?: string };
+  mode: MemoryPromoteMode;
+  /** Mandatory in the UI — an unexplained promote is not auditable. */
+  reason: string;
+}
+
+/** One line of /memories/core/audit/memory-promotions.jsonl. */
+export interface MemoryPromotionReceipt {
+  ts: string;
+  agentSlug: string;
+  actor: string;
+  mode: MemoryPromoteMode;
+  sourcePath: string;
+  targetPath: string;
+  reason?: string;
+  bytes: number;
+}
+
+/** A context tree with its display name, when something could resolve one. */
+export interface MemoryContextLabel {
+  axis: MemoryContextAxis;
+  ctxKey: string;
+  displayName?: string;
+}
+
+/**
+ * The promotion endpoint, on the SAME prefix and gate as the Danger-Zone purge
+ * (`/api/v1/admin/memory/purge`, cookie session JWT). Promotion is the one way
+ * knowledge crosses a chat-context boundary, so it is a Danger-Zone-class
+ * operator action and shares that surface rather than introducing a third one.
+ */
+function memoryPromotionsPath(agentSlug: string): string {
+  return `/v1/admin/memory/promotions/${encodeURIComponent(agentSlug)}`;
+}
+
+/** Copy or move a memory file/subtree into a wider tier of the same agent. */
+export async function promoteMemory(
+  agentSlug: string,
+  req: MemoryPromoteRequest,
+): Promise<MemoryPromotionReceipt> {
+  const res = await postJson<{ receipt?: MemoryPromotionReceipt }>(
+    memoryPromotionsPath(agentSlug),
+    req,
+  );
+  // The route answers `{ receipt }`, not a bare receipt. `postJson` is an
+  // unchecked cast, so validate at the boundary: without this a shape change
+  // surfaces as a render-time TypeError on `receipt.targetPath` rather than as
+  // a handled error.
+  const receipt = res?.receipt;
+  if (!receipt || typeof receipt !== 'object') {
+    throw new Error('memory_promote_unexpected_response');
+  }
+  return receipt;
+}
+
+/** Read the promote audit log, newest first. */
+export async function listMemoryPromotions(
+  agentSlug: string,
+  opts: { limit?: number } = {},
+): Promise<{ entries: MemoryPromotionReceipt[] }> {
+  const qs =
+    opts.limit === undefined ? '' : `?limit=${encodeURIComponent(String(opts.limit))}`;
+  const res = await getJson<{ entries?: unknown }>(
+    `${memoryPromotionsPath(agentSlug)}${qs}`,
+  );
+  // Same reason as above, and the failure is worse here: `setEntries(undefined)`
+  // followed by `entries.length` throws during render and white-screens the
+  // whole /memory page, which the panel's own error state cannot catch.
+  return { entries: Array.isArray(res?.entries) ? (res.entries as MemoryPromotionReceipt[]) : [] };
+}
+
+/**
+ * Best-effort display names for an agent's context keys ("aufgelöste
+ * Display-Namen aus dem KG, wo vorhanden", design §6). A context key is a
+ * digest by construction, so it is unreadable on purpose — but the KG only
+ * knows a name for contexts it has actually seen. Callers MUST tolerate a
+ * rejection (404 while the resolver is not deployed, 403 for a non-operator)
+ * and fall back to the decoded key.
+ */
+export async function listMemoryContextLabels(
+  agentSlug: string,
+): Promise<{ contexts: MemoryContextLabel[] }> {
+  return getJson<{ contexts: MemoryContextLabel[] }>(
+    `/v1/operator/agents/${encodeURIComponent(agentSlug)}/memory/contexts`,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Operator memory-contexts browser (READ-ONLY). Backed by the operator router
+// at /api/v1/operator/memory/contexts, surfaced to the browser as
+// /bot-api/v1/operator/memory/contexts:
+//
+//   GET /list?path=/memories/contexts[/...]  → { path, entries: [...] }
+//   GET /file?path=/memories/contexts/...    → text/plain
+//
+// This REPLACES `/bot-api/dev/memory/{list,file}` for the memory browser. That
+// dev router is unauthenticated and only mounted when the memory plugin's
+// `dev_memory_endpoints_enabled` flag is truthy, which the kernel forbids in
+// production — so the browser it backed was dead exactly where an operator
+// needs it. The operator router is requireAuth-gated (cookie session JWT, the
+// same gate as the Danger-Zone purge) and is structurally unable to leave
+// `/memories/contexts`.
+//
+// The wire shape is byte-compatible with the dev router's, which is why the
+// page's `Entry`/`ListResponse` handling carries over unchanged and only the
+// URL moves. See middleware/src/routes/operatorMemoryContexts.ts.
+//
+// Deliberately NOT routed through `getJson`: that helper bounces the browser to
+// /login on 401, and this page must RENDER an unauthenticated state instead —
+// a memory browser that silently navigates away cannot tell an operator whether
+// the tree is empty or their session expired. The page therefore fetches these
+// URLs itself and maps the status codes into catalog strings.
+// -----------------------------------------------------------------------------
+
+/** One entry of an operator memory listing (identical to the dev router's). */
+export interface MemoryDirEntry {
+  virtualPath: string;
+  isDirectory: boolean;
+  sizeBytes: number;
+}
+
+/** Body of `GET /v1/operator/memory/contexts/list`. */
+export interface MemoryListResponse {
+  path: string;
+  entries: MemoryDirEntry[];
+}
+
+function operatorMemoryContextsUrl(verb: 'list' | 'file', path: string): string {
+  return botApi(
+    `/v1/operator/memory/contexts/${verb}?path=${encodeURIComponent(path)}`,
+  );
+}
+
+/** Absolute URL of the directory listing for `path`. */
+export function operatorMemoryContextsListUrl(path: string): string {
+  return operatorMemoryContextsUrl('list', path);
+}
+
+/** Absolute URL of the file content for `path`. */
+export function operatorMemoryContextsFileUrl(path: string): string {
+  return operatorMemoryContextsUrl('file', path);
 }
 
 // -----------------------------------------------------------------------------
@@ -3661,6 +4323,62 @@ export async function switchEmbeddingProvider(
   return postJson<SwitchEmbeddingProviderResult>(
     '/v1/admin/embedding-provider/switch',
     { pluginId, confirmDiscardVectors },
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Transcription provider (#584 WS T) — the lean sibling of the embedding
+// section above: /api/v1/admin/transcription-provider, surfaced to the browser
+// as /bot-api/v1/admin/transcription-provider. A transcription-provider switch
+// destroys nothing (no corpus, no gate), so there is no confirmation step.
+//   - GET  /       → installed providers, the active one, live-published state
+//   - POST /switch → deactivate current, activate target, verified rollback
+// -----------------------------------------------------------------------------
+
+export interface TranscriptionProviderOption {
+  pluginId: string;
+  label: string;
+  active: boolean;
+  registryStatus: 'active' | 'inactive' | 'errored' | null;
+}
+
+export interface TranscriptionProviderState {
+  providers: TranscriptionProviderOption[];
+  activeProviderId: string | null;
+  /** Is a `transcription@1` service actually published right now? False with
+   *  an active-but-unconfigured adapter (no API key in the vault). */
+  capabilityPublished: boolean;
+  /** Provider self-description (e.g. `openai:gpt-transcribe`), `null` while
+   *  nothing is published. */
+  activeProvider: string | null;
+}
+
+export interface SwitchTranscriptionProviderResult
+  extends TranscriptionProviderState {
+  ok: true;
+  switchedTo: string;
+}
+
+/** Read the current transcription-provider picture. Safe to poll. */
+export async function getTranscriptionProvider(): Promise<TranscriptionProviderState> {
+  return getJson<TranscriptionProviderState>('/v1/admin/transcription-provider');
+}
+
+/**
+ * Switch the active transcription provider, live. Inline-surfaceable
+ * failures: 400 `transcriptionProvider.unknown_target`, 409
+ * `transcriptionProvider.already_active`, 409
+ * `transcriptionProvider.target_unavailable` (the target published nothing —
+ * missing API key; `details.restoredProviderId` names the provider verified
+ * live again, or `null` when nothing could be restored) and 409
+ * `transcriptionProvider.switch_in_progress`.
+ */
+export async function switchTranscriptionProvider(
+  pluginId: string,
+): Promise<SwitchTranscriptionProviderResult> {
+  return postJson<SwitchTranscriptionProviderResult>(
+    '/v1/admin/transcription-provider/switch',
+    { pluginId },
   );
 }
 
@@ -3879,12 +4597,14 @@ export interface ConductorWorkflow {
 export interface ConductorRun {
   id: string;
   workflowVersionId: string;
-  status: 'running' | 'waiting' | 'completed' | 'failed';
+  status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
   currentStepId: string | null;
   context: unknown;
   triggerKind: string;
   startedAt: string;
   endedAt: string | null;
+  /** #759 — set while an operator cancel is pending on a 'running' run. */
+  cancelRequestedAt?: string | null;
 }
 
 export interface ConductorRunStep {
@@ -3906,6 +4626,55 @@ const CONDUCTOR_BASE = '/v1/operator/conductors';
 
 export async function listConductorWorkflows(): Promise<{ workflows: ConductorWorkflow[] }> {
   return getJson(CONDUCTOR_BASE);
+}
+
+// #330 round 4 — operator lens over LIVE facilitations (ephemeral workflows
+// are hidden from the library by design). Wire shape mirrors the kernel's
+// FacilitationOverview.
+export interface FacilitationOverview {
+  workflowId: string;
+  slug: string;
+  name: string;
+  createdByAgent: string | null;
+  expiresAt: string | null;
+  conversation: { channelType: string; conversationId: string } | null;
+  roleKey: string | null;
+  initiators: string[];
+  /** True when the kernel could not load every detail — the row may under-report. */
+  incomplete: boolean;
+  run: {
+    id: string;
+    status: 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+    startedAt: string | null;
+    endedAt: string | null;
+    cancelRequestedAt: string | null;
+    currentStepId: string | null;
+    goal: string | null;
+    definitionOfDone: string | null;
+    rounds: number;
+    lastVerdict: {
+      dodMet: boolean | null;
+      summary: string | null;
+      /** Per-DoD-point interim state (pattern v3+); null on runs started before it. */
+      items: Array<{
+        point: number | null;
+        label: string | null;
+        status: 'done' | 'partial' | 'open' | null;
+        note: string | null;
+      }> | null;
+    } | null;
+  } | null;
+  participants: Array<{ displayName: string; isBot: boolean }> | null;
+  participantsPartial: boolean;
+}
+
+export async function listFacilitations(): Promise<{ facilitations: FacilitationOverview[] }> {
+  return getJson(`${CONDUCTOR_BASE}/facilitations`);
+}
+
+/** Cancel the facilitation's active runs and dispose of its scaffold (binding + initiator role go with it). */
+export async function terminateFacilitation(workflowId: string): Promise<{ cancelledRuns: number; disposed: boolean }> {
+  return postJson(`${CONDUCTOR_BASE}/facilitations/${encodeURIComponent(workflowId)}/terminate`, {});
 }
 
 export async function getConductorWorkflowGraph(
@@ -3986,13 +4755,24 @@ export async function respondToAwait(awaitId: string, response: unknown): Promis
   return postJson(`${CONDUCTOR_BASE}/awaits/${encodeURIComponent(awaitId)}/respond`, { response });
 }
 
+/** #759 — non-blocking validator finding carried on a successful publish. */
+export interface ConductorValidationWarning {
+  code: string;
+  message: string;
+  nodeIds: string[];
+}
+
 export async function publishConductorWorkflow(body: {
   slug: string;
   name: string;
   description?: string;
   graph: unknown;
   enable?: boolean;
-}): Promise<{ workflow: ConductorWorkflow; version: { id: string; version: number } }> {
+}): Promise<{
+  workflow: ConductorWorkflow;
+  version: { id: string; version: number };
+  warnings?: ConductorValidationWarning[];
+}> {
   return postJson(CONDUCTOR_BASE, body);
 }
 
@@ -4025,6 +4805,40 @@ export async function listConductorRuns(slug: string): Promise<{ runs: Conductor
 
 export async function getConductorRun(slug: string, runId: string): Promise<ConductorRunResult> {
   return getJson(`${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}`);
+}
+
+/** Delete a workflow. Physical when no run references it; otherwise a logical
+ *  removal (disabled + hidden) that keeps the run history as audit trace.
+ *  409 conductor.has_active_runs while runs are running/waiting. postJson
+ *  hard-codes POST, so this is a dedicated DELETE fetch mirroring
+ *  deleteConductorTemplate. */
+export async function deleteConductorWorkflow(slug: string): Promise<{ deleted: boolean; mode: 'hard' | 'soft' }> {
+  const forwarded = await forwardCookieHeader();
+  const path = `${CONDUCTOR_BASE}/${encodeURIComponent(slug)}`;
+  const res = await fetch(botApi(path), {
+    method: 'DELETE',
+    headers: {
+      accept: 'application/json',
+      ...forwarded,
+    },
+    cache: 'no-store',
+    credentials: 'include',
+  });
+  const text = await res.text().catch(() => '');
+  if (!res.ok) {
+    maybeNavigateToLogin(res.status);
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}`, text);
+  }
+  return JSON.parse(text) as { deleted: boolean; mode: 'hard' | 'soft' };
+}
+
+/** #759 — cancel a run. 'waiting' finalizes immediately; 'running' flags the
+ *  driver (honoured at the next step boundary); terminal runs 409. */
+export async function cancelConductorRun(slug: string, runId: string): Promise<{ run: ConductorRun }> {
+  return postJson(
+    `${CONDUCTOR_BASE}/${encodeURIComponent(slug)}/runs/${encodeURIComponent(runId)}/cancel`,
+    {},
+  );
 }
 
 // Workflow templates (#429) — curated, slot-parameterized starting points bundled with
@@ -4524,4 +5338,179 @@ export async function listWebhookSubscriptionDeliveries(
   id: string,
 ): Promise<{ deliveries: ConductorWebhookOutboundDelivery[] }> {
   return getJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/deliveries`);
+}
+
+// -----------------------------------------------------------------------------
+// Public API keys (issues #438/#439; admin UI follow-through #567) —
+// /api/public/v1/admin/keys.
+//
+// This router lives in @omadia/channel-api, not under /v1/operator/* like the
+// rest of this file's admin surfaces — it is mounted at API_PREFIX
+// `/api/public/v1`, gated by the same operator-session cookie via its own
+// `operatorAuth` middleware (see adminKeysRouter.ts). getJson/postJson still
+// apply here unchanged: same cookie, same 401-bounces-to-/login behavior.
+// -----------------------------------------------------------------------------
+
+const API_KEYS_BASE = '/public/v1/admin/keys';
+
+export interface ApiKeyPublicView {
+  id: string;
+  label?: string;
+  rateLimitPerMinute: number;
+  scopes: string[];
+  /** Epoch ms. */
+  createdAt: number;
+  /** Epoch ms. Present iff the key has been revoked. */
+  revokedAt?: number;
+}
+
+export interface CreateApiKeyInput {
+  label?: string;
+  rateLimitPerMinute?: number;
+  /**
+   * Omit this field entirely to accept the backend's legacy default
+   * (`['chat:write']`). An explicitly empty array is REJECTED by the
+   * backend with 400 — it reads `[]` as a deliberate "grant nothing"
+   * request, never as "use the default". Callers must never pass `[]`.
+   */
+  scopes?: string[];
+}
+
+export interface CreateApiKeyResult {
+  key: ApiKeyPublicView;
+  /** Plaintext — present only in this one response. Never returned again by
+   *  any other endpoint; do not persist it beyond the reveal-once UI. */
+  token: string;
+}
+
+export async function listApiKeys(): Promise<{ keys: ApiKeyPublicView[] }> {
+  return getJson(API_KEYS_BASE);
+}
+
+export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiKeyResult> {
+  return postJson(API_KEYS_BASE, input);
+}
+
+export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
+  return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
+
+// -----------------------------------------------------------------------------
+// Rolling self-update (#432). Backed by the admin router at
+// /api/v1/admin/update, surfaced to the browser as /bot-api/v1/admin/update.
+//
+// Three capability tiers, all reported by GET /status so the UI can be honest
+// about which one is active instead of offering a button that cannot work:
+//   - always            version surface + newer-release check
+//   - Postgres present  the audit trail
+//   - update overlay    executing a version bump
+//
+// The trigger returns 202 and does NOT wait: applying an update recreates the
+// middleware container serving the request. Poll `getUpdateStatus` afterwards.
+// -----------------------------------------------------------------------------
+
+const UPDATE_BASE = '/v1/admin/update';
+
+export type AppVersionSource = 'release' | 'floating' | 'unknown';
+
+export type UpdaterState =
+  | 'idle'
+  | 'updating'
+  | 'succeeded'
+  | 'failed'
+  | 'rolled_back';
+
+export type UpdaterPhase =
+  | 'resolve'
+  | 'preflight'
+  | 'pin'
+  | 'replace'
+  | 'health_gate'
+  | 'rollback'
+  | 'done';
+
+export type UpdaterFailure =
+  | {
+      kind: 'health_gate';
+      /** `never_reachable` | `version_never_matched` — the health waiter's
+       *  verdict. Kept as string so an unknown future verdict still renders. */
+      reason: string;
+      observedVersion: string | null;
+    }
+  | { kind: 'replace'; service: string | null };
+
+export interface UpdateStatus {
+  current: { version: string; source: AppVersionSource };
+  latest: {
+    tag: string;
+    url: string;
+    publishedAt: string;
+    prerelease: boolean;
+  } | null;
+  updateAvailable: boolean;
+  check: { checkedAt: number | null; stale: boolean; error?: string };
+  executor: {
+    configured: boolean;
+    reachable: boolean;
+    state?: UpdaterState;
+    targetVersion?: string | null;
+    previousVersion?: string | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    error?: string;
+    steps?: string[];
+    /** Which of the job's steps is running; null while idle or on a sidecar
+     *  that predates the field. Drives the progress stepper. */
+    phase?: UpdaterPhase | null;
+    /** Structured reason for `failed` / `rolled_back`; null otherwise. */
+    failure?: UpdaterFailure | null;
+    /** Which executor drives the update (#696). */
+    engine?: 'docker' | 'fly';
+    /** False on Fly: the chosen version does NOT survive the operator's next
+     *  plain `fly deploy`, because that reads their local fly.toml. */
+    pinPersisted?: boolean;
+  };
+  auditAvailable: boolean;
+  /** Where the middleware runs. Only used to make the manual instructions
+   *  concrete — `unknown` on compose and anywhere else, which is the generic
+   *  case, not an error. */
+  platform?: {
+    kind: 'fly' | 'unknown';
+    appName?: string;
+    machineId?: string;
+  };
+}
+
+export interface UpdateAuditEntry {
+  id: string;
+  actor: string;
+  fromVersion: string;
+  toVersion: string;
+  outcome: 'requested' | 'succeeded' | 'failed';
+  detail: string | null;
+  createdAt: string;
+}
+
+export async function getUpdateStatus(refresh = false): Promise<UpdateStatus> {
+  return getJson<UpdateStatus>(
+    `${UPDATE_BASE}/status${refresh ? '?refresh=true' : ''}`,
+  );
+}
+
+export async function getUpdateHistory(): Promise<{
+  entries: UpdateAuditEntry[];
+  available: boolean;
+}> {
+  return getJson(`${UPDATE_BASE}/history`);
+}
+
+/**
+ * Trigger the update. `confirm` must be the target tag retyped by the
+ * operator; the backend re-checks it server-side and refuses on mismatch.
+ */
+export async function triggerUpdate(body: {
+  targetVersion: string;
+  confirm: string;
+}): Promise<{ accepted: boolean; targetVersion: string; auditId: string }> {
+  return postJson(UPDATE_BASE, body);
 }

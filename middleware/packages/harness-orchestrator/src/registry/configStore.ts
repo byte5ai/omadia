@@ -2,6 +2,8 @@ import type { Pool } from 'pg';
 
 import { resolveModelRef } from '@omadia/llm-provider';
 
+import type { ContextMemoryMode } from '../memoryBinder.js';
+
 import {
   AgentGraphStore,
   type PersonaSkillRow,
@@ -48,6 +50,28 @@ export interface AgentRow {
   readonly modelRouting?: Record<string, unknown> | null;
   /** Cosmetic canvas coordinate; `null`/absent until first laid out. */
   readonly canvasPosition?: CanvasPosition | null;
+  /**
+   * W5 memory-ACL — per-agent rollout switch for chat-context-scoped memory
+   * (`agents.context_memory`, migration 0050). Lifted into
+   * `AgentRuntimeConfig.contextMemory`, where the `MemoryBinder` consumes it.
+   *
+   * Optional on the row type so pre-existing `AgentRow` fixtures stay valid;
+   * absent and every unrecognised value both resolve to `'off'` — today's
+   * behaviour — in {@link parseContextMemoryMode}. Fail-closed applies to the
+   * flag itself, not just to the scope it controls.
+   */
+  readonly contextMemory?: ContextMemoryMode;
+  /**
+   * #914 — the agent's authored behaviour text (`agent_identities.
+   * instructions`). Read-only here: the identity is written through
+   * `platform/agentIdentityStore.ts`, and this column is joined in so the
+   * registry can build the Agent's system prompt from it without a second
+   * round trip per Agent.
+   *
+   * `null`/absent means "not authored" — the platform-wide assistant identity
+   * applies, exactly as before this column existed.
+   */
+  readonly instructions?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -87,6 +111,14 @@ export interface AgentPatch {
   readonly status?: AgentStatus;
   readonly modelRouting?: Record<string, unknown> | null;
   readonly canvasPosition?: CanvasPosition | null;
+  /**
+   * W5 memory-ACL rollout switch (#899). Absent leaves the stored value
+   * untouched: the UPDATE below uses `COALESCE`, so a patch that does not
+   * mention the flag can never silently reset an enforcing agent back to
+   * `'off'`. The column's CHECK constraint (migration 0050) covers the same
+   * three values, so a widened union cannot reach the database either.
+   */
+  readonly contextMemory?: ContextMemoryMode;
 }
 
 export interface AgentPluginInput {
@@ -207,8 +239,29 @@ interface AgentDbRow {
   status: AgentStatus;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
+  /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
+  context_memory?: string | null;
+  /** #914 — `agent_identities.instructions`, joined in by the three read
+   *  queries below. Absent on the RETURNING rows of the write paths, which do
+   *  not join: a write never changes the identity, and a caller that needs it
+   *  re-reads. */
+  identity_instructions?: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Narrow the persisted `context_memory` text to the typed rollout mode.
+ *
+ * Deny-default: anything the running code does not recognise — a NULL from a
+ * pre-0050 database, a value written by a NEWER middleware during a rolling
+ * deploy, a hand-edited row — resolves to `'off'`, which is today's
+ * agent-global behaviour. The alternative failure direction (treating an
+ * unknown value as `'enforce'`) would change memory routing on a rollback, and
+ * the safe direction here is the one that changes nothing.
+ */
+function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
+  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
 }
 
 interface AgentPluginDbRow {
@@ -241,6 +294,8 @@ function mapAgent(row: AgentDbRow): AgentRow {
     status: row.status,
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
+    contextMemory: parseContextMemoryMode(row.context_memory),
+    instructions: row.identity_instructions ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -274,20 +329,33 @@ function mapPlatformSettings(
   };
 }
 
+/**
+ * #914 — every agent read joins the agent's authored identity, so the
+ * registry can build an Agent's system prompt from `instructions` without a
+ * per-Agent second query. `a.*` keeps the row shape every existing caller
+ * already gets; the LEFT JOIN keeps an agent without an identity intact.
+ *
+ * Only the TEXT column is joined. The identity's avatar columns are BYTEA and
+ * this query runs on every dashboard load and every registry rebuild.
+ */
+const AGENT_SELECT =
+  'SELECT a.*, i.instructions AS identity_instructions FROM agents a ' +
+  'LEFT JOIN agent_identities i ON i.agent_id = a.id';
+
 export class ConfigStore {
   constructor(private readonly pool: Pool) {}
 
   // ── agents ────────────────────────────────────────────────────────────
   async listAgents(): Promise<readonly AgentRow[]> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents ORDER BY slug',
+      `${AGENT_SELECT} ORDER BY a.slug`,
     );
     return rows.map(mapAgent);
   }
 
   async getAgentBySlug(slug: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents WHERE slug = $1',
+      `${AGENT_SELECT} WHERE a.slug = $1`,
       [slug],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -295,7 +363,7 @@ export class ConfigStore {
 
   async getAgentById(id: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents WHERE id = $1',
+      `${AGENT_SELECT} WHERE a.id = $1`,
       [id],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -346,6 +414,7 @@ export class ConfigStore {
          status          = COALESCE($5, status),
          model_routing   = COALESCE($6::jsonb, model_routing),
          canvas_position = COALESCE($7::jsonb, canvas_position),
+         context_memory  = COALESCE($8, context_memory),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -357,6 +426,7 @@ export class ConfigStore {
         patch.status ?? null,
         patch.modelRouting ? JSON.stringify(patch.modelRouting) : null,
         patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
+        patch.contextMemory ?? null,
       ],
     );
     const row = rows[0];

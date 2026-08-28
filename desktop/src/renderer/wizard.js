@@ -7,12 +7,26 @@
 // it → "Identifier 'omadia' has already been declared", which aborts the whole
 // script so no handlers bind and the wizard freezes. Use a distinct name.
 const bridge = window.omadia;
+// Locale overlay (wizard-i18n.js, loaded first). `wt(key, fallback)` returns
+// the German string when the OS locale is German, else the fallback — so every
+// call site keeps its English text readable inline.
+const wt = window.wizardT || ((_k, fallback) => fallback);
+if (window.applyWizardLocale) window.applyWizardLocale();
 const LAST_STEP = 4;
 
 const state = {
   step: 0,
   dataDir: null,
+  /* Step 1 mode: `apiKey` keeps the existing flow; `subscription` skips key
+     entry now and expects Claude/Codex CLI setup after boot. */
+  providerMode: 'apiKey',
+  /* True only after `testLlmKey` came back ok for the CURRENTLY entered
+     provider+key. Reset on every edit below — a verdict about a previous key
+     says nothing about this one. */
   keyVerified: false,
+  /* Set when the user pressed Continue on the key step without a successful
+     probe. The next press goes through. */
+  unverifiedAcknowledged: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -23,8 +37,10 @@ const stepSections = () => Array.from(document.querySelectorAll('.step[data-step
 function bridgeOk() {
   if (bridge) return true;
   const el = $('#testResult') || document.body;
-  el.textContent =
-    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).';
+  el.textContent = wt(
+    'js.bridgeMissing',
+    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).',
+  );
   if (el.className !== undefined) el.className = 'test-result err';
   return false;
 }
@@ -59,7 +75,15 @@ function renderRail() {
 
 function renderNav() {
   $('#back').disabled = state.step === 0;
-  $('#next').textContent = state.step === LAST_STEP ? 'Finish & start omadia' : 'Continue';
+  $('#next').textContent = state.step === LAST_STEP ? wt('nav.finish', 'Finish & start omadia') : wt('nav.continue', 'Continue');
+}
+
+function renderProviderMode() {
+  const isSubscription = state.providerMode === 'subscription';
+  $('#modeApiKey').checked = !isSubscription;
+  $('#modeSubscription').checked = isSubscription;
+  $('#apiKeyFields').classList.toggle('hidden', isSubscription);
+  $('#subscriptionHint').classList.toggle('hidden', !isSubscription);
 }
 
 function goto(step) {
@@ -71,13 +95,36 @@ function goto(step) {
 
 function validateCurrent() {
   if (state.step === 1) {
+    if (state.providerMode === 'subscription') return true;
     const key = $('#apiKey').value.trim();
     if (key.length < 8) {
       flashTest('Please enter your API key first.', false);
       return false;
     }
+    /* The wizard used to run the key probe and then throw the result away, so a
+       typo'd or revoked key sailed through setup and resurfaced much later as an
+       unexplained "invalid x-api-key" on every chat message. Consult the probe
+       here instead. It is an acknowledgement, not a hard block: the probe also
+       fails on an air-gapped or offline machine, and the wizard has to stay
+       usable there — so the first Continue explains, the second proceeds. */
+    if (!state.keyVerified && !state.unverifiedAcknowledged) {
+      state.unverifiedAcknowledged = true;
+      flashTest(
+        wt('js.unverifiedHint', 'This key has not been verified yet. Press "Test key" to check it — or press Continue again to set it up unverified.'),
+        false,
+      );
+      return false;
+    }
   }
   return true;
+}
+
+/* Any edit to the provider or the key invalidates the previous probe result —
+   otherwise "Test key" on a good key followed by pasting a bad one would still
+   read as verified. */
+function resetKeyVerification() {
+  state.keyVerified = false;
+  state.unverifiedAcknowledged = false;
 }
 
 function flashTest(msg, ok) {
@@ -86,10 +133,18 @@ function flashTest(msg, ok) {
   el.className = 'test-result ' + (ok ? 'ok' : 'err');
 }
 
+function clearTestFeedback() {
+  const el = $('#testResult');
+  el.textContent = '';
+  el.className = 'test-result';
+}
+
 function collectConfig() {
+  const provider = state.providerMode === 'subscription' ? 'subscription' : $('#provider').value;
+  const apiKey = state.providerMode === 'subscription' ? '' : $('#apiKey').value.trim();
   return {
-    provider: $('#provider').value,
-    apiKey: $('#apiKey').value.trim(),
+    provider,
+    apiKey,
     capabilities: {
       attachments: $('#capAttachments').checked,
       embeddings: $('#capEmbeddings').checked,
@@ -126,7 +181,10 @@ async function provision() {
   const unsubProgress = bridge.onBootProgress((p) => {
     const pct = PHASE_PCT[p.phase] ?? 10;
     $('#barFill').style.width = pct + '%';
-    $('#progressMsg').textContent = p.message + (p.detail ? ' — ' + p.detail : '');
+    // Localized by PHASE (typed contract), supervisor message as fallback —
+    // a new phase never renders blank, it just renders English.
+    const phaseText = wt('boot.' + p.phase, p.message);
+    $('#progressMsg').textContent = phaseText + (p.detail ? ' — ' + p.detail : '');
     if (p.phase === 'error') $('#barFill').style.background = 'var(--err)';
   });
   // Live, granular log (kernel migrations, plugin activation, DB readiness …).
@@ -138,7 +196,7 @@ async function provision() {
   try {
     res = await bridge.complete(collectConfig());
   } catch (err) {
-    res = { ok: false, error: (err && err.message) || 'Setup crashed unexpectedly.' };
+    res = { ok: false, error: (err && err.message) || wt('js.setupCrashed', 'Setup crashed unexpectedly.') };
   } finally {
     clearInterval(ticker);
     unsubProgress();
@@ -147,7 +205,7 @@ async function provision() {
 
   if (!res.ok) {
     const err = $('#provisionError');
-    err.textContent = res.error || 'Setup failed. Check the logs (tray → Open Logs).';
+    err.textContent = res.error || wt('js.setupFailed', 'Setup failed. Check the logs (tray → Open Logs).');
     err.classList.remove('hidden');
     appendBootLog('ERROR', res.error || 'Setup failed.');
     // Allow another attempt.
@@ -172,25 +230,41 @@ $('#back').addEventListener('click', () => {
   if (state.step > 0) goto(state.step - 1);
 });
 
+document.querySelectorAll('input[name="providerMode"]').forEach((el) => {
+  el.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!target || !target.checked) return;
+    if (target.value !== 'apiKey' && target.value !== 'subscription') return;
+    state.providerMode = target.value;
+    resetKeyVerification();
+    clearTestFeedback();
+    renderProviderMode();
+  });
+});
+
+$('#apiKey').addEventListener('input', resetKeyVerification);
+$('#provider').addEventListener('change', resetKeyVerification);
+
 $('#testKey').addEventListener('click', async () => {
   if (!bridgeOk()) return;
+  if (state.providerMode === 'subscription') return;
   const provider = $('#provider').value;
   const apiKey = $('#apiKey').value.trim();
   if (apiKey.length < 8) {
-    flashTest('Key looks too short.', false);
+    flashTest(wt('js.keyTooShort', 'Key looks too short.'), false);
     return;
   }
   const btn = $('#testKey');
   btn.disabled = true;
-  flashTest('Testing…', true);
+  flashTest(wt('js.testing', 'Testing…'), true);
   try {
     const res = await bridge.testLlmKey({ provider, apiKey });
     state.keyVerified = res.ok;
-    flashTest(res.ok ? 'Key works.' : res.error || 'Key check failed.', res.ok);
+    flashTest(res.ok ? wt('js.keyWorks', 'Key works.') : res.error || wt('js.keyCheckFailed', 'Key check failed.'), res.ok);
   } catch (err) {
     // Never leave the user stuck on "Testing…" — surface the failure.
     state.keyVerified = false;
-    flashTest((err && err.message) || 'Key check failed (internal error).', false);
+    flashTest((err && err.message) || wt('js.keyCheckFailedInternal', 'Key check failed (internal error).'), false);
   } finally {
     btn.disabled = false;
   }
@@ -207,7 +281,10 @@ $('#chooseDir').addEventListener('click', async () => {
     }
   } catch (err) {
     $('#dataDirHint').textContent =
-      'Could not open the folder picker: ' + ((err && err.message) || 'internal error') + '. The default folder will be used.';
+      wt(
+        'js.pickerFailed',
+        'Could not open the folder picker: {msg}. The default folder will be used.',
+      ).replace('{msg}', (err && err.message) || 'internal error');
   }
 });
 
@@ -226,6 +303,7 @@ $('#revealKey').addEventListener('click', async () => {
   }
 });
 
+renderProviderMode();
 goto(0);
 // Fail loud, not silent, if the preload bridge is missing.
 if (!bridge) bridgeOk();

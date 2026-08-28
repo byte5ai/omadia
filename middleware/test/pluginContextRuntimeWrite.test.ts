@@ -82,8 +82,8 @@ function makeStubs() {
 }
 
 const SETUP_FIELDS: PluginSetupField[] = [
-  { key: 'app_id', label: 'App ID', type: 'string' },
-  { key: 'private_key', label: 'Key', type: 'secret' },
+  { key: 'app_id', label: { en: 'App ID' }, type: 'string' },
+  { key: 'private_key', label: { en: 'Key' }, type: 'secret' },
 ];
 
 function makeCatalog(runtimeWrite: boolean): PluginCatalog {
@@ -111,6 +111,9 @@ function makeCatalog(runtimeWrite: boolean): PluginCatalog {
     manifest: {},
     source_path: '/abs/caller/manifest.yaml',
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   } as unknown as PluginCatalogEntry;
   return {
     list: () => [entry],

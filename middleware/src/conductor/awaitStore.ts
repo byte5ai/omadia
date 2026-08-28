@@ -7,7 +7,9 @@ export interface ConductorAwait {
   id: string;
   runId: string;
   stepId: string;
-  principalKind: 'user' | 'role';
+  /** 'timer' (#330 C3): a deterministic tick — no principal, no reminders;
+   *  only the deadline poll acts on it. */
+  principalKind: 'user' | 'role' | 'timer';
   principalRef: string;
   channelType: string;
   message: string;
@@ -27,6 +29,7 @@ export async function resolveAwaitHolders(
   aw: Pick<ConductorAwait, 'principalKind' | 'principalRef'>,
   resolveRole: (roleKey: string) => Promise<string[]>,
 ): Promise<string[]> {
+  if (aw.principalKind === 'timer') return []; // #330 C3 — nobody to remind or list
   return aw.principalKind === 'role' ? resolveRole(aw.principalRef) : [aw.principalRef];
 }
 
@@ -76,7 +79,7 @@ export class ConductorAwaitStore {
   async create(input: {
     runId: string;
     stepId: string;
-    principalKind: 'user' | 'role';
+    principalKind: 'user' | 'role' | 'timer';
     principalRef: string;
     channelType: string;
     message: string;
@@ -114,34 +117,36 @@ export class ConductorAwaitStore {
   }
 
   /**
-   * All waiting HUMAN awaits (the operator inbox). Dev-job awaits (`channel_type='dev_job'`,
-   * Epic #470 W3) are excluded: they have no human holder and are resolved by a terminal dev-job
-   * outcome, not an operator response — surfacing them would show a phantom, un-actionable row
-   * whose `respond` can only ever be rejected by the authz gate.
+   * All waiting awaits — the operator inbox.
+   *
+   * Every await IS a human await by construction: `openHumanAwait` is the single caller of
+   * {@link create}, and it always writes a human principal and a human channel. An earlier
+   * `channel_type` exclusion filter hid a machine step's synthetic awaits; that step was
+   * deleted with its writer, so the excluded set is now empty and the filter is gone rather
+   * than kept as a generic one — a filter whose complement no member can enter is an
+   * invariant asserted in the wrong place, and a future non-human await kind would have to
+   * remember to add itself to survive it. If such a kind ever lands, it names itself here.
    */
+  /** #330 C3 — the run's open timer await, if any (there is at most one open
+   *  await per (run, step); a graph has no reason to park two timers at once).
+   *  Backs `conductorEphemeralRuns.poke`: expire the tick early when the
+   *  group already reached its outcome instead of waiting out the interval. */
+  async openTimerAwaitForRun(runId: string): Promise<ConductorAwait | null> {
+    const r = await this.pool.query<AwaitRow>(
+      `SELECT ${COLS} FROM conductor_awaits
+        WHERE run_id = $1 AND status = 'waiting' AND principal_kind = 'timer'
+        ORDER BY created_at ASC LIMIT 1`,
+      [runId],
+    );
+    return r.rows[0] ? toAwait(r.rows[0]) : null;
+  }
+
   async listWaiting(limit = 100): Promise<ConductorAwait[]> {
     const r = await this.pool.query<AwaitRow>(
       `SELECT ${COLS} FROM conductor_awaits
-        WHERE status = 'waiting' AND channel_type <> 'dev_job'
+        WHERE status = 'waiting'
         ORDER BY created_at ASC LIMIT $1`,
       [Math.min(Math.max(1, limit), 500)],
-    );
-    return r.rows.map(toAwait);
-  }
-
-  /**
-   * Waiting dev-job awaits (`channel_type='dev_job'`) — the reconciliation sweep's input
-   * (Epic #470 W3). Deliberately the COMPLEMENT of {@link listWaiting}: these carry a synthetic
-   * `dev_job:<jobId>` principal and are recovered by `reconcileTerminalDevJobAwaits`, which asks
-   * the dev-job port whether the bound job is already terminal (closing the terminal-before-bind
-   * lost-wakeup window).
-   */
-  async listWaitingDevJobAwaits(limit = 200): Promise<ConductorAwait[]> {
-    const r = await this.pool.query<AwaitRow>(
-      `SELECT ${COLS} FROM conductor_awaits
-        WHERE status = 'waiting' AND channel_type = 'dev_job'
-        ORDER BY created_at ASC LIMIT $1`,
-      [Math.min(Math.max(1, limit), 1000)],
     );
     return r.rows.map(toAwait);
   }
@@ -220,6 +225,18 @@ export class ConductorAwaitStore {
       [awaitId],
     );
     return r.rows.map((row) => ({ responderId: row.responder_id, response: row.response }));
+  }
+
+  /** #759 — close every waiting await of a run as 'cancelled' (operator run
+   *  cancel). Returns the number of awaits closed. The first writer of the
+   *  'cancelled' enum value the schema has carried since 0001. */
+  async cancelForRun(runId: string): Promise<number> {
+    const r = await this.pool.query(
+      `UPDATE conductor_awaits SET status = 'cancelled', resolved_at = now()
+        WHERE run_id = $1 AND status = 'waiting'`,
+      [runId],
+    );
+    return r.rowCount ?? 0;
   }
 
   /** Atomic transition waiting → resolved/timed_out (FR-018). Returns true iff this call won. */

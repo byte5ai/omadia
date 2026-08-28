@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { ApiError } from '../../../_lib/api';
 import {
@@ -29,6 +29,7 @@ interface Props {
  */
 export function ChannelsDashboard({ initial }: Props): React.ReactElement {
   const t = useTranslations('operatorChannels');
+  const format = useFormatter();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +129,19 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                       </span>
                     )}
                   </div>
+                  {c.members && c.members.length > 0 && (
+                    <div className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
+                      {t('membersLine', { names: format.list(c.members) })}
+                      {(c.member_count ?? 0) > c.members.length && (
+                        <>
+                          {' '}
+                          {t('membersMore', {
+                            count: (c.member_count ?? 0) - c.members.length,
+                          })}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <label className="flex items-center gap-2 text-xs text-[color:var(--fg-muted)]">
                   <span>{t('routesTo')}</span>
@@ -158,6 +172,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                   </select>
                 </label>
                 {c.stale && (
+                  // eslint-disable-next-line no-restricted-syntax -- warning-outline clear-stale-binding action (§10 no warning variant)
                   <button
                     type="button"
                     className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 px-2 py-1 text-xs text-[color:var(--warning)] hover:bg-[color:var(--warning)]/10"

@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -189,30 +188,64 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(true),
 
-  // Local-dev endpoints (unauthenticated memory browser, …). Keep this OFF in
-  // any deployed environment — the router mounts under /api/dev and exposes
-  // raw memory contents without auth. Only enable when iterating on the
+  // #575 — enforce the audience floor: a room may only do what EVERY
+  // participant is granted. Off by default, and that default is load-bearing
+  // rather than cautious. The floor fails closed by design, so switching it on
+  // against an empty grant table does not mean "no policy yet" — it means every
+  // tool refused, no context recalled and no attachment readable, in every
+  // room, at once. Seed and review the grants through
+  // /api/v1/admin/audience-grants (available whenever Postgres is), THEN set
+  // this. It also needs Postgres: with the in-memory backend there is nowhere
+  // durable for grants to live, and a restart would shut the rooms.
+  AUDIENCE_FLOOR_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+
+  // #575 — read the audience floor's host policy as an ALLOW-LIST rather than
+  // as prohibitions only.
+  //
+  // Off by default, and this default is not caution — it is the difference
+  // between a usable feature and a broken deployment. Outbound hosts are
+  // granted by a plugin's MANIFEST (`permissions.network.outbound`), never by
+  // the grant store. Switching this on means every host a room may reach must
+  // ALSO be granted through the floor, per principal, and anything not granted
+  // is refused. Grant `net:*` to principals who should stay unrestricted, and
+  // `net:<host>` for the narrow ones, BEFORE setting this.
+  //
+  // Requires AUDIENCE_FLOOR_ENABLED; without a floor there is no room to
+  // intersect and the setting does nothing.
+  AUDIENCE_HOST_ALLOWLIST_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(false),
+
+  // Local-dev endpoints (raw graph browser, memory browser, …) under /api/dev.
+  //
+  // Issue #669: these used to mount WITHOUT authentication, so this flag alone
+  // published knowledge-graph state — and three destructive maintenance sweeps —
+  // to anyone who knew the path. They now sit behind the same operator session
+  // gate as every other /api route, and the KG-Lifecycle / priorities operator
+  // pages moved to /api/v1/admin/kg-* so they no longer need this flag at all.
+  // Still dev scaffolding: leave it off unless you are iterating on the
   // Next.js dev UI against a local middleware.
   DEV_ENDPOINTS_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
     .default(false),
 
-  // Epic #470 W4 — GitHub webhook trigger controls (spec §3). The global kill
-  // switch defaults ON (a per-repo `webhook_enabled` and an empty sender allowlist
-  // already keep it off until an operator opts a repo in). The two rate limits cap
-  // how many jobs a single repo / single sender can spawn per rolling hour.
-  DEV_WEBHOOKS_ENABLED: z
+  // Issue #669 — belt-and-braces for /api/dev: refuse any request that did not
+  // arrive over a loopback socket (403), on top of the session gate. Off by
+  // default because a containerised dev setup proxies through the Next.js
+  // server from a non-loopback address. See auth/loopbackOnly.ts.
+  DEV_ENDPOINTS_LOOPBACK_ONLY: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
-    .default(true),
-  DEV_WEBHOOK_MAX_JOBS_PER_REPO_HOUR: z.coerce.number().int().positive().default(5),
-  DEV_WEBHOOK_MAX_JOBS_PER_SENDER_HOUR: z.coerce.number().int().positive().default(2),
+    .default(false),
 
   // Issue #437 — Conductor's generic inbound webhook route (`POST /api/hooks/:endpointId`).
   // Per-endpoint secrets already gate every request (Vault-backed, see webhookEndpointStore.ts);
-  // this is the same operator-facing global kill switch DEV_WEBHOOKS_ENABLED is for the
-  // dev-platform's GitHub route, kept separate because the two features are unrelated.
+  // this is the operator-facing global kill switch over that route.
   CONDUCTOR_WEBHOOKS_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')
@@ -233,10 +266,32 @@ const ConfigSchema = z.object({
   // origin in dev, while the webhook route only ever lives on the middleware).
   CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL: z.string().url().optional(),
 
-  // Epic #470 W4 — default per-job LLM cost budget (USD) applied when neither the
-  // job nor its repo sets one (spec §5). Token budgets have NO default: they are
-  // enforced only when explicitly set on the job or repo.
-  DEV_JOB_DEFAULT_BUDGET_USD: z.coerce.number().positive().default(100),
+  // #330 — guardrails for agent-generated ephemeral workflows
+  // (conductor.createEphemeralRun): a mandatory, clamped TTL plus per-agent
+  // concurrency and creation-rate caps make runaway generation structurally
+  // impossible; the reaper poll disposes of expired/terminal scaffolds.
+  CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
+  CONDUCTOR_EPHEMERAL_MAX_TTL_MS: z.coerce.number().int().positive().default(7 * 24 * 60 * 60 * 1000),
+  CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT: z.coerce.number().int().positive().default(3),
+  CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR: z.coerce.number().int().positive().default(10),
+  CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+
+  // #757 — bounded retention for persisted per-turn privacy receipts
+  // (`turn_receipts`). The payload is PII-free (counts only) but turn_id +
+  // scope are personal-data linkage, so rows are reaped after this many days.
+  RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+
+  // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
+  // private key (base64 PKCS#8 DER; generate with
+  // scripts/generate-audit-signing-key.mjs) lives HERE — env / secret
+  // manager — never in Postgres: the admin the chain defends against must
+  // not be able to re-sign a rewritten chain. Absent ⇒ the chain still
+  // builds, but no signed checkpoints are produced (logged loudly at boot).
+  AUDIT_SIGNING_KEY: z.string().optional(),
+  AUDIT_CHECKPOINT_INTERVAL_MINUTES: z.coerce.number().int().positive().default(60),
+  // Optional external anchor: checkpoint JSONL appended OUTSIDE the DB —
+  // point it at storage the DB admin cannot rewrite (WORM/S3 sync).
+  AUDIT_ANCHOR_PATH: z.string().optional(),
 
   // Postgres connection string for the Neon-backed knowledge graph.
   // When set, `bootstrapKnowledgeGraphFromEnv` installs the
@@ -273,6 +328,20 @@ const ConfigSchema = z.object({
    * OAuth flow, no consent prompts).
    */
   TEAMS_SSO_CONNECTION_NAME: z.string().optional(),
+
+  /**
+   * W1a (#860) — public base URL the agent factory advertises to Azure as
+   * the per-bot Teams messaging endpoint
+   * (`<base>/api/teams/<botSlug>/messages`, channel-teams >= 0.20.0) when
+   * provisioning bot identities. Optional override in the
+   * TELEGRAM_/FLOW_/ATTACHMENT_PUBLIC_BASE_URL tradition: the provisioning
+   * wiring falls back to PUBLIC_BASE_URL, so set this only when Bot
+   * Framework traffic reaches the middleware under a different host than
+   * the browser-facing UI. Consumed where the provisioning job runner is
+   * constructed — it is bound into the teamsProvisioner accessor's
+   * messaging-endpoint URL builder, never string-built elsewhere.
+   */
+  TEAMS_PUBLIC_BASE_URL: z.string().url().optional(),
 
   // Telegram channel. When TELEGRAM_BOT_TOKEN is set, the channel package is
   // auto-installed at boot. TELEGRAM_WEBHOOK_SECRET is required alongside it
@@ -466,6 +535,25 @@ const ConfigSchema = z.object({
    *  blocks an install. */
   SKILLSPECTOR_URL: z.string().url().optional(),
   SKILLSPECTOR_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
+  /** Build identity, stamped into the image by publish-images.yml (#432).
+   *  Unset ⇒ the build reports itself as `unknown` rather than guessing from
+   *  package.json, which has been stale for the whole current release series.
+   *  Deliberately NOT set by docker-compose.yaml: compose passing an empty
+   *  value would override the value baked into the image. */
+  OMADIA_VERSION: z.string().optional(),
+  /** Base URL of the updater sidecar (#432), e.g. http://updater:8090. Unset
+   *  ⇒ notify-only: the admin page still reports versions and flags a newer
+   *  release, but cannot execute an update. Enabled by the opt-in overlay
+   *  docker-compose.update.yaml. */
+  OMADIA_UPDATER_URL: z.string().url().optional(),
+  /** Shared bearer secret for the updater sidecar. Required whenever
+   *  OMADIA_UPDATER_URL is set — see the cross-field check below. */
+  OMADIA_UPDATER_TOKEN: z.string().min(16).optional(),
+  /** `owner/repo` the release check queries. Override for a fork. */
+  OMADIA_RELEASE_REPO: z.string().min(3).default('byte5ai/omadia'),
+  /** Optional PAT for the release check — only needed for a private fork or
+   *  a busy shared NAT (the unauthenticated GitHub budget is 60/h per IP). */
+  OMADIA_RELEASE_TOKEN: z.string().optional(),
   /** Root of the built-in package tree (scanned for manifest.yaml files at
    *  boot). In dev this resolves to `<repo>/middleware/packages`; in the
    *  Docker image it's `/app/packages`. Each subdirectory with a valid
@@ -494,112 +582,63 @@ const ConfigSchema = z.object({
     .positive()
     .default(15_000),
 
-  // --- Dev platform (epic #470 W0) ----------------------------------------
-  // Isolated per-job code runners (clone → agent-edit → diff → server-side PR).
-  // The whole subsystem is dark by default: DEV_PLATFORM_ENABLED=false mounts
-  // no router and starts no worker. See src/devplatform/ and the wire unit.
-  DEV_PLATFORM_ENABLED: devFlag(),
-  // The W0 walking-skeleton LocalProcessBackend runs the agent under a dedicated
-  // unprivileged uid with an allowlist-built env and NO dependency-install / test
-  // execution. It is an unsafe skeleton by construction, so it stays off unless
-  // the operator explicitly acknowledges it — and boot REFUSES the flag without a
-  // uid (loadConfig, below), never runs the agent as root.
-  DEV_PLATFORM_UNSAFE_LOCAL: devFlag(),
-  DEV_PLATFORM_LOCAL_UID: optionalNonEmpty(z.coerce.number().int().positive()),
-  DEV_PLATFORM_WORKSPACE_DIR: z
-    .string()
-    .min(1)
-    .default(() => path.join(os.tmpdir(), 'omadia-dev-jobs')),
-  // Where the runner phones home. Defaults to loopback + PORT in loadConfig.
-  DEV_PLATFORM_RUNNER_BASE_URL: optionalNonEmpty(z.string().url()),
-  DEV_PLATFORM_CLI_BIN: z.string().min(1).default('claude'),
-  DEV_PLATFORM_JOB_WALL_CLOCK_MS: z.coerce.number().int().positive().default(1_800_000),
-  DEV_PLATFORM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
-  DEV_PLATFORM_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().default(1),
-  DEV_PLATFORM_GITHUB_CLIENT_ID: optionalNonEmpty(z.string().min(1)),
-  DEV_PLATFORM_COMMIT_AUTHOR: z.string().min(1).default('omadia-dev <dev-platform@omadia.ai>'),
-  DEV_PLATFORM_EVENT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
-  // Epic #470 W5 — data lifecycle (spec §7). Two-tier event retention: low-value
-  // telemetry (heartbeat/log) is pruned at EVENT_RETENTION_DAYS above; audit-grade
-  // events (status/tool/gate/token/approval/egress/phase) are kept until this outer
-  // bound. The daily retention job also purges terminal jobs older than it.
-  DEV_PLATFORM_AUDIT_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
-  // Per-job event cap: once a job holds this many events, the append path drops
-  // further low-value telemetry (keeps audit-grade events) and records one
-  // `events_truncated` status event. Bounds a runaway agent's event stream.
-  DEV_JOB_MAX_EVENTS: z.coerce.number().int().positive().default(50_000),
-  // Artifact ceiling: inline content larger than this is offloaded to object
-  // storage (when wired) or marked and refused inline (default 5 MiB).
-  DEV_ARTIFACT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
-  // Q4 decision: subscription-mode jobs run the CLI on the operator's Claude
-  // login, so the credential is IN the runner. It is off by default and boot
-  // REFUSES the flag unless the operator also sets the explicit acknowledgment
-  // string (loadConfig, below) — a boot-time refusal, not a warning.
-  DEV_PLATFORM_SUBSCRIPTION_MODE: devFlag(),
-  DEV_PLATFORM_SUBSCRIPTION_ACK: optionalNonEmpty(z.string().min(1)),
-  // --- W1 keystones (spec §4/§6/§6b) ---------------------------------------
-  // The daemon's shared bearer for the internal job-policy endpoint AND the
-  // DockerBackend's control-plane calls. Absent ⇒ the job-policy endpoint 503s
-  // and the DockerBackend is NOT registered.
-  DEV_RUNNER_DAEMON_TOKEN: optionalNonEmpty(z.string().min(1)),
-  // The daemon control-plane origin the middleware calls (spec §4/§5). Absent ⇒
-  // the DockerBackend is not registered even under DEV_PLATFORM_BACKEND=docker.
-  DEV_RUNNER_DAEMON_URL: optionalNonEmpty(z.string().url()),
-  // Which runner backend the operator ships (spec §5): `docker` registers the
-  // container backend as the shipping path; `local` keeps the W0 skeleton (which
-  // ALSO requires DEV_PLATFORM_UNSAFE_LOCAL). Default `docker` — the local
-  // backend never becomes the permanent crutch the epic warns against, and it
-  // stays inert until its own acknowledgment flag is set anyway.
-  DEV_PLATFORM_BACKEND: z.enum(['docker', 'local']).default('docker'),
-  // Lease TTL a docker job requests + renews at ~TTL/3 (spec §7/§8). Bounded to
-  // the daemon's [30, 3600] window in the backend.
-  DEV_JOB_LEASE_TTL_SEC: z.coerce.number().int().positive().default(180),
-  // Digest-pinned runner image. Absent ⇒ the job-policy endpoint 503s.
-  DEV_RUNNER_DEFAULT_IMAGE: optionalNonEmpty(z.string().min(1)),
-  // Operator egress default, comma-separated bare hostnames (validated in
-  // deriveJobPolicy). Absent ⇒ empty base allowlist.
-  DEV_EGRESS_BASE_ALLOWLIST: optionalNonEmpty(z.string().min(1)),
-  // Hostname the job container reaches the middleware on; defaults to the
-  // RUNNER_BASE_URL host in the wire layer when unset.
-  DEV_PLATFORM_MIDDLEWARE_HOST: optionalNonEmpty(z.string().min(1)),
-  // LLM proxy (spec §6b): upstream origin + exact model allowlist. The proxy is
-  // always mounted; an empty allowlist ⇒ it answers 500 "no LLM policy".
-  DEV_PLATFORM_LLM_UPSTREAM_BASE_URL: z.string().url().default('https://api.anthropic.com'),
-  DEV_PLATFORM_LLM_PROVIDER: z.string().min(1).default('anthropic'),
-  DEV_PLATFORM_LLM_ALLOWED_MODELS: optionalNonEmpty(z.string().min(1)),
+  // --- Public MCP endpoint (W2-3, issue #542) ------------------------------
+  // omadia's own tools, exposed over a stateless Streamable-HTTP MCP server at
+  // /api/v1/mcp to third parties holding an API key. This is the highest-blast
+  // -radius surface in the MCP cluster — an internet-facing route that reaches
+  // the tool layer, including WRITE tools by operator allowlist — so the whole
+  // thing is dark by default: false mounts NO router at all, which is a
+  // stronger guarantee than mounting one that answers 403.
+  PUBLIC_MCP_ENABLED: devFlag(),
+  // Whether tool calls are served when PII masking is unavailable.
+  //
+  // The dispatch privacy seam is closed — `ToolDispatchService` now replicates
+  // the chat path's data-plane boundary — but it closed it at PARITY, which
+  // includes two behaviours that are wrong for an untrusted caller: masking
+  // fails OPEN on a provider error, and no installed privacy provider means
+  // results pass through unchanged. The endpoint overrides both (see
+  // `mcp/publicMcpPrivacy.ts`); this flag is the escape hatch for the coarsest
+  // one — an install with no privacy provider at all.
+  //
+  // Default false ⇒ tools/list works, tools/call refuses and says why.
+  // Set true ONLY on a deliberate, documented operator decision — e.g. an
+  // install whose allowlisted tools provably carry no personal data.
+  PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING: devFlag(),
 
-  // Epic #470 W4 — LLM budget hard-enforcement ceiling (spec §5, Forge W4 #2).
-  // The proxy clamps a job's `max_tokens` to this so the buffered enforcement path
-  // can never overshoot the budget by an unbounded single response.
-  DEV_JOB_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+  // --- Long-running task seam (W2-2, issue #543) ------------------------------
+  // Generic, subsystem-agnostic. These sat interleaved with the extracted
+  // subsystem's keys before epic #470 C10 and are core: they govern the
+  // `<tool>_start`/`_status`/`_list` triple any slow tool can opt into.
+  //
+  // Comma-separated sub-agent tool names (`ask_<slug>`) that ALSO get the
+  // non-blocking triple, so a slow sub-agent stops blocking the chat turn it
+  // was delegated from. The blocking `ask_<slug>` tool stays registered either
+  // way; empty (the default) means every sub-agent keeps today's inline
+  // behaviour exactly.
+  LONG_RUNNING_SUBAGENT_TOOLS: z.string().default(''),
+  // Orphan windows for the long-running task seam: a live task silent this long
+  // is failed as abandoned, and a finished task is retained this long so a
+  // following turn can still collect its result.
+  LONG_RUNNING_TASK_STALE_MS: z.coerce.number().int().positive().default(900_000),
+  LONG_RUNNING_TASK_RETAIN_MS: z.coerce.number().int().positive().default(3_600_000),
 
-  // Epic #470 W4 — FlyMachinesBackend (spec §2): one ephemeral Fly Machine per job
-  // in a DEDICATED runner app (NEVER odoo-bot-middleware). The backend is registered
-  // ONLY when DEV_FLY_RUNNER_APP is set (absent ⇒ not registered, like the docker
-  // backend keys on the daemon url). The operator MUST have run
-  // `flyctl apps create <app> --org <org>` and stored a deploy token in Vault at
-  // `core:dev-platform` key `fly/deploy_token` — the wiring logs a hint at boot.
-  DEV_FLY_RUNNER_APP: optionalNonEmpty(z.string().min(1)),
-  // Fly-injected env; presence is the on-Fly detector (picks the internal Machines
-  // API + `.internal` phone-home address). Absent off-Fly ⇒ public endpoints.
+  // Fly-injected env; presence is the on-Fly detector. It describes the HOST,
+  // not any one feature, so it survives the epic #470 C10 extraction even
+  // though the extracted Fly runner backend was its only reader.
   FLY_APP_NAME: optionalNonEmpty(z.string().min(1)),
-  // Digest-pinned runner image for Fly machines. Falls back to
-  // DEV_RUNNER_DEFAULT_IMAGE when unset (both must be digest-pinned, never a tag).
-  DEV_RUNNER_IMAGE: optionalNonEmpty(z.string().min(1)),
-  // Operator override for the shim phone-home URL. Default: on-Fly
-  // `http://$FLY_APP_NAME.internal:8080`, else PUBLIC_BASE_URL.
-  DEV_FLY_PHONE_HOME_URL: optionalNonEmpty(z.string().min(1)),
-  // Guest ceilings — a per-job request over these is CLAMPED, never honored.
-  DEV_FLY_MAX_CPUS: z.coerce.number().int().positive().default(4),
-  DEV_FLY_MAX_MEMORY_MB: z.coerce.number().int().positive().default(8192),
-  // Default guest size a Fly machine boots with (clamped to the ceilings above).
-  DEV_FLY_GUEST_CPUS: z.coerce.number().int().positive().default(1),
-  DEV_FLY_GUEST_MEMORY_MB: z.coerce.number().int().positive().default(1024),
-  // Optional Fly region placement (Fly picks one when unset).
-  DEV_FLY_REGION: optionalNonEmpty(z.string().min(1)),
+
+  // #294 — "Sign in with ChatGPT" (experimental). Registers the `openai-chatgpt`
+  // subscription provider (OAuth device flow → the ChatGPT/Codex Responses
+  // backend). OFF by default: it drives programmatic calls through a consumer
+  // ChatGPT subscription, a ToS grey area — the operator must opt in explicitly.
+  CHATGPT_SUBSCRIPTION_EXPERIMENTAL: devFlag(),
+
 });
 
-export type Config = z.infer<typeof ConfigSchema>;
+type ParsedConfig = z.infer<typeof ConfigSchema>;
+
+/** The core config: exactly what the schema parses. */
+export type Config = ParsedConfig;
 
 // Relative path-like settings are resolved against the middleware root so the server
 // works regardless of the CWD (local dev, Docker, Fly machine, tests).
@@ -636,35 +675,6 @@ export function resolveStateDir(
   return resolvePath(zodDefaultResolved);
 }
 
-/**
- * Boot-time refusals for the dev platform's two credential-exposing modes
- * (epic #470 W0). These are hard refusals, NOT warnings: an operator who turns
- * on subscription mode or the unsafe local backend without the paired safety
- * variable must not boot. Pure + exported so the wire unit's test can drive it
- * without importing the whole config module.
- */
-export function devPlatformBootRefusals(cfg: {
-  subscriptionMode: boolean;
-  subscriptionAck: string | undefined;
-  unsafeLocal: boolean;
-  localUid: number | undefined;
-}): string[] {
-  const refusals: string[] = [];
-  if (cfg.subscriptionMode && !cfg.subscriptionAck) {
-    refusals.push(
-      'DEV_PLATFORM_SUBSCRIPTION_MODE=true requires DEV_PLATFORM_SUBSCRIPTION_ACK to be set ' +
-        '(the operator must acknowledge that subscription jobs run the CLI credential inside the runner)',
-    );
-  }
-  if (cfg.unsafeLocal && cfg.localUid === undefined) {
-    refusals.push(
-      'DEV_PLATFORM_UNSAFE_LOCAL=true requires DEV_PLATFORM_LOCAL_UID ' +
-        '(the jailed shim must run as a dedicated unprivileged uid, never root)',
-    );
-  }
-  return refusals;
-}
-
 function loadConfig(): Config {
   const parsed = ConfigSchema.safeParse(process.env);
   if (!parsed.success) {
@@ -673,14 +683,17 @@ function loadConfig(): Config {
       .join('\n');
     throw new Error(`Invalid configuration:\n${issues}`);
   }
-  const refusals = devPlatformBootRefusals({
-    subscriptionMode: parsed.data.DEV_PLATFORM_SUBSCRIPTION_MODE,
-    subscriptionAck: parsed.data.DEV_PLATFORM_SUBSCRIPTION_ACK,
-    unsafeLocal: parsed.data.DEV_PLATFORM_UNSAFE_LOCAL,
-    localUid: parsed.data.DEV_PLATFORM_LOCAL_UID,
-  });
-  if (refusals.length > 0) {
-    throw new Error(`Invalid configuration:\n${refusals.map((r) => `  - ${r}`).join('\n')}`);
+  // #432 — an updater URL without its shared secret would leave the kernel
+  // calling an endpoint that can replace every container in the stack with no
+  // credential. Refuse at boot rather than fail at the one moment an operator
+  // is trying to update.
+  if (
+    parsed.data.OMADIA_UPDATER_URL !== undefined &&
+    (parsed.data.OMADIA_UPDATER_TOKEN ?? '').length === 0
+  ) {
+    throw new Error(
+      'Invalid configuration:\n  - OMADIA_UPDATER_TOKEN: required whenever OMADIA_UPDATER_URL is set',
+    );
   }
   return {
     ...parsed.data,
@@ -694,10 +707,6 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
-    // Runner phone-home base URL: explicit override, else loopback + PORT.
-    DEV_PLATFORM_RUNNER_BASE_URL:
-      parsed.data.DEV_PLATFORM_RUNNER_BASE_URL ?? `http://127.0.0.1:${String(parsed.data.PORT)}`,
-    DEV_PLATFORM_WORKSPACE_DIR: resolvePath(parsed.data.DEV_PLATFORM_WORKSPACE_DIR),
   };
 }
 

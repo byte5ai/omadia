@@ -19,6 +19,10 @@ import {
   type UploadedPackage,
 } from './uploadedPackageStore.js';
 import { extractZipToDir, ZipExtractionError } from './zipExtractor.js';
+import {
+  formatArbitraryValueOffenders,
+  scanForArbitraryTailwindValues,
+} from './tailwindArbitraryValueScan.js';
 
 /**
  * Accepts an uploaded zip, validates it and registers the contained agent
@@ -102,6 +106,27 @@ export interface PackageUploadServiceDeps {
     }): Promise<void>;
   };
   log?: (msg: string) => void;
+}
+
+/**
+ * #789 — the operator's explicit opt-out from the bundled-id refusal.
+ *
+ * An env var rather than a request flag on purpose: the refusal protects the
+ * host from the package, so the permission has to come from the person who
+ * runs the host, not from whoever is holding the zip. A request parameter
+ * would let the uploader authorise their own override, which is the shape of
+ * the bug this closes rather than a fix for it.
+ *
+ * Read per call rather than captured at module load, so a test — or an
+ * operator restarting with the flag set — does not depend on import order.
+ */
+const BUNDLED_ID_OVERRIDE_ENV = 'PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE';
+
+/** Exactly `'1'`. A bare `true`/`yes` does not count: one spelling means one
+ *  thing to grep for during an incident, and no near-miss silently disarms
+ *  the gate. */
+function allowBundledIdOverride(): boolean {
+  return process.env[BUNDLED_ID_OVERRIDE_ENV] === '1';
 }
 
 export class PackageUploadService {
@@ -237,9 +262,62 @@ export class PackageUploadService {
         );
       }
 
+      // --- 8b. UI bundle: no arbitrary Tailwind values ----------------------
+      // Epic #470 C8. A plugin's `ui/` bundle styles itself exclusively from
+      // the stylesheet core generates and serves, which carries a finite,
+      // documented vocabulary. A class outside it renders unstyled and says
+      // nothing about why, so an arbitrary value is rejected here, where the
+      // answer can name the file and the line. `tailwindArbitraryValueScan.ts`
+      // documents the two patterns and their known limits.
+      const uiOffenders = scanForArbitraryTailwindValues(
+        await readUiBundleScripts(packageRoot),
+      );
+      if (uiOffenders.length > 0) {
+        return fail(
+          'package.ui_arbitrary_tailwind_value',
+          'The ui/ bundle uses Tailwind arbitrary values. Plugins may only use the ' +
+            'vocabulary core pre-generates (see plugin-ui-vocabulary.md in the ' +
+            'epic #470 spec directory); an undeclared class renders unstyled.\n' +
+            formatArbitraryValueOffenders(uiOffenders),
+          { offenders: uiOffenders },
+        );
+      }
+
       // --- 9. ID-Konflikt-Check --------------------------------------------
       const existingUploaded = this.deps.store.get(plugin.id);
       const catalogEntry = this.deps.catalog.get(plugin.id);
+
+      // #789 — a package claiming an id this image SHIPS is refused, and this
+      // check is deliberately not conditioned on `existingUploaded`.
+      //
+      // The check below it is `catalogEntry && !existingUploaded`. That is
+      // right for an ordinary collision (re-uploading your own plugin must
+      // keep working) but wrong for a bundled id, because it opens once and
+      // stays open: an id can be uploaded while it is not yet bundled and
+      // become bundled in a later release, and from then on `existingUploaded`
+      // is truthy and every subsequent zip for that id sails past. The catalog
+      // erodes the same way — once an upload wins the collision the entry
+      // under that key reads `origin: 'installed'`, so an origin test against
+      // `catalogEntry` would be asking the shadow about the thing it hides.
+      // `isBundledId` is asked instead: it records what the loader was OFFERED
+      // as bundled, before the collision resolved.
+      //
+      // What is protected is not the id but what the id inherits.
+      // `LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20` is keyed by plugin id,
+      // and `@omadia/orchestrator`'s row alone carries nineteen capabilities,
+      // `graphPool` and `tigrisStore` among them. The grant gate already
+      // refuses those to a shadowing package (`legacyServiceGrantsFor`); this
+      // is the second lock — on the door rather than on the safe.
+      if (this.deps.catalog.isBundledId(plugin.id) && !allowBundledIdOverride()) {
+        return fail(
+          'package.id_conflict_bundled',
+          `Plugin-ID "${plugin.id}" gehört zu einem mitgelieferten (bundled) Plugin dieser Installation. ` +
+            'Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. ' +
+            `Wenn der Override bewusst gewollt ist, setze ${BUNDLED_ID_OVERRIDE_ENV}=1 in der Middleware-Umgebung.`,
+          { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
+        );
+      }
+
       if (catalogEntry && !existingUploaded) {
         return fail(
           'package.id_conflict_builtin',
@@ -503,6 +581,61 @@ async function resolvePackageRoot(stagingRoot: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+/**
+ * Reads every `.js` / `.mjs` below the staged package's `ui/` directory for
+ * the arbitrary-value scan. Bounded on purpose: a bundle past the cap is left
+ * unscanned rather than allowed to turn ingest into an OOM. `node_modules`
+ * and dot-directories are skipped — the served bundle never reaches into them
+ * (`pluginUiStatic.ts` serves the `ui/` tree only, and the extractor rejects
+ * symlinks outright).
+ */
+const UI_SCAN_MAX_FILES = 200;
+const UI_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+
+async function readUiBundleScripts(
+  packageRoot: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const uiRoot = path.join(packageRoot, 'ui');
+  const out: Array<{ path: string; content: string }> = [];
+  let budget = UI_SCAN_MAX_BYTES;
+
+  const walk = async (dir: string): Promise<void> => {
+    if (out.length >= UI_SCAN_MAX_FILES || budget <= 0) return;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= UI_SCAN_MAX_FILES || budget <= 0) return;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(abs);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext !== '.js' && ext !== '.mjs') continue;
+      let content: string;
+      try {
+        content = await fs.readFile(abs, 'utf-8');
+      } catch {
+        continue;
+      }
+      budget -= Buffer.byteLength(content);
+      out.push({
+        path: path.relative(packageRoot, abs).split(path.sep).join('/'),
+        content,
+      });
+    }
+  };
+
+  await walk(uiRoot);
+  return out;
 }
 
 async function readSubdirs(dir: string): Promise<Dirent[]> {

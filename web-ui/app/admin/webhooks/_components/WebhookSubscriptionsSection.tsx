@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -32,6 +32,7 @@ type State =
  */
 export function WebhookSubscriptionsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.subscriptions');
+  const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -235,8 +236,8 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
                               <td className="py-1 pr-3">{d.status}</td>
                               <td className="py-1 pr-3">{d.attempts}</td>
                               <td className="py-1 pr-3">{d.lastError ?? '—'}</td>
-                              <td className="py-1 pr-3">{d.status === 'pending' ? new Date(d.nextAttemptAt).toLocaleString() : '—'}</td>
-                              <td className="py-1">{new Date(d.createdAt).toLocaleString()}</td>
+                              <td className="py-1 pr-3">{d.status === 'pending' ? format.dateTime(new Date(d.nextAttemptAt)) : '—'}</td>
+                              <td className="py-1">{format.dateTime(new Date(d.createdAt))}</td>
                             </tr>
                           ))}
                         </tbody>

@@ -29,11 +29,6 @@ import {
   type LlmProvider,
   type McpAccessor,
   type McpAccessorToolDescriptor,
-  type DevJobsAccessor,
-  type DevJobCreateRequest,
-  type DevJobDescriptor,
-  type DevJobEventRecord,
-  type DevJobStatus,
   type MemoryAccessor,
   type MemoryStore,
   type MigrationContext,
@@ -57,7 +52,14 @@ import {
   type EmitResult,
   EventNotDeclaredError,
   ConductorUnavailableError,
+  type ServiceCaller,
+  type SqlAccessor,
+  type MigrationReport,
+  type LedgerSeedReport,
+  type SeedLedgerOptions,
+  SqlMigrationError,
 } from '@omadia/plugin-api';
+import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
 import { turnContext } from '@omadia/orchestrator';
 import {
@@ -90,12 +92,29 @@ import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
 import type { NotificationRouter } from './notificationRouter.js';
 import type { UiRouteCatalog } from './uiRouteCatalog.js';
 import { createHttpAccessor, isAuditMode, type AuditMode } from './httpAccessor.js';
+import { audienceDeniesHost } from './audienceHostPolicy.js';
 import { createNetAccessor, type NetTarget } from './netAccessor.js';
 import { signFlowState, verifyFlowState } from './flowState.js';
 import type { PluginStatusRegistry } from './pluginStatusRegistry.js';
 import { createMemoryAccessor } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
+import {
+  createServiceGrantGate,
+  legacyServiceGrantsFor,
+} from './pluginServiceGrants.js';
+import {
+  createSqlGate,
+  DEFAULT_MIGRATIONS_DIR,
+  POOL_SHAPED_CAPABILITIES,
+  sqlPermissionOf,
+} from './pluginSqlGrants.js';
+import { borrowPool } from './borrowedPool.js';
+import { runPluginMigrations } from './pluginMigrations.js';
+import {
+  CORE_MIGRATION_DONOR_LEDGER,
+  seedPluginLedgerFromDonor,
+} from './pluginMigrationHandoff.js';
 
 /**
  * The plugin-facing types (PluginContext, SecretsAccessor, ConfigAccessor,
@@ -174,6 +193,37 @@ export interface CreatePluginContextOptions {
    *  is `undefined` and any plugin admin-router relying on it MUST fail closed
    *  (see the `PluginContext.operatorAuth` doc comment). */
   operatorAuth?: OperatorAuthAccessor;
+  /**
+   * Epic #470 C7 / G4 — whether the operator has granted this plugin
+   * `permissions.sql`, resolved BEFORE the context is built.
+   *
+   * It is a boolean and not a store because `ctx.services.get` is synchronous
+   * and cannot await a database read. Doing the lookup here would force either
+   * an async accessor (a breaking change to every plugin) or a cached
+   * best-effort answer that is permissive while the cache is cold — and a
+   * permission that is permissive while cold is not a permission. So the read
+   * happens once, at activate, where awaiting is free, and the gate is a pure
+   * function of the answer.
+   *
+   * Absent → ungranted. Test and migration contexts that omit it get no
+   * database access, which is the correct default for a context that was never
+   * meant to have any.
+   *
+   * The corollary, stated plainly because it is security-relevant: since this
+   * is resolved ONCE, revoking the operator's grant does not disarm a plugin
+   * that is already running. It stops the next activation. An operator who
+   * needs the access gone immediately must deactivate/reactivate the plugin.
+   * See `PluginSqlGrantStore.revoke`.
+   */
+  sqlGranted?: boolean;
+  /**
+   * Absolute package root, used to resolve `permissions.sql.migrations` and to
+   * prove the resolved directory did not escape it. Absent → `ctx.sql` is not
+   * built even for a granted plugin: without a root there is nothing to
+   * contain a path against, and an uncontained path is how a manifest turns
+   * `../../` into arbitrary SQL at boot.
+   */
+  packageRoot?: string;
   logger?: (...args: unknown[]) => void;
 }
 
@@ -233,9 +283,78 @@ export function createPluginContext(
     domain = `unknown.${safeId}`;
   }
 
+  // Epic #470 (B1) — the consumer seam `serviceRegistry.ts` always said would
+  // exist. `get` resolves only capabilities this plugin's manifest declares;
+  // everything else throws `ServiceNotDeclaredError`. Built once per context:
+  // a manifest cannot change under a live plugin.
+  const assertServiceGranted = createServiceGrantGate({
+    agentId,
+    catalog,
+    // #788 — the registry, not the manifest, answers whether this plugin has
+    // actually provided the name. `agentId` is the kernel-known id, so the
+    // plugin cannot claim somebody else's registration; and the closure is
+    // evaluated per `get`, because at the moment this context is built the
+    // plugin's `activate()` has not run and it has provided nothing yet.
+    isRegisteredByPlugin: (name) => serviceRegistry.providedBy(agentId, name),
+    log,
+  });
+
+  // Epic #470 (C7 / G4) — the SECOND gate, for pool-shaped capabilities only.
+  // `assertServiceGranted` answers "did the author declare this?"; this answers
+  // "may this plugin touch the operator's database?". A `requires:` line is the
+  // author's own say-so, and that is the wrong bar for handing over the pool
+  // core writes user data through — so `graphPool` additionally needs a
+  // `permissions.sql` declaration and an operator grant.
+  const sqlPermission = sqlPermissionOf(agentId, catalog);
+  const assertSqlAccess = createSqlGate({
+    agentId,
+    catalog,
+    granted: opts.sqlGranted ?? false,
+    // One migration ramp, not two: the pool gate honours exactly the pairs
+    // C2b's dated allowlist already grandfathered, and retires with it.
+    // Read through the same origin-aware accessor (#789) — reaching for the
+    // raw table here would have handed an upload shadowing a bundled id the
+    // operator's Postgres pool through the second gate after the first one
+    // stopped granting it.
+    legacyCapabilities: legacyServiceGrantsFor(agentId, catalog),
+    log,
+  });
+
+  // Caller identity handed to per-caller service factories. Built from the
+  // kernel-known `agentId`, never from an argument — that is the whole point
+  // (§2.2: a self-attributed accessor is not an accessor, it is a suggestion).
+  const serviceCaller: ServiceCaller = Object.freeze({
+    agentId,
+    pluginId: agentId,
+  });
+
   const services: ServicesAccessor = {
     get<T>(name: string): T | undefined {
-      return serviceRegistry.get<T>(name);
+      assertServiceGranted(name);
+      // Order matters: declaration first, permission second. A plugin that
+      // declared neither should hear about the manifest line it is missing
+      // before it hears about a grant it could not have obtained anyway.
+      assertSqlAccess(name);
+      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
+      // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
+      // tears down the connection pool core writes user data through. Applied
+      // here, at the plugin-facing seam, so core's own
+      // `serviceRegistry.get('graphPool')` keeps the real object.
+      return resolved !== undefined && POOL_SHAPED_CAPABILITIES.has(name)
+        ? (borrowPool(resolved as Pool, agentId) as T)
+        : resolved;
+    },
+    // #795 — the accessor an `optional_requires:` entry is consumed
+    // through. Same gates in the same order as `get`: a name the manifest
+    // declares nowhere is still a manifest bug and still throws, because a
+    // typo that quietly became `undefined` is precisely the failure the
+    // declaration gate exists to prevent. What differs is the contract the
+    // caller signs up to — `undefined` is an answer here, not a symptom —
+    // and the fact that the kernel never held the plugin's activation back
+    // waiting for a provider.
+    getOptional<T>(name: string): T | undefined {
+      return services.get<T>(name);
     },
     has(name: string): boolean {
       return serviceRegistry.has(name);
@@ -243,10 +362,32 @@ export function createPluginContext(
     // Owner attribution comes from the kernel-known `agentId`, never from
     // the caller — it is what lets `disposeBySource(agentId)` unregister a
     // plugin's services on deactivate.
+    //
+    // `provide` is deliberately NOT gated on a declaration: it cannot take a
+    // name away from anyone. `ServiceRegistry.provide` throws
+    // duplicate-provider when the name is already live, so the worst a plugin
+    // can do is claim a name nobody holds — and claiming it is what
+    // `provides:` is for.
     provide<T>(name: string, impl: T): () => void {
       return serviceRegistry.provide(name, impl, agentId);
     },
+    // #788 (follow-up) — `replace` IS gated, because it is the one verb that
+    // takes a live name away from its owner. It only works when a provider
+    // already exists, so an ungated `replace` let any activated plugin swap
+    // out core's `graphPool`/`anthropicClient` — or another plugin's service —
+    // for an implementation of its own, which every later consumer in the
+    // process then resolves. It also minted the very fact the #788 gate reads:
+    // `ServiceRegistry.track` counts a `replace` as a live registration, so an
+    // undeclared `replace` turned a bare `provides:` claim into a
+    // 'self-provided' grant.
+    //
+    // Same gate as `get` on purpose: a name a plugin may not read is a name it
+    // may not redefine. The legal wrapping pattern is unaffected — a decorator
+    // declares the name it wraps under `requires:`/`optional_requires:`
+    // (`@omadia/orchestrator-extras` declares `knowledgeGraph@^1`), and a
+    // plugin re-wrapping its OWN registration is already 'self-provided'.
     replace<T>(name: string, impl: T): () => void {
+      assertServiceGranted(name, 'replace');
       return serviceRegistry.replace(name, impl, agentId);
     },
   };
@@ -270,7 +411,10 @@ export function createPluginContext(
   // — the active Agent slug is resolved from the turn context at call time, so
   // the same plugin invoked under two Agents writes to two disjoint trees.
   // Plugins cannot see each other's — or another orchestrator's — memory.
-  const memoryStoreService = serviceRegistry.get<MemoryStore>('memoryStore');
+  const memoryStoreService = serviceRegistry.get<MemoryStore>(
+    'memoryStore',
+    serviceCaller,
+  );
   const memory: MemoryAccessor | undefined =
     memoryStoreService && memoryDeclared(agentId, catalog)
       ? createMemoryAccessor({
@@ -404,6 +548,11 @@ export function createPluginContext(
           ...(auditConfig.auditMode
             ? { auditMode: auditConfig.auditMode }
             : {}),
+          // #575 — the room's host prohibitions, asked per request rather than
+          // captured here: the accessor is built once at activation and the
+          // audience changes within a turn, so a value bound now would be a
+          // snapshot of a room that no longer exists.
+          audienceDeniesHost,
         })
       : undefined;
 
@@ -450,6 +599,13 @@ export function createPluginContext(
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
           : {}),
+        // #542 — carry the plugin's declared write capabilities into the registry
+        // so `ToolDispatchService` can give this tool duplicate-write protection.
+        // Without this forward, only kernel-internal registrations could declare
+        // themselves and no real plugin (Odoo, M365) would ever be protected.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -470,6 +626,11 @@ export function createPluginContext(
         ...(options?.attachmentSink
           ? { attachmentSink: options.attachmentSink }
           : {}),
+        // #542 — same forward as `register()` above; a handler-only tool is
+        // dispatchable by name, so it needs the same protection.
+        ...(options?.writeCapabilities !== undefined
+          ? { writeCapabilities: options.writeCapabilities }
+          : {}),
       });
     },
     async invoke(name, input) {
@@ -481,11 +642,47 @@ export function createPluginContext(
     },
   };
 
+  // `permissions.public_paths` as declared in THIS plugin's manifest. Read
+  // once, from the same catalogue entry `toolPluginRuntime` later claims
+  // against, so the register-time gate and the activation-time claim can never
+  // disagree about what was declared.
+  const declaredPublicPaths: readonly string[] =
+    catalog.get(agentId)?.plugin.permissions_summary?.public_paths ?? [];
+
   // Routes accessor: append to the kernel's route queue. The kernel mounts
   // after all plugins have activated.
+  //
+  // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // The route registry is a generic Express concern that must not know about
+  // manifests; the grant registry cannot answer yet (claims happen AFTER
+  // activate(), by design — see toolPluginRuntime.activate). What exists at
+  // registration time is the manifest declaration, and it is the right gate:
+  // a plugin may only opt a prefix out of the kernel session gate, or ask for
+  // the global pre-auth raw-body slot, if it ASKED for that prefix in
+  // `permissions.public_paths`, which the operator saw in the install dialog.
+  //
+  // Declaration is necessary, not sufficient. Being served without a session
+  // additionally needs exclusive ownership and operator consent, both checked
+  // at request time by the C4 mount. And `body:'raw'` is just as operator-
+  // visible a decision: the prefix is buffered by a GLOBAL mount that runs
+  // before authentication, for anonymous callers, and it changes what every
+  // request under that prefix looks like. So the failure modes stack the safe
+  // way: declared-but-unconsented is claimed and unreachable-without-a-
+  // session; undeclared is not registerable at all.
   const routes: RoutesAccessor = {
-    register(prefix, router) {
-      return opts.routeRegistry.register(prefix, router, agentId);
+    register(prefix, router, options) {
+      const auth = options?.auth ?? 'session';
+      const body = options?.body ?? 'json';
+      if (auth !== 'session' || body === 'raw') {
+        assertPrefixIsDeclared(
+          agentId,
+          prefix,
+          auth !== 'session' ? `auth:'${auth}'` : `body:'${body}'`,
+          declaredPublicPaths,
+        );
+      }
+      return opts.routeRegistry.register(prefix, router, agentId, options);
     },
   };
 
@@ -643,8 +840,10 @@ export function createPluginContext(
   // Status accessor (spec 004): the plugin pushes its operator-facing action
   // status to the kernel registry. Self-scoped to this plugin id — a plugin
   // cannot report another's status. No-op when no registry was threaded
-  // (migration/test contexts). `clear()` and `report({state:'ok'})` both leave
-  // no badge; the value is normalized to guard against malformed input.
+  // (migration/test contexts). `clear()` and a BARE `report({state:'ok'})`
+  // both leave no badge; an ok WITH a title renders as a positive
+  // "connection verified" badge. Values are normalized against malformed
+  // input and `checked_at` is kernel-stamped.
   const statusRegistry = opts.pluginStatusRegistry;
   const status: StatusAccessor = {
     report(next) {
@@ -657,8 +856,14 @@ export function createPluginContext(
         state,
         ...(typeof next?.title === 'string' ? { title: next.title } : {}),
         ...(typeof next?.detail === 'string' ? { detail: next.detail } : {}),
+        // Kernel-stamped, never taken from the caller: the time a status
+        // claims to have been checked must be the time it was reported.
+        checked_at: new Date().toISOString(),
       };
-      if (state === 'ok') {
+      if (state === 'ok' && normalized.title === undefined) {
+        // Bare ok stays the clear() synonym (previewRuntime's synthetic
+        // markers and every pre-existing caller rely on it). An ok WITH a
+        // title is a deliberate, renderable "connection verified" signal.
         statusRegistry.clear(agentId);
         return;
       }
@@ -712,6 +917,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     permissions: extractSubAgentPermissions(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
   });
 
   // OB-29-2 — KnowledgeGraphAccessor: present iff the manifest declares
@@ -721,6 +927,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     entitySystems: extractEntitySystems(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
   });
 
   // OB-29-3 — LlmAccessor: present iff the manifest declares
@@ -729,6 +936,7 @@ export function createPluginContext(
     callerAgentId: agentId,
     permissions: extractLlmPermissions(agentId, catalog),
     serviceRegistry,
+    serviceCaller,
     activeProvider: resolveActiveProvider(registry, agentId),
     vault,
   });
@@ -750,34 +958,51 @@ export function createPluginContext(
   // so the #462 audit log and the scan-policy dispatch guard see the plugin.
   const mcpAllowed = catalog.get(agentId)?.plugin.permissions_summary.mcp === true;
   const mcp: McpAccessor | undefined = mcpAllowed
-    ? createPluginMcpAccessor(agentId, serviceRegistry)
-    : undefined;
-
-  // Epic #470 W3 — ctx.devJobs: present iff the manifest declares
-  // permissions.devJobs. The backing host service ('devJobs') is resolved
-  // LAZILY per call (mirrors ctx.mcp); grants are read live so an operator
-  // revoke applies without re-activation. Scoped to operator-granted repos —
-  // fail-closed on everything else.
-  const devJobsAllowed =
-    catalog.get(agentId)?.plugin.permissions_summary.dev_jobs === true;
-  const devJobs: DevJobsAccessor | undefined = devJobsAllowed
-    ? createPluginDevJobsAccessor(agentId, serviceRegistry)
+    ? createPluginMcpAccessor(agentId, serviceRegistry, serviceCaller)
     : undefined;
 
   const eventsAllowed = catalog.get(agentId)?.plugin.permissions_summary.events_emit === true;
   const events: EventsAccessor | undefined = eventsAllowed
     ? {
         emit(id: string, payload: Record<string, unknown>) {
-          const router = serviceRegistry.get<ConductorEventRouterLike>('conductorEventRouter');
+          const router = serviceRegistry.get<ConductorEventRouterLike>(
+            'conductorEventRouter',
+            serviceCaller,
+          );
           if (!router) throw new ConductorUnavailableError();
           // Deny-by-default fails CLOSED: with no catalog we cannot prove the plugin declared
           // this id, so we reject rather than allow an unverified emit.
-          const eventCatalog = serviceRegistry.get<EventCatalogAllows>('eventCatalogRegistry');
+          const eventCatalog = serviceRegistry.get<EventCatalogAllows>(
+            'eventCatalogRegistry',
+            serviceCaller,
+          );
           if (!eventCatalog || !eventCatalog.allows(agentId, id)) throw new EventNotDeclaredError(agentId, id);
           return router.emit(id, payload, agentId);
         },
       }
     : undefined;
+
+  // Epic #470 C7 / G4 — `ctx.sql` exists only for a plugin that declared
+  // `permissions.sql`, was granted it, and has a package root to resolve
+  // migration paths against. Any one missing and the accessor is simply
+  // absent, which is the shape every other gated accessor here uses: a plugin
+  // guards with `if (ctx.sql)` and an older core, an undeclared permission and
+  // a withheld grant are indistinguishable — all three meaning "do not touch
+  // the database".
+  const sql: SqlAccessor | undefined =
+    sqlPermission && (opts.sqlGranted ?? false) && opts.packageRoot
+      ? createSqlAccessor({
+          agentId,
+          ledger: sqlPermission.ledger,
+          packageRoot: opts.packageRoot,
+          defaultDir: sqlPermission.migrations ?? DEFAULT_MIGRATIONS_DIR,
+          serviceRegistry,
+          serviceCaller,
+          log: (msg) => {
+            log(msg);
+          },
+        })
+      : undefined;
 
   return {
     agentId,
@@ -785,6 +1010,7 @@ export function createPluginContext(
     secrets,
     config,
     services,
+    ...(sql ? { sql } : {}),
     tools,
     routes,
     jobs,
@@ -799,7 +1025,6 @@ export function createPluginContext(
     ...(knowledgeGraph ? { knowledgeGraph } : {}),
     ...(llm ? { llm } : {}),
     ...(mcp ? { mcp } : {}),
-    ...(devJobs ? { devJobs } : {}),
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
@@ -807,6 +1032,181 @@ export function createPluginContext(
     status,
     log,
   };
+}
+
+interface SqlAccessorOptions {
+  readonly agentId: string;
+  readonly ledger: string;
+  readonly packageRoot: string;
+  readonly defaultDir: string;
+  readonly serviceRegistry: ServiceRegistry;
+  readonly serviceCaller: ServiceCaller;
+  readonly log: (msg: string) => void;
+}
+
+/**
+ * Build `ctx.sql` for a plugin that has cleared both halves of the gate.
+ *
+ * The pool is resolved per CALL, not captured at construction. `graphPool` is
+ * wired late in `index.ts` (long after the first contexts are built) and a
+ * pool captured at activate could be a stale handle to a torn-down module. A
+ * per-call lookup also keeps the kernel attribution honest — this resolution
+ * bypasses the plugin-facing gate deliberately, because the gate has already
+ * run to decide this accessor exists at all, and re-running it here would gate
+ * the kernel's own call on the plugin's manifest.
+ */
+function createSqlAccessor(opts: SqlAccessorOptions): SqlAccessor {
+  const { agentId, ledger, packageRoot, defaultDir, log } = opts;
+
+  return {
+    ledger,
+    async runMigrations(runOpts): Promise<MigrationReport> {
+      const pool = opts.serviceRegistry.get<Pool>(
+        'graphPool',
+        opts.serviceCaller,
+      );
+      if (!pool) {
+        throw new SqlMigrationError(
+          agentId,
+          ledger,
+          "no 'graphPool' is registered — the operator granted permissions.sql but the middleware is running without a database",
+        );
+      }
+      return runPluginMigrations({
+        pool,
+        pluginId: agentId,
+        ledger,
+        dir: resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          runOpts?.dir ?? defaultDir,
+        ),
+        allowChecksumDrift: runOpts?.allowChecksumDrift ?? false,
+        log,
+      });
+    },
+
+    async seedLedger(seedOpts): Promise<LedgerSeedReport> {
+      const pool = opts.serviceRegistry.get<Pool>(
+        'graphPool',
+        opts.serviceCaller,
+      );
+      if (!pool) {
+        throw new SqlMigrationError(
+          agentId,
+          ledger,
+          "no 'graphPool' is registered - the operator granted permissions.sql but the middleware is running without a database",
+        );
+      }
+      const entries = validateSeedEntries(agentId, ledger, seedOpts);
+      return seedPluginLedgerFromDonor({
+        pool,
+        pluginId: agentId,
+        ledger,
+        dir: resolveMigrationsDir(
+          agentId,
+          ledger,
+          packageRoot,
+          seedOpts.dir ?? defaultDir,
+        ),
+        // Core's ledger, named by CORE. The plugin supplies its filenames and
+        // its witnesses - the two things only the plugin knows - and never
+        // gets to say which table those rows are read from, which is what
+        // keeps one plugin out of another's migration history.
+        donor: {
+          ledgerTable: CORE_MIGRATION_DONOR_LEDGER,
+          filenames: entries.map((e) => e.filename),
+        },
+        witnesses: Object.fromEntries(entries.map((e) => [e.filename, e.witnessSql])),
+        dryRun: seedOpts.dryRun ?? false,
+        log,
+      });
+    },
+  };
+}
+
+/**
+ * Reject a malformed entry list before a connection is taken.
+ *
+ * `entries` crosses the plugin boundary as plain data, so none of its shape is
+ * guaranteed by the type system at runtime. Duplicates matter in particular: a
+ * filename listed twice with two different witnesses would make the outcome
+ * depend on iteration order, and `Object.fromEntries` would silently keep the
+ * last one.
+ */
+function validateSeedEntries(
+  agentId: string,
+  ledger: string,
+  seedOpts: SeedLedgerOptions,
+): readonly { filename: string; witnessSql: string }[] {
+  const entries = seedOpts.entries;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new SqlMigrationError(
+      agentId,
+      ledger,
+      'seedLedger requires a non-empty `entries` list - a handoff that claims nothing is a caller bug, not a no-op',
+    );
+  }
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    const filename: unknown = entry?.filename;
+    const witnessSql: unknown = entry?.witnessSql;
+    if (typeof filename !== 'string' || filename.length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        'every seedLedger entry needs a non-empty `filename`',
+      );
+    }
+    if (typeof witnessSql !== 'string' || witnessSql.trim().length === 0) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' has no witnessSql - a file with no proof is never seeded, so an empty witness is a mistake rather than a way to force one`,
+      );
+    }
+    if (seen.has(filename)) {
+      throw new SqlMigrationError(
+        agentId,
+        ledger,
+        `seedLedger entry '${filename}' is listed twice - two witnesses for one file makes the outcome depend on iteration order`,
+      );
+    }
+    seen.add(filename);
+    return { filename, witnessSql };
+  });
+}
+
+
+/**
+ * Resolve a migrations directory inside the package root, and prove it stayed
+ * there.
+ *
+ * The manifest is plugin-supplied, so `migrations: ../../../etc` is a string a
+ * package can ship. `zipExtractor.ts` allows `.sql` in uploaded packages
+ * precisely because "every migrator resolves its directory from its own
+ * `import.meta.url`" — this runner takes a directory from a manifest instead,
+ * so it has to re-establish that containment itself rather than inherit it.
+ * The `+ path.sep` on the comparison is load-bearing: without it a sibling
+ * directory named `<root>-evil` passes a bare `startsWith`.
+ */
+function resolveMigrationsDir(
+  agentId: string,
+  ledger: string,
+  packageRoot: string,
+  relative: string,
+): string {
+  const root = path.resolve(packageRoot);
+  const resolved = path.resolve(root, relative);
+  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+    throw new SqlMigrationError(
+      agentId,
+      ledger,
+      `migrations directory '${relative}' escapes the package root`,
+    );
+  }
+  return resolved;
 }
 
 /** Minimal server row shape the host MCP service exposes. */
@@ -856,10 +1256,16 @@ function mcpHostRowToConfig(row: McpHostServerRow): McpHostServiceConfig {
 /** Exported for direct unit testing (issue #458). */
 export function createPluginMcpAccessor(
   pluginId: string,
-  serviceRegistry: { get<T>(name: string): T | undefined },
+  serviceRegistry: {
+    get<T>(name: string, caller?: ServiceCaller): T | undefined;
+  },
+  caller: ServiceCaller = Object.freeze({
+    agentId: pluginId,
+    pluginId,
+  }),
 ): McpAccessor {
   const host = (): McpHostService => {
-    const service = serviceRegistry.get<McpHostService>('mcp');
+    const service = serviceRegistry.get<McpHostService>('mcp', caller);
     if (!service) {
       throw new Error('MCP host service unavailable — the core did not wire ctx.mcp');
     }
@@ -903,6 +1309,10 @@ export function createPluginMcpAccessor(
           turnDate: current?.turnDate ?? new Date().toISOString().slice(0, 10),
           ...(current?.agentSlug ? { agentSlug: current.agentSlug } : {}),
           ...(current?.privacyHandle ? { privacyHandle: current.privacyHandle } : {}),
+          // W3-A — the turn's MCP OAuth identity. Dropping it here made every
+          // plugin-attributed call resolve as an unknown caller: `unresolved` in
+          // the audit trail, no token, and a `per_user` server failing closed.
+          ...(current?.mcpUserKey ? { mcpUserKey: current.mcpUserKey } : {}),
           mcpCallerKind: 'plugin',
           mcpCallerId: pluginId,
         },
@@ -912,126 +1322,6 @@ export function createPluginMcpAccessor(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Epic #470 W3 — ctx.devJobs host service + plugin accessor.
-// ---------------------------------------------------------------------------
-
-/**
- * Host service registered by the W0 dev-platform module under 'devJobs' (epic
- * #470 W3). The plugin accessor resolves it lazily per call. Grant resolution
- * (`listGrantedRepoIds`) and creator enforcement (`cancelJob`) live here
- * because they need DB-level `dev_repo_plugin_grants` / `dev_jobs.created_by`
- * access; the accessor layers the repo-scoping / no-oracle contract on top.
- */
-export interface DevJobsHostService {
-  /** Repo ids the operator granted to this plugin (`dev_repo_plugin_grants`). */
-  listGrantedRepoIds(pluginId: string): Promise<readonly string[]>;
-  createJob(
-    input: DevJobCreateRequest & { createdBy: { kind: 'plugin'; id: string } },
-  ): Promise<DevJobDescriptor>;
-  getJob(jobId: string): Promise<DevJobDescriptor | undefined>;
-  /** Scope is already narrowed to `repoIds` by the accessor. */
-  listJobs(filter: {
-    repoIds: readonly string[];
-    status?: DevJobStatus;
-  }): Promise<readonly DevJobDescriptor[]>;
-  listJobEvents(jobId: string, afterId?: number): Promise<readonly DevJobEventRecord[]>;
-  /** Cancel a job created by `requestedByPluginId`. The host enforces the
-   *  creator match and throws when the job was created by another plugin. */
-  cancelJob(jobId: string, requestedByPluginId: string): Promise<void>;
-}
-
-/**
- * Exported for direct unit testing (mirrors {@link createPluginMcpAccessor}).
- *
- * Fail-closed contract:
- *   - `listRepos` returns only the operator-granted repo ids for this plugin.
- *   - `create`/`list` on an ungranted repo throw.
- *   - `get`/`listEvents`/`cancel` resolve the job first; a job that is missing
- *     OR lives on an ungranted repo raises the SAME opaque error — no
- *     existence oracle.
- *   - `cancel` additionally forwards to `host.cancelJob(jobId, pluginId)`,
- *     which rejects jobs this plugin did not create.
- */
-export function createPluginDevJobsAccessor(
-  pluginId: string,
-  serviceRegistry: { get<T>(name: string): T | undefined },
-): DevJobsAccessor {
-  const host = (): DevJobsHostService => {
-    const service = serviceRegistry.get<DevJobsHostService>('devJobs');
-    if (!service) {
-      throw new Error(
-        'dev-platform host service unavailable — the core did not wire ctx.devJobs',
-      );
-    }
-    return service;
-  };
-  const grantedSet = async (): Promise<Set<string>> =>
-    new Set(await host().listGrantedRepoIds(pluginId));
-  const requireGrantedRepo = async (repoId: string): Promise<void> => {
-    if (!(await grantedSet()).has(repoId)) {
-      // Fail closed; the message never reveals whether the repo exists.
-      throw new Error(`dev repo "${repoId}" is not granted to plugin "${pluginId}"`);
-    }
-  };
-  // Resolve a job ONLY when it lives on a granted repo. A missing job and an
-  // out-of-scope job raise the SAME error, so a plugin cannot probe existence.
-  const requireAccessibleJob = async (jobId: string): Promise<DevJobDescriptor> => {
-    const svc = host();
-    const job = await svc.getJob(jobId);
-    const granted = await grantedSet();
-    if (!job || !granted.has(job.repoId)) {
-      throw new Error(`dev job "${jobId}" is not accessible to plugin "${pluginId}"`);
-    }
-    return job;
-  };
-  return {
-    async listRepos(): Promise<readonly string[]> {
-      return host().listGrantedRepoIds(pluginId);
-    },
-    async create(req: DevJobCreateRequest): Promise<DevJobDescriptor> {
-      await requireGrantedRepo(req.repoId);
-      return host().createJob({ ...req, createdBy: { kind: 'plugin', id: pluginId } });
-    },
-    async get(jobId: string): Promise<DevJobDescriptor> {
-      return requireAccessibleJob(jobId);
-    },
-    async list(filter?: {
-      repoId?: string;
-      status?: DevJobStatus;
-    }): Promise<readonly DevJobDescriptor[]> {
-      const granted = await grantedSet();
-      let repoIds: readonly string[];
-      if (filter?.repoId !== undefined) {
-        if (!granted.has(filter.repoId)) {
-          throw new Error(
-            `dev repo "${filter.repoId}" is not granted to plugin "${pluginId}"`,
-          );
-        }
-        repoIds = [filter.repoId];
-      } else {
-        repoIds = [...granted];
-      }
-      return host().listJobs({
-        repoIds,
-        ...(filter?.status ? { status: filter.status } : {}),
-      });
-    },
-    async listEvents(
-      jobId: string,
-      afterId?: number,
-    ): Promise<readonly DevJobEventRecord[]> {
-      await requireAccessibleJob(jobId);
-      return host().listJobEvents(jobId, afterId);
-    },
-    async cancel(jobId: string): Promise<void> {
-      // Repo-grant scoping first (no existence oracle); then the host enforces
-      // the "only jobs this plugin created" rule via created_by.
-      await requireAccessibleJob(jobId);
-      await host().cancelJob(jobId, pluginId);
-    },
-  };
-}
 
 interface SubAgentPermissions {
   /** Whitelisted target agentIds. Wildcards (`'de.byte5.agent.*'`) match
@@ -1078,12 +1368,13 @@ interface SubAgentAccessorOptions {
   callerAgentId: string;
   permissions: SubAgentPermissions | undefined;
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
 }
 
 function createSubAgentAccessor(
   opts: SubAgentAccessorOptions,
 ): SubAgentAccessor | undefined {
-  const { callerAgentId, permissions, serviceRegistry } = opts;
+  const { callerAgentId, permissions, serviceRegistry, serviceCaller } = opts;
   if (!permissions) return undefined;
 
   // Per-instance call counter. Resets when a fresh ctx is created (which
@@ -1122,6 +1413,7 @@ function createSubAgentAccessor(
       }
       const tool = serviceRegistry.get<DomainTool>(
         `subAgent:${targetAgentId}`,
+        serviceCaller,
       );
       if (!tool) {
         throw new UnknownSubAgentError(callerAgentId, targetAgentId);
@@ -1149,12 +1441,13 @@ interface KnowledgeGraphAccessorOptions {
   callerAgentId: string;
   entitySystems: readonly string[];
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
 }
 
 function createKnowledgeGraphAccessor(
   opts: KnowledgeGraphAccessorOptions,
 ): KnowledgeGraphAccessor | undefined {
-  const { callerAgentId, entitySystems, serviceRegistry } = opts;
+  const { callerAgentId, entitySystems, serviceRegistry, serviceCaller } = opts;
   if (entitySystems.length === 0) return undefined;
   // We don't pre-resolve the KG impl: doing it lazily lets the plugin
   // boot even when the kg-provider activates later (provider-ordering is
@@ -1162,7 +1455,10 @@ function createKnowledgeGraphAccessor(
   // throwing KgServiceUnavailableError if no provider is around.
   const allowed = new Set(entitySystems);
   function resolveKg(): KnowledgeGraph {
-    const kg = serviceRegistry.get<KnowledgeGraph>('knowledgeGraph');
+    const kg = serviceRegistry.get<KnowledgeGraph>(
+      'knowledgeGraph',
+      serviceCaller,
+    );
     if (!kg) throw new KgServiceUnavailableError(callerAgentId);
     return kg;
   }
@@ -1309,6 +1605,7 @@ interface LlmAccessorOptions {
   callerAgentId: string;
   permissions: LlmPermissions | undefined;
   serviceRegistry: ServiceRegistry;
+  serviceCaller: ServiceCaller;
   /** Provider that serves THIS plugin's `ctx.llm` (per-plugin pin → global →
    *  anthropic). Drives both class-ref whitelist resolution AND which provider
    *  the call is built on, so gate and execution stay in lockstep. */
@@ -1322,8 +1619,14 @@ interface LlmAccessorOptions {
 function createLlmAccessor(
   opts: LlmAccessorOptions,
 ): LlmAccessor | undefined {
-  const { callerAgentId, permissions, serviceRegistry, activeProvider, vault } =
-    opts;
+  const {
+    callerAgentId,
+    permissions,
+    serviceRegistry,
+    serviceCaller,
+    activeProvider,
+    vault,
+  } = opts;
   if (!permissions) return undefined;
 
   let callsUsed = 0;
@@ -1339,7 +1642,9 @@ function createLlmAccessor(
   let buildPromise: Promise<LlmProvider | undefined> | undefined;
   const resolveServingProvider = (): Promise<LlmProvider | undefined> => {
     if (activeProvider === 'anthropic') {
-      return Promise.resolve(serviceRegistry.get<LlmProvider>('llm'));
+      return Promise.resolve(
+        serviceRegistry.get<LlmProvider>('llm', serviceCaller),
+      );
     }
     if (buildPromise === undefined) {
       buildPromise = (async () => {
@@ -1453,6 +1758,58 @@ export function createMigrationContext(
     toVersion: opts.toVersion,
     previousConfig: opts.previousConfig,
   };
+}
+
+/**
+ * Epic #470 C6 / G2+G3 — a route may only opt out of the kernel session gate,
+ * or ask for the pre-auth global raw-body slot, beneath a prefix the plugin
+ * declared in `permissions.public_paths`.
+ *
+ * The direction of the containment check is the point. We require the
+ * REGISTERED PREFIX to lie inside a DECLARED PATH, not the other way round.
+ * The inverse — "a declaration anywhere under this router makes the router
+ * public" — is the bug: a plugin declaring `/api/plugins/acme/webhook` would
+ * be able to register an unauthenticated router at `/api/plugins/acme` and
+ * serve its whole admin surface without a session. Requiring the prefix to sit
+ * inside the declaration means every URL the router can possibly answer was
+ * declared, and therefore shown to the operator.
+ *
+ * `body:'raw'` belongs behind the same gate for the same operator-visibility
+ * reason. The raw parse is not a local router concern; it happens in a GLOBAL
+ * mount before authentication, buffers bytes for anonymous callers, and
+ * changes what every request under that prefix looks like. That is exactly the
+ * kind of boundary decision an operator must have seen in the manifest.
+ *
+ * Throwing (rather than downgrading to `'session'`) is deliberate: a webhook
+ * receiver that silently acquires a session gate answers 401 to every delivery
+ * and looks like a broken integration. A plugin that mis-declares must fail to
+ * activate, loudly, at install time.
+ */
+function assertPrefixIsDeclared(
+  agentId: string,
+  prefix: string,
+  reason: string,
+  declared: readonly string[],
+): void {
+  const covered = declared.some((decl) => isPathUnderPrefix(prefix, decl));
+  if (covered) return;
+  throw new Error(
+    `routes.register: '${agentId}' asked for ${reason} at '${prefix}' but that prefix is not covered by any ` +
+      `permissions.public_paths declaration` +
+      (declared.length === 0
+        ? ' (the manifest declares none)'
+        : ` (declared: ${declared.join(', ')})`) +
+      ` — a plugin cannot change authentication or raw-body parsing at a prefix without an operator-visible declaration`,
+  );
+}
+
+/** `child` is `parent`, or sits beneath it on a segment boundary. Mirrors
+ *  `publicPathGrants.isUnderPrefix`; kept local so this module does not take a
+ *  dependency on the grant machinery for one three-line predicate. */
+function isPathUnderPrefix(child: string, parent: string): boolean {
+  if (child === parent) return true;
+  const withSlash = parent.endsWith('/') ? parent : `${parent}/`;
+  return child.startsWith(withSlash);
 }
 
 function memoryDeclared(agentId: string, catalog: PluginCatalog): boolean {

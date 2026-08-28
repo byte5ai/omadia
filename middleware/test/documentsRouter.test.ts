@@ -10,6 +10,7 @@ import {
   signDocumentUrl,
   MEDIA_TYPE,
 } from '@omadia/plugin-office';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const SECRET = 'z'.repeat(32);
 
@@ -66,7 +67,7 @@ describe('/documents router (office delivery path)', () => {
 
     const app = express();
     app.use('/documents', createDocumentsRouter({ store, secret: SECRET }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
   });

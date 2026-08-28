@@ -105,6 +105,7 @@ export function ToolBulkImportModal({
               {t('title')}
             </h2>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only modal close control (X glyph, no text label) */}
           <button
             type="button"
             onClick={onClose}
@@ -117,7 +118,7 @@ export function ToolBulkImportModal({
 
         <div className="flex items-center gap-1 border-b border-[color:var(--border)] bg-[color:var(--bg-soft)] px-4 pb-2">
           <TabBtn active={tab === 'openapi'} onClick={() => setTab('openapi')}>
-            OpenAPI 3 (JSON)
+            {t('tabOpenApi')}
           </TabBtn>
           <TabBtn
             active={tab === 'jsonschema'}
@@ -197,6 +198,7 @@ function TabBtn({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- segmented tab selector (active-state toggle for import format)
     <button
       type="button"
       onClick={onClick}

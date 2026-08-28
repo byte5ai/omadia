@@ -1,3 +1,5 @@
+import { canonicalizePrincipalRef } from '@omadia/channel-sdk';
+
 // Canonical id space for Conductor principals (US5 reminder/approval delivery).
 //
 // A reminder reaches a person only if the channel-binding key and the human-step principal /
@@ -8,8 +10,14 @@
 // Email/UPN ids are case-insensitive; AAD-object-id GUIDs are already lowercase — so trimming +
 // lowercasing is safe and lossless for both.
 
+// #333 Phase 1 — the rule itself now lives with the `Principal` type in the channel
+// SDK, so Conductor and every future Principal producer canonicalize identically.
+// Two independent implementations of "canonical" drifting apart would reintroduce
+// exactly the case-sensitive miss this function exists to prevent. Conductor's
+// principal ids are the `user` kind: `role` keys are canonicalized differently
+// (trim only) because `createRole` writes them verbatim — see `principal.ts`.
 export function canonicalizePrincipalId(id: string): string {
-  return id.trim().toLowerCase();
+  return canonicalizePrincipalRef('user', id);
 }
 
 /**

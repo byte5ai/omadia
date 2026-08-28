@@ -185,6 +185,11 @@ export interface ToolGrantNode {
   toolKind: ToolKind;
   toolRef: string;
   mcpServerId: string | null;
+  // NOTE deliberately NO `grantEpoch` here: the middleware's `toolGrantNode()`
+  // serializer (canvas graph payload) does not emit it. The grant epoch is
+  // surfaced by exactly two wire shapes — `AgentToolGrantRowDto.grant_epoch`
+  // (GET /v1/operator/agents/:slug/grants, agents.ts) and
+  // `McpGrantMatrixRow.grantEpoch` (GET /mcp-grants) — read it from those.
 }
 
 /** Scan verdict decoration on a discovered MCP tool (issue #454). Absent on
@@ -202,15 +207,29 @@ export interface McpDiscoveredTool {
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** Issue #547 (W1-3) — the tool's declared JSON-Schema for its
+   *  `structuredContent` payload. Present ⇒ the tool returns structured output
+   *  in addition to text. Read-only signal for the operator. */
+  outputSchema?: Record<string, unknown>;
   verdict?: McpToolVerdictField;
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse';
 
+/**
+ * Transports MCP 2026-07-28 deprecated (issue #541). Mirrors the middleware's
+ * `DEPRECATED_MCP_TRANSPORTS`; the union above deliberately keeps `'sse'` —
+ * legacy servers stay fully usable during the 12-month removal window, they are
+ * only discouraged for new registrations.
+ */
+export const DEPRECATED_MCP_TRANSPORTS: readonly McpTransport[] = ['sse'];
+
 export interface McpServerNode {
   id: string;
   name: string;
   transport: McpTransport;
+  /** Issue #541 — server-derived deprecation flag; absent on older middleware. */
+  transportDeprecated?: boolean;
   endpoint: string | null;
   status: NodeStatus;
   lastDiscoveredAt: string | null;
@@ -227,6 +246,12 @@ export interface McpServerNode {
   kgIngest?: boolean;
   /** Epic #459 — declared config fields (from placeholders or a registry). */
   configSchema?: McpConfigField[];
+  /** Issue #862 — per-SERVER identity delegation mode (W0-1): every
+   *  assignment of this server acts under the same identity resolution, so
+   *  an assignment UI shows this value read-only and changes it via
+   *  {@link setMcpServerDelegation} (global effect for every agent holding a
+   *  grant on the server); absent on older middleware. */
+  delegation?: McpDelegation;
 }
 
 /** Epic #459 — a declared MCP server config field. */
@@ -553,6 +578,30 @@ export interface SkillImportResult {
   risks: SkillRisk[];
   resourceCount: number;
   skillId?: string;
+  /**
+   * OM-25 — the security verdict the import just produced.
+   *
+   * The server computed this all along and threw it away, so a skill that
+   * landed in the registry as "⚠ MARKIERT — PRÜFUNG EMPFOHLEN" was confirmed to
+   * the user as a plain success and the flag was discovered only by chance.
+   *
+   * NOT derivable from `risks`: that array cannot express `too_large_to_scan`
+   * or `scan_failed`, and re-implementing `computeVerdict`'s thresholds
+   * client-side would guarantee drift. Optional so a pre-OM-25 middleware still
+   * type-checks.
+   */
+  verdict?: {
+    severity: SkillVerdictSeverity;
+    riskCodes: string[];
+  };
+  /**
+   * Frontmatter lines the import had to drop: omadia's frontmatter is flat
+   * `key: scalar`, so lists and nested maps (common in skills authored for
+   * other ecosystems) cannot be represented. Reporting them keeps a truncated
+   * import visible instead of letting the skill quietly lose data. Optional so
+   * a middleware predating this field still type-checks.
+   */
+  unparsedFrontmatter?: string[];
 }
 
 export interface SkillResource {
@@ -636,6 +685,13 @@ export interface McpGrantMatrixRow {
   notYetScanned: boolean;
   acked: boolean;
   blocked: boolean;
+  /** Issue #862 — the granted server's per-SERVER delegation mode (`null`
+   *  when the row has no server); absent on older middleware. */
+  delegation?: McpDelegation | null;
+  /** Issue #862 — last verdict-epoch bump of this grant; `null` until the
+   *  first bump (always `null` on skill-binding / plugin rows); absent on
+   *  older middleware. */
+  grantEpoch?: string | null;
 }
 
 /** One MCP call audit entry (issue #462). No tool arguments by design. */
@@ -644,13 +700,28 @@ export interface McpCallLogEntry {
   serverId: string | null;
   serverName: string;
   toolName: string;
-  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+  /** W2-3 (#542) — `api_key` is a call that arrived over the public MCP
+   *  endpoint from a third party holding an API key: no orchestrator turn, no
+   *  sub-agent, no plugin. Migration 0033 widened the matching DB CHECK. */
+  callerKind: 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed' | 'api_key';
   callerAgent: string | null;
   turnId: string | null;
   ok: boolean;
   error: string | null;
   durationMs: number;
   calledAt: string;
+  /**
+   * W0-1 — WHOSE authority the call acted under. `callerAgent` names the
+   * orchestrator; this names the identity its credentials belonged to
+   * (`apikey:<id>` for a public MCP call, an MCP user key otherwise). The
+   * literal `unresolved` marks a call that had no identity to act as.
+   *
+   * The backend has returned this since the `mcp_call_log.acting_identity`
+   * column landed; it was simply never surfaced, which left "whose credentials
+   * touched that server?" unanswerable in the UI — the exact question the
+   * column was added to answer.
+   */
+  actingIdentity: string | null;
 }
 
 export async function listMcpGrants(): Promise<{ grants: McpGrantMatrixRow[] }> {
@@ -678,6 +749,103 @@ export async function grantMcpToolToOrchestrator(
     method: 'PUT',
     body: JSON.stringify({ agentSlug, mcpServerId, toolName }),
   });
+}
+
+/**
+ * Result of an allowlist replace via `PUT /mcp-grants` with `toolNames[]`
+ * (issue #862). `delegationScope` is always `'server'`: delegation lives on
+ * `mcp_servers`, not per assignment, so a `delegation` sent with the edit
+ * changed the SERVER's mode — for every agent holding a grant on it.
+ */
+export interface McpToolAllowlistResult {
+  agentSlug: string;
+  mcpServerId: string;
+  /** The full allowlist after the edit (normalized tool names, sorted). */
+  toolNames: string[];
+  /** Tools this edit newly granted. */
+  granted: string[];
+  /** Tools this edit revoked (fell off the list). */
+  revoked: string[];
+  /** The server's delegation mode after the edit. */
+  delegation: McpDelegation;
+  delegationScope: 'server';
+}
+
+/**
+ * Replace an agent's whole tool allowlist for one MCP server (issue #862).
+ * The allowlist IS the set of `agent_tool_grants` rows for the (agent,
+ * server) pair — tools missing from `toolNames` are revoked, new ones pass
+ * the same fail-closed verdict gate as a single grant (one rejection aborts
+ * the whole edit; nothing is written).
+ *
+ * `delegation` optionally sets the SERVER's delegation mode in the same
+ * call — a per-server switch with global effect, see
+ * {@link McpToolAllowlistResult.delegationScope}.
+ */
+export async function replaceMcpToolAllowlist(
+  agentSlug: string,
+  mcpServerId: string,
+  toolNames: string[],
+  opts?: { delegation?: McpDelegation },
+): Promise<McpToolAllowlistResult> {
+  return callJson<McpToolAllowlistResult>('/v1/operator/mcp-grants', {
+    method: 'PUT',
+    body: JSON.stringify({
+      agentSlug,
+      mcpServerId,
+      toolNames,
+      ...(opts?.delegation !== undefined ? { delegation: opts.delegation } : {}),
+    }),
+  });
+}
+
+/**
+ * Machine codes the agent-builder grant routes emit as `{ error: '<code>' }`
+ * (they predate the `{ code }` envelope `ApiError.code` parses, so the code
+ * must be read from the body).
+ *
+ * i18n HARD RULE: these are NOT user-facing text. Pages map each code to a
+ * message-catalogue key and render the localized copy; the raw body string
+ * must never reach the UI.
+ */
+export const MCP_GRANT_ERROR_CODES = [
+  // PUT /mcp-grants — the verdict gate (`assertMcpToolAllowed`) rejects
+  // blocked / unscanned tools as a 409 `config_validation`.
+  'config_validation',
+  'invalid_delegation',
+  'invalid_grant',
+  'mcp_server_not_found',
+  'multi_orchestrator_unavailable',
+  'orchestrator_not_found',
+  // DELETE /mcp-grants/:grantId
+  'grant_not_found',
+  'invalid_grant_id',
+  'not_an_mcp_grant',
+] as const;
+
+export type McpGrantErrorCode = (typeof MCP_GRANT_ERROR_CODES)[number];
+
+const MCP_GRANT_ERROR_CODE_SET: ReadonlySet<string> = new Set(
+  MCP_GRANT_ERROR_CODES,
+);
+
+/**
+ * Extract the machine code from a failed grant/allowlist call, or `null`
+ * when the error is not an {@link ApiError}, its body is not JSON, or the
+ * code is not one this client knows. Total by construction — a proxy's HTML
+ * 502 page yields `null`, never a throw.
+ */
+export function parseMcpGrantErrorCode(err: unknown): McpGrantErrorCode | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { error?: unknown };
+    return typeof parsed.error === 'string' &&
+      MCP_GRANT_ERROR_CODE_SET.has(parsed.error)
+      ? (parsed.error as McpGrantErrorCode)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function revokeMcpGrant(grantId: string): Promise<void> {
@@ -804,6 +972,8 @@ export interface McpCatalogEntry {
   description: string | null;
   version: string | null;
   transport: McpTransport | null;
+  /** Issue #541 — the catalog only offered a deprecated (HTTP+SSE) remote. */
+  transportDeprecated?: boolean;
   endpoint: string | null;
   license: string | null;
   author: string | null;
@@ -856,15 +1026,49 @@ export async function importMcpServerFromRegistry(
 
 // ── Generic MCP OAuth (issue #459 W9) ────────────────────────────────────────
 
+/** Whose authority MCP calls to a server act under (W0-1). `per_user` requires
+ *  each caller to have its own identity and fails closed without one;
+ *  `service` is the explicit opt-in to one shared identity. */
+export type McpDelegation = 'per_user' | 'service';
+
 export interface McpAuthStatus {
   protected: boolean;
   connected: boolean;
   issuer: string | null;
   issuerHost?: string | null;
-  /** The server offers Dynamic Client Registration — connecting is zero-setup. */
+  /** A client can be acquired with no operator setup — via a Client ID Metadata
+   *  Document (W2-4) or working Dynamic Client Registration. */
   brokered?: boolean;
+  /** W2-4 — which link of the client-acquisition chain this issuer resolves
+   *  through. `manual` is the permanent, supported Entra ID / Okta path, NOT a
+   *  failure state: neither IdP supports CIMD. */
+  acquisitionMode?: 'stored' | 'cimd' | 'dcr' | 'manual';
+  /** W2-4 — the authorization server advertised
+   *  `client_id_metadata_document_supported`. Independent of whether THIS install
+   *  can serve the document (that needs inbound https reachability). */
+  cimdSupported?: boolean;
+  /** W2-4 — why CIMD is unavailable although the AS supports it. Almost always
+   *  because this deployment is not inbound-reachable, which is normal on-prem. */
+  cimdBlockedReason?: string | null;
   needsClient: boolean;
   redirectUri?: string;
+  /** W0-1 — the server's delegation mode. */
+  delegation?: McpDelegation;
+  /** W0-1 — whether this session has an identity to act as. False on a
+   *  `per_user` server means every call fails closed until an identity is
+   *  available or the operator opts into `service` delegation. */
+  identityResolved?: boolean;
+}
+
+/** Switch a server's delegation mode (W0-1). */
+export async function setMcpServerDelegation(
+  serverId: string,
+  delegation: McpDelegation,
+): Promise<{ id: string; delegation: McpDelegation }> {
+  return callJson(`/v1/operator/mcp-servers/${encodeURIComponent(serverId)}/delegation`, {
+    method: 'PUT',
+    body: JSON.stringify({ delegation }),
+  });
 }
 
 export async function getMcpAuthStatus(serverId: string): Promise<McpAuthStatus> {
@@ -972,6 +1176,90 @@ export async function exportSkill(id: string): Promise<string> {
   const text = await res.text();
   if (!res.ok) throw new ApiError(res.status, `export ${id} failed: ${res.status}`, text);
   return text;
+}
+
+// -----------------------------------------------------------------------------
+// Public MCP key bindings (W5-1)
+// -----------------------------------------------------------------------------
+
+/**
+ * A row of `public_mcp_key_bindings` — the per-API-key allowlist behind the
+ * public MCP endpoint. `enabled: false` is a PARKED binding: the key reaches
+ * nothing, but what it was configured to reach is still on the row.
+ */
+/** #571 — a non-fatal note that a binding points at an id that does not
+ *  resolve, so it reaches nothing despite looking configured. `code` is the
+ *  stable, locale-independent discriminator the pane renders from; `message` is
+ *  the server's English fallback, for API consumers and logs. */
+export interface PublicMcpKeyBindingWarning {
+  code: 'key_id_unknown' | 'agent_id_unknown';
+  message: string;
+}
+
+export interface PublicMcpKeyBinding {
+  keyId: string;
+  agentId: string;
+  readTools: string[];
+  writeTools: string[];
+  writeRateLimitPerMinute: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  /** #571 — present only when the key or agent this row names does not resolve.
+   *  Absent on a clean row, so a healthy binding is unchanged from before. */
+  warnings?: PublicMcpKeyBindingWarning[];
+}
+
+export interface PublicMcpKeyBindingsResponse {
+  bindings: PublicMcpKeyBinding[];
+}
+
+export interface UpsertPublicMcpKeyBindingInput {
+  keyId: string;
+  agentId: string;
+  readTools: string[];
+  writeTools: string[];
+  writeRateLimitPerMinute?: number;
+  /** OMIT to leave the revoked/active state exactly as stored. Sending `true`
+   *  RE-ARMS a revoked key, so this pane never sends it implicitly — un-parking
+   *  goes through `restorePublicMcpKeyBinding` instead. */
+  enabled?: boolean;
+}
+
+export async function listPublicMcpKeyBindings(): Promise<PublicMcpKeyBindingsResponse> {
+  return callJson<PublicMcpKeyBindingsResponse>('/v1/operator/public-mcp-bindings');
+}
+
+export async function upsertPublicMcpKeyBinding(
+  input: UpsertPublicMcpKeyBindingInput,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>('/v1/operator/public-mcp-bindings', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Parks the binding. Deliberately not a delete — the configured reach stays
+ *  visible so an operator can see what the integration used to have. */
+export async function revokePublicMcpKeyBinding(
+  keyId: string,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>(
+    `/v1/operator/public-mcp-bindings/${encodeURIComponent(keyId)}/revoke`,
+    { method: 'POST' },
+  );
+}
+
+/** Un-parks a revoked binding, restoring the reach it already had on the row.
+ *  Its own call, not a side effect of saving: a save that never mentions
+ *  `enabled` deliberately CANNOT re-arm a key an operator revoked. */
+export async function restorePublicMcpKeyBinding(
+  keyId: string,
+): Promise<{ binding: PublicMcpKeyBinding }> {
+  return callJson<{ binding: PublicMcpKeyBinding }>(
+    `/v1/operator/public-mcp-bindings/${encodeURIComponent(keyId)}/restore`,
+    { method: 'POST' },
+  );
 }
 
 // -----------------------------------------------------------------------------

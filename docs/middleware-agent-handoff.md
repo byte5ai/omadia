@@ -752,7 +752,10 @@ Neue REST-Oberfläche `src/routes/datasets.ts`, gemountet unter
 
 - `POST /api/v1/datasets` — multipart CSV-Upload (`multer`, ein File pro
   Request, `MAX_UPLOAD_BYTES` = 25 MB).
-- `GET /api/v1/datasets` — Liste der eigenen Datasets.
+- `GET /api/v1/datasets` — paginierte Liste der eigenen Datasets
+  (`limit`/`offset` via zod, 400 bei ungültiger Query; Response
+  `{ items, totalMatched }` — `totalMatched` fehlt nur, wenn die
+  Graph-Implementierung das optionale `countDatasets` noch nicht kennt).
 - `GET /api/v1/datasets/:id` — Schema + Metadaten eines Datasets.
 - `GET /api/v1/datasets/:id/rows` — paginierte Roh-Zeilen.
 - `DELETE /api/v1/datasets/:id` — Dataset löschen.
@@ -977,6 +980,463 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 
 ---
 
+### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
+
+Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
+`NEXT_LOCALE` verlässt die Next.js-Schicht nie. Jeder `message`-String auf
+einem Fehler-Envelope ist damit per Konstruktion Englisch, und jede Oberfläche,
+die ihn gerendert hat, hat einem deutschen Operator einen englischen Satz
+gezeigt. Konsequenz für alles, was hier neu gebaut wird: **Codes raus, Sätze
+behalten wir für Logs.**
+
+- **`ProviderVerification.code`** (`src/platform/providerCredentialVerifier.ts`):
+  optionales Feld, gesetzt ausschließlich von `rejected()` auf
+  `'providers.key_rejected'`. `error` bleibt unverändert der englische
+  Fallback-Satz für ältere Clients. Kein anderes Verdikt setzt `code` — ein
+  `unverified` trägt seinen Grund weiterhin in `reason` (nie gerendert).
+- **`verifyErrorCode`** auf der Provider-Zeile von `GET /v1/admin/providers`
+  (`src/routes/adminProviders.ts`): konditionaler Spread neben dem bestehenden
+  `verifyError`. Rein additiv — fehlt der Code, fehlt das Feld komplett, und
+  ein Client von vor #604 sieht exakt die alte Payload.
+- **Zwei Codes statt einem bei `PATCH /v1/admin/settings`**
+  (`src/routes/adminSettings.ts`): Wird der ganze Batch abgelehnt, antwortet
+  die Route mit `settings.invalid_values`, wenn der *Wert* mindestens einer
+  bekannten Einstellung durch die Validierung gefallen ist, sonst weiter mit
+  `settings.no_valid_changes` (kein gesendeter Key ist eine Einstellung, die
+  dieser Server aktuell anbietet). Ein Code für beides hieß Copy, die im einen
+  Fall lügt: ein `ANTHROPIC_API_KEY` im falschen Format wurde als unbekannte
+  Einstellung gemeldet, mit "Seite neu laden" als Aktion. **Wer eine neue
+  Wert-Validierung ergänzt, nutzt `rejectValue(key, message)` statt
+  `errors.push(...)`** — sonst landet der Fall wieder im falschen Code.
+- **Web-UI-Seite:** `ApiError.code` parst den Code einmal zentral,
+  `web-ui/app/_lib/errorHelp.ts` löst ihn gegen
+  `messages/{en,de}.json → errorHelp.<code>.{what,next}` auf, und
+  `web-ui/app/_components/ErrorHelp.tsx` rendert beides plus eine
+  eingeklappte Support-Disclosure (`supportDetail()` redigiert vorher).
+
+**Key-Konvention** (`web-ui/messages/{en,de}.json`) — die Verschachtelung
+spiegelt den Code: `store.list_failed` liegt unter
+`errorHelp.store.list_failed`. Zwei Pflicht-Keys, je ein Satz:
+
+```jsonc
+{
+  "errorHelp": {
+    "providers": {
+      "key_rejected": {
+        "what": "The provider refused this API key.",
+        "next": "Copy the key from the provider console once more and paste it here."
+      }
+    }
+  }
+}
+```
+
+- `what` — was passiert ist. Nie den Code-Identifier zurückspiegeln, nie den
+  Satz des Servers hineinkopieren.
+- `next` — die eine Aktion, die es löst, im Imperativ.
+- `action` — optionales Link-Label, nur für Codes in `ERROR_HELP_ACTIONS`
+  (ein Link auf die Seite, auf der man ohnehin steht, ist Rauschen).
+- Chrome, das zur Komponente und nicht zu einem Code gehört (Summary der
+  Disclosure, generische Fallback-Zeile), liegt im Nachbar-Namespace
+  `errorHelpUi` — `errorHelp` bleibt damit ein reiner Code-Index.
+
+**Einen Code ergänzen:** `code: '<family>.<name>'` in einer der fünf Dateien
+emittieren → `what` + `next` in `en.json` → beide nach `de.json` spiegeln →
+Code in `ERROR_HELP_CODES` (`web-ui/app/_lib/errorHelp.ts`) eintragen →
+`npm test` in `web-ui/` wird grün. Die vollständige Key-Doku für die Web-UI-
+Seite steht in `web-ui/messages/README.md`.
+- **Abgedeckt sind nur** die Codes aus `src/routes/{install,runtime,`
+  `adminProviders,store,adminSettings}.ts`. `web-ui/app/_lib/__tests__/`
+  `errorHelpCoverage.test.ts` liest diese Dateien direkt und wird rot, sobald
+  eine davon einen Code ohne Copy emittiert. Wer eine dieser fünf Dateien um
+  einen Fehlerfall erweitert, braucht im selben PR zwei Sätze in beiden
+  Locales.
+- **Ein `code:`, das kein Literal ist, ist der gefährliche Fall.**
+  `handleError` in `src/routes/install.ts` beantwortet einen geworfenen
+  `InstallError` mit `{ code: err.code }` — zehn `install.*`-Codes stehen
+  damit nirgends als Literal in der Route-Datei. Der Guard folgt diesem
+  Forwarder nach `src/plugins/installService.ts` und verlangt auch dafür
+  Copy. Jedes weitere nicht-literale `code:` in einer der fünf Dateien muss in
+  `ACKNOWLEDGED_NON_LITERAL_CODE` mit Begründung eingetragen werden (Typ-
+  Annotation, OAuth-Authorization-Code) — sonst wird der Test rot, statt den
+  Code stillschweigend durchzulassen. Dasselbe gilt für eine Umstellung auf
+  `sendError(...)` oder einen `error: '…'`-Envelope.
+
+Tests: `test/providerCredentialVerifier.test.ts` (401 → `code`, jedes andere
+Verdikt ohne `code`), `test/adminProvidersRoute.test.ts` (DTO trägt
+`verifyErrorCode` beim abgelehnten Key, lässt das Feld sonst weg),
+`test/adminSettingsRoute.test.ts` (abgelehnter Wert → `settings.invalid_values`,
+unbekannter Key bzw. nicht installiertes Ziel-Plugin → `settings.no_valid_changes`).
+
+### MCP Tool-List-Cache via `ttlMs`/`cacheScope` (issue #545)
+
+MCP 2026-07-28 macht `tools/list`-Results cachebar (`CacheableResult`:
+`ttlMs` + `cacheScope`). Umgesetzt auf SDK 1.30.0 — **kein** v2-Bump nötig,
+die Felder überleben das loose Result-Parsing (gleiches Muster wie
+`resultType`, #544).
+
+- **Client** (`McpManager.listTools`, `packages/harness-orchestrator/src/mcp/
+  mcpClient.ts`): TTL-Cache, Key via `mcpToolListCacheKey` — `public` ⇒ bare
+  Server-ID, `private`/unbekannt/fehlend ⇒ Pool-Key (Server-ID + Token-Hash,
+  Token-Rotation = Cache-Miss). Der Bare-Id-Probe akzeptiert nur als `public`
+  abgelegte Einträge (`sharedPublic`-Flag): die private Liste eines token-losen
+  Callers hat denselben Key (Pool-Key ohne Token = Server-ID) und darf nie
+  über Auth-Kontexte geteilt werden. Rückgaben sind Deep-Copies in beide
+  Richtungen — Caller-Mutation (Plugins!) erreicht den Cache nicht.
+  Server-`ttlMs` geclampt auf 15 min
+  (`MCP_TOOLLIST_MAX_TTL_MS`); fehlt `ttlMs`, greift ein Default von 60 s —
+  **bewusste Spec-Abweichung** (Spec: fehlend ⇒ nicht cachen), Begründung in
+  ADR-0009; `OMADIA_MCP_TOOLLIST_TTL_MS=0` stellt spec-strikt zurück.
+- **Invalidierung:** `notifications/tools/list_changed` purgt sofort (Handler
+  wird vor `connect` registriert); `close()`/`closeAll()` purgen mit; Expiry
+  lazy beim Read (kein Timer, wie `evictIdle`).
+- **Bypass:** Discovery (Builder-Route) und der Security-Rescan listen immer
+  frisch (`fresh: true`) — ein Scan über eine gecachte Liste scannt nichts.
+  Cache-Nutznießer ist der Plugin-Accessor `ctx.mcp.listTools()`.
+- **Eigene Server emittieren:** Loopback `ttlMs: 300000` / `public` (Liste ist
+  pro Turn-Instanz eingefroren, nicht caller-abhängig); Public-Server
+  `ttlMs: 60000` / `private` (Liste ist per API-Key gefiltert — `private` ist
+  Pflicht, sonst leaken fremde Tool-Sets; `tools/call` prüft Bindings weiter
+  live, Revoke bleibt sofort wirksam). `list_changed`-*Emission* aus eigenen
+  Servern ist bewusst Folge-Issue.
+
+Tests: `test/mcpToolListCache.test.ts` (pure Regeln + Stdio-/HTTP-Fixtures),
+Emission-Asserts in `test/cliBridge/loopbackMcpServer.test.ts` und
+`test/publicMcp/publicMcpEndpoint.e2e.test.ts`.
+
+---
+
+### Privacy Shield: Deny-Lists, Miss-Queue, idnum, Eval-Gate (#760)
+
+Operator-Deny-List: Setup-Felder `custom_terms` (Literale, ';'/Zeilen-getrennt)
++ `custom_patterns` (Regex, eine pro Zeile) am Privacy-Plugin; Vetting beim
+Config-Wechsel (Syntax + Escalating-Probe-Zeitbudget gegen katastrophales
+Backtracking), abgelehnte Patterns loggen `customPatternRejected` laut.
+Detector-Id `custom-terms`, Span-Typ `custom`, gleiche Fail-Closed-Maschinerie.
+Miss-Report-Queue: **`POST/GET /api/v1/operator/privacy/miss-reports`** (+
+`/:id/resolve`), Tabelle `privacy_miss_reports` (Migration `0040`), Intake auf
+der PrivacyReceiptCard, Review-UI `/operator/privacy-reports`. `idnum` ist
+seit #760 gated (DE/ES/IT/UK/FR-Patterns in C0; NL BSN bewusst ungepattern —
+9 nackte Ziffern). CI-Gate: `promptDetectorEval.ts --check` gegen
+`validation/ci-baseline.json` (per-Locale-Floors, leerer Lauf = rot). Tests:
+`test/privacyCustomTermsAndIdnum.test.ts`, `test/privacyMissReports.test.ts`.
+
+### Conductor-Cancel + Approval-Härtung (#759)
+
+Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
+endet sofort (Awaits → `'cancelled'`, synthetischer Step mit `operator_cancel`-
+Actor), `running` wird geflaggt und stoppt an der nächsten Schrittgrenze
+(`runStore.isCancelRequested`-Check am Loop-Kopf von `driveFrom`), terminal ⇒
+409 `conductor.run_already_ended`. Schema: `conductor/migrations/0008_run_cancel.sql`.
+Per-Step-Flag `human.strictApproval` (nur explizites `{approved:true}` führt
+weiter; Designer-Checkbox). Validator liefert jetzt non-blocking `warnings`
+(`timeout_equals_approval`, `approval_fail_open`) — im 201-Response von
+`POST /` und amber im Designer. Rollen-Baton-Änderungen landen im
+`admin_audit` (`conductor.role_holders_change`), verdrahtet über
+`wireConductor.auditRoleChange`. Tests: `test/conductorCancelAndStrictApproval.test.ts`.
+Known limitations: (a) im engen Expire-vs-Cancel-Race kann `notifyRunEnded`
+**zweimal** feuern (Run-Ended-Webhooks sind at-least-once — Subscriber müssen
+das tolerieren) und ein konkurrierender Writer kann auf `UNIQUE(run_id, seq)`
+kollidieren (ein 500 beim Responder, Zustand bleibt korrekt); (b) verliert ein
+`resolveAwait` das Lease an einen konkurrierenden Cancel, antwortet die
+Respond-Route 500 statt 409 — Ergebnis korrekt (Run cancelled), Oberfläche
+hässlich. Die Cancel-Flag-Spalten werden absichtlich NIE gelöscht — sie sind
+der tragende Backstop aller Cancel-Races.
+
+### Conductor-Workflow-Delete (PR #836)
+
+Neu: **`DELETE /api/v1/operator/conductors/:slug`** — löscht einen manuellen
+Workflow mit den zwei Removal-Shapes des #330-Reapers: **hard** (physischer
+DELETE, wenn kein Run irgendeine Version referenziert; Versions/Drafts/
+Schedules kaskadieren) oder **soft** (`status='disabled'` + `reaped_at`-Stempel;
+Run-Historie bleibt als Audit-Trace). Aktive Runs ⇒ 409
+`conductor.has_active_runs` (erst per #759-Route canceln); `eph-`-Namespace ⇒
+400 (Ephemeral-Lifecycle). Response `{deleted, mode: 'hard'|'soft'}`.
+Resurrection-Guards: `list()` filtert `reaped_at IS NULL` (Library **und**
+Event-Router), `removeLogical` disabled Workflow + Cron-Schedules atomar (eine
+CTE), `setStatus` und der Publish-Upsert verweigern reaped Rows (Publish auf
+gelöschten Slug ⇒ 409 `conductor.slug_exists`), `GET /:slug` ⇒ 404, FK-Race
+23503 im Hard-Pfad fällt auf soft zurück. Store-Methoden: `hasActiveRuns`,
+`removeLogical`, `hardDeleteUnreferenced` (workflowStore.ts, Spiegel von
+ephemeralStore). Web-UI: Delete-Button + ConfirmDialog auf `/conductor`,
+`deleteConductorWorkflow` in `api.ts`, i18n `conductor.delete*` en+de.
+Tests: `test/conductorWorkflowDelete.test.ts`.
+
+### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
+
+Jeder abgeschlossene Turn persistiert seinen PII-freien `PrivacyReceipt`
+synchron nach `turn_receipts` (Migration `0039`, Postgres-Backend only). Der
+Orchestrator löst den Store late-bound über den Service
+`turnReceiptStore` auf (Kernel provided in `index.ts`, gleiches Muster wie
+`privacyRedact`); ohne Service bleiben Receipts ephemer. Fehlschläge werden
+gezählt (`persistFailures` in `src/receipts/store.ts`) und greppbar geloggt
+(`turn-receipt persist failed`), scheitern aber nie den Turn. Read-API:
+auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
+`(created_at, id)`) und **`GET /api/v1/operator/receipts/:turnId`**; UI unter
+`/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
+Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
+`test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+### Receipt-Hash-Kette + signierte Checkpoints (#758)
+
+`turn_receipts` ist seit Migration `0041` hash-verkettet: `entry_hash =
+sha256(stream ‖ seq ‖ prev_hash ‖ canonical(payload))`, Appends serialisiert
+über `audit_stream_heads` (FOR UPDATE — eine lineare Kette, keine Forks);
+Replay ⇒ kompletter Rollback. UPDATE per Trigger verboten, DELETE bleibt für
+Retention erlaubt (Lücken sind detektierbar). Ed25519-Checkpoints
+(`src/receipts/checkpoints.ts`): Key NUR in Env (`AUDIT_SIGNING_KEY`,
+Keygen `scripts/generate-audit-signing-key.mjs`), Intervall
+`AUDIT_CHECKPOINT_INTERVAL_MINUTES` (60), externer Anker `AUDIT_ANCHOR_PATH`
+(JSONL). Public Key: **`GET /api/v1/operator/provenance/public-key`**.
+Verify-Grundstein `verifyChainSegment` in `src/receipts/chain.ts` (Tamper-
+Tests in `test/receiptHashChain.test.ts`); die Operator-Verify-Fläche ist
+#761. Zeitanker: Checkpoint-Kadenz, nicht pro Zeile (`created_at` ist
+außerhalb des Hashes — bewusst, begründet in `src/receipts/chain.ts` +
+`receiptChainPayload` in `store.ts`). ⚠️ #761-Pflicht: Retention-Lücken
+gegen die Checkpoint-Zeitachse prüfen (Backdating-Laundering-Kanal, s.
+security-architecture §7b).
+
+### Provenance-Verifikations-Fläche (#761)
+
+**`GET /api/v1/operator/provenance/verify`** (Chain-Walk + Checkpoint-
+Signaturen + Retention-Prefix inkl. `premature_deletion`-Regel aus #758) und
+**`GET /api/v1/operator/provenance/export`** (signierter JSONL-Export,
+Format `omadia-audit-export-v1`). Offline-Verifier:
+`scripts/verify-audit-export.mjs` — zero-dep, dupliziert Kanonisierung/Hash
+BEWUSST unabhängig von `chain.ts` (Änderung dort = `hash_version`-Bump +
+Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
+Tamper-Demo: `docs/provenance-verification.md`. Tests:
+`test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
+
+### Conductor Ephemeral/JIT-Workflows (#330 Workstream A)
+
+Agent-generierte, run-scoped Workflows: `conductor_workflows.origin`
+(`manual` | `ephemeral`, Migration `0009_ephemeral_workflows.sql` — plus
+`expires_at`, `created_by_agent`, `reaped_at`). Ephemere Workflows entstehen
+NUR über den Kernel-Service **`conductorEphemeralRuns`**
+(`createEphemeralRun({ agentId, patternId, slots, payload, ttlMs })`,
+provided in `src/index.ts` neben `conductorAwaitResolver`; deny-by-default —
+kein `pluginServiceGrants`-Eintrag, den liefert erst das Facilitator-Plugin).
+Der Graph kommt aus dem kuratierten **Pattern-Katalog**
+`src/conductor/patterns/` (`patternCatalog.ts`, Patterns = TemplateManifests,
+Slot-Fill über die bestehende Template-Maschinerie — Agents können keine
+freien Graphen einreichen; erstes Pattern: `facilitation`). Create+Start in
+einem Call: `createOrPublish({ origin:'ephemeral', expectNew, enable })` →
+`startRun({ triggerKind:'agent' })` (erste Call-Site dieses TriggerKinds).
+
+Namespace: Slug-Präfix **`eph-`** ist reserviert — `POST /`,
+Template-Instantiate, `POST /:slug/status` und `POST /:slug/runs` lehnen es
+mit `conductor.reserved_slug_prefix` ab (Status/Runs: der Reaper owned den
+Lifecycle, sonst Zombie-Risiko). `workflowStore.list()` filtert auf
+`origin='manual'` — Library-UI UND EventRouter sehen ephemere Workflows nie
+(run-scoped, nicht event-triggerbar).
+
+Lifecycle („discard the scaffold, never the minutes"): bei terminalem
+Run-State (Hook in `notifyRunEnded`) oder TTL-Ablauf
+(`ephemeralReaper.ts`, scheduleWorker-Muster) wird die Definition disabled +
+`reaped_at` gestempelt; abgelaufene aktive Runs bekommen den #759
+Cancel-Request; physisches DELETE nur für referenzlose Definitionen
+(`hardDeleteUnreferenced`, NOT-EXISTS-Guard; FK conductor_runs →
+versions blockt ohnehin). Run-Historie + Version-Graph bleiben als
+Audit-Trace. Guardrails env-tunable (`CONDUCTOR_EPHEMERAL_*`, §10): Pflicht-TTL
+mit Clamp (Default 24h, Max 7d), max. 3 concurrent Runs + 10 Creates/h pro
+Agent. Tests: `test/conductorEphemeral*.test.ts`,
+`test/conductorPatternCatalog.test.ts`. Achtung: das Schema-CI-Gate re-applied
+`src/conductor/migrations` noch NICHT (Verzeichnis steht in ci.yml unter
+"still uncovered") — 0009 ist nach 0008-Muster idempotent geschrieben, aber
+CI-unbewiesen.
+
+### Group-Conversation-Primitives im Channel-SDK (#330 Workstream B1)
+
+Strikt additive SDK-Erweiterung (Teams 0.12.7 / Telegram 0.2.0 laufen
+unverändert): `IncomingTurn.conversationType` (`'direct'|'group'`, absent =
+unknown → wie direct behandelt, Helper `isGroupConversation`),
+`ConversationRoster` (+`partial`-Lower-Bound-Semantik wie
+`roleHolderSource.ts`), typisierte `ConversationMembershipEvent`s
+(`bot_added` inkl. `addedBy` — der Facilitator-Handshake-Trigger,
+`members_added`/`members_removed`) und `TargetedSendProvider` (liefert immer
+nur an EINEN bereits aufgelösten User).
+
+Drei neue **optionale** `CoreApi`-Methoden nach dem
+`registerWebSocket`-Feature-Detect-Muster: `registerRosterProvider`,
+`registerTargetedSendProvider`, `emitConversationEvent` — nur definiert, wenn
+der Kernel die jeweilige Registry verdrahtet hat
+(`src/channels/{rosterRegistry,targetedSendRegistry,conversationEventHub}.ts`);
+`channelRegistry.deactivate` räumt die Beiträge des Channels ab.
+
+**Principal-Auflösung ist Kernel-Sache** (`targetedDeliveryService.ts`,
+Service `targetedSend`, deny-by-default): `user:<id>` → 1 Delivery;
+`role:<key>` → late-bound Fan-out an ALLE aktuellen Holder (Notification, eine
+Delivery pro Holder, KEIN Quorum — anders als Decision-Awaits). Leere Rolle →
+`role_has_no_holders`, Partial-Liste → `role_resolution_partial` (Deliveries
+an bekannte Holder laufen trotzdem), unreachable Holder →
+per-Holder-Diagnostic; nie silent drop, nie Throw. Ohne Postgres degradieren
+role-Sends zu `role_resolution_unavailable`, user-Sends funktionieren.
+Rollen-Auflösung nutzt eine zweite `buildRoleHolderRegistry`-Instanz über
+`conductorWiring.roleStore` (TODO #330: Conductor exponiert seine Registry),
+Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
+
+`@omadia/plugin-api` **1.7.0**: `TARGETED_SEND_SERVICE_NAME` + Shapes
+(plugin-api-eigen, da Dependency-Richtung sdk→plugin-api) — Workstream C
+(Facilitator) konsumiert das. Tests: `test/conversationRoster.test.ts`,
+`test/conversationEventHub.test.ts`, `test/targetedDelivery.test.ts`,
+`test/coreApiOptionalCapabilities.test.ts`.
+
+### Zero-Touch-Facilitator-Setup (#330 C2a)
+
+Drei neue deny-by-default Kernel-Services (Manifest-`optional_requires` ist
+das Gate, kein Katalogeintrag):
+
+- **`agentProvisioning`** (`src/platform/agentSetupService.ts`):
+  `ensureAgent({slug, name, description, pluginId, personaSkill?})` —
+  idempotent; Persona via `skills`-Upsert + `agent_persona_skills`-Link
+  (Wave 8 — Agents haben KEINE instructions-Spalte); attached nur das
+  aufrufende Plugin; `fallback`-Slug verboten; bestehende Agenten werden nie
+  mutiert. `configStore`/`orchestratorRegistry` werden **lazy pro Call**
+  aufgelöst (das Orchestrator-Plugin published sie erst bei seiner eigenen
+  Aktivierung).
+- **`conversationBindings`**: `bind()` nur für Conversations, für die der
+  Kernel selbst ein Gruppen-`bot_added` beobachtet hat
+  (`src/platform/observedConversationInvites.ts` — subscribed DIREKT am
+  ConversationEventHub, vor jedem Plugin; Key channelType::conversationId,
+  TTL 24h). Der Index **überlebt Restarts** (#330 follow-up): Write-through in
+  `observed_conversation_invites` (Migration `0048`, Core-Serie;
+  `src/platform/observedInvitePersistence.ts`) — Map bleibt der Hot Path,
+  Writes fire-and-forget (log-only), Boot-Hydration TTL-gefiltert, auf
+  MAX_ENTRIES gecappt, Key aus den Tabellen-SPALTEN (JSONB≠Spalten ⇒ Row wird
+  verworfen), try/catch um `hydrate()` (fehlende Tabelle ⇒ altes
+  Re-Invite-Verhalten, nie Boot-Abbruch). Live-Events vor der Hydration
+  gewinnen. Achtung: zwei Instanzen auf EINER DATABASE_URL teilen sich den
+  Index (Annahme: eine Deployment == eine DB).
+  Fremd-gebundene Conversations: Refusal via `channel_bindings`-PK.
+  `unbind()` ist gleich hart geguarded: nur eigene Ephemeral-Attachment-Rows
+  — Operator-Bindings sind von dieser Fläche aus unerreichbar, und ein
+  vorbestehendes Operator-Binding wird NIE in den Ephemeral-Lifecycle
+  adoptiert. bind/unbind laufen als `channel.binding_change` ins admin_audit.
+  `attachWorkflow()` (guarded: nur eigene pending-Row) koppelt das Binding an
+  den Facilitation-Run.
+- **Restart-Rehydration (#330 field report):** `listOwnAttachments({agentSlug})`
+  liefert die eigenen, nicht abgelaufenen Attachment-Rows inkl. `activeRunId`
+  (neuester running/waiting Run des Workflows, via `resolveActiveRun` in
+  `src/index.ts`). Der Facilitator baut daraus nach einem Deploy seinen
+  In-Memory-State wieder auf — ohne das lehnte er nach jedem Fly-Restart alle
+  progress/nudge-Calls ab ("kein aktives Facilitation-Ziel").
+- **`conductorRoleAssignments`** (`src/conductor/scopedRoleAssignments.ts`):
+  Rollen-Writes hart auf Präfix `facilitation-` beschränkt; jede
+  Holder-Mutation läuft durch den #759-Audit-Sink
+  (`conductor.role_holders_change`, actor = Plugin bzw. Reaper).
+
+**Ephemere Kopplung:** Migration `0010_ephemeral_attachments.sql` +
+`ephemeralAttachmentsStore.ts`. Beide Reap-Pfade (Terminal-Hook in
+`wireConductor.reapIfEphemeral` + `ephemeralReaper.onReaped`) rufen EINEN
+gemeinsamen, in `src/index.ts` VOR wireConductor konstruierten
+Cleanup-Pfad (`disposeEphemeralAttachment`): Binding entfernen,
+Rollen-Holder schließen (auditiert), erst DANN Row löschen. Retry-Wahrheit:
+schlägt das Cleanup fehl (oder läuft der Reaper-Boot-Tick, bevor
+configStore/orchestratorRegistry published sind), bleibt die Row stehen und
+der **Attachment-Sweep** räumt sie nach Ablauf ab — expired `pending`
+(Invite ohne Facilitation) UND expired `attached` (verpasstes
+Reap-Cleanup). Tests: `test/agentSetupService.test.ts`,
+`test/observedConversationInvites.test.ts`,
+`test/conductorScopedRoleAssignments.test.ts`,
+`test/conductorEphemeralAttachments.test.ts`.
+### Transcription-Capability + Recording-Ingestion (#584 WS T+I)
+
+Speech-to-Text ist eine Core-Capability nach ADR-0003: Registry-Key
+`'transcription'` (bare), Manifest-Form `'transcription@1'` — Twin-Konstanten
+in `packages/plugin-api/src/transcription.ts` (sessionBriefing-Konvention).
+Interface provider-neutral: `transcribeFile` (Batch) + `transcribeStream`
+(Realtime, `AsyncIterable<TranscriptDelta>`), Hint-Carrier
+(`languageHints`/`keywordHints`/`context`) für die #584-Hint-Synergie.
+Guardrails als Decorator `withTranscriptionGuardrails` (per-Call-Cap,
+per-Agent-Minuten-Quota In-Memory, Metering; Attribution via
+`turnContext.currentAgentSlug()` zur Call-Zeit, VOR dem ersten yield
+gecaptured — ALS überlebt Generator-yields nicht).
+
+Erster Provider: `packages/transcription-adapter-openai/` (Plugin, provides
+`transcription@1`, Vault-Key; `gpt-transcribe` Batch ungated,
+`gpt-live-transcribe` hinter `TRANSCRIPTION_REALTIME_EXPERIMENTAL`).
+Provider-Switch mit verifiziertem Rollback:
+`/api/v1/admin/transcription-provider` (`src/routes/adminTranscriptionProvider.ts`,
+schlankes Spiegelbild der Embedding-Route ohne Corpus/Gate) + web-ui-Panel
+`/admin/transcription-provider` (Consent-Surface: „Roh-Audio verlässt die
+Installation", i18n en+de).
+
+Workstream I: Native-Tool `transcribe_recording`
+(`packages/harness-orchestrator/src/tools/transcribeRecordingTool.ts`,
+Registrierung in `plugin.ts` mit late-bound Service-Resolve). Ingestiert
+Aufnahmen in dieselbe Artefakt-Substanz wie Live-Chat: ein `SessionLogEntry`
+pro Utterance (additive Felder `speaker?`/`time?`; `TurnIngest.speaker` in
+beiden KG-Backends), Markdown-Transkript + KG-Turns + Briefing. Transkript
+gilt als untrusted Input und läuft als Tool-Result durch die bestehenden
+Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
+`test/sessionLoggerSpeaker.test.ts`, `test/adminTranscriptionProviderRoute.test.ts`,
+`packages/plugin-api/test/transcriptionGuardrails.test.ts`, Adapter-Suite in
+`packages/transcription-adapter-openai/test/`.
+
+### Facilitation-Admin-Lens (#330 Runde 4)
+
+Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
+Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
+im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
+requireAuth unter `/api/v1/operator/conductors`, VOR den `/:slug`-Routen
+deklariert):
+
+- **`GET /facilitations`** — Overview aller nicht gereapten ephemeren
+  Workflows aus rein durablem State: Conversation (Attachment-Row), Goal/DoD
+  + Assess-Runden (`ctx.stepAttempts.moderate`) + letztes Verdict
+  (`ctx.steps.moderate.data` — accumulate() persistiert pro Step-Id;
+  `ctx.stepResult` existiert nur transient als Guard-Argument, NIE im
+  durablen Context), Initiator-Role-Holder, Teilnehmer via
+  Roster-Registry (best-effort, 30s-TTL-Cache — jeder Roster-Read öffnet
+  einen proaktiven Channel-Turn). Store-Fehler beim Zusammenbau ⇒ Row-Flag
+  `incomplete: true` + Log (unter-reporten ja, erfinden nie).
+- **`POST /facilitations/:workflowId/terminate`** — cancelt aktive Runs
+  (#759-Semantik) und disposed das Scaffold über DENSELBEN Cleanup-Pfad wie
+  der Reaper (`disposeEphemeralWorkflow` in `src/conductor/index.ts`;
+  Binding + Rolle gehen mit). Schlägt EIN Cancel fehl, wird die Disposal
+  ÜBERSPRUNGEN (502 `conductor.facilitation_cancel_failed`) — reaped_at auf
+  einem lebenden Run würde ihn aus genau dieser Lens verstecken. Non-ephemeral
+  ⇒ 404. Jede erfolgreiche Terminierung landet als
+  `conductor.facilitation_terminate` im admin_audit (actor-uuid/email nach
+  #775-Regel getrennt).
+
+Web-UI: Panel „Laufende Facilitations" auf der Conductor-Seite
+(`web-ui/app/conductor/_components/FacilitationsPanel.tsx`), Stop & remove
+hinter ConfirmDialog. Modul: `src/conductor/facilitationAdmin.ts`, Tests:
+`test/conductorFacilitationAdmin.test.ts`.
+
+**Zwischenstand-Tabelle (Pattern v3):** Das Moderate-Verdict trägt zusätzlich
+`items[]` — pro nummeriertem DoD-Punkt `{point, label, status:
+done|partial|open, note}`. Der Kernel validiert die Model-Ausgabe defensiv
+(`verdictItems()` in `facilitationAdmin.ts`: Nicht-Objekte fliegen raus,
+falsch getypte Felder werden genullt) und reicht sie als
+`run.lastVerdict.items` durch (Strings auf 300 Zeichen gekappt, `point` nur
+als positive Ganzzahl); das Details-Modal (`FacilitationDetailsModal.tsx`)
+rendert daraus die Tabelle #/Punkt/Status/Stand. Die Labels sind eine
+Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
+die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
+
+### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
+Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
+`0011`): Deadline-Poll → `expireAwait` → On-Expiry-Fallback — derselbe
+Mechanismus wie Human-Deadlines. Guarded Cycles durch einen Timer sind
+validate-grün (unguarded bleibt Fehler); Loop-Budget deterministisch über
+`ctx.stepAttempts[stepId]` (Executor bumpt bei jedem Step-Entry; Guard z.B.
+`lt ctx.stepAttempts.moderate 24`) plus Ephemeral-TTL plus MAX_STEPS.
+Agent-Steps liefern strukturierte Verdicts: letzter ```json-Fence der
+Antwort → `stepResult.data` (`extractFencedJson` in realStepEffects,
+tolerant + size-capped). Pattern `facilitation` ist **v2** (Assess-Tick
+PT1H, max 24 Runden, DoD-met → confirm, exhausted → abort-report).
+`conductorEphemeralRuns.poke(runId)` feuert den offenen Timer-Await sofort.
+Neuer Service **`conversationSend`** (deny-by-default; SDK-Seam
+`registerConversationSendProvider`, Kernel `src/channels/
+conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
+Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
+`test/conversationSendService.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1172,8 +1632,11 @@ startet. Logged `scopes=N files=N turns=N skipped=N`.
 - `GET /api/dev/graph/session/:scope`
 - `GET /api/dev/graph/neighbors?nodeId=...`
 
-Alle hinter `DEV_ENDPOINTS_ENABLED=true`. Admin-geschützte Variante für
-Prod wäre machbar, aktuell nicht nötig.
+Alle hinter `DEV_ENDPOINTS_ENABLED=true` **und** der Operator-Session
+(Issue #669 — vorher waren sie unauthentifiziert). Die Operator-Flächen
+(KG-Lifecycle, KG-Priorities, Plugin-Domains) hängen nicht mehr an diesem
+Flag, sondern liegen unter `/api/v1/admin/kg-*` bzw. `/api/admin/domains`.
+Siehe `docs/security-architecture.md` §10.
 
 ### Agent-Query-Tool
 
@@ -1197,9 +1660,14 @@ migrations/0029_datasets.sql`); pro Dataset genau EIN `Dataset`-Graph-Node
 (`PluginEntity`, `system='dataset'`) für Recall/Zitation.
 
 - **Interface:** `KnowledgeGraph.{ingestDataset,listDatasets,getDataset,
-  queryDatasetRows,deleteDataset}` (`plugin-api/src/knowledgeGraph.ts`),
-  implementiert in `@omadia/knowledge-graph-neon` (echtes SQL) UND
-  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub).
+  queryDatasetRows,deleteDataset}` plus das **optionale** `countDatasets`
+  (`plugin-api/src/knowledgeGraph.ts`; `listDatasets` nimmt seit #532 auch
+  `offset` — additiv, plugin-api 1.7.0), implementiert in
+  `@omadia/knowledge-graph-neon` (echtes SQL) UND
+  `@omadia/knowledge-graph-inmemory` (volle Parität, kein Stub). Die
+  extras-Wrapper (captureFiltering/inconsistencyTriggering/mergeTriggering)
+  reichen `countDatasets` nur durch, wenn der innere Graph es kann —
+  keine fabrizierten Totals.
 - **Import:** `POST /api/v1/datasets` (multipart CSV, `src/routes/
   datasets.ts`) sowie automatisch bei CSV-Chat-Attachments
   (`attachmentExtract.ts`'s `isCsvAttachment` branch in `orchestrator.ts`'s
@@ -1323,6 +1791,8 @@ SKILLS_DIR=../skills                # relativ zum middleware root
 MEMORY_DIR=./.memory
 MEMORY_SEED_DIR=./seed/memory
 MEMORY_SEED_MODE=missing            # missing | overwrite | skip
+# Turn receipts (#757)
+RECEIPT_RETENTION_DAYS=90           # bounded retention for turn_receipts
 # Odoo
 ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_API_KEY
 ODOO_PROXY_MAX_BYTES=500000
@@ -1331,9 +1801,17 @@ ODOO_INSECURE_TLS=false             # true nur lokal bei Private-CA
 CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN, CONFLUENCE_BASE_URL
 CONFLUENCE_SPACE_KEY=HOME
 CONFLUENCE_PROXY_MAX_BYTES=200000
+# Transcription (#584 — transcription@1 capability)
+TRANSCRIPTION_REALTIME_EXPERIMENTAL=1   # opt-in: gpt-live-transcribe Realtime-Pfad
+                                        # (transcribeStream); Batch (gpt-transcribe)
+                                        # läuft ohne Gate, sobald der Adapter
+                                        # @omadia/transcription-adapter-openai
+                                        # installiert + mit API-Key versorgt ist
 # Optional endpoints
 ADMIN_TOKEN                         # mount /api/admin (mutating memory)
-DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (unauth!)# Teams
+DEV_ENDPOINTS_ENABLED=false         # mount /api/dev/* (Session-gated seit #669; Dev-Scaffolding)
+DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#669)
+# Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
@@ -1348,6 +1826,12 @@ BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Conductor generic webhooks (issue #437) — Kill-Switch für POST /api/hooks/:endpointId
 CONDUCTOR_WEBHOOKS_ENABLED=true
 CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE=60   # Rate-Limit pro Endpoint (rolling minute)
+# Conductor ephemeral/JIT workflows (#330 Workstream A) — Guardrails für createEphemeralRun
+CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS=86400000      # 24h Default-TTL
+CONDUCTOR_EPHEMERAL_MAX_TTL_MS=604800000         # 7d Obergrenze (Requests werden geclampt)
+CONDUCTOR_EPHEMERAL_MAX_ACTIVE_PER_AGENT=3       # concurrent ephemeral Runs pro Agent
+CONDUCTOR_EPHEMERAL_MAX_CREATES_PER_HOUR=10      # Create-Rate pro Agent
+CONDUCTOR_EPHEMERAL_REAPER_INTERVAL_MS=60000     # Reaper-Poll
 # Tenant-Scope (auch für Diagramm-Cache-Keys genutzt)
 GRAPH_TENANT_ID=byte5
 # Prompt-PII C1-Detector (GLiNER-Sidecar, #361) — optional
@@ -1358,6 +1842,20 @@ PORT=3979
 
 `.env.example` ist gepflegt. Leere Strings parsed zod als `""`, nicht
 `undefined` — daher muss der Fallback `||` sein, nicht `??`.
+
+### Package-lokale Env-Variablen (`OMADIA_*`, ohne zod-Schema)
+
+Das `harness-orchestrator`-Package importiert `config.ts` **nicht**; seine
+Optionen laufen als `OMADIA_*`-Env mit Modul-Konstante als Default und werden
+pro Aufruf aufgelöst (Änderung greift ohne Restart):
+
+```
+OMADIA_TOOL_DISPATCH_TIMEOUT_MS=240000      # äußere Dispatch-Deadline (W3-A)
+OMADIA_MCP_CALL_TIMEOUT_MS=60000            # Idle-Budget pro MCP-Request (W0-2)
+OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=180000 # absolute Decke inkl. Retry (W0-2)
+OMADIA_MCP_TOOLLIST_TTL_MS=60000            # Default-TTL Tool-List-Cache (#545,
+                                            # ADR-0009); 0 = spec-strikt aus
+```
 
 ### Wichtige Gotchas
 
@@ -1437,6 +1935,34 @@ dokumentierten C0-Locale-Lücken (Beträge/Daten/Telefonformate). Flag-Policy
 unverändert: Tabellen müssen vor dem Flag-Flip pro Locale auf Issue #361
 gepostet sein.
 
+### 10.x Setup-Felder der KI-Kennzeichnung (Epic #642 / #644)
+
+Plugin-Setup-Felder des Orchestrators, **keine** Env-Variablen — gelesen in
+`resolveAiDisclosureSetup` (`packages/harness-orchestrator/src/plugin.ts`):
+
+| Feld | Werte | Wirkung |
+|---|---|---|
+| `ai_disclosure_level` | `standard` \| `concise` \| `off` | globale Stufe |
+| `ai_disclosure_level_overrides` | `"telegram=concise,web=off"` | pro `ChannelKind` |
+| `ai_disclosure_locale` | z. B. `de`, `en` | Sprache der Kennzeichnung |
+| `ai_disclosure_assistant_name` | Freitext | Name in der Standardformulierung |
+| `ai_disclosure_operator_note` | Freitext | wörtlicher Zusatz **hinter** der Zeile |
+
+Auslieferungszustand ohne jedes gesetzte Feld: `standard`, aktiv,
+`source: 'default'`. Drei Eigenschaften sind load-bearing:
+
+- **Sobald EIN Feld gesetzt ist, ist die gesamte Policy operator-sourced** — erst
+  das macht ein `off` überhaupt gültig. Ein Turn kann sich nicht selbst
+  stummschalten.
+- **Unbekannte Kanal-Tokens und Stufen werden mit einer Warnung verworfen.** Ein
+  stiller Drop läse sich als "Kennzeichnung konfiguriert", wenn sie es nicht ist.
+- **Nur `teams`/`slack`/`telegram` liefern heute pro Turn einen `channelKind`.**
+  Ein Override für `email` oder `web` parst und wird angezeigt, wirkt aber nicht.
+  `/health` und das Operator-Dashboard weisen seit #648 darauf hin.
+
+Die aufgelöste Haltung ist ablesbar: `GET /health` → `disclosure`, plus
+Boot-Warnung und Dashboard-Hinweis **nur** bei Abweichung vom Auslieferungszustand.
+
 ---
 
 ## 11. Stream-Protokoll (`POST /api/chat/stream`)
@@ -1456,6 +1982,27 @@ type ChatStreamEvent =
 Genau ein `done` oder `error` schließt den Stream. Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
+
+**Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
+trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
+
+- `SemanticAnswer.aiDisclosure` — strukturierter Marker (`text`, `level`, `locale`,
+  `source`, optional `operatorNote`), liegt an **jedem** Turn an, solange der
+  Betreiber die Kennzeichnung nicht auf `off` gesetzt hat. Auch am `done`-Event
+  (`discloseDoneEvent`).
+- `SemanticAnswer.text` — dieselbe Zeile wird beim **ersten** Turn eines Scopes in
+  den Text gefaltet, damit sie auch Kanäle ohne Provenienz-Slot erreicht. `text`
+  ist das einzige Feld, das jeder Connector rendern muss (`outgoing.ts:33`).
+- Auf den beiden öffentlichen Egress-Pfaden zusätzlich maschinenlesbar: Header
+  `X-AI-Generated: true` plus `provenance: { aiGenerated: true }` am `done`-Event
+  (Public Chat API), `_meta["omadia.ai/provenance"]` am `tools/call`-Ergebnis
+  (Public MCP). Der Header wird bei `flushHeaders()` gesetzt, also **vor** dem Turn
+  — sonst fehlte er genau bei den Antworten, die mit einem Fehler enden.
+
+Beide Felder sind additiv und optional im Sinne des Wire-Contracts: ein Client, der
+sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
+rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
+[`ai-act-transparency.md`](ai-act-transparency.md).
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -1516,6 +2063,30 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
+
+Alles hier ist **nicht** umgesetzt. Vollständige Darstellung samt Codestellen:
+[`ai-act-transparency.md`](ai-act-transparency.md).
+
+- **C2PA für Bilder.** Im Baum existiert keine C2PA-Implementierung. Für
+  gerenderte Diagramme wäre das der naheliegende nächste Schritt; heute trägt das
+  PNG einen eigenen `iTXt`-Chunk, keinen C2PA-Manifest.
+- **`.xlsx` gröber als `.docx`.** exceljs bietet keine verlässlichen
+  benutzerdefinierten OOXML-Properties, deshalb fehlt der strukturierte
+  `AIGenerated`-Flag. Ein Parser muss dort den Freitext der `category` auswerten.
+  Behebbar nur durch Wechsel des Renderers oder Nachbearbeitung des ZIP.
+- **Zwei Provenienz-Vokabulare.** Office und PNG benutzen `AIGenerated` /
+  `Generator` / `ProvenanceStandard`, der API-/MCP-Envelope `aiGenerated`. Beide
+  dokumentiert, aber ein Konsument muss beide kennen.
+- **Per-Kanal-Overrides greifen nur auf `teams`/`slack`/`telegram`.** `email`,
+  `web` und die kind-losen Kanäle tragen keinen `channelKind` in den Turn. Die
+  Lücke ist gemeldet (#648), aber nicht geschlossen — dafür müsste
+  `orchestratorDispatcher.toChannelKind` mehr Kanäle auflösen.
+- **Fließtext-Kanäle bleiben ohne maschinenlesbare Markierung.** Teams, Slack,
+  Telegram, WhatsApp bieten keinen Slot, und für reinen Text existiert kein
+  Standard, den ein Empfänger auswerten würde. Kein offener Task, sondern eine
+  Grenze, die benannt bleiben muss.
 
 ### Phase 5 — Business-Entity-Sync (nächster sinnvoller Task)
 
@@ -1646,17 +2217,38 @@ gekettet, weil `requires` beim Boot enforced wird): docs-RFC (diese PR)
 omadia-ui-Orchestrator-Consumer. Details + per-PR-Doc-Pflichten in §15
 des RFC.
 
-### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up)
+### Phase 14 — Admin-UI für Dataset-Upload/Schema/Delete (#430 Follow-up) — **erledigt (#532)**
 
-Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckt
-absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete bleibt
+Der #430-Scope (CSV-Import + `query_dataset`-Tool, siehe §3 und §7) deckte
+absichtlich **keine** Admin-UI ab — Upload/Schema-Browse/Delete blieb
 API-only (`POST/GET/DELETE /api/v1/datasets*`, siehe §3). #430's eigene
-Triage-Acceptance-Criteria verlangen aber genau diese UI; der Branch
-schließt das Issue deshalb NICHT, sondern "addresses" es — ein
-Folge-Issue für die Admin-UI-Seite (`web-ui/app/admin/datasets/` o.ä.,
-Upload-Dropzone + Schema-Tabelle + Zeilen-Preview + Delete-Bestätigung,
-Pattern analog zur bestehenden Package-Upload-Seite) ist offen zu
-erfassen.
+Triage-Acceptance-Criteria verlangen aber genau diese UI; das
+Folge-Issue #532 hat sie nachgezogen.
+
+Geliefert, überwiegend `web-ui`-seitig; an der REST-Surface aus §3 gab es
+EINE additive Änderung: `GET /api/v1/datasets` paginiert jetzt
+(`limit`/`offset`, Response `{ items, totalMatched }`, getragen von
+`listDatasets.offset` + optionalem `countDatasets` im plugin-api-Interface,
+Minor-Bump auf 1.7.0) — ohne sie waren Datasets jenseits des 50er-Caps im
+Admin-UI unsichtbar UND unlöschbar:
+
+- `web-ui/app/admin/datasets/page.tsx` — Upload (Datei + optionaler Name),
+  Liste, aufklappbares Detail mit Schema-Tabelle und Zeilen-Vorschau,
+  Delete mit Bestätigung.
+- Der Client (`web-ui/app/_lib/api.ts`) spiegelt `DatasetSummary` /
+  `DatasetColumnSchema` / den unaggregierten Zweig von
+  `DatasetQueryResult`, weil `web-ui` nicht gegen den
+  middleware-Workspace baut.
+- Die Zeilen-Vorschau paginiert **server-seitig** über `limit`/`offset`
+  (25 pro Seite, Server clamped auf [1, 200]). Ein Datensatz fasst bis zu
+  `MAX_DATASET_ROWS` (50 000) Zeilen — genau der Fall, gegen den
+  `queryDatasetRows` existiert.
+- Nach einem Import werden `privacyScan.scannedCells` /
+  `maskedCells` und eine etwaige Zell-Truncation angezeigt: der Scan läuft
+  auf diesem Pfad genauso wie beim Chat-Attachment-Auto-Ingest, und das
+  soll sichtbar sein statt geglaubt werden zu müssen.
+- ACL unverändert owner-only: die Seite zeigt ausschließlich Datensätze
+  des eingeloggten Kontos, nicht die der Instanz.
 
 ---
 
@@ -1757,3 +2349,320 @@ Gute Einstiegs-Prompts, geordnet nach erwartetem Gewinn:
   alles"-Antwort.
 - Die Dev-UI unter `http://localhost:3000` ist der schnellste Weg, Agent-
   Verhalten interaktiv zu testen — sie streamt Tool-Calls live.
+
+## Channel-Directory: aufgelöste Namen + Mitglieder (2026-08-24)
+
+Der Channel-Directory-Contract (`@omadia/channel-sdk` 0.2.0,
+`ChannelKeyEntry`) trägt zwei optionale Felder: `members` (gecappte
+Display-Namen, vom Channel-Plugin aufgelöst — Teams macht das via
+Microsoft Graph) und `memberCount` (ungecappte Gesamtzahl). Der Kernel
+reicht beide durch `ChannelDirectoryRegistry.listAll()` →
+`GET /api/v1/operator/channels` (`members` / `member_count`) und cappt
+dabei hart (max. 16 Namen à 120 Zeichen, negative Counts verworfen) —
+Plugins sind untrusted. Das Channels-Dashboard (web-ui, auch eingebettet
+in `/operator/agents`) rendert daraus eine "Mitglieder: …"-Zeile
+(i18n-Keys `operatorChannels.membersLine` / `membersMore`).
+
+Die eigentliche Graph-Auflösung (Group-Chat-Topic, Chat-/Team-Members,
+Org-Name für den Catch-all) lebt im Plugin-Repo
+`byte5ai/omadia-channel-teams` (`teamsGraphResolver.ts`) — nie awaited
+im Render-Pfad, stale-while-revalidate ab `observe()`, degradiert ohne
+Graph-App-Permissions lautlos auf die Bot-Framework-Labels. Benötigte
+Application-Permissions (Admin-Consent im Tenant): `Chat.Read.All`,
+`ChatMember.Read.All`, `TeamMember.Read.All`, `Organization.Read.All`.
+
+
+## Agent Factory: Teams-Identity-Provisioning (W1a, 2026-08-26)
+
+Epic #860, Wave W1a. Ein Agent bekommt per Operator-API eine eigene Microsoft-Teams-
+Identität — Entra-App-Registration → Azure Bot → Teams-App-Package → Tenant-Katalog →
+Team-Install — ohne dass die Middleware selbst je Graph/ARM spricht.
+
+**Architektur (ein Choke-Point, ein Writer, eine State-Quelle):**
+
+| Baustein | Datei | Rolle |
+|---|---|---|
+| Migration | `middleware/migrations/0049_agent_teams_identities.sql` | 1 Identity/Agent (PK `agent_id`), global unique `bot_slug`, State-CHECK (7 Werte), Evidence-Spalten, `team_id` als Resume-Ziel. KEINE Secret-Spalte. |
+| Store | `middleware/src/platform/agentTeamsIdentityStore.ts` | Einziger Writer von `state`/`last_error`; exportiert DIE State-Union (`TEAMS_PROVISIONING_STATES`), die Runner+Router importieren. Query-Fehler surfacen (kein stilles `pending`). |
+| Accessor | `middleware/src/platform/teamsProvisionerService.ts` | Einzige `serviceRegistry.get('teamsProvisioner')`-Stelle (KERNEL_SERVICE_CALLER), gespiegelter Connector-Contract v0.3.1 (inkl. `getCatalogApp`), Duck-typed Error-Guards, Secret-Stripping, SingleTenant-Guard, `buildTeamsBotMessagingEndpoint()` → `https://<base>/api/teams/<botSlug>/messages`. |
+| Job-Runner | `middleware/src/services/teamsProvisioningJob.ts` | Async in-process, idempotenter Resume ab persistiertem State, bounded Retries (Throttle-Hint ≤ `maxRetryDelayMs`), ConsentMissing→`failed`+Scopes, ArmNotConfigured→bleibt `app_registered`+actionable `last_error`; Team-Konflikt-Enqueue wird `rejected`, nie fremdes Ergebnis. `asBackgroundJob()` (Registry-Lifecycle, start() re-armt nach stop()). |
+| Package-Assets | `middleware/src/services/teamsAppPackageAssets.ts` | Liest `appPackage/{manifest.json.template,color.png,outline.png}` aus dem installierten channel-teams-Package, füllt Platzhalter template-getrieben, deterministische Teams-App-GUID pro Agent (Katalog-Idempotenz). |
+| Endpoints | `middleware/src/routes/operatorAgents.ts` | `POST/GET /api/v1/operator/agents/:slug/teams-identity` — 202-async, `{ ok: true }`-Envelope, camelCase `teams_bot`-Projektion (paste-ready für `teams_bots[]`), 503/404/400/409-Reihenfolge korrekt, ehrliches `running`, Enqueue-Fehler landen in `last_error`. |
+| Boot-Wiring | `middleware/src/index.ts` (nach graphPool-Resolution) | Registriert `agentTeamsIdentityStore` + `teamsProvisioningJobRunner`, bindet `TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL` in den URL-Builder, `backgroundJobRegistry`, Resume offener Jobs (`listResumable`, nur mit `team_id`, `failed` bleibt geparkt). |
+
+**Secret-Custody:** Das Bot-Passwort verlässt den M365-Connector NIE — dessen Vault hält
+es unter `teams_bot_password:<appId>`; die Status-Projektion leitet den Ref
+deterministisch aus `app_id` ab (nichts wird gespeichert, nichts geloggt).
+
+**Deploy-Voraussetzungen:** Connector-Plugin `@omadia/integration-microsoft365` ≥ 0.3.1
+(publiziert `teamsProvisioner@1`), channel-teams-Package mit `appPackage/` (W0a) für den
+Package-Schritt, Postgres (`DATABASE_URL`). Fehlt der Connector: Jobs bleiben
+retryable-pending, POST antwortet 503 `teams_provisioner_unavailable`.
+
+**Out of scope / Follow-ups:** Automatischer Sync der fertigen Identity in die
+channel-teams-Plugin-Config (`teams_bots[]`) ist dokumentierter Follow-up; Extraktion der
+Teams-Identity-Routen aus `operatorAgents.ts` (Datei > 800 Zeilen) bei nächster Gelegenheit.
+
+**Tests:** `test/teamsProvisioningJob.test.ts` (24), `test/teamsProvisionerService.test.ts`
+(22), `test/operatorAgentsRouter.test.ts` (42), `test/agentTeamsIdentityStore.pg.test.ts`
+(9, gegen echtes Postgres, wendet Migration 0049 doppelt an), `coreMigrations.pg.test.ts`
+(Double-Apply aller 49 Files).
+
+## Chat-Kontext-Memory-ACL (W5, #860 / #870, 2026-08-27)
+
+**Das Problem.** Agent-Memory war pro AGENT isoliert (`ScopedMemoryStore` über
+`['core', 'orchestrator:<slug>:*']`), nicht pro CHAT-KONTEXT. Was ein Agent in Teams-Team A
+lernte, landete im agent-globalen Baum und war im nächsten Turn in Team B zitierbar. W5
+partitioniert diesen Baum nach Chat-Kontext.
+
+### Scope-Grammatik
+
+`ScopedMemoryStore` versteht drei neue Tokens plus einen Modifier. Physische Wurzeln kommen
+ausschliesslich aus `contextTierRoot(agentSlug, axis, ctxKey)` — eine zweite Schreibweise
+wäre eine Partition, die der kompilierte Scope nicht gewährt:
+
+| Token | matcht |
+|---|---|
+| `team:<ctxKey>:*` | `/memories/contexts/<slug>/team/<ctxKey>/…` |
+| `channel:<ctxKey>:*` | `/memories/contexts/<slug>/channel/<ctxKey>/…` |
+| `user:<ctxKey>:*` | `/memories/contexts/<slug>/user/<ctxKey>/…` |
+| `ro:<pattern>` | Access-Modifier: read/list/exists ja, write/delete/rename → `MemoryScopeViolation` |
+
+`/memories/contexts/` ist ein **neues Top-Level-Segment**, nicht ein Unterbaum von
+`/memories/orchestrators/`. Das ist das strukturelle Kollisionsfreiheits-Argument:
+`orchestrator:<slug>:*` matcht ausschliesslich den Agent-Baum, also erreicht kein Alt-Scope
+einen Kontextbaum und kein Kontext-Scope den Agent-Baum. **Nicht "aufräumen".**
+
+`ro:` ist ein **Veto**, kein schwaches Grant: matcht ein `ro:`-Pattern den Pfad, wird der
+Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-öffnet jedes
+überlappende Pattern still das Tier, das `ro:` quarantänisieren soll.
+
+`/memories/core/audit/` ist für **jeden** Agent unbeschreibbar (Deny-Prefix vor jeder
+positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
+jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
+überschreiben, was ein Operator mit seinem Memory gemacht hat.
+
+### Kontext-Key
+
+`memoryContextKey(channelType, nativeId)` (`harness-channel-sdk/src/scopeId.ts`) ist der
+**einzige** Sanitizer: `${channelType}~${safeKey(nativeId)}`. Jeder `<ctxKey>` in der
+Grammatik, jeder physische Pfad, jeder Purge-Selector und die Promote-Route gehen da durch.
+Ein Ad-hoc-`replace(/[^a-z0-9]/g,'-')` irgendwo anders reisst das Loch wieder auf, das
+`scopeGraphKey` geschlossen hat: eine Teams-Conversation-Id ist `19:abc@thread.tacv2`, und
+plain sanitisiert kollidiert sie mit dem Literal `19-abc-thread-tacv2`.
+
+Zwei Eigenschaften sind sicherheitstragend:
+
+- **Injektiv.** Ein bereits verlustfreier Id (`/^[a-z0-9_-]{1,64}$/`) geht byte-identisch
+  durch, alles andere bekommt Stem + 64-Bit-sha256-Digest des ROHEN Strings. Die beiden
+  Ausgaberäume sind **disjunkt** — ein Id, der wie ein Digest aussieht (`…-<16 hex>`), wird
+  selbst gehasht. Ohne das könnte jemand, der seine eigene Conversation-Id benennen kann,
+  den Key eines gehashten Kontexts vorbilden und in dessen Baum landen.
+- **`~` liegt ausserhalb des Safe-Alphabets** → die Zerlegung ist eindeutig und ein Key kann
+  nie ein `:` tragen, das das `team:<key>:*`-Format bräche.
+
+`memoryAxesForOrigin` keyt **nicht** auf `formatSessionScope(scope)`, sondern auf eine
+injektive JSON-Tupel-Kodierung der strukturellen Scope-Teile. Die Wire-Form ist nur über der
+Teilmenge injektiv, die `parseSessionScope` emittiert — und Adapter bauen Scopes direkt.
+Sonst teilen sich `{kind:'group',groupRef:'x'}` und
+`{kind:'conversation',conversationId:'group:x'}` ein Tier.
+
+### Effective Scope (statisch ∩ dynamisch)
+
+```
+scope = axes.isContextFree
+  ? ['core', `orchestrator:${slug}:*`]                        // exakt heute
+  : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]  // enforce
+  : ['ro:core', …axes.patterns]                               // enforce-strict
+```
+
+- **Fail-closed.** Fehlender `origin`, `unscoped`, `system`, unbekannter `channelType`,
+  unbrauchbare Patterns → Zeile 1 der Tabelle, byte-identisch zu heute, kein Kontextbaum
+  erreichbar. `axes.patterns` ist eine **Allowlist**: alles ausserhalb der drei Tier-Tokens
+  wird verworfen und geloggt, denn diese Liste kommt über eine Paketgrenze aus einem
+  unabhängig versionierten Channel-Plugin.
+- **Agent-Tier ist read-only.** Sonst wäre "notiere das global" ein permanenter Leak-Kanal
+  von Team A nach Team B.
+- **`ro:core`, nicht `core`.** Die Shared-Bäume (`core`, `sessions`, `chat-sessions`,
+  Top-Level `_*`) reicht der Namespacer unverändert durch — sie sind die EINE modellseitige
+  Fläche, die zwei Kontexte unter demselben Pfad ansprechen. Schreibbar wäre
+  `/memories/core/notes.md` ein Einzeiler-Bypass der ganzen ACL.
+- **Nie ein Throw auf dem Message-Pfad.** Kaputte Axes degradieren auf den Agent-Privat-Scope
+  und loggen laut (`[security-audit]`) — in BEIDEN Modi, weil ein Plugin-Bug sonst unsichtbar
+  bleibt.
+
+### Turn-Bindung
+
+`MemoryBinder.forOrigin(origin)` liefert synchron und LRU-gecacht (Cap 256) den Stack
+`DurableRulesMemoryStore?( ContextMemoryNamespacer( ScopedMemoryStore(scope, rootStore) ) )`.
+Der Orchestrator ruft das **einmal am Turn-Anfang** und reicht das Ergebnis als **expliziten
+Parameter** bis `dispatchToolInner` durch — ausdrücklich **nicht** über `turnContext`
+(AsyncLocalStorage). Ein Generator wird im Async-Kontext seines Aufrufers fortgesetzt; genau
+so hat `turnContext.enter` vor W3-A auf jedem Streaming-Turn den Kontext still verloren. Eine
+so verlorene Bindung würde nicht fehlschlagen, sie würde leise den Scope weiten.
+
+Modellseitig (nur im Kontext-Modus, sonst byte-identischer Prompt):
+
+```
+/memories/…         → engstes Tier des Turns (Kanal bzw. User)
+/memories/~team/…   → Team-Tier (rw, nur wenn eine Team-Achse existiert)
+/memories/~agent/…  → Agent-Baum (ro; Enforcement macht der Store, nicht der Mapper)
+```
+
+`~` ist kollisionsfrei, weil der bestehende Namespacer nie `~`-Segmente nach aussen emittiert.
+
+### Rollout
+
+`agents.context_memory` (Migration `0050_agent_context_memory_flag.sql`), `off` | `enforce` |
+`enforce-strict`, **Default `off`**. `off` plus optionales `origin` ⇒ jede Kombination aus
+alter/neuer Middleware und altem/neuem Channel-Plugin verhält sich wie heute, bis ein
+Operator umschaltet. Kein Flag-Day. Unbekannte/NULL-Werte lesen sich als `off`
+(deny-default), damit ein Rollback das Memory-Routing nicht ändert.
+
+`buildOrchestrator` baut den Binder **unbedingt** und gated per Modus — `off` und der heutige
+Stack sind ein Codepfad, damit der Schalter nicht von dem wegdriftet, was er schaltet.
+`ChatSessionStore`/`SessionLogger` bleiben auf dem statischen `scopedStore`: Session-
+Transkripte bleiben geteilt unter `core/sessions` (Entscheidung A3a).
+
+HTTP/API-Turns emittieren **kein** `origin` (Koordinator-Entscheidung 1). Deren
+Scope-Strings (`http-<scope>`, client-gewählte `sessionId`, das geteilte `'http-default'`)
+sind vom Caller gelieferte Transkript-Labels — daraus eine Memory-Partition abzuleiten hiesse,
+jedem API-Client das Tier eines anderen benennbar zu machen.
+
+### Purge & Promote
+
+**Purge** (`/api/v1/admin/memory/purge`): `axis:'team'|'channel'|'user'` hat erstmals einen
+Scratch-Footprint und löscht den Kontextbaum über ALLE Agenten (Enumeration via
+`store.list('/memories/contexts')`, nur list+delete, also backend-agnostisch). `axis:'agent'`
+nimmt `/memories/contexts/<slug>` mit, `axis:'all'` erfasst `contexts` gratis (nicht in
+`PROTECTED_SEED_ENTRIES`). Selector-Semantik: **immer** `<channelType>~<id>`; ohne `~` →
+400 `invalid_selector`, denn eine Danger-Zone-Geste, die nichts löscht und Erfolg meldet, ist
+schlimmer als ein Fehler. Beide Lesarten (verbatim Key / roher Native-Id) werden aufgelöst
+und die Vereinigung der real existierenden Bäume gelöscht — `memoryContextKey` ist auf seiner
+eigenen Digest-Form bewusst nicht idempotent. Das server-seitige Type-to-confirm prüft
+weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
+
+**Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
+und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers
+EINES Agenten. Das ist der einzige Weg, auf dem Wissen eine Kontextgrenze überschreitet.
+Audit dreifach: JSONL-Zeile in `/memories/core/audit/memory-promotions.jsonl`,
+Provenance-Frontmatter (`promoted-from`/`-by`/`-at`) im Ziel-File, `[security-audit]`-Logzeile.
+Läuft auf dem ROOT-Store (undekoriert), Präzedenz `memoryPurge`.
+
+Zwei Fallen, die real waren: `move` löscht nur die Files, die es auch geschrieben hat — der
+rekursive `delete(sourceRoot)` hätte Dotfiles vernichtet, die `store.list()` gar nicht
+aufzählt (der Walk überspringt `.`-Namen, in-memory wie Postgres). Und ein Ziel, das im
+Quellbaum liegt (oder umgekehrt), wird abgelehnt: `move` hätte das frisch geschriebene Ziel
+mit der Quelle zusammen gelöscht und Erfolg gemeldet.
+
+### Tests (Store-Level, kein LLM-Output; Per-Test-Fixtures)
+
+`test/memoryContextKey.test.ts` (Injektivität, Pre-Image-Schutz),
+`test/memoryAxesForOrigin.test.ts` (§2-Tabelle als Cases + Cross-Kind-Kollisionen),
+`test/scopedMemoryStore.contexts.test.ts` (Token-Matrix × read/write, `ro:`,
+Kollisionsfreiheit), `test/effectiveMemoryScope.test.ts` (fail-closed + Golden gegen
+`orchestratorMemoryScope`), `test/contextMemoryNamespacer.test.ts` (Bijektion),
+`test/memoryContextIsolation.test.ts` (**der Abnahmetest**: Team A ↮ Team B, Kanal ↮ Kanal,
+User ↮ User, Shared-Namespace als Seitenkanal, Audit-Log, `off`-Golden, `enforce-strict`),
+`test/memoryBinder.cache.test.ts` (LRU + Key-Kollisionsfreiheit),
+`test/memoryPurge*.test.ts`, `test/memoryPromote*.test.ts`.
+
+**Offene Follow-ups:** Der Memory-Browser im web-ui liest die Kontext-Bäume noch über den
+dev-only `GET /bot-api/dev/memory/list` — in Produktion nicht gemountet, also dort inert. Eine
+operator-authentifizierte Listing-Route (gleiches Gate wie Purge) ist der nächste Schritt.
+Die Channel-Plugins (`omadia-channel-teams`, `omadia-channel-telegram`) bauen den `TurnOrigin`
+in ihren EIGENEN Repos; die können erst nach Release des SDK mit `TurnOrigin` gebaut werden.
+
+## Teams-E2E-Smoke: Provisioning-Kette gegen eine Wegwerf-Umgebung (W2a, #860 / #874, 2026-08-27)
+
+`middleware/scripts/smoke-teams-e2e.ts` (+ `-stage2.ts`, beide gitignored, weil sie
+byte5-interne Endpunkte treffen). Zwei Stufen in einem Entrypoint:
+
+| Stufe | Was sie beweist | Netz/Seiteneffekte |
+|---|---|---|
+| **STAGE 1** | Das auf dem Hub publizierte channel-teams-Artefakt kommt durch das *produktive* Ingest-Gate (`RegistryClient` → sha256 → `extractZipToDir` mit den Limits aus `packageUploadService.ts:165-167`). Der Check, der bei 0.21.0 gefehlt hat (#880). | nur lesend, nur der Hub |
+| **STAGE 2** | Die Live-Kette: `POST /api/v1/operator/agents/:slug/teams-identity` (202) → Polling `GET …/teams-identity` durch `pending → app_registered → bot_created → package_built → catalog_uploaded → installed` → Messaging-Endpoint des neuen Bots ist gebunden. | **schreibend** — siehe Guard |
+
+### ⚠ Production-Write-Guard (fail-closed, kein Default-Ziel)
+
+STAGE 2 persistiert eine `agent_teams_identities`-Zeile und legt im Ziel-Tenant eine echte
+Entra-App, einen echten Azure-Bot und einen echten Katalog-Eintrag an. Deshalb:
+
+- **Ohne Opt-in läuft STAGE 2 gar nicht** (Skip, kein Fehler) — Default jeder Maschine.
+- `SMOKE_TEAMS_E2E_ALLOW_WRITES` muss **exakt** `yes-throwaway-environment` sein.
+- `SMOKE_MW_BASE_URL` hat **keinen Default**. Ein Default zeigt irgendwann auf Produktion.
+- `SMOKE_TEAMS_E2E_TARGET` muss den Host aus `SMOKE_MW_BASE_URL` **wiederholen**
+  (Echo-Back). Ein aus fremder Shell-History kopierter Befehl scheitert dadurch, statt
+  still auf ein anderes Ziel zu schreiben.
+- Produktions-Hosts (`omadia.ai`, `app.omadia.ai`, `hub.omadia.ai`, …) werden
+  **ohne Override-Schalter** abgelehnt.
+- Ist in der Shell ein `DATABASE_URL` gesetzt, das den Marker `scratch` nicht enthält,
+  bricht der Lauf ab (`SMOKE_SCRATCH_DB_MARKER` passt den Marker an). Das Script öffnet
+  selbst nie eine DB — die Prüfung fängt den Fall "Shell hält Prod-Credentials".
+
+Einen Guard-Abbruch **niemals** durch Aufweichen des Guards "reparieren".
+
+### Auf einen Scratch-Tenant zeigen — was gebraucht wird
+
+1. **Wegwerf-Middleware** (eigene DB, eigener `PUBLIC_BASE_URL`), erreichbar unter
+   `SMOKE_MW_BASE_URL`.
+2. **Connector-Plugin installiert UND aktiv:** `@omadia/integration-microsoft365` ≥ 0.3.1
+   (liefert `teamsProvisioner@1`). Fehlt es, antwortet der POST 503
+   `teams_provisioner_unavailable` — das Script sagt das explizit.
+3. **channel-teams mit `appPackage/`** (das Artefakt aus STAGE 1) für den Package-Schritt.
+4. **Scratch-Microsoft-Tenant** mit erteiltem Admin-Consent für die Provisioning-Scopes.
+   Fehlt der Consent, endet der Lauf hart mit `consent_missing` und den fehlenden Scopes.
+5. **ARM-Setup-Felder am Connector** (`azureSubscriptionId`, `azureResourceGroup`, …) —
+   **nur für die volle Kette**. Ohne sie ist **Registration-only ein PASS**: die Kette hält
+   nach `app_registered` an, `last_error` trägt `arm_not_configured: …`, und der Lauf meldet
+   *PASSED WITH CAVEAT*. Das ist der dokumentierte Teilerfolg des Job-Runners, kein Fehler.
+6. **Operator-Session:** `SMOKE_MW_SESSION` = Wert des `omadia_session`-Cookies der
+   Scratch-Instanz (DevTools → Application → Cookies).
+7. **Scratch-Team:** `SMOKE_TEAMS_TEAM_ID`, plus `SMOKE_AGENT_SLUG` als Wegwerf-Agent.
+
+```bash
+cd middleware
+SMOKE_TEAMS_E2E_ALLOW_WRITES=yes-throwaway-environment \
+SMOKE_MW_BASE_URL=https://mw-scratch.example.internal \
+SMOKE_TEAMS_E2E_TARGET=mw-scratch.example.internal \
+SMOKE_MW_SESSION=<omadia_session-Cookie> \
+SMOKE_AGENT_SLUG=smoke-agent \
+SMOKE_TEAMS_TEAM_ID=19:...@thread.tacv2 \
+npx tsx scripts/smoke-teams-e2e.ts
+```
+
+Optional: `SMOKE_BOT_SLUG`, `SMOKE_BOT_DISPLAY_NAME`, `SMOKE_PROVISION_TIMEOUT_MS`
+(Default 900000), `SMOKE_POLL_INTERVAL_MS` (5000), `SMOKE_SCRATCH_DB_MARKER`.
+
+### Was das Script bewusst NICHT tut
+
+Es sendet keinen echten Bot-Framework-Turn. Das Signieren bräuchte das Client-Secret der
+frisch angelegten App, und das verlässt den Connector-Vault nie
+(`agentTeamsIdentityStore.ts` — *NO SECRET MATERIAL*). Stattdessen prüft es, dass
+`POST /api/teams/<botSlug>/messages` existiert und ein unsigniertes Payload ablehnt (404 =
+channel-teams kennt den Bot nicht → `teams_bots[]` nicht synchronisiert, echter Fehler;
+2xx = Auth nicht erzwungen, ebenfalls Fehler). Die sichtbare Antwort im Team bleibt ein
+einzeiliger manueller Schritt, den der Lauf am Ende ausdruckt.
+
+### Ein Lauf pro Agent
+
+Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-406`); ein
+zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
+`running` und bricht ab, statt in einen Team-Konflikt zu laufen.
+
+### `last_error_detail` — Klassifikation serverseitig
+
+`GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
+strukturiertes `last_error_detail`:
+`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
+Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
+die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
+Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
+Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
+und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
+Operator-UI in Produktion zu verschlechtern.
+
+**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
+persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
+Unit.

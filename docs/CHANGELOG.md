@@ -18,6 +18,2672 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — provisioning writes the `teams_bots` entry itself (#910)
+
+2026-08-28 — After a successful Teams identity provisioning run the operator
+UI showed a ready-made `teams_bot` JSON block and asked the operator to paste
+it into the `teams_bots` setup field of `@omadia/channel-teams` by hand. Until
+that paste happened the bot existed in Azure, in the tenant catalog and in the
+team — and still did not answer, because the middleware had neither an adapter
+nor a route for it. That was the only manual step in an otherwise fully
+automatic chain.
+
+The provisioning job runner now writes the entry into the plugin config when
+it reaches `installed` (and re-asserts it on a later re-run, so a changed
+display name or a deleted entry is repaired), then reactivates the plugin so
+the bot is live without a restart. The write is idempotent by `botSlug`: a
+re-run replaces its own entry in place, never appends a second one, and every
+foreign entry — above all `teams_bots[0]`, the legacy scalar-shimmed
+production bot — is read as a raw object and written back byte-identical, with
+hand-added keys intact. A no-op run neither writes nor reloads.
+
+Failure is a warning, not a rollback: the identity is already valid in Azure by
+then, so a failed or impossible write leaves the run `installed` and records
+`config_sync_failed: [reason]` in `last_error`. A `teams_bots` value that
+cannot be read as JSON is never overwritten. A missing channel-teams plugin is
+a clean skip, not an error.
+
+The copy-paste block stays in the operator UI as the fallback and for
+operators who configure explicitly. Its leading line now answers whether it is
+still needed, rendered from the new `teams_bots_sync` field of
+`GET /api/v1/operator/agents/:slug/teams-identity` — derived from the live
+plugin config on every read rather than from a stored "we synced it" flag, so
+a hand edit shows up immediately. Copy in EN + DE.
+
+### Fixed — runtime-readiness banner now points to the actual LLM access page (#911)
+
+2026-08-28 — The readiness card shown when the runtime is offline had exactly
+one CTA, but it pointed to `/admin/settings`, a directory of miscellaneous
+plugin configuration with no relation to LLM providers or subscriptions. That
+meant the one card whose whole job is "your runtime is offline, go fix your
+LLM access" sent operators to the wrong page.
+
+The CTA now targets `/admin/providers`, the page that actually exposes the
+API-key and subscription-CLI tabs added around #889. The EN/DE body copy now
+names both supported access paths — adding an API key or connecting an
+existing Claude/Codex subscription — instead of only referring to "your key",
+and the title ("LLM API key missing" → "LLM access missing") no longer frames
+the problem as API-key-specific when the body describes both paths. The
+banner test now pins the CTA href so this exact regression is covered
+under #911.
+
+### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
+
+2026-08-27 — #882's PATH augmentation checked Homebrew, Volta, asdf, and nvm,
+but not `~/.local/bin` — where Claude Code's own native installer symlinks the
+`claude` binary, independent of any Node package manager. A subscription-CLI
+chat turn still failed with `spawn claude ENOENT` for anyone installed that
+way, even fully logged in. A shell alias masked the symptom in manual
+terminal testing (`which`/`command -v` resolve aliases; `child_process.spawn`
+never does). `resolveAugmentedPath()` now also checks `~/.local/bin`.
+
+### Fixed — a granted `memory` tool no longer lets a sub-agent write past its parent's scope (#904, part of #860)
+
+2026-08-27 — A sub-agent that had been granted the native `memory` tool resolved
+its handler out of the process-wide `NativeToolRegistry`. That entry belongs to
+the memory *provider* plugin (`@omadia/memory`, `@omadia/memory-postgres`) and is
+bound to the **undecorated** root store — the one below every scoping wrapper. A
+sub-agent reaching it read and wrote outside its parent agent's
+`orchestrator:<slug>:*` subtree, and, with the chat-context ACL from #881
+enabled, outside its team's and channel's tiers too. Granting a sub-agent the
+memory tool is ordinary operator configuration, and the per-agent boundary it
+crossed predates the memory-ACL epic entirely.
+
+The grant is now served by a tool bound to the same turn-scoped store the
+parent's own dispatch uses: `Orchestrator.dispatchToolInner` publishes that
+handler for the lifetime of a domain-tool dispatch, and
+`adaptNativeToolForSubAgent` takes the resolver as a **required** parameter, so a
+call site that forgets to thread it fails `typecheck` instead of silently
+degrading to the unscoped store — the same hardening #903 applied to
+`dispatchTool` / `dispatchToolDeadlined` / `dispatchToolInner`.
+
+Two consequences worth knowing:
+
+- The grant used to be a **silent no-op** on a default install: the shipped
+  providers register handler-only (no wire-spec) and the adapter dropped such
+  entries. It is now honoured — with the parent turn's scope.
+- **Fail-closed, never fallback.** With no turn-bound store — a detached
+  `ask_<slug>_start` runner, or any call outside an orchestrator turn — the tool
+  refuses instead of reaching for a wider one.
+
+Unchanged and still true: the `claude-cli` provider never constructs the
+`Orchestrator`, so `context_memory` remains inert there (#899).
+
+
+### Added — team uninstall for provisioned agent identities (#900, part of #860)
+
+2026-08-27 — Assigning an agent to a Team was one-way: `DELETE
+/api/v1/operator/agents/:slug/teams/:teamId` answered `501
+teams_uninstall_unsupported` and the operator UI shipped the control disabled,
+because `teamsProvisioner@1` published an install but no uninstall. Removing an
+agent bot from a team meant going to the Teams admin center.
+
+`@omadia/integration-microsoft365` **0.4.0** adds `uninstallFromTeam({ teamId,
+teamsAppId })` — Graph deletes an installation by its *installation* id, so the
+connector resolves it first
+(`GET /teams/{id}/installedApps?$expand=teamsApp&$filter=teamsApp/id eq '…'`)
+and then deletes it. "Not installed" is an idempotent success
+(`outcome: 'already-absent'`), 403 maps to the same `ConsentMissingError` and
+the same scope as the install direction — **no new Graph permission** — and 429
+rides the shared `Retry-After` backoff.
+
+The middleware mirrors the connector contract structurally rather than
+importing it, so the route **feature-detects**: with a connector `< 0.4.0` it
+keeps answering `501` (now carrying `min_connector_version`), and
+`GET …/teams` reports `capabilities.uninstall: false` with a reason that names
+the fix, so the UI renders a disabled control instead of a button that fails.
+The panel was already capability-driven, so a new-enough connector lights the
+button up on its own.
+
+Graph first, row second: the identity row is only cleared after the connector
+confirms the removal (state back to `catalog_uploaded`, `team_id` `NULL`), so a
+failure mid-way never leaves a live install that nothing tracks. Re-installing
+later resumes from the catalog entry — one Graph call, not the whole chain.
+
+### Fixed — billing-posture badge on "Erkannte CLIs" no longer reads as a second status (#887)
+
+2026-08-27 — Each CLI row on Admin → LLM-Zugang → Abo-CLIs showed a detection
+badge ("NICHT GEFUNDEN") next to a billing badge ("Abo" / "Prüfung nötig") with
+nothing distinguishing the two — two entries both "not found" could still show
+different second badges, reading like conflicting statuses. The billing badge
+now carries an explicit "Abrechnung:"/"Billing:" prefix so it's unmistakably a
+billing-model label, not a second detection state. Display-string change only —
+`cliBackendDetector.ts`'s `CliBillingPosture` type and wire field are unchanged.
+
+### Added — der Kontext-Memory-ACL lässt sich aus der Operator-UI einschalten (#899)
+
+2026-08-27 — W5 (#881) hatte die komplette Chat-Kontext-Memory-ACL ausgeliefert, aber
+hinter `agents.context_memory` — einer Spalte ohne UI und ohne API. Einschalten ging nur
+per Hand-`UPDATE`, womit die ganze Wave praktisch inert war. Neu: `GET`/`PUT
+/api/v1/operator/agents/:slug/context-memory` auf dem bestehenden Operator-Router
+(`{ ok: true }`-Envelope, `requireAuth`) und ein Control auf der Agent-Detailseite.
+`PUT` validiert gegen dieselbe Werteliste wie der CHECK-Constraint der Migration `0050`
+(`off` | `enforce` | `enforce-strict`), lehnt Unbekanntes mit `400 invalid_body` ab
+statt es still auf `off` zu mappen, loggt den Wechsel mit `[security-audit]` und löst
+einen `registry.reload()` aus — der nächste Turn läuft bereits im neuen Scope. Der Modus
+liegt bewusst NICHT auf dem Umbenennen-/Aktivieren-`PATCH`, damit eine Änderung am
+Memory-Scope nicht als Beifang einer unabhängigen Bearbeitung mitreist. Die UI zeigt vor
+dem Einschalten die drei Semantiken (Team-Tier read-write, Agent-Tier read-only,
+API-Turns nur agent-privat) und verlangt eine ausdrückliche Bestätigung; Zurückschalten
+auf `off` ist nicht bestätigungspflichtig. Kein Schema-Change. EN/DE vollständig.
+
+### Fixed — die Turn-Bindung der Memory-ACL kann nicht mehr stillschweigend verloren gehen (#899)
+
+2026-08-27 — `dispatchTool`, `dispatchToolDeadlined` und `dispatchToolInner` nahmen die
+`TurnMemoryBinding` in einer OPTIONALEN Position entgegen, während alle sechs übrigen
+Signaturen auf dem Pfad sie verpflichtend führen. Eine Aufrufstelle, die das Argument
+schlicht vergisst, kompilierte damit sauber und fiel zur Laufzeit still auf den
+agent-globalen Memory-Stack zurück — genau die lautlose Scope-Ausweitung, gegen die die
+Wave gebaut ist. Nachgewiesen, nicht vermutet: das Argument an den beiden Tool-Loop-
+Aufrufstellen zu streichen passierte `tsc`. Die drei Parameter sind jetzt required
+(`TurnMemoryBinding | undefined`), Laufzeitverhalten unverändert; dieselbe Mutation
+scheitert nun im Typecheck. Dazu die erste Integrationsabdeckung der Bindung überhaupt
+(`middleware/test/orchestrator/contextMemoryTurnBinding.test.ts`): echte Turns über
+`runTurn` UND `chatStream` mit einem Teams-`TurnOrigin`, die den physischen Schreibpfad
+im Root-Store prüfen — bislang endete jede W5-Suite beim Handler des `MemoryBinder`,
+und der Streaming-Pfad war nie durchlaufen worden.
+
+### Fixed — dashboard onboarding step 3 no longer contradicts its own done badge (#886)
+
+2026-08-27 — Step 3 "Plugins installieren" ticked its INSTALLIERT badge from
+`hasInstalledPlugin` but picked its body copy from `selectedCase === null`, so
+clearing the business case turned a completed step back into "Wähle oben einen
+Business-Case, um passende Empfehlungen zu sehen." The body now reads off the
+same `done` signal as the badge and states the result instead — a new
+`dashboard.onboarding.installStep.done` key (EN/DE, ICU plural) counted with the
+shared OM-27 `isInstalled` predicate over the `plugins` array the component
+already receives, so `update-available` counts as installed and the sentence
+cannot drift from the health tile. The recommendation list for a selected case
+is untouched.
+
+### Added — Nutzungs-Doku: mehrere benannte Agent-Bots in Teams (#860)
+
+2026-08-27 — Neue Operator-Doku `docs/teams-multi-agent-identities.md`, verlinkt aus
+`docs/README.md`. Sie führt von null zu mehreren omadia-Agenten, die in Microsoft Teams
+als jeweils eigener Bot auftreten, und deckt die Waves W0a/W0b/W1a/W2a/W5 ab:
+Voraussetzungen (Plugin-Versionen, Migrationen `0049`/`0050` Core und `0031` KG,
+Graph-Scopes samt der Consent-Fallstricke), Setup von M365-Connector und channel-teams,
+Anlegen einer Teams-Identität über die Operator-UI (#896) mit den REST-Endpunkten als
+Alternative, Team-Zuordnung inklusive `409 team_install_conflict` und der nicht
+unterstützten Deinstallation, Rechte pro Agent, Persona im nativen Agent Builder,
+Kontext-Memory-ACL (#881) mit dem standardmäßig ausgeschalteten Rollout-Flag, eine
+Troubleshooting-Tabelle (u. a. der `.template`-Ingest-Fall aus #880, behoben ab
+v0.136.2) sowie Grenzen und Ausblick. Jede API-Angabe ist gegen den Code auf `main`
+verifiziert; nicht Belegbares steht als `VERIFY`-Kommentar statt als Behauptung.
+
+### Fixed — dashboard onboarding step 1 now exposes both LLM access paths (#889)
+
+2026-08-27 — The web-ui onboarding card promised a choice between API-provider
+setup and a subscription CLI, but step 1 only rendered one CTA to
+`/admin/providers`. The step now shows the existing filled API-key pill and a
+matching accent-outline subscription pill that deep-links to
+`/admin/providers?tab=subscriptions`, with aligned EN/DE catalog keys and a
+dashboard test that pins both labels and both hrefs.
+
+### Fixed — plugin readiness no longer calls a plugin ready without a verified LLM credential (#884)
+
+2026-08-27 — The Hub reported "14 von 14 einsatzbereit" while no LLM provider
+held a verified credential, because `computeReadiness()` only ever checked a
+plugin's own manifest-required setup fields and had no concept of the provider
+it routes through. The per-provider verdict logic that the providers-admin page
+already computed inline (CLI login, OAuth grant, or key-based cache/durable
+record) is now extracted to `middleware/src/platform/pluginLlmReadiness.ts` and
+shared, so the two surfaces can no longer disagree about the same credential.
+Readiness gained a fifth state, `awaiting_llm`, returned only for an
+LLM-consuming plugin that would otherwise be `ready` and whose assigned
+provider's verdict is anything other than `verified`. The check runs after the
+existing `not_installed`/`errored`/`config_required` steps and degrades to
+`ready` on any probe failure, matching the file's existing rule that an
+infrastructure hiccup must never manufacture a false negative. The web-ui
+mirrors the new state as a warning-toned "Konfiguriert – wartet auf LLM-Zugang"
+badge plus a post-install CTA to `/admin/providers`; the Hub count, the
+dashboard tile and the plugin tiles needed no change, because all three already
+read the shared `isReady` predicate.
+
+### Fixed — desktop first-run wizard no longer forces API-key entry (#890)
+
+2026-08-27 — The Electron desktop wizard hard-blocked every first-time setup on
+an API key, even though the app can boot without one and wire a Claude/Codex
+CLI subscription afterwards. Step 1 now offers two explicit paths: the existing
+API-key flow remains the default with its current verification behavior intact,
+and a new subscription path persists `llmProvider: "subscription"` without
+storing a key. The desktop main-process types and setup validation now treat
+that provider as a first-class value instead of an unsupported edge case.
+
+### Fixed — desktop app augments PATH for forked children (#882)
+
+2026-08-27 — The Electron desktop supervisor used the OS launcher's inherited
+environment as-is when spawning the kernel and web-ui children. On macOS that
+can mean launchd's minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), so bare
+`npm` lookups inside the kernel failed with `ENOENT` even when Node tooling was
+installed through Homebrew, Volta, asdf, or nvm. The desktop package now
+computes one augmented PATH at app start, merges existing entries first, adds
+only existing well-known tool directories, best-effort resolves nvm's default
+version without shelling out, and injects the result into both child-process
+env builders so every `execFile('npm', ...)` inside the kernel inherits the
+same corrected lookup path.
+
+### Fixed — builder boot observes template install failures and classifies them (#882)
+
+2026-08-27 — The Plugin Builder boot path started `ensureBuildTemplate(...)`
+eagerly, but the promise's logging `.catch(...)` re-threw before any observer
+was attached. When the boot-time template `npm install` failed, Node emitted a
+spurious `unhandledRejection` long before the first real build awaited the same
+promise. The boot wiring now attaches a separate no-op observer to mark that
+promise as handled without altering it, and `BuildPipeline.run()` re-throws a
+rejected `templateReady` gate as `BuildPipelineError('template_not_ready', …)`.
+That keeps the original cause for the real consumer while recording the failure
+phase honestly instead of degrading to `unknown`.
+
+### Fixed — CLI install failure says what actually happened, manual steps carry the prefix (#882)
+
+2026-08-27 — When the kernel could not find `npm` at all, the subscription-CLI
+install failed with no output, and the UI still rendered "npm install failed —
+see the log tail." above an empty `<pre>`: it pointed the operator at a log that
+did not exist. `cliInstallService` now classifies the failure —
+`cli_install.no_output` when npm produced nothing (the command was most likely
+not found) and `cli_install.npm_failed` when it ran and failed — and returns the
+code on the install-status poll. The install box renders through the shared
+`<ErrorHelp>` catalogue instead of its own raw-log block, so both cases get a
+localized what/next line with the server's text moved into the redacted support
+disclosure. The manual-install instructions were also incomplete: they showed a
+bare `npm install -g …` that installs somewhere the server never looks, so
+`detectCliBackends()` now exposes `cliToolsDir` and the shown command carries
+`--prefix <cliToolsDir>`.
+
+### Fixed — desktop app version was hardcoded to 0.1.0 (#883, OM-51/47/52)
+
+`desktop/package.json` shipped every release at the placeholder version `0.1.0`, which
+electron-builder reads for three release-facing surfaces at once: the packaged app's
+"About omadia" panel, the generated artifact filenames, and the version electron-updater
+compares against the release feed — so every build claimed to be `0.1.0` and the updater
+could never detect a newer release.
+
+- **CI now writes the real version before packaging.** A new `desktop/scripts/set-desktop-version.mjs`
+  derives a bare semver from the release tag and rewrites `desktop/package.json` in a new
+  `.github/workflows/desktop-apps.yml` step, placed after `npm ci` (so the lockfile's own
+  `version` field is validated first) and before the build/pack steps that consume it.
+- **Manual "Check for Updates".** Packaged builds previously only checked once, silently, at
+  startup, with no way to ask again and no visible result either way. Both the tray menu and
+  a new cross-platform Help menu now expose a "Check for Updates…" action that shows a
+  dialog for every outcome — found (downloading), already up to date, or the check failed —
+  without changing the silent startup check's existing (dialog-free) behavior.
+
+### Added — operator UI for Teams agent identities, team assignment and context memory (#866, epic #860 W2a)
+
+2026-08-27 — The provisioning chain built in W1a had no operator surface: everything ran
+through curl. The agent detail page now owns the whole loop.
+
+- **Teams identity panel.** Create the identity, watch the state machine advance live
+  (`pending → app_registered → bot_created → package_built → catalog_uploaded → installed`),
+  and read a failure as something actionable: the middleware classifies `last_error`
+  server-side and the panel renders what happened, which scopes or setup fields are
+  missing, and what to do next — with the raw English sentence demoted to a technical
+  detail. Registration-only (`arm_not_configured` on `app_registered`) reads as a valid
+  stop, not as a broken agent.
+- **The `teams_bot` block, and the honesty about it.** The channel-teams `teams_bots[]`
+  entry is shown ready to copy, together with a plain statement that pasting it into the
+  plugin's setup field is a MANUAL step — nothing syncs it. Automatic config sync stays a
+  documented follow-up.
+- **Team assignment.** The teams an agent's app is installed in, with consent status,
+  install, and an honest 501 for uninstall (`teamsProvisioner@1` publishes none).
+- **Agent Builder link.** Persona and behaviour design stays in the native builder; the
+  detail page deep-links to the draft that published this orchestrator's agent plugin, or
+  to the overview when no single draft matches — never to a guessed id.
+- **Memory context browser off the dev endpoint.** `/memory` now reads the new
+  authenticated `GET /api/v1/operator/memory/contexts/{list,file}`, whose path guard
+  normalizes every request into the `/memories/contexts` subtree segment-wise and rejects
+  traversal before the store is touched. The browser is no longer dev-only.
+
+Integration decisions worth recording, because two parallel units disagreed:
+
+- **One owner for `identity.last_error_detail`.** Two units projected the same key with
+  different wire shapes (camelCase vs snake_case). The camelCase
+  `TeamsProvisioningErrorDetail` — produced by `classifyTeamsProvisioningError` next to the
+  sentences it decodes — is the single owner; the duplicate snake_case projection and the
+  duplicate web-ui sentence parser (`app/_lib/teamsIdentityErrors.ts`) are gone. One
+  classifier, pinned by a round-trip test against the real producers.
+- **`team_id` is required, and the UI now says so.** `TeamsIdentityProvisionSchema` declares
+  it `z.string().min(1)` and the runner needs it to reach `installToTeam`, but the create
+  form invited an empty value and the re-run action posted `{}` — both a guaranteed 400.
+  The form requires the field, `GET …/teams-identity` additionally returns the recorded
+  `team_id`, and a re-run resends it.
+- **A retarget can no longer fabricate an install.** `agent_teams_identities` keeps ONE
+  `team_id`, and the runner refuses a second enqueue with a RESOLVED `{status:'rejected'}`
+  that a fire-and-forget caller never sees. Both POSTs now refuse a conflicting retarget
+  with 409 BEFORE writing — for an already-installed row and for a run in flight toward
+  another team (`TeamsProvisioningJobRunner.runningTeamId`) — and a refused enqueue is
+  recorded instead of dropped.
+
+### Changed — one `teams_bot` projection + a decoded `last_error` for the operator UI (#860 W2a)
+
+2026-08-27 — Groundwork for the operator-facing team↔agent screens, no schema change and
+no new route.
+
+- **Single projection choke point.** The channel-teams `teams_bots[]` entry that
+  `GET /api/v1/operator/agents/:slug/teams-identity` returns was assembled inline in the
+  handler. It is now the exported `projectTeamsBotConfig()` of
+  `middleware/src/routes/operatorAgents.ts`, so every further team↔agent route emits a
+  byte-identical block. The entry is a config contract with channel-teams — a second,
+  drifting copy would hand operators a config the plugin silently refuses to parse. The
+  invariants are unchanged: `null` unless BOTH `app_id` and `tenant_id` are known,
+  `appType` always `SingleTenant`, and the bot password only ever as the opaque vault ref
+  `teams_bot_password:<appId>`. Pasting that block into channel-teams' `teams_bots` setup
+  field stays a MANUAL operator step; automatic config sync remains a follow-up.
+- **`last_error_detail` (additive).** The GET now also returns the identity's `last_error`
+  in structured form: `{ code: consent_missing | arm_not_configured | throttled | unknown,
+  scopes?, fields?, retryAfterSeconds?, raw }`. `last_error` itself is unchanged. The
+  decoder (`classifyTeamsProvisioningError`) sits in
+  `middleware/src/services/teamsProvisioningJob.ts` — next to the only code that WRITES
+  those sentences — so changing a message and forgetting the decoder breaks a colocated
+  round-trip test instead of degrading the operator UI in production. The UI renders from
+  `code` plus the typed arguments; `raw` is a secondary technical detail only.
+- **New sentence:** an exhausted throttle budget is now recorded as
+  `throttled: … (gave up after N attempts; retry after Ns)` instead of an un-prefixed
+  message, so "come back later" is machine-readable. Follow-up worth doing: persist the
+  structured code as its own column from the start.
+### Added — Teams E2E smoke STAGE 2 + server-side `last_error` classification (#860 W2a, #874)
+
+2026-08-27 — The Teams identity provisioning chain had unit coverage but nothing that drove
+it end to end against a real tenant, and the operator UI had no way to act on a failure
+except to show an untranslated English backend sentence.
+
+- **STAGE 2 of the Teams E2E smoke** (`middleware/scripts/smoke-teams-e2e.ts`, gitignored —
+  it hits byte5-internal endpoints) drives the live chain: `POST
+  /api/v1/operator/agents/:slug/teams-identity` (202), then polls `GET …/teams-identity`
+  through `pending → app_registered → bot_created → package_built → catalog_uploaded →
+  installed`, asserts the `teams_bot` projection and `teams_app_id` are complete, and
+  verifies the new bot's `/api/teams/<botSlug>/messages` route is live and rejects an
+  unsigned payload. It runs on the environment STAGE 1 establishes.
+- **Production-write guard, fail-closed.** A provisioning call persists an
+  `agent_teams_identities` row and creates real Entra/Azure/Teams objects, so STAGE 2 has no
+  default target: it skips entirely without an explicit opt-in, requires the caller to echo
+  the target host back, refuses known production hosts with no override, and aborts when the
+  shell carries a non-scratch `DATABASE_URL`.
+- **Registration-only is a pass.** With no ARM setup fields on the M365 connector the chain
+  legitimately stops at `app_registered` with `arm_not_configured: …`; the run reports
+  success-with-caveat rather than failing, matching the job runner's partial-success
+  contract. Missing admin consent stays a hard stop, with the missing scopes named.
+- **`identity.last_error_detail`** is emitted alongside `last_error` by `GET …/teams-identity`
+  — `{ code: consent_missing | arm_not_configured | throttled | unknown, scopes?, fields?,
+  retryAfterSeconds?, raw }`. Additive; no schema change, no migration. The classifier
+  lives next to the code that writes those sentences
+  (`services/teamsProvisioningJob.ts`), with a round-trip test
+  (`test/teamsProvisioningLastError.test.ts`) so rewording a message without updating the
+  parser breaks a colocated test instead of silently degrading the operator UI. Clients must
+  render from the structured object, never parse the English sentence.
+- **Docs:** `docs/middleware-agent-handoff.md` gains a section on pointing the smoke at a
+  scratch tenant and what it needs (connector plugin installed and active, admin consent,
+  ARM fields for the full chain, registration-only otherwise).
+
+Known limitation: the smoke does not send a genuine Bot Framework turn — signing one needs
+the freshly created app's secret, which never leaves the connector's vault. The visible
+reply in Teams stays a one-line manual step the run prints out. Follow-up: the job runner
+should persist a structured error code from the start, which needs its own migration.
+
+### Added — chat-context memory ACL: per-team/channel/user agent memory (#860 W5, design #870)
+
+2026-08-27 — Agent memory was isolated per AGENT but not per CHAT CONTEXT. What an agent
+learned in Teams team A landed in one agent-global tree and was quotable in team B on the
+next turn. This wave partitions that tree by chat context, fail-closed.
+
+- **Scope grammar.** `ScopedMemoryStore` gains `team:<ctxKey>:*`, `channel:<ctxKey>:*` and
+  `user:<ctxKey>:*`, plus an `ro:<pattern>` access modifier. The context trees live under a
+  NEW top-level segment `/memories/contexts/`, deliberately not under
+  `/memories/orchestrators/<slug>/`: `orchestrator:<slug>:*` matches only the agent tree, so
+  no legacy scope reaches a context tree and no context scope reaches the agent tree. `ro:`
+  is a veto rather than a weak grant — an overlapping pattern cannot silently re-grant write
+  to a path it protects.
+- **Context key.** `memoryContextKey(channelType, nativeId)` is the single sanitiser behind
+  every `<ctxKey>`, every physical path, every purge selector and the promote route. A
+  lossless id passes through byte-identically; anything else keeps a readable stem plus a
+  64-bit digest of the RAW input, and the two output spaces are kept disjoint so an id
+  spelled like a digest cannot pre-image another context's tree. The axes derivation keys on
+  an injective tuple of the scope's structural parts, not on its wire form — `group:x` as a
+  group ref and as a conversation id are two contexts, not one.
+- **Per-turn binding.** `MemoryBinder.forOrigin()` resolves one stack per chat context
+  (LRU-cached) at the start of each turn, and the orchestrator threads it to `dispatchTool`
+  as an explicit parameter — never through AsyncLocalStorage, where a generator resumed in
+  its caller's context would lose it silently and widen the scope rather than fail.
+- **What a context turn may do.** Write its own tier; read the agent tier (`ro:`); read but
+  NOT write the shared trees (`core`, `sessions`, `chat-sessions`, `_*`), which are the one
+  model-facing surface two contexts address by the same path. New knowledge leaves a context
+  only through the operator promote action.
+- **Operator surfaces.** The Danger-Zone purge axes `user`/`team`/`channel` get a scratch
+  footprint for the first time and delete the named context tree across every agent; a
+  selector without a `<channelType>~` half is now refused with `invalid_selector` instead of
+  silently matching nothing. New `POST|GET /api/v1/admin/memory/promotions/:slug` copies or
+  moves knowledge between an agent's tiers, on the same auth gate as purge, audited three
+  ways (JSONL log, provenance frontmatter, `[security-audit]` line). The memory browser gains
+  a context dimension, a promote dialog and an audit tab.
+- **No flag day.** Per-agent `agents.context_memory` (`off` | `enforce` | `enforce-strict`,
+  migration 0050) defaults to `off`, and `ChatTurnInput.origin` is optional. Every
+  combination of old/new middleware and old/new channel plugin behaves exactly as it does
+  today until an operator switches an agent over; unknown and NULL flag values read as `off`.
+
+Two properties are worth remembering because they cost a rewrite each. `formatSessionScope`
+is injective only over the strings `parseSessionScope` emits, while the design has channel
+adapters build scopes directly — so it cannot be used to key a security boundary. And a
+sanitise-or-hash key function is not injective unless the two branches have disjoint output
+spaces; without that, the hash branch is pre-imageable by anyone who can name their own id.
+
+### Changed — the memory context browser reads the operator endpoint (#860 W2a)
+
+2026-08-27 — W5 shipped the context browser on `/bot-api/dev/memory/{list,file}`
+(`packages/harness-memory/src/devMemoryRouter.ts`), which the memory plugin only mounts when
+`dev_memory_endpoints_enabled` resolves truthy — a flag the kernel forbids in production. The
+panel was therefore dead exactly where an operator needs it, and it explained itself with
+"set `DEV_ENDPOINTS_ENABLED`", advice no production operator can act on.
+
+- **Both call sites move** to `GET /api/v1/operator/memory/contexts/{list,file}`
+  (`middleware/src/routes/operatorMemoryContexts.ts`), `requireAuth`-gated on the same cookie
+  session as the Danger-Zone purge. The wire shape is unchanged, so only the URL moves.
+- **The page is now a CONTEXT browser.** That endpoint is structurally unable to read outside
+  `/memories/contexts`, so the root, the breadcrumbs and "up" all stop there and the tree no
+  longer offers an agent-tier node — a node that always errors is worse than an absent one.
+  Promotion still TARGETS the agent tier; that is a write on the audited promote route.
+- **401/403 read as words.** They are ordinary answers on a gated route, so they get their own
+  copy instead of a bare "Listing failed (HTTP 401)". `memory.errorDevEndpointUnavailable` is
+  gone, replaced by `errorUnauthenticated` / `errorForbidden` / `errorPathNotFound` /
+  `errorOutOfScope`. The browser stays strictly READ-ONLY.
+
+### Fixed — plugin ingest rejected the Teams app-package template (#860 W1a)
+
+2026-08-26 — A store update to `@omadia/channel-teams` 0.21.0 failed on the live
+instance with `entry appPackage/manifest.json.template has a disallowed
+extension (.template)`. Producer, gatekeeper and consumer are all in-house and
+disagreed, so the agent factory could not install its template anywhere:
+
+- the published 0.21.0 artifact ships `appPackage/manifest.json.template`
+  (verified against the hub zip's central directory),
+- `zipExtractor`'s `EXTENSION_ALLOWLIST` is deny-by-default and had no
+  `.template`, so ingest rejected the whole package,
+- `teamsAppPackageAssets` reads exactly that filename and requires it by name.
+
+`.template` is now accepted, scoped to `appPackage/` — the same construction
+`.woff2` uses under `ui/`. Scoped rather than global because the extension says
+nothing about content: the file is read as text and never loaded or executed,
+which puts it in the class of the already-allowed `.txt` / `.md`, but only the
+one directory has a reason to carry it. Renaming to an allowed extension was the
+alternative and is worse: the consumer name is compiled into the running
+release, so a renamed plugin would blind the factory until the middleware caught
+up — an ordering constraint for no security gain.
+
+The real gap was in the process, not the deploy: nothing ever held the published
+package layout against the ingest gate (`npm run package` checks the zip builds,
+the drift-guard checks versions). `pluginPackageTemplateAllowlist.test.ts` now
+pushes the actual `appPackage/` layout through the extractor and pins the scope
+in both directions.
+
+### Fixed — Teams answer card: honest badges and a Fresh-Check button that means something (#859, #878)
+
+2026-08-25/26 — Field report on a bare `ping` → `Pong.` turn: the card claimed
+"✓ Antwort geprüft", repeated the AI-Act disclosure sentence that the ✨
+AI-generated chip already carries, and offered "🔄 Fresh Check (ohne Memory)"
+on an answer no memory had touched. Three separate over-triggers, now closed.
+
+- **Verifier badge** (#859): `toSemanticAnswer` forwards it only when
+  `claimCount > 0`. With zero extracted claims — small talk, and the
+  pipeline-failure fallback, which reports `approved` with an empty claim list —
+  the badge asserted a verification that never ran.
+- **Disclosure sentence** (channel-teams 0.20.0): the kernel folds the AI-Act
+  marking into `SemanticAnswer.text` for wire-only channels; Teams marks the
+  answer itself, so the connector strips the folded line (keeping any
+  operator-authored addendum) before rendering and before the history append.
+- **Fresh-Check button** (#859 introduced `memoryUsed`, #878 fixed its meaning):
+  the flag first meant "a prior-context block existed", and that block always
+  carries the verbatim tail of the running chat — so the button never
+  disappeared. It now means memory could actually have changed the answer:
+  topical recall (`AssembledHit.origin !== 'tail'`), a cross-session
+  plan/process/insight, or a successful memory-file read. The live tail and the
+  read-convention's `/memories` directory listing do not count, and neither do
+  memory writes.
+
+Two implementation notes worth remembering. `AssembledHit.reason` is
+presentational — a boost rewrites it, so a boosted tail turn reads as
+`'agent-boost'`; the new sibling `origin` carries the delivering leg and is what
+the gate branches on. And the run trace records only
+`{callId, toolName, durationMs, isError}`, never the tool input, so the memory
+command + result are captured at dispatch onto a mutable turn-context holder —
+a plain field would be lost, because a privacy guard re-enters dispatch inside a
+shallow copy of the turn store.
+
+### Added — agent factory: Teams identity provisioning via teamsProvisioner@1 (W1a, #860)
+
+- New CORE migration `0049_agent_teams_identities.sql`: one Teams identity per agent
+  (unique `agent_id`), globally unique `bot_slug`, a seven-state provisioning CHECK
+  (`pending → app_registered → bot_created → package_built → catalog_uploaded →
+  installed`, terminal `failed`), step-evidence columns and a `team_id` install target
+  for boot-time resume. Deliberately NO secret column — the bot's client secret stays
+  in the M365 connector's vault (opaque ref `teams_bot_password:<appId>`).
+- New operator endpoints on the agents router: `POST
+  /api/v1/operator/agents/:slug/teams-identity` (create-or-provision, async — answers
+  202 immediately and hands the chain to the in-process provisioning job runner) and
+  `GET …/teams-identity` (status incl. a paste-ready camelCase `teams_bots[]` entry
+  for channel-teams, `last_error`, and an honest `running` flag). 503 with
+  `teams_provisioner_unavailable` while the connector is not installed; 409
+  `bot_slug_taken` on cross-agent slug collisions.
+- Every Graph/ARM call happens inside the `@omadia/integration-microsoft365`
+  connector plugin (**>= 0.3.1 required**), consumed through the kernel service
+  registry via the new `platform/teamsProvisionerService.ts` choke point (typed
+  errors, secret-stripping boundary, SingleTenant guard, per-bot messaging-endpoint
+  URL builder honoring `TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL`). Without the
+  connector, provisioning jobs stay retryable-pending — never a crash.
+- Boot wiring registers `agentTeamsIdentityStore` + `teamsProvisioningJobRunner`
+  (Postgres required) and resumes interrupted provisioning runs idempotently; the
+  Teams app package is rendered from the installed channel-teams package's
+  `appPackage/` template with a deterministic per-agent catalog id.
+
+### Fixed — facilitation lens read the verdict from a context key that never exists
+
+- The facilitation admin lens read the latest assess verdict from `ctx.stepResult` — but
+  the executor persists step results under `ctx.steps[stepId]`; `stepResult` only exists
+  as the transient guard-evaluation argument. Result: `lastVerdict` (and the new interim
+  results table) was ALWAYS null in the admin UI. Now read from `ctx.steps.moderate.data`,
+  with the test fixture matching the executor's real durable shape.
+
+### Added — interim results table per DoD point in the facilitation details modal
+
+- The moderate tick's fenced-JSON verdict now carries `items[]` — one entry per numbered
+  DoD point with a short label, a status (`done` / `partial` / `open`) and a one-line note
+  on the concrete current state (facilitation pattern v3).
+- The kernel validates the model-emitted items defensively (drops garbage, nulls bad
+  fields) and serves them through the facilitation admin lens; the details modal renders
+  them as a **# / point / status / current-state table** — the actual interim result at a
+  glance instead of a wall of `t-keep-waiting` rows. The authoritative DoD text stays
+  visible alongside (the table labels are a model paraphrase); runs started before
+  pattern v3 simply show the DoD list as before.
+
+### Added — facilitation details modal; the panel disappears when there is nothing to show
+
+- Every facilitation card gets a **Details** modal: the summary plus the FULL durable run
+  trace (every assess round with postcondition outcome and transition) — "wo stehen wir
+  gerade?" without leaving the admin.
+- Installations without the facilitator (or without any running facilitation) no longer see
+  an empty box: the panel renders nothing when the listing is empty, and treats a
+  pre-feature kernel's 501 exactly like "feature not present". Real load errors stay visible.
+
+
+### Changed — facilitation panel readability + tick nudge discipline (#330 round 4 follow-up)
+
+- The "Laufende Facilitations" card is structured now: conversation line, goal as title, the
+  latest assessment as a highlighted box, the DoD split back into an ordered list
+  (deterministic string handling), participant chips, and a compact meta footer — instead of
+  one full-width text wall.
+- The assess tick's prompt carries an explicit nudge discipline: nudge ONLY when the progress
+  log has not moved since the previous tick — an actively working group needs no impulse, and
+  a second facilitator voice mid-conversation reads as a duplicate bot.
+
+
+### Added — Admin lens + stop for running facilitations (#330 round 4)
+
+- New operator endpoints `GET /api/v1/operator/conductors/facilitations` and
+  `POST .../facilitations/:workflowId/terminate`. Ephemeral workflows are hidden from the
+  library by design, which left LIVE facilitations invisible — two instances ended up
+  moderating the same meeting with no way to see or stop them.
+- The overview reads only durable state: conversation (attachment row), goal/DoD + assess
+  rounds + latest fenced-JSON verdict (run context), initiator role holders, participants via
+  the kernel roster registry (best-effort). Terminate cancels active runs (#759 semantics) and
+  disposes of the scaffold through the reaper's own cleanup path (binding + role go with it);
+  idempotent, refuses non-ephemeral workflows.
+- Conductor page: new "Laufende Facilitations" panel with the overview and a confirmed
+  Stop & remove action (en+de).
+
+
+### Added — channel directory entries can carry resolved member names
+
+- `ChannelKeyEntry` (`@omadia/channel-sdk`) gained optional `members` (capped list of
+  display names, resolved by the channel plugin — e.g. Teams via Microsoft Graph) and
+  `memberCount` (uncapped total). The kernel forwards both through
+  `ChannelDirectoryRegistry.listAll()` and `GET /api/v1/operator/channels`
+  (`members` / `member_count`); the operator Channels dashboard renders a
+  "Members: Alice, Bob +N more" line (en+de). Older plugins that don't set the
+  fields are unaffected — the fields are additive and optional in both directions.
+
+### Added — `bot_present`: an inbound group message opens facilitation eligibility (#330 round 3)
+
+- New channel-SDK membership-event kind **`bot_present`** — the adapter observed the agent is
+  ALREADY a member of a group conversation (transport-verified inbound message). A bot added
+  long ago never gets another `bot_added`, so the invite index stayed closed for exactly the
+  chats people talk to the bot in; two live facilitation attempts died on this.
+- The kernel invite index accepts `bot_present` as **eligibility only** — the deliberate,
+  announced entry (and any eager auto-bind by consumers) stays `bot_added`.
+
+### Changed — cancelling Conductor runs no longer requires finding the hidden button (#330 field report)
+
+- The run history offers **Cancel** directly on each running/waiting row (previously only
+  inside an opened trace — the delete guard said "cancel first" while the button was
+  effectively unfindable). Per-run busy state; the row-level cancel does not open the trace.
+- A delete blocked by active runs (409) now **opens the run history automatically** and the
+  message says where to cancel (en+de).
+
+### Added — restart-proof facilitation groundwork (#330 field report)
+
+- Graph migration `0009_teams_conversation_refs.sql`: `teams_conversation_refs` — write-through
+  backing store for the Teams channel plugin's per-conversation Bot-Framework
+  ConversationReference cache. The in-memory LRU dies with every restart, after which
+  proactive delivery (group nudges via `conversationSend`, roster reads) answered
+  `no_binding` until the conversation produced a new inbound activity.
+- The facilitation pattern's report prompts carry hard FORMAT rules: compact Teams-flavoured
+  Markdown (bold mini-headings + bullets, outcome emoji, <150 words) — no ASCII dividers or
+  ALL-CAPS banner walls in chat anymore.
+- `conversationBindings.listOwnAttachments({agentSlug})`: read-own listing of a plugin's
+  non-expired ephemeral attachments, enriched with the workflow's newest running/waiting run
+  (`activeRunId`). Lets a restarted agent plugin rehydrate its facilitation state instead of
+  refusing every `facilitation_progress`/`facilitation_nudge` call. Same attribution trust
+  model as bind/unbind; read-only.
+
+### Fixed — verifier: judge sees the sentence a fragment claim was cut from (#129 follow-up)
+
+- The claim extractor sometimes emits a subject-less fragment ("in die
+  IT-Abteilung") as the qualitative claim. The evidence judge deliberately
+  never sees the answer, so it could not know *who* moved where and returned
+  `unverified` — `golden-eval.yml` flaked on `blocked_contradiction_role`.
+- `Claim.context` now carries the enclosing sentence, cut deterministically
+  (no LLM) at `.`/`!`/`?`+whitespace or newline; a dot after a number or a
+  known abbreviation (`01.03.2023`, `1. März`, `z.B.`, `Dr.`) is not a
+  boundary; capped at 400 chars around the span. No context is attached when
+  the span occurs in more than one sentence (no guessing the subject) or
+  when it already is the whole sentence. The judge gets it as a `CONTEXT:`
+  line for disambiguation only and may not base a verdict on facts that
+  appear only there. Extractor prompt additionally asks for self-contained
+  qualitative claims. The contradiction double-check is unchanged.
+
+### Added — Conductor workflows can be deleted from the library
+
+- **`DELETE /api/v1/operator/conductors/:slug`** removes a workflow with the
+  #330 reaper's two shapes, extended to manual workflows: physical DELETE when
+  no run references any version (versions, drafts and schedules cascade),
+  logical removal otherwise (`disabled` + `reaped_at` — run history retained
+  as audit trace, hidden from the library and never event- or cron-triggered
+  again). Active (running/waiting) runs answer `409 conductor.has_active_runs`;
+  the `eph-` namespace stays owned by the ephemeral lifecycle (`400`).
+- **Conductor page grows a "Delete" action** per workflow, gated by the shared
+  ConfirmDialog (en+de).
+
+### Changed — the observed-invite index survives restarts (#330 follow-up)
+
+- Migration `0048_observed_invites.sql` (core series, `middleware/migrations/`): new table
+  `observed_conversation_invites` as write-through backing store for the kernel-side invite
+  index (#330 C2a) — the deny-by-default scope guard for plugin auto-binds. Until now the
+  index was in-memory only, so every deploy/restart forced operators to remove and re-invite
+  the bot before a facilitation could start.
+- The in-memory map stays the hot path: writes are fire-and-forget (log-only on failure),
+  boot hydration is TTL-filtered, capped at the in-memory limit, keyed off the table's key
+  COLUMNS (a JSONB payload disagreeing with its columns is dropped — defense in depth for a
+  security guard), and wrapped so a missing table degrades to the old re-invite behaviour
+  instead of failing the boot. Live events observed before hydration win.
+
+### Changed — Admin → Update shows the run as a blocking progress dialog (#432 follow-up)
+
+- **The updater sidecar reports structured progress.** `GET /status` gains
+  `phase` (`resolve | preflight | pin | replace | health_gate | rollback | done`,
+  `null` while idle) and `failure` (`{kind:'health_gate', reason, observedVersion}`
+  or `{kind:'replace', service}`, `null` otherwise). `runUpdate` takes an
+  optional `setPhase` hook. The middleware's `/api/v1/admin/update/status`
+  passes both through (normalised to `null` for an older sidecar) together
+  with `previousVersion`, `startedAt` and `finishedAt`.
+- **Admin → Update blocks the page while an update runs** and shows a stepper
+  driven by `phase`, the polling itself (cadence, checks, last answer, and the
+  restart gap as "middleware is not answering — expected"), and a decoded
+  outcome. A `never_reachable` health gate is explained with its likely cause
+  (a newly required secret such as `CREDENTIAL_KEYCHAIN_KEY`, a failed
+  migration) and a link to `docs/upgrading.md`. The run is remembered in
+  `localStorage`, so the dialog resumes after the admin UI container itself is
+  replaced; a stale `rolled_back` from an earlier job cannot close a fresh run.
+
+### Added — timer steps, machine-checkable DoD loops and conversation-addressed nudges (#330 C3)
+
+- New Conductor step kind **`timer`** (migration `0011_timer_awaits.sql` widens the await principal-kind CHECK): parks the run via the existing await machinery and follows its `fallbackTransitionId` (the on-expiry edge) when the deadline poll fires — guarded cycles through a timer are legal, unguarded ones stay a validation error (`timer_step_invalid_duration` / `timer_requires_fallback` gate the shape). Preview simulates timers instantly; the run trace records an honest `{kind:'timer', ticked:true}` actor.
+- Deterministic loop budget: the executor maintains `ctx.stepAttempts[stepId]` (bumped on every step entry), so a transition guard like `lt ctx.stepAttempts.moderate 24` bounds an assess loop without trusting the model to count — on top of the ephemeral TTL and MAX_STEPS.
+- Agent steps now carry a structured verdict: the LAST fenced ```json block of an agent answer becomes `stepResult.data` (mirror of the action-step's `data`; size-capped, tolerant — a missing verdict just keeps the bounded loop going). The bundled `facilitation` pattern is **v2**: hourly assess tick (moderate → wait PT1H → moderate, max 24 rounds) that routes a met DoD to the initiator's confirmation and exhausted rounds to the abort report.
+- `conductorEphemeralRuns.poke(runId)` early-fires a run's open timer await ("the group is done — don't wait out the interval").
+- New deny-by-default kernel service **`conversationSend`** (+ channel-SDK seam `registerConversationSendProvider`, plugin-api **1.9.0**): conversation-addressed proactive send — the Facilitator's stall-nudges post INTO the group, distinct from targetedSend's user-addressed DMs. First-registrant ownership per channel type, named unreachable outcomes, never a throw.
+
+
+### Added — zero-touch Facilitator setup: agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a)
+
+- Three new plugin-facing, deny-by-default kernel services remove the manual Facilitator setup: `agentProvisioning` (`ensureAgent` — idempotently creates a top-level Agent, seeds its persona create-only via the Wave-8 `agent_persona_skills` path with the skill slug namespaced under the agent, and attaches the calling plugin; an existing agent — and an existing operator-configured `agent_plugins` row — is never touched, the `fallback` slug never managed), `conversationBindings` (`bind` only for conversations the KERNEL itself observed a group `bot_added` for, via a hub-direct invite index keyed by channel type + conversation; `unbind` is equally guarded to the caller's own ephemeral attachments, so operator bindings are out of reach and the `channel_bindings` PK plus guard close the steal path; both mutations land in the new `channel.binding_change` audit action), and `conductorRoleAssignments` (role writes hard-confined to the `facilitation-` namespace, every holder mutation audited through the #759 `conductor.role_holders_change` sink).
+- Migration `0010_ephemeral_attachments.sql`: auto-provisioned bindings/roles are recorded per facilitation and live exactly as long as its ephemeral workflow. Both reap paths (terminal-state hook + TTL reaper) dispose of them through one shared cleanup, and rows only disappear AFTER a successful cleanup — an attachment sweep retries expired `pending` (invite never became a facilitation) and expired `attached` (reap-time cleanup failed or ran before the kernel stores were up) rows. A pre-existing operator binding is never adopted into this self-disposing lifecycle.
+- `configStore`/`orchestratorRegistry` are resolved lazily per call (the orchestrator plugin publishes them at its own activation), so the seam is independent of plugin boot order.
+
+### Added — `transcription@1` capability + batch recording ingestion (#584 WS T+I)
+
+- **Speech-to-text is a Core capability.** New provider-swappable
+  `transcription@1` seam in `@omadia/plugin-api` (`transcribeFile` batch +
+  `transcribeStream` realtime, provider-neutral types, keyword/language/context
+  hint carrier) with day-one cost guardrails: per-call duration cap, per-agent
+  minute quota (in-memory spend brake) and minute metering, mirroring the
+  conductor's #818 guardrails. Contract `@omadia/plugin-api` → 1.8.0 (additive).
+- **First provider: `@omadia/transcription-adapter-openai`.** `gpt-transcribe`
+  (batch, `POST /v1/audio/transcriptions`, $0.0045/min) ships ungated;
+  `gpt-live-transcribe` (Realtime WebSocket, $0.017/min) ships behind
+  `TRANSCRIPTION_REALTIME_EXPERIMENTAL` until its consumer (#584 WS S,
+  AudioMeetingSource) lands. Vault-backed BYO key; injectable socket/fetch
+  seams keep the whole wire protocol unit-tested without credentials.
+- **`transcribe_recording` native tool (Workstream I).** Transcribes an
+  uploaded recording and ingests it into the SAME artifact substrate as a live
+  chat session — speaker-attributed session-log entries, per-utterance KG
+  turns (new additive `speaker`/`time` fields on `SessionLogEntry` /
+  `TurnIngest`), briefing availability. Transcript text re-enters as a tool
+  result, so it rides the standard per-turn privacy choke points.
+- **Admin → Transcription provider panel** (`/admin/transcription-provider` +
+  `/api/v1/admin/transcription-provider`): live provider switch with verified
+  rollback (embeddings-route mechanics minus the corpus machinery) — and the
+  operator-facing consent surface: an active provider sends raw audio to its
+  external endpoint.
+
+### Added — "Sign in with ChatGPT" subscription provider (#294, experimental)
+
+- **Connect a ChatGPT subscription as an LLM provider via OAuth, no API key.**
+  A new `openai-chatgpt` provider connects through the real device-code login
+  flow (`POST /api/v1/admin/providers/oauth/{start,poll}`): the operator gets a
+  user code, approves it at `auth.openai.com/codex/device`, and the resulting
+  bearer drives the ChatGPT/Codex **Responses** backend (a new
+  `openai-responses` SSE wire format + adapter). Gated behind
+  `CHATGPT_SUBSCRIPTION_EXPERIMENTAL` (off by default) — driving programmatic
+  calls through a consumer subscription is a ToS grey area, so the connect modal
+  shows a prominent notice and it is not an enterprise feature.
+- **Rotation-safe token store.** Refresh tokens rotate (reuse is a terminal
+  error), so tokens live in one process-wide store with single-flight refresh;
+  rotated tokens fan out to every LLM-plugin vault scope with a newest-wins
+  stamp, and a dead grant parks the provider in a clean "reconnect required"
+  state instead of retry-hammering. Empirically verified live: tools, forced
+  tool choice, parallel tool calls and vision all work on the backend.
+- Contract `@omadia/llm-provider-api` → 1.1.0 (additive: `openai-responses`
+  wire format, descriptor `oauth`, adapter `bearerProvider`).
+
+### Added — group-conversation primitives in the channel SDK + Principal-addressed targeted delivery (#330 Workstream B1)
+
+- Channel SDK (strictly additive; Teams 0.12.7 / Telegram 0.2.0 run unchanged): `IncomingTurn.conversationType` (`'direct' | 'group'`, absent = unknown → treated as direct via the new `isGroupConversation`), a `ConversationRoster` contract with `partial` lower-bound semantics, typed `ConversationMembershipEvent`s (`bot_added` incl. WHO invited the agent, `members_added`/`members_removed`), and a `TargetedSendProvider` that only ever delivers to ONE already-resolved user.
+- Three new optional `CoreApi` methods in the `registerWebSocket` feature-detect mould: `registerRosterProvider`, `registerTargetedSendProvider`, `emitConversationEvent` — defined only when the kernel wired the matching registry; channel deactivation drops the channel's contributions.
+- Kernel: per-channel roster + targeted-send registries, a conversation-event hub with per-subscriber isolation, and a `targetedSend` kernel service (deny-by-default) that resolves Principals — `user:<id>` → one delivery, `role:<key>` → late-bound fan-out to ALL current holders (notification semantics, one delivery per holder, no quorum). Empty roles, partial holder lists and unreachable holders are named diagnostics, never silent drops; on the no-Postgres path role sends degrade to `role_resolution_unavailable` while user sends keep working.
+- `@omadia/plugin-api` 1.7.0 (additive MINOR, snapshot updated): `TARGETED_SEND_SERVICE_NAME` + request/result shapes so an agent plugin (the #330 Facilitator) can send reports without depending on the channel SDK.
+
+### Added — pattern-based ephemeral Conductor workflows with TTL reaper (#330 Workstream A)
+
+- Workflows now carry an `origin` (`manual` | `ephemeral`, migration `0009_ephemeral_workflows.sql`): agent-generated JIT workflows live in the reserved `eph-` slug namespace, never appear in the workflow library (`list()` filters to `manual`), and the create/instantiate routes reject the reserved prefix (`conductor.reserved_slug_prefix`).
+- New kernel service `conductorEphemeralRuns` (deny-by-default like every plugin service — no grants-catalog entry yet, the Facilitator plugin adds one): `createEphemeralRun({ agentId, patternId, slots, payload, ttlMs })` instantiates a curated pattern from the new bundled `src/conductor/patterns/` catalog (slot-fill via the existing template machinery — agents can never submit arbitrary graphs), publishes it as `origin='ephemeral'` and starts the run with the previously call-site-less `triggerKind: 'agent'`.
+- Guardrails (env-tunable, `CONDUCTOR_EPHEMERAL_*`): mandatory clamped TTL (default 24h, max 7d), per-agent concurrent-run cap (3) and hourly create rate limit (10).
+- Disposal is "discard the scaffold, never the minutes": on a terminal run state (immediate hook) or TTL expiry (new reaper worker) the definition is disabled + stamped `reaped_at`; expired-but-active runs get a #759 cancel request; a physical DELETE only happens for definitions no run references. Run history and version graph are retained as the audit trace.
+- First bundled pattern: `facilitation` (moderate → initiator confirmation with 24h deadline → report / abort-report) — the Conductor substrate for the #330 Facilitator.
+
+### Removed — the core-decoupling ratchet is retired (#470 C14)
+
+- `scripts/check-core-decoupling.mjs`, its colocated detector test
+  `scripts/check-core-decoupling.test.mjs`, `specs/470-dev-platform-plugin/decoupling-baseline.json`
+  and the CI job `core decoupling ratchet (#470)` are removed. The guard ran from 2026-07-30
+  (#539) to 2026-08-21, peaked at **3,448** counted Dev Platform references in core, fell to
+  214 at C10 and reached **0** at C13, where the floor was pinned permanently.
+- It was scaffolding for a migration in flight: it made a file inventory's staleness
+  survivable, because a checklist goes stale on contact and a count does not. The extraction
+  is finished and the Dev Platform lives in `byte5ai/omadia-dev-platform`, so the guard has
+  nothing left to guard — keeping it would cost a CI job and leave an editable number behind.
+  Reintroducing that coupling is now an ordinary architectural decision, argued for in review.
+- No behaviour change: the job is not among `main`'s required status checks and no other job
+  declared `needs: decoupling`, so removing it cannot leave a branch waiting on a check that
+  will never report. (The job's own comment claimed required-check status; branch protection
+  says otherwise — worth knowing before trusting a comment about CI over the API.) The specs
+  under `specs/470-dev-platform-plugin/` keep a closing note in place of the live baseline rows.
+### Added — runtime install of subscription CLIs from the admin UI (#309 extension, enabler for #294)
+
+- **The Subscription-CLIs page can now install a missing vendor CLI in-app.**
+  The public image deliberately does not bundle the Claude/Codex/Gemini CLIs
+  (redistribution needs legal review); previously a missing CLI dead-ended in
+  manual shell steps. A new "Install now" button triggers an operator-side
+  `npm install` from the public registry into `CLI_TOOLS_DIR` (defaults to
+  `<PLATFORM_DATA_DIR>/cli-tools` on the persisted volume, so installs survive
+  restarts). Detection and the in-app login prefer that directory over PATH.
+- **New routes** (auth-required, same router as the existing login flow):
+  `POST /api/v1/admin/cli-backends/:id/install` (202 accepted / 200 already
+  installed / 409 while another install runs / 400 unknown id or non-semver
+  version) and `GET /api/v1/admin/cli-backends/:id/install/status`.
+- **Hardening:** package names only from a fixed allowlist, optional version
+  strictly semver-validated, `execFile` without a shell, bounded time/output,
+  host-global single-flight. New env vars documented in `middleware/.env.example`:
+  `CLI_TOOLS_DIR`, `CODEX_HOME`.
+
+### Fixed — handoff plans now stay inside the package after symlinks and fail closed on declared dry runs (#470 C15)
+
+- `middleware/src/platform/pluginHandoffPlan.ts` now re-checks `permissions.sql.handoff` containment after resolving real paths for BOTH the package root and the target, closing the two escapes PR #815 left open: a file symlink inside the package pointing outside, and a directory symlink inside the package whose child path points outside. Missing targets still refuse as `unreadable`, not as an escape, so the operator still hears "the package does not ship this file" for the case they can actually fix.
+- The same loader now refuses `"dryRun": true` in a kernel-run handoff plan. Preview mode belongs to `middleware/scripts/plugin-ledger-handoff.mjs --dry-run`; if core honoured a plan-level dry run it would write nothing, then immediately let its own migration runner apply every file, silently recreating the exact G7 failure C15 exists to remove.
+- Regression locks now cover the two fail-closed properties the feature lives or dies on: a witness that fails at the database aborts activation before the migration runner can run, and a manifest whose SQL grant no longer matches its declared ledger is treated as ungranted so neither the handoff nor the runner can reach the database.
+
+### Fixed — core-decoupling zero floor no longer hides same-named files (#470 C13 review)
+
+- `scripts/check-core-decoupling.mjs` now excludes only the exact detector path `scripts/check-core-decoupling.mjs` instead of any basename match, closing the hole where a same-named file dropped under `middleware/src/` could hide Dev Platform identifiers from the permanent zero floor. A colocated regression test proves the detector stays self-excluded while a probe file at `middleware/src/__probe/check-core-decoupling.mjs` is counted.
+- The remaining human-readable fixture labels left behind by the C13 identifier rename now use the neutral example-plugin naming too (`Example Plugin` / `Beispiel-Plugin`), so the tests assert against the strings their fixtures actually define and no permanently-green "old assertion, new fixture" trap remains.
+- `middleware/test/auth/staticPublicPathsClosedSet.test.ts` still skips the loopback-listener half in restrictive local sandboxes, but if `CI` is set the same bind failure now throws with a clear message instead of silently skipping the five 401 assertions.
+
+### Added — migration handoff: a plugin can adopt an existing installation's schema (#470 C11)
+
+- **Plugins extracted out of core no longer re-apply core's migrations.**
+  `ctx.sql.seedLedger({ entries, dryRun })` records a plugin's migration files as
+  already applied — but only where a per-file **witness** (a catalog query such as
+  `SELECT to_regclass('public.<table>') IS NOT NULL`) proves the schema object that
+  file creates is actually present. The core ledger is corroboration; the witness is
+  the decision.
+- **This is the failure it prevents.** The obvious handoff copies core's ledger rows
+  and skips those files. On a database where the rows are present but the tables are
+  **absent** — a restore from an older snapshot, a version-skewed rollback, an
+  operator who dropped a table during an incident — that seed activates the plugin
+  green and makes every request 500, nine steps behind the cause. With witnesses the
+  plugin's migration runner simply applies the files, which is the repair.
+- **Core's rows are never deleted.** They are the rollback path: while core still
+  ships the same files, removing them would make core's own migrator re-run them on
+  the next boot. Uninstalling the plugin and reverting the extraction leaves core's
+  migrator exactly as it was.
+- **Operator CLI, dry-run by default.**
+  `node middleware/scripts/plugin-ledger-handoff.mjs --plan <plan.json>` prints the
+  plan against `$DATABASE_URL` and writes nothing; `--apply` is the only way to
+  write. It highlights the one number worth reading — the files core recorded whose
+  witness is false. Running it against production before installing the plugin is
+  the cheapest de-risking of this step there is.
+- `@omadia/plugin-api` **1.3.0** (additive): `SqlAccessor.seedLedger` (optional, so
+  a plugin still activates against a 1.2.0 core), `LedgerSeedEntry`,
+  `SeedLedgerOptions`, `LedgerSeedReport`.
+
+
+### Removed — Dev Platform moved to byte5ai/omadia-dev-platform (install via Hub/ZIP) (#470 C10)
+
+- **BREAKING for operators who ran it.** The Dev Platform — isolated per-job code
+  runners (clone → agent-edit → diff → server-side PR), its repo/job/gate admin
+  surface, the GitHub App onboarding, the webhook trigger, the LLM proxy and the
+  runner sidecars — is no longer part of core. It ships as an installable,
+  uninstallable plugin from
+  [`byte5ai/omadia-dev-platform`](https://github.com/byte5ai/omadia-dev-platform).
+  **Install it through the plugin Hub, or upload its ZIP.**
+- **Configuration moves with it.** All 43 `DEV_PLATFORM_*` / `DEV_JOB_*` /
+  `DEV_RUNNER_*` / `DEV_FLY_*` / `DEV_EGRESS_*` / `DEV_ARTIFACT_*` /
+  `DEV_WEBHOOK*` environment variables are gone from the middleware schema and are
+  now plugin settings. `middleware/.env.example` points operators at the plugin.
+  Unrelated lookalikes are **unchanged**: `DEV_ENDPOINTS_ENABLED` and
+  `DEV_ENDPOINTS_LOOPBACK_ONLY` are core's dev-graph endpoints, and `FLY_APP_NAME`
+  describes the host.
+- **Your data is not touched.** Migrations `0022`–`0030` and every `dev_*` table
+  stay exactly where they are; core still ships and applies them. The handoff of
+  ledger ownership to the plugin is a separate, independently revertible change
+  (#470 C11), and it seeds by filename only against a per-file schema witness —
+  it never deletes the donor rows.
+- **In-flight jobs keep working across the upgrade.** The two `auth/publicPaths.ts`
+  exemptions that let a runner phone home without a session are deliberately still
+  present; they are removed on their own afterwards (#470 C12).
+- The `dev-runner` and `dev-runner-daemon` images are no longer built, signed or
+  published from this repository. The plugin repo owns their GHCR publishing, SBOM
+  and cosign signing. A daemon pinning the old keyless certificate identity needs
+  the transition `--certificate-identity-regexp` before it will accept images from
+  the new signer.
+- In chat, a dev-job start no longer renders its bespoke card; it uses the generic
+  long-running-task card instead (#470 H3).
+
+### Fixed — plugin SQL ledgers now live in a core-proof namespace
+
+- `permissions.sql.ledger` is now kernel-validated as
+  `plg_<sanitized-plugin-id>_<suffix>`, closing the hole where a plugin whose
+  folded id matched a real core table name could adopt that table as its
+  migration ledger. The validator now also fails loudly when the mandatory
+  namespace leaves too little room inside Postgres' 63-byte identifier limit,
+  instead of relying on later DDL truncation behavior.
+
+### Fixed — service-grant gate covers legacy rows, plugin-facing callers, and per-plugin factories (#470 C2b, PR #783)
+
+- Filled the dated `ctx.services.get` legacy allowlist with the currently-real built-in and hub-plugin rows the first audit missed: some service names are hidden behind exported constants (`PROCESS_MEMORY_SERVICE_NAME`, `PLUGIN_CAPABILITIES_SERVICE`, `CHANNEL_RESOLVER_SERVICE`, …) and some channel repos resolve them through shared `@omadia/channel-sdk` helpers rather than a literal string in the plugin's own file. The boot-breaking orchestrator/orchestrator-extras gaps are now grandfathered explicitly until their manifests catch up.
+- Added `test/pluginServiceGrantCoverage.test.ts`, which derives service reads from every built-in `middleware/packages/*/manifest.yaml` plus its `src/**/*.ts` call sites and fails loud on undeclared or stale legacy rows instead of trusting a hand-maintained snapshot.
+- Threaded the plugin's `ServiceCaller` through plugin-facing accessors that resolved services outside `ctx.services.get` (`ctx.memory`, the knowledge-graph accessor, `ctx.mcp`, `ctx.subAgents`, `ctx.llm`, `ctx.events`) so `perCallerService(...)` providers see the consuming plugin instead of the kernel.
+- Made `perCallerService(...)` truthful to its docs: one implementation is now memoized per consuming plugin and per factory object, so repeat reads by the same plugin reuse the same instance while a replaced provider starts cold automatically.
+
+### Fixed — verifier: hallucinated record references no longer pass with a disclaimer (#129, PR #781)
+
+- **Behaviour change (blocking).** A qualitative answer that names a concrete
+  Odoo document (`INV/2026/0099`, `SO0123`, `RE-4711`) which does **not**
+  exist is now `blocked`, not `approved_with_disclaimer`. Root cause: the
+  LLM claim extractor typed such sentences as `qualitative` in roughly a
+  third of samples, and qualitative claims bypassed the deterministic
+  re-query entirely. `golden-eval.yml` flaked on exactly this
+  (`blocked_deterministic_id_absent`).
+- Scope is deliberately narrow: only `qualitative` claims with a
+  document-style `ref` (contains a digit) or numeric `id`; only models with
+  known reference fields (`account.move` `name|ref`, `sale.order`
+  `name|client_order_ref`, `purchase.order` `name|partner_ref`,
+  `stock.picking` `name|origin`, `account.payment`, `hr.expense.sheet`).
+  Person/company names, unknown models and reader errors stay on the judge
+  path (fail-open). Anchors already covered by a hard `id` claim in the same
+  turn are not re-queried twice.
+- Extractor prompt now asks for a separate `id` claim per record reference.
+
+### Added — provenance verification surface: verify API, signed export, offline verifier (#761)
+
+- **`GET /api/v1/operator/provenance/verify`** walks the stored chain,
+  recomputes every entry hash, validates checkpoint signatures against the
+  operator key, checks the retention prefix for a signed anchor, and enforces
+  the #758 laundering rule: a reaped row a checkpoint proves was younger than
+  the retention window is a `premature_deletion` finding, not retention.
+- **Signed JSONL export** (`/provenance/export`) + a **zero-dependency
+  offline verifier** (`scripts/verify-audit-export.mjs`, node:crypto only) —
+  an external auditor verifies the export with the out-of-band public key
+  WITHOUT trusting the server; a zero-entry export refuses to report green.
+  The verifier is itself covered by end-to-end tests (clean export → exit 0;
+  tampered payload → exit 1 naming the exact seq).
+- **Chain-status card** on `/operator/receipts`: posture (key, cadence,
+  anchor), on-demand verify, findings list, export download.
+- **`docs/provenance-verification.md`**: mechanism explainer, the
+  five-minute tamper demo, and the explicit proves/does-not-prove list. With
+  this, "cryptographically verifiable" is backed by code; the public wording
+  change stays a deliberate separate step per `docs/ai-act-transparency.md`.
+
+### Added — tamper-evident receipt chain: hash chaining + signed checkpoints (#758)
+
+- **Hash chain (migration `0041`).** Every persisted receipt row now joins a
+  per-stream chain: `entry_hash = sha256(stream ‖ seq ‖ prev_hash ‖
+  canonical(payload))`, appends serialized through a `FOR UPDATE`-locked
+  stream head so concurrent turns form one linear chain. Editing row *n*
+  breaks the copy of its hash stored in row *n+1* — visible to every later
+  entry. Replayed turns roll the whole transaction back (no phantom head
+  movement). UPDATE on `turn_receipts` is trigger-forbidden (defence in
+  depth; the chain is the proof); DELETE stays legal for retention, and
+  deletions show as seq gaps.
+- **Ed25519 checkpoints.** On an interval (`AUDIT_CHECKPOINT_INTERVAL_MINUTES`,
+  default 60) the stream head is signed with a key held ONLY in
+  env/secret-manager (`AUDIT_SIGNING_KEY` — never in Postgres, or the admin
+  the chain defends against could re-sign a rewritten chain). Optional
+  external anchor file (`AUDIT_ANCHOR_PATH`, JSONL) for WORM storage.
+  Keygen: `node scripts/generate-audit-signing-key.mjs`. Public key +
+  fingerprint served at `GET /api/v1/operator/provenance/public-key`.
+- **Verification foundation** (`verifyChainSegment`) ships with tamper tests
+  (edit → `hash_mismatch` at the exact seq; delete → `seq_gap`; forged
+  suffix → `link_mismatch`); the operator-facing verify surface (endpoint,
+  signed export, offline verifier, UI) is #761 — until it ships,
+  "cryptographically verifiable" remains a non-claim
+  (`docs/ai-act-transparency.md`).
+- Known limitations, stated: detection not prevention; per-row time is
+  anchored by checkpoint cadence, not per-row (`created_at` is outside the
+  hash); pre-chain rows carry NULL chain columns ("pre-chain era").
+
+### Added — Privacy Shield: operator deny-lists, miss-report queue, idnum coverage, eval CI gate (#760)
+
+- **Operator deny-list.** Two new privacy-plugin setup fields: `custom_terms`
+  (literal terms — project code names, customer names — ';'/newline-separated,
+  word-boundary + case-insensitive) and `custom_patterns` (advanced regexes,
+  one per newline). Patterns are vetted at config change: invalid syntax and
+  catastrophic-backtracking candidates (escalating-probe time budget) are
+  rejected with a loud `customPatternRejected` log, never silently dropped.
+  Spans report type `custom` in the receipt and ride the same fail-closed
+  surrogate machinery as the built-in patterns.
+- **Miss-report catch basin.** Fail-closed guards execution, not
+  non-detection — so a value the detectors miss now has a human path back:
+  "report a missed value" on the privacy receipt card files into
+  `privacy_miss_reports` (migration `0040`), reviewed at
+  `/operator/privacy-reports` (copy term → add to `custom_terms` → resolve).
+- **`idnum` promoted from informational to gated.** C0 now detects DE
+  Steuer-ID/USt-IdNr., ES NIE/DNI, IT Codice Fiscale, UK NINO, FR n° sécu.
+  Deliberately unpatterned: NL BSN (9 bare digits, no distinguishing shape) —
+  a recorded miss, not an ungated type.
+- **Detection quality is now a CI gate.** `promptDetectorEval.ts --check`
+  (deterministic C0 set) runs on every PR against committed per-locale floors
+  (`validation/ci-baseline.json`); an empty evaluation fails rather than
+  reporting green.
+- Open, deliberately: surrogate-TYPE assertions in the eval fixtures (the
+  #727 bug class stays invisible to span-coverage scoring), fixture
+  auto-export from resolved reports, the `mask_user_prompt` default (product
+  decision), setup-time feedback for rejected custom patterns (today the
+  rejection is server-log-only), and the residual runtime risk that a
+  polynomial pattern's FIRST over-budget turn is slow before the fail-closed
+  block lands (exponential cases are caught at vet time by the digit/letter/
+  unicode probe escalation).
+
+### Added — Conductor run cancellation + approval hardening (#759)
+
+- **Run cancel.** `POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`
+  (+ a cancel button on the run trace): a `waiting` run ends immediately — its
+  open awaits close as `cancelled` (writing, for the first time, the enum value
+  the schema carried since 0001) and a synthetic step records the cancelling
+  operator; a `running` run is flagged and its driver stops at the next step
+  boundary (a mid-step kill is deliberately not attempted — the at-least-once
+  effect window stays bounded to one step, same as crash recovery); terminal
+  runs answer 409. Schema: conductor migration `0008_run_cancel.sql` (status
+  CHECK + `cancel_requested_by/at`).
+- **Strict approvals.** New per-human-step `strictApproval` flag (designer
+  checkbox): only an explicit `{approved:true}` advances — inverting the
+  documented fail-open default where anything but `{approved:false}` counts as
+  approval. Default unchanged for existing workflows.
+- **Validator warnings (non-blocking).** `timeout_equals_approval` (a deadline
+  fallback that lands on the approval path — a timeout would silently approve)
+  and `approval_fail_open` (a non-strict human step gating an action step),
+  surfaced amber in the designer on publish.
+- **Role-holder audit.** Every baton add/remove now lands in `admin_audit`
+  (`conductor.role_holders_change`) — who may approve is a security decision;
+  in the current single-role system any operator can assign themselves.
+
+### Added — persistent per-turn privacy receipts (#757)
+
+- **`turn_receipts` (migration `0039`).** The per-turn `PrivacyReceipt` is no
+  longer ephemeral UI state: every completed turn writes its PII-free receipt
+  (counts + routing metadata, never a value) synchronously to Postgres — no
+  optional graph sink, no user-cluster precondition. Failures are counted and
+  logged, never silent. Schema note: `turn_id` unique (idempotent on replayed
+  `done` events); retention bounded by the new `RECEIPT_RETENTION_DAYS`
+  (default 90) via an unref'd reaper anchored on the DB clock.
+- **Operator surface.** Auth-gated `GET /api/v1/operator/receipts` (+
+  `/:turnId`) with composite-keyset pagination, and a web-ui page under
+  `/operator/receipts` rendering the exact receipt card the user saw.
+- Not yet tamper-evident — hash chaining, signatures, and verification are
+  #758/#761; `docs/ai-act-transparency.md` §6 keeps "cryptographically
+  verifiable" a non-claim until they ship.
+
+### Added — a command policy that reads what a command actually does
+
+- **Shell-normalizing command policy (#580).** Command gating is not
+  regex-on-the-raw-string: `r""m -rf /`, `rm${IFS}-rf${IFS}/`, `$'\x72\x6d' -rf /`
+  and `$(printf rm) -rf /` are the same command wearing four disguises, and a
+  naive `includes('rm -rf')` misses every one. The new primitive **normalizes
+  first** — unwraps quoting, decodes ANSI-C `$'…'`, collapses `${IFS}` to a field
+  split, recurses into `$(…)` and backticks — then tokenizes, and only then runs
+  the rule cascade (org floor → org allowlist → scope rules → default).
+- **The org floor holds in every posture.** Recursive `rm`, `git push --force`,
+  destructive SQL, fork bombs and pipe-to-shell are denied with no caller flag
+  that turns them off — a `dangerous` posture is not an exemption. The shipped
+  floor is **deep-frozen**, so no caller can flip a rule from `deny` to `allow`
+  on the shared value.
+- **A command that could not be fully read is refused, not cleared.** When
+  substitution nesting passes the depth cap the normalizer reports `truncated`;
+  the enforcement seam treats that as suspicious rather than clean, because a
+  floored command could be hiding below the cap (`$($($(…rm -rf…)))`).
+- **This is a speed bump, not a sandbox boundary** — the framing is borrowed
+  from qm's own SECURITY.md, and it is the honest one. Unresolved variables,
+  `eval` of a computed string and exotic here-docs are documented blind spots;
+  the durable sandbox is the real containment.
+- The enforcement seam is **honest-inert**: omadia ships no shell-execute tool
+  yet, and with no policy provider installed the guard is a no-op. Nothing
+  changes for any existing turn.
+
+### Changed — a restricted room keeps the curated knowledge it is entitled to
+
+- **`sharedOnly` recall (#575).** Narrowing a room to its own conversation used
+  to drop curated memory entirely along with the other cross-session legs. But
+  curated memory is **tiered**: `team` / `public` knowledge is shared by
+  construction, so a restricted room may have it — only rows the recalling user
+  privately owns are off-limits.
+- **`sharedOnly` is not the opposite of `teamVisibility`.** The latter *widens*
+  the ACL (owner rows plus shared ones); this *narrows* it to the shared tier
+  alone. They answer different questions, and the audience floor needs the
+  second one: "what may **everyone present** see?"
+- `sharedOnly` **implies** the shared branch in every implementation — asking
+  for shared rows while that branch is off would silently return only the
+  viewer's own shared rows, a misconfiguration with no legitimate use.
+
+### Fixed — shielded result tables no longer render blank columns
+
+- **Masked columns came out empty on the canvas (#326).** A privacy-shield
+  dataset resolves to rows *keyed by the source's column paths*, but the canvas
+  composer looked cells up under the **agent's** field keys. Where the agent
+  called a column `invoice_number` and Odoo's path was `name`, the lookup missed
+  and the cell was silently blanked — so an invoice table rendered without
+  invoice numbers or customers.
+- Columns that happened to reuse the real field name filled correctly, which is
+  why this looked like a rendering glitch rather than a mapping fault.
+- **Fixed by deriving the table's columns from the resolved dataset**, so values
+  resolve by path. Shielded columns now also carry
+  `privacy: "guard-protected"` — a marking the canvas protocol already defined
+  and the `v4_render_answer` path already emitted; only this path never did.
+- **Labels are matched positionally**, and only when the agent's and the
+  dataset's column lists are the same length; otherwise the raw path is shown.
+  No field-key↔path mapping exists anywhere in the system, so the alternative
+  would be a header that confidently names the wrong column.
+
+### Changed — a restricted room narrows its recall instead of losing it
+
+- **`memory:recall:cross_scope` (#575).** Recall used to be all-or-nothing: a
+  room that could not satisfy `memory:recall` got no prior context at all. A
+  room can now hold `memory:recall` without the new capability — it recalls its
+  **own** history and drops hits from other conversations.
+- **Why it matters:** recall is ACL-gated by the *recalling* user, so in a
+  shared room a hit from that person's other chats lands in the single prompt
+  everyone's answer is derived from. Only one participant was entitled to it.
+- **The cross-session legs are skipped too** — plans, processes and curated
+  insights bypass the candidate pool and render their own blocks, so filtering
+  candidates alone would have looked thorough while letting those through.
+- Dropped hits are recorded as exclusions with reason `audience-scope`, so a
+  thin context block is explainable rather than mysterious.
+
+### Added — outbound hosts can be read as an allow-list, not just prohibitions
+
+- **`AUDIENCE_HOST_ALLOWLIST_ENABLED` (default off, #575).** With it, a host must
+  also be granted through the audience floor — `net:<host>` per host, or `net:*`
+  for unrestricted — and the grants intersect across everyone present. This is
+  the "allowlist = intersection of allowed hosts" half of the issue.
+- **Off by default because switching it on is consequential**, not out of
+  caution: outbound hosts are granted by a plugin's manifest, so a room whose
+  participants hold no host grants reaches nothing at all. Seed grants first.
+- **A prohibition beats `net:*`.** The unrestricted grant is a convenience for
+  operators who should not have to enumerate hosts; if it also overrode an
+  explicit veto, the veto would be worthless exactly where it matters, since
+  `net:*` is what a broad role is most likely to carry.
+- **`net:*` intersects like any other capability** — the room is unrestricted
+  only when *everyone* present is. One host-restricted participant restricts the
+  room.
+
+### Added — a room can forbid an outbound host
+
+- **Host-level egress (#575).** A `net:<host>` prohibition now narrows a
+  plugin's manifest outbound allow-list for the duration of a turn, enforced in
+  `ctx.http` — the accessor that already carries the manifest allow-list, the
+  SSRF guard and the rate limiter.
+- **It binds `public-web` audit mode too**, so a `web_scanner` plugin is not a
+  way around a host an operator forbade, and it is checked *before* the rate
+  limiter so a refused call costs the plugin nothing.
+- **Prohibitions only — the allow-side intersection is deliberately not
+  shipped.** Outbound hosts are granted by the plugin manifest, not by the grant
+  store, so intersecting would reduce every room's effective allow-list to the
+  empty set the moment the floor is switched on. A prohibition can only ever
+  narrow, and only where an operator wrote one.
+- `AudienceFloor` now exposes the union of prohibitions alongside the permitted
+  set: with only the difference, "explicitly forbidden" and "never granted" are
+  indistinguishable, and a consumer with its own allow-list has to tell them
+  apart.
+
+### Added — one participant's prohibition binds the whole room
+
+- **The audience floor could express "may" but not "must not" (#575).** It
+  intersected allowances, which is half of what spec §5.2 asks for
+  ("allowlist ∩, denylist ∪"). There was no way to say *this person must never
+  do X* at all.
+- **New:** explicit denials for a principal or a role (migration
+  `0037_audience_denials.sql`), with endpoints under
+  `/api/v1/admin/audience-grants/{direct,roles}/deny`.
+- **Allowances intersect, prohibitions union — deliberately asymmetric.** An
+  allowance says what someone *may* do, so the room may do what everyone may;
+  a prohibition binds the room even when only one participant carries it.
+  Applying intersection to prohibitions would mean a rule only bites when
+  everybody is under it.
+- **A denial overrides a grant**, rather than being modelled as "simply do not
+  grant it" — otherwise any role that happens to confer the capability would
+  silently lift an operator's explicit prohibition.
+
+### Added — an attachment handle only redeems in the room that minted it
+
+- **A storage key was just a string (#575).** The handle guard checked the floor
+  at *redemption* — may this room read attachments — but not at *minting*. So a
+  key issued in a private chat stayed redeemable in any room that happened to
+  hold `attachment:read`, which is what "a string can be pasted into a group
+  chat" means in practice.
+- **New:** each key is pinned on first sighting to the `ScopeId` it was resolved
+  in (migration `0036_attachment_scope_bindings.sql`), and every later
+  resolution must come from the same room.
+- **The binding rides on the reader, not on the call sites** — a storage key
+  outlives its turn, so a check at one resolution site holds only until somebody
+  adds the next one.
+- **Non-addressable scopes are deliberately not bound.** `'http-default'` is
+  shared by every unscoped HTTP caller (the #445 cross-user hole) and
+  `teams-unknown` by every Teams activity without a conversation id. Binding to
+  one of those would declare all of them the same room — enforcement in
+  appearance, universal access in fact.
+- Enabled by the same `AUDIENCE_FLOOR_ENABLED` flag; without it the check stands
+  down and the reader behaves exactly as before.
+
+### Added — audience-floor grants survive a restart, and an operator can see them
+
+- **The audience floor had no durable store (#575).** `InMemoryGrantStore` was
+  the only implementation, so a deployment that switched the floor on lost every
+  grant on restart. Because the floor fails closed, that did not degrade the
+  feature — an empty grant table means "nobody may do anything", so a restart
+  shut every room until someone re-seeded by hand.
+- **New:** `AUDIENCE_FLOOR_ENABLED` (default off) plus Postgres-backed grants
+  (migration `0035_audience_grants.sql`) and an operator surface at
+  `/api/v1/admin/audience-grants` (cookie auth, like the other admin routers).
+- **The admin surface is available whenever Postgres is, independently of
+  enforcement** — grants have to be seedable and reviewable *before* the floor
+  starts enforcing, or the only way to populate the table would be to switch the
+  floor on against an empty one.
+- **Enabling the floor without Postgres refuses to boot.** The alternative is
+  worse than a crash: every lookup would throw, every room would refuse every
+  tool, recall nothing and read no attachment, and the deployment would look
+  configured while behaving as though someone had forbidden everything.
+- Role grants additionally need a role source registered (#333 phase 2); direct
+  grants work on their own, because an empty role registry is a complete answer
+  rather than a partial one.
+
+### Fixed — a withheld answer no longer ships its full reasoning to the channel
+
+- **`NO_REPLY` stopped suppressing delivery the moment the AI-Act Art. 50
+  marking shipped (#661, #662).** `isNoReply` anchors the sentinel at the END of
+  the message; `applyAiDisclosure` folds the marking line into that same `text`.
+  Folded onto a sentinel answer, the anchor stops matching and the agent's
+  entire turn goes out.
+- **Seen in production.** A weekly approval routine emitted the sentinel in all
+  four of its recorded runs and still pushed 9,381 characters of intermediate
+  reasoning into a Teams chat on the first Monday after the deploy. Every
+  routine on every channel that relies on the sentinel was affected, and both
+  sentinel forms were — the mandated bare `NO_REPLY` as much as the lenient
+  trailing one.
+- **Suppression now precedes decoration.** The guard sits in the one shared
+  derivation, so the streaming and non-streaming paths, and every channel that
+  renders `text`, are covered by construction rather than per call site.
+- **A withheld message no longer spends the scope's first-turn marking slot.**
+  The guard short-circuits before `shouldFold`, which marks a scope seen as a
+  side effect; otherwise the next answer that really was delivered would have
+  shipped without its Art. 50 marking.
+### Added — the audience floor can now be switched on (#575)
+
+- **The piece that makes the three guards non-inert.** Until now the floor, the
+  grants and all three guards were merged but unreachable, because nothing
+  installed an audience source. Passing `audienceGrants` to the orchestrator now
+  builds one per turn, and enforcement begins.
+- **It is an explicit opt-in, not a default.** The floor fails closed by design,
+  so a deployment that has not decided who may do what would otherwise find its
+  rooms bounded by an empty grant table. Omit the option and every guard
+  short-circuits exactly as before.
+- **The chain runs end to end**: roster → Principal per participant (via the
+  same knowledge-graph join `resolveTurnOwnerIdentity` uses) → roles → grants →
+  the intersection. Every failure along it was already made explicit by the
+  layer that owns it, so this adds no policy of its own — an unreadable role
+  source, an unplaceable participant or an empty roster each close the room,
+  with a reason.
+- **It deliberately does not cache.** The egress guard re-evaluates per tool
+  call so a mid-turn joiner narrows the floor before the next call fires;
+  memoizing the roster here would hand it the turn's opening answer every time.
+  Caching stays where the `ChatParticipantsProvider` contract already puts it —
+  with the channel adapter, which knows when its roster goes stale.
+- A turn that did not arrive through a channel resolves to no principals rather
+  than defaulting to a plausible-looking channel kind: a wrong kind resolves to
+  a *different* identity cluster, which would hand the room somebody else's
+  grants.
+
+### Added — the audience floor now guards attachment-handle resolution (#575)
+
+- **The floor's third and last guard**, completing the trio the spec names. A
+  storage key is a handle: it is minted in one turn and can be redeemed later,
+  potentially in a different room.
+- **The check rides with the handle, not with the call sites.** Enforcement
+  lives in a wrapper around `AttachmentReader` applied at its single
+  construction site, so `read_attachment`, the orchestrator's own
+  `ingestAttachments` and any future resolution path are covered by
+  construction rather than by remembering to add a call.
+- **This closes a path the egress guard did not.** `read_attachment` is a tool
+  and so already passed the first guard, but `ingestAttachments` resolves
+  storage keys straight off the inbound turn with no tool call involved — the
+  path a caller actually controls.
+- **A refusal is indistinguishable from "unknown key" to the caller, on
+  purpose.** Confirming that a key exists but is off-limits would leak the
+  document's existence to a room that may not know it. The real reason goes to
+  the operator log, where it is actionable and not a side channel. The inner
+  reader is never reached, so a refused redemption does not even touch the
+  store.
+- Redeeming a handle and invoking the read tool are separate capabilities;
+  neither grants the other.
+
+> **Remaining gap, named rather than assumed closed.** This checks the floor at
+> *redemption*, not at *minting*. It stops a room from redeeming a handle that
+> room may not read, but cannot yet stop a handle minted in a narrow room from
+> being redeemed in a wider one that happens to hold the capability. Binding the
+> minting audience to the handle needs the attachment store to persist it, and
+> that store lives in the channel plugins.
+
+### Added — the audience floor now guards context recall (#575)
+
+- **The floor's second guard**, at the single context-assembly call site. In a
+  shared room the recalled context is rendered into one prompt that everyone's
+  reply derives from, so the room may only recall what **everyone present** may
+  read. That is the same intersection, applied to a `memory:recall` capability.
+- **This one snapshots, while egress re-computes** — the two halves of decision
+  D4. Rendered context cannot be un-sent, so re-filtering it later in the turn
+  would be theatre; an unfired tool call can still be refused, so that one
+  recomputes per call.
+- **A denial is a skip, not an error.** The turn proceeds without prior context,
+  exactly as it already does when no retriever is configured, and the reason is
+  logged. Dressing a policy decision up as a fault would be misleading.
+- **Recall and tool use are separate capabilities.** Being allowed to run a tool
+  says nothing about being allowed to read the room's history, and neither
+  grants the other.
+- Same inertness as the egress guard: with no audience source installed, recall
+  behaves exactly as before.
+
+> **Known limitation, stated rather than papered over.** The spec asks for "per
+> retrieval, **per recipient**", and this is not that. Two preconditions do not
+> exist in the tree yet: context is assembled once per turn into a single prompt
+> (there is no per-recipient render for a per-recipient context to go to), and
+> recalled items carry scores and scopes but no capability labels (there is
+> nothing per item to check). A per-item filter would have to invent a labelling
+> scheme, which is policy and not this layer's to invent.
+
+### Added — the audience floor now guards tool egress (#575)
+
+- **The first of the floor's three guards is wired**, at `dispatchTool` — the
+  single choke point every tool call passes through. Placed before the dispatch
+  deadline so a refused call costs nothing, and before the Privacy Shield
+  boundary because the floor decides *whether* an effect happens while Privacy
+  Shield decides what a permitted one may carry.
+- **Evaluated per call, not per turn.** A turn-start snapshot is a TOCTOU hole:
+  somebody can join between the model choosing a tool and the call firing. This
+  is also the half of decision D4 that re-evaluates — rendered context cannot be
+  un-sent, but an unfired call can still be refused.
+- **Inert unless a deployment opts in.** No audience source installed means the
+  floor is *not enforced*, which is emphatically not the same as *closed*. A
+  closed floor denies everything, so reading "nobody configured this" as
+  "closed" would silently disable every tool everywhere. Same shape and same
+  reasoning as `turnContext.privacyHandle`.
+- **But a provider that throws closes rather than opens** — deliberately the
+  opposite of the privacy precedent. Privacy degrading to "unmodified"
+  over-shares detail; this degrading to "allowed" performs an effect nobody
+  authorized.
+- A refusal comes back as a tool result, not an exception, and says that
+  retrying will not help — a policy decision should not read as an outage, and
+  an unexplained denial just produces a retry loop.
+
+### Added — the audience floor and capability grants (#575, phase 2)
+
+- **The first module in this cluster that decides something.** #333 produces
+  Principals and says what they are entitled to; this consumes them and answers
+  *"given who is present, what may happen in this room?"*.
+- **One intersection function, three guards.** The spec is emphatic that the
+  floor is not a single interception point: egress must be checked **per tool
+  call** (a turn-start snapshot is a TOCTOU hole), context **per retrieval, per
+  recipient**, and file/credential handles **at handle resolution**. So the
+  intersection ships as a pure, cheap function the three guards share rather
+  than as a hook.
+- **Everything fails closed, because the intersection of nothing is
+  everything.** An audience that cannot be established permits nothing rather
+  than everything, and that trap is live today: `ChatParticipantsProvider`'s own
+  contract says "returning an empty array is a valid unknown/unavailable state",
+  so an empty roster is `unknown`, never "the room is empty". One participant
+  who cannot be resolved to a Principal closes the whole room — bounding only
+  the people you could identify is not bounding the room.
+- **`closed` and `open`-with-nothing are different answers.** Both permit
+  nothing, but the first is an outage and the second is policy. An operator
+  looking at a blocked workflow needs to tell them apart.
+- **Grants: capabilities union within a principal, intersect across the room.**
+  A principal's capabilities are their direct grants plus the grants of every
+  role they hold; the room's floor is the intersection of everyone's. The two
+  directions live in separate modules because confusing them is a privilege bug
+  either way.
+- **A partial role lookup never becomes a capability set.** #333 phase 2 made
+  "we could not read a role source" distinct from "no roles"; that distinction
+  survives into the floor, which closes with a diagnosable reason instead of
+  quietly applying a stricter policy nobody chose.
+- Capabilities are deliberately **not** roles: intersecting role labels would be
+  wrong in a way that looks right, since two people with different roles may
+  well share a right.
+
+### Fixed — an approval quorum could complete with too few approvals (#333, phase 3)
+
+- **Conductor's role→holder resolution is now pluggable — and two decisions built
+  on it were fail-open.** Holders used to come only from
+  `conductor_role_assignments`, so a *partially known* holder list could not
+  exist. Sourcing holders from an Entra group or an Odoo HR reporting line makes
+  it possible, and it turns out two places treated a shrunken list as the truth:
+  - **`quorum='all'` completed with too few approvals.** Every holder still
+    visible may have answered while the people an unreachable directory knows
+    about were never asked — a four-eyes approval silently becoming two-eyes.
+    The pre-existing guard covered only the *empty* list; the partial one looks
+    legitimate. It now refuses to complete and lets the deadline fallback run.
+  - **A human step could be skipped entirely.** "Role has no holder" triggers
+    the step's fallback by design (FR-024), but an empty list from a failed
+    lookup is *"we could not ask"*, not *"nobody holds this"*. It now parks the
+    await instead, so the real holders still get their chance.
+- **The authorization gate is deliberately left alone.** A shrunken list there
+  only rejects a genuine holder — it fails closed, which is the safe direction.
+- **The local assignment table is registered as an ordinary holder source**
+  rather than special-cased, so there is one merge path and the local store gets
+  the same throw-becomes-`unavailable` handling as any remote directory. A
+  source may not claim the reserved `conductor-local` id — that would substitute
+  its own approver list, so it is a boot-time collision.
+- With no external source configured the behaviour is unchanged: one source,
+  never partial.
+
+### Added — role and attribute sources: what a `Principal` is entitled to (#333, phase 2)
+
+- **A pluggable `RoleSource` registry in the channel SDK.** Phase 1 answered
+  *who* a turn's caller is; this answers *what they are entitled to* — the roles
+  an Entra group membership or an Odoo HR record confers. It still evaluates no
+  permission: the audience floor, grants and per-recipient filtering belong to
+  #575, which consumes these facts.
+- **Absence is a type, not an empty array.** `rolesFor` returns
+  `resolved | unavailable`, and the aggregate carries a `partial` flag. An empty
+  role set and "the directory was unreachable" are different facts, and merging
+  them is an authorization bug in whichever direction the caller guesses: read as
+  "this user has no roles" an outage silently strips every entitlement; read as
+  "unknown, so allow" it is a silent full grant. The same reasoning that made
+  `ScopeId`'s `unscoped` and `Principal`'s `undefined` types rather than values.
+- **The operator gate from `ProviderRegistry` is mirrored, and matters more
+  here.** Sources must be catalogued before they can be activated. An auth
+  provider decides whether you get in; a role source decides what you *are* once
+  inside, so registering one silently is privilege escalation with no login
+  event to notice.
+- **A throwing source degrades to `unavailable` instead of failing the turn** —
+  but it still appears in the per-source breakdown and still sets `partial`, so
+  a directory outage is diagnosable rather than invisible. Sources are queried
+  concurrently; they are independent network reads on a turn's hot path.
+- **A `role:` principal short-circuits without consulting any source.** Asking
+  what roles a role has is a category error — a role is an indirection over
+  holders — and answering it would invite a source to invent role nesting that
+  #575 has not specified.
+
+### Added — `Principal`, the platform's typed answer to "who is this?" (#333, phase 1)
+
+- **A `Principal` type in the channel SDK**, the same home as `ScopeId` and for
+  the same reason: the orchestrator, the kernel and `middleware/src` all depend
+  on that package and it depends on none of them. Until now only Conductor could
+  name a principal, and only as two loose columns (`principal_kind`,
+  `principal_ref`) plus a bare-string canonicalizer. `specs/575-scope-and-identity-foundation/spec.md`
+  §6 draws the line this implements: **#333 produces Principals, #575 consumes
+  them and produces decisions.** Nothing in the new code evaluates a permission.
+- **`user` and `role` do not share a canonicalization rule, and now cannot be
+  written as if they did.** User ids are trimmed and lowercased, because the SQL
+  deciding whether a reminder reaches a person is a case-sensitive `=`. Role keys
+  are trimmed only, because `createRole` writes them verbatim — lowercasing them
+  would stop matching every mixed-case row already in a deployment's
+  `conductor_roles` table. The two variants therefore carry differently-named
+  fields (`userId` / `roleKey`), so the difference is visible at each use site
+  rather than hidden behind a shared `ref: string`.
+- **`parsePrincipal` splits on the first separator only.** Principal references
+  legitimately contain colons — `coreApi.resolveIdentity` builds its platform id
+  as `` `${kind}:${id}` `` — so `user:teams:29:1a2b` is a real value that a naive
+  `split(':')` would truncate into a principal addressing the wrong person. An
+  unparseable string yields `undefined`, never a `user`: a role key misread as a
+  user id routes an approval to somebody who does not exist.
+- **Conductor's `canonicalizePrincipalId` now delegates to that rule** instead of
+  keeping its own copy, so the two cannot drift apart and reintroduce the
+  case-sensitive miss both exist to prevent.
+- **`resolveTurnOwnerIdentity` also returns the turn owner as a `Principal`**,
+  widening the `{ omadiaUserId?, authSubjectKey? }` answer #568 shipped. Derived
+  from the canonical omadia id only — an IdP subject names an account at a
+  *provider*, not a subject in omadia's id space, so a turn with a login but no
+  canonical id still has no principal.
+
+### Added — a wiring test for the injective graph-scope key (#575 D3)
+
+- **`OMADIA_INJECTIVE_SCOPE_KEYS` now has a test proving `graphScopeFor` reads
+  it.** `scopeGraphKey`'s own tests show the *function* is injective; they say
+  nothing about whether the formula both the write and the read side use ever
+  consults the flag. A gate that is declared but never read passes every test
+  while the fix it guards is unreachable.
+
+### Fixed — the resume/reaper conformance test raced the wall clock
+
+- **`a RESUMED task survives the reaper` could fail for reasons unrelated to
+  the behaviour it guards.** It aged a parked task by `sleep(120)`, resumed it,
+  and then swept with `staleAfterMs: 60` using the reaper's *default real-time*
+  `now`. That left a 60ms budget between `provideInput` returning and the sweep
+  running: any stall longer than that — a GC pause, a loaded CI box, the serial
+  Postgres job sharing a runner — aged the freshly reset heartbeat past its own
+  window, so the reaper failed the task and the test went red while the code
+  was correct. Reproduced deterministically by inserting an 80ms stall before
+  the sweep.
+- The sweep now takes an explicit `now` anchored on the resume's own
+  `updatedAt`. `provideInput` writes `updatedAt` and `lastHeartbeatAt` in one
+  statement, so that timestamp comes from the same clock that stamped the row —
+  the database's for the durable store, the process's for the in-memory one —
+  and the comparison no longer depends on how long the test itself takes. With
+  the fix the test survives even a 3s injected stall.
+- `updatedAt` is the anchor precisely because it stays correct when the
+  behaviour regresses: dropping the `lastHeartbeatAt` reset still advances
+  `updatedAt`, so the frozen heartbeat lands outside the window and the test
+  goes red. Verified by mutation against **both** stores — in-memory and real
+  Postgres.
+
+### Fixed — the rest of the test servers now bind the port they dial (#707)
+
+- **The remaining 57 `listen(0)` sites are converted.** #703 fixed the
+  mechanism but could only convert the call sites that already waited for
+  their `listening` callback. The rest read `server.address().port`
+  synchronously on the next line, which stops working the moment a host is
+  passed — `listen` then goes through the `dns.lookup` path even for an IP
+  literal and no longer binds synchronously. They now go through a
+  `listenLoopback()` helper that binds 127.0.0.1 and resolves on `listening`,
+  so no test server is left holding a port it never dials.
+- **A correction to #703's explanation.** That entry said the wildcard socket
+  is `IPV6_V6ONLY`. Measured on macOS, it is not: `[::]` is dual-stack and
+  `http://127.0.0.1:<port>` normally reaches it, which is exactly why the bug
+  presented as intermittent rather than as a hard failure. The real mechanism
+  is that the wildcard bind's port is chosen only against other wildcard
+  binds, while a process that binds `127.0.0.1:<port>` **specifically** may
+  already hold it — and on BSD/macOS the more specific bind coexists with the
+  wildcard and wins for connections to 127.0.0.1. Local dev servers bind
+  127.0.0.1 by default, which is why the observed shadowers were an MCP server
+  and a Flask app. The fix and its rationale are unchanged; only the
+  description of *why* the port was unprotected was wrong.
+- `canvas-core`'s WebSocket stub server had the same shape (`port: 0`, no
+  host, callers dialling `ws://127.0.0.1:<port>`) and now binds the loopback
+  too.
+- Removed 23 now-dead `await once('listening')` waits that followed a
+  converted site. The helper already resolves after `listening`, so a second
+  wait could never fire — it hung 12 files to the 120s test timeout.
+
+
+### Added — the public MCP endpoint serves MRTR to 2026-07-28 clients (#700)
+
+- **Two SDK generations behind one path, routed by protocol era.** A request
+  that negotiates the 2025 `initialize` handshake is served by the v1 wiring
+  exactly as before; one carrying the 2026-07-28 envelope is served by
+  `@modelcontextprotocol/server@2`. Neither generation can serve the other's
+  era, which is why this is a router and not a port: the v1 line never answers
+  `server/discover` (so a modern client negotiating against it falls back to
+  legacy, where it strips `resultType` and MRTR becomes invisible to it), and
+  the v2 line refuses to emit omadia's flat `inputRequests` array at all, on
+  either era. Routing is the SDK's own documented composition for this.
+- **The documented 2025 contract is untouched.** Same array dialect, same
+  `arguments.inputResponses` retry, byte for byte — the existing endpoint suite
+  passes unmodified. Modern callers instead get the revision's shape: one
+  embedded `elicitation/create` request and an opaque `requestState`.
+- **`requestState` is integrity-protected, which the spec requires and the SDK
+  does not do for you.** HMAC-SHA256 via the SDK's own codec, over a
+  vault-persisted key (so any instance behind the load balancer can verify what
+  another minted), bound to the API key and the method, one-hour TTL. A
+  modified, expired or borrowed state is refused with the frozen `-32602`.
+  Without a vault the endpoint generates a per-process key and warns — still
+  signed and still verified, just not across instances.
+- **The bounce cap stops being guessable.** On the 2025 dialect it is inferred
+  from `inputResponses` appearing in the arguments, so a caller that strips the
+  key gets a fresh card forever. On the modern dialect the round counter is
+  inside the signed state.
+- **A tool cannot tell which era its caller spoke.** The translation lives
+  entirely in the endpoint: a tool still asks with the `_pendingInputRequest`
+  sentinel and still receives a flat `inputResponses` object.
+- **Known gap, stated rather than papered over:** the revision's elicitation
+  schema has no masked-input concept (`email`, `date`, `uri`, `date-time` are
+  the only string formats), so a field the tool marked `secret` is named in the
+  prose instead of flagged in the schema. Emitting a `password` format anyway
+  would produce a request a conforming client rejects.
+### Fixed — test servers bound a port they never dialled (CI flake)
+
+- **Intermittent 401/404 in the middleware test suite.** A test would fail with
+  a `401 devplatform.unauthorized` on a request that carried perfectly valid
+  session headers, or a `404` on a repo it had just registered — and pass on
+  the next run. The cause was neither the routes nor the fakes: the harnesses
+  bound their server with `app.listen(0)`, which binds the **IPv6** wildcard
+  `[::]`. On macOS/BSD that socket is `IPV6_V6ONLY`, so the kernel reserved the
+  port in the IPv6 ephemeral space only — while every harness handed out
+  `http://127.0.0.1:<port>`, an **IPv4** URL. The two spaces are independent,
+  so the port the test dialled was never reserved at all, and any unrelated
+  process holding that IPv4 port received the request and answered it. Observed
+  foreign responders on a developer machine included a local MCP server
+  (`401 … provide valid authorization token`) and a Flask dev server
+  (`404 Not Found`); a non-HTTP peer surfaced instead as
+  `HTTPParserError: Response does not match the HTTP/1.1 protocol`.
+- Every test listener that already waits for its `listening` callback now binds
+  `127.0.0.1` explicitly (both dev-platform harnesses, 36 call sites in all,
+  plus the updater sidecar's server test), so the reserved port and the dialled
+  port are the same port and the OS guarantees exclusivity — a colliding bind is
+  refused with `EADDRINUSE` instead of silently shadowing the harness. A
+  `harness socket binding` suite in each affected route test guards the
+  property so the old shape cannot come back.
+- Note for follow-up work: passing a host makes `listen()` bind
+  **asynchronously**, so the remaining 55 `app.listen(0)` sites that read
+  `server.address().port` synchronously on the next line cannot be converted by
+  adding the host alone — they each need to await `listening` first. They are
+  still exposed to this failure mode.
+
+### Fixed — the Fly updater asked for a wait longer than Fly allows (#696)
+
+- **`/wait?timeout=120` is rejected outright.** Fly caps the machine-wait at
+  60s and answers anything larger with
+  `400 invalid WaitMachineRequest.Timeout: value must be inside range
+  [1s, 1m0s]` — asking for more does not buy a longer wait, it buys no wait at
+  all. `waitForState`'s 120s default therefore failed every update on the step
+  right after the image was written. Found on a real deployment, once the
+  lease-nonce fix let the update get that far. The request is now capped at the
+  API maximum and re-issued until the caller's own budget is spent, and the
+  machine's state is re-read and checked explicitly instead of trusting the
+  long-poll's timeout semantics — a `/wait` that errors is not the oracle.
+- **A "rolled back" job now really rolls back.** `replace()` can fail *past the
+  point of mutation*: on Fly the machine is already carrying the new image when
+  the wait step throws. The bookkeeping entry was written only after `replace()`
+  returned, so that case left `replaced` empty, rollback restored nothing, and
+  the operator was told the update had been rolled back while the service ran
+  the new build — exactly what happened in production. The entry is now recorded
+  before the call; restoring an image the service never left is a no-op, so
+  pessimistic bookkeeping is safe in the other direction.
+
+### Fixed — the Fly updater was blocked by its own lease (#696)
+
+- **Applying an update on Fly always failed and rolled back.** `replace()`
+  leases the Machine, and Fly gates every write to a leased Machine behind the
+  `fly-machine-lease-nonce` header — which was sent nowhere. `updateMachine`
+  declared `leaseNonce` in its signature but never read it, the engine never
+  passed it, and the HTTP helper had no way to carry a header at all. Every
+  real update therefore came back
+  `409 aborted: … lease currently held by …@tokens.fly.io` and rolled back,
+  seconds after taking that lease itself. Threaded end to end now: per-call
+  headers on the client, the nonce on the update, the lease from the engine.
+- **The lease is handed back in a `finally`.** It was acquired and abandoned,
+  so it kept blocking writes for the rest of its 300s TTL — which also meant
+  the rollback after a failed update hit the same 409, and the machine stayed
+  locked against a human `fly deploy` for minutes.
+- **The test fake now enforces the lease.** It returned a nonce and ignored it
+  on writes, so it could not produce Fly's 409 and 263 lines of green tests
+  said the path worked. It now rejects an unnonced write and validates the
+  nonce on release. New wire-level `flyApi.test.mjs` asserts against the bytes
+  an HTTP server actually receives, because a fake can only ever prove the
+  engine *passes* a value, never that the client *sends* it.
+
+### Added — one-click updates on Fly.io (#696, follow-up to #432)
+
+- **A Fly executor for the rolling self-update.** Fly Machines are Firecracker
+  microVMs with no Docker daemon, so the compose executor could never run
+  there. The updater now has an **engine seam**: `updateJob.mjs` keeps
+  everything platform-independent — the ordering that makes a failure safe, the
+  health gate on the *reported* version, rollback, the protected list — and an
+  engine supplies only the four things that differ. The Fly engine drives the
+  Machines API. **The middleware needed no changes** beyond passing two new
+  status fields through, which is the seam working as intended.
+- **Deployed as its own tiny app**, opt-in via `OMADIA_WITH_UPDATER=1
+  ./fly/deploy.sh`. It has no public address (6PN only), and holds one
+  **app-scoped** deploy token per managed app — a narrower capability than the
+  compose design, where a mounted Docker socket is host-root-equivalent and
+  all-or-nothing. It also has to be a separate app: `/data` is a Fly volume and
+  a volume attaches to exactly one machine, so the middleware is structurally
+  single-machine there and cannot health-gate its own replacement.
+- **The "pull before you stop anything" property is preserved** without a pull
+  step: Fly fetches the image itself, so the engine checks the registry
+  manifest up front. A missing tag now aborts before any machine is told to
+  move, and an unreachable registry is reported as such rather than as a
+  missing tag.
+- **Named the limit instead of hiding it:** the Fly engine reports
+  `pinPersisted: false`, and Admin → Update says so next to the button. On
+  compose the updater writes `OMADIA_VERSION` into the project `.env`; on Fly
+  nothing can, because `fly deploy` reads the operator's local `fly.toml`.
+### Changed — Admin → Update names the operator's actual Fly apps (#432)
+
+- **The manual update command is no longer a template.** On Fly the middleware
+  reads `FLY_APP_NAME` / `FLY_MACHINE_ID` (set inside every Machine) and reports
+  them through `GET /api/v1/admin/update/status`; the admin page's server shell
+  contributes the web-ui app's own name. The notify-only box therefore prints
+  `fly deploy --app omadia-middleware-<yours> …` instead of
+  `--app <middleware-app>`, for both apps, middleware first.
+- Detection is **positive-only**: anything not demonstrably Fly reports
+  `unknown` and keeps the generic placeholders. A wrong app name in a
+  copy-pasteable command is worse than an obviously incomplete one.
+- **Named the `--image` pin caveat**, in the UI and in `docs/upgrading.md`:
+  `--image` applies to one deploy, so a later plain `fly deploy` silently puts
+  the app back on the tag in `fly.toml`. This is the Fly counterpart to the
+  compose `.env` pin — except nothing server-side can write it, so the operator
+  has to. Also corrected the docs' implication that Fly rolls back on its own;
+  neither `fly deploy` nor the Machines API does.
+### Added — MRTR reads the declared 2026-07-28 contract, not an SDK internal (#562, phase 3)
+
+- **`callTool` now passes `allowInputRequired: true`.** On a modern-era
+  connection that is what makes the SDK hand an `input_required` result back
+  with `resultType`, `inputRequests` and `requestState` present verbatim,
+  instead of fulfilling it in-process or raising a typed error. Until now MRTR
+  read those fields only because SDK 1.30's `ResultSchema` happens to be a
+  `.passthrough()` — a dependency `mcpClient.ts` already documented as one it
+  did not want.
+- **The elicitation capability is declared** — measured prerequisite, not
+  boilerplate: without it the SDK refuses an embedded `elicitation/create`
+  request with `MissingRequiredClientCapabilityError` *before* the result
+  reaches omadia, so every modern-era MRTR call would fail instead of parking.
+  A decline handler backs the declaration, because omadia genuinely does not
+  answer elicitation in-process — it asks a human over a channel.
+- **The parser learned the spec's dialect.** A 2026-07-28 peer sends
+  `inputRequests` as a MAP of whole elicitation requests, not omadia's flat
+  array; each request's `requestedSchema` properties become card fields, with
+  `required` honoured literally and `format: 'password'` / `writeOnly` marking a
+  field masked. The array dialect is untouched — the *shape* decides, so both
+  eras work on the same code path. `sampling/createMessage` and `roots/list`
+  are reported as `unsupported_request_method` rather than silently dropped: a
+  card missing one of several embedded requests could never satisfy the retry.
+- **`requestState` is adopted instead of running a second park handle.** The
+  server's opaque state rides the parked record and is echoed back byte-exact on
+  the retry, alongside spec-shaped `inputResponses` keyed by the server's own
+  request ids. The tool's `arguments` stay unchanged across the park — on the
+  modern dialect the answers ride the params, not the arguments.
+- **The park-and-ask form survives, which was the explicit risk.** Auto-fulfil
+  stays off, and the bounce cap now reads an explicit replay marker: on the spec
+  dialect there is nothing left in `arguments` for it to recognise, so without
+  that a server asking forever would bounce forever.
+- Coverage is **per era, and each file pins its own era** so neither can quietly
+  stop being exercised: `mcpPendingInput.test.ts` (2025) and the new
+  `mcpModernMrtr.test.ts` (2026-07-28, against a real v2 server, asserting on
+  the wire bodies because v2's server decode consumes the retry params before a
+  raw handler sees them).
+
+### Changed — the MCP **client** speaks `@modelcontextprotocol/client@2` over `http` (#562, phase 2)
+
+- **Only `http` moved.** `McpManager` now connects streamable-HTTP servers with
+  the v2 `Client` + `StreamableHTTPClientTransport` and
+  `versionNegotiation: { mode: 'auto' }`, so a 2026-07-28 peer is negotiated as
+  such and a 2025-era peer still falls back to the plain `initialize` handshake.
+  Deliberately **not** a pin: a pin has no fallback and most third-party servers
+  are 2025-era, so pinning would break exactly the peers that work today.
+- **`stdio` and `sse` stay on v1**, from measurement rather than convenience:
+  `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+  probe there can only fall back and a pin fails with `ERA_NEGOTIATION_FAILED`.
+  Porting them would swap the API and buy no protocol capability.
+- **MRTR on 2025-era peers keeps working — this is the part the port could have
+  broken in silence.** v2 treats `resultType` as a wire-only discriminator and
+  strips it when it decodes a legacy `tools/call` reply as a complete result,
+  while leaving `inputRequests` in place. Unrepaired, `isInputRequiredResult`
+  goes false, the call is never parked, the human is never asked, and the model
+  is handed the server's holding text as if it were the answer — with nothing
+  red anywhere. `restoreLegacyInputRequired` puts the discriminator back on
+  legacy-era connections only (on a modern one `resultType` arrives verbatim and
+  inventing one would mask a real divergence). Removing it turns eleven tests in
+  `mcpPendingInput.test.ts` red.
+- **Two v2 behaviours are switched off on purpose.** Auto-fulfilment of
+  `input_required` (`inputRequired: { autoFulfill: false }`) — omadia parks the
+  call and asks a *human* over a channel, possibly hours later, and letting the
+  driver answer in-process would mean the human silently stops being asked. And
+  client-side output-schema validation, by fetching `tools/list` with
+  `cacheMode: 'bypass'` — it would turn a server whose `structuredContent` does
+  not match its declared `outputSchema` into a hard call failure on `http` only,
+  and its validator is reachable only through an `ajv` that neither
+  `@modelcontextprotocol/client` nor `/core` declares as a dependency.
+- Coverage runs on **both eras**: the existing live round-trip suite plus a new
+  modern-era assertion against the phase-1 loopback server, and a hand-rolled
+  2025-era peer that refuses `server/discover`.
+
+### Changed — the loopback MCP server runs on the `@modelcontextprotocol/*@2` family (#562, phase 1)
+
+- **`createMcpHandler` replaces a hand-rolled per-request dance.** The loopback
+  server built a fresh `Server` + stateless `StreamableHTTPServerTransport` for
+  every request and tore both down in a `finally`, purely because v1 throws
+  `'Stateless transport cannot be reused across requests'` on a transport's
+  second use. v2 offers that per-request-instance model as the serving entry
+  itself, so the workaround and its teardown block are deleted rather than
+  ported. `toNodeHandler` bridges the handler's web-standard `fetch` to the
+  Node `(req, res)` this server speaks.
+- **No wire change.** Statelessness, the POST-only `405` on the standalone SSE
+  stream, the `413` body cap, bearer auth, and name-sorted `tools/list` all
+  behave exactly as before — the existing suite passes unmodified, and the
+  omadia MCP *client* (still on v1) talks to the ported server unchanged, which
+  is the cross-era interop check.
+- **Scope is deliberately one surface.** The public MCP endpoint is NOT ported
+  in this phase: it serves MRTR (`resultType: "input_required"`, #544/#570), and
+  v2 offers no mode that reproduces that wire shape on a 2025-era connection —
+  its legacy shim converts the return into server→client `elicitation/create`
+  requests, and disabling the shim makes the same return fail loudly. Tracked on
+  #562.
+
+### Fixed — skill import no longer drops frontmatter silently
+
+- **`parseSkillMarkdown` reports what it cannot read.** omadia's SKILL.md
+  frontmatter is a flat one-line `key: scalar` format. Lines carrying lists or
+  nested mappings — routine in skills authored for other ecosystems — were
+  skipped with a bare `continue`, so an import reported success while the skill
+  landed with data missing. The parser now returns those lines, and the import
+  preview shows them as a warning before the user confirms.
+- **A key whose block could not be parsed is no longer stored as an empty
+  string.** `allowed-tools:` followed by list entries used to persist
+  `allowed-tools: ""` — a value the source file never contained, which then
+  travelled into the skill content hash and the risk scan. Such a key is now
+  reported together with its block instead of being invented, which also keeps
+  two identical dropped entries distinguishable by their owning key.
+- No YAML support was added; the parser stays deliberately flat. The response of
+  `POST /v1/operator/skills/import` gains an `unparsedFrontmatter: string[]`
+  field (additive; the web-ui treats it as optional so an older middleware still
+  type-checks). `loadSkill()` for plugin-borne on-disk skills is unchanged.
+
+### Added — the updater sidecar is published, and the manual path is per-platform (#432)
+
+- **`ghcr.io/byte5ai/omadia-updater`** is now built and pushed by
+  `publish-images.yml` on the same tags as the middleware it updates, so
+  `docker-compose.update.yaml` pulls it with the same `${OMADIA_VERSION}` as
+  everything else instead of requiring a source build. Deliberately not added to
+  `docker-compose.build.yaml`: a service defined there would start an updater on
+  stacks that never opted into one.
+- **Admin → Update labels its manual commands per platform.** The executor is
+  compose-only, so Fly.io and Kubernetes deployments land in notify-only mode —
+  where an unlabelled `docker compose up -d` line was actively misleading. The
+  page now shows the compose *and* the `fly deploy --image` form, and points at
+  `docs/upgrading.md` for anything else.
+- **`docs/upgrading.md` gained a Fly.io section**: what Admin → Update can and
+  cannot do there, the middleware-before-web-ui redeploy order, the `/health`
+  version check between the two, rollback via `fly releases`, and the reminder
+  not to redeploy the Postgres app during a version bump.
+
+### Added — product documentation for the AI marking (#649, epic #642)
+
+- **New `docs/ai-act-transparency.md`** — what omadia actually marks and, just as
+  explicitly, what it does not. Every statement carries the code site it comes
+  from; the binding rule for the document is that a claim without one does not
+  go in. A promise phrased too widely on a public page is worse than a named gap.
+- **DE and EN copy blocks** for the product section of `omadia.ai/ai-transparency`,
+  written along what the code actually does. Finished here, **not live**: the
+  section goes through internal approval before publication.
+- **Corrected `docs/architecture.md`**, which claimed the full trace "is stored as
+  the run's audit receipt". That collides with the #684 decision, so it now states
+  best-effort telemetry and names the three ways a turn can leave no trace.
+- **`docs/middleware-agent-handoff.md`**: the outgoing-contract extension in §11
+  (stream protocol), the five `ai_disclosure_*` setup fields in §10, and the open
+  provenance items in §13. The issue pointed at §3/§8 for the contract half; §8 is
+  "Skills" on current main, and the contract actually belongs next to the stream
+  protocol, so it went there.
+- **Limits named rather than omitted**: the coarser `.xlsx` coverage, connectors
+  being plugins whose rendering the core cannot force, two provenance vocabularies
+  in one epic, per-channel overrides that only fire on teams/slack/telegram, and
+  C2PA — which appears nowhere in the tree and is therefore an open point, not a
+  capability.
+### Fixed — the structural i18n categories left by #601 (#679)
+
+- **I4 — page titles now follow the active locale.** All **10** remaining
+  `export const metadata` exports became `generateMetadata`, so the window /
+  tab title is German for a German operator instead of always English. A static
+  `metadata` object is evaluated once at build time, where no request and
+  therefore no locale exists. The category is now at **zero** and pinned
+  repo-wide by a test.
+- **I5 — the boot-seeded agent description.** Decided rather than translated:
+  the sentence is written by the server into the database at first boot, before
+  any locale exists to write it in, so it is a record of why the row exists,
+  not UI copy. Localising it at write time would freeze whichever locale the
+  boot happened to pick into persisted data; dropping it would leave consumers
+  without a catalogue (API, exports, CLI) saying nothing at all. The UI now
+  renders its own catalogued sentence, recognising the untouched seed by exact
+  match — the moment an operator edits it, their words are shown verbatim.
+- **I6 — currency and number formatting.** `admin/usage` rendered cost with a
+  hardcoded `$` and `toFixed`, and — not mentioned in the issue — pinned
+  `de-DE` for compact counts and timestamps, so an *English* operator read
+  German grouping. All now go through next-intl's `useFormatter()`. The
+  currency stays USD deliberately: the ledger records USD, and converting
+  without an exchange rate would present a fabricated number as a ledger
+  figure. What is localised is the presentation.
+- **I3 — hardcoded literals**, scoped and measured. `app/graph/ListView.tsx`
+  held three GERMAN sentences (the rule broken twice over — hardcoded, and in
+  the language that belongs only in `de.json`); `admin/kg-lifecycle`, the
+  issue's named worst offender, is fully swept. API enum values (`HOT`/`WARM`/
+  `COLD`, `memory`/`process`/`task`) stay untranslated on purpose so the screen
+  still matches logs and SQL.
+- **The issue's I3 count did not survive measurement**: it claims 25 literals
+  across 11 files with 11 in `kg-lifecycle`; that file alone holds **22**, and
+  the scan under-counts multi-line JSX text on top. The remaining tail
+  (~217 candidates / 63 files, plus 18 files still calling `toLocaleString`) is
+  filed as its own issue rather than silently declared done.
+### Added — the AI-marking posture is readable per channel (#648, epic #642)
+
+- **`GET /health` gains a `disclosure` block**: the resolved AI-Act Art. 50
+  marking level per channel, whether it came from the shipping default or the
+  operator, and whether it deviates from the delivered state. Builds on the
+  post-#665 shape (`{ status, kg }` → `{ status, kg, disclosure }`) rather than
+  the older registry-projector form.
+- **Boot warning on deviation only.** A delivered-state instance logs nothing —
+  a line that fires on every default install is one nobody reads.
+- **Operator channels dashboard** shows an informing hint when the instance
+  deviates, DE/EN through the message catalogue. In the delivered state the
+  surface is unchanged and completely quiet.
+- **Why**: the operator may grade the marking down per channel or switch it off
+  — omadia is self-hosted, that is their decision. The problem was that the
+  decision was visible nowhere, so a copied config or a leftover from a test
+  setup was never noticed. The hint describes the state and blocks nothing.
+- **One derivation, not two.** `resolveDisclosureLevelForChannel` is now the
+  single place the override → global → shipped precedence lives;
+  `Orchestrator.resolveTurnDisclosure` calls it per turn and the posture view
+  calls it per channel. A second copy of those rules would let the reported
+  posture disagree with what turns actually do, silently — the exact failure
+  this feature exists to prevent.
+- **An override that cannot fire says so.** Only `teams` / `slack` / `telegram`
+  currently carry a `channelKind` into a turn, so a configured `web=off` never
+  takes effect. Both `/health` and the dashboard report that instead of letting
+  the operator conclude their override is in force.
+- **Nothing that permits conclusions about content or users leaves the process**:
+  levels, sources and booleans only. The assistant name and the free-form
+  operator note are reported as *configured* / *not configured*, never by value
+  — asserted against the serialised payload, not left to review.
+### Changed — the run trace is best-effort telemetry, and its gaps are now countable (#684, epic #642)
+
+- **Decision recorded, not behaviour changed.** #650 added `model` / `provider`
+  to the persisted trace and deliberately left the harder question open: is the
+  record guaranteed? It is not, and #684 settled that it should not be promised
+  to be. A missing trace now means "not recorded" — never "no such turn".
+- **Why telemetry and not a provenance record.** The graph sink is optional by
+  construction (`SessionLogger` guards every ingest behind `if (this.graph)`);
+  the Markdown transcript is the surface that is actually guaranteed, and the
+  logger already refuses graph ingest when the transcript write fails so the two
+  can never disagree. Promoting the trace to a record would require
+  auto-creating User-Cluster nodes — which both backends refuse on purpose,
+  because orphan clusters with no `IS_IDENTITY_OF` edges would hide exactly the
+  channel-resolution bugs the refusal exists to surface. That trades a visible
+  gap for an invisible data-integrity defect.
+- **Named where a reader looks**: `RunTrace` and `KnowledgeGraph.ingestRun` now
+  state the contract in their own doc comments, so nobody builds a compliance
+  answer on a best-effort store by inference.
+- **Every drop is now observable** (`runTraceObservability.ts`): one greppable
+  `console.warn` naming the reason, plus per-outcome tallies on
+  `SessionLogger.runTraceStats`. The issue described the drops as silent; three
+  of the four paths already logged. The genuinely invisible one was **no graph
+  sink configured**, which returned with no signal at all — a deployment that
+  had never recorded a single trace looked identical to a healthy one.
+- **`warn`, not `error`**: the turn succeeded. Logging at error level would flag
+  every single turn in a deployment that simply runs without a knowledge graph.
+- A turn that carried no trace is not counted as a drop — counting it would make
+  the drop total meaningless.
+
+### Added — the persisted run trace records which model answered (#650, epic #642)
+
+- **`RunTrace` / `RunTracePayload`** gain optional `model` and `provider`. The
+  trace recorded how long a turn ran, which sub-agents ran and which tools were
+  called, but not the one fact a provenance question about a past turn starts
+  from. The model id already existed on the `done` event and in the cost
+  telemetry; it just never reached the persisted record.
+- **Stamped once per turn**, right after model routing resolves
+  (`RunTraceCollector.recordModel`), on both the buffered and streaming paths —
+  not threaded through `finish()`'s five call sites, where missing one would
+  leave the field absent on a single exit path and looking recorded elsewhere.
+- **Both knowledge-graph backends** write it, so the answer to "which model
+  wrote this?" does not depend on which store a deployment runs.
+- **No schema migration, and none was needed.** The issue's acceptance criteria
+  asked for one; that premise does not hold for this table.
+  `graph_nodes.properties` is a generic `JSONB` column (`0001_graph_init.sql`)
+  and `RunPropsSchema` is `.passthrough()`, so adding a property is a
+  schema-level change only. The fields are declared optional in the Zod schema
+  anyway — passthrough means "tolerated", and a provenance field that is merely
+  tolerated is one nothing validates and nothing documents. Run nodes written
+  before this change stay valid and readable, which is what a migration would
+  have existed to guarantee.
+- Absent rather than empty when unknown: a trace carrying `model: ''` claims to
+  know and does not.
+
+### Added — admin UI for the public API keys (#567)
+
+- **Admin UI** (`web-ui/app/admin/api-keys/`): create/list/revoke against
+  `/api/public/v1/admin/keys`, which shipped in #438/#439 with no page at all —
+  keys could only be minted with `curl`. Each row shows the key's
+  `ApiKeyRecord.id` verbatim with a one-click copy, which is the point of the
+  issue: a public MCP key-binding (#550) is keyed on that id, so an operator
+  previously had to read it out of the API by hand.
+- A created key's plaintext token is shown exactly once, right after creation,
+  and creation is blocked while that one-time reveal is still on screen — the
+  create button and every form field stay disabled until the operator
+  explicitly dismisses it, so a second key can never silently overwrite the
+  first one's only-ever-shown token before it is copied. Revoking is a
+  two-step confirm-then-revoke per row with independent busy/confirm state per
+  key, and the list reload is guarded against out-of-order responses so a
+  slower in-flight fetch cannot stomp a newer one's result. Known backend
+  codes (`not_found`, `operator_auth.unavailable`,
+  `auth.missing`/`auth.invalid`, `invalid_request`) map to translated messages
+  rather than surfacing the raw response body.
+
+### Added — errors on the LLM-access and credential screens now explain themselves (#604)
+
+- The providers panel used to render the middleware's English rejection
+  sentence verbatim in every locale, and the plugin credential editor rendered
+  `runtime.vault_unavailable: vault not wired into runtime route` — an internal
+  identifier next to an English sentence. Neither told the operator what to do
+  next, which is what the customer report was about.
+- `ApiError` now parses the machine code out of the JSON error body once
+  (`ApiError.code`), and a localized catalogue (`errorHelp.<code>.{what,next}`
+  in `messages/en.json` + `de.json`) turns it into two sentences: what
+  happened, and the one action that fixes it. The server's own text survives
+  only inside a collapsed "details for support" disclosure, redacted through
+  `supportDetail()`.
+- A rejected provider key now carries a machine-readable code end to end:
+  `ProviderVerification.code` and a new optional `verifyErrorCode` on the
+  admin-providers DTO. Both are additive — `verifyError` keeps its value and
+  meaning, so an older web-ui against a new middleware, and a new web-ui
+  against an older middleware, both keep working.
+- Scope is bounded and guarded. The catalogue covers the 56 codes emitted by
+  `middleware/src/routes/{install,runtime,adminProviders,store,adminSettings}.ts`
+  plus `providers.key_rejected`. That count includes the ten `install.*` codes
+  that never appear as a literal in a route file at all: `install.ts`'s
+  `handleError` re-emits them from an `InstallError` thrown in
+  `plugins/installService.ts`, and `errorHelpCoverage.test.ts` follows that
+  forwarder rather than assume the file only writes literals. The guard fails
+  when a covered file emits a code with no copy in any locale, when copy exists
+  with no emitter, and when a covered file writes a `code:` the extractor
+  cannot read — an unregistered forwarding shape is a failure, not a silent
+  gap. NOT covered: the other middleware route families, shipped
+  troubleshooting pages, and any LLM-backed help assistant — the issue's own
+  corrected scope rules the last one out.
+- `web-ui/messages/README.md` documents the `errorHelp.<code>.{what,next}` key
+  convention, the optional `action` label, how to add a code, and why adding a
+  `code:` literal to one of the five covered route files turns the web-ui suite
+  red until the copy exists in both locales.
+- The providers panel's very first request is on that path too. A failed
+  `GET /v1/admin/providers` used to render the client-assembled
+  `GET /v1/admin/providers failed: 500` as the entire message, in every locale;
+  it now resolves `providers.read_failed` through the catalogue, keeps the
+  request line for the support disclosure, and falls back to a localized "the
+  provider list could not be loaded" when the server sends no code.
+- `PATCH /v1/admin/settings` now answers a fully-rejected batch with two codes
+  instead of one, because the operator's next step differs:
+  `settings.invalid_values` when the server refused the values (correct the
+  value the details flag) and `settings.no_valid_changes` when no submitted key
+  is a setting it currently offers (reload — the page's field list is stale).
+  With one code, saving a malformed `ANTHROPIC_API_KEY` was reported as an
+  unknown setting and the operator was told to reload, which cannot fix it.
+
+### Added — AI-assistant install path via a public skill file (#338)
+
+- New `docs/onboarding/SKILL.md`: a public, copy-paste onboarding path for
+  non-technical evaluators. Pasting a short prompt into the Claude or Codex
+  desktop app points the assistant at the skill file, which installs the native
+  omadia desktop app and opens the onboarding wizard — no Docker, no build tools.
+  The skill is idempotent (re-running only relaunches an existing install) and
+  resolves each release asset by its API `browser_download_url`, so it survives
+  the independently-pinned desktop version. It scans recent releases for the
+  newest one that actually carries a build for the user's OS, rather than assuming
+  `releases/latest` is complete — a release whose macOS/Windows build failed can
+  ship Linux-only.
+- `README.md` gains a copy-paste setup prompt next to the Quickstart, including
+  the key-free note for Claude Pro/Max subscriptions (#309).
+
+### Changed — MCP connection lifetime is now explicit (#563)
+
+- The MCP pool kept its state in two parallel maps keyed by server id **plus** a
+  hash of the caller's bearer token. Since a stdio child process never sees that
+  token, N callers with N tokens spawned N identical child processes for the
+  same server. Pool keys now carry exactly what the transport consumes: stdio is
+  keyed by server id alone, http/sse by server id + token.
+- Pooled connections are dropped when a server is deleted
+  (`DELETE /mcp-servers/:id`), when its config is saved
+  (`PUT /mcp-servers/:id/config`) and when its token is revoked
+  (`DELETE /mcp-servers/:id/token`) — previously the live connection kept
+  running with the old command, env, headers and token — and on SIGTERM/SIGINT,
+  which no longer leaves MCP stdio children behind.
+- Connections idle longer than `McpManagerOptions.idleTtlMs` (default 5 minutes)
+  are evicted on the next connect attempt, which bounds a pool that previously
+  grew by one entry — and, for stdio, one process — per OAuth token rotation.
+- **Behaviour change for out-of-repo callers:** `McpManager.close(serverId)` now
+  closes every token-scoped connection of that server instead of a single exact
+  pool key. Passing a full pool key still matches only itself, and a server id
+  never matches a different server whose id shares its prefix.
+- Rationale and rejected alternatives: `docs/adr/0008-mcp-connection-lifetime.md`.
+### Added — MCP structured output is accounted in the privacy receipt (#547 / #569)
+
+- External MCP tools that return `structuredContent` now surface in the turn's
+  Privacy Shield receipt, as a neutral "structured output received" section
+  (tool name, server name, byte count, and whether the tool declared an
+  `outputSchema`). This closes the #569 gap: the structured-content sidecar
+  fires inside `McpManager.callTool`, beneath every dispatcher, so structured
+  content previously appeared in **no** receipt or dataset accounting at all —
+  an operator auditing what a turn touched could not see it. Scope note: like
+  every receipt line, this appears only when a `privacy.redact@1` provider is
+  active; with no Privacy Shield installed there is no receipt and the sink
+  no-ops (it produces no receipt entry and nothing observable — the one change
+  in that case is that the previously-inert structured sidecar now has a wired
+  consumer at all).
+- **Accounting, not masking.** Privacy Shield's data-plane boundary is server ↔
+  LLM provider, not server ↔ browser. The structured payload is emitted
+  out-of-band and never crosses the model wire (the model still sees only the
+  interned digest of the tool's text result), so nothing is masked — the browser
+  is the trusted side. The receipt entry is PII-free by construction: counts and
+  names only, never the structured value. A regression test pins that the
+  accounting metadata carries none of the raw values the sidecar legitimately
+  still holds, over a real MCP socket.
+- New optional `PrivacyGuardService.recordStructuredPayload` on the published
+  `@omadia/plugin-api` surface, mirroring `recordBypassedTool`; the boot-wired
+  `McpManager.structuredSink` is its first consumer. Fail-closed: an accounting
+  failure never breaks a tool call, and a payload with no turn identity is
+  skipped rather than mis-filed.
+- Deliberately **not** included: a renderer that draws a canvas card from the
+  structured payload. That is #547's remaining half, unblocked by this
+  accounting decision — the decision #569 asked for *before* anything renders
+  from the sidecar.
+
+### Fixed — a mistyped id no longer produces a dead-but-configured-looking public MCP binding
+
+- `public_mcp_key_bindings.key_id` and `agent_id` are not foreign keys — the key
+  records live in the secret vault and the agents in the in-process registry, not
+  in Postgres (`migrations/0033`) — and nothing in the application layer compensated.
+  A one-character typo in either id got `201 Created`, a row in the list, and a
+  fully-configured-**looking** binding that reached zero tools forever, visually
+  indistinguishable from a working one.
+- The operator write path now resolves both ids against the same sources a real
+  request does. A `agent_id` the registry does not know is a **hard `400`
+  (`agent_not_found`)** with no row written — the registry is cheap and
+  authoritative in-process. A `key_id` that matches no vault record is a
+  **warning, not a rejection** (the honest interim until the key-lister UI from
+  #438/#439 ships): the row still saves, but the write response and every list
+  row carry a `key_id_unknown` warning so the operator sees it reaches nothing.
+- The list endpoint annotates **pre-existing** rows too, so a binding that was
+  already dead — created before this shipped, or bound to an agent later deleted —
+  is flagged the next time the pane is opened, not only on save. The MCP Control
+  Center's Public API keys tab renders these warnings inline.
+- Fail-honest, never fail-red: when a source cannot be read (no registry wired, a
+  vault that failed to load) the check returns "cannot tell" and neither rejects
+  the agent nor invents a warning, so a transient read failure never paints a
+  working install as broken.
+
+### Fixed — `per_user` MCP delegation was unreachable from chat
+
+- Migration `0031` made delegation explicit per MCP server and gave new servers a
+  fail-closed `per_user` default. `resolveMcpUserKey` reads
+  `turnContext.current()?.mcpUserKey` — but **the only thing that ever set it was
+  the operator discover route.** `routes/chat.ts` did not so much as import
+  `turnContext`. Every newly created `per_user` server was therefore dead from
+  chat out of the box: no token sent, the audit row recording the literal
+  `unresolved`, and the turn failing closed. Existing installs were masked only
+  because `0031` backfills token-holding servers to `service`.
+- Both HTTP chat entries now open a turn scope carrying `mcpUserKey`. The
+  streaming entry uses `turnContext.runGenerator`, not `enter`: `enterWith` binds
+  to the async resource executing at that instant, and an async generator resumes
+  in the caller's context, so the identity would be gone by the orchestrator's
+  first yield — before any tool, and therefore before any MCP call, runs.
+- The value is `sessionIdentity(req)` (`session.sub || session.email`), extracted
+  from `routes/agentBuilder.ts` into `src/auth/sessionIdentity.ts`. Deliberately
+  **not** `resolveUserId(req)`, which falls through to the client-sent
+  `x-user-id` header — keying MCP tokens on a client-controlled header would let
+  any caller act as any user. When nothing resolves, `mcpUserKey` stays unset and
+  a `per_user` server fails closed exactly as intended; there is no fallback.
+- Channel turns set `mcpUserKey` inside the orchestrator from the already-resolved
+  `resolvedOmadiaUserId`, gated on `channelIdentity` — which only the dispatcher
+  mints, from the adapter's authenticated `userRef`, so it is server-attested end
+  to end. ⚠️ **Known limit:** channel turns key on the canonical omadia uuid while
+  `/authorize` stores tokens under the session-shaped key, so an affected user
+  still fails closed rather than reaching their server. Closing that needs a new
+  method on the `KnowledgeGraph` contract. Narrower than it sounds: a `per_user`
+  token can only exist for someone who completed `/authorize`, which requires a
+  session, so a channel-only user has no token and failing closed is correct.
+
+### Fixed — migration `0031` built neither of its guards reliably
+
+- The CHECK guard looked up `pg_constraint` by `conname` alone. `conname` is
+  unique per `(connamespace, conrelid)`, not cluster-wide, so a same-named
+  constraint in **any** other schema made the guard true and the `ALTER TABLE` was
+  silently skipped — the migration did not build the constraint it claims to. Now
+  anchored on `conrelid = 'mcp_servers'::regclass`.
+- The backfill guard hardcoded `to_regclass('public.mcp_oauth_tokens')` in a file
+  that is otherwise entirely unqualified, so wherever the domain is applied outside
+  `public` it answered about a table the statement never touches. Demonstrated on a
+  database with an empty `public`: the old guard left an operator-token server on
+  `per_user`, losing its grandfathering and breaking it fail-closed.
+- The backfill test previously **rewrote** the migration to make it apply; it now
+  applies verbatim, with a guard that fails if a schema-qualified reference is ever
+  reintroduced, plus the assertion the suite had dropped as a known flake.
+
+### Fixed — the middleware suite had no per-test timeout
+
+- `--test-timeout=120000`. Previously unset, so Node's default of `Infinity`
+  applied and a hung test burned the CI job's 15-minute wall with no attribution.
+  Note the ceiling is **per file**, not per leaf — a file whose total exceeds it is
+  killed as a unit — so the value is sized on the slowest file (18.4 s), not the
+  slowest test (7.8 s). `web-ui` needs no change; vitest already bounds at 5 s.
+
+### Added — operator surface for public MCP key bindings
+
+- The public MCP endpoint's authorization is driven entirely by rows in
+  `public_mcp_key_bindings`, and there was **no way to create one** except
+  hand-written SQL — the endpoint was inert as shipped. A Public API keys tab in
+  the MCP Control Center now lists, creates and revokes bindings.
+- The public endpoint's dependency bag is unchanged and still receives the
+  read-only store: it gains no write path to its own authorization table. The
+  admin path validates through the same `normalizeBindingRow` the enforcement path
+  uses, so the two cannot drift. Revoke parks the row rather than deleting it.
+- **Revoke is sticky.** A cross-vendor review found that saving a binding
+  re-enabled it: an omitted `enabled` was defaulted to `true` and written over the
+  stored value, so any later save — a stale browser tab, a second operator, a
+  config replay, or this pane's own form, which does not round-trip the field —
+  silently handed a revoked key its whole allowlist back. An absent `enabled` now
+  preserves the stored flag (a genuinely new row still starts enabled), and
+  un-parking is an explicit act: `POST /:keyId/restore`, or an explicit
+  `enabled: true` on the upsert. The pane grew a confirmed **Restore access**
+  button so the stricter server does not strand an operator in psql.
+- `POST /` answers **200** for a row it replaced and keeps 201 for one it created
+  — "Created" is the operator's only per-request signal that they landed on a
+  binding somebody else had already configured, or parked.
+- `writeRateLimitPerMinute` and `enabled` are type-checked rather than coerced. A
+  JSON `null` reached `Number(null)` → `0`, a valid write budget, so a client
+  sending `null` to mean "use the default" got an integration that authenticates,
+  resolves its binding, and is throttled to nothing on every write while the UI
+  showed write tools listed. `[]`, `false` and `""` coerced identically; `true`
+  became 1. Bad values are now a 400.
+- 500 bodies no longer carry `String(err)`. pg errors name tables, columns and
+  constraints and sometimes the connection host, and those bodies land in browser
+  devtools and UI logs; the detail is logged server-side instead.
+
+### Fixed — raw NUL bytes made ripgrep silently truncate eight source files
+
+- Fifteen literal `0x00` bytes, used as composite map-key separators, are now
+  written as `\0`. Provably a no-op — none is followed by an ASCII digit, the only
+  case where the escape would change meaning. Behaviour is bit-identical; what
+  changes is that `rg` no longer classifies these files as binary and stops
+  searching partway through, silently truncating every audit that crosses them.
+
+### Fixed — the MCP input-replay path put raw tool output on the LLM wire
+
+- Privacy Shield v4's boundary is **server ↔ LLM provider**, not server ↔ browser:
+  `internToolResultV4` returns an identity-free digest for the `tool_result` block
+  while the real rows stay server-side behind a `datasetId`, and the browser
+  legitimately receives real values (`PrivacyRenderedAnswer.text`, highlighted via
+  `maskedValues` so the user can see what the server resolved).
+- The replay that runs after a user answers an MCP input card called
+  `mcpManager.callTool` **directly** rather than going through `dispatchTool`, so
+  the result was never interned — and was then interpolated verbatim into the note
+  folded into the turn's ingested text. A replayed HR or accounting tool returning a
+  personnel row sent that row to the model in cleartext, where the identical tool on
+  an ordinary turn would have yielded only a digest.
+- The comment above the interpolation shows this was a near-miss rather than a
+  decision: it reasons explicitly about the LLM wire, but only about the user's
+  typed values, and overlooks the tool result two lines below. Found by
+  cross-vendor review, live in any deployment with a graph pool.
+
+### Known limitation — #547 structured content still has no renderer
+
+- `emitStructured` fires inside `McpManager.callTool`, beneath every dispatcher, so
+  the sidecar is not interned. `middleware/test/mcpStructuredOutputPrivacy.test.ts`
+  pins that mechanism over a real MCP socket, and confirms `outputSchema` and
+  `turnId` already reach the sidecar.
+- **This is not a leak to the browser** — an earlier reading of it as one was
+  corrected by cross-vendor review; the browser is the trusted side. The renderer is
+  deferred for two ordinary reasons instead: it is a full-stack change across eight
+  web-ui files on an already-large PR, and the sidecar bypasses Privacy Shield's
+  receipt and dataset *accounting* even where masking is not owed, which wants a
+  decision before anything renders from it.
+
+### Added — public, stateless MCP endpoint (`POST /api/v1/mcp`)
+
+- omadia can now expose **its own tools** over a stateless Streamable-HTTP MCP
+  server so an external MCP client (Claude Desktop, an agent framework, your own
+  service) can call them with an API key instead of driving the operator UI.
+  External-consumer documentation: `middleware/src/mcp/README.md`.
+- **Stateless by construction.** `sessionIdGenerator: undefined`, no
+  `initialize` handshake required, no `Mcp-Session-Id` ever issued, and a fresh
+  `Server` + transport pair per request torn down in a `finally`. That is what
+  makes the endpoint horizontally scalable — any instance can answer any
+  request. `POST` only; a non-POST gets `405` (a per-request transport leaks on
+  `GET`, because an SSE stream never ends and the teardown never runs).
+- ⚠️ **DARK BY DEFAULT.** `PUBLIC_MCP_ENABLED=false` mounts **no router at
+  all**. This is the highest-blast-radius surface in the MCP cluster — an
+  internet-facing route that reaches the tool layer, including WRITE tools — so
+  not mounting is a stronger guarantee than mounting something that answers 403.
+
+#### Authorization — default-deny at four independent layers
+
+- New scopes on `@omadia/api-key-auth`: `mcp:list`, `mcp:invoke`, and per-tool
+  `mcp:write:<tool>`.
+- **`mcp:invoke` is not sufficient for a write**, and **`*` (`WILDCARD_SCOPE`)
+  does not grant any write.** The wildcard exclusion lives inside `hasScope`
+  itself, so no caller can reach a permissive matcher by accident. The bare
+  two-segment `mcp:write` is rejected at key creation: it would validate,
+  persist, and grant nothing — indistinguishable from a revoked key.
+- **Allowlist per KEY, not per server** (`public_mcp_key_bindings`, migration
+  `0033`). A key reaches exactly one **agent** and exactly the tool names listed
+  on it. A key with no binding authenticates and reaches **zero** tools, which
+  is how integration-backed and write-capable tools (Odoo, Microsoft 365,
+  Confluence) stay out of reach by default — nothing is included until an
+  operator names it.
+- `tools/list` is filtered per caller to exactly the set the key could
+  successfully **call**. A tool name the caller cannot invoke is itself a
+  disclosure, and a non-allowlisted tool is indistinguishable from a
+  nonexistent one.
+- **Write capability is the union** of the tool's own `writeCapabilities`
+  declaration (`isWriteCapableTool`) and the operator's `write_tools` list, so a
+  mistake in either direction fails toward "treat it as a write".
+
+#### Privacy — fails CLOSED for public callers
+
+- The shared dispatch path masks PII at chat-path **parity**, which includes two
+  behaviours that are wrong for an untrusted caller. This endpoint overrides
+  both, without changing the chat path:
+  - **Masking failure refuses the call** instead of returning the raw result.
+  - **An operator's per-plugin privacy bypass does not extend** to a public
+    caller.
+  - **Intern-exempt tools** (`memory`, `read_attachment`, …) — whose results the
+    Privacy Shield deliberately hands over in clear — are **never servable**
+    here, whatever an operator configures.
+- With **no privacy provider installed**, tool calls are refused and say why
+  (`tools/list` still works). `PUBLIC_MCP_ALLOW_WITHOUT_PRIVACY_MASKING=true` is
+  the documented escape hatch for an install whose allowlisted tools provably
+  carry no personal data.
+
+#### Limits, audit, and what idempotency does NOT promise
+
+- 8 MB request body, 30 s per-tool timeout, endpoint-wide concurrency ceiling,
+  and a **separate, tighter rate-limit budget for writes** — heavy reading
+  cannot fund a write burst.
+- One `mcp_call_log` row per call **including every refusal**, with
+  `caller_kind = 'api_key'` (new in migration `0033`) and the acting identity
+  `apikey:<id>`. The acting identity is now **visible in the admin MCP call-log
+  UI** for every row, not just for public calls — it had been recorded but never
+  surfaced.
+- `_meta.idempotencyKey` is honoured for write-capable tools but is
+  **advisory**: process-local, ~15 minute window, so two instances behind a load
+  balancer can both execute. It is retry safety, **not distributed
+  exactly-once** — see the README before relying on it.
+
+### Added — MCP Client ID Metadata Documents, as a third client-acquisition mode
+
+- omadia can now identify itself to an MCP authorization server by a **Client ID
+  Metadata Document** — an https `client_id` the server dereferences — served at
+  `GET /.well-known/omadia-mcp-client`. This removes the app-registration step at
+  MCP-native brokers that support it.
+- Client acquisition is now an explicit ordered chain:
+  `stored → cimd → dcr (deprecated, warns) → manual`. CIMD is attempted only when
+  the authorization server advertises `client_id_metadata_document_supported`
+  **and** the document is verifiably reachable.
+- **Nothing is deprecated on omadia's side.** Dynamic Client Registration keeps
+  working and merely logs a deprecation notice (the MCP spec's sunset is a
+  12-month clock). The manual OAuth client stays **permanently first-class**: it
+  is the protocol-correct path for Microsoft Entra ID and Okta, neither of which
+  supports CIMD.
+- ⚠️ **Deployment requirement — CIMD needs INBOUND HTTPS reachability.** The
+  identity provider must fetch the document from omadia, which is strictly
+  stronger than the outbound-redirect-only requirement every other mode has. Set
+  `FLOW_PUBLIC_BASE_URL` to an https origin reachable from the internet.
+  Deliberately *not* derived from `PUBLIC_BASE_URL`, whose `localhost` default is
+  exactly the shape that cannot work.
+- **A firewalled or air-gapped install degrades cleanly, it does not break.** The
+  metadata endpoint answers **501 with an actionable message** rather than 500,
+  the acquisition chain falls through to the manual client, and the MCP Control
+  Center explains which mode a server is on plus why CIMD is unavailable when it
+  is. A byte5-hosted metadata relay is **not** offered by default — it would make
+  every customer's `client_id` identify byte5 to that customer's IdP.
+- Migration `0032_mcp_oauth_cimd.sql` adds `'cimd'` to the
+  `mcp_oauth_clients.registered_via` CHECK set and a `client_metadata_url`
+  column. The CHECK is widened, not dropped — an unknown mode is still rejected.
+- Security: the metadata-URL probe reuses the existing `assertPublicHttpsUrl`
+  SSRF guard (no second validator), a CIMD client is public by construction so no
+  secret is stored, the document carries no secret, and the W0-1 RFC 9207 `iss`
+  validation plus flow-bound endpoint pinning are untouched. `mcp_oauth_flows`
+  TTL pruning was verified to actually exist in both places it is claimed.
+- Rationale, rejected options, and the full deployment note:
+  [ADR-0007](adr/0007-mcp-client-id-metadata-documents.md).
+- Note on issue #546: its premise that the registry "supports only static headers
+  with `secretRef`" was incorrect — the provider-agnostic OAuth 2.1 + PKCE stack
+  shipped in epic #459 W9. This release is a delta on that stack.
+### Added — MCP tools can ask the user for input mid-call (MRTR `input_required`, #544)
+
+- An MCP server that answers `tools/call` with
+  `resultType: "input_required"` plus `inputRequests` now gets a real input
+  form instead of a failed tool call. The turn ends, the channel renders the
+  fields, and the user's answer replays the parked call automatically.
+  `resultType` and `inputRequests` are read off the **shipped SDK 1.29.0** —
+  no version bump and no dependency on the `@modelcontextprotocol/*@2.0.0`
+  family (#540).
+- **Two turns, not a suspended one.** MRTR imagines the client retrying the
+  *original* request with the call still in flight. omadia has no per-turn
+  suspend/resume store — `turnContext` is an `AsyncLocalStorage` whose
+  lifetime is the turn — and parking a turn mid-tool-loop would hold the HTTP
+  or Teams connection open past every proxy idle timeout. So the feature rides
+  the existing `ask_user_choice` short-circuit: the turn ends, and the answer
+  arrives as a fresh turn that re-calls the tool with
+  `{...originalArgs, inputResponses}`.
+  **Accepted limitation:** the replay is a NEW `tools/call` in a LATER turn
+  against a possibly reconnected transport. For a stateless HTTP server that
+  is indistinguishable from the retry MRTR describes; for a **stdio server
+  holding process state tied to the original in-flight call** it is not — that
+  state may be gone and the server sees a fresh call rather than a
+  continuation. Servers needing true continuation semantics are out of scope
+  until omadia has a real turn suspend/resume store.
+- **The card always names the asking server.** An MCP server can now make
+  omadia display arbitrary prose and collect arbitrary free text
+  mid-conversation, so a card that hid the asker would let a hostile server
+  phish credentials behind omadia's own chrome. Every surface attributes the
+  request: the web-ui form, the plain-text fallback for channels without form
+  support, and the session-log line. Server-supplied prose is rendered quoted
+  and attributed, never as omadia's own copy, and `secret` fields say plainly
+  that the value still reaches the server as entered.
+- A parked record is bound to `{userId, sessionId, correlationId}` and is
+  replayable by that triple only. `sessionScope` alone is deliberately not a
+  key: `resolveScope` returns the literal `'http-default'` for unscoped HTTP
+  turns, which was the live cross-user hole in #445. Records are single-use,
+  TTL-bounded (15 min), and a second `input_required` raised *by* a replay is
+  capped rather than bouncing the user indefinitely.
+- The MCP call audit gains a three-valued `outcome`
+  (`ok` | `fail` | `input_required`). A parked call previously had nowhere
+  honest to go: `ok: false` would put a phantom failure in front of operators
+  debugging a healthy server, and a bare `ok: true` would claim a result that
+  was never delivered. `ok` keeps its narrower meaning ("did not fail") and
+  the finer truth gets its own field.
+- When both an `ask_user_choice` card and an MCP input request are pending in
+  the same tool batch, **the choice card wins** — deterministically, not by
+  dispatch order. A model that asked its own clarifying question has decided
+  it does not yet understand the request, so collecting server-specific field
+  values first would answer the wrong question. The MCP record is not
+  discarded; it stays replayable until its TTL.
+- Not included: omadia acting as an MCP *server* and signalling
+  `input_required` to its own clients. That needs a `ToolDispatchService`
+  result-type widening touching every plugin dispatch handler, and is a
+  separate issue.
+
+### Fixed — `turnContext` is empty inside tool handlers on the streaming path
+
+- Found while building #544. `Orchestrator.chatStream` establishes the turn
+  context with `turnContext.enter()` (`AsyncLocalStorage.enterWith`) inside an
+  async generator, which does **not** propagate into the generator's own
+  continuations — so `turnContext.current()` is `undefined` in every tool
+  handler on every streaming turn, including the web-ui path. Verified with a
+  probe against both entry points.
+- #544 does not depend on it (the parked-record owner is bound from the turn
+  input the orchestrator holds directly), and `userId` + `sessionScope` are now
+  populated on both entry points. The broader consequences for
+  `mcpCallerKind` / `mcpUserKey` audit attribution on streaming turns are
+  **not** addressed here and want their own issue.
+
+### Fixed — the CI schema job never applied `middleware/migrations`
+
+- `MIGRATION_DOMAINS` in `.github/workflows/ci.yml` listed five domains and
+  omitted `middleware/migrations` — the core runtime domain holding `0001`
+  through `0030`. Every migration there had therefore shipped without ever
+  being applied, or re-applied for the idempotency check, against a real
+  Postgres in CI: the whole MCP schema (`0003` agent-builder graph, `0008`
+  tool verdicts, `0009` call log, `0010`/`0013` registries, `0012`/`0014`
+  grants, `0015`/`0016` OAuth 2.1 + PKCE, `0017`–`0020`) and every
+  dev-platform migration (`0022`–`0030`). The gap was suspected during #330
+  and is now closed; the domain is applied first, ahead of the knowledge-graph
+  domain.
+- **No latent schema defect was exposed.** All 30 files apply and re-apply
+  cleanly against `pgvector/pgvector:pg16`, in both possible domain
+  orderings, and additionally with rows present. The domain is fully
+  self-contained: no cross-domain foreign keys, no shared object names with
+  the other five domains, and no extension dependency at all
+  (`gen_random_uuid()` is core since pg13). Verified locally with a
+  reproduction of the CI job before the workflow change was pushed.
+- The workflow comment now records the three domains that remain uncovered
+  (`middleware/src/conductor/migrations`,
+  `middleware/src/services/graph/migrations`,
+  `middleware/packages/harness-memory-postgres/src/migrations`), each of which
+  needs its own audit before being enabled.
+
+### Added — first pg coverage for the MCP schema
+
+- `middleware/test/mcpRegistrySchema.pg.test.ts` — no pg test touched MCP
+  before this (only `memoryStoreConformance`, `pluginVerdictStore` and
+  `skillLifecycleStore` existed). Asserts the registry seed and catalog-kind
+  backfill (`0010` + `0013`, including that `0013`'s `UPDATE` actually lifts
+  the official registry off the `generic` column default), the `kind` /
+  `auth_kind` / `source` / `registered_via` CHECK sets, marketplace
+  provenance defaults with `ON DELETE SET NULL` detaching an imported server
+  from a deleted catalog, the `0014` partial unique index on top-level MCP
+  grants (and that it leaves native grants alone), and the `0015`/`0016`
+  OAuth surface — authorize-time endpoint pinning plus token/flow cascade on
+  server delete.
+- A second suite covers what the CI gate structurally cannot: the CI
+  idempotency check re-applies against an **empty** database, so it can never
+  catch a migration that only breaks once rows exist. That suite re-applies
+  all 30 files with MCP rows in place. It runs against a dedicated schema on
+  a pinned connection with `public` off the `search_path`, so the migrations
+  build a private copy of the domain: re-running `0001`/`0003` drops and
+  recreates the NOTIFY triggers and takes ACCESS EXCLUSIVE on shared tables,
+  which must not happen underneath a concurrently running suite. A scratch
+  *database* isolates just as well but `CREATE`/`DROP DATABASE` is a
+  cluster-wide operation — it stalled the dev-platform pg suites long enough
+  to cancel 29 of their tests, so the schema is the cheaper boundary. The
+  test asserts the isolation itself, since a leaked `search_path` would make
+  every later assertion pass vacuously.
+- Both suites skip when no test Postgres is reachable, and scope every row
+  they write to a `w04-mcp-` tenant prefix, matching the existing pg-suite
+  convention. They share one capped pool: the runner executes test files
+  concurrently and ~16 other pg suites each hold a default-sized (max 10)
+  pool, so an uncapped extra pool in one file exhausts `max_connections` and
+  cancels an unrelated suite mid-run.
+### Security — MCP OAuth: issuer binding, explicit delegation, refresh race (W0-1)
+
+Three live defects in the MCP OAuth path, one migration
+(`middleware/migrations/0031_mcp_oauth_iss_delegation.sql`).
+
+- **RFC 9207 `iss` validation at the OAuth callback.** The callback trusted the
+  `state` parameter alone. `state` proves a response belongs to a flow we
+  started; it does **not** prove which authorization server issued the code, so
+  a malicious or compromised MCP server could steer the callback and have a code
+  minted by one AS redeemed at another. `iss` is now validated against the
+  issuer bound to the flow **before** the code is exchanged — a mismatch, or an
+  absent `iss` from an AS that advertised
+  `authorization_response_iss_parameter_supported`, is rejected and persists
+  nothing. Whether the AS advertised `iss` is captured at authorize time
+  (`mcp_oauth_flows.iss_required`), never re-discovered at the callback, for the
+  same reason migration 0016 pinned the token endpoint.
+- **Confused deputy removed.** Both the operator router and the runtime
+  `McpManager` resolved the OAuth user key as `… ?? 'operator'`. A Teams or
+  Telegram turn whose user had no mapped identity therefore reached the
+  customer's MCP server holding the **operator's** token. Resolution is now
+  explicit per server via the new `mcp_servers.delegation` column: `per_user`
+  fails closed through the existing `onAuthFailure` path when no identity
+  resolves, and `service` is the explicit opt-in to one shared identity. The
+  fallback literal is gone from every call site.
+- **Refresh race.** `getValidAccessToken` allowed N concurrent refreshes per
+  (server, user). Against an AS with rotating refresh tokens the losers get
+  `invalid_grant` and the last writer can persist an already-retired token,
+  silently disconnecting the user. Concurrent callers now share one in-flight
+  refresh, verified by a test that asserts exactly one token-endpoint **HTTP
+  request** under 8 concurrent callers.
+- `mcp_oauth_tokens.issuer` records which AS minted a token, so a rotated issuer
+  invalidates it instead of replaying it against a different server.
+- `mcp_call_log.acting_identity` records **whose** authority each call used
+  (`caller_agent` is the orchestrator slug, not the identity); an unattributable
+  call is recorded as `unresolved` rather than left blank.
+- OAuth failure logging now goes through a redactor
+  (`middleware/src/services/secretRedaction.ts`) — tokens, `code`, and
+  `code_verifier` can no longer reach a log line, including values echoed back
+  by a provider that we never minted.
+
+> ⚠️ **Operator-visible behaviour change.** A fail-closed `per_user` default for
+> every row would break installed deployments whose channel users reach MCP
+> servers today *because of* the `'operator'` fallback. The migration is
+> therefore deliberately asymmetric: every **existing** `mcp_servers` row that
+> already holds a stored operator token is set to `delegation = 'service'`,
+> preserving today's behaviour, and only **newly created** servers get the safe
+> `per_user` default. Review each grandfathered server in the MCP Control Center
+> and switch the ones that should be per-user — while a server stays on
+> `service`, anyone who can reach an orchestrator it is granted to acts with the
+> operator's authority at that server.
+### Deprecated — legacy HTTP+SSE MCP transport (#541)
+
+- MCP 2026-07-28 reclassifies the legacy HTTP+SSE transport as **Deprecated**,
+  with a removal window of at least 12 months. omadia now discourages `sse` for
+  **new** registrations while keeping every existing SSE server fully working —
+  this is a discouragement, not a removal. No protocol work: `SSEClientTransport`
+  stays wired, the `agent_mcp_servers.transport` CHECK constraint still accepts
+  `'sse'`, and no migration ships with this change. Streamable HTTP (`http`) is
+  the migration target.
+- `@omadia/orchestrator` exports `DEPRECATED_MCP_TRANSPORTS` and
+  `isDeprecatedMcpTransport()` as the single source of truth. The operator API's
+  MCP server node gained an additive `transportDeprecated: boolean` derived from
+  it; `McpTransport`/`McpTransportKind` keep `'sse'` in every union, so the
+  published plugin contract is unchanged.
+- **MCP Control Center:** `sse` is no longer offered in the transport picker
+  unless "Show deprecated transports" is ticked (`http` remains the default),
+  and existing `sse` servers carry a *Deprecated* badge pointing at Streamable
+  HTTP. Nothing is hard-blocked — an operator can still deliberately register a
+  legacy SSE server while the removal window is open.
+- **Marketplace imports** are covered too, not just the UI: when a catalog entry
+  advertises both a Streamable-HTTP and an HTTP+SSE remote, the importer now
+  picks the `http` one. An `sse`-only entry still imports, flagged via
+  `McpCatalogEntry.transportDeprecated`. The untrusted-remote guard (https only,
+  no internal/metadata hosts) applies to every candidate as before.
+### Added — MCP structured-content sidecar and `outputSchema` capture (#547, W1-3)
+
+- Discovery now keeps a tool's declared `outputSchema`. `McpToolDescriptor`
+  and `McpDiscoveredTool` gained an optional `outputSchema` field, and
+  `McpManager.listTools()` copies it from `tools/list` (object-valued only;
+  anything else is dropped rather than propagated). It is persisted with the
+  rest of the descriptor in the existing `mcp_servers.discovered_tools`
+  `jsonb` column, so it survives a restart without re-discovery — **no
+  migration required**. `subAgentToolHydration` rehydrates it on the way back
+  out.
+- `structuredContent` returned by an MCP tool is no longer discarded. A new
+  `extractStructured(res)` reads it, and `McpManager` hands it to an optional
+  `McpManagerOptions.structuredSink` as `{ kind: 'structured_output',
+  serverId, toolName, turnId, structured, outputSchema? }`, keyed so a
+  consumer can correlate it with the turn that produced it. Error results and
+  absent/null payloads emit nothing.
+- This is deliberately an **out-of-band** channel, not a widened return type.
+  `McpManager.callTool()` still returns `Promise<string>` and
+  `NativeToolHandler` is untouched, which keeps the published plugin contract
+  stable and — more importantly — keeps every MCP result on the
+  `typeof result === 'string'` path that gates Privacy Shield masking in the
+  orchestrator. A non-string result would silently bypass the shield.
+- Operator surface: the MCP Control Center's tool list shows a read-only
+  "returns structured output" badge for any tool that declares an output
+  schema.
+- No canvas/synthesis behaviour is attached yet — this change is plumbing
+  only. The sink's payload union is a discriminated `kind` so the MRTR work
+  (#544) can add `input_required` without another refactor.
+### Changed — long-running tools stop blocking chat turns (#543)
+
+- New generic **long-running task seam** in `@omadia/orchestrator`
+  (`TaskDescriptor` / `TaskStore`, `defineLongRunningTool`). Mark a tool
+  `longRunning` and it gets a non-blocking `<tool>_start` / `<tool>_status` /
+  `<tool>_list` triple plus a streaming status card: `_start` returns a handle in
+  milliseconds, the work runs detached, and the model collects the result on a
+  later poll. Generalized from the `dev_job_*` tools, which hand-rolled exactly
+  this shape.
+- **A chat turn is never parked.** There is no park/resume for a chat turn —
+  `chat.ts` streams SSE with a heartbeat and ends when the model loop ends — so
+  holding the stream open for minutes only buys proxy idle timeouts, Teams
+  activity expiry, and reaped connections. The model says "started, I'll report
+  back" instead; that is the intended UX.
+- **`dev_job` is the seam's first implementor, with no behaviour change.** A new
+  adapter projects `DevJobStore` onto the seam (ten-value `DevJobStatus` down to
+  `working | input_required | completed | failed`, `dev_job_events` onto the event
+  tail, `claimNextQueued` onto the claim, `finalizeDevJob` onto the terminal
+  write so the brand-gated choke point is preserved). `dev_job_start` still
+  returns `{"status":"job_started",…}`; nothing in `devJobStore.ts` or
+  `devJobOrchestratorTool.ts` changed and no migration was added.
+- **Deferred sub-agent dispatch** is the second consumer. A slow sub-agent
+  delegated from a chat turn blocks that turn for as long as its `LocalSubAgent`
+  loop runs; opt one in via `LONG_RUNNING_SUBAGENT_TOOLS` (comma-separated
+  `ask_<slug>` names) and it also gets the non-blocking triple. The blocking
+  `ask_<slug>` tool stays registered either way, so a sub-agent that answers in
+  seconds keeps answering inline. Empty by default — no existing behaviour moves.
+- **Orphan handling**: a periodic reaper fails live tasks whose worker went
+  silent (including tasks no worker ever claimed) and purges terminal tasks past
+  a retain window, so an unpolled task cannot leak a `working` row forever.
+  Windows: `LONG_RUNNING_TASK_STALE_MS` (default 15 min),
+  `LONG_RUNNING_TASK_RETAIN_MS` (default 1 h).
+- **Deferred-result privacy**: a task's result reaches the model only as the
+  return value of `<tool>_status` — an ordinary tool call inside a live turn — so
+  the Privacy Shield interning that `dispatchTool` performs still applies, at poll
+  time instead of completion time. Status cards deliberately carry no result and
+  no input (they bypass `dispatchTool`), which is enforced by test. Known v1
+  limitation: privacy **bypass attribution** for work done inside the detached
+  runner cannot be recorded against the originating turn, since that turn has
+  already ended. No data leaks; the audit line is what is missing.
+- Not the MCP Tasks extension: internal `LocalSubAgent` dispatches never cross an
+  MCP boundary, and the redesigned extension (SEP-2663) is unshipped even in SDK
+  v2 (`tasks/update` does not exist). The status vocabulary above was chosen to
+  match MCP Tasks so a later protocol projection is mechanical.
+
+### Fixed — background chat turns write into their own session (#617)
+
+- A turn that was still streaming when the user switched to another chat tab
+  lost its content: every transcript write went through the active-session
+  helpers, so the fold landed in whichever session happened to be in the
+  foreground — nowhere at all, in practice. The tab marker reported a finished
+  answer that the transcript never received, and the pending bubble stayed
+  stuck in its `streaming` state.
+- The chat-sessions store now exposes `mutateById(sessionId, mutator)` and
+  `persistById(sessionId)`; `applyStreamEvent`, `finalizePending` and the
+  stream runner's terminal persist all address the session the turn belongs to.
+  `mutateActive` / `persistActive` are gone — the active-scoped call sites on
+  the chat page pass their id explicitly.
+- `persistById` also fixes a second half of the bug: it enqueues rather than
+  reading an effect-synced ref, so the PUT carries state from *after* the
+  `done` fold committed. Without that, a background answer survived in memory
+  but not across a reload — a background turn gets no corrective follow-up turn
+  to repair the snapshot. A session deleted mid-stream is never resurrected:
+  the queued write is dropped when the id is gone.
+
+### Changed — background chat streams surface in-context, not as toasts (#286)
+
+- **Removed `StreamToasts`** (the bottom-right floating cards for background
+  chat turns). Per the Lume visual spec §7.6, toasts / floating notifications
+  are a ship-blocking anti-pattern; §7.4 makes the chat the surface of record.
+- **Background-stream state now lives on the chat tab**: a running turn shows a
+  hollow accent ring (pulsing), a finished one a solid accent disc, an errored
+  one a hollow danger ring carrying a `!` glyph. The states differ by *shape*,
+  so colour is never the sole signal (§8) and the distinction survives
+  `prefers-reduced-motion` disabling the pulse — running vs done separates on
+  fill, error vs running on the glyph. The state also reaches the tab's
+  accessible name via an `sr-only` label (the glyph itself is `aria-hidden`, so
+  screen readers don't speak it twice). Switching tabs clears the unread marker
+  on the tab being left as well as the one entered; active-session errors
+  continue to render inline on the turn.
+- **A polite live region** (`ChatTabs`) announces background turns that finish
+  or fail, replacing the `aria-live` container the removed toast overlay
+  carried. Announcements fire only for non-active tabs.
+- **Known consequence**: background-stream state is now visible only on
+  `/chat`. `StreamToasts` was mounted in the root layout and rendered on every
+  route; the tab strip renders only from the chat page. Accepted in
+  [ADR-0006](adr/0006-in-context-background-stream-surfacing.md).
+
 ### Added — API keys as a first-class authentication method, with per-key scopes (#439)
 
 - New workspace package `@omadia/api-key-auth`
@@ -399,6 +3065,7 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
     the hand-written `0005_turn_embeddings_768.sql`-style migration as the only
     route. `'true'` (default) permits it *when an operator confirms it*; it can
     no longer let a restart wipe a corpus.
+
 ### Added — plugin-contributed navigation (#470, phase 1 of the Dev Platform extraction)
 
 - New plugin capability `ctx.uiRoutes.registerNav({ navId, href, cluster?,

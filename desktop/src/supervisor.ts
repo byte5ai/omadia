@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'node:child_process';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -10,8 +11,11 @@ import {
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
 import { startEmbeddedDb, EmbeddedDb } from './embeddedDb';
-import { vaultKey, allProviderKeys } from './secrets';
+import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
+import { resolveAugmentedPath } from './pathEnv';
+
+const augmentedPath = resolveAugmentedPath(process.env['PATH']);
 
 export type BootPhase =
   | 'starting-db'
@@ -139,6 +143,7 @@ export class Supervisor extends EventEmitter {
   private kernelEnv(port: number): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       PORT: String(port),
@@ -154,6 +159,15 @@ export class Supervisor extends EventEmitter {
       // keep vault precedence.
       OMADIA_EMBEDDED_DB: '1',
       VAULT_KEY: vaultKey(),
+      // #578's credential keychain is a separate trust domain with its own
+      // master key; the kernel fail-hards in production without it. Missing
+      // here = dead fresh install (found the hard way on v0.115.0).
+      CREDENTIAL_KEYCHAIN_KEY: credentialKeychainKey(),
+      // Core migrations (#802): the orchestrator's default path walk assumes
+      // the monorepo/Docker layout and lands in `node_modules/migrations` in
+      // the packaged app — second fresh-install killer found on v0.115.0.
+      // The explicit override removes the guesswork entirely.
+      MULTI_ORCH_MIGRATIONS_DIR: path.join(kernelCwd(), 'migrations'),
       PLATFORM_DATA_DIR: platformDataDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
@@ -168,6 +182,7 @@ export class Supervisor extends EventEmitter {
   private uiEnv(uiPort: number, kernelPort: number): NodeJS.ProcessEnv {
     return {
       ...process.env,
+      PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       PORT: String(uiPort),

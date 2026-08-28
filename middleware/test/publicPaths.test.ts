@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { publicPaths, STATIC_PUBLIC_PATHS } from '../src/auth/publicPaths.js';
+import { CIMD_METADATA_PATH } from '../src/services/mcpCimd.js';
+import { PUBLIC_MCP_PATH } from '../src/mcp/publicMcpPath.js';
 
 /**
  * Regression guard for the MCP-OAuth-callback 401 bug: the epic #459 W9
@@ -13,7 +15,7 @@ import { publicPaths, STATIC_PUBLIC_PATHS } from '../src/auth/publicPaths.js';
  * must assert against the SAME array production runs.
  */
 describe('publicPaths — MCP OAuth callback allowlist', () => {
-  const allowlist = publicPaths({ devEndpointsEnabled: false });
+  const allowlist = publicPaths();
 
   it('allows the generic MCP-server OAuth callback', () => {
     assert.equal(
@@ -48,10 +50,162 @@ describe('publicPaths — MCP OAuth callback allowlist', () => {
     );
   });
 
-  it('is present in STATIC_PUBLIC_PATHS regardless of devEndpointsEnabled', () => {
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
     assert.equal(
       STATIC_PUBLIC_PATHS.some((p) => p.test('/api/v1/operator/mcp-oauth/callback')),
       true,
     );
+  });
+});
+
+/**
+ * W2-4 (issue #546) — the Client ID Metadata Document. An authorization server
+ * fetches it with NO credential of ours; that is the entire mechanism (the
+ * `client_id` we hand the AS is this URL, which it dereferences). So it must be
+ * public, and it must be public via the SHARED constant: asserting against a
+ * retyped literal here is precisely the drift this module's doc comment warns
+ * about, so the test derives its expectation from `CIMD_METADATA_PATH` itself.
+ */
+describe('publicPaths — MCP client-ID metadata document allowlist', () => {
+  const allowlist = publicPaths();
+
+  it('allows the metadata document path built from the shared constant', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(CIMD_METADATA_PATH)),
+      true,
+      `${CIMD_METADATA_PATH} must be public — an AS fetches it uncredentialed`,
+    );
+  });
+
+  it('allows it with a query string appended', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(`${CIMD_METADATA_PATH}?v=1`)),
+      true,
+    );
+  });
+
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
+    assert.equal(
+      STATIC_PUBLIC_PATHS.some((p) => p.test(CIMD_METADATA_PATH)),
+      true,
+    );
+  });
+
+  it('does NOT widen the bypass to a sibling well-known path', () => {
+    assert.equal(
+      allowlist.some((p) => p.test(`${CIMD_METADATA_PATH}-secret`)),
+      false,
+      'a prefix match would expose neighbouring well-known routes',
+    );
+    assert.equal(
+      allowlist.some((p) => p.test('/.well-known/omadia-mcp-client/../../api/v1/operator/x')),
+      false,
+    );
+  });
+});
+
+/**
+ * W2-3 (issue #542) — the public, stateless MCP endpoint.
+ *
+ * Asserted against the SHARED `PUBLIC_MCP_PATH` constant, not a retyped
+ * literal, for the reason in this module's own doc comment: a hand-written
+ * pattern next to a hand-written mount is exactly the epic #470 drift the
+ * constant exists to make impossible.
+ *
+ * The entry is what makes the route reachable at all — the OB-106 `/api`
+ * requireAuth line runs for every `/api/*` request — so its removal makes the
+ * endpoint go DARK rather than open. That failure direction is asserted
+ * end-to-end in `test/publicMcp/publicMcpEndpoint.e2e.test.ts`
+ * ("goes DARK (session 401), not open"); this block covers the allowlist half.
+ */
+describe('publicPaths — public MCP endpoint allowlist', () => {
+  const allowlist = publicPaths();
+  const isPublic = (path: string): boolean => allowlist.some((p) => p.test(path));
+
+  it('exempts the public MCP endpoint from the session gate', () => {
+    assert.equal(
+      isPublic(PUBLIC_MCP_PATH),
+      true,
+      `${PUBLIC_MCP_PATH} must be exempt — it authenticates via requireApiKey`,
+    );
+  });
+
+  it('exempts it with a query string appended', () => {
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}?v=1`), true);
+  });
+
+  it('is present in STATIC_PUBLIC_PATHS, which is configuration-independent', () => {
+    assert.equal(
+      STATIC_PUBLIC_PATHS.some((p) => p.test(PUBLIC_MCP_PATH)),
+      true,
+    );
+  });
+
+  /**
+   * Narrowest possible entry. Every additional character this matched would be
+   * a new unauthenticated-until-the-handler-says-otherwise surface, and the
+   * NOTE in `publicPaths.ts` asks for exactly one route, never a prefix.
+   */
+  it('does NOT widen the bypass to sub-paths under the endpoint', () => {
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}/admin`), false);
+    assert.equal(isPublic(`${PUBLIC_MCP_PATH}/`), false);
+  });
+
+  it('does NOT widen the bypass to sibling /api/v1/mcp* routes', () => {
+    assert.equal(isPublic('/api/v1/mcp-servers'), false);
+    assert.equal(isPublic('/api/v1/mcp-oauth/callback'), false);
+    assert.equal(isPublic('/api/v1/mcpsecret'), false);
+  });
+
+  it('does NOT exempt the operator MCP admin surfaces', () => {
+    assert.equal(isPublic('/api/v1/operator/mcp-servers'), false);
+    assert.equal(isPublic('/api/v1/operator/mcp-call-log'), false);
+  });
+});
+
+/**
+ * Issue #669 — `/api/dev/*` was exempt from the session gate whenever
+ * `DEV_ENDPOINTS_ENABLED=true`. That single boolean published knowledge-graph
+ * state and three destructive maintenance sweeps to anonymous callers on any
+ * internet-reachable deployment (verified: uncredentialed `200`s with real
+ * payloads). The entry is gone, and `publicPaths` no longer takes any
+ * configuration at all — there is nothing left to flip.
+ *
+ * The end-to-end half of this ("401, and the sweep never ran") lives in
+ * `test/devEndpoints/devEndpointsAuth.e2e.test.ts`, which also asserts the
+ * failure direction: restore the entry and the surface goes open again.
+ */
+describe('publicPaths — /api/dev is not exempt (#669)', () => {
+  const allowlist = publicPaths();
+  const isPublic = (path: string): boolean => allowlist.some((p) => p.test(path));
+
+  const DEV_PATHS: readonly string[] = [
+    '/api/dev',
+    '/api/dev/',
+    '/api/dev/graph/stats',
+    '/api/dev/graph/lifecycle/stats',
+    '/api/dev/graph/lifecycle/run-decay',
+    '/api/dev/graph/lifecycle/run-gc',
+    '/api/dev/graph/lifecycle/run-access-flush',
+    '/api/dev/graph/priorities/list',
+    '/api/dev/memory/entries',
+    '/api/dev/graph/stats?scope=demo',
+  ];
+
+  for (const path of DEV_PATHS) {
+    it(`does not exempt ${path}`, () => {
+      assert.equal(
+        isPublic(path),
+        false,
+        `${path} must sit behind the session gate — #669`,
+      );
+    });
+  }
+
+  it('exposes no configuration switch that could re-open it', () => {
+    // A zero-argument accessor is the assertion: there is no
+    // `{ devEndpointsEnabled: true }` to pass any more.
+    assert.equal(publicPaths.length, 0);
+    assert.deepEqual([...publicPaths()], [...STATIC_PUBLIC_PATHS]);
   });
 });

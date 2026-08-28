@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import { useCallback, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
+
+type Formatter = ReturnType<typeof useFormatter>;
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -31,6 +33,7 @@ const HISTORY_LIMIT = 10;
  */
 export function RoutineRow({ routine }: Props): React.ReactElement {
   const t = useTranslations('routines.row');
+  const format = useFormatter();
   const [expanded, setExpanded] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [runs, setRuns] = useState<RoutineRunSummaryDto[] | null>(null);
@@ -66,6 +69,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
     <>
       <tr className="border-t border-[color:var(--border)] align-top">
         <td className="px-4 py-3">
+          {/* eslint-disable-next-line no-restricted-syntax -- chevron row-details expand/collapse toggle (aria-expanded), not a §4.2 CTA */}
           <button
             type="button"
             onClick={handleDetailsToggle}
@@ -135,7 +139,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
           {routine.lastRunAt ? (
             <>
               <div className="whitespace-nowrap">
-                {formatDate(routine.lastRunAt)}
+                {formatDate(routine.lastRunAt, format)}
               </div>
               <div
                 className={
@@ -156,6 +160,7 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
                   {routine.lastRunError}
                 </div>
               ) : null}
+              {/* eslint-disable-next-line no-restricted-syntax -- chevron run-history expand/collapse toggle (aria-expanded), not a §4.2 CTA */}
               <button
                 type="button"
                 onClick={handleToggle}
@@ -211,33 +216,34 @@ export function RoutineRow({ routine }: Props): React.ReactElement {
 
 function DetailsPanel({ routine }: { routine: RoutineDto }): React.ReactElement {
   const t = useTranslations('routines.row');
+  const format = useFormatter();
   return (
     <div className="space-y-4">
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          Prompt
+          {t('promptLabel')}
         </div>
         <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-[color:var(--border)] bg-[color:var(--surface)] p-3 font-mono text-[12px] leading-relaxed text-[color:var(--fg-strong)]">
           {routine.prompt}
         </pre>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailField label="Routine-ID" value={routine.id} mono />
-        <DetailField label="User-ID" value={routine.userId} mono />
-        <DetailField label="Tenant" value={routine.tenant} mono />
-        <DetailField label="Channel" value={routine.channel} mono />
-        <DetailField label="Cron" value={routine.cron} mono />
+        <DetailField label={t('fieldRoutineId')} value={routine.id} mono />
+        <DetailField label={t('fieldUserId')} value={routine.userId} mono />
+        <DetailField label={t('fieldTenant')} value={routine.tenant} mono />
+        <DetailField label={t('fieldChannel')} value={routine.channel} mono />
+        <DetailField label={t('fieldCron')} value={routine.cron} mono />
         <DetailField
-          label="Timeout"
+          label={t('fieldTimeout')}
           value={`${(routine.timeoutMs / 1000).toFixed(0)}s (${routine.timeoutMs}ms)`}
           mono
         />
-        <DetailField label="Status" value={routine.status} />
+        <DetailField label={t('fieldStatus')} value={routine.status} />
         <DetailField
           label={t('lastRun')}
           value={
             routine.lastRunAt
-              ? `${formatDate(routine.lastRunAt)} · ${routine.lastRunStatus ?? '—'}`
+              ? `${formatDate(routine.lastRunAt, format)} · ${routine.lastRunStatus ?? '—'}`
               : t('neverRan')
           }
         />
@@ -296,6 +302,7 @@ function RunHistoryPanel({
   onRefresh: () => void;
 }): React.ReactElement {
   const t = useTranslations('routines.row');
+  const format = useFormatter();
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -331,13 +338,13 @@ function RunHistoryPanel({
           <table className="w-full text-[12px]">
             <thead className="bg-[color:var(--surface-muted)] text-left text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
               <tr>
-                <th className="px-3 py-2">Started</th>
-                <th className="px-3 py-2">Trigger</th>
-                <th className="px-3 py-2">Status</th>
+                <th className="px-3 py-2">{t('columnStarted')}</th>
+                <th className="px-3 py-2">{t('columnTrigger')}</th>
+                <th className="px-3 py-2">{t('columnStatus')}</th>
                 <th className="px-3 py-2">{t('columnDuration')}</th>
-                <th className="px-3 py-2">Iter · Tools</th>
+                <th className="px-3 py-2">{t('columnIterTools')}</th>
                 <th className="px-3 py-2">{t('columnError')}</th>
-                <th className="px-3 py-2 text-right">Detail</th>
+                <th className="px-3 py-2 text-right">{t('columnDetail')}</th>
               </tr>
             </thead>
             <tbody>
@@ -347,7 +354,7 @@ function RunHistoryPanel({
                   className="border-t border-[color:var(--border)]"
                 >
                   <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-[color:var(--fg-muted)]">
-                    {formatDate(run.startedAt)}
+                    {formatDate(run.startedAt, format)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     <TriggerPill trigger={run.trigger} />
@@ -470,11 +477,10 @@ function RunStatusPill({
   );
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, format: Formatter): string {
   try {
     const d = new Date(iso);
-    return d.toLocaleString('de-DE', {
-      timeZone: 'Europe/Berlin',
+    return format.dateTime(d, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',

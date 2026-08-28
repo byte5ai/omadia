@@ -22,6 +22,9 @@ import type {
 } from '@omadia/channel-sdk';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
 import type { WebSocketRegistry } from './webSocketRegistry.js';
+import type { ConversationRosterRegistry } from './rosterRegistry.js';
+import type { TargetedSendRegistry } from './targetedSendRegistry.js';
+import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 
 /**
  * Runtime registry for installed channel packages. At middleware startup it
@@ -66,6 +69,11 @@ export interface ChannelRegistryDeps {
   routes: ExpressRouteRegistry;
   /** Optional — WebSocket lifecycle mirror of `routes` (Omadia UI canvas). */
   webSockets?: WebSocketRegistry;
+  /** #330 B1 — optional group-conversation registries; deactivation drops the
+   *  channel's roster + targeted-send contributions like routes/webSockets. */
+  rosterRegistry?: ConversationRosterRegistry;
+  targetedSends?: TargetedSendRegistry;
+  conversationSends?: ConversationSendRegistry;
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
@@ -148,6 +156,10 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     const handle = this.handles.get(agentId);
     this.deps.routes.deactivateChannel(agentId);
     this.deps.webSockets?.deactivateChannel(agentId);
+    // #330 B1 — drop this channel's roster + targeted-send contributions.
+    this.deps.rosterRegistry?.unregisterChannel(agentId);
+    this.deps.targetedSends?.unregisterChannel(agentId);
+    this.deps.conversationSends?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's

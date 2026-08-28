@@ -8,11 +8,13 @@ import { CLI_ENV_SCRUB_KEYS } from '../packages/harness-orchestrator/src/cliChat
 
 import {
   detectCliBackends,
+  cliToolsDir,
   scrubbedEnv,
   __resetCliBackendCache,
 } from '../src/platform/cliBackendDetector.js';
 import { createAdminCliBackendsRouter } from '../src/routes/adminCliBackends.js';
 import { claudeCliAdapter } from '../src/platform/claudeCliAdapter.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 describe('cliBackendDetector', () => {
   afterEach(() => {
@@ -45,6 +47,34 @@ describe('cliBackendDetector', () => {
       // A CLI that is not installed must never claim a login.
       if (!b.installed) assert.equal(b.loggedIn, 'no');
     }
+  });
+
+  // OM-22 — "Erneut prüfen" appeared to do nothing. The report blamed a missing
+  // spinner, but a busy state already existed and simply finishes in under
+  // 100 ms on a local `--version` probe. The real defect: `generatedAt` was
+  // already on the wire and had ZERO render sites, so a re-check whose result
+  // was unchanged produced no observable change at all. It must therefore be
+  // present on every snapshot — including one where nothing is installed, which
+  // is exactly the case a self-hoster hits first.
+  it('an installed:false snapshot still carries generatedAt', async () => {
+    const before = Date.now();
+    const snap = await detectCliBackends({ force: true });
+    const after = Date.now();
+
+    assert.equal(typeof snap.generatedAt, 'number');
+    assert.ok(snap.generatedAt >= before && snap.generatedAt <= after);
+
+    // The assertion is about the snapshot, not about this machine's tooling —
+    // assert the invariant for whichever backends happen to be absent here.
+    for (const b of snap.backends.filter((x) => !x.installed)) {
+      assert.equal(b.loggedIn, 'no');
+      assert.ok(snap.generatedAt > 0, `generatedAt missing while ${b.id} is absent`);
+    }
+  });
+
+  it('includes the runtime install prefix in every snapshot', async () => {
+    const snap = await detectCliBackends({ force: true });
+    assert.equal(snap.cliToolsDir, cliToolsDir());
   });
 
   it('caches within the TTL and re-detects on force', async () => {
@@ -108,7 +138,7 @@ describe('adminCliBackends route', () => {
   it('GET / returns the detection snapshot as JSON', async () => {
     const app = express();
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends`);
@@ -125,7 +155,7 @@ describe('adminCliBackends route', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends/claude/login/code`, {
@@ -140,7 +170,7 @@ describe('adminCliBackends route', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/v1/admin/cli-backends', createAdminCliBackendsRouter());
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const port = (server.address() as AddressInfo).port;
 
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/admin/cli-backends/claude/login/cancel`, {

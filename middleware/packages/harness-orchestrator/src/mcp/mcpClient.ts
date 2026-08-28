@@ -11,23 +11,45 @@
  *   - `LocalSubAgentTool`               — for tools granted to a sub-agent
  *     (passed into its `LocalSubAgent` tool list).
  *
- * Connections are pooled per server id and lazily (re)established. A failed
- * connection is dropped so the next call retries — callers layer their own
- * backoff. The manager never throws on `callTool`; it returns an `Error: …`
+ * Connection lifetime (issue #563) — one entry map, one set of rules:
+ *
+ *   - **Key.** A pooled entry is keyed by exactly the inputs its transport
+ *     actually consumes: `stdio` by server id alone (the bearer token never
+ *     reaches the spawned child process), `http`/`sse` by server id PLUS a hash
+ *     of the bearer token, so two callers' authenticated sessions stay apart.
+ *   - **Dropped** on a failed connect, on a failed tool call, when a stale
+ *     token is rejected, on explicit invalidation via `close(serverId)` (which
+ *     drops every token-scoped entry of that server and nothing else), when an
+ *     entry has been idle longer than `idleTtlMs`, and on `closeAll()`.
+ *   - **Idle eviction is lazy.** It runs inside `getOrConnect`, so an idle
+ *     entry can outlive its TTL until the next connect attempt for *some*
+ *     server. That is deliberate: a background reaper would leak an unref'd
+ *     timer into the server process and into `node --test`.
+ *
+ * A dropped connection simply reconnects on the next call — callers layer their
+ * own backoff. The manager never throws on `callTool`; it returns an `Error: …`
  * string so a tool failure degrades the turn instead of killing it.
+ *
+ * See `docs/adr/0008-mcp-connection-lifetime.md` for the rejected alternatives.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  Client as ModernClient,
+  StreamableHTTPClientTransport as ModernStreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import {
   StdioClientTransport,
   getDefaultEnvironment,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolResultSchema,
+  ToolListChangedNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type {
   LocalSubAgentTool,
@@ -36,25 +58,106 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
+import { currentIdempotencyScope } from '../toolIdempotency.js';
+import {
+  MCP_INPUT_MAX_REPLAY_DEPTH,
+  extractMcpInputPrompt,
+  mcpInputMalformedError,
+  mcpInputReplayCappedError,
+  mcpInputRequiredSentinel,
+  mcpInputUnsupportedError,
+  parseMcpInputRequests,
+  type PendingMcpInput,
+  type PendingMcpInputStore,
+} from './pendingMcpInput.js';
 
 /**
- * Relaxed CallToolResult schema: the MCP spec says `structuredContent` MUST be a
+ * Relaxed CallToolResult schema for the **v1-backed** transports (`stdio`,
+ * `sse`). The v2 family has no result-schema parameter at all and types
+ * `structuredContent` as `unknown` by spec (SEP-2106), so the `http` path gets
+ * the same leniency without asking for it — see {@link modernSdkSession} for
+ * the one place v2 is stricter than v1 and what that costs.
+ *
+ * The MCP spec says `structuredContent` MUST be a
  * JSON object, but some hosted proxies (e.g. strava.run.mcp.com.ai) return it as
  * an array. The SDK's strict schema rejects the entire result, and callTool then
  * throws — which we surface as "-32000 Connection closed", making every call on
  * that server look like a dead connection. Accepting any `structuredContent`
- * keeps well-formed servers unchanged while tolerating this one deviation; we
- * only read `content`/`isError` downstream anyway.
+ * keeps well-formed servers unchanged while tolerating this one deviation.
+ *
+ * Issue #547 (W1-3): `structuredContent` is now also read out-of-band via
+ * `extractStructured` and handed to `McpManagerOptions.structuredSink`. The
+ * lenient schema is what makes that possible for off-spec (array-valued)
+ * payloads too — the sink carries whatever the server sent, unnormalised.
+ *
+ * Issue #544 (W2-1): `resultType` + `inputRequests` (MRTR mid-call user input)
+ * are declared here too. Both are readable off the SHIPPED SDK 1.29.0 — no
+ * version bump, and no dependency on the `@modelcontextprotocol/{core,client,
+ * server}@2.0.0` family (#540).
+ *
+ * Be precise about what the declaration buys, because it is NOT "makes the
+ * fields arrive": SDK 1.29.0's `CallToolResultSchema` derives from
+ * `ResultSchema`, which is `.passthrough()`, so an unmodelled key already
+ * survives `parse` at runtime. Verified, and pinned by a characterization test
+ * in `mcpPendingInput.test.ts`. Declaring them explicitly buys two things:
+ *   1. They are typed and intentional rather than an unnamed passthrough
+ *      residue, so a reader can see what we consume off the wire.
+ *   2. The behaviour stops being hostage to an SDK internal. Passthrough is not
+ *      part of the MRTR contract, and this file already carries the scar of a
+ *      strict-vs-lenient result schema breaking every call on a server
+ *      (`structuredContent`, above); a future SDK that tightens it would break
+ *      MRTR silently instead of loudly.
+ * Both are typed loosely on purpose — the MRTR shape is not final, so
+ * validation lives in `parseMcpInputRequests` where a failure can degrade to a
+ * plain tool error instead of rejecting the whole result.
  */
 // Cast back to the base schema type: the SDK's callTool overload is typed to the
 // strict CallToolResultSchema, but our runtime schema only *widens* what parses
-// (any structuredContent), so it is a safe superset. We never read
-// structuredContent downstream — only `content`/`isError`.
+// (any structuredContent, optional resultType/inputRequests), so it is a safe
+// superset.
 const LENIENT_CALL_TOOL_RESULT_SCHEMA = CallToolResultSchema.extend({
   structuredContent: z.unknown().optional(),
+  resultType: z.string().optional(),
+  inputRequests: z.unknown().optional(),
 }) as unknown as typeof CallToolResultSchema;
 
+/** MRTR result type meaning "I need more information from the human" (#544). */
+export const MCP_RESULT_TYPE_INPUT_REQUIRED = 'input_required';
+
 export type McpTransportKind = 'stdio' | 'http' | 'sse';
+
+/**
+ * Transports the MCP specification has formally deprecated (issue #541).
+ *
+ * The MCP 2026-07-28 revision reclassifies the legacy HTTP+SSE transport
+ * (two endpoints: `GET /sse` for the event stream plus a separate POST
+ * endpoint for messages) as **Deprecated**, with a minimum 12-month removal
+ * window. Streamable HTTP (our `'http'`) is the migration target.
+ *
+ * omadia therefore *discourages* `'sse'` for NEW registrations — the operator
+ * picker hides it behind a "show deprecated transports" toggle, and the
+ * marketplace importer prefers an `http` remote when a catalog entry offers
+ * both. Nothing is hard-blocked: the removal window is open, existing rows
+ * keep working unchanged (`SSEClientTransport` stays wired in
+ * `McpManager.makeTransport`), and the `agent_mcp_servers.transport` CHECK
+ * constraint still accepts `'sse'`, so a legacy server can be re-created.
+ *
+ * This array is the single source of truth for "which transports are
+ * deprecated" — the API serializer, the marketplace importer, and the web-ui
+ * all derive from it rather than hard-coding `'sse'`.
+ */
+export const DEPRECATED_MCP_TRANSPORTS = ['sse'] as const;
+
+/** A transport listed in {@link DEPRECATED_MCP_TRANSPORTS}. */
+export type DeprecatedMcpTransport = (typeof DEPRECATED_MCP_TRANSPORTS)[number];
+
+/**
+ * True when `transport` is deprecated by the MCP spec. Takes a plain `string`
+ * so callers holding an unvalidated DB/catalog value can ask without casting.
+ */
+export function isDeprecatedMcpTransport(transport: string): boolean {
+  return (DEPRECATED_MCP_TRANSPORTS as readonly string[]).includes(transport);
+}
 
 export interface McpServerConfig {
   readonly id: string;
@@ -76,12 +179,48 @@ export interface McpToolDescriptor {
   readonly name: string;
   readonly description?: string;
   readonly inputSchema?: Record<string, unknown>;
+  /**
+   * Issue #547 (W1-3) — the tool's declared `outputSchema` from `tools/list`.
+   * Never sent to the model (it would only inflate the prompt); it travels with
+   * the structured-result sidecar so a downstream consumer can render the
+   * payload against its declared shape. Persisted with the discovered-tool row
+   * so it survives a restart without re-discovery.
+   */
+  readonly outputSchema?: Record<string, unknown>;
 }
 
-/** Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
- *  Defined once here; skill (#456) and plugin (#458) surfaces identify
- *  themselves via `turnContext.mcpCallerKind`. */
-export type McpCallerKind = 'agent' | 'subagent' | 'skill' | 'plugin' | 'unattributed';
+/**
+ * Caller taxonomy for the MCP call audit log (epic #459 W2, issue #462).
+ * Defined once here; skill (#456) and plugin (#458) surfaces identify
+ * themselves via `turnContext.mcpCallerKind`.
+ *
+ * W2-3 (issue #542) adds `api_key`: a call arriving over the public MCP
+ * endpoint from a third party holding an API key. It is none of the other five
+ * — no orchestrator turn, no sub-agent, no plugin — and squeezing it into
+ * `plugin` or `unattributed` would make the one question that row exists to
+ * answer ("internal turn, or the internet?") unanswerable from the data.
+ * Migration 0033 widens the matching `mcp_call_log.caller_kind` CHECK.
+ */
+export type McpCallerKind =
+  | 'agent'
+  | 'subagent'
+  | 'skill'
+  | 'plugin'
+  | 'unattributed'
+  | 'api_key';
+
+/**
+ * Issue #544 (W2-1) — what actually happened on a call.
+ *
+ * The audit trail used to be binary (`ok: true | false`), which MRTR breaks:
+ * a parked `input_required` call neither succeeded nor failed. Overloading
+ * either value would misreport it — `ok: false` would put a phantom failure in
+ * front of operators debugging a healthy server, and a bare `ok: true` would
+ * claim the tool delivered a result it never delivered. So the truth gets its
+ * own field, and `ok` keeps its narrower documented meaning: "the call
+ * completed without failing".
+ */
+export type McpCallOutcome = 'ok' | 'fail' | 'input_required';
 
 /** One audit entry per `callTool` invocation. Deliberately carries NO tool
  *  arguments — identity and outcome only. */
@@ -92,10 +231,24 @@ export interface McpCallLogEntry {
   readonly callerKind: McpCallerKind;
   readonly callerAgent: string | null;
   readonly turnId: string | null;
+  /** True unless the call FAILED. An `input_required` park is not a failure —
+   *  read `outcome` to tell it apart from a delivered result. */
   readonly ok: boolean;
+  /**
+   * W2-1 — the three-valued truth. Optional so persisters that predate #544
+   * (and the `mcp_call_log` table, which has no column for it yet) keep
+   * compiling and simply ignore it; every entry the manager emits sets it.
+   */
+  readonly outcome?: McpCallOutcome;
   readonly error: string | null;
   readonly durationMs: number;
   readonly calledAt: Date;
+  /** W0-1 — WHOSE authority this call acted under. `callerAgent` names the
+   *  orchestrator; this names the identity its credentials belonged to. The
+   *  literal `unresolved` marks a `per_user` server that had no identity to
+   *  act as (the call fails closed), which is exactly the case an operator
+   *  needs to be able to find in the audit trail. */
+  readonly actingIdentity: string | null;
 }
 
 /** Observer invoked after every tool call. Implementations must be fast and
@@ -129,6 +282,15 @@ export interface McpAuthProvider {
    */
   onAuthFailure(cfg: McpServerConfig): Promise<string | null>;
   /**
+   * The identity this server's calls act as, for the audit trail (W0-1). Same
+   * resolution `getToken` uses, exposed separately so EVERY audited call —
+   * including denied ones and calls to servers with no OAuth at all — records
+   * who acted. Returns null when the provider cannot attribute the call.
+   * Optional: providers that predate W0-1 keep working (identity falls back to
+   * the turn context).
+   */
+  resolveIdentity?(cfg: McpServerConfig): Promise<string | null>;
+  /**
    * Secret config values to inject as request headers for this server (epic
    * #459). Resolved from the Vault per call so secrets never live on the pooled
    * config or the DB row. Per-server (not per-caller), so pooling by server id
@@ -143,10 +305,173 @@ export interface McpAuthProvider {
   getConfigEnv?(cfg: McpServerConfig): Promise<Record<string, string>>;
 }
 
+// ── out-of-band sidecar (issue #547 W1-3) ───────────────────────────────────
+//
+// Everything the model sees still travels as the plain string `callTool`
+// returns. Anything richer — an MCP `structuredContent` payload today, an
+// `input_required` result type tomorrow (#544 MRTR / W2-1) — leaves the manager
+// through this second, out-of-band channel instead of widening the return type.
+//
+// Widening was ruled out deliberately, for two reasons that are not stylistic:
+//   1. `NativeToolHandler = (input: unknown) => Promise<string>` is a published
+//      plugin contract; every in-tree and out-of-tree plugin implements it.
+//   2. The orchestrator gates Privacy Shield masking on
+//      `typeof result === 'string'`. A non-string result would silently skip
+//      masking — i.e. bypass the shield entirely.
+// The sidecar keeps both invariants intact: no downstream hop changes.
+
+/** Discriminator for a sidecar payload. W1-3 shaped this as a union precisely
+ *  so W2-1 could add its second member here instead of inventing a parallel
+ *  channel; `'input_required'` is that planned member (#544). */
+export type McpSidecarKind = 'structured_output' | 'input_required';
+
+/** Identity carried by every sidecar payload: which turn, which server, which
+ *  tool. `turnId` is null outside a turn (e.g. an operator test-call). */
+export interface McpSidecarIdentity {
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly turnId: string | null;
+}
+
+/** An MCP tool returned a `structuredContent` payload alongside its text. */
+export interface McpStructuredOutputSidecar extends McpSidecarIdentity {
+  readonly kind: 'structured_output';
+  /** The operator-configured server display name (`cfg.name`), so a consumer
+   *  (e.g. #569 receipt accounting) can attribute the payload to a readable
+   *  source rather than the opaque `serverId` UUID. Mirrors why the
+   *  `input_required` sidecar carries `pending.serverName`. */
+  readonly serverName: string;
+  /** The parsed payload exactly as the server sent it — object, or an array for
+   *  off-spec hosted servers. Never a re-parse of the rendered string. */
+  readonly structured: unknown;
+  /** The tool's declared `outputSchema`, when discovery captured one. */
+  readonly outputSchema?: Record<string, unknown>;
+}
+
+/**
+ * Issue #544 (W2-1) — an MCP tool answered `resultType: "input_required"` and
+ * the call has been parked in the {@link PendingMcpInputStore}. Rides the same
+ * out-of-band channel as the structured-output payload for the same reason: the
+ * model-facing return stays a plain string (a stable sentinel), so neither the
+ * `NativeToolHandler` contract nor the orchestrator's
+ * `typeof result === 'string'` Privacy-Shield gate changes.
+ */
+export interface McpInputRequiredSidecar extends McpSidecarIdentity {
+  readonly kind: 'input_required';
+  /** The parked record — carries `serverName` so the card can attribute the
+   *  request, which is a security requirement, not cosmetics. */
+  readonly pending: PendingMcpInput;
+}
+
+/** Union of everything the sidecar channel can carry. Add new members here;
+ *  consumers switch on `kind`. */
+export type McpSidecarPayload =
+  | McpStructuredOutputSidecar
+  | McpInputRequiredSidecar;
+
+/**
+ * Out-of-band sink for payloads that must NOT reach the model as text.
+ * Implementations must be fast and MUST NOT throw; the manager additionally
+ * guards with try/catch so the sidecar can never break a tool call. Mirrors the
+ * `onToolCall` audit-observer contract.
+ */
+export type McpStructuredSink = (payload: McpSidecarPayload) => void;
+
 export interface McpManagerOptions {
   readonly onToolCall?: McpCallObserver;
   readonly guard?: McpCallGuard;
   readonly auth?: McpAuthProvider;
+  /** Issue #547 (W1-3) — see `McpStructuredSink`. Optional: omitting it leaves
+   *  behaviour byte-identical to before. */
+  readonly structuredSink?: McpStructuredSink;
+  /**
+   * Issue #544 (W2-1) — where a `resultType: "input_required"` call gets parked
+   * until the user answers. Same optional-dependency shape as `auth` /
+   * `structuredSink`: omitting it leaves every existing path byte-identical,
+   * and an `input_required` result then degrades to a plain tool error
+   * (`mcpInputUnsupportedError`) rather than vanishing.
+   */
+  readonly pendingInput?: PendingMcpInputStore;
+  /** Issue #563 — drop a pooled connection that has not been used for this
+   *  many milliseconds. Bounds the pool: a rotated OAuth token yields a new
+   *  key, and without a TTL the entry under the old hash (and, for stdio, its
+   *  child process) would live as long as the process. `0` or negative
+   *  disables eviction. Defaults to `MCP_POOL_IDLE_TTL_MS`. */
+  readonly idleTtlMs?: number;
+  /** Issue #545 — TTL applied to a cached tool list whose server sent no
+   *  `ttlMs` (ADR-0009). Same optional-dependency shape as `idleTtlMs`: wins
+   *  over the `OMADIA_MCP_TOOLLIST_TTL_MS` env override, defaults to
+   *  `MCP_TOOLLIST_DEFAULT_TTL_MS`. `0` (or negative) restores the
+   *  spec-strict reading — absent `ttlMs` means no caching. */
+  readonly toolListTtlMs?: number;
+}
+
+/** Default idle lifetime of a pooled MCP connection (5 minutes). */
+export const MCP_POOL_IDLE_TTL_MS = 300_000;
+
+/**
+ * Default TTL for a cached tool list when the server sent no `ttlMs` (#545).
+ *
+ * MCP 2026-07-28 says an absent `ttlMs` MUST be read as 0 — no caching. The
+ * ecosystem we connect to today speaks ≤ 2025-11-25 and never sends the field,
+ * so the spec-strict reading would make the cache a no-op and forfeit the
+ * discovery round-trips the cache exists to save. Deliberate client-side
+ * deviation, recorded in ADR-0009; `OMADIA_MCP_TOOLLIST_TTL_MS=0` (or
+ * `toolListTtlMs: 0`) opts back into spec-strict behaviour.
+ */
+export const MCP_TOOLLIST_DEFAULT_TTL_MS = 60_000;
+
+/**
+ * Ceiling on any tool-list TTL, server-provided or defaulted (ADR-0009).
+ * `notifications/tools/list_changed` invalidates cooperative servers
+ * immediately; this clamp bounds the staleness an uncooperative server can
+ * buy itself with an extravagant `ttlMs`.
+ */
+export const MCP_TOOLLIST_MAX_TTL_MS = 900_000;
+
+/**
+ * Effective TTL for one `tools/list` result. Exported for the same reason as
+ * `mcpPoolScopeMatches`: the rules are the contract, so they are unit-tested
+ * as a pure function rather than through timing-sensitive integration paths.
+ *
+ *   - server sent a finite number → clamped to [0, MCP_TOOLLIST_MAX_TTL_MS]
+ *     (spec: negative reads as 0; 0 means "do not cache")
+ *   - absent or malformed → `defaultTtlMs` (ADR-0009), same clamp
+ */
+export function mcpToolListTtlMs(ttlMs: unknown, defaultTtlMs: number): number {
+  const fromServer =
+    typeof ttlMs === 'number' && Number.isFinite(ttlMs) ? Math.max(0, ttlMs) : undefined;
+  return Math.min(fromServer ?? Math.max(0, defaultTtlMs), MCP_TOOLLIST_MAX_TTL_MS);
+}
+
+/**
+ * Cache key for one `tools/list` result (#545).
+ *
+ * `cacheScope: "public"` promises the list is identical across auth contexts,
+ * so it may be shared under the bare server id. Everything else — `"private"`,
+ * absent, or a value this client does not recognise — stays under the caller's
+ * pool key (server id + token hash), because a mis-shared tool list crosses
+ * auth contexts and a missed share only costs one extra round-trip.
+ */
+export function mcpToolListCacheKey(
+  poolKey: string,
+  serverId: string,
+  cacheScope: unknown,
+): string {
+  return cacheScope === 'public' ? serverId : poolKey;
+}
+
+/**
+ * True when `key` is a pool key belonging to server `id`.
+ *
+ * This is the whole no-collateral-invalidation rule, exported so it can be unit
+ * tested and reused: a key is either the bare server id or `<id>#<tokenHash>`.
+ * The `#` separator is what keeps server `abc` from matching `abcd` — a plain
+ * `startsWith(id)` would drop an unrelated server whose id merely starts with
+ * the same characters.
+ */
+export function mcpPoolScopeMatches(key: string, id: string): boolean {
+  return key === id || key.startsWith(`${id}#`);
 }
 
 /** True when an error/result string looks like an authorization failure. */
@@ -164,8 +489,15 @@ function looksUnauthorized(text: string): boolean {
  *  (request timeout, dropped/closed connection, socket reset) — NOT an auth or
  *  application-level tool error. */
 function looksTransient(text: string): boolean {
+  // W0-5 — auth wins. `-32001` used to be matched as a bare numeric code here,
+  // which contradicted this function's own contract: the code is only
+  // *implementation-defined*, and servers legitimately use it for Unauthorized
+  // (omadia's own LoopbackMcpServer does, see its 401 branch). A genuine
+  // Unauthorized was therefore retried once — an extra doomed round trip that
+  // delayed the auth prompt. A real SDK request timeout still retries: it
+  // carries "Request timed out" and matches the timeout pattern below.
+  if (looksUnauthorized(text)) return false;
   return (
-    /-?32001\b/.test(text) ||
     /timed?\s*out|timeout/i.test(text) ||
     /connection closed|connection reset|econnreset|socket hang ?up|network error|fetch failed|und_err/i.test(
       text,
@@ -173,17 +505,378 @@ function looksTransient(text: string): boolean {
   );
 }
 
+/**
+ * The MCP protocol revision a live connection settled on (issue #562 phase 2).
+ * `'legacy'` is the 2025-era `initialize` handshake, `'modern'` the 2026-07-28
+ * `server/discover` negotiation. `null` means the backing SDK cannot negotiate
+ * at all — the v1 line is frozen at 2025-11-25, so a v1-backed session is
+ * `'legacy'` by construction rather than by measurement.
+ */
+export type McpProtocolEra = 'legacy' | 'modern';
+
+/** The per-request policy `callTool` applies. See {@link resolveMcpCallTimeouts}. */
+interface McpRequestPolicy {
+  readonly timeout: number;
+  readonly resetTimeoutOnProgress: boolean;
+  readonly maxTotalTimeout: number;
+}
+
+/** `tools/call` params, as both SDK families accept them. */
+interface McpCallParams {
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+  readonly _meta?: Record<string, unknown>;
+  /** #562 phase 3, 2026-07-28 retry params — see {@link McpCallReplay}. */
+  readonly inputResponses?: Record<string, unknown>;
+  readonly requestState?: string;
+}
+
+/**
+ * What a replay of a parked MRTR call carries beyond its arguments
+ * (#562 phase 3).
+ *
+ * The 2026-07-28 revision answers an `input_required` result by re-issuing the
+ * ORIGINAL request on a fresh id with two extra params: `inputResponses`, one
+ * entry per embedded request, and a byte-exact echo of the server's opaque
+ * `requestState`. omadia's own 2025-era dialect instead puts the collected
+ * answers inside `arguments` under {@link REPLAY_ARG_KEY}; that form is
+ * untouched, and `planMcpInputReplay` picks per record which one applies.
+ *
+ * `isReplay` is separate from either payload on purpose: it is what the bounce
+ * cap reads, and on the spec dialect there is nothing in `arguments` left for
+ * it to recognise.
+ */
+export interface McpCallReplay {
+  readonly isReplay: true;
+  readonly requestState?: string;
+  readonly inputResponses?: Record<string, unknown>;
+}
+
+/** One `tools/list` entry, typed only as far as `listTools` reads it. Both SDK
+ *  families put the same four fields on the wire; nothing here reshapes them. */
+interface McpToolListEntry {
+  readonly name?: unknown;
+  readonly description?: unknown;
+  readonly inputSchema?: unknown;
+  readonly outputSchema?: unknown;
+}
+
+interface McpListToolsResult {
+  readonly tools?: readonly McpToolListEntry[];
+  /**
+   * MCP 2026-07-28 `CacheableResult` (#545). Declared rather than cast at the
+   * read site, for the reason `LENIENT_CALL_TOOL_RESULT_SCHEMA` gives about
+   * `resultType`: a cast makes "the field is absent" and "this type forgot
+   * about the field" indistinguishable, so a change that really did stop
+   * these arriving would compile in silence and the tool-list cache would
+   * quietly fall back to its default TTL forever.
+   *
+   * Both are `unknown` on purpose. They come off the wire, `mcpToolListTtlMs`
+   * and `mcpToolListCacheKey` are the validators, and a second opinion here
+   * about what a well-formed value looks like is a second place to disagree.
+   *
+   * Measured, because the v2 path had reason to lose them: `listTools` runs
+   * with `cacheMode: 'bypass'`, and bypass only skips the SDK's own response
+   * cache — the hints still arrive verbatim on a modern-era connection.
+   */
+  readonly ttlMs?: unknown;
+  readonly cacheScope?: unknown;
+}
+
+/**
+ * One pooled connection, reduced to the three verbs the manager actually uses.
+ *
+ * Issue #562 phase 2 — omadia now speaks TWO SDK families at once, and this is
+ * the seam between them: `http` connects with `@modelcontextprotocol/client@2`
+ * (which can negotiate the 2026-07-28 era), `stdio` and `sse` stay on the v1
+ * `@modelcontextprotocol/sdk`. Everything above this interface — pooling,
+ * retry, audit, MRTR parking — is family-agnostic and stayed unchanged.
+ *
+ * Why the other two transports did NOT move, measured rather than assumed:
+ * `McpServer` never answers `server/discover` off the HTTP edge, so an `'auto'`
+ * probe on stdio/sse can only ever fall back to `initialize` and a pin fails
+ * with `ERA_NEGOTIATION_FAILED`. Porting them would swap the API and gain no
+ * protocol capability.
+ */
+interface McpSession {
+  /** Which SDK family backs this session. Diagnostics and tests read it. */
+  readonly family: 'v1' | 'v2';
+  /** The negotiated era, once connected. */
+  era(): McpProtocolEra;
+  listTools(): Promise<McpListToolsResult>;
+  callTool(params: McpCallParams, policy: McpRequestPolicy): Promise<unknown>;
+  close(): Promise<void>;
+}
+
 interface Pooled {
-  readonly client: Client;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly transport: any;
+  readonly client: McpSession;
+}
+
+/**
+ * v1-backed session (`stdio`, `sse`). Byte-identical to what the manager did
+ * before phase 2, including the lenient result schema.
+ */
+function legacySdkSession(client: Client): McpSession {
+  return {
+    family: 'v1',
+    era: () => 'legacy',
+    listTools: () => client.listTools(),
+    callTool: ({ inputResponses: _r, requestState: _s, ...params }, policy) =>
+      // The 2026-07-28 retry params are dropped rather than forwarded: this
+      // family only ever talks 2025-era, where they are not vocabulary. They
+      // cannot be populated on this path anyway (only a modern peer mints a
+      // `requestState` or a spec-shaped `inputRequests`), so the destructuring
+      // is a guarantee, not a workaround.
+      client.callTool(params, LENIENT_CALL_TOOL_RESULT_SCHEMA, policy),
+    close: () => client.close(),
+  };
+}
+
+/**
+ * v2-backed session (`http`), with three deliberate settings. Each one exists
+ * because the alternative was measured and was worse:
+ *
+ *  - **`versionNegotiation: { mode: 'auto' }`, never a pin.** A pin has no
+ *    fallback and most third-party servers are 2025-era, so pinning breaks
+ *    exactly the peers that work today.
+ *  - **`inputRequired: { autoFulfill: false }`.** v2's driver would otherwise
+ *    fulfil an `input_required` result IN-PROCESS against a round limit.
+ *    omadia does not answer these itself — it parks the call and asks a HUMAN
+ *    over a channel, possibly hours later. Auto-fulfilment is not a faster
+ *    version of that; it is a different behaviour in which the human is never
+ *    asked and nothing turns red. Manual mode is the only correct setting here.
+ *  - **`listTools` with `cacheMode: 'bypass'`.** A cached `tools/list` is what
+ *    arms v2's client-side output-schema validation, which turns a server whose
+ *    `structuredContent` does not match its declared `outputSchema` — or which
+ *    declares one and sometimes omits the content — into a HARD `callTool`
+ *    failure. v1 never validated, this file already carries the scar of a
+ *    strict result schema breaking every call on a real server, and the
+ *    validator is only reachable through an `ajv` neither `@modelcontextprotocol
+ *    /client` nor `/core` declares as a dependency. Bypass keeps `http` behaving
+ *    exactly like `stdio`/`sse` instead of diverging by transport.
+ */
+function modernSdkSession(client: ModernClient): McpSession {
+  return {
+    family: 'v2',
+    era: () => (client.getProtocolEra() === 'modern' ? 'modern' : 'legacy'),
+    listTools: () => client.listTools(undefined, { cacheMode: 'bypass' }),
+    async callTool(params, policy) {
+      // #562 phase 3 — read MRTR off the DECLARED contract instead of an SDK
+      // internal. `allowInputRequired` is what makes v2 hand an
+      // `input_required` result back to the caller (with `resultType`,
+      // `inputRequests` and `requestState` present verbatim) rather than
+      // fulfilling it in-process or raising a typed error. On a 2025-era
+      // connection it is documented as having no effect, and measurement
+      // agrees, so it is passed unconditionally rather than era-gated: one
+      // code path is one fewer place for the two eras to diverge.
+      const res = await client.callTool(params, { ...policy, allowInputRequired: true });
+      return restoreLegacyInputRequired(res, client.getProtocolEra());
+    },
+    close: () => client.close(),
+  };
+}
+
+/**
+ * Put back the MRTR discriminator v2 removes on a 2025-era connection.
+ *
+ * MEASURED, and it is the one thing that would have made this port a silent
+ * regression: `resultType` is wire-only in v2's type system, and a LEGACY-era
+ * `tools/call` decode lifts the body to a plain complete result — dropping
+ * `resultType` while leaving `inputRequests` (and `requestState`) in place.
+ * `isInputRequiredResult` therefore goes false, the call is never parked, and
+ * the model is handed the server's holding text as if it were an answer. The
+ * user simply stops being asked, and no test that only checks "the call
+ * returned something" can see it. #570/#544 made MRTR work on exactly these
+ * 2025-era peers; the port is not allowed to take it away again.
+ *
+ * The recovery is evidence-based, not a guess: `inputRequests` is MRTR-only
+ * vocabulary, it does not appear on a complete result, and v2 has already
+ * rejected the body if it carried `inputRequests` without `content`. On a
+ * MODERN connection nothing is restored — there `resultType` arrives verbatim
+ * (with `allowInputRequired`) and inventing one would mask a real divergence.
+ */
+function restoreLegacyInputRequired(res: unknown, era: string | undefined): unknown {
+  if (era === 'modern') return res;
+  if (!isPlainObject(res)) return res;
+  if (res['resultType'] !== undefined) return res;
+  if (res['inputRequests'] === undefined) return res;
+  if (res['isError'] === true) return res;
+  return { ...res, resultType: MCP_RESULT_TYPE_INPUT_REQUIRED };
+}
+
+/** One pooled connection. `promise` is the single source of truth for the
+ *  entry's state — pending while the connect is in flight, settled afterwards —
+ *  so there is no second "connecting" map that can disagree with it. */
+interface PoolEntry {
+  readonly promise: Promise<Pooled>;
+  lastUsedAt: number;
 }
 
 const CLIENT_INFO = { name: 'omadia-agent-builder', version: '0.1.0' } as const;
 
+/**
+ * Client options for the v2 (`http`) family. Rationale for each field is on
+ * {@link modernSdkSession}; they live here so a reader sees the whole opt-in
+ * surface in one place rather than spread across a factory.
+ */
+const MODERN_CLIENT_OPTIONS = {
+  versionNegotiation: { mode: 'auto' },
+  inputRequired: { autoFulfill: false },
+  /**
+   * #562 phase 3 — MEASURED prerequisite, not boilerplate. On a 2026-07-28
+   * connection the SDK refuses an embedded `elicitation/create` request with
+   * `MissingRequiredClientCapabilityError` *before* the result reaches the
+   * caller unless the client declared the capability. Without this line
+   * `allowInputRequired` has nothing to hand back and every modern-era MRTR
+   * call fails instead of parking.
+   *
+   * Declaring it is honest here: omadia genuinely does serve elicitation — by
+   * parking the call and asking a human over a channel. What it does not do is
+   * answer one IN-PROCESS, which is why `autoFulfill` stays off and why the
+   * decline handler below exists for the one path that can still reach it.
+   */
+  capabilities: { elicitation: {} },
+} as const;
+
+/**
+ * W0-2 — explicit per-call MCP request policy. `callTool` used to pass no
+ * `RequestOptions` at all and silently inherited the SDK's 60s default, so the
+ * real ceiling was undocumented and un-tunable. Stated here instead:
+ *  - `timeout`: idle budget for one request.
+ *  - `resetTimeoutOnProgress`: a server streaming progress notifications keeps
+ *    its budget alive (long Odoo/Confluence reports do exactly this)…
+ *  - `maxTotalTimeout`: …but never past this absolute ceiling, so a chatty
+ *    server cannot extend a call forever.
+ * Both are env-tunable per deployment.
+ *
+ * ── ORDERING INVARIANT (W3-A) ───────────────────────────────────────────────
+ * These are the INNER bounds. The orchestrator's per-tool dispatch deadline
+ * (`OMADIA_TOOL_DISPATCH_TIMEOUT_MS`, see `DEFAULT_TOOL_DISPATCH_TIMEOUT_MS` in
+ * `orchestrator.ts`) is the OUTER bound and must stay strictly LOOSER than
+ * `maxTotalTimeout` here. It used to default to 120 s — i.e. INSIDE this 180 s
+ * ceiling — so an MCP-backed sub-agent legitimately streaming progress for its
+ * full allowance was killed by the outer bound first, and the model saw a
+ * generic dispatch-deadline error instead of the MCP layer's own diagnosis.
+ * `assertTimeoutHierarchy()` in `orchestrator.ts` refuses to boot on an
+ * incoherent configuration, and `resolveToolDispatchTimeoutMs()` clamps a
+ * runtime env change that would re-create the inversion.
+ *
+ * ── …AND THE RETRY MUST NOT DOUBLE IT ───────────────────────────────────────
+ * `maxTotalTimeout` bounds ONE `callTool` request. `callTool` below makes up to
+ * {@link MCP_CALL_MAX_ATTEMPTS} of them, so the naive reading of the invariant —
+ * outer (240 s) > ceiling (180 s) — was asserted against a per-attempt number
+ * while reality was 2 × 180 s = 360 s: the inversion W3-A removed, re-created by
+ * a knob nobody counted. The fix is on this side, not by inflating the outer
+ * bound: the attempts SHARE one absolute budget, so `maxTotalTimeout` means what
+ * its name says. Attempt 2 gets only the remainder, and no retry is started once
+ * the budget is spent. {@link resolveMcpCallTimeouts} therefore reports a
+ * `worstCaseTotalMs` the hierarchy check can assert against the real ceiling.
+ */
+const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
+const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
+
+/**
+ * Attempts one `callTool` may make: the original plus ONE transient retry.
+ * Exported so the timeout hierarchy reasons about the real number rather than
+ * re-deriving it from the loop below.
+ */
+export const MCP_CALL_MAX_ATTEMPTS = 2;
+
+/**
+ * Floor on the remaining budget worth spending on a retry. Below this a second
+ * attempt cannot plausibly finish, so it is skipped rather than started and
+ * immediately timed out — which would turn one honest ceiling error into a
+ * misleading "the retry also failed".
+ */
+const MCP_RETRY_MIN_REMAINING_MS = 1_000;
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+/** `OMADIA_MCP_TOOLLIST_TTL_MS`, resolved per Listing (an operator change
+ *  applies without a restart, like the dispatch timeout). NOT `envMs`: there
+ *  `<= 0` is a config mistake, here `0` is the deliberate spec-strict opt-out
+ *  (ADR-0009) and must survive parsing. A negative value reads as 0 too — the
+ *  same rule `mcpToolListTtlMs` applies to the `toolListTtlMs` option, so the
+ *  two config paths cannot disagree about what a negative default means. */
+function envToolListTtlMs(): number {
+  const raw = process.env['OMADIA_MCP_TOOLLIST_TTL_MS'];
+  if (raw === undefined || raw.trim() === '') return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return MCP_TOOLLIST_DEFAULT_TTL_MS;
+  return Math.max(0, parsed);
+}
+
+/**
+ * The MCP request policy as it would be applied to the NEXT `callTool` — the
+ * same resolution `callTool` performs, exposed so the timeout-hierarchy
+ * invariant can be asserted against the real numbers (including env overrides)
+ * rather than against a copy of the defaults.
+ */
+export function resolveMcpCallTimeouts(): {
+  readonly timeoutMs: number;
+  readonly maxTotalTimeoutMs: number;
+  /**
+   * Wall-clock worst case for one `callTool`, retries INCLUDED — the number the
+   * outer dispatch deadline actually has to be looser than. Equal to
+   * `maxTotalTimeoutMs` because the attempts share one budget; it is reported
+   * separately so the hierarchy check keeps asserting against the real worst
+   * case if that ever stops being true.
+   */
+  readonly worstCaseTotalMs: number;
+} {
+  const maxTotalTimeoutMs = envMs(
+    'OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS',
+    DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+  );
+  return {
+    timeoutMs: envMs('OMADIA_MCP_CALL_TIMEOUT_MS', DEFAULT_MCP_CALL_TIMEOUT_MS),
+    maxTotalTimeoutMs,
+    worstCaseTotalMs: maxTotalTimeoutMs,
+  };
+}
+
 export class McpManager {
-  private readonly pool = new Map<string, Pooled>();
-  private readonly connecting = new Map<string, Promise<Pooled>>();
+  private readonly entries = new Map<string, PoolEntry>();
+  /** Issue #547 (W1-3) — declared `outputSchema` per `${serverId} ${tool}`.
+   *  `callTool` only receives a name, so the schema learned at discovery (or
+   *  rehydrated from the persisted descriptor by the adapters below) is cached
+   *  here and attached to the sidecar. A miss just omits the schema. */
+  private readonly outputSchemas = new Map<string, Record<string, unknown>>();
+
+  /** Issue #545 — cached `tools/list` results. Keyed via `mcpToolListCacheKey`
+   *  (bare server id for `public` scope, pool key otherwise), so the same
+   *  `mcpPoolScopeMatches` rule that scopes `close()` also scopes cache
+   *  invalidation. Expiry is lazy, like `evictIdle`: checked on read, never by
+   *  a timer. */
+  private readonly toolLists = new Map<
+    string,
+    {
+      readonly descriptors: readonly McpToolDescriptor[];
+      readonly expiresAt: number;
+      /** Filed under the bare server id BECAUSE the server said `public`. A
+       *  token-less caller's `private` list lands under the bare id too (its
+       *  pool key IS the id), and must never be served across auth contexts —
+       *  this flag is what tells the two apart on the shared-slot probe. */
+      readonly sharedPublic: boolean;
+    }
+  >();
+
+  /** #545 — purge generation for the tool-list cache. A purge that lands while
+   *  a `tools/list` fetch is in flight must win over that fetch's cache write:
+   *  the SDK dispatches a `list_changed` notification as a microtask, so it can
+   *  run between the response resolving and `listTools` priming the cache —
+   *  the purge would hit an empty map and the stale-marked list would then be
+   *  cached for its full TTL. `listTools` snapshots this counter before the
+   *  fetch and skips the write when any purge advanced it. Global rather than
+   *  per-server: the false positive (an unrelated purge skipping one write) is
+   *  just one extra fetch, and a purge is rare. */
+  private toolListPurgeGen = 0;
 
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
@@ -196,9 +889,10 @@ export class McpManager {
   private emitCall(
     cfg: McpServerConfig,
     toolName: string,
-    ok: boolean,
+    outcome: McpCallOutcome,
     error: string | null,
     startedAt: number,
+    actingIdentity: string | null,
   ): void {
     if (!this.options?.onToolCall) return;
     try {
@@ -218,21 +912,190 @@ export class McpManager {
         callerKind,
         callerAgent: ctx?.mcpCallerId ?? ctx?.agentSlug ?? null,
         turnId: inTurn ? ctx.turnId : null,
-        ok,
+        // W2-1: `fail` is the ONLY outcome that clears `ok`. A parked
+        // `input_required` call did not fail, so it must not show up in any
+        // failure-rate query built on `ok`.
+        ok: outcome !== 'fail',
+        outcome,
         // Bounded: external error strings can carry upstream data; the audit
         // table is append-only, so cap what gets persisted (codex W2 finding).
         error: error === null ? null : error.length > 300 ? `${error.slice(0, 300)}…` : error,
         durationMs: Date.now() - startedAt,
         calledAt: new Date(),
+        // W0-1: never left blank. An unattributable call is recorded AS
+        // unattributable rather than silently omitted.
+        actingIdentity: actingIdentity ?? ctx?.mcpUserKey ?? null,
       });
     } catch {
       /* the audit trail must never break a tool call */
     }
   }
 
-  /** Discover the tool list a server exposes. Throws on connection failure so
-   *  the operator-facing `/discover` endpoint can report it. */
-  async listTools(cfg: McpServerConfig): Promise<McpToolDescriptor[]> {
+  /**
+   * Issue #547 (W1-3) — remember a tool's declared `outputSchema` so a later
+   * `callTool` (which only gets a name) can attach it to the sidecar. Called
+   * automatically by `listTools`, and by the adapter factories below so a
+   * descriptor rehydrated from the DB after a restart is just as good as a
+   * freshly discovered one. Idempotent; a schema-less descriptor is a no-op.
+   */
+  rememberToolSchema(serverId: string, tool: McpToolDescriptor): void {
+    if (!tool.outputSchema) return;
+    this.outputSchemas.set(schemaKey(serverId, tool.name), tool.outputSchema);
+  }
+
+  /** Emit one structured-result sidecar. Out-of-band by construction: the
+   *  caller has already produced the model-facing string and ignores this. */
+  private emitStructured(
+    cfg: McpServerConfig,
+    toolName: string,
+    structured: unknown,
+  ): void {
+    if (!this.options?.structuredSink) return;
+    try {
+      const ctx = turnContext.current();
+      const outputSchema = this.outputSchemas.get(schemaKey(cfg.id, toolName));
+      this.options.structuredSink({
+        kind: 'structured_output',
+        serverId: cfg.id,
+        serverName: cfg.name,
+        toolName,
+        turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
+        structured,
+        ...(outputSchema ? { outputSchema } : {}),
+      });
+    } catch {
+      /* the sidecar must never break a tool call */
+    }
+  }
+
+  /**
+   * W2-1 (#544) — park a `resultType: "input_required"` call and hand the model
+   * a stable sentinel instead of a result.
+   *
+   * Every exit here is deliberate and distinguishable; nothing degrades into
+   * "looked like success":
+   *   - no store wired            → plain tool error (`mcpInputUnsupportedError`)
+   *   - unusable `inputRequests`  → plain tool error (`mcpInputMalformedError`)
+   *   - bounce cap tripped        → plain tool error (`mcpInputReplayCappedError`)
+   *   - second park in one turn   → `MCP_INPUT_ALREADY_PENDING_SENTINEL`
+   *   - parked                    → `mcpInputRequiredSentinel`
+   *
+   * The three error exits audit as `'fail'` (they ARE failed calls — the tool
+   * produced nothing usable). The two park exits audit as `'input_required'`,
+   * which keeps `ok` true without claiming a result was delivered.
+   */
+  private parkInputRequired(
+    cfg: McpServerConfig,
+    toolName: string,
+    args: Record<string, unknown>,
+    res: unknown,
+    startedAt: number,
+    actingIdentity: string | null,
+    replay: McpCallReplay | undefined,
+  ): string {
+    const store = this.options?.pendingInput;
+    if (!store) {
+      const failure = mcpInputUnsupportedError(cfg.name, toolName);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    const parsed = parseMcpInputRequests(
+      (res as { inputRequests?: unknown }).inputRequests,
+    );
+    if (!parsed.ok) {
+      const failure = mcpInputMalformedError(cfg.name, toolName, parsed.reason);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    const prompt = extractMcpInputPrompt(res);
+    // #562 phase 3 — carry the server's opaque `requestState` so the retry can
+    // echo it back verbatim. Only a 2026-07-28 peer mints one; a string is the
+    // only shape the spec allows, and anything else is dropped rather than
+    // forwarded, because handing a server back something it did not send is
+    // worse than not echoing at all.
+    const requestState = (res as { requestState?: unknown }).requestState;
+    const record: PendingMcpInput = {
+      correlationId: randomUUID(),
+      serverId: cfg.id,
+      serverName: cfg.name,
+      toolName,
+      originalArgs: args,
+      inputRequests: parsed.fields,
+      ...(prompt !== undefined ? { prompt } : {}),
+      ...(typeof requestState === 'string' && requestState.length > 0
+        ? { requestState }
+        : {}),
+      // A call that already carries `inputResponses` IS the replay — the only
+      // signal available here, since the manager is stateless per call. On the
+      // spec dialect the responses ride a top-level param instead of the
+      // arguments, so the replay says so explicitly; without that the bounce
+      // cap would never trip on a 2026-07-28 peer.
+      replayDepth:
+        REPLAY_ARG_KEY in args || replay?.isReplay === true
+          ? MCP_INPUT_MAX_REPLAY_DEPTH
+          : 0,
+    };
+    // Parked WITHOUT an owner: the manager has no reliable turn identity (see
+    // `PendingMcpInputStore`). The orchestrator binds the owner when it claims
+    // the record via the correlation id embedded in the sentinel below. Until
+    // then the record is replayable by nobody.
+    if (store.put(record) === 'replay_capped') {
+      const failure = mcpInputReplayCappedError(record);
+      this.emitCall(cfg, toolName, 'fail', failure, startedAt, actingIdentity);
+      return failure;
+    }
+    this.emitCall(cfg, toolName, 'input_required', null, startedAt, actingIdentity);
+    this.emitInputRequired(cfg, toolName, record);
+    // #570 — hand the dispatch that is awaiting us a provenance receipt for the
+    // id we just minted, so the Privacy Shield can tell OUR sentinel apart from
+    // a server-authored string that merely looks like one. The box belongs to a
+    // single dispatch and is absent when no privacy guard is installed (nothing
+    // interns then) or when this call did not come from a tool dispatch at all
+    // (skill/plugin accessor paths) — in both cases there is simply nothing to
+    // exempt and the sentinel is returned exactly as before.
+    const mint = turnContext.current()?.mcpInputSentinelMint;
+    if (mint !== undefined) mint.correlationId = record.correlationId;
+    return mcpInputRequiredSentinel(record);
+  }
+
+  /** Emit one `input_required` sidecar. Same never-throws contract as
+   *  `emitStructured`; consumers switch on `kind`. */
+  private emitInputRequired(
+    cfg: McpServerConfig,
+    toolName: string,
+    pending: PendingMcpInput,
+  ): void {
+    if (!this.options?.structuredSink) return;
+    try {
+      const ctx = turnContext.current();
+      this.options.structuredSink({
+        kind: 'input_required',
+        serverId: cfg.id,
+        toolName,
+        turnId: ctx !== undefined && ctx.turnId !== '' ? ctx.turnId : null,
+        pending,
+      });
+    } catch {
+      /* the sidecar must never break a tool call */
+    }
+  }
+
+  /**
+   * List the tools a server exposes. Throws on connection failure so the
+   * operator-facing `/discover` endpoint can report it.
+   *
+   * Issue #545 — results are cached per `ttlMs`/`cacheScope` (MCP 2026-07-28
+   * `CacheableResult`; ADR-0009 for the default applied when a server sends no
+   * `ttlMs`). Callers for whom a cached list would defeat the purpose pass
+   * `fresh: true`: Discovery (the Builder route persists what it fetches) and
+   * the security Rescan (a scan of a cached list scans nothing). The runtime
+   * Listing path — the plugin `ctx.mcp.listTools()` accessor — is the cache's
+   * beneficiary and uses the default.
+   */
+  async listTools(
+    cfg: McpServerConfig,
+    opts?: { readonly fresh?: boolean },
+  ): Promise<McpToolDescriptor[]> {
     // Attach the OAuth token (issue #459 W9): some servers (e.g. Figma) require
     // authorization even to `initialize`/`tools/list`, so discovery must use the
     // caller's token exactly like a tool call — otherwise every OAuth-protected
@@ -245,16 +1108,96 @@ export class McpManager {
         /* token resolution must not break discovery */
       }
     }
+    // The private key is derivable before the fetch; the public one is just the
+    // server id — so a read probes private-then-public and finds a hit wherever
+    // the last write's `cacheScope` filed it. The second probe accepts only
+    // entries filed as `public`: a token-less caller's `private` list sits
+    // under the bare id as well (its pool key IS the id) and serving it to a
+    // tokened caller would cross auth contexts.
+    const privateKey = this.poolKey(cfg, token);
+    if (!opts?.fresh) {
+      const hit =
+        this.cachedToolList(privateKey) ?? this.cachedToolList(cfg.id, { publicOnly: true });
+      if (hit) return [...structuredClone(hit)];
+    }
+    // Snapshot BEFORE the fetch: a purge (list_changed, close) arriving while
+    // the request is in flight advances the generation, and the write below
+    // then steps aside instead of resurrecting an invalidated entry.
+    const purgeGen = this.toolListPurgeGen;
     const { client } = await this.getOrConnect(await this.withResolvedConfig(cfg), token);
     const res = await client.listTools();
     const tools = Array.isArray(res?.tools) ? res.tools : [];
-    return tools.map((t) => ({
+    const descriptors = tools.map((t) => ({
       name: String(t.name),
       ...(t.description ? { description: String(t.description) } : {}),
       ...(t.inputSchema
         ? { inputSchema: t.inputSchema as Record<string, unknown> }
         : {}),
+      // Issue #547 (W1-3): carry the declared output schema through discovery
+      // so it can be persisted and later attached to the sidecar. Object-only —
+      // a server that sends a non-object here gets it dropped rather than
+      // poisoning the descriptor (arrays are objects in JS, so exclude them).
+      ...(isPlainObject(t.outputSchema)
+        ? { outputSchema: t.outputSchema as Record<string, unknown> }
+        : {}),
     }));
+    for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
+    // #545 — file the result under the scope the server declared.
+    //
+    // The two fields reach here by DIFFERENT routes, and only one of them is
+    // the loose-passthrough argument #544 used for `resultType`:
+    //   - v1 legs (stdio, sse): `ResultSchema` is loose, so a server that
+    //     sends them survives parsing. 2025-era servers do not send them, so
+    //     in practice this is the ADR-0009 default-TTL path.
+    //   - the v2 leg (http): they are modelled 2026-07-28 fields and arrive
+    //     verbatim. MEASURED, because there was reason to doubt it —
+    //     `listTools` runs with `cacheMode: 'bypass'` (#562 phase 2), and
+    //     bypass skips only the SDK's own response cache, not the hints.
+    // Do not collapse that into "the SDK is lenient": on the v2 family that
+    // reasoning is what proved false for `resultType` on a legacy-era decode.
+    //
+    // Read defensively regardless — both come off the wire.
+    const ttl = mcpToolListTtlMs(
+      res.ttlMs,
+      this.options?.toolListTtlMs ?? envToolListTtlMs(),
+    );
+    if (ttl > 0 && purgeGen === this.toolListPurgeGen) {
+      this.toolLists.set(mcpToolListCacheKey(privateKey, cfg.id, res.cacheScope), {
+        // Deep-copied on write (and again on read): callers — plugins via
+        // `ctx.mcp.listTools()` — must not be able to mutate the cached
+        // descriptors that later callers receive.
+        descriptors: structuredClone(descriptors),
+        expiresAt: Date.now() + ttl,
+        sharedPublic: res.cacheScope === 'public',
+      });
+    }
+    return descriptors;
+  }
+
+  /** A still-fresh cached tool list under `key`, expiring lazily on read.
+   *  `publicOnly` is set on the bare-server-id probe, so a token-less caller's
+   *  `private` entry (also keyed by the bare id) never crosses auth contexts. */
+  private cachedToolList(
+    key: string,
+    opts?: { readonly publicOnly?: boolean },
+  ): readonly McpToolDescriptor[] | undefined {
+    const entry = this.toolLists.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.toolLists.delete(key);
+      return undefined;
+    }
+    if (opts?.publicOnly && !entry.sharedPublic) return undefined;
+    return entry.descriptors;
+  }
+
+  /** Drop every cached tool list belonging to server `id` (or to one exact
+   *  pool key) — the same scoping rule `close()` applies to connections. */
+  private purgeToolLists(id: string): void {
+    this.toolListPurgeGen += 1;
+    for (const key of this.toolLists.keys()) {
+      if (mcpPoolScopeMatches(key, id)) this.toolLists.delete(key);
+    }
   }
 
   /** Invoke a tool. Never throws — returns an `Error: …` string on failure so
@@ -263,15 +1206,27 @@ export class McpManager {
     cfg: McpServerConfig,
     toolName: string,
     args: Record<string, unknown>,
+    replay?: McpCallReplay,
   ): Promise<string> {
     const startedAt = Date.now();
+    // Resolve the acting identity FIRST (W0-1), before the guard can short-
+    // circuit: a denied call still has to say whose authority it would have
+    // used. Only paid for when auditing is actually on.
+    let actingIdentity: string | null = null;
+    if (this.options?.onToolCall && this.options.auth?.resolveIdentity) {
+      try {
+        actingIdentity = await this.options.auth.resolveIdentity(cfg);
+      } catch {
+        /* identity resolution must not break the call path */
+      }
+    }
     // Dispatch-time policy gate (issue #454): checked on EVERY call, so a
     // verdict that turned risky on re-discover blocks immediately and an
     // operator ack unblocks immediately — independent of registry rebuilds.
     try {
       const denial = this.options?.guard?.(cfg.id, toolName);
       if (denial) {
-        this.emitCall(cfg, toolName, false, denial, startedAt);
+        this.emitCall(cfg, toolName, 'fail', denial, startedAt, actingIdentity);
         return denial;
       }
     } catch {
@@ -295,8 +1250,37 @@ export class McpManager {
     // that intermittently returns "-32001 Request timed out" or drops the
     // connection). The retry drops the pooled connection first so it reconnects
     // fresh; auth-looking and real tool errors are NOT retried.
+    //
+    // #542 prerequisite — EXCEPT under an exactly-once idempotency scope. A
+    // transient failure is indistinguishable from "the server executed the write
+    // and the response was lost", so retrying a WRITE-capable call can duplicate
+    // a mutation (a second Odoo/M365 write = customer-data damage). When
+    // `ToolDispatchService` dispatched this call as write-capable with an
+    // idempotency key it publishes `exactlyOnce`, and this loop then makes ONE
+    // attempt: at-most-once beats at-least-once for writes.
+    //
+    // The mitigation itself is untouched for everything else — read tools, and
+    // write tools dispatched without an idempotency key, still get the retry.
+    //
+    // W4 — the retry does NOT get a fresh `maxTotalTimeout`. Two attempts each
+    // allowed the full absolute ceiling made one `callTool` worth up to
+    // 2 × 180 s = 360 s of wall clock, above the 240 s dispatch deadline that is
+    // supposed to be the LOOSER, outer bound — the exact inversion W3-A existed
+    // to remove, re-created by a retry nobody counted in the invariant. The
+    // attempts therefore share one budget: attempt 2 runs with what is left, and
+    // is not started at all once the budget is spent.
+    const idempotency = currentIdempotencyScope();
+    const maxAttempts =
+      idempotency?.exactlyOnce === true ? 1 : MCP_CALL_MAX_ATTEMPTS;
     let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const budgetStartedAt = Date.now();
+    /** What is left of the shared absolute ceiling, or `null` when it is gone. */
+    const remainingBudgetMs = (): number | null => {
+      const policy = resolveMcpCallTimeouts();
+      const left = policy.maxTotalTimeoutMs - (Date.now() - budgetStartedAt);
+      return left >= MCP_RETRY_MIN_REMAINING_MS ? left : null;
+    };
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       let pooled: Pooled;
       try {
         pooled = await this.getOrConnect(cfg, token);
@@ -305,25 +1289,63 @@ export class McpManager {
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
         // this path must also offer the auth prompt — not just tool-level errors.
         const failure = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
-        if (attempt < 2 && looksTransient(failure) && token !== null) {
+        if (
+          attempt < maxAttempts &&
+          looksTransient(failure) &&
+          token !== null &&
+          remainingBudgetMs() !== null
+        ) {
           await this.close(this.poolKey(cfg, token));
           lastFailure = failure;
           continue;
         }
-        return this.handleFailure(cfg, toolName, token, failure, startedAt);
+        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
       try {
         const res = await pooled.client.callTool(
           {
             name: toolName,
             arguments: args,
+            // #542 prerequisite — advertise the idempotency key so a server that
+            // implements dedupe can recognise a duplicate as the SAME call.
+            // Advisory only: MCP defines no standard idempotency field and no
+            // server is obliged to honour this, so it is never the protection —
+            // the `maxAttempts` clamp above and the dispatcher's dedupe store
+            // are. Rides `_meta`, the spec's extension channel, so a server that
+            // ignores it sees byte-identical arguments.
+            ...(idempotency !== undefined
+              ? { _meta: { idempotencyKey: idempotency.key } }
+              : {}),
+            // #562 phase 3 — the spec's retry params. Siblings of `arguments`,
+            // never inside them: the tool's own arguments must stay byte-exact
+            // across the park, which is the whole point of replaying
+            // `originalArgs`. Only ever populated for a 2026-07-28 peer; the
+            // v1-backed session drops them (see `legacySdkSession`).
+            ...(replay?.inputResponses !== undefined
+              ? { inputResponses: replay.inputResponses }
+              : {}),
+            ...(replay?.requestState !== undefined
+              ? { requestState: replay.requestState }
+              : {}),
           },
-          // Tolerate off-spec `structuredContent` (some third-party MCP servers —
-          // e.g. the hosted Strava proxy — return it as a JSON array instead of an
-          // object). The strict SDK schema otherwise rejects the whole result and
-          // the failure surfaces to the model as "-32000 Connection closed",
-          // making every tool call on that server look like a transport failure.
-          LENIENT_CALL_TOOL_RESULT_SCHEMA,
+          // Stated request policy instead of the SDK's implicit 60s default —
+          // see DEFAULT_MCP_CALL_TIMEOUT_MS. `maxTotalTimeout` is the SHARED
+          // remainder, not a fresh allowance per attempt, so N attempts still
+          // cost at most one ceiling of wall clock (see the note above the loop).
+          (() => {
+            const policy = resolveMcpCallTimeouts();
+            const elapsed = Date.now() - budgetStartedAt;
+            const remaining = Math.max(
+              MCP_RETRY_MIN_REMAINING_MS,
+              policy.maxTotalTimeoutMs - elapsed,
+            );
+            return {
+              // The per-request idle budget can never outlive the absolute one.
+              timeout: Math.min(policy.timeoutMs, remaining),
+              resetTimeoutOnProgress: true,
+              maxTotalTimeout: remaining,
+            };
+          })(),
         );
         const rendered = renderToolResult(res);
         // MCP protocol errors resolve (isError result) instead of throwing —
@@ -331,23 +1353,56 @@ export class McpManager {
         const protocolError =
           res !== null && typeof res === 'object' && (res as { isError?: unknown }).isError === true;
         if (protocolError) {
-          return this.handleFailure(cfg, toolName, token, rendered, startedAt);
+          return this.handleFailure(cfg, toolName, token, rendered, startedAt, actingIdentity);
         }
-        this.emitCall(cfg, toolName, true, null, startedAt);
+        // ── W2-1 (#544) MRTR mid-call user input ─────────────────────────────
+        // Checked BEFORE the success audit and INSIDE the attempt loop with an
+        // unconditional `return`, which is what makes the two "must nots" true
+        // by construction: no retry attempt is consumed (we never `continue`),
+        // and no failure row is emitted (`handleFailure` is not on this path).
+        if (isInputRequiredResult(res)) {
+          return this.parkInputRequired(
+            cfg,
+            toolName,
+            args,
+            res,
+            startedAt,
+            actingIdentity,
+            replay,
+          );
+        }
+        this.emitCall(cfg, toolName, 'ok', null, startedAt, actingIdentity);
+        // Issue #547 (W1-3) — hand any `structuredContent` to the out-of-band
+        // sink. `rendered` above is already final and is NOT re-derived from
+        // this: the model-facing string is byte-identical with or without a
+        // sink installed. Error results are skipped by `extractStructured`.
+        const structured = extractStructured(res);
+        if (structured !== undefined) {
+          this.emitStructured(cfg, toolName, structured);
+        }
         return rendered;
       } catch (err) {
         // Drop the connection so the next call reconnects (server may have died).
         await this.close(this.poolKey(cfg, token));
         const failure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed: ${msg(err)}`;
-        if (attempt < 2 && looksTransient(failure)) {
+        // No retry once the shared absolute budget is spent: a call that already
+        // consumed its whole ceiling is not "transiently flaky", and starting a
+        // second attempt with no time left would only replace an honest ceiling
+        // error with a confusing one — while doubling the wall clock the outer
+        // dispatch deadline was sized against.
+        if (
+          attempt < maxAttempts &&
+          looksTransient(failure) &&
+          remainingBudgetMs() !== null
+        ) {
           lastFailure = failure;
           continue;
         }
-        return this.handleFailure(cfg, toolName, token, failure, startedAt);
+        return this.handleFailure(cfg, toolName, token, failure, startedAt, actingIdentity);
       }
     }
     // Both attempts hit a transient failure.
-    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt);
+    return this.handleFailure(cfg, toolName, token, lastFailure, startedAt, actingIdentity);
   }
 
   /**
@@ -363,6 +1418,7 @@ export class McpManager {
     token: string | null,
     rawFailure: string,
     startedAt: number,
+    actingIdentity: string | null,
   ): Promise<string> {
     const maybeAuth = token === null || looksUnauthorized(rawFailure);
     if (maybeAuth && this.options?.auth) {
@@ -376,15 +1432,30 @@ export class McpManager {
         /* fall back to the raw failure */
       }
       if (authMessage) {
-        this.emitCall(cfg, toolName, false, 'auth_required', startedAt);
+        this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
         return authMessage;
       }
     }
-    this.emitCall(cfg, toolName, false, rawFailure, startedAt);
+    this.emitCall(cfg, toolName, 'fail', rawFailure, startedAt, actingIdentity);
     return rawFailure;
   }
 
+  /** Number of pooled entries. Exposed for tests and for ops observability
+   *  (there is otherwise no way to see whether the pool is growing). */
+  get poolSize(): number {
+    return this.entries.size;
+  }
+
   private poolKey(cfg: McpServerConfig, token: string | null): string {
+    // INVARIANT: the key must contain exactly the inputs the transport actually
+    // consumes. `makeTransport` puts the bearer token in an HTTP request header
+    // and nowhere else — a stdio child is spawned with `command`/`args`/`env`
+    // only (and that env is per-server, never per-caller). Hashing the token
+    // into a stdio key therefore bought nothing and cost one child process per
+    // distinct token for a server that behaves identically for all of them
+    // (issue #563). If stdio ever gains token-derived env, this must change
+    // back in lockstep.
+    if (cfg.transport === 'stdio') return cfg.id;
     // A per-token pool key keeps different callers' authenticated connections
     // separate and lets a refreshed token transparently open a new connection.
     if (!token) return cfg.id;
@@ -392,51 +1463,118 @@ export class McpManager {
     return `${cfg.id}#${h}`;
   }
 
+  /**
+   * Drop pooled connections for `id` and close them.
+   *
+   * `id` is either a full pool key (the internal drop points pass one, and it
+   * matches only itself) or a bare server id — which drops every token-scoped
+   * entry of that server, so a deleted/reconfigured/re-authorized server is
+   * fully invalidated. It never crosses server ids; see `mcpPoolScopeMatches`.
+   */
   async close(id: string): Promise<void> {
-    const pooled = this.pool.get(id);
-    this.pool.delete(id);
-    this.connecting.delete(id);
-    if (!pooled) return;
-    try {
-      await pooled.client.close();
-    } catch {
-      /* best-effort */
-    }
+    // #545 — a closed server is an invalidated server: its cached tool list
+    // must not outlive its connections (deleted/reconfigured/re-authorized
+    // servers all arrive here).
+    this.purgeToolLists(id);
+    const keys = [...this.entries.keys()].filter((key) => mcpPoolScopeMatches(key, id));
+    await Promise.all(keys.map((key) => this.dropEntry(key)));
   }
 
   async closeAll(): Promise<void> {
-    await Promise.all([...this.pool.keys()].map((id) => this.close(id)));
+    this.toolListPurgeGen += 1;
+    this.toolLists.clear();
+    await Promise.all([...this.entries.keys()].map((key) => this.dropEntry(key)));
+  }
+
+  /** Remove one entry and tear its connection down. The removal is synchronous
+   *  (so the next `getOrConnect` reconnects immediately), the teardown waits
+   *  for the entry's promise: a connect that is still in flight is closed when
+   *  it lands instead of resolving into a `Client` nobody owns. */
+  private dropEntry(key: string): Promise<void> {
+    const entry = this.entries.get(key);
+    this.entries.delete(key);
+    if (!entry) return Promise.resolve();
+    return entry.promise.then(
+      async (pooled) => {
+        try {
+          await pooled.client.close();
+        } catch {
+          /* best-effort */
+        }
+      },
+      () => {
+        /* the connect failed — there is nothing to close */
+      },
+    );
+  }
+
+  /** Close every entry idle for longer than the configured TTL. Lazy by
+   *  design (see the class doc): called from `getOrConnect`, never from a
+   *  timer. Deleting the current key while iterating a Map is safe. */
+  private evictIdle(): void {
+    const ttl = this.options?.idleTtlMs ?? MCP_POOL_IDLE_TTL_MS;
+    if (!(ttl > 0)) return;
+    const cutoff = Date.now() - ttl;
+    for (const [key, entry] of this.entries) {
+      if (entry.lastUsedAt <= cutoff) void this.dropEntry(key);
+    }
   }
 
   private getOrConnect(cfg: McpServerConfig, token: string | null = null): Promise<Pooled> {
+    this.evictIdle();
     const key = this.poolKey(cfg, token);
-    const existing = this.pool.get(key);
-    if (existing) return Promise.resolve(existing);
-    const inflight = this.connecting.get(key);
-    if (inflight) return inflight;
-
-    const p = this.connect(cfg, token)
-      .then((pooled) => {
-        this.pool.set(key, pooled);
-        this.connecting.delete(key);
-        return pooled;
-      })
-      .catch((err) => {
-        this.connecting.delete(key);
-        throw err;
-      });
-    this.connecting.set(key, p);
-    return p;
+    const existing = this.entries.get(key);
+    if (existing) {
+      existing.lastUsedAt = Date.now();
+      return existing.promise;
+    }
+    // A rejected connect is never cached: the entry removes itself so the next
+    // call retries with a fresh transport.
+    const promise: Promise<Pooled> = this.connect(cfg, token).catch((err: unknown) => {
+      if (this.entries.get(key)?.promise === promise) this.entries.delete(key);
+      throw err;
+    });
+    this.entries.set(key, { promise, lastUsedAt: Date.now() });
+    return promise;
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
-    const transport = this.makeTransport(cfg, token);
+    // #562 phase 2 — `http` is the only transport that moved to the v2 family.
+    // The branch is here rather than inside `makeTransport` because the two
+    // families' `Transport` interfaces are NOT interchangeable: a v2 transport
+    // cannot drive a v1 `Client`, and era negotiation lives in the v2 client,
+    // not in its transport. Picking the transport therefore picks the client.
+    if (cfg.transport === 'http') {
+      const client = new ModernClient(CLIENT_INFO, MODERN_CLIENT_OPTIONS);
+      // #545 — same purge as the v1 branch below; the v2 client registers spec
+      // notifications by method string instead of by schema.
+      client.setNotificationHandler('notifications/tools/list_changed', () => {
+        this.purgeToolLists(cfg.id);
+      });
+      // The honest half of declaring the elicitation capability (#562 phase 3).
+      // The in-band MRTR path never reaches this handler — `autoFulfill` is off
+      // and `allowInputRequired` returns the result first — but a server may
+      // still open a server→client `elicitation/create` request, and a declared
+      // capability with no handler answers that with "method not found", which
+      // reads as a broken client rather than a deliberate policy. omadia does
+      // not answer elicitation in-process by design, so it says so.
+      client.setRequestHandler('elicitation/create', async () => ({ action: 'decline' as const }));
+      await client.connect(this.makeModernHttpTransport(cfg, token));
+      return { client: modernSdkSession(client) };
+    }
     const client = new Client(CLIENT_INFO);
-    await client.connect(transport);
-    return { client, transport };
+    // #545 — `notifications/tools/list_changed` invalidates a cached tool list
+    // IMMEDIATELY, even mid-TTL (the spec's two freshness mechanisms are
+    // complementary: the TTL bounds staleness, the notification reports it).
+    // All scopes of this server are dropped — the server said "changed", not
+    // for whom. Registered before `connect` so no notification can race past.
+    client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      this.purgeToolLists(cfg.id);
+    });
+    await client.connect(this.makeTransport(cfg, token));
+    return { client: legacySdkSession(client) };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for
    *  http/sse, environment variables for stdio. Returns cfg unchanged when the
    *  provider has none. */
@@ -484,19 +1622,38 @@ export class McpManager {
       return new StdioClientTransport({ command, args, ...(env ? { env } : {}) });
     }
     const url = new URL(cfg.endpoint);
-    // Merge the OAuth bearer token (issue #459 W9) with any configured headers;
-    // bearer_methods_supported is 'header' for spec-compliant servers.
-    const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-    if (cfg.transport === 'sse') {
-      return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+    const requestInit = httpRequestInit(cfg, token);
+    return new SSEClientTransport(url, requestInit ? { requestInit } : {});
+  }
+
+  /** The v2 Streamable-HTTP transport (#562 phase 2). Same URL and the same
+   *  merged headers the v1 transport got — `requestInit` is byte-identical
+   *  between the families, so nothing about authentication changed. */
+  private makeModernHttpTransport(
+    cfg: McpServerConfig,
+    token: string | null,
+  ): ModernStreamableHTTPClientTransport {
+    if (!cfg.endpoint) {
+      throw new Error(`MCP server "${cfg.name}" has no endpoint configured`);
     }
-    return new StreamableHTTPClientTransport(
-      url,
+    const requestInit = httpRequestInit(cfg, token);
+    return new ModernStreamableHTTPClientTransport(
+      new URL(cfg.endpoint),
       requestInit ? { requestInit } : {},
     );
   }
+}
+
+/** Merge the OAuth bearer token (issue #459 W9) with any configured headers;
+ *  `bearer_methods_supported` is 'header' for spec-compliant servers. Shared by
+ *  both SDK families so the two HTTP-shaped transports cannot drift. */
+function httpRequestInit(
+  cfg: McpServerConfig,
+  token: string | null,
+): { headers: Record<string, string> } | undefined {
+  const headers: Record<string, string> = { ...(cfg.headers ?? {}) };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
 // ── adapters ────────────────────────────────────────────────────────────────
@@ -530,6 +1687,16 @@ function inputSchemaOrEmpty(tool: McpToolDescriptor): {
   return { type: 'object', properties: {}, required: [] };
 }
 
+/**
+ * The `domain` an MCP server's tools are attributed to. Single derivation:
+ * `mcpToolToNativeSpec` stamps it onto every hydrated DomainTool, and the
+ * orchestrator's MCP input-replay privacy guard reuses it so a replay's
+ * bypass-receipt entry carries the SAME plugin id an ordinary dispatch would.
+ */
+export function mcpDomainForServer(serverName: string): string {
+  return `mcp.${slugifyDomain(serverName)}`;
+}
+
 /** Adapt an MCP tool into a top-level orchestrator NativeToolSpec. */
 export function mcpToolToNativeSpec(
   serverName: string,
@@ -540,7 +1707,7 @@ export function mcpToolToNativeSpec(
     description:
       tool.description ?? `MCP tool "${tool.name}" from server "${serverName}".`,
     input_schema: inputSchemaOrEmpty(tool),
-    domain: `mcp.${slugifyDomain(serverName)}`,
+    domain: mcpDomainForServer(serverName),
   };
 }
 
@@ -565,6 +1732,10 @@ export function mcpToolToLocalSubAgentTool(
   cfg: McpServerConfig,
   tool: McpToolDescriptor,
 ): LocalSubAgentTool {
+  // Issue #547 (W1-3): seed the schema cache from the (possibly DB-rehydrated)
+  // descriptor so the sidecar carries an outputSchema even when this process
+  // never ran discovery for this server.
+  manager.rememberToolSchema(cfg.id, tool);
   return {
     spec: {
       name: mcpNativeToolName(cfg.name, tool.name),
@@ -607,6 +1778,130 @@ export function renderToolResult(res: any): string {
     return JSON.stringify(res.structuredContent);
   }
   return JSON.stringify(res ?? {});
+}
+
+/**
+ * Issue #547 (W1-3) — pull an MCP result's `structuredContent` out for the
+ * out-of-band sidecar. Deliberately a SEPARATE function from
+ * `renderToolResult`, which stays byte-for-byte unchanged: the model-facing
+ * string must not shift because a sink is installed.
+ *
+ * Returns the payload exactly as the server sent it (object, or array for
+ * off-spec hosted servers — see `LENIENT_CALL_TOOL_RESULT_SCHEMA`), never a
+ * re-parse of the rendered string.
+ *
+ * Returns `undefined` for:
+ *   - a non-object / protocol-error result (nothing trustworthy to read),
+ *   - `isError: true` (a failed call has no result to render structurally),
+ *   - an absent `structuredContent`,
+ *   - an explicit `null` — off-spec (the spec requires an object) and carries
+ *     nothing to render, so it is folded into "absent" rather than emitting an
+ *     empty sidecar. Keeps the sink contract simple: a payload arrives only
+ *     when there is genuinely something in it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function extractStructured(res: any): unknown | undefined {
+  if (res === null || typeof res !== 'object') return undefined;
+  if (res.isError === true) return undefined;
+  const structured = res.structuredContent;
+  if (structured === undefined || structured === null) return undefined;
+  return structured;
+}
+
+/** Cache key for a per-server tool schema — same shape as the verdict maps in
+ *  `agentBuilder.ts`. `serverId` is a UUID and so contains no space, which makes
+ *  the FIRST space the unambiguous separator no matter what the tool name
+ *  contains; no collision is possible. */
+function schemaKey(serverId: string, toolName: string): string {
+  return `${serverId} ${toolName}`;
+}
+
+/** True for a non-null, non-array object. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * The argument key the replay adds. Also the manager's only signal that a call
+ * IS a replay — see `parkInputRequired`. Exported so the replayer and the tests
+ * cannot drift from it.
+ */
+export const REPLAY_ARG_KEY = 'inputResponses';
+
+/** What a replay has to send: the arguments, plus the spec params when the
+ *  parked record came from a 2026-07-28 peer. */
+export interface McpInputReplayPlan {
+  readonly args: Record<string, unknown>;
+  readonly replay: McpCallReplay;
+}
+
+/**
+ * Turn a claimed card plus the human's answers into the retry that peer
+ * expects (#562 phase 3).
+ *
+ * TWO dialects, and the RECORD decides — not the era, not a flag. A field that
+ * remembers its `requestKey` was parsed out of a spec-shaped embedded request,
+ * so its answer belongs in that request's own `inputResponses` entry as an
+ * `ElicitResult`; a field without one came from omadia's flat array dialect and
+ * replays exactly as it has since #544, inside `arguments`. Deriving it from
+ * the record is what keeps a card parked before an upgrade replayable after
+ * one.
+ *
+ * `originalArgs` always goes first so a server that (incorrectly) declared an
+ * `inputResponses` input field cannot shadow the collected answers with a stale
+ * value from the original call.
+ */
+export function planMcpInputReplay(
+  record: PendingMcpInput,
+  answers: Record<string, string>,
+): McpInputReplayPlan {
+  const grouped = new Map<string, Record<string, string>>();
+  for (const field of record.inputRequests) {
+    if (field.requestKey === undefined) continue;
+    const value = answers[field.name];
+    if (value === undefined) continue;
+    const bucket = grouped.get(field.requestKey) ?? {};
+    bucket[field.name] = value;
+    grouped.set(field.requestKey, bucket);
+  }
+  if (grouped.size === 0) {
+    return {
+      args: { ...record.originalArgs, [REPLAY_ARG_KEY]: answers },
+      replay: {
+        isReplay: true,
+        ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+      },
+    };
+  }
+  const inputResponses: Record<string, unknown> = {};
+  for (const [requestKey, content] of grouped) {
+    // `action: 'accept'` is the truthful report: the human filled the card in
+    // and submitted it. A declined or cancelled card never reaches a replay —
+    // the record is simply dropped — so no other action is representable here.
+    inputResponses[requestKey] = { action: 'accept', content };
+  }
+  return {
+    args: { ...record.originalArgs },
+    replay: {
+      isReplay: true,
+      inputResponses,
+      ...(record.requestState !== undefined ? { requestState: record.requestState } : {}),
+    },
+  };
+}
+
+/**
+ * W2-1 (#544) — does this result ask for mid-call user input?
+ *
+ * Requires `resultType === 'input_required'` exactly. An `isError` result is
+ * excluded: a failed call has no pending continuation to park, and treating one
+ * as a card would turn every server-side error into a prompt for the user.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isInputRequiredResult(res: any): boolean {
+  if (res === null || typeof res !== 'object') return false;
+  if (res.isError === true) return false;
+  return res.resultType === MCP_RESULT_TYPE_INPUT_REQUIRED;
 }
 
 /** Split a shell command line into argv. Honours simple double/single quotes;

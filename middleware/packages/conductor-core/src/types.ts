@@ -85,7 +85,16 @@ export interface EvalScope {
 // Workflow graph
 // ---------------------------------------------------------------------------
 
-export type StepKind = 'agent' | 'action' | 'human';
+export type StepKind = 'agent' | 'action' | 'human' | 'timer';
+
+/** kind='timer' (#330 C3): park the run for `duration`, then fire the step's
+ *  `fallbackTransitionId` (the on-expiry edge). The deterministic tick that
+ *  makes bounded assess/nudge loops possible — a guarded cycle through a
+ *  timer step is legal, an unguarded one stays a validation error. */
+export interface TimerStepConfig {
+  /** ISO-8601 duration (e.g. "PT1H"). */
+  duration: string;
+}
 
 export type PrincipalKind = 'user' | 'role';
 
@@ -108,6 +117,16 @@ export interface HumanStepConfig {
   /** default 'any'. */
   quorum?: Quorum;
   responseSchema?: JsonObject;
+  /**
+   * #759 — strict approval semantics. Default (false, the historical
+   * behaviour) is fail-open: only an explicit `{approved:false}` counts as a
+   * rejection, so an absent/garbage payload advances as approved. With
+   * `strictApproval: true` the executor normalizes the step result so
+   * `approved` is true ONLY for an explicit `{approved:true}` — everything
+   * else is a rejection. Set it on any human step that gates an
+   * irreversible action.
+   */
+  strictApproval?: boolean;
 }
 
 export interface CanvasPosition {
@@ -131,6 +150,8 @@ export interface Step {
   input?: JsonObject;
   /** required when kind='human'. */
   human?: HumanStepConfig;
+  /** required when kind='timer' (#330 C3). */
+  timer?: TimerStepConfig;
   /** the step's exit postcondition; absent ≡ always met. */
   postcondition?: Predicate;
   /** id of the transition fired when the postcondition is unmet, or when no happy-path
@@ -190,6 +211,8 @@ export type ValidationCode =
   | 'unreachable_step'
   | 'unguarded_cycle'
   | 'deadline_without_fallback'
+  | 'timer_step_invalid_duration'
+  | 'timer_requires_fallback'
   | 'quorum_all_requires_deadline_fallback'
   | 'agent_step_missing_agent'
   | 'action_step_missing_action'
@@ -216,9 +239,21 @@ export interface ValidationError {
   nodeIds: string[];
 }
 
+/** #759 — non-blocking validation findings. A warning never fails `ok`; it
+ *  surfaces a legal-but-dangerous shape the designer should consciously keep. */
+export type ValidationWarningCode = 'timeout_equals_approval' | 'approval_fail_open';
+
+export interface ValidationWarning {
+  code: ValidationWarningCode;
+  message: string;
+  nodeIds: string[];
+}
+
 export interface ValidationResult {
   ok: boolean;
   errors: ValidationError[];
+  /** Optional so pre-#759 consumers (and template checks) stay source-compatible. */
+  warnings?: ValidationWarning[];
 }
 
 /** Optional known-reference sets supplied by the kernel so the pure engine can verify that

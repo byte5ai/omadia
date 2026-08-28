@@ -14,7 +14,7 @@
  * than once in one process.
  */
 
-import type { ChatAgent } from '@omadia/channel-sdk';
+import type { ChatAgent, DisclosureSeenStore, GrantStore } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -33,6 +33,7 @@ import type {
   ProcessMemoryService,
   ResponseGuardService,
   SessionBriefingService,
+  TurnReceiptStore,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 import type { Pool } from 'pg';
@@ -43,12 +44,28 @@ import { ChatSessionStore } from './chatSessionStore.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
-import { Orchestrator, type OrchestratorPersonaSkill } from './orchestrator.js';
+import {
+  Orchestrator,
+  type OrchestratorPersonaSkill,
+  type AiDisclosureSetup,
+} from './orchestrator.js';
+import {
+  LlmScreener,
+  HttpProxyScreener,
+  type SecurityScreener,
+  type SecurityPostureSetup,
+  type SecurityAuditEvent,
+} from './securityScreener.js';
 import type { DirectLineStickyStore } from './directLineSticky.js';
+import type {
+  McpInputReplayer,
+  PendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
 import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
 import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
+import { MemoryBinder, type ContextMemoryMode } from './memoryBinder.js';
 import {
   ScopedMemoryStore,
   orchestratorMemoryScope,
@@ -87,6 +104,37 @@ export interface AgentRuntimeConfig {
    *  by the caller from `agent_persona_skills` (see {@link OrchestratorOptions}).
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * #914 — this Agent's authored behaviour text (`agent_identities.
+   * instructions`, migration 0052), which REPLACES the platform-wide
+   * `OrchestratorDeps.assistantIdentity` for this Agent.
+   *
+   * Same slot, not an additional block: `assistantIdentity` is the opening
+   * section of the system prompt, and an agent whose operator wrote its
+   * behaviour down means that text, not that text appended to a generic
+   * one. Absent/blank → the platform identity, exactly as before.
+   *
+   * Per-turn persona skills (Wave 8) still win over both — they replace this
+   * slot for one turn, which is what they always did.
+   */
+  readonly identityInstructions?: string;
+  /**
+   * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
+   * Read from the `agents.context_memory` column (migration 0050).
+   *
+   *  - `'off'` (DEFAULT, and what every existing row reports) — byte-identical
+   *    to today: every turn gets the agent-private memory stack, whether or not
+   *    its channel plugin sends a `TurnOrigin`.
+   *  - `'enforce'` — context turns write into their own tier and READ the
+   *    agent tier read-only, so existing knowledge stays quotable.
+   *  - `'enforce-strict'` — full quarantine: a context turn cannot even read
+   *    the agent tier.
+   *
+   * Off-by-default plus an optional `origin` is what makes this a no-flag-day
+   * change: every combination of old/new middleware and old/new channel plugin
+   * behaves exactly as it does today until an operator flips this.
+   */
+  readonly contextMemory?: ContextMemoryMode;
 }
 
 /**
@@ -109,10 +157,26 @@ export interface OrchestratorDeps {
    * conversation whenever an operator tweaked something unrelated.
    */
   readonly directLineStickyStore?: DirectLineStickyStore;
+  /**
+   * W2-1 (#544) — process-shared MCP pending-input store + replayer.
+   *
+   * Deps, not per-Agent config, for the SAME reason as
+   * `directLineStickyStore`: the registry replaces an Orchestrator instance on
+   * any config diff, and a per-instance store would drop every parked call
+   * whenever an operator changed something unrelated — after the user had
+   * already seen the card. Must be the same store instance the kernel's
+   * `McpManager` writes to.
+   */
+  readonly pendingMcpInput?: PendingMcpInputStore;
+  readonly mcpInputReplay?: McpInputReplayer;
   /** Late-bound `responseGuard@1` lookup (see `OrchestratorOptions`). */
   readonly responseGuard: () => ResponseGuardService | undefined;
   /** Late-bound `privacy.redact@1` lookup (see `OrchestratorOptions`). */
   readonly privacyGuard: () => PrivacyGuardService | undefined;
+  /** #757 — late-bound persistent per-turn receipt store lookup (see
+   *  `OrchestratorOptions.turnReceiptStore`). Optional: absent ⇒ receipts
+   *  stay ephemeral. */
+  readonly turnReceiptStore?: () => TurnReceiptStore | undefined;
   /**
    * Slice 2.5 — cross-plugin runtime-config lookup for the privacy bypass
    * resolver (see `OrchestratorOptions.pluginConfigGet`). Wired from the
@@ -152,6 +216,40 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
+   * shipping default (standard, active) on every channel. See
+   * `OrchestratorOptions.aiDisclosure`.
+   */
+  readonly aiDisclosure?: AiDisclosureSetup;
+  /**
+   * #644 — process-shared first-turn-per-scope fold-dedup store. Deps, not
+   * per-Agent config, for the SAME reason as `directLineStickyStore`: the
+   * registry replaces an Orchestrator instance on any config diff, and a
+   * per-instance store would re-fold the marking into every live conversation
+   * whenever an operator changed something unrelated.
+   */
+  readonly aiDisclosureSeenStore?: DisclosureSeenStore;
+  /**
+   * #579 — resolved org security posture (org floor + optional scope tighten +
+   * shadow/enforce mode + optional external screen URL). Absent → the shipping
+   * default (`auto`, enforce). The SCREENER and AUDIT SINK are built here (they
+   * need the provider + session logger), keyed off this setup — see
+   * `OrchestratorOptions.securityScreener` / `securityAuditSink`.
+   */
+  readonly securityPosture?: SecurityPostureSetup;
+  /**
+   * #575 — durable capability grants for the audience floor.
+   *
+   * Present ONLY when the operator enabled the floor: the kernel publishes the
+   * `audienceGrants` service behind `AUDIENCE_FLOOR_ENABLED`. Absent ⇒ the
+   * orchestrator installs no audience provider and the three guards
+   * short-circuit, which is the "not enforced ≠ closed" rule they are built on.
+   * Passing a store is therefore the switch, and the reason it is a switch
+   * rather than a default is that the floor fails closed — an empty grant table
+   * bounds every room to nothing.
+   */
+  readonly audienceGrants?: GrantStore;
   /** #133 E0 — side-channel turn-hook runner, fired during each turn. */
   readonly turnHookRegistry?: TurnHookRunner;
   /**
@@ -236,6 +334,50 @@ export function buildOrchestratorForAgent(
     : namespacedStore;
   const memoryToolHandler = new MemoryToolHandler(memoryToolStore);
 
+  // W5 memory-ACL — the per-CHAT-CONTEXT binder. `memoryToolHandler` above is
+  // resolved once, here, for the whole process lifetime; the binder resolves a
+  // stack per turn from the turn's `TurnOrigin` instead, so what an Agent
+  // learns in team A is not quotable in team B.
+  //
+  // It is built unconditionally and gated by MODE, not by presence: with
+  // `contextMemory: 'off'` — the default, and what every existing agent row
+  // reports until an operator changes it — `forOrigin` ignores the origin and
+  // returns the context-free stack, which is the same ScopedMemoryStore +
+  // OrchestratorMemoryNamespacer + DurableRulesMemoryStore composition the
+  // lines above build. One code path, so the rollout switch cannot drift away
+  // from the thing it is switching.
+  //
+  // The binder takes `deps.memoryStore` UNDECORATED on purpose: it owns the
+  // whole decorator chain, because the scope it enforces is what decides which
+  // wrappers apply. `chatSessionStore` / `sessionLogger` keep the static
+  // `scopedStore` — session transcripts stay shared under `core/sessions`
+  // (decision A3a) and must not be partitioned by chat context.
+  const memoryBinder = new MemoryBinder({
+    agentSlug: config.agentId,
+    root: deps.memoryStore,
+    mode: config.contextMemory ?? 'off',
+    ...(durableRulesHookEnabled
+      ? {
+          durableRules: {
+            pool: deps.graphPool!,
+            kg: deps.knowledgeGraph,
+            tenantId: deps.graphTenantId ?? 'default',
+            ...(deps.embeddingClient
+              ? { embeddingClient: deps.embeddingClient }
+              : {}),
+            log: (msg: string): void => {
+              console.error(msg);
+            },
+          },
+        }
+      : {}),
+    log: (msg, fields): void => {
+      console.error(
+        `[security-audit] ${msg}${fields ? ` ${JSON.stringify(fields)}` : ''}`,
+      );
+    },
+  });
+
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
   const chatParticipantsTool = new ChatParticipantsTool();
@@ -255,6 +397,35 @@ export function buildOrchestratorForAgent(
         deps.microsoft365.slots,
       )
     : undefined;
+
+  // #579 — security screener + audit sink, keyed off the resolved posture.
+  // Late-bound thunks (see `OrchestratorOptions`): resolved once per turn, so a
+  // screen-URL change on rebuild takes effect without touching this closure.
+  // The screener is the external HTTP proxy when the operator set a URL, else
+  // the default LLM judge over THIS agent's provider + model (temperature 0).
+  const securityScreener = (): SecurityScreener => {
+    const url = deps.securityPosture?.screenUrl;
+    return url
+      ? new HttpProxyScreener({ url })
+      : new LlmScreener({ provider: deps.provider, model: config.model });
+  };
+  // The audit sink is fire-and-forget. `SessionLogger.log` is turn-shaped (it
+  // records a user/assistant exchange), so a security event does not fit it;
+  // the default sink writes a structured operational log line — the same idiom
+  // the codebase uses for the privacy-receipt drop and the override warnings.
+  // The injectable `securityAuditSink` option is the extension point for a
+  // durable audit store when one lands (there is no central audit bus today).
+  const securityAuditSink =
+    () =>
+    (event: SecurityAuditEvent): void => {
+      console.warn(`[security-audit] ${JSON.stringify(event)}`);
+    };
+
+  // #914 — per-Agent identity beats the platform default. A blank authored
+  // value is not an identity, so it falls through rather than silencing the
+  // opening section of the system prompt.
+  const agentAssistantIdentity =
+    config.identityInstructions?.trim() || deps.assistantIdentity;
 
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
@@ -284,6 +455,7 @@ export function buildOrchestratorForAgent(
     domainTools: [],
     nativeToolRegistry: deps.nativeToolRegistry,
     memoryToolHandler,
+    memoryBinder,
     sessionLogger,
     entityRefBus: deps.entityRefBus,
     knowledgeGraph: deps.knowledgeGraph,
@@ -295,12 +467,23 @@ export function buildOrchestratorForAgent(
     ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
     chatParticipantsTool,
     askUserChoiceTool,
+    // W2-1 (#544) — both or neither: a store with no replayer would park calls
+    // the user can answer but nothing can deliver.
+    ...(deps.pendingMcpInput && deps.mcpInputReplay
+      ? {
+          pendingMcpInput: deps.pendingMcpInput,
+          mcpInputReplay: deps.mcpInputReplay,
+        }
+      : {}),
     suggestFollowUpsTool,
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
     ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
     privacyGuard: deps.privacyGuard,
+    ...(deps.turnReceiptStore
+      ? { turnReceiptStore: deps.turnReceiptStore }
+      : {}),
     ...(deps.pluginConfigGet
       ? { pluginConfigGet: deps.pluginConfigGet }
       : {}),
@@ -325,9 +508,24 @@ export function buildOrchestratorForAgent(
       : {}),
     ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
-    ...(deps.assistantIdentity
-      ? { assistantIdentity: deps.assistantIdentity }
+    // #914 — the Agent's own behaviour text wins over the platform-wide one.
+    // Resolved once, here, so the two call sites below cannot disagree about
+    // which identity this Agent speaks with.
+    ...(agentAssistantIdentity
+      ? { assistantIdentity: agentAssistantIdentity }
       : {}),
+    ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
+    ...(deps.aiDisclosureSeenStore
+      ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
+      : {}),
+    // #579 — org security posture + its screener/audit sink. Posture absent →
+    // orchestrator applies the shipping default (`auto`); the screener + sink
+    // are always wired (inert unless screening is enabled for the posture).
+    ...(deps.securityPosture ? { securityPosture: deps.securityPosture } : {}),
+    // #575 — supplying this is what makes the audience guards non-inert.
+    ...(deps.audienceGrants ? { audienceGrants: deps.audienceGrants } : {}),
+    securityScreener,
+    securityAuditSink,
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
@@ -370,8 +568,8 @@ export function buildOrchestratorForAgent(
         agent: new CliChatAgent({
           dispatch,
           model: config.model.replace(/-cli$/, '') || 'sonnet',
-          ...(deps.assistantIdentity
-            ? { systemPrompt: deps.assistantIdentity }
+          ...(agentAssistantIdentity
+            ? { systemPrompt: agentAssistantIdentity }
             : {}),
         }),
         raw: orchestrator,

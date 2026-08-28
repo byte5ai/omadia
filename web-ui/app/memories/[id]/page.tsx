@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -80,6 +80,7 @@ const SOURCE_BADGE: Record<ExcerptSource, string> = {
  */
 export default function MemoryDetailPage(): React.ReactElement {
   const t = useTranslations('memories');
+  const format = useFormatter();
   const params = useParams<{ id: string }>();
   const rawId = params?.id ?? '';
   const id = useMemo(() => decodeURIComponent(rawId), [rawId]);
@@ -357,7 +358,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                 className="font-mono text-[10px] text-[color:var(--fg-muted)]"
                 dateTime={node.props.created_at}
               >
-                {new Date(node.props.created_at).toLocaleString('de-DE')}
+                {format.dateTime(new Date(node.props.created_at))}
               </time>
             </div>
 
@@ -655,6 +656,7 @@ export default function MemoryDetailPage(): React.ReactElement {
               <h2 className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
                 {t('detail.auditHeading')}
               </h2>
+              {/* eslint-disable-next-line no-restricted-syntax -- inline hover-underline text link (no fill/border/padding), not a CTA */}
               <button
                 type="button"
                 onClick={() => void loadAudit()}
@@ -700,7 +702,7 @@ export default function MemoryDetailPage(): React.ReactElement {
                           dateTime={e.createdAt}
                           className="font-mono text-[color:var(--fg-muted)]"
                         >
-                          {new Date(e.createdAt).toLocaleString('de-DE')}
+                          {format.dateTime(new Date(e.createdAt))}
                         </time>
                         {ownersDelta !== null && ownersDelta !== 0 && (
                           <span

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 
@@ -18,9 +18,11 @@ import { Button } from '@/app/_components/ui/Button';
  *   - reason (optional)
  *   - updated_at
  *
- * Backed by `/bot-api/dev/graph/priorities/{agentId}` (GET → list,
- * POST → upsert, DELETE → remove). Mounted only when DEV_ENDPOINTS_ENABLED
- * + agentPriorities@1 is published; otherwise the page shows an empty state.
+ * Backed by `/bot-api/v1/admin/kg-priorities/{agentId}` (GET → list,
+ * POST → upsert, DELETE → remove). Issue #669 moved these off the
+ * unauthenticated `/api/dev` surface: they are authenticated operator admin
+ * routes now, mounted whenever `agentPriorities@1` is published — no
+ * `DEV_ENDPOINTS_ENABLED` involved. Otherwise the page shows an empty state.
  */
 
 type AgentPriorityRecord = {
@@ -32,11 +34,12 @@ type AgentPriorityRecord = {
   updatedAt: string;
 };
 
-const STAT_BASE = '/bot-api/dev/graph/priorities';
+const STAT_BASE = '/bot-api/v1/admin/kg-priorities';
 const DEFAULT_AGENT = 'orchestrator-default';
 
 export default function KgPrioritiesPage(): React.ReactElement {
   const t = useTranslations('adminKgPriorities');
+  const format = useFormatter();
   const [agentId, setAgentId] = useState<string>(DEFAULT_AGENT);
   const [records, setRecords] = useState<AgentPriorityRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -144,7 +147,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
     <main className="mx-auto max-w-[1200px] px-6 py-12 lg:px-8 lg:py-16">
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Knowledge-Graph Priorities
+          {t('title')}
         </h1>
         <p className="mt-3 max-w-3xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
           {t('intro')}
@@ -192,8 +195,8 @@ export default function KgPrioritiesPage(): React.ReactElement {
             onChange={(e) => { setDraftAction(e.target.value as 'block' | 'boost'); }}
             className="lg:col-span-2 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           >
-            <option value="block">block</option>
-            <option value="boost">boost</option>
+            <option value="block">{t('actionBlock')}</option>
+            <option value="boost">{t('actionBoost')}</option>
           </select>
           <input
             type="number"
@@ -213,7 +216,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
             type="text"
             value={draftReason}
             onChange={(e) => { setDraftReason(e.target.value); }}
-            placeholder="Reason (optional)"
+            placeholder={t('reasonPlaceholder')}
             className="lg:col-span-3 rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-sm text-[color:var(--fg-strong)]"
           />
           <Button
@@ -239,11 +242,11 @@ export default function KgPrioritiesPage(): React.ReactElement {
         <table className="w-full text-sm">
           <thead className="border-b border-[color:var(--border)] text-left text-[color:var(--fg-muted)]">
             <tr>
-              <th className="px-4 py-3 font-semibold">Entry External ID</th>
-              <th className="px-4 py-3 font-semibold">Action</th>
-              <th className="px-4 py-3 font-semibold">Weight</th>
-              <th className="px-4 py-3 font-semibold">Reason</th>
-              <th className="px-4 py-3 font-semibold">Updated</th>
+              <th className="px-4 py-3 font-semibold">{t('colEntryExternalId')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colAction')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colWeight')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colReason')}</th>
+              <th className="px-4 py-3 font-semibold">{t('colUpdated')}</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
@@ -284,7 +287,7 @@ export default function KgPrioritiesPage(): React.ReactElement {
                     {r.reason ?? '—'}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-[color:var(--fg-muted)]">
-                    {new Date(r.updatedAt).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(r.updatedAt))}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Button

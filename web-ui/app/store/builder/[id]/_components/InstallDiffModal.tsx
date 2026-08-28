@@ -145,6 +145,7 @@ export function InstallDiffModal({
       aria-modal="true"
       aria-label={t('publishTitle')}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- full-screen modal overlay/backdrop dismiss button, no text */}
       <button
         type="button"
         onClick={handleClose}
@@ -176,6 +177,7 @@ export function InstallDiffModal({
               {draft.spec.version} {t('publishLeadSuffix')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only header close button (X), no text */}
           <button
             type="button"
             onClick={handleClose}
@@ -249,19 +251,14 @@ export function InstallDiffModal({
         </div>
 
         <footer className="flex items-center justify-end gap-3 border-t border-[color:var(--rule)] px-6 py-4">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={handleClose}
             disabled={busy}
-            className={cn(
-              'rounded-md px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.18em]',
-              'text-[color:var(--fg-muted)] transition-colors',
-              'hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]',
-              'disabled:opacity-40 disabled:cursor-not-allowed',
-            )}
+            className="text-[12px] font-semibold uppercase tracking-[0.18em]"
           >
             {t('back')}
-          </button>
+          </Button>
           <Button
             variant="primary"
             onClick={() => void handleInstall()}
@@ -347,26 +344,26 @@ function DiffBody({ draft, t }: { draft: Draft; t: InstallT }): React.ReactEleme
           <EmptyHint>{t('noToolsDefined')}</EmptyHint>
         ) : (
           <ul className="space-y-2">
-            {tools.map((t) => (
+            {tools.map((tool) => (
               <li
-                key={t.id}
+                key={tool.id}
                 className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)] px-3 py-2"
               >
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="font-mono-num text-[12px] font-semibold text-[color:var(--fg-strong)]">
-                    {t.id}
+                    {tool.id}
                   </span>
                 </div>
                 <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-                  {t.description}
+                  {tool.description}
                 </p>
-                {t.input ? (
+                {tool.input ? (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
-                      input schema
+                      {t('toolInputSchema')}
                     </summary>
                     <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-[color:var(--divider)] bg-[color:var(--paper)] px-2 py-2 text-[10px] font-mono leading-relaxed text-[color:var(--fg-strong)]">
-                      {JSON.stringify(t.input, null, 2)}
+                      {JSON.stringify(tool.input, null, 2)}
                     </pre>
                   </details>
                 ) : null}

@@ -1,6 +1,6 @@
 {
   "name": "@omadia/plugin-api",
-  "version": "0.1.0",
+  "version": "1.10.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,10 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "api:check": "node scripts/api-snapshot.mjs --check",
+    "api:update": "node scripts/api-snapshot.mjs --update",
+    "test": "node --import tsx --test 'test/**/*.test.ts'",
     "clean": "rm -rf dist"
   },
   "engines": {

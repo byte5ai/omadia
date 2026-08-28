@@ -19,7 +19,9 @@
         "title": "LLM-Provider",
         "connected": "{count, plural, one {# Provider verbunden} other {# Provider verbunden}}",
         "none": "Kein Provider verbunden",
-        "active": "Aktiv: {name}"
+        "active": "Aktiv: {name}",
+        "unverified": "{count, plural, one {# Provider ungeprüft} other {# Provider ungeprüft}}",
+        "invalid": "Provider-Schlüssel abgelehnt"
       },
       "orchestrators": {
         "title": "Orchestratoren",
@@ -29,6 +31,7 @@
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
+        "ready": "{n} von {total} einsatzbereit",
         "none": "Noch keine Plugins installiert"
       },
       "mcp": {
@@ -102,27 +105,19 @@
         "open": "Öffnen",
         "build": "Im Builder bauen",
         "request": "Anfragen",
-        "missingHint": "Noch nicht im Hub",
-        "sectionEmpty": "Keine Empfehlung in dieser Kategorie."
+        "missingHint": "Noch nicht im Hub"
       },
-      "step": "Schritt {n}",
-      "rolesHeading": "Rolle wählen",
       "llmStep": {
-        "connect": "LLM-Zugang öffnen",
+        "connectApiKey": "API-Schlüssel hinterlegen",
+        "connectSubscription": "Abo verwenden",
         "title": "LLM verbinden",
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
-        "connectProvider": "Provider verbinden",
-        "connectCli": "Abo-CLI verbinden"
+        "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
+        "doneViaCli": "Du bist in einer Abo-CLI angemeldet — das reicht, um Orchestratoren zu betreiben."
       },
       "heading": "Erste Schritte",
-      "subtitle": "Wähle eine Rolle, um einen empfohlenen Satz Plugins zu installieren. Alles lässt sich später anpassen.",
       "kicker": "Einrichtung",
-      "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-      "apply": "Set installieren",
-      "applying": "Wird installiert",
       "applied": "Installiert",
-      "failed": "Installation fehlgeschlagen",
-      "retry": "Erneut versuchen",
       "browseAll": "Alle Plugins ansehen",
       "bringSkills": {
         "kicker": "Optional",
@@ -136,8 +131,14 @@
       },
       "dismiss": "Onboarding ausblenden",
       "reenable": "Onboarding anzeigen",
-      "empty": "Keine Rollenprofile verfügbar. Verbinde eine Registry, um Empfehlungen zu sehen.",
-      "outcome": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen"
+      "stepOfTotal": "Schritt {n} von {total}",
+      "progress": "{done} von {total} erledigt",
+      "caseChosen": "Business-Case: {name}",
+      "installStep": {
+        "title": "Plugins installieren",
+        "pickCaseFirst": "Wähle oben einen Business-Case, um passende Empfehlungen zu sehen.",
+        "done": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}"
+      }
     }
   },
   "adminLlm": {
@@ -164,6 +165,9 @@
         "access": {
           "heading": "Zugang"
         },
+        "system": {
+          "heading": "System"
+        },
         "danger": {
           "heading": "Gefahrenzone"
         }
@@ -176,6 +180,10 @@
         "usage": {
           "title": "Nutzung & Kosten",
           "description": "Token-Verbrauch und Kosten pro Modell, Quelle und Zeit verfolgen, inklusive Cache-Hit-Rate über jeden Call."
+        },
+        "transcriptionProvider": {
+          "title": "Transkriptions-Provider",
+          "description": "Aktiven Speech-to-Text-Adapter live umschalten — ohne Neustart. Ein aktiver Provider sendet Roh-Audio an seinen externen Endpoint."
         },
         "providers": {
           "title": "Provider",
@@ -192,6 +200,10 @@
         "kgPriorities": {
           "title": "Knowledge-Graph Prioritäten",
           "description": "Pro Agent Block- und Boost-Listen setzen, die Recall-Treffer im Token-Budget-Assembler überschreiben."
+        },
+        "datasets": {
+          "title": "Datensätze",
+          "description": "CSVs als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
         },
         "bulkPromote": {
           "title": "Bulk-Promotion",
@@ -221,10 +233,6 @@
           "title": "MCP Control Center",
           "description": "MCP-Server, erkannte Tools mit Scan-Verdicts, Grants und das Call-Audit-Log an einem Ort."
         },
-        "devPlatform": {
-          "title": "Dev-Plattform",
-          "description": "Repositories registrieren und isolierte Code-Runner-Jobs starten, die aus einem geprüften Diff einen Pull Request öffnen."
-        },
         "webhooks": {
           "title": "Conductor-Webhooks",
           "description": "Eingehende Endpunkte und ausgehende Subscriptions, mit Secret-Rotation und Zustellungsverlauf."
@@ -236,6 +244,14 @@
         "users": {
           "title": "Benutzer",
           "description": "Lokale Konten anlegen, deaktivieren, Passwort zurücksetzen oder löschen."
+        },
+        "apiKeys": {
+          "title": "Öffentliche API-Schlüssel",
+          "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
+        },
+        "update": {
+          "title": "Update",
+          "description": "Zeigt die laufende Version, prüft auf ein neueres Release und hebt den Stack – mit installiertem Updater-Overlay – direkt von hier an."
         },
         "dangerZone": {
           "title": "Memory-Purge",
@@ -282,6 +298,10 @@
           "updated": "Aktualisiert den bestehenden importierten Skill.",
           "unchanged": "Bereits importiert — keine Änderungen."
         },
+        "unparsedFrontmatter": {
+          "title": "Teile des Frontmatters konnten nicht importiert werden",
+          "explain": "omadia liest ein „Schlüssel: Wert“ pro Zeile. Diese Zeilen nutzen Listen oder verschachtelte Werte, daher wurden die hier gezeigten Schlüssel nicht importiert. Alles Übrige im Skill wurde normal importiert."
+        },
         "risks": {
           "title": "Vor dem Import prüfen — dieser Inhalt könnte versuchen:",
           "code": {
@@ -293,7 +313,9 @@
             "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse zu sammeln",
             "silent_permission_escalation": "Erweiterten Zugriff anzufordern, ohne den Nutzer zu informieren"
           }
-        }
+        },
+        "importFailed": "Der Import hat nicht geklappt.",
+        "supportDetails": "Details für den Support"
       },
       "toolbox": {
         "native": "Native Tools",
@@ -412,6 +434,8 @@
     "graph": "Graph",
     "routines": "Routinen",
     "conductor": "Conductor",
+    "receipts": "Receipts",
+    "privacyReports": "Privacy-Reports",
     "admin": "Admin",
     "system": "System",
     "agentsCluster": "Orchestratoren",
@@ -419,7 +443,8 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
-    "adminCluster": "Admin"
+    "adminCluster": "Admin",
+    "help": "Hilfe"
   },
   "conductor": {
     "title": "Conductor",
@@ -436,6 +461,13 @@
     "publishing": "Veröffentliche…",
     "runButton": "Starten",
     "editButton": "Bearbeiten",
+    "deleteButton": "Löschen",
+    "deleteConfirmTitle": "Workflow löschen?",
+    "deleteConfirmBody": "\"{slug}\" wird aus der Bibliothek entfernt und kann nicht mehr gestartet oder getriggert werden. Vorhandene Läufe bleiben als Audit-Trace erhalten.",
+    "deleteConfirmButton": "Löschen",
+    "deleteCancelButton": "Abbrechen",
+    "deleteFailed": "Der Workflow konnte nicht gelöscht werden",
+    "deleteHasActiveRuns": "Dieser Workflow hat laufende oder wartende Läufe — der Verlauf ist unten geöffnet: dort erst abbrechen, dann löschen.",
     "running": "Läuft…",
     "refreshButton": "Aktualisieren",
     "statusLabel": "Status",
@@ -451,6 +483,14 @@
     "publishError": "Veröffentlichen fehlgeschlagen",
     "runError": "Lauf fehlgeschlagen",
     "validationHeading": "Graph-Validierung fehlgeschlagen",
+    "validationWarningsHeading": "Veröffentlicht mit Warnungen",
+    "cancelRunButton": "Lauf abbrechen",
+    "cancelRunBusy": "Wird abgebrochen",
+    "cancelRunConfirm": "Diesen Lauf abbrechen? Ein wartender Lauf endet sofort; ein laufender stoppt an der nächsten Schrittgrenze. Das lässt sich nicht rückgängig machen.",
+    "cancelRunFailed": "Der Lauf konnte nicht abgebrochen werden",
+    "cancelPendingHint": "Abbruch angefordert — der Lauf stoppt an der nächsten Schrittgrenze.",
+    "strictApprovalLabel": "Strikte Freigabe",
+    "strictApprovalHint": "Nur eine explizite Freigabe führt weiter; eine fehlende oder fehlerhafte Antwort zählt als Ablehnung. Empfohlen, wenn dieser Schritt eine unumkehrbare Aktion schützt.",
     "designerHeading": "Visueller Designer",
     "designerHint": "Steps hinzufügen, zum Verdrahten zwischen ihnen ziehen, einen Step im Inspector bearbeiten, dann Speichern. Markiere einen Step als Einstieg.",
     "chatHeading": "Konversationeller Builder",
@@ -490,7 +530,7 @@
     "agentSlugLabel": "Agent-Slug",
     "promptLabel": "Prompt",
     "actionIdLabel": "Action-ID",
-    "inputLabel": "Input (JSON)",
+    "inputLabel": "Eingabe (JSON)",
     "principalLabel": "Principal",
     "channelLabel": "Channel",
     "messageLabel": "Nachricht",
@@ -688,9 +728,88 @@
     "templateApproving": "Wird freigegeben",
     "templateRejecting": "Wird abgelehnt",
     "templatePendingEmpty": "Keine Vorlagen warten auf Review",
-    "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern."
+    "templateNoMatches": "Keine Vorlagen entsprechen deinen Filtern.",
+    "facilitationsHeading": "Laufende Facilitations",
+    "facilitationsEmpty": "Es läuft keine Facilitation.",
+    "facilitationsLoadFailed": "Die Facilitations konnten nicht geladen werden",
+    "facilitationTerminateFailed": "Die Facilitation konnte nicht beendet werden",
+    "facilitationTerminateButton": "Stoppen & entfernen",
+    "facilitationTerminateBusy": "Wird gestoppt",
+    "facilitationTerminateConfirmTitle": "Diese Facilitation stoppen?",
+    "facilitationTerminateConfirmBody": "Aktive Läufe werden abgebrochen, das automatisch angelegte Binding und die Initiator-Rolle werden entfernt. Der Verlauf bleibt als Audit-Spur erhalten. Das lässt sich nicht rückgängig machen.",
+    "facilitationConversation": "Konversation",
+    "facilitationDod": "Definition of Done",
+    "facilitationRounds": "Assess-Runden",
+    "facilitationLastVerdict": "Letzte Einschätzung",
+    "facilitationDodMet": "DoD erfüllt",
+    "facilitationDodOpen": "DoD noch offen",
+    "facilitationParticipants": "Teilnehmer",
+    "facilitationRosterPartial": "(Liste evtl. unvollständig)",
+    "facilitationInitiator": "Initiator",
+    "facilitationExpires": "Läuft ab",
+    "facilitationsLoading": "Facilitations werden geladen…",
+    "facilitationIncomplete": "Einige Details konnten nicht geladen werden — diese Zeile kann unvollständig sein.",
+    "facilitationDetailsButton": "Details",
+    "facilitationDetailsHeading": "Facilitation-Details",
+    "facilitationDetailsClose": "Schließen",
+    "facilitationTraceHeading": "Verlauf (Assess-Runden)",
+    "facilitationTraceFailed": "Der Verlauf konnte nicht geladen werden",
+    "facilitationNoRun": "Für diese Facilitation existiert noch kein Lauf.",
+    "facilitationResultsHeading": "Zwischenstand der Ergebnisse (je DoD-Punkt)",
+    "facilitationResultsPoint": "Punkt",
+    "facilitationResultsStatus": "Status",
+    "facilitationResultsNote": "Aktueller Stand",
+    "facilitationStatusDone": "erledigt",
+    "facilitationStatusPartial": "teilweise",
+    "facilitationStatusOpen": "offen"
+  },
+  "operatorPrivacyReports": {
+    "metaTitle": "Privacy-Reports · omadia",
+    "title": "Privacy-Miss-Reports",
+    "subtitle": "Werte, die das Prompt-Masking übersehen hat — von Operatoren aus dem Privacy-Receipt gemeldet. Begriff in eine Deny-List-Regel überführen (custom_terms am Privacy-Plugin), dann den Report auflösen.",
+    "loadError": "Reports konnten nicht geladen werden",
+    "empty": "Keine offenen Reports. Aus der Receipt-Karte gemeldete Misses erscheinen hier.",
+    "howToResolve": "So bearbeitest Du einen Report: Begriff kopieren, ins custom_terms-Setup-Feld des Privacy-Plugins eintragen, dann auflösen.",
+    "reportedBy": "gemeldet von {reporter}",
+    "copyTerm": "Begriff kopieren",
+    "copied": "Kopiert",
+    "resolve": "Auflösen",
+    "resolving": "Wird aufgelöst",
+    "resolveFailed": "Auflösen des Reports fehlgeschlagen"
+  },
+  "operatorReceipts": {
+    "metaTitle": "Receipts · omadia",
+    "title": "Privacy-Receipts",
+    "subtitle": "Jeder abgeschlossene Turn schreibt seinen PII-freien Privacy-Receipt hierher — was der Shield interniert, maskiert und durchgereicht hat. Der Beleg überlebt die Chat-Ansicht; die Aufbewahrung begrenzt RECEIPT_RETENTION_DAYS der Middleware.",
+    "loadError": "Receipts konnten nicht geladen werden",
+    "empty": "Noch keine Receipts vorhanden. Sobald ein Turn mit Privacy-Shield-Aktivität abschließt, erscheint er hier.",
+    "scopeLabel": "Scope",
+    "channelLabel": "Channel",
+    "modelLabel": "Modell",
+    "turnIdLabel": "Turn",
+    "summaryCounts": "{masked} maskiert · {datasets} Datasets",
+    "loadMore": "Mehr laden",
+    "loadingMore": "Lädt…",
+    "chainHeading": "Manipulationsschutz-Kette",
+    "chainNotYetVerified": "in dieser Sitzung noch nicht geprüft",
+    "chainVerifying": "Wird geprüft",
+    "chainVerifyNow": "Jetzt prüfen",
+    "chainVerified": "geprüft — {n} Einträge intakt",
+    "chainVerifiedUnsigned": "geprüft ohne Signaturen — {n} Einträge intakt, kein Signierschlüssel",
+    "chainBroken": "GEBROCHEN — siehe Befunde",
+    "chainVerifyFailed": "Prüf-Anfrage fehlgeschlagen",
+    "chainExport": "Signierten Export herunterladen",
+    "chainKeyConfigured": "Checkpoint-Signierung aktiv (Key {fingerprint}…, alle {minutes} Min.).",
+    "chainKeyMissing": "Kein Signierschlüssel konfiguriert — die Kette wird gebaut, aber Checkpoints sind unsigniert (AUDIT_SIGNING_KEY setzen).",
+    "chainAnchorOn": "externer Anker aktiv",
+    "chainBreakAt": "Kettenbruch: {kind} bei Seq {seq}",
+    "chainCheckpointFinding": "Checkpoint-Befund: {kind} bei Seq {seq}",
+    "chainUnanchoredPrefix": "Retention hat frühe Zeilen entfernt und kein signierter Checkpoint verankert die verbleibende Kette",
+    "chainPrematureDeletion": "Ein Checkpoint beweist, dass eine gelöschte Zeile nach {provenAfter} entstand — innerhalb des {days}-Tage-Retention-Fensters. Das ist ein Befund, keine Retention",
+    "chainPreChainRows": "{n} Zeilen stammen aus der Zeit vor der Manipulationsschutz-Kette und sind nicht prüfbar"
   },
   "operatorChannels": {
+    "metaTitle": "Channels · omadia",
     "title": "Channels",
     "subtitle": "Eingehende Webhooks pro Channel-Key auf einen Orchestrator routen. Jeder Channel-Plugin meldet seine eigenen Keys — du wählst nur, welcher Orchestrator sie beantwortet.",
     "loadError": "Konnte Channels nicht laden",
@@ -700,15 +819,29 @@
     "fallbackHint": "Channels ohne explizite Zuordnung landen beim Standard-Orchestrator ({fallback}).",
     "fallbackHintNone": "kein Standard gesetzt",
     "originLabel": "via",
+    "membersLine": "Mitglieder: {names}",
+    "membersMore": "{count, plural, one {+# weiteres} other {+# weitere}}",
     "staleBadge": "veraltet",
     "routesTo": "→ Orchestrator:",
     "routesToFallback": "(Standard · {fallback})",
-    "clearStale": "Binding entfernen"
+    "clearStale": "Binding entfernen",
+    "disclosure": {
+      "heading": "KI-Kennzeichnung weicht vom Auslieferungszustand ab",
+      "body": "Auf diesen Channels werden Antworten anders gekennzeichnet als im Auslieferungszustand: {channels}.",
+      "inert": "Konfiguriert, aber noch nicht wirksam: {channels}. Turns auf diesen Channels melden ihren Channel-Typ nicht, daher gilt dort die globale Einstellung.",
+      "note": "Das ist deine Entscheidung als Betreiber — es wird nichts blockiert. Angezeigt, damit eine Einstellung aus einem Test-Setup nicht unbemerkt bleibt.",
+      "level": {
+        "standard": "volle Kennzeichnung",
+        "concise": "kurze Kennzeichnung",
+        "off": "keine Kennzeichnung"
+      }
+    }
   },
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
     "metaTitle": "omadia · Management UI",
-    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal)."
+    "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal).",
+    "tagline": "an Agentic OS"
   },
   "localeSwitcher": {
     "ariaLabel": "Sprache wechseln"
@@ -717,22 +850,23 @@
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
     "palette": {
-      "lagoon": "Lagoon",
-      "petrol": "Petrol",
-      "atelier": "Atelier"
+      "lagoon": "Lagoon (Türkis)",
+      "petrol": "Petrol (Blau)",
+      "atelier": "Atelier (Warm)"
     },
     "appearance": {
-      "system": "System",
+      "system": "Automatisch",
       "light": "Hell",
       "dark": "Dunkel"
     }
   },
   "login": {
     "title": "Bei omadia anmelden",
+    "tagline": "an Agentic OS",
     "shellLoading": "Lade Login…",
     "loadingProviders": "Lade Login…",
     "errorPrefix": "Login-Provider konnten nicht geladen werden:",
-    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze {envVar} im Middleware-Environment und starte neu.",
+    "noProviders": "Es sind keine Auth-Provider konfiguriert. Setze <envVar>AUTH_PROVIDERS</envVar> im Middleware-Environment und starte neu.",
     "emailLabel": "E-Mail",
     "passwordLabel": "Passwort",
     "submit": "Anmelden",
@@ -779,13 +913,13 @@
     "apply": "Anwenden",
     "applying": "Installiere…",
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "outcomeAppliedTitle": "Profil {id} angewendet",
+    "outcomeAppliedTitle": "Profil <id>{profileId}</id> angewendet",
     "outcomeStats": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen",
     "sectionInstalled": "Neu installiert",
     "sectionSkipped": "Bereits installiert (übersprungen)",
     "sectionErrored": "Fehler — bitte manuell prüfen",
-    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status {erroredTag} bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via {reactivateTag}.",
-    "errorTitle": "Profil {id} konnte nicht angewendet werden",
+    "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status <erroredTag>errored</erroredTag> bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via \"Reactivate\".",
+    "errorTitle": "Profil <id>{profileId}</id> konnte nicht angewendet werden",
     "tryAnother": "Anderes Profil wählen"
   },
   "chatTabs": {
@@ -794,7 +928,12 @@
     "tabTitleSuffix": "ID: {id}\nDoppelklick zum Umbenennen",
     "closeAriaLabel": "Tab schließen: {title}",
     "closeWhileBusyTitle": "Warten bis der Turn durch ist",
-    "closeTitle": "Tab schließen"
+    "closeTitle": "Tab schließen",
+    "streamRunningAria": "Antwort wird erstellt",
+    "streamDoneAria": "Antwort fertig",
+    "streamErrorAria": "Antwort fehlgeschlagen",
+    "streamDoneAnnounce": "{title}: Antwort fertig",
+    "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
     "loginLink": "Login",
@@ -807,7 +946,362 @@
     "description": "Diese Seite hat einen unerwarteten Fehler ausgelöst und konnte nicht vollständig geladen werden.",
     "reload": "Neu laden",
     "resetData": "Lokale Chat-Daten zurücksetzen",
-    "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft."
+    "resetDataHint": "Löscht die lokal in diesem Browser gespeicherten Chats und lädt neu. Deine serverseitigen Daten bleiben unberührt — nutze dies, wenn ein Neu-Laden allein nicht hilft.",
+    "digestLabel": "Fehler-Referenz",
+    "digestHint": "Gib diese Referenz bei einer Fehlermeldung an — die vollständige Meldung steht im Server-Log."
+  },
+  "errorHelp": {
+    "install": {
+      "already_installed": {
+        "what": "Dieses Plugin ist auf diesem Server bereits installiert.",
+        "next": "Deinstalliere die vorhandene Kopie zuerst, wenn du es neu installieren willst."
+      },
+      "blocked": {
+        "what": "Der Store markiert dieses Plugin als inkompatibel mit diesem Server, deshalb wurde die Installation abgelehnt.",
+        "next": "Lies die Inkompatibilitätsgründe in den Details unten, bevor du es erneut versuchst."
+      },
+      "capability_already_provided": {
+        "what": "Ein anderes installiertes Plugin liefert die Capability bereits, die dieses hier liefern will.",
+        "next": "Deinstalliere das Plugin, das die Capability hält, und installiere danach dieses."
+      },
+      "has_dependents": {
+        "what": "Andere installierte Plugins hängen noch von diesem ab, deshalb lässt es sich nicht deinstallieren.",
+        "next": "Deinstalliere zuerst die Plugins, die in den Details unten stehen."
+      },
+      "invalid_body": {
+        "what": "Der Setup-Schritt hat seine Eingaben in einer Form geschickt, die der Server ablehnt.",
+        "next": "Lade die Seite neu und fülle den Schritt erneut aus."
+      },
+      "invalid_job_id": {
+        "what": "Die Anfrage sagt nicht, zu welchem Installationslauf sie gehört.",
+        "next": "Geh zurück zum Plugin und starte die Installation erneut."
+      },
+      "invalid_plugin_id": {
+        "what": "Die Installationsanfrage kam ohne Plugin-Id an.",
+        "next": "Öffne das Plugin in der Store-Liste und installiere es von dort."
+      },
+      "job_not_found": {
+        "what": "Der Installationslauf, zu dem dieser Schritt gehört, liegt nicht mehr auf dem Server.",
+        "next": "Starte die Installation erneut über das Plugin im Store."
+      },
+      "missing_capability": {
+        "what": "Das Plugin braucht Capabilities, die noch kein installiertes Plugin liefert.",
+        "next": "Installiere zuerst die Plugins, die sie liefern — der Installationsassistent kann sie verketten."
+      },
+      "missing_dependencies": {
+        "what": "Das Plugin hängt von anderen Plugins ab, die hier nicht installiert sind.",
+        "next": "Installiere die in den Details unten genannten Plugins und danach dieses."
+      },
+      "no_schema": {
+        "what": "Dieser Installationslauf hat kein Setup-Formular, es gibt also nichts zu konfigurieren.",
+        "next": "Schließ die Installation ohne den Konfigurationsschritt ab."
+      },
+      "not_installed": {
+        "what": "Dieses Plugin ist auf diesem Server nicht installiert.",
+        "next": "Installiere es zuerst aus dem Store.",
+        "action": "Zum Store"
+      },
+      "unexpected": {
+        "what": "Die Installation ist an einem Fehler abgebrochen, mit dem der Server nicht gerechnet hat.",
+        "next": "Versuch es erneut und schick die Details unten an den Support, falls es wieder passiert."
+      },
+      "wrong_state": {
+        "what": "Dieser Installationslauf ist bereits über den Konfigurationsschritt hinaus.",
+        "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
+      }
+    },
+    "cli_install": {
+      "no_output": {
+        "what": "npm hat gar keine Ausgabe geliefert — der npm-Befehl selbst konnte auf dem Server nicht gestartet werden.",
+        "next": "Installiere die CLI mit dem angezeigten Befehl manuell oder stelle sicher, dass Node und npm auf dem Server im PATH liegen."
+      },
+      "npm_failed": {
+        "what": "npm wurde ausgeführt, aber die Installation ist fehlgeschlagen.",
+        "next": "Prüfe die Log-Details unten und starte die Installation danach erneut."
+      }
+    },
+    "package": {
+      "id_conflict_bundled": {
+        "what": "Diese Plugin-ID gehört zu einem Plugin, das mit omadia ausgeliefert wird — der Upload wurde abgelehnt.",
+        "next": "Vergib dem Paket in manifest.yaml und package.json eine eigene ID und lade es erneut hoch."
+      }
+    },
+    "providers": {
+      "apply_failed": {
+        "what": "Die Zuordnung wurde angenommen, konnte aber nicht ins Plugin geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "invalid_request": {
+        "what": "In der Zuordnung fehlte das Plugin, der Provider oder das Modell.",
+        "next": "Wähle Provider und Modell und speichere erneut."
+      },
+      "key_rejected": {
+        "what": "Der Provider hat diesen API-Key abgelehnt.",
+        "next": "Kopiere den Schlüssel noch einmal aus der Provider-Konsole und füge ihn hier ein."
+      },
+      "model_provider_mismatch": {
+        "what": "Das gewählte Modell gehört zu einem anderen Provider als dem ausgewählten.",
+        "next": "Wähle ein Modell dieses Providers oder wechsle zum Provider des Modells."
+      },
+      "not_installed": {
+        "what": "Das Plugin, dem du einen Provider zuordnest, ist hier nicht installiert.",
+        "next": "Installiere das Plugin zuerst und setze danach seinen Provider.",
+        "action": "Zum Store"
+      },
+      "oauth_poll_failed": {
+        "what": "Die Prüfung, ob die ChatGPT-Anmeldung bestätigt wurde, ist fehlgeschlagen.",
+        "next": "Kurz warten — es wird automatisch erneut versucht; bleibt es fehlerhaft, den Dialog schließen und die Anmeldung neu starten."
+      },
+      "oauth_start_failed": {
+        "what": "Die ChatGPT-Anmeldung konnte nicht gestartet werden.",
+        "next": "Gleich noch einmal versuchen. Hält es an, ist der OpenAI-Anmeldedienst von diesem Server aus evtl. nicht erreichbar."
+      },
+      "oauth_too_many_flows": {
+        "what": "Auf diesem Server laufen bereits zu viele ChatGPT-Anmeldungen.",
+        "next": "Warten, bis die laufenden abgeschlossen sind oder ablaufen, dann die Anmeldung erneut starten."
+      },
+      "oauth_unsupported": {
+        "what": "Dieser Provider kann nicht per ChatGPT-Anmeldung verbunden werden.",
+        "next": "Für diesen Provider stattdessen einen API-Key verwenden oder den ChatGPT-Abo-Provider wählen."
+      },
+      "read_failed": {
+        "what": "Die Provider-Liste konnte nicht gelesen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."
+      },
+      "tool_incompatible": {
+        "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
+        "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
+      },
+      "unknown_plugin": {
+        "what": "Diesem Plugin kann auf dieser Seite kein Provider zugeordnet werden.",
+        "next": "Lade die Seite neu und wähle ein Plugin aus der Liste."
+      },
+      "unknown_provider": {
+        "what": "Der Server kennt keinen Provider mit dieser Id.",
+        "next": "Lade die Seite neu und wähle einen Provider aus der Liste."
+      },
+      "verify_failed": {
+        "what": "Die Schlüsselprüfung lief nicht zu Ende, das Ergebnis bleibt unverändert.",
+        "next": "Starte die Prüfung noch einmal. Wiederholte Fehlschläge heißen: der Provider ist von diesem Server nicht erreichbar."
+      }
+    },
+    "runtime": {
+      "agent_inactive": {
+        "what": "Das Plugin ist installiert, läuft aber nicht und kann deshalb gerade nicht antworten.",
+        "next": "Aktiviere das Plugin und lade diese Seite neu."
+      },
+      "empty_secrets_patch": {
+        "what": "Beim Speichern war kein geänderter Wert dabei.",
+        "next": "Ändere oder leere mindestens ein Feld, bevor du speicherst."
+      },
+      "invalid_audit_mode": {
+        "what": "Diesen Audit-Modus akzeptiert der Server nicht.",
+        "next": "Wähle einen der angebotenen Modi und speichere erneut."
+      },
+      "invalid_config": {
+        "what": "Die Konfiguration kam in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und trage die Werte erneut ein."
+      },
+      "invalid_id": {
+        "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
+        "next": "Lade die Seite neu und wiederhole die Aktion auf dem Plugin-Screen."
+      },
+      "invalid_json_file_body": {
+        "what": "Die Upload-Anfrage nannte nicht zugleich ein Setup-Feld und eine Datei — der Server konnte nicht erkennen, was er auswerten soll.",
+        "next": "Lade die Seite neu und wähle die Datei erneut aus."
+      },
+      "invalid_multiselect": {
+        "what": "Einer der ausgewählten Werte hat nicht die Form, die der Server akzeptiert.",
+        "next": "Leere die Auswahl und wähle die Einträge erneut aus der Liste."
+      },
+      "invalid_public_path": {
+        "what": "Einer dieser Pfade ist kein gültiges öffentliches Präfix — zu breit, prozentkodiert oder für Core-Routen reserviert.",
+        "next": "Prüfe den Pfad gegen die Präfixe, die das Plugin deklariert, und gib ihn dann erneut frei."
+      },
+      "invalid_public_paths": {
+        "what": "Die freigegebenen Pfade kamen nicht als Liste von Pfad-Strings an.",
+        "next": "Schicke die vollständige Menge der Pfade, die du freigibst, als Liste von Strings."
+      },
+      "invalid_secrets_body": {
+        "what": "Die Zugangsdaten kamen in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und trage die Zugangsdaten erneut ein."
+      },
+      "json_file_bad_extract_path": {
+        "what": "Das Plugin deklariert einen Upload-Pfad, den der Server nicht unterstützt — die Datei konnte nicht gelesen werden.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_invalid_spec": {
+        "what": "Das Plugin deklariert diesen Datei-Upload fehlerhaft, er kann keinen Wert erzeugen.",
+        "next": "Das liegt am Plugin, nicht an deiner Datei — melde es dem Plugin-Autor."
+      },
+      "json_file_missing_value": {
+        "what": "In der hochgeladenen Datei fehlt einer der Werte, die dieses Feld braucht.",
+        "next": "Prüfe, ob du die richtige Datei ausgewählt hast — die Meldung unten nennt den fehlenden Wert."
+      },
+      "json_file_not_an_object": {
+        "what": "Die Datei ist zwar gültiges JSON, aber kein JSON-Objekt — sie enthält also keine benannten Werte.",
+        "next": "Lade die Zugangsdatei hoch, die der Anbieter ausgestellt hat, keine Liste und keinen Ausschnitt davon."
+      },
+      "json_file_not_json": {
+        "what": "Die hochgeladene Datei ist kein gültiges JSON, es konnte also nichts daraus gelesen werden.",
+        "next": "Lade die Schlüsseldatei beim Anbieter erneut herunter und lade sie unverändert hoch."
+      },
+      "json_file_too_large": {
+        "what": "Die hochgeladene Datei ist größer, als der Server für eine Zugangsdatei akzeptiert.",
+        "next": "Prüfe, ob du die Schlüsseldatei selbst ausgewählt hast und kein Archiv oder einen Export."
+      },
+      "json_file_unexpected_document": {
+        "what": "Die hochgeladene Datei ist die falsche Art von Zugangsdatei — ihr Inhalt passt nicht zu dem, was dieses Feld erwartet.",
+        "next": "Die Meldung unten nennt den abweichenden Wert; lade anschließend die richtige Datei hoch."
+      },
+      "no_options_provider": {
+        "what": "Dieses Feld hat keine Live-Quelle für Optionen, es lässt sich also nichts nachladen.",
+        "next": "Trag den Wert von Hand ein."
+      },
+      "not_installed": {
+        "what": "Dieses Plugin ist auf diesem Server nicht installiert.",
+        "next": "Installiere es zuerst und komm dann auf diesen Screen zurück.",
+        "action": "Zum Store"
+      },
+      "not_web_scanner": {
+        "what": "Der Audit-Modus gilt nur für Plugins, die das Web scannen. Dieses tut das nicht.",
+        "next": "Lass den Audit-Modus für dieses Plugin ungesetzt."
+      },
+      "options_provider_bad_shape": {
+        "what": "Das Plugin hat auf die Options-Anfrage etwas geantwortet, das keine Liste ist.",
+        "next": "Aktualisiere das Plugin. Sein Options-Provider liefert die falsche Form."
+      },
+      "options_provider_failed": {
+        "what": "Das Plugin konnte die Optionen für dieses Feld nicht liefern.",
+        "next": "Prüfe die Zugangsdaten, die dieses Plugin braucht, und lade die Liste erneut."
+      },
+      "options_provider_timeout": {
+        "what": "Das Plugin hat für die Optionen zu lange gebraucht.",
+        "next": "Lade die Liste erneut. Läuft sie weiter in den Timeout, ist das System hinter dem Plugin langsam oder nicht erreichbar."
+      },
+      "options_unavailable": {
+        "what": "Dieser Core kann keine Setup-Optionen aus einem laufenden Plugin holen.",
+        "next": "Trag den Wert von Hand ein."
+      },
+      "public_path_not_declared": {
+        "what": "Einen dieser Pfade fordert das Plugin in seinem Manifest gar nicht an, und eine Freigabe kann nie weiter reichen als die Anforderung.",
+        "next": "Gib nur die Pfade frei, die das Plugin deklariert, oder installiere eine Version, die den gewünschten Pfad deklariert."
+      },
+      "public_paths_unavailable": {
+        "what": "Die Freigabe öffentlicher Pfade liegt in der Datenbank, und in diesem Deployment ist keine verdrahtet.",
+        "next": "Richte im Deployment eine Datenbank ein und setze die freigegebenen Pfade danach erneut."
+      },
+      "setup_field_invalid": {
+        "what": "Einer der Werte passt nicht zum Format, das dieses Feld erwartet.",
+        "next": "Korrigiere das markierte Feld und speichere erneut."
+      },
+      "unknown_json_file_field": {
+        "what": "Der Upload nennt ein Setup-Feld, das dieses Plugin nicht als Datei-Upload anbietet.",
+        "next": "Lade die Seite neu, damit das Formular zum Plugin passt, und lade die Datei erneut hoch."
+      },
+      "update_failed": {
+        "what": "Die Änderung konnte nicht geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      },
+      "value_not_offered": {
+        "what": "Einer der ausgewählten Werte steht nicht auf der Liste, die das Plugin anbietet.",
+        "next": "Lade die Liste neu und wähle aus den aktuellen Einträgen."
+      },
+      "vault_read_failed": {
+        "what": "Die gespeicherten Zugangsdaten konnten nicht aus dem Vault gelesen werden.",
+        "next": "Lade neu, sobald der Vault wieder erreichbar ist."
+      },
+      "vault_unavailable": {
+        "what": "In diesem Deployment ist kein Secret-Vault verdrahtet, Zugangsdaten lassen sich nicht ablegen.",
+        "next": "Richte im Deployment einen Vault ein, bevor du hier Zugangsdaten einträgst."
+      },
+      "vault_write_failed": {
+        "what": "Die Zugangsdaten konnten nicht in den Vault geschrieben werden.",
+        "next": "Speichere erneut, sobald der Vault erreichbar ist."
+      },
+      "grants_in_flight": {
+        "what": "Eine andere Berechtigungsänderung für dieses Plugin wird gerade noch angewendet, diese daher nicht.",
+        "next": "Warten Sie, bis die andere Änderung abgeschlossen ist, laden Sie die Seite neu, um den aktuellen Stand zu sehen, und übernehmen Sie erneut."
+      },
+      "invalid_grants": {
+        "what": "Die Berechtigungsanfrage war fehlerhaft, es wurde nichts geändert.",
+        "next": "Laden Sie die Seite neu und versuchen Sie es erneut. Tritt der Fehler weiterhin auf, passen Browser und Server nicht zusammen — melden Sie ihn mit den Details unten."
+      },
+      "sql_not_declared": {
+        "what": "Dieses Plugin fragt keinen Datenbankzugriff an, es gibt also nichts freizugeben.",
+        "next": "Hier ist nichts zu tun. Benötigt das Plugin doch eine Datenbank, fehlt in seinem Manifest der Block `permissions.sql` — das muss der Plugin-Autor beheben."
+      },
+      "sql_grants_unavailable": {
+        "what": "Datenbank-Berechtigungen brauchen eine Datenbank, es ist aber keine konfiguriert.",
+        "next": "Setzen Sie DATABASE_URL, installieren Sie ein Postgres-Knowledge-Graph-Plugin und erteilen Sie die Freigabe danach erneut."
+      },
+      "ledger_already_owned": {
+        "what": "Ein anderes Plugin besitzt bereits die Tabelle, die dieses Plugin migrieren möchte.",
+        "next": "Eine Tabelle gehört genau einem Plugin. Deinstallieren Sie das Plugin, das sie hält, oder bitten Sie den Autor dieses Plugins um einen anderen Tabellennamen."
+      }
+    },
+    "settings": {
+      "invalid_request": {
+        "what": "Die Änderung kam in einer Form an, die der Server ablehnt.",
+        "next": "Lade die Seite neu und nimm die Änderung erneut vor."
+      },
+      "invalid_values": {
+        "what": "Der Server hat bei jeder Änderung den Wert abgelehnt, es wurde nichts geschrieben.",
+        "next": "Korrigiere den Wert, den die Details unten nennen — dort steht zu jedem Feld der Grund — und speichere erneut."
+      },
+      "no_valid_changes": {
+        "what": "Keine der gesendeten Änderungen passt zu einer Einstellung, die dieser Server aktuell anbietet.",
+        "next": "Lade die Seite neu, damit die Feldliste zum Server passt, und nimm die Änderung erneut vor."
+      },
+      "read_failed": {
+        "what": "Die Einstellungen konnten nicht gelesen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihren Config-Store nicht."
+      },
+      "vault_unavailable": {
+        "what": "In diesem Deployment ist kein Secret-Vault verdrahtet, Secrets lassen sich nicht bearbeiten.",
+        "next": "Richte im Deployment einen Vault ein. Nicht-geheime Einstellungen funktionieren auch ohne."
+      },
+      "write_failed": {
+        "what": "Die Einstellungen konnten nicht geschrieben werden.",
+        "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
+      }
+    },
+    "store": {
+      "ack_failed": {
+        "what": "Die Bestätigung konnte nicht festgehalten werden.",
+        "next": "Bestätige erneut. Bis dahin bleibt das Scan-Ergebnis offen."
+      },
+      "get_failed": {
+        "what": "Die Plugin-Details konnten nicht geladen werden.",
+        "next": "Lade die Seite neu. Passiert es wieder, ist der Store-Index auf diesem Server nicht lesbar."
+      },
+      "invalid_id": {
+        "what": "Die Anfrage nennt nicht, um welches Plugin es geht.",
+        "next": "Geh zurück zur Store-Liste und öffne das Plugin von dort."
+      },
+      "list_failed": {
+        "what": "Die Plugin-Liste konnte nicht geladen werden.",
+        "next": "Lade die Seite neu. Bleibt sie leer, erreicht die Middleware ihre Registry nicht."
+      },
+      "plugin_not_found": {
+        "what": "Auf diesem Server gibt es kein Plugin mit dieser Id.",
+        "next": "Wähle ein Plugin aus der Store-Liste.",
+        "action": "Zum Store"
+      },
+      "verdict_not_found": {
+        "what": "Für dieses Plugin wurde noch kein Code-Scan-Ergebnis festgehalten.",
+        "next": "Lass zuerst den Code-Scan laufen und bestätige ihn danach."
+      },
+      "verdicts_unavailable": {
+        "what": "Code-Scan-Ergebnisse sind in diesem Deployment abgeschaltet.",
+        "next": "Aktiviere den Scanner in der Deployment-Konfiguration, wenn du Ergebnisse brauchst."
+      }
+    }
+  },
+  "errorHelpUi": {
+    "supportDetails": "Details für den Support",
+    "unknownFailure": "Die Anfrage ist fehlgeschlagen, und der Server hat keinen Code geschickt, den diese Seite erklären kann.",
+    "httpStatus": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
   },
   "session": {
     "expiresAtLabel": "Sitzung gültig bis",
@@ -819,6 +1313,12 @@
     "expiredTitle": "Sitzung abgelaufen",
     "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
     "expiredCta": "Neu anmelden"
+  },
+  "runtimeReadiness": {
+    "title": "LLM-Zugang fehlt",
+    "body": "Die Agent-Runtime ist offline — meistens, weil noch kein LLM-API-Key oder Abo hinterlegt ist. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang; Chat, Agenten, Channels und Skills sind danach sofort verfügbar. Routinen brauchen zusätzlich einen Neustart der Middleware.",
+    "cta": "LLM-Zugang öffnen",
+    "dismiss": "Später"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} Tool-Aufrufe",
@@ -849,10 +1349,12 @@
     "pillTitle": "{id} — Details anzeigen"
   },
   "chat": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar auf localhost:3979. Läuft `npm run dev` im middleware-Ordner?",
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
+    "errorProviderAuth": "Der KI-Anbieter hat den hinterlegten API-Schlüssel abgelehnt. Prüfe ihn unter Admin → LLM-Zugang mit „Schlüssel testen“ und hinterlege ggf. einen neuen.",
+    "errorProviderRateLimit": "Der KI-Anbieter bremst gerade die Anfragen (Rate-Limit). Kurz warten und erneut versuchen — an den Einstellungen muss nichts geändert werden.",
+    "errorProviderOverloaded": "Der KI-Anbieter ist gerade überlastet. Das legt sich von selbst — versuch es gleich noch einmal.",
     "intro": {
       "kicker": "Wofür ist dieser Chat?",
       "body": "Das ist der Debug-Chat für Operatoren — eine direkte Leitung zu deinen Orchestratoren zum Testen von Prompts und zum Beobachten von Tool-Aufrufen, Plänen und Knowledge-Graph-Walks in Echtzeit. Das ist nicht die Endnutzer-Erfahrung, sondern zum Debuggen gedacht."
@@ -879,32 +1381,27 @@
     "steerTraceLabel": "Mitten im Turn nachgesteuert:",
     "sessionsLoading": "Sessions werden geladen…",
     "emptyStatePrompt": "Frage an den Orchestrator stellen — Antwort streamt live inkl. Tool-Aufrufen.",
-    "emptyStateShortcut": "Shortcut: ⌘↵ / Ctrl↵ · Neuer Tab über „+ Neuer Chat\"",
+    "emptyStateShortcut": "Shortcut: ↵ senden · ⇧↵ neue Zeile · Neuer Tab über „+ Neuer Chat\"",
+    "composerSendHint": "↵ senden · ⇧↵ neue Zeile",
     "streamingSuffix": "· streamt…",
     "toolTraceHeading": "Tool-Trace ({count})",
     "subCallCount": "{count, plural, one {# Sub-Call} other {# Sub-Calls}}",
-    "devJob": {
-      "heading": "Dev-Job",
-      "viewJob": "Job öffnen",
-      "viewPr": "PR ansehen",
-      "connectionLost": "Verbindung verloren",
-      "gate": {
-        "title": "Freigabe erforderlich",
-        "approve": "Freigeben",
-        "reject": "Ablehnen",
-        "resolving": "Wird gesendet…",
-        "error": "Gate konnte nicht aufgelöst werden."
-      }
+    "task": {
+      "started": "Gestartet: {label}",
+      "running": "läuft im Hintergrund",
+      "deferredHint": "Das läuft eigenständig weiter — die Antwort kommt in einer Folgemeldung, nicht in dieser.",
+      "taskId": "Task {id}",
+      "phase": "Phase {phase}"
     },
-    "inputLabel": "input",
-    "outputLabel": "output",
+    "inputLabel": "Eingabe",
+    "outputLabel": "Ausgabe",
     "persona": {
       "title": "Persona",
       "matched": "Antwortet als {name}",
       "none": "Standard-Identität",
       "fallback": "Persona-Klassifikator nicht verfügbar — Standard-Identität"
     },
-    "subAgentTrace": "sub-agent trace",
+    "subAgentTrace": "Sub-Agent-Trace",
     "mcpAuth": {
       "kicker": "Autorisierung erforderlich",
       "body": "{server} muss verbunden werden, bevor es genutzt werden kann.",
@@ -913,9 +1410,16 @@
       "modalBody": "Autorisiere {server}, damit diese und künftige Anfragen es nutzen können.",
       "close": "Schließen"
     },
-    "iterationLabel": "── iteration {n}",
+    "mcpInput": {
+      "kicker": "Externe Eingabe-Anfrage",
+      "heading": "„{server}“ braucht für „{tool}“ noch weitere Angaben.",
+      "secretHint": "Bei der Eingabe verborgen — an den Server geht der Wert unverändert.",
+      "warning": "Was du hier eingibst, geht an den externen Server „{server}“. Gib nur Daten ein, die dieser Server bekommen darf.",
+      "submit": "An Server senden"
+    },
+    "iterationLabel": "── Iteration {n}",
     "attachmentTitle": "{kind}{cachedSuffix} — klick für Originalgröße",
-    "attachmentCachedSuffix": " · cached",
+    "attachmentCachedSuffix": " · zwischengespeichert",
     "clarifyKicker": "🤔 Rückfrage",
     "followUpsLabel": "Nächste Varianten",
     "streamLive": "Stream live · {seconds}s",
@@ -1030,6 +1534,14 @@
       "factNotEmbedded": "— kein Vektor",
       "factPrivateBlocks": "'<private>'-Blöcke",
       "factHintTags": "'<palaia-hint>'-Tags"
+    },
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
+    "errorCorrelationRef": "Referenz für den Support: {id}",
+    "routing": {
+      "classifierTooltip": "Triage-Klassifizierer: {classifier} → {bucket} → {model}",
+      "bucketSimple": "einfach",
+      "bucketComplex": "komplex",
+      "bucketFallback": "Fallback"
     }
   },
   "privacyReceipt": {
@@ -1057,7 +1569,21 @@
     "explainerBypassed": "Der Operator hat für mindestens ein Plugin den Privacy-Mode auf »Bypass« gestellt — dessen Tool-Ergebnisse erreichten das Modell unmaskiert. Eingesetzt für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht sinnvoll digestieren kann.",
     "summaryPromptMasked": "Prompt: {count} maskiert",
     "factPromptMasked": "Maskierte PII in deiner Nachricht",
-    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt."
+    "explainerPromptMasked": "In deiner eigenen Nachricht erkannte Identifikatoren wurden vor dem Modellaufruf durch Pseudonyme ersetzt und in der Antwort wiederhergestellt.",
+    "summaryStructured": "{count, plural, one {# strukturiertes Ergebnis} other {# strukturierte Ergebnisse}}",
+    "factStructured": "Strukturierte Ausgabe empfangen",
+    "structuredBytes": "{kb} KB",
+    "structuredSchemaYes": "Output-Schema",
+    "structuredSchemaNo": "kein Schema",
+    "explainerStructured": "Ein verbundenes Tool lieferte strukturierte Daten. Sie erreichten den Browser — die vertrauenswürdige Seite — aber nie das Modell, das nur den internen Digest sah. Hier zur Transparenz aufgeführt; es wurde nichts maskiert, weil auf diesem Pfad nichts zu maskieren war.",
+    "missReportSummary": "Übersehenen Wert melden",
+    "missReportTermPlaceholder": "Der Wert, der hätte maskiert werden sollen",
+    "missReportDescriptionPlaceholder": "Kontext (optional)",
+    "missReportSubmit": "Melden",
+    "missReportSending": "Wird gemeldet",
+    "missReportSent": "Gemeldet — ein Admin prüft es unter Operator → Privacy-Reports.",
+    "missReportFailed": "Meldung fehlgeschlagen — bitte erneut versuchen",
+    "missReportHint": "Der hier eingegebene Begriff wird unverändert in der Operator-Review-Queue gespeichert und kann dort zur Deny-List-Regel werden."
   },
   "directLine": {
     "consultedLabel": "🔎 Konsultiert",
@@ -1125,6 +1651,7 @@
     "actionDelete": "Session löschen"
   },
   "skills": {
+    "metaTitle": "Skills · omadia",
     "title": "Skills",
     "subtitle": "Deine Skill-Bibliothek — Skills importieren, ansehen, bearbeiten und exportieren.",
     "loadError": "Skills konnten nicht geladen werden.",
@@ -1151,7 +1678,9 @@
       "save": "Speichern",
       "forkAndSave": "Als bearbeitbare Kopie speichern",
       "forkNotice": "Dies ist ein importierter Skill. Beim Speichern wird eine bearbeitbare Kopie erstellt; das Original bleibt als Quelle erhalten.",
-      "export": "Exportieren"
+      "export": "Exportieren",
+      "actionFailed": "Das hat nicht geklappt. Der Skill wurde nicht geändert.",
+      "supportDetails": "Details für den Support"
     },
     "capabilities": {
       "heading": "Benötigte Tools",
@@ -1175,6 +1704,8 @@
       "filterAll": "Alle Verdicts",
       "acknowledge": "Bestätigen",
       "acked": "Bestätigt von {by}",
+      "structuredOutput": "liefert strukturierte Ausgabe",
+      "structuredOutputHint": "Dieses Tool deklariert ein Output-Schema und liefert zusätzlich zum Text ein strukturiertes Ergebnis.",
       "runDeepScan": "Tiefen-Scan ausführen",
       "why": "Heuristischer Scan hat markiert: {codes}. Das ist ein Signal, kein Beweis, dass der Inhalt sicher ist.",
       "llmRationale": "Tiefen-Scan-Hinweis: {rationale}",
@@ -1186,10 +1717,23 @@
         "hidden_content": "Versteckten oder verschleierten Inhalt enthalten",
         "credential_harvest": "API-Schlüssel, Passwörter oder Geheimnisse sammeln",
         "silent_permission_escalation": "Erweiterten Zugriff anfordern, ohne den Nutzer zu informieren"
+      },
+      "scanFailure": {
+        "auth": "Der Tiefen-Scan konnte nicht laufen: Der hinterlegte API-Schlüssel ist ungültig.",
+        "rate_limit": "Der Tiefen-Scan konnte nicht laufen: Das Limit des Anbieters ist erreicht. Bitte in Kürze erneut versuchen.",
+        "overloaded": "Der Tiefen-Scan konnte nicht laufen: Der Anbieter ist gerade überlastet. Bitte in Kürze erneut versuchen.",
+        "provider_error": "Der Tiefen-Scan konnte nicht laufen: Der LLM-Anbieter hat einen Fehler gemeldet.",
+        "timeout": "Der Tiefen-Scan konnte nicht laufen: Der Anbieter hat nicht rechtzeitig geantwortet.",
+        "malformed_json": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat ein unlesbares Ergebnis geliefert.",
+        "unsupported_severity": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat eine unbekannte Bewertung geliefert.",
+        "missing_rationale": "Der Tiefen-Scan konnte nicht ausgewertet werden: Das Modell hat keine Begründung geliefert.",
+        "unexpected": "Der Tiefen-Scan ist unerwartet fehlgeschlagen.",
+        "fixProviderLink": "LLM-Zugang prüfen"
       }
     }
   },
   "operatorAgents": {
+    "metaTitle": "Orchestratoren · omadia",
     "title": "Orchestratoren",
     "subtitle": "Multi-Orchestrator-Runtime — Orchestratoren anlegen, editieren, deaktivieren, drainen oder killen und der Registry live beim Reagieren zuschauen über den LISTEN/NOTIFY-Hot-Reload-Bus.",
     "loadError": "Konnte Orchestratoren nicht laden",
@@ -1206,6 +1750,27 @@
     "agentsHeading": "Orchestratoren",
     "agentsEmpty": "Noch keine Orchestratoren. Leg oben einen an.",
     "agentMeta": "id: {id} · privacy: {privacy} · status: {status} · runtime: {runtime}",
+    "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailOpenLink": "Details",
+    "detailBackToList": "Alle Orchestratoren",
+    "detailAssignedHeading": "Zugewiesene Plugins",
+    "detailAssignedHint": "Plugin nur für diesen Orchestrator aktivieren oder deaktivieren — der Schalter wird sofort gespeichert. Plugins anhängen oder lösen geht im Editor darunter.",
+    "detailAssignedEmpty": "Diesem Orchestrator sind noch keine Plugins zugewiesen. Häng im Editor darunter eins an.",
+    "detailToggleAria": "{plugin} aktivieren oder deaktivieren",
+    "detailErrors": {
+      "agent_identity_unavailable": "Der Identitäts-Speicher ist nicht verdrahtet — er meldet sich an, sobald DATABASE_URL gesetzt und Migration 0051 angewendet ist.",
+      "invalid_avatar": "Dieses Bild ließ sich nicht als Avatar verwenden — erwartet wird ein PNG, JPEG oder WebP bis 2 MB.",
+      "payload_too_large": "Das Bild ist zu groß — es sind höchstens 2 MB erlaubt.",
+      "unsupported_media_type": "Dieser Dateityp geht nicht — erlaubt sind PNG, JPEG und WebP.",
+      "agent_graph_store_unavailable": "Die Orchestrator-Registry ist gerade nicht erreichbar. Versuch es gleich nochmal.",
+      "config_validation": "Der Server hat die Plugin-Konfiguration abgelehnt.",
+      "invalid_body": "Der Server hat den Request-Payload abgelehnt.",
+      "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+      "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
+      "not_found": "Diesen Orchestrator gibt es nicht mehr — lad die Seite neu.",
+      "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lad die Seite neu.",
+      "unknown": "Request fehlgeschlagen: {detail}"
+    },
     "statusEnabled": "aktiviert",
     "statusDisabled": "deaktiviert",
     "runtimeActive": "aktiv",
@@ -1234,7 +1799,7 @@
     "catalogEmpty": "Keine installierten Plugins.",
     "multiInstanceFalseBadge": "multi_instance: false — darf nur auf EINEM Orchestrator aktiv sein",
     "multiInstanceFalseShort": "Single-Instance",
-    "privacyStrictBadge": "strict",
+    "privacyStrictBadge": "strikt",
     "memoryReadTooltip": "Memory-Read-Scope dieses Plugins",
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
@@ -1252,9 +1817,11 @@
     "routingTesterRunning": "Prüfe …",
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
-    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · plugins: {plugins} · bindings: {bindings}",
-    "sessionsLabel": "Sessions:",
+    "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
+    "sessionsLabel": "Sitzungen:",
     "pluginsAvailable": "Verfügbar",
+    "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
+    "pluginsAttachedHere": "An diesen Orchestrator angehängt",
     "pluginsAvailableEmpty": "Alle installierten Plugins sind bereits angehängt.",
     "pluginsEnabled": "Angehängt",
     "pluginsEnabledEmpty": "Drag-and-drop oder „Attach\" benutzen, um Plugins anzuhängen.",
@@ -1269,26 +1836,323 @@
     "orphanDetachAll": "Alle entfernen",
     "orphanDetachAllTooltip": "Entfernt alle veralteten Plugin-Zuordnungen (alte IDs aus früheren Deployments) auf einmal.",
     "orphanExplain": "Plugin-IDs aus früheren Seeds, die im aktuellen Katalog nicht mehr existieren (typisch: Umbenennung de.byte5.agent.* → @omadia/*). Werden beim nächsten „Speichern\" verworfen, außer du markierst sie als „Behalten\".",
-    "orphanKeep": "Behalten"
-  },
-  "streamToasts": {
-    "phaseThinking": "Agent denkt",
-    "phaseStreaming": "Antwort läuft",
-    "phaseToolRunning": "Tool läuft",
-    "phaseDone": "Antwort fertig",
-    "phaseError": "Fehler",
-    "phaseAborted": "Abgebrochen",
-    "elapsedSec": "{sec}s",
-    "tokensInTitle": "{n} Input-Tokens (kumuliert über Iterationen)",
-    "tokensOutTitle": "{n} Output-Tokens (kumuliert über Iterationen)",
-    "cacheHitTitle": "{n} Cache-Read-Tokens",
-    "dismissAriaLabel": "Benachrichtigung schließen (Stream läuft weiter)",
-    "dismissTitle": "Schließen",
-    "abortButton": "Stream stoppen",
-    "abortConfirmTitle": "Stream wirklich stoppen?",
-    "abortConfirmBody": "Die laufende Antwort wird sofort abgebrochen und kann nicht fortgesetzt werden.",
-    "abortConfirmKeep": "Weiter laufen lassen",
-    "abortConfirmStop": "Ja, stoppen"
+    "orphanKeep": "Behalten",
+    "seededDescription": "Beim ersten Start automatisch angelegt. Empfängt Channel-Traffic ohne explizite Zuordnung, bis du eine einrichtest.",
+    "mcp": {
+      "heading": "MCP-Server",
+      "hint": "Weise diesem Orchestrator MCP-Server zu und pflege die Tool-Allowlist. Ein Tool ist erst aufrufbar, wenn es hier freigegeben ist und den Scan-Gate passiert hat.",
+      "loading": "MCP-Server werden geladen…",
+      "loadError": "MCP-Server konnten nicht geladen werden: {detail}",
+      "empty": "Keine MCP-Server verfügbar. Registriere und discovere Server zuerst im MCP Control Center.",
+      "toolsGranted": "{granted} von {total} Tools freigegeben",
+      "notAssigned": "Nicht zugewiesen",
+      "discoveredTools": "Entdeckte Tools ({count})",
+      "noTools": "Noch keine Tools entdeckt — starte die Discovery zuerst im MCP Control Center.",
+      "toolAria": "{tool} freigeben",
+      "acked": "Bestätigt",
+      "needsAckHint": "Das Scan-Urteil muss bestätigt werden, bevor dieses Tool freigegeben werden kann.",
+      "unscannedHint": "Noch nicht gescannt — ungescannte Tools können nicht freigegeben werden.",
+      "ack": "Urteil bestätigen",
+      "ackConfirm": "Bestätigung wirklich erteilen",
+      "save": "Allowlist speichern",
+      "savedSummary": "Allowlist gespeichert — {granted} freigegeben, {revoked} entzogen.",
+      "selectAllGrantable": "Alle freigebbaren auswählen",
+      "discardDraft": "Änderungen verwerfen",
+      "unassign": "Server entfernen",
+      "unassignTitle": "MCP-Server entfernen",
+      "unassignBody": "Alle {count} Tool-Freigaben von \"{server}\" für diesen Orchestrator entziehen?",
+      "unassignConfirm": "Alle entziehen",
+      "cancel": "Abbrechen",
+      "delegation": {
+        "label": "Identitäts-Delegation",
+        "modeService": "Service",
+        "modePerUser": "Pro Nutzer",
+        "scopeHint": "Server-weite Einstellung — sie gilt für jeden Agenten, der diesen Server nutzt, nicht nur für diesen.",
+        "perUserFailClosed": "Pro-Nutzer-Aufrufe laufen unter der Identität des jeweiligen Nutzers und schlagen fail-closed fehl, wenn keine auflösbar ist.",
+        "serverSettingsLink": "In den MCP-Server-Einstellungen ändern"
+      },
+      "errors": {
+        "config_validation": "Der Scan-Gate hat die Änderung abgelehnt — ein ausgewähltes Tool ist blockiert oder noch nicht gescannt.",
+        "invalid_delegation": "Der Server hat den Delegationsmodus abgelehnt.",
+        "invalid_grant": "Der Server hat die Freigabe-Anfrage abgelehnt.",
+        "mcp_server_not_found": "Dieser MCP-Server existiert nicht mehr — lade die Seite neu.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
+        "orchestrator_not_found": "Dieser Orchestrator existiert nicht mehr — lade die Seite neu.",
+        "grant_not_found": "Diese Freigabe existiert nicht mehr — lade die Seite neu.",
+        "invalid_grant_id": "Die Freigabe-Id ist ungültig.",
+        "not_an_mcp_grant": "Diese Freigabe ist keine MCP-Tool-Freigabe.",
+        "unknown": "Anfrage fehlgeschlagen: {detail}"
+      }
+    },
+    "grants": {
+      "heading": "Tool-Grants",
+      "hint": "Nur-Lese-Ansicht der Tools, die dieser Orchestrator aufrufen darf, und der MCP-Server, die seinen Plugins zugewiesen sind. Grants werden auf der MCP-Admin-Seite verwaltet.",
+      "loading": "Grants werden geladen…",
+      "refresh": "Aktualisieren",
+      "empty": "Dieser Orchestrator hält noch keine Tool-Grants.",
+      "epochSummary": "Grant-Epoche: {epoch}",
+      "epochRow": "Epoche: {epoch}",
+      "epochNever": "nie erhöht",
+      "epochUnknown": "Grant-Epoche: unbekannt",
+      "serverRemoved": "(Server entfernt)",
+      "pluginHeading": "Plugin-MCP-Grants",
+      "pluginEmpty": "Den Plugins dieses Orchestrators sind keine MCP-Server zugewiesen.",
+      "grantedMeta": "vergeben von {who} · {date}",
+      "kind": {
+        "native": "nativ",
+        "mcp": "MCP"
+      },
+      "errors": {
+        "agent_graph_store_unavailable": "Die Orchestrator-Registry ist gerade nicht erreichbar. Versuch es gleich noch einmal.",
+        "config_validation": "Der Server hat die Anfrage abgelehnt.",
+        "invalid_body": "Der Server hat den Anfrage-Payload abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
+        "unknown": "Laden der Grants fehlgeschlagen: {detail}"
+      }
+    },
+    "contextMemory": {
+      "heading": "Chat-Kontext-Memory",
+      "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. „Aus“ ist die Voreinstellung und entspricht dem Verhalten vor dieser Funktion.",
+      "loading": "Memory-Einstellung wird geladen…",
+      "stateSummary": "Aktuell: {mode}",
+      "stateUnknown": "Aktuell: unbekannt",
+      "save": "Speichern",
+      "saving": "Wird gespeichert",
+      "unchanged": "Keine ungespeicherte Änderung.",
+      "semanticsHeading": "Vor dem Einschalten lesen",
+      "semanticsTeam": "Ein Turn aus einem Team-Kontext schreibt in seine eigene Ebene und in die gemeinsame Team-Ebene — dort lesen sich Teamkolleginnen und -kollegen gegenseitig.",
+      "semanticsAgent": "Das eigene Memory des Orchestrators bleibt lesbar, wird für Kontext-Turns aber schreibgeschützt. „Merk dir das global“ kann damit kein Wissen mehr von Team A nach Team B tragen.",
+      "semanticsApi": "Turns über die API bringen keinen Chat-Kontext mit und erreichen deshalb nur das private Memory des Orchestrators selbst — nie einen Team- oder Kanal-Baum.",
+      "acknowledge": "Mir ist klar, wie das Memory für diesen Orchestrator aufgeteilt wird.",
+      "modes": {
+        "off": {
+          "label": "Aus",
+          "description": "Ein gemeinsames Memory für alle Turns. Voreinstellung und identisch mit dem Verhalten vor dieser Funktion."
+        },
+        "enforce": {
+          "label": "Je Kontext getrennt",
+          "description": "Jeder Chat-Kontext bekommt ein eigenes Memory. Das eigene Memory des Orchestrators bleibt lesbar, vorhandenes Wissen ist also weiter zitierbar."
+        },
+        "enforce-strict": {
+          "label": "Getrennt und abgeschottet",
+          "description": "Jeder Chat-Kontext bekommt ein eigenes Memory und kann das eigene Memory des Orchestrators gar nicht lesen. Für Kontexte, die nichts teilen dürfen."
+        }
+      }
+    },
+    "teamsInstalls": {
+      "heading": "Teams-Zuordnung",
+      "hint": "In welchem Microsoft-Teams-Team die App dieses Orchestrators installiert ist und ob der Tenant den dafür nötigen Berechtigungen zugestimmt hat.",
+      "loading": "Teams-Zuordnung wird geladen…",
+      "refresh": "Aktualisieren",
+      "noIdentity": "Dieser Orchestrator hat noch keine Teams-Identität. Lege sie im Abschnitt Teams-Identität an, bevor du ihn einem Team zuordnest.",
+      "installedHeading": "Installiert in",
+      "installedEmpty": "Die App dieses Orchestrators ist noch in keinem Team installiert.",
+      "appIdLabel": "Teams-App: {appId}",
+      "appIdNone": "noch nicht hochgeladen",
+      "installedAt": "erfasst am {date}",
+      "installedAtUnknown": "kein Zeitstempel erfasst",
+      "pendingHint": "Ein Provisionierungslauf zielt auf Team {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
+      "consentHeading": "Admin-Zustimmung",
+      "consentStatus": {
+        "granted": "erteilt",
+        "missing": "fehlt",
+        "unknown": "nicht belegt"
+      },
+      "consentScopes": "Ausstehend sind {count} Berechtigung(en): {scopes}",
+      "consentSource": {
+        "last_error": "Aus dem zuletzt erfassten Provisionierungsfehler gelesen.",
+        "provisioning_state": "Abgeleitet aus Schritten, die der Lauf ohne Zustimmung nicht hätte passieren können.",
+        "none": "Bisher wurde nichts beobachtet, was die Zustimmung in die eine oder andere Richtung belegen würde."
+      },
+      "consentPointer": "Was dagegen zu tun ist, steht oben im Abschnitt Teams-Identität.",
+      "installHeading": "In ein Team installieren",
+      "fieldTeamId": "Team-ID",
+      "fieldTeamIdHint": "Die Microsoft-Teams-Gruppen-Id des Ziel-Teams.",
+      "install": "Installieren",
+      "installBusy": "Wird installiert",
+      "installStarted": "Installation in Team {teamId} gestartet — der Provisionierungslauf läuft im Hintergrund weiter.",
+      "alreadyInstalled": "Bereits in Team {teamId} installiert; nichts zu tun.",
+      "provisionerMissing": "Die Teams-Provisioner-Fähigkeit fehlt, deshalb lässt sich gerade keine Installation starten.",
+      "uninstall": "Deinstallieren",
+      "uninstallBusy": "Wird deinstalliert",
+      "uninstallTitle": "App aus diesem Team entfernen?",
+      "uninstallBody": "Die App des Orchestrators wird aus Team {teamId} entfernt und antwortet dort nicht mehr.",
+      "uninstallBodyNamed": "Die App des Orchestrators wird aus dem Team „{teamName}“ ({teamId}) entfernt und antwortet dort nicht mehr.",
+      "teamNameUnresolved": "Name nicht aufgelöst — der M365-Connector kann ihn gerade nicht liefern.",
+      "uninstallConfirm": "Entfernen",
+      "uninstallAlreadyAbsent": "Die App war nicht in Team {teamId} installiert — die Zuordnung wurde aufgehoben.",
+      "uninstalled": "App aus Team {teamId} entfernt.",
+      "cancel": "Abbrechen",
+      "unsupported": {
+        "install": "Die Installation in ein Team ist in dieser Installation nicht verfügbar.",
+        "uninstall": "Das Entfernen der App aus einem Team braucht den Microsoft-365-Connector 0.4.0 oder neuer. Der hier installierte Connector ist älter und veröffentlicht keine Deinstallation — aktualisiere das Plugin, oder lass die App von einem Teams-Admin manuell entfernen.",
+        "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
+        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt."
+      },
+      "unsupportedTechnical": "Server-Begründung: {detail}",
+      "notice": {
+        "teams_identity_unavailable": "Die Teams-Provisionierung ist in dieser Installation nicht verdrahtet — Identitäts-Store und Job-Runner registrieren sich, sobald eine Datenbank konfiguriert ist und die Orchestrator-Factory gebootet hat.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere und aktiviere das Microsoft-365-Connector-Plugin (0.3.1 oder neuer) und lade die Seite neu."
+      },
+      "errors": {
+        "invalid_body": "Der Server hat den Anfrage-Payload abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "team_install_conflict": "Dieser Orchestrator ist bereits einem anderen Team zugeordnet. Löse diese Zuordnung zuerst — pro Orchestrator wird ein Team geführt.",
+        "team_install_not_found": "Für dieses Team ist keine Installation verzeichnet — lade die Seite neu, um zu sehen, was entfernt werden kann.",
+        "teams_app_id_missing": "Dieser Orchestrator gilt als installiert, trägt aber keine Teams-App-ID — die Installation lässt sich damit nicht ansprechen. Provisionierung erneut ausführen.",
+        "teams_identity_not_found": "Dieser Orchestrator hat noch keine Teams-Identität.",
+        "teams_identity_unavailable": "Die Teams-Provisionierung ist in dieser Installation nicht verdrahtet.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
+        "teams_provisioning_running": "Für diesen Orchestrator läuft noch eine Provisionierung. Warte, bis sie fertig ist, und versuche es dann erneut.",
+        "teams_uninstall_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App aus einem Team zu entfernen. Aktualisiere ihn auf 0.4.0 oder neuer, oder lass die App von einem Teams-Admin manuell entfernen.",
+        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
+      },
+      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."
+    },
+    "identity": {
+      "heading": "Identität",
+      "hint": "Name, Beschreibung, Verhalten, Farbe und Avatar dieses Agenten. Leere Felder erben, was in der Registry steht. Was hier steht, landet im Teams-App-Paket des Agenten.",
+      "loading": "Identität wird geladen…",
+      "save": "Identität speichern",
+      "saving": "Wird gespeichert…",
+      "unsaved": "Ungespeicherte Änderungen",
+      "avatarAlt": "Avatar von {name}",
+      "avatarNone": "Kein Bild",
+      "avatarUpload": "Bild hochladen",
+      "avatarBusy": "Wird übertragen…",
+      "avatarRemove": "Bild entfernen",
+      "avatarHint": "PNG, JPEG oder WebP bis 2 MB. Daraus entsteht das 192×192-Farbsymbol des Teams-Pakets; ein 32×32-Umrisssymbol nur dann, wenn das Bild transparente Flächen hat — sonst bleibt das Standardsymbol.",
+      "fields": {
+        "displayName": "Anzeigename",
+        "displayNameHint": "So heißt der Agent in Teams. Leer lassen heißt: Name aus der Registry.",
+        "accentColor": "Akzentfarbe",
+        "accentColorHint": "Als #RRGGBB. Färbt das Teams-App-Paket ein.",
+        "shortDescription": "Kurzbeschreibung",
+        "shortDescriptionHint": "Höchstens 80 Zeichen — genau die Grenze, die das Teams-Manifest zieht.",
+        "longDescription": "Ausführliche Beschreibung",
+        "instructions": "Verhalten",
+        "instructionsHint": "Wie dieser Agent auftreten und antworten soll. Ersetzt für diesen Agenten den plattformweiten Standardtext — leer lassen heißt: Standard."
+      },
+      "republish": {
+        "queued": "Teams-Paket wird neu veröffentlicht.",
+        "not_needed": "Nichts verändert — nichts zu veröffentlichen.",
+        "no_installed_app": "Gespeichert. Dieser Agent hat noch keine installierte Teams-App, deshalb wird nichts veröffentlicht.",
+        "provisioner_unavailable": "Gespeichert. Der M365-Connector ist gerade nicht installiert, deshalb konnte das Teams-Paket nicht neu veröffentlicht werden."
+      }
+    },
+    "teamsIdentity": {
+      "heading": "Teams-Identität",
+      "hint": "Dieser Orchestrator bekommt eine eigene Teams-Bot-Identität: Bot-Slug, Anzeigename und optional ein Ziel-Team. Das Provisioning registriert die Entra-App, legt den Bot an, baut das Teams-App-Paket, lädt es hoch und installiert es.",
+      "loading": "Teams-Identität wird geladen…",
+      "refresh": "Aktualisieren",
+      "createHint": "Bot-Slug und Anzeigename sind optional — ohne Angabe leitet der Server beide aus dem Orchestrator ab. Das Ziel-Team ist Pflicht: Beim Provisioning wird die App dort installiert.",
+      "fieldBotSlug": "Bot-Slug",
+      "fieldBotSlugHint": "Kleinbuchstaben, Ziffern und Bindestriche. Muss über alle Orchestratoren hinweg eindeutig sein.",
+      "fieldDisplayName": "Anzeigename",
+      "fieldDisplayNameHint": "Der Name, den Menschen in Teams sehen.",
+      "fieldTeamId": "Ziel-Team-ID",
+      "fieldTeamIdHint": "Pflichtfeld. Die Teams-Team-(Gruppen-)ID, in die die App installiert wird.",
+      "submit": "Provisioning starten",
+      "submitBusy": "Startet",
+      "rerun": "Provisioning erneut ausführen",
+      "started": "Provisioning für {botSlug} gestartet.",
+      "progressLabel": "Provisioning-Fortschritt",
+      "stateSummary": "Status: {state}",
+      "running": "Ein Provisioning-Lauf ist gerade aktiv.",
+      "idle": "Aktuell läuft kein Provisioning.",
+      "botSlug": "Bot-Slug",
+      "displayName": "Anzeigename",
+      "appId": "Anwendungs-ID (Client)",
+      "tenantId": "Tenant-ID",
+      "teamsAppId": "Teams-App-ID",
+      "teamsAppExternalId": "Externe Teams-App-ID",
+      "notYet": "noch nicht vergeben",
+      "updatedAt": "Letzte Änderung: {date}",
+      "lastErrorHeading": "Letzter Provisioning-Fehler",
+      "lastErrorTechnical": "Technisches Detail",
+      "states": {
+        "pending": "ausstehend",
+        "app_registered": "App registriert",
+        "bot_created": "Bot angelegt",
+        "package_built": "Paket gebaut",
+        "catalog_uploaded": "Katalog hochgeladen",
+        "installed": "installiert",
+        "failed": "fehlgeschlagen"
+      },
+      "notice": {
+        "teams_identity_unavailable": "Das Teams-Identitäts-Provisioning ist in diesem Deployment nicht verdrahtet — Identitätsspeicher und Job-Runner registrieren sich, sobald eine Datenbank konfiguriert ist und die Orchestrator-Factory gebootet hat.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere und aktiviere das Microsoft-365-Connector-Plugin (0.3.1 oder neuer) und lade die Seite neu."
+      },
+      "routeErrors": {
+        "bot_slug_taken": "Dieser Bot-Slug gehört bereits zu einem anderen Orchestrator — wähle einen anderen.",
+        "invalid_body": "Der Server hat die Anfrage-Daten abgelehnt.",
+        "invalid_slug": "Dieser Orchestrator-Slug ist ungültig.",
+        "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Laufzeit ist nicht verfügbar.",
+        "not_found": "Diesen Orchestrator gibt es nicht mehr — lade die Seite neu.",
+        "teams_identity_not_found": "Dieser Orchestrator hat noch keine Teams-Identität.",
+        "teams_identity_unavailable": "Das Teams-Identitäts-Provisioning ist in diesem Deployment nicht verdrahtet.",
+        "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
+        "unknown": "Die Teams-Identitäts-Anfrage ist fehlgeschlagen: {detail}"
+      },
+      "errors": {
+        "technicalDetail": "Technisches Detail: {raw}",
+        "consent_missing": {
+          "what": "Microsoft hat die Anfrage abgelehnt, weil eine Tenant-Administration die Admin-Zustimmung für die benötigten Berechtigungen noch nicht erteilt hat.",
+          "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
+          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts.",
+          "consentLink": "So wird die Admin-Zustimmung in Microsoft Entra ID erteilt"
+        },
+        "arm_not_configured": {
+          "what": "Die Entra-App-Registrierung wurde angelegt, für den Bot selbst fehlen aber Azure-Setup-Felder, die am M365-Connector noch leer sind.",
+          "fields": "Fehlende Setup-Felder ({count}): {fields}",
+          "next": "Fülle diese Felder am M365-Connector aus und starte das Provisioning erneut — es setzt auf der App-Registrierung auf.",
+          "keepsRegistration": "Hier stehenzubleiben ist völlig in Ordnung. Die App-Registrierung bleibt bestehen, es muss nichts aufgeräumt werden, und der Agent ist nicht kaputt — er hat nur noch keinen Teams-Bot."
+        },
+        "throttled": {
+          "what": "Microsoft hat die Provisioning-Anfragen gedrosselt, deshalb hat der Lauf vor dem Ende aufgegeben.",
+          "retryAfter": "Microsoft bittet um {seconds} Sekunden Wartezeit.",
+          "next": "An der Konfiguration ist nichts falsch. Starte das Provisioning in ein paar Minuten erneut; es setzt beim letzten erfolgreichen Schritt auf."
+        },
+        "unknown": {
+          "what": "Das Provisioning wurde aus einem Grund gestoppt, den omadia nicht einordnen kann.",
+          "next": "Sieh dir das technische Detail unten an, behebe die Ursache und starte das Provisioning erneut."
+        },
+        "config_sync_failed": {
+          "what": "Die Teams-Identität ist provisioniert und installiert — nur das automatische Schreiben in die Konfiguration des Teams-Channel-Plugins hat nicht geklappt.",
+          "reason": "Grund: {reason}",
+          "next": "Füge den unten gezeigten Konfigurationsblock im Teams-Channel-Plugin ein und speichere, oder starte das Provisioning erneut, um den automatischen Schreibvorgang zu wiederholen. In Azure muss nichts wiederholt werden."
+        },
+        "bot_handle_unavailable": {
+          "what": "Microsoft hat den Bot-Namen abgelehnt: Er ist bereits für eine andere Bot-Anwendung registriert.",
+          "next": "Azure-Bot-Handles teilen sich einen einzigen globalen Namensraum über alle Azure-Kunden hinweg — wie ein Domainname, nicht wie ein Name innerhalb deines Tenants. omadia qualifiziert den Handle bereits automatisch mit der ID der App-Registrierung, dieser Name ist also auch in qualifizierter Form vergeben. Vergib dem Agenten einen anderen Bot-Slug und starte das Provisioning erneut."
+        }
+      },
+      "teamsBot": {
+        "heading": "Konfiguration für das Teams-Channel-Plugin",
+        "notReady": "Es gibt noch keine Bot-Konfiguration — sie erscheint, sobald die Entra-App-Registrierung existiert.",
+        "instructions": "Kopiere den Block, füge ihn im Setup-Feld {field} des Teams-Channel-Plugins ein und speichere.",
+        "secretRefNote": "Der Block enthält nur eine Referenz auf das Bot-Passwort, niemals das Passwort selbst — das Geheimnis bleibt im Vault des M365-Connectors.",
+        "blockLabel": "teams_bots-Konfigurationsblock für {botSlug}",
+        "copy": "Kopieren",
+        "copied": "Kopiert",
+        "applied": "Bereits übernommen — das Provisioning hat diese Konfiguration in {plugin} geschrieben und das Plugin neu geladen. Der Bot ist live, hier ist nichts mehr zu tun.",
+        "appliedFallback": "Der Block wird weiterhin angezeigt, damit Du ihn mit dem Konfigurierten vergleichen oder in einer anderen Installation wiederverwenden kannst.",
+        "notApplied": {
+          "missing": "Ein manueller Schritt fehlt noch: Dieser Bot steht noch nicht in der Konfiguration des Teams-Channel-Plugins. Normalerweise schreibt das Provisioning ihn automatisch — starte das Provisioning erneut oder füge den Block unten ein.",
+          "out_of_sync": "Achtung: Im Teams-Channel-Plugin steht eine abweichende Konfiguration für diesen Bot. Entweder wurde sie von Hand bearbeitet, oder ein automatischer Schreibvorgang lief nicht zu Ende. Ersetze sie durch den Block unten oder starte das Provisioning erneut.",
+          "plugin_not_installed": "Das Teams-Channel-Plugin ist nicht installiert, es gibt also noch kein Ziel für diese Konfiguration. Installiere und aktiviere es — das Provisioning schreibt den Eintrag beim nächsten Lauf, alternativ fügst Du ihn unten ein.",
+          "unreadable": "Im Feld {field} des Teams-Channel-Plugins steht aktuell ein Wert, der sich nicht als JSON lesen lässt. Es wurde nichts überschrieben. Korrigiere das Feld von Hand und füge dann den Block unten ein.",
+          "not_applicable": "Die Bot-Konfiguration ist noch nicht vollständig — sie erscheint, sobald die Entra-App-Registrierung existiert.",
+          "unknown": "Ob diese Konfiguration bereits übernommen wurde, lässt sich gerade nicht feststellen. Vergleiche sie mit dem Teams-Channel-Plugin und füge den Block unten ein, falls er fehlt."
+        }
+      },
+      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten."
+    }
   },
   "builder": {
     "issueReport": {
@@ -1419,8 +2283,8 @@
       "autoFixDismissAria": "Hinweis ausblenden",
       "buildStatusLabel": "Build-Status",
       "buildBusLive": "live",
-      "buildBusReconnecting": "reconnecting",
-      "buildBusIdle": "idle",
+      "buildBusReconnecting": "verbindet neu",
+      "buildBusIdle": "inaktiv",
       "buildSse": "SSE {status}",
       "buildErrorsHeading": "{count} TypeScript-Fehler",
       "buildErrorsHeadingWithBuild": "{count} TypeScript-Fehler · build #{buildN}",
@@ -1459,11 +2323,12 @@
         "removeTool": "Tool {id} entfernen",
         "formPlaceholder": "Tool-Form folgt in B.11-2.",
         "stuckTitle": "Builder-Agent ist auf diesem Tool/Slot stecken geblieben — manuell prüfen",
-        "stuckBadge": "stuck"
+        "stuckBadge": "hängt"
       },
       "bulkImport": {
         "dialogLabel": "Tools-Bulk-Import",
         "title": "Tools importieren",
+        "tabOpenApi": "OpenAPI 3 (JSON)",
         "closeModal": "Modal schließen",
         "inputLabel": "Eingabe",
         "preview": "Vorschau",
@@ -1510,10 +2375,11 @@
         "propertyKeyTaken": "Property-Key bereits vergeben",
         "description": "Beschreibung",
         "descriptionPlaceholder": "Vom LLM gelesener Hint",
-        "entityTitle": "Entity {name} (v{version})",
+        "entityTitle": "Entität {name} (v{version})",
         "booleanNoConstraints": "Boolean — keine zusätzlichen Constraints.",
         "objectNestedHint": "Object — verschachtelte Properties unten editieren.",
         "allowedValues": "Erlaubte Werte",
+        "patternRegexLabel": "pattern (regex)",
         "removeValue": "Wert {value} entfernen",
         "valueEnterPlaceholder": "Wert + Enter",
         "itemType": "Item-Typ",
@@ -1561,11 +2427,14 @@
         "send": "Senden"
       },
       "liveness": {
+        "streamLive": "Stream live · {elapsed} · Modell {model}",
+        "iterActivity": "Iter. {iteration} · letzte Aktivität {gap}",
         "likelyStuck": "vermutlich hängt — Stop drücken?"
       },
       "turnStats": {
         "live": "Turn live",
-        "last": "Letzter Turn"
+        "last": "Letzter Turn",
+        "toolTime": "{seconds} s Tool-Zeit"
       },
       "empty": {
         "title": "Sag dem Builder, womit du anfangen willst.",
@@ -1609,7 +2478,7 @@
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
-          "title": "Builder-Agent kommt bei Slot {slot} nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
+          "title": "Builder-Agent kommt bei Slot <slot>{slotKey}</slot> nicht weiter ({attempts, plural, one {# Versuch} other {# Versuche}})",
           "body": "{summary}. Öffne den Slot-Editor, prüf die Errors manuell und korrigier den Code — der Agent versucht es nicht von alleine erneut.",
           "dismiss": "Schließen",
           "dismissTooltip": "Banner schließen"
@@ -1621,9 +2490,9 @@
         "smoke": {
           "running": "smoke #{buildN} läuft …",
           "okNoTools": "smoke #{buildN} ✓ (keine Tools deklariert)",
-          "okTools": "smoke #{buildN} ✓ ({count} {count, plural, one {tool} other {tools}} ok)",
-          "activateFailed": "smoke #{buildN} ✗ — preview activate failed{detail}",
-          "toolsFailed": "smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {tool} other {tools}} failed",
+          "okTools": "Smoke #{buildN} ✓ ({count} {count, plural, one {Tool} other {Tools}} ok)",
+          "activateFailed": "Smoke #{buildN} ✗ — Preview-Aktivierung fehlgeschlagen{detail}",
+          "toolsFailed": "Smoke #{buildN} ✗ — {failed}/{count} {count, plural, one {Tool} other {Tools}} fehlgeschlagen",
           "fixWithBuilder": "Fix mit Builder"
         }
       },
@@ -1769,11 +2638,11 @@
         "templateBadgeAdjusted": "Vorlage: {template} — angepasst",
         "templateBadgeNone": "Keine Vorlage",
         "applyTemplate": "Vorlage anwenden",
-        "templateLabel": "Template (optional)",
+        "templateLabel": "Vorlage (optional)",
         "templatePlaceholder": "z.B. software-engineer (Templates kommen in Phase 4)",
-        "coreHeading": "Core (8)",
-        "extendedHeading": "Extended (4)",
-        "customNotesLabel": "Custom Notes (optional)",
+        "coreHeading": "Kern (8)",
+        "extendedHeading": "Erweitert (4)",
+        "customNotesLabel": "Eigene Notizen (optional)",
         "customNotesPlaceholder": "z.B. „Antworte auf Deutsch wenn der User auf Deutsch schreibt.\"",
         "saved": "Gespeichert.",
         "unsavedChanges": "Änderungen nicht gespeichert.",
@@ -1793,15 +2662,15 @@
         "applying": "Anwenden…",
         "templates": {
           "customerService": {
-            "label": "Customer Service Agent",
+            "label": "Kundenservice-Agent",
             "description": "Professioneller Support mit Empathie und klarer Eskalation."
           },
           "salesDev": {
-            "label": "Sales Development Rep",
+            "label": "Vertriebsmitarbeiter (SDR)",
             "description": "Proaktiver Vertrieb mit persönlicher Note und klarem Follow-up."
           },
           "contentMarketing": {
-            "label": "Content & Marketing Agent",
+            "label": "Content- & Marketing-Agent",
             "description": "Kreative Brand Voice mit strategischem Denken."
           },
           "researchAnalyst": {
@@ -1813,7 +2682,7 @@
             "description": "Teamorientierter Entwickler mit klarem Kommunikationsstil."
           },
           "teamLead": {
-            "label": "Team Lead / Coordinator",
+            "label": "Teamleitung / Koordination",
             "description": "Orchestrator, der Delegation, Eskalation und Teamstruktur steuert."
           }
         }
@@ -1852,7 +2721,7 @@
         "noSelection": "— Keine Auswahl —",
         "modalLabel": "Kultur-Preset anwenden",
         "overwriteNotice": "Diese Achsen würden überschrieben:",
-        "unset": "unset",
+        "unset": "nicht gesetzt",
         "noChange": "Keine Änderung — alle Werte stimmen bereits überein.",
         "apply": "Anwenden",
         "applying": "Anwenden…",
@@ -1972,7 +2841,7 @@
           "toggleLabel": "Admin UI bereitstellen",
           "toggleHelp": "Plugin mountet eine HTML-Page unter <code>admin_ui_path</code>. Web-UI embed sie als <code>&lt;iframe&gt;</code> auf der Store-Detail-Seite nach Install.",
           "pathLabel": "Pfad (absolut, endet auf <code>index.html</code>)",
-          "bodyLabel": "Admin UI Body (HTML)",
+          "bodyLabel": "Admin-UI-Body (HTML)",
           "bodyHint": "Inhalt zwischen den Marker-Regions. inline style + script erlaubt.",
           "operatorContract": "<strong>Operator-Contract:</strong> Frontend-Fetches müssen <strong>relative URLs</strong> nutzen (<code>fetch('api/devices')</code>, nicht <code>fetch('/api/...')</code>) — die UI läuft hinter einem <code>/bot-api/*</code>-Rewrite. JSON-Responses brauchen das <code>{ ok: boolean, ... }</code>-Schema, sonst flagged der RuntimeSmoke sie als kaputt.",
           "disabledHint": "Aus. Plugins ohne <code>admin_ui_path</code> haben keine Admin-Tile in der Store-Detail-Seite — das ist der Default.",
@@ -2000,7 +2869,7 @@
           "tabLabelHelp": "Max 24 Zeichen. Wird in Teams-Tab + Hub-Card angezeigt.",
           "pageTitleLabel": "Page-Title (title)",
           "pageTitleHelp": "Voller Page-Title im HTML-Doc. Max 80 Zeichen.",
-          "refreshLabel": "Refresh (s)",
+          "refreshLabel": "Aktualisierung (s)",
           "refreshHelp": "Meta-Refresh-Intervall. 0 = kein Auto-Reload."
         },
         "renderMode": {
@@ -2021,7 +2890,7 @@
           "help": "Das gewählte Tool wird bei jedem Page-Request mit leerem Input aufgerufen; Output fließt als Props in die Render-Funktion."
         },
         "interactive": {
-          "label": "Interactive (Hydration)",
+          "label": "Interaktiv (Hydration)",
           "help": "SSR + Client-Side-Hydration via esm.sh-Importmap. Setze auf true wenn dein Component <code>useState</code>, <code>onClick</code> o.ä. nutzt. Root-Element MUSS <code>data-omadia-page=\"{routeId}\"</code> tragen."
         },
         "componentSlot": {
@@ -2034,8 +2903,8 @@
         },
         "itemTemplate": {
           "heading": "Item-Template (Path-Interpolation: <code>item.feldname</code>)",
-          "titleLabel": "Title (required)",
-          "subtitleLabel": "Subtitle (optional)",
+          "titleLabel": "Titel (erforderlich)",
+          "subtitleLabel": "Untertitel (optional)",
           "metaLabel": "Meta (optional)",
           "urlLabel": "URL (optional — macht das Item klickbar)",
           "suffixHelp": "Whitelisted Suffixe: <code>.join(\", \")</code> für Arrays, <code>.toLocaleString()</code> für Zahlen. Sonstige Function-Calls werden ignoriert."
@@ -2061,7 +2930,7 @@
         "refreshTitle": "Preview neu laden",
         "openInNewTabAriaLabel": "Preview in neuem Tab öffnen",
         "openInNewTabTitle": "In neuem Tab öffnen",
-        "iframeTitle": "Preview: {label}",
+        "iframeTitle": "Vorschau: {label}",
         "unavailableTitle": "Preview nicht verfügbar",
         "hintLine": "<strong>Hinweis:</strong> {hint}",
         "hints": {
@@ -2087,14 +2956,14 @@
       "relMinutesAgo": "vor {count} min",
       "relHoursAgo": "vor {count} h",
       "relDaysAgo": "vor {count, plural, one {# Tag} other {# Tagen}}",
-      "detailTemplate": "Template: {template}",
+      "detailTemplate": "Vorlage: {template}",
       "detailAxes": "{count, plural, one {# Achse} other {# Achsen}}",
       "detailCustomNotes": "Custom notes",
       "detailSycophancy": "Sycophancy: {value}",
       "detailPresets": "{count, plural, one {# Preset} other {# Presets}}",
       "detailCustom": "{count} Custom",
       "detailOperations": "{count, plural, one {# Operation} other {# Operationen}}",
-      "detailSlotBytes": "{slot} — {bytes} bytes",
+      "detailSlotBytes": "{slot} — {bytes} Bytes",
       "createSnapshot": "Snapshot erstellen",
       "refresh": "Aktualisieren",
       "loadFailed": "Konnte Snapshots nicht laden: {message}",
@@ -2162,6 +3031,7 @@
       "sectionTools": "Tools",
       "toolsCount": "{count, plural, one {# Tool} other {# Tools}}",
       "noToolsDefined": "Keine Tools definiert.",
+      "toolInputSchema": "Input-Schema",
       "sectionDependencies": "Abhängigkeiten",
       "sectionDependenciesSubtitle": "depends_on (gewährt Vault-Scopes)",
       "noDependencies": "Keine Plugin-Abhängigkeiten.",
@@ -2170,7 +3040,7 @@
       "sectionSetupFields": "Setup-Felder",
       "sectionSetupFieldsSubtitle": "vom Operator beim Aktivieren auszufüllen",
       "noSetupNeeded": "Kein Setup nötig.",
-      "required": "required",
+      "required": "erforderlich",
       "failureGenericHeading": "Bereitstellung fehlgeschlagen",
       "headingConflict": "Plugin-ID-Konflikt",
       "headingBuildFailed": "Build fehlgeschlagen (tsc)",
@@ -2213,6 +3083,7 @@
     },
     "drafts": {
       "list": {
+        "metaTitle": "Plugin-Builder · omadia",
         "eyebrow": "Plugin-Builder",
         "headline": "Neue Plugins bauen.",
         "lede": "Ein Plugin kann deterministischen Code bündeln (die Tools und Integrationen, auf denen die Plattform läuft), die Agents, die damit arbeiten, oder beides zusammen. Lege hier Drafts an, iteriere parallel an mehreren und installiere sie per Klick. Jeder Draft bleibt in deinem persönlichen Arbeitsbereich, sichtbar nur für dich.",
@@ -2246,11 +3117,10 @@
           "label": "Fehler",
           "loadFailed": "Drafts konnten nicht geladen werden."
         },
-        "footer": {
-          "phaseLabel": "Phase"
-        }
+        "footerStamp": "omadia · Plugin-Builder"
       },
       "detail": {
+        "metaTitle": "Workspace · Agent-Builder · omadia",
         "error": {
           "label": "Fehler",
           "loadFailed": "Workspace konnte nicht geladen werden.",
@@ -2336,7 +3206,7 @@
       }
     },
     "title": "Konfiguration",
-    "intro": "Alle {envFile}-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
+    "intro": "Alle <envFile>.env</envFile>-Werte, die beim Start in den Config-Store bzw. den Secret-Vault geschrieben werden. Änderungen werden automatisch gespeichert und das betroffene Plugin neu aktiviert — sie wirken sofort, ohne Neustart. Secrets zeigen nur, ob ein Wert hinterlegt ist; der Wert selbst wird nie angezeigt.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "vaultUnavailable": "Vault nicht verfügbar — Secrets können nicht bearbeitet werden.",
@@ -2362,13 +3232,19 @@
     "title": "LLM-Provider",
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
-    "loadError": "Fehler beim Laden: {message}",
+    "loadError": "Die Provider-Liste konnte nicht geladen werden.",
     "vaultUnavailable": "Vault nicht verfügbar — Provider-Schlüssel können nicht gelesen werden.",
     "providers": {
       "heading": "Provider",
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
+      "unverified": "Schlüssel hinterlegt, nicht geprüft",
+      "verified": "geprüft",
+      "invalid": "Schlüssel abgelehnt",
+      "verifiedAt": "geprüft {time}",
+      "testKey": "Schlüssel testen",
+      "testing": "Wird geprüft …",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
@@ -2378,7 +3254,19 @@
       "keyInputLabel": "{provider} API-Key",
       "keyPlaceholder": "API-Key einfügen …",
       "saveKey": "Schlüssel speichern",
-      "cancel": "Abbrechen"
+      "cancel": "Abbrechen",
+      "cliNotInstalledReason": "Die Claude-CLI ist auf diesem Server nicht installiert.",
+      "helpLink": "Was bedeutet das?",
+      "unverifiedReason": {
+        "forbidden": "Der Provider hat die Anfrage abgelehnt (HTTP 403). Das ist meist eine Regions- oder Organisationsbeschränkung, kein falscher Schlüssel.",
+        "nonJsonResponse": "Der Provider hat kein JSON geliefert — oft eine Proxy- oder Portalseite statt der API.",
+        "unexpectedBody": "Der Provider hat geantwortet, aber nicht mit einer Modell-Liste, die wir erkennen.",
+        "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
+        "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
+        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
+      },
+      "oauthConnect": "Mit ChatGPT anmelden",
+      "oauthReconnect": "ChatGPT neu verbinden"
     },
     "assignments": {
       "heading": "Zuordnung pro Agent",
@@ -2388,13 +3276,28 @@
       "providerLabel": "Provider",
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",
-      "avvDisclosure": "Wird dieser Agent auf {provider} umgestellt, werden seine Prompt-Daten an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
-      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern."
+      "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
+      "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
     },
     "status": {
       "saving": "speichert …",
       "saved": "✓ gespeichert",
       "errorChip": "✗ Fehler"
+    },
+    "oauth": {
+      "title": "Mit ChatGPT anmelden",
+      "close": "Schließen",
+      "tosNotice": "Experimentell. API-Aufrufe über ein persönliches ChatGPT-Abo zu betreiben, ist eine Grauzone der OpenAI-Bedingungen. Nicht als Enterprise-Funktion nutzen — kann jederzeit ohne Vorankündigung ausfallen.",
+      "starting": "Anmeldung wird gestartet…",
+      "openHint": "Öffne die ChatGPT-Geräteseite:",
+      "openLink": "Bestätigungsseite öffnen",
+      "enterCode": "Gib dort diesen Code ein:",
+      "waiting": "Komm dann hierher zurück — dieser Dialog schließt sich automatisch, sobald du bestätigt hast.",
+      "connected": "Verbunden. ChatGPT steht jetzt als Provider zur Verfügung.",
+      "expired": "Der Anmeldecode ist abgelaufen, bevor er bestätigt wurde.",
+      "failed": "Die Anmeldung konnte nicht abgeschlossen werden.",
+      "retry": "Erneut versuchen"
     }
   },
   "adminSubscriptionClis": {
@@ -2437,8 +3340,9 @@
       "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
       "manualSummary": "Lieber das Terminal?",
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
-      "installCmd": "npm install -g @anthropic-ai/claude-code",
+      "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",
       "step2": "Melde dich mit deinem Abo-Konto an:",
+      "loginCmd": "{bin} auth login",
       "step3": "Komm hierher zurück und drücke Erneut prüfen. Eine angemeldete CLI zeigt ein grünes Badge."
     },
     "logout": {
@@ -2451,8 +3355,21 @@
       "installed": "installiert",
       "needsLogin": "Anmeldung nötig",
       "loggedIn": "angemeldet",
-      "subscription": "Abo",
-      "needsVerification": "Prüfung nötig"
+      "subscription": "Abrechnung: Abo",
+      "needsVerification": "Abrechnung: noch zu prüfen"
+    },
+    "lastChecked": "Zuletzt geprüft um {time}",
+    "refreshed": "Gerade aktualisiert",
+    "install": {
+      "heading": "CLI installieren",
+      "intro": "Diese CLI ist auf diesem Server nicht vorhanden. Dort installieren und anmelden — danach steht die Anmeldung auch hier zur Verfügung.",
+      "autoIntro": "Diese CLI ist auf diesem Server nicht vorhanden. Sie kann direkt von hier installiert werden — aus der öffentlichen npm-Registry in das persistente Datenverzeichnis des Servers.",
+      "button": "Jetzt installieren",
+      "installing": "Wird installiert … das kann einige Minuten dauern.",
+      "failed": "Installation fehlgeschlagen.",
+      "conflict": "Auf diesem Server läuft bereits eine CLI-Installation. Bitte warten, bis sie abgeschlossen ist, und dann erneut versuchen.",
+      "retry": "Erneut versuchen",
+      "manualSummary": "Lieber manuell installieren?"
     }
   },
   "createIssue": {
@@ -2515,6 +3432,7 @@
       "lead": "Der Hub ist unser Katalog für die bereitgestellten Plugins. Er bündelt Integrations (Credential-Container), Agents (Domain-Capabilities) und Channels (User-Kanäle wie Teams, Telegram). Ein Klick auf eine Kachel zeigt Berechtigungen, Secrets und Abhängigkeiten vor der Installation."
     },
     "page": {
+      "metaTitle": "Hub · omadia",
       "filters": {
         "all": "Alle",
         "integration": "Integrations",
@@ -2529,6 +3447,12 @@
       "sourceHub": "Registry",
       "sourceLocal": "Lokal",
       "sourceInstalled": "Installiert",
+      "counts": {
+        "installed": "{n} installiert",
+        "ready": "{n} von {total} einsatzbereit",
+        "attached": "{n} an {agent} angehängt",
+        "available": "{n} zum Anhängen verfügbar"
+      },
       "emptyFilteredTitle": "Keine {category} in dieser Ansicht.",
       "emptyFilteredHint": "Wechsle die Kategorie oder die Quelle oben.",
       "emptyInstalledTitle": "Noch keine Plugins installiert.",
@@ -2539,7 +3463,7 @@
       "emptyHubBody": "Verbinde eine Registry unter <adminLink>Admin · Registries</adminLink> — oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
       "errorKicker": "Fehler",
       "errorTitle": "Katalog konnte nicht geladen werden.",
-      "errorHint": "Prüfe, ob die Middleware unter <host>http://localhost:3979</host> erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
+      "errorHint": "Prüfe, ob die Middleware erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
       "footerSource": "Quelle:"
     },
     "detail": {
@@ -2548,6 +3472,8 @@
       "signed": "signiert",
       "unsigned": "unsigniert",
       "connectedOk": "Verbindung hergestellt.",
+      "alreadyProvided": "Diese Capability wird bereits von {owner} bereitgestellt. Ein zweiter Provider lässt sich nicht installieren — konfiguriere stattdessen den vorhandenen.",
+      "alreadyProvidedCta": "Provider konfigurieren",
       "connectedError": "Verbindung fehlgeschlagen. Bitte erneut versuchen.",
       "connectedErrorWithReason": "Verbindung fehlgeschlagen ({reason}). Bitte erneut versuchen.",
       "sectionDescription": "Beschreibung",
@@ -2560,6 +3486,8 @@
       "sectionSelfExtension": "Selbst-Erweiterung",
       "sectionPermissions": "Berechtigungen",
       "sectionCapabilities": "Capabilities",
+      "sectionForDevelopers": "Für Entwickler",
+      "sectionForDevelopersHint": "Service-Verträge und Integrationsziele",
       "capabilitiesMeta": "{provides} liefert · {requires} benötigt",
       "sectionIntegrations": "Integrationen",
       "categories": "Kategorien",
@@ -2576,6 +3504,9 @@
         "networkOutbound": "Netzwerk · Outbound",
         "flagRuntimeSecrets": "Schreibt eigene Credentials zur Laufzeit",
         "flagCredentialFlows": "Führt Credential-Flows auf eigenen Routes aus",
+        "publicPathsTitle": "Öffentliche (nicht authentifizierte) Pfade",
+        "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
+        "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Jedes Präfix bleibt hinter der Sitzungsprüfung, bis Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
         "none": "Keine Berechtigungen deklariert.",
         "runtimeCredentials": "Laufzeit-Credentials"
       },
@@ -2585,21 +3516,36 @@
         "noneDeclared": "Keine Capabilities deklariert.",
         "noRequirements": "Keine Voraussetzungen.",
         "installHint": "Beim Install prüft die Middleware diese Voraussetzungen transitiv. Fehlt ein Provider, öffnet sich ein Wizard mit den passenden Plugins aus dem Katalog."
-      }
+      },
+      "sectionGrants": "Berechtigungen"
     },
     "card": {
       "updateTitle": "Update verfügbar",
       "updateTitleWithVersion": "Update verfügbar: {from} → {to}",
       "updateSticker": "Update",
       "noDescription": "Keine Beschreibung hinterlegt.",
-      "actionRequired": "Aktion erforderlich"
+      "actionRequired": "Aktion erforderlich",
+      "setupProfileLabel": "Einrichtung",
+      "setupProfile": {
+        "audience": {
+          "it_admin": "Einrichtung durch IT-Administrator",
+          "operator": "Einrichtung durch Betreiber",
+          "end_user": "Einrichtung durch Endnutzer"
+        },
+        "minutes": "ca. {minutes} Min"
+      }
     },
     "stateBadge": {
       "available": "Verfügbar",
       "installed": "Installiert",
       "updateAvailable": "Update verfügbar",
       "incompatible": "Inkompatibel",
-      "migrationNeeded": "Migration nötig"
+      "migrationNeeded": "Migration nötig",
+      "configRequired": "Konfiguration erforderlich",
+      "awaitingLlm": "Konfiguriert – wartet auf LLM-Zugang",
+      "errored": "Aktivierung fehlgeschlagen",
+      "readyVerified": "Aktiv · konfiguriert {time}",
+      "missingFields": "Fehlt: {fields}"
     },
     "workaroundBadge": {
       "active": "Workaround aktiv",
@@ -2618,11 +3564,17 @@
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
+      "activationFailed": "Installiert, aber das Plugin ist nicht gestartet: {message}",
       "updateAvailable": "Update verfügbar",
       "updating": "Aktualisiere …",
       "update": "Aktualisieren",
       "installed": "Installiert",
       "active": "aktiv",
+      "installedNext": "\"{name}\" installiert — jetzt an einen Orchestrator anhängen.",
+      "toOrchestrators": "An Orchestrator anhängen",
+      "toSetup": "Einrichtung abschließen ({count} fehlen)",
+      "toLlmProvider": "LLM-Zugang einrichten",
+      "toChat": "Im Chat ausprobieren",
       "uninstallAria": "{name} deinstallieren",
       "uninstall": "Deinstallieren",
       "confirmRemove": "<strong>{name}</strong> entfernen? Tool wird sofort aus dem Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-Eintrag gelöscht.",
@@ -2644,6 +3596,7 @@
       "installing": "Wird installiert …",
       "confirmInstall": "Installation bestätigen",
       "errorKicker": "Fehler",
+      "privacyModeLabel": "Privacy-Modus",
       "privacyGuarded": "Geschützt (Privacy Shield)",
       "privacyBypass": "Bypass (roh durchlassen)",
       "privacyPerTool": "Per-Tool (Whitelist)",
@@ -2696,7 +3649,10 @@
       "saving": "Speichern",
       "saveSelection": "Auswahl speichern",
       "saveSelectionWithCount": "Auswahl speichern ({count})",
-      "refreshList": "Liste aktualisieren"
+      "refreshList": "Liste aktualisieren",
+      "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
+      "patternMismatch": "Dieser Wert hat nicht das erwartete Format.",
+      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
     },
     "editFromStore": {
       "cloning": "Klone Draft …",
@@ -2749,12 +3705,48 @@
     },
     "setupForm": {
       "enable": "Aktivieren",
-      "dontSet": "(nicht setzen)"
+      "dontSet": "(nicht setzen)",
+      "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
+      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
+    },
+    "adminUi": {
+      "iframeTitle": "{plugin} Admin-UI"
+    },
+    "grants": {
+      "stepTitle": "Berechtigungen",
+      "stepIntro": "Dieses Plugin bittet um Zugriffe, die nur Sie erteilen können. Nichts davon ist durch die Installation bereits erteilt, und jede Freigabe lässt sich später auf der Plugin-Seite wieder zurücknehmen.",
+      "sqlTitle": "Eigene Datenbanktabellen",
+      "sqlBody": "Das Plugin erhält eine Verbindung zu Ihrer Datenbank und besitzt eigene Tabellen — es legt sie selbst an und migriert sie selbst. Auf Tabellen von omadia oder anderen Plugins kann es weder lesend noch schreibend zugreifen.",
+      "sqlLedger": "Migrations-Ledger: {ledger}",
+      "sqlLedgerDrift": "Es liegt eine Freigabe für eine andere Tabelle vor ({ledger}). Das Plugin fragt inzwischen eine andere Tabelle an, die alte Freigabe zählt deshalb nicht mehr — setzen Sie den Haken, um die neue zu erteilen.",
+      "publicPathsIntro": "Diese Pfade antworten ohne omadia-Login, weil der Aufrufer keinen vorweisen kann. Authentifiziert wird trotzdem — vom Plugin selbst.",
+      "publicPathBody": "Wird ohne Session ausgeliefert. Ohne Freigabe bleibt der Pfad hinter dem Login und antwortet mit 401.",
+      "orphaned": "Ebenfalls freigegeben, wird vom Plugin aber nicht mehr angefragt: {paths}. Diese Freigaben bewirken nichts; ein Speichern des Formulars unten entfernt sie.",
+      "optionalRequiresIntro": "Optionale Voraussetzungen. Das Plugin funktioniert auch ohne sie, mit eingeschränktem Funktionsumfang — es handelt sich nicht um Berechtigungen, hier ist nichts freizugeben.",
+      "currentGranted": "Aktuell freigegeben",
+      "currentNotGranted": "Aktuell nicht freigegeben",
+      "grantAndActivate": "Freigeben & aktivieren",
+      "skip": "Überspringen",
+      "skippedBody": "Es wurde nichts freigegeben. Sie können die Freigabe jederzeit auf der Plugin-Seite unter „Berechtigungen“ nachholen — eine Neuinstallation ist dafür nicht nötig.",
+      "apply": "Übernehmen",
+      "close": "Schließen",
+      "openPanel": "Berechtigungen öffnen",
+      "saving": "Wird gespeichert und neu aktiviert…",
+      "saved": "Gespeichert",
+      "loading": "Berechtigungen werden geladen…",
+      "loadFailed": "Die Berechtigungen dieses Plugins konnten nicht geladen werden.",
+      "grantFailed": "Die Berechtigungen konnten nicht gespeichert werden.",
+      "nothingDeclared": "Dieses Plugin fragt keine besonderen Berechtigungen an.",
+      "state": {
+        "active": "Aktiv — das Plugin läuft mit den erteilten Berechtigungen.",
+        "errored": "Läuft nicht. Das Plugin konnte nach der letzten Änderung nicht starten.",
+        "inactive": "Nicht aktiv."
+      }
     }
   },
   "adminAuth": {
     "title": "Authentifizierungs-Provider",
-    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable {envVar} definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
+    "intro": "Aktiviere oder deaktiviere die Anmelde-Verfahren. Die env-Variable <envVar>AUTH_PROVIDERS</envVar> definiert die zulässigen Provider; hier wählst du, welche davon aktuell aktiv sind.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "statusActive": "aktiv",
@@ -2779,7 +3771,44 @@
       "marketplace": "Marketplace",
       "grants": "Grants",
       "plugins": "Plugin-Zugriff",
+      "bindings": "Öffentliche API-Keys",
       "audit": "Audit-Log"
+    },
+    "bindings": {
+      "intro": "Über den öffentlichen MCP-Endpunkt ruft eine externe Integration Tools mit einem API-Key auf. Jeder Key erreicht genau einen Agenten und genau die Tools, die hier eingetragen sind — ein Key ohne Binding erreicht gar nichts.",
+      "keyIdHint": "Trag die Key-ID ein, die beim Anlegen des API-Keys zurückkam. Eine Auswahlliste gibt es noch nicht: Keys verwaltet die Channel-API über einen eigenen Endpunkt.",
+      "keyId": "Key-ID",
+      "keyIdPlaceholder": "z. B. 8f3c1a90-…",
+      "agentId": "Agent",
+      "agentIdPlaceholder": "Agent wählen",
+      "readTools": "Lese-Tools",
+      "writeTools": "Schreib-Tools",
+      "toolsPlaceholder": "Tool-Namen, per Komma getrennt",
+      "writeRate": "Writes/Min.",
+      "writeToolsHint": "Ein Schreib-Tool verlangt zusätzlich den passenden mcp:write-Scope auf dem Key und geht auf das engere Schreib-Budget. Steht ein Tool in beiden Listen, zählt es als Schreib-Tool.",
+      "save": "Binding speichern",
+      "saving": "Speichert",
+      "empty": "Noch keine Bindings. Solange keines existiert, erreicht über den öffentlichen Endpunkt kein API-Key irgendein Tool.",
+      "boundTo": "gebunden an {agent}",
+      "enabled": "Aktiv",
+      "parked": "Widerrufen",
+      "readToolsLabel": "Lesen",
+      "writeToolsLabel": "Schreiben",
+      "none": "keine",
+      "meta": "{rate} Writes/Min. · zuletzt geändert {updated}",
+      "revoke": "Widerrufen",
+      "revokeTitle": "Dieses Binding widerrufen?",
+      "revokeBody": "Der Key {keyId} erreicht ab sofort kein Tool mehr. Das Binding bleibt erhalten und wird nicht gelöscht — du siehst weiterhin, was es erlaubt hat.",
+      "revokeConfirm": "Widerrufen",
+      "restore": "Zugriff wiederherstellen",
+      "restoreHint": "Erneutes Speichern ändert die Tools, hebt den Widerruf aber nicht auf. Nur Wiederherstellen macht den Key wieder nutzbar.",
+      "restoreTitle": "Dieses Binding wiederherstellen?",
+      "restoreBody": "Der Key {keyId} erhält sofort alles zurück, was auf dieser Zeile steht: {tools}.",
+      "restoreConfirm": "Wiederherstellen",
+      "warnings": {
+        "keyUnknown": "Es existiert noch kein API-Key mit dieser ID. Das Binding wurde gespeichert, erreicht aber nichts, solange kein solcher Key angelegt ist – prüfe die ID auf einen Tippfehler.",
+        "agentUnknown": "Dieses Binding nennt einen Agenten, der nicht mehr registriert ist, und erreicht daher nichts. Verknüpfe es mit einem existierenden Agenten."
+      }
     },
     "plugins": {
       "intro": "Plugins, die im Manifest MCP-Zugriff deklarieren. Weise jedem gezielt die Server zu, die es erreichen darf — nichts ist implizit. Die Per-Tool-Sicherheit greift weiterhin: ein ungescanntes oder hochriskantes Tool wird zur Aufrufzeit abgelehnt.",
@@ -2790,6 +3819,10 @@
     "servers": {
       "name": "Name",
       "transport": "Transport",
+      "transportDeprecated": "Veraltet",
+      "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "showDeprecatedTransports": "Veraltete Transports anzeigen",
+      "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
       "status": "Status",
       "tools": "Tools",
@@ -2866,7 +3899,26 @@
       "readyToLogin": "Client gespeichert. Melde dich jetzt bei {host} an, um den Zugriff zu autorisieren.",
       "continueLogin": "Weiter zum Login bei {host} ↗",
       "afterLoginHint": "Öffnet in einem neuen Tab. Nach der Bestätigung hierher zurückkehren — der Status aktualisiert sich automatisch.",
-      "checkStatus": "Status prüfen"
+      "checkStatus": "Status prüfen",
+      "delegationLabel": "Handelnde Identität",
+      "delegationPerUser": "Jeder Nutzer handelt als er selbst",
+      "delegationService": "Eine gemeinsame Service-Identität",
+      "delegationPerUserWhy": "Jeder Aufrufer nutzt an diesem Server seine eigene Autorisierung. Eine Unterhaltung ohne zugeordnete Nutzeridentität wird abgewiesen und greift nicht auf deine zurück.",
+      "delegationServiceWhy": "Alle Aufrufer teilen eine Autorisierung — deine. Wer einen Orchestrator mit diesem Server erreicht, handelt mit dieser Berechtigung. Behalte das nur für Server, bei denen eine gemeinsame Identität gewollt ist.",
+      "delegationSwitchToPerUser": "Identität pro Nutzer verlangen",
+      "delegationSwitchToService": "Gemeinsame Service-Identität nutzen",
+      "delegationIdentityMissing": "Diese Sitzung hat keine zugeordnete Nutzeridentität — Aufrufe pro Nutzer an diesen Server schlagen deshalb bewusst fehl. Es wird nichts an den Server gesendet.",
+      "modeCimd": "Metadaten-Dokument",
+      "modeDcr": "Automatisch registriert",
+      "modeManual": "Registrierte App",
+      "cimdBadgeWhy": "Dieser Server akzeptiert ein Client-ID-Metadaten-Dokument. omadia weist sich dadurch über eine URL aus, die diese Installation veröffentlicht — eine App-Registrierung war nicht nötig.",
+      "modeDcrWhy": "Dieser Server hat omadia automatisch registriert (Dynamic Client Registration). Die MCP-Spezifikation löst das schrittweise durch Metadaten-Dokumente ab, es funktioniert aber weiterhin — es gibt nichts zu tun.",
+      "modeManualWhy": "omadia nutzt eine OAuth-App, die Du einmal bei diesem Issuer registriert hast. Das ist der Standardweg für Microsoft Entra ID und Okta und bleibt vollständig unterstützt.",
+      "hintCimd": "Dieser Server erkennt omadia über ein Metadaten-Dokument, das diese Installation veröffentlicht — nichts zu registrieren, einfach verbinden und anmelden.",
+      "cimdUnreachable": "Dieser Server würde ein Client-ID-Metadaten-Dokument akzeptieren, aber diese Installation kann keines veröffentlichen, das er abrufen kann. Meist heißt das: omadia ist aus dem Internet nicht erreichbar — bei einer On-Premises-Installation normal, denn der Identity Provider muss das Dokument selbst abrufen.",
+      "cimdUnreachableReason": "Grund",
+      "manualStillSupported": "Es ist nichts kaputt: Registriere unten einmalig eine OAuth-App für diesen Issuer und verbinde wie gewohnt.",
+      "manualIsEnterprisePath": "Das ist der reguläre Enterprise-Weg, kein Notbehelf. Microsoft Entra ID und Okta setzen bewusst auf vorab registrierte App-Registrierungen und werden dieses Formular weiterhin nutzen."
     },
     "marketplace": {
       "registry": "Registry",
@@ -2926,396 +3978,27 @@
       "server": "Server",
       "tool": "Tool",
       "caller": "Aufrufer",
+      "identity": "Handelnde Identität",
       "outcome": "Ergebnis",
       "duration": "Dauer",
       "empty": "Noch keine MCP-Aufrufe protokolliert.",
       "ok": "ok",
       "failed": "fehlgeschlagen",
       "loadMore": "Mehr laden",
+      "unresolved": "nicht aufgelöst",
       "kind": {
         "agent": "Orchestrator",
         "subagent": "Sub-Agent",
         "skill": "Skill",
         "plugin": "Plugin",
-        "unattributed": "Nicht zugeordnet"
-      }
-    }
-  },
-  "adminDevPlatform": {
-    "title": "Dev-Plattform",
-    "intro": "Repositories, Dev-Jobs und Pull-Request-Pipelines, ausgeführt von omadia-Agenten. Jobs laufen isoliert und enden immer in einem Pull Request zur menschlichen Prüfung — omadia merged nie.",
-    "tabs": {
-      "repos": "Repositories",
-      "jobs": "Jobs",
-      "apps": "GitHub Apps",
-      "gates": "Freigaben"
-    },
-    "apps": {
-      "createHeading": "GitHub App erstellen",
-      "createBody": "Eine GitHub App gibt der Dev-Plattform kurzlebige, repository-spezifische Tokens, die nicht mergen können — der stärkste Credential-Modus. Beim Erstellen leiten wir dich zu GitHub, wo du das Manifest bestätigst, und danach wieder zurück.",
-      "orgLabel": "Organisation (optional)",
-      "orgPlaceholder": "acme",
-      "orgHelp": "Leer lassen, um die App unter deinem persönlichen Konto zu erstellen. Mit Organisation wird sie dort angelegt.",
-      "create": "GitHub App erstellen",
-      "creating": "GitHub wird geöffnet",
-      "createError": "Das App-Setup konnte nicht gestartet werden. Versuch es erneut.",
-      "listHeading": "Registrierte Apps",
-      "loading": "Lädt…",
-      "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
-      "loadError": "Beim Laden ist etwas schiefgelaufen.",
-      "retry": "Erneut versuchen",
-      "empty": "Noch keine GitHub Apps. Erstell eine, um Repositories mit Scoped Tokens zu verbinden.",
-      "colOwner": "Owner",
-      "colSlug": "App",
-      "colInstalls": "Installationen",
-      "installs": "{count, plural, one {# Installation} other {# Installationen}}",
-      "openOnGithub": "Auf GitHub öffnen"
-    },
-    "gates": {
-      "advisoryHeading": "Plan-Freigabe ist beratend",
-      "advisoryBody": "Eine Plan-Freigabe lässt den Job nur mit der Umsetzung beginnen. Die maßgebliche Sicherheitsprüfung ist das Diff-Gate, das den tatsächlichen Patch vor jedem Pull Request prüft. omadia merged nie.",
-      "loading": "Lädt…",
-      "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
-      "loadError": "Beim Laden ist etwas schiefgelaufen.",
-      "retry": "Erneut versuchen",
-      "empty": "Es warten keine Pläne auf Freigabe.",
-      "job": "Job",
-      "deadline": "Frist {at}",
-      "noDeadline": "Keine Frist",
-      "plan": "Plan",
-      "viewPlan": "Plan ansehen",
-      "noPlan": "Kein Plan-Artefakt",
-      "planLoading": "Plan wird geladen…",
-      "planLoadError": "Der Plan konnte nicht geladen werden.",
-      "holders": "Holder",
-      "noHolders": "keine",
-      "questions": "Rückfragen",
-      "answerPlaceholder": "Deine Antwort",
-      "noQuestions": "Der Agent hatte keine Rückfragen.",
-      "noteLabel": "Notiz (optional)",
-      "notePlaceholder": "Kontext zur Entscheidung",
-      "approve": "Plan freigeben",
-      "approving": "Wird freigegeben",
-      "reject": "Ablehnen",
-      "rejecting": "Wird abgelehnt",
-      "notHolder": "Du bist nicht berechtigt, dieses Gate aufzulösen. Die Holder-Rolle liegt inzwischen bei jemand anderem.",
-      "alreadyResolved": "Dieses Gate ist nicht mehr offen — es wurde aufgelöst oder ist abgelaufen. Die Liste wurde aktualisiert.",
-      "resolveError": "Das Gate konnte nicht aufgelöst werden. Versuch es erneut."
-    },
-    "bindApp": {
-      "intro": "Verbinde dieses Repository mit einer GitHub-App-Installation. Die App stellt Scoped, kurzlebige Tokens aus, die nicht mergen können. omadia prüft, dass die Installation dieses Repository abdeckt, bevor gespeichert wird.",
-      "loadingApps": "Apps werden geladen",
-      "noApps": "Noch keine GitHub Apps. Erstell zuerst eine im Tab „GitHub Apps“.",
-      "installLink": "Installieren / verwalten",
-      "installationLabel": "Installations-ID",
-      "installationPlaceholder": "12345678",
-      "installationHelp": "Installiere die App auf diesem Repository und füge dann die Installations-ID ein, die GitHub nach der Installation anzeigt.",
-      "bind": "GitHub App verbinden",
-      "binding": "Wird verbunden",
-      "bound": "GitHub App verbunden. Für dieses Repository werden jetzt Scoped Tokens verwendet.",
-      "boundWithWarnings": "Verbunden mit Warnungen",
-      "errors": {
-        "notCovering": "Diese Installation deckt dieses Repository nicht ab. Installiere die App auf diesem Repository und verwende dann dessen Installations-ID.",
-        "unknownInstallation": "Diese Installation ist nicht registriert. Schließe die App-Installation ab, damit omadia sie erfasst, und versuch es erneut.",
-        "invalidInstallation": "Gib die Installations-ID ein, die GitHub nach der Installation der App angezeigt hat.",
-        "appUnusable": "Die App hinter dieser Installation ist unbrauchbar — ihre Credentials fehlen. Erstelle die App neu.",
-        "generic": "Die GitHub App konnte nicht verbunden werden. Versuch es erneut."
-      }
-    },
-    "loading": "Lädt…",
-    "loadError": "Beim Laden ist etwas schiefgelaufen.",
-    "unauthorized": "Du brauchst Operator-Zugriff für die Dev-Plattform.",
-    "retry": "Erneut versuchen",
-    "repos": {
-      "count": "{count, plural, one {# Repository} other {# Repositories}}",
-      "name": "Repository",
-      "forge": "Forge",
-      "credential": "Credential-Modus",
-      "branch": "Default-Branch",
-      "protectionCol": "Protection",
-      "credentialExpired": "Credential abgelaufen",
-      "credentialModes": {
-        "githubApp": "GitHub App",
-        "deviceFlow": "Device Flow — User-Token",
-        "pat": "Personal Access Token"
-      },
-      "newJob": "Neuer Job",
-      "settings": "Einstellungen",
-      "add": "Repository hinzufügen",
-      "empty": {
-        "heading": "Noch keine Repositories",
-        "body": "Die Dev-Plattform führt isolierte Jobs gegen deine Repositories aus: ein Issue analysieren, planen, implementieren und einen Pull Request zur menschlichen Prüfung öffnen. omadia merged nie — das bleibt bei dir.",
-        "cta": "Repository hinzufügen"
-      },
-      "remove": {
-        "action": "Entfernen",
-        "title": "Repository entfernen?",
-        "body": "Laufende Jobs werden zuerst abgebrochen. Das gespeicherte Credential dieses Repositories wird aus dem Vault gelöscht.",
-        "confirm": "Repository entfernen",
-        "cancel": "Repository behalten"
-      },
-      "protection": {
-        "protected": "geschützt",
-        "unprotected": "ungeschützt",
-        "unchecked": "ungeprüft",
-        "recheck": "Neu prüfen",
-        "rechecking": "Prüft",
-        "warning": "Ohne Branch Protection könnte dein Token direkt auf den Default-Branch pushen. Die No-Merge-Garantie hängt daran."
-      }
-    },
-    "jobs": {
-      "job": "Job",
-      "repo": "Repo",
-      "kind": "Art",
-      "phase": "Phase",
-      "status": "Status",
-      "cost": "Kosten",
-      "costEstimatedTitle": "Geschätzte Kosten (Abo-CLI – nicht gemessen)",
-      "costEstimatedTag": "geschätzt",
-      "costNearTitle": "Nahe am Budget (≥80%)",
-      "costOverTitle": "Budget überschritten (≥100%)",
-      "age": "Alter",
-      "view": "Ansehen",
-      "cancel": "Abbrechen",
-      "delete": "Löschen",
-      "empty": "Noch keine Jobs. Starte einen aus einer Repository-Zeile.",
-      "live": "live",
-      "liveLost": "Verbindung verloren — versucht erneut",
-      "filters": {
-        "allRepos": "Alle Repositories",
-        "allStatuses": "Alle Status"
-      },
-      "statuses": {
-        "queued": "wartet",
-        "provisioning": "provisioniert",
-        "running": "läuft",
-        "waiting": "wartet auf dich",
-        "applying": "wendet an",
-        "done": "fertig",
-        "failed": "fehlgeschlagen",
-        "cancelled": "abgebrochen",
-        "stalled": "hängt",
-        "budgetExceeded": "Budget überschritten"
-      },
-      "kinds": {
-        "analyze": "Analysieren",
-        "fixIssue": "Issue fixen",
-        "implement": "Implementieren"
-      },
-      "cancelConfirm": {
-        "title": "Job abbrechen?",
-        "body": "Der Runner wird beendet. Branch, Log und ein bereits hochgeladener Diff bleiben erhalten.",
-        "confirm": "Job abbrechen",
-        "cancel": "Weiterlaufen lassen"
-      },
-      "deleteConfirm": {
-        "title": "Job löschen?",
-        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
-        "confirm": "Job löschen",
-        "cancel": "Behalten"
-      }
-    },
-    "newJob": {
-      "title": "Neuer Job für {repo}",
-      "kind": "Art",
-      "kinds": {
-        "fixIssue": "Ein Issue fixen",
-        "analyze": "Analysieren",
-        "implement": "Implementieren"
-      },
-      "fromIssue": "Aus Issue",
-      "fromBrief": "Freitext-Brief",
-      "loadingIssues": "Lädt offene Issues",
-      "noIssues": "Keine offenen Issues in diesem Repository gefunden.",
-      "issue": "Issue",
-      "selectIssue": "Issue auswählen",
-      "brief": "Brief",
-      "briefPlaceholder": "Was soll der Agent tun?",
-      "error": "Der Job konnte nicht angelegt werden.",
-      "cancel": "Abbrechen",
-      "starting": "Startet",
-      "start": "Job starten"
-    },
-    "wizard": {
-      "title": "Repository hinzufügen",
-      "intro": "Verbinde ein Repository, damit die Dev-Plattform isolierte Jobs dagegen ausführen und Pull Requests zu deiner Prüfung öffnen kann.",
-      "backToRepos": "Zurück zu den Repositories",
-      "steps": {
-        "repo": "Repository",
-        "credentials": "Credentials",
-        "confirm": "Bestätigen"
-      },
-      "fields": {
-        "forge": "Forge",
-        "owner": "Owner",
-        "name": "Repository-Name",
-        "branch": "Default-Branch"
-      },
-      "next": "Weiter",
-      "back": "Zurück",
-      "finish": "Repository hinzufügen",
-      "adding": "Fügt hinzu",
-      "edit": "Bearbeiten",
-      "summary": {
-        "github_app": "GitHub App",
-        "device_flow": "Device Flow",
-        "pat": "Personal Access Token"
-      },
-      "error": {
-        "submit": "Das Repository konnte nicht hinzugefügt werden. Prüfe Owner, Name und Credential und versuche es erneut."
-      },
-      "done": {
-        "heading": "Repository hinzugefügt",
-        "body": "{repo} ist verbunden. Du kannst aus der Repository-Liste einen Job starten.",
-        "toList": "Zu den Repositories"
-      },
-      "credentials": {
-        "groupLabel": "Credential-Modus",
-        "githubApp": {
-          "title": "GitHub App — empfohlen",
-          "soon": "bald verfügbar",
-          "body": "Installation pro Repository, kurzlebige, eng gescopte Tokens, Commits als omadia-dev[bot]. Das Token kann nicht mergen — strukturell."
-        },
-        "deviceFlow": {
-          "title": "Device Flow — Schnellstart",
-          "body": "Melde dich per einmaligem Device-Code mit deinem GitHub-Account an. Der schnellste Weg, die Dev-Plattform auszuprobieren."
-        },
-        "deviceTradeoffs": {
-          "heading": "Was dieser Modus bedeutet",
-          "asUser": "Commits erscheinen als dein GitHub-User, nicht als Bot",
-          "repoWide": "das Token gewährt Zugriff auf alle deine Repositories, nicht nur dieses",
-          "canMerge": "das Token kann mergen — die No-Merge-Regel setzt nur die omadia-Policy durch, nicht der Token-Scope",
-          "noWebhooks": "Webhook-Trigger bleiben für dieses Repository deaktiviert"
-        },
-        "device": {
-          "codeAria": "Device-Code {code}",
-          "copyCode": "Code kopieren",
-          "copied": "Kopiert",
-          "waiting": "Wartet auf Autorisierung",
-          "authorizedAs": "Autorisiert als {login}",
-          "expired": "Code abgelaufen",
-          "error": "Autorisierung fehlgeschlagen",
-          "restart": "Neu starten"
-        },
-        "pat": {
-          "title": "Fine-grained PAT / Deploy-Key",
-          "body": "Füge ein fine-grained Personal Access Token ein, das auf dieses Repository gescopt ist. Auch der Weg für GitLab und Gitea.",
-          "label": "Token",
-          "placeholder": "github_pat_…"
-        }
-      },
-      "checks": {
-        "label": "Branch Protection auf {branch}",
-        "enabled": "aktiv",
-        "missing": "fehlt",
-        "unknown": "nicht prüfbar",
-        "warning": "Ohne Branch Protection könnte ein Device-Flow- oder PAT-Token direkt auf {branch} pushen. Aktiviere sie in den Repository-Einstellungen — die Dev-Plattform pusht nur auf omadia/job-*-Branches, aber Protection macht das strukturell.",
-        "unknownHint": "Das gespeicherte Token kann die Protection-Einstellungen nicht lesen — klassischen Device-Flow-Tokens fehlt meist der Admin-Lesezugriff. Du kannst jederzeit neu prüfen."
-      }
-    },
-    "detail": {
-      "jobLabel": "Job {hash}",
-      "loading": "Lädt…",
-      "notFound": "Diesen Job gibt es nicht.",
-      "railLabel": "Pipeline-Phasen",
-      "phases": {
-        "analyze": "analyze",
-        "bootstrap": "bootstrap",
-        "plan": "plan",
-        "clarify": "clarify",
-        "gate": "gate",
-        "implement": "implement",
-        "review": "review",
-        "pr": "pr"
-      },
-      "phaseSkipped": "übersprungen — keine Fragen",
-      "toolCall": {
-        "pending": "läuft",
-        "failed": "fehlgeschlagen",
-        "noOutput": "(keine Ausgabe)",
-        "prompt": "Prompt",
-        "result": "Ergebnis",
-        "output": "Ausgabe",
-        "moreDiffLines": "… {count, plural, one {# weitere Zeile} other {# weitere Zeilen}}"
-      },
-      "openPr": "Pull Request öffnen",
-      "artifactError": "Das Ergebnis dieser Phase konnte nicht geladen werden.",
-      "logEmpty": "Noch keine Log-Ausgabe.",
-      "scrollToBottom": "Nach unten scrollen",
-      "connection": {
-        "live": "live · letztes Event vor {seconds}s",
-        "reconnecting": "verbindet neu",
-        "closed": "Stream beendet — Job abgeschlossen"
-      },
-      "cancel": {
-        "action": "Abbrechen",
-        "title": "Job abbrechen?",
-        "body": "Der Runner wird beendet, der Branch bleibt erhalten.",
-        "confirm": "Job abbrechen",
-        "cancelLabel": "Weiterlaufen lassen"
-      },
-      "delete": {
-        "action": "Löschen",
-        "title": "Job löschen?",
-        "body": "Der Job, sein Log und seine Artefakte werden endgültig entfernt. Ein bereits erstellter Branch oder PR bleibt erhalten.",
-        "confirm": "Job löschen",
-        "cancelLabel": "Behalten"
-      },
-      "sidebar": {
-        "backend": "Backend",
-        "agent": "Agent",
-        "branch": "Branch",
-        "source": "Quelle",
-        "createdBy": "Angelegt von",
-        "tokens": "Tokens ein / aus",
-        "cost": "Kosten"
-      }
-    },
-    "repoDetail": {
-      "back": "Zurück zu den Repositories",
-      "loading": "Lädt…",
-      "loadError": "Dieses Repository konnte nicht geladen werden.",
-      "forge": "Forge",
-      "branch": "Default-Branch",
-      "credential": "Credential",
-      "credentialHeading": "Credential",
-      "credentialCurrent": "Aktueller Modus: {kind}",
-      "runsTests": "Führt Tests aus",
-      "yes": "ja",
-      "no": "nein",
-      "protectionHeading": "Branch Protection",
-      "recheck": "Neu prüfen",
-      "rechecking": "Prüft",
-      "budget": {
-        "heading": "Budget",
-        "help": "Begrenze die Kosten pro Job für dieses Repository. Leer lassen, um den Plattform-Standard zu verwenden.",
-        "costLabel": "Kostenbudget (USD pro Job)",
-        "costPlaceholder": "z. B. 5.00",
-        "costError": "Gib einen positiven Betrag ein oder lass das Feld für den Standard leer.",
-        "save": "Budget speichern",
-        "saving": "Speichert",
-        "saved": "Gespeichert",
-        "saveError": "Das Budget konnte nicht gespeichert werden."
-      },
-      "webhook": {
-        "heading": "Webhook-Auslöser",
-        "help": "Wenn aktiviert, startet das Anwenden des Trigger-Labels an einem Issue einen Job — aber nur für einen freigegebenen Absender. Eine leere Absenderliste hält den Webhook aus.",
-        "enable": "Aktivieren",
-        "disable": "Deaktivieren",
-        "saving": "Speichert",
-        "statusLabel": "Status",
-        "enabledStatus": "Aktiviert",
-        "disabledStatus": "Deaktiviert",
-        "triggerLabelLabel": "Trigger-Label",
-        "sendersLabel": "Erlaubte Absender",
-        "sendersEmpty": "Keine — Webhook-Auslöser sind aus, bis ein Absender hinzugefügt wird.",
-        "saveError": "Die Webhook-Einstellung konnte nicht gespeichert werden."
+        "unattributed": "Nicht zugeordnet",
+        "api_key": "API-Key (Public MCP)"
       }
     }
   },
   "adminRegistries": {
     "title": "Plugin-Registries",
-    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit {hub}. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
+    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit <hub>hub.omadia.ai</hub>. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
     "addHeading": "Registry hinzufügen",
     "fields": {
       "name": "Name",
@@ -3349,6 +4032,60 @@
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
       "generic": "Fehler {status}."
+    }
+  },
+  "adminApiKeys": {
+    "title": "Öffentliche API-Schlüssel",
+    "intro": "Server-zu-Server-Bearer-Zugangsdaten für die öffentliche Chat-API. Das Klartext-Token eines Schlüssels wird genau einmal angezeigt, direkt nach dem Erstellen — sofort kopieren, es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+    "create": {
+      "heading": "Neuen Schlüssel erstellen",
+      "fields": {
+        "label": "Bezeichnung (optional)",
+        "rateLimit": "Rate-Limit (Anfragen/Minute, optional)"
+      },
+      "rateLimitInvalid": "Rate-Limit muss zwischen {min} und {max} Anfragen/Minute liegen.",
+      "scopesRequired": "Mindestens einen Scope auswählen — ein Schlüssel ohne Scope kann nichts tun.",
+      "blockedByReveal": "Das Token oben zuerst ausblenden, bevor ein weiterer Schlüssel erstellt wird.",
+      "submit": "Schlüssel erstellen",
+      "creating": "Wird erstellt"
+    },
+    "reveal": {
+      "heading": "Neuer API-Schlüssel erstellt",
+      "warning": "Dieses Token wird nur dieses eine Mal angezeigt. Jetzt kopieren — es kann danach nicht erneut abgerufen werden, auch nicht von einem Operator.",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "copyFailed": "Automatisches Kopieren fehlgeschlagen — Token oben markieren und manuell kopieren.",
+      "dismiss": "Kopiert, ausblenden"
+    },
+    "list": {
+      "heading": "Vorhandene Schlüssel",
+      "loading": "Lädt …",
+      "empty": "Noch keine API-Schlüssel. Oben einen erstellen, um loszulegen.",
+      "unlabeled": "Ohne Label",
+      "idLabel": "Schlüssel-ID",
+      "copyId": "ID kopieren",
+      "copyIdCopied": "Kopiert",
+      "copyIdTitle": "Schlüssel-ID kopieren — in ein öffentliches MCP-Key-Binding einfügen",
+      "createdAt": "Erstellt {date}",
+      "rateLimitValue": "{value}/Min",
+      "status": {
+        "active": "Aktiv",
+        "revoked": "Widerrufen"
+      },
+      "revoke": "Widerrufen",
+      "revoking": "Wird widerrufen",
+      "confirmRevoke": {
+        "message": "Diesen Schlüssel widerrufen? Alles, was ihn verwendet, hört sofort auf zu funktionieren — das kann nicht rückgängig gemacht werden.",
+        "confirm": "Widerruf bestätigen",
+        "cancel": "Abbrechen"
+      }
+    },
+    "errors": {
+      "notFound": "Dieser Schlüssel existiert nicht mehr — die Liste wurde aktualisiert.",
+      "authUnavailable": "Operator-Authentifizierung ist gerade nicht verfügbar. Bitte in Kürze erneut versuchen.",
+      "sessionExpired": "Die Sitzung ist abgelaufen. Weiterleitung zur Anmeldung …",
+      "invalidRequest": "Die Anfrage war ungültig — bitte die Werte oben prüfen und erneut versuchen.",
+      "generic": "Etwas ist schiefgelaufen (Fehler {status})."
     }
   },
   "adminWebhooks": {
@@ -3420,7 +4157,7 @@
   },
   "adminDomains": {
     "title": "Plugin-Domains",
-    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der {manifest} deklarierten {domain}. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
+    "intro": "Übersicht aller registrierten Plugins, gruppiert nach ihrer in der <manifest>manifest.yaml</manifest> deklarierten <domain>domain</domain>. Domains werden vom Phase-8 Nudge-Pipeline-Multi-Domain-Trigger gelesen und vom Operator-UI für Cross-Agent-Gruppierung verwendet. Curation (Umbenennen / Mergen / Hierarchien) folgt mit OB-78 (Phase 9 Agent-Profile).",
     "loading": "Lade …",
     "loadError": "Fehler beim Laden: {message}",
     "noData": "Keine Daten.",
@@ -3431,10 +4168,10 @@
       "fallbacks": "Fallbacks"
     },
     "pluginCount": "{count, plural, one {# Plugin} other {# Plugins}}",
-    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf {fallbackDomain}. Füge dem Manifest eine {manifestKey}-Zeile hinzu (z.B. {exampleOne}, {exampleTwo}) oder lade den Agent über den Builder neu hoch."
+    "fallbackWarning": "{count, plural, one {# Plugin} other {# Plugins}} ohne deklarierte Domain — auto-fallback auf <fallbackDomain>{fallbackDomainName}</fallbackDomain>. Füge dem Manifest eine <manifestKey>identity.domain</manifestKey>-Zeile hinzu (z.B. <exampleOne>\"confluence\"</exampleOne>, <exampleTwo>\"odoo.hr\"</exampleTwo>) oder lade den Agent über den Builder neu hoch."
   },
   "adminUsage": {
-    "title": "Kosten",
+    "title": "Nutzung & Kosten",
     "intro": "Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
@@ -3569,10 +4306,127 @@
     "scorePhaseTitle": "Phase 1 · SCORE",
     "promotePhaseTitle": "Phase 2 · PROMOTE"
   },
+  "adminUpdate": {
+    "title": "Update",
+    "intro": "Die Version, die diese Instanz gerade fährt, ob ein neueres Release existiert und – mit installiertem Updater-Overlay – ein Versionssprung der laufenden Container per Klick.",
+    "versionsTitle": "Versionen",
+    "running": "Läuft",
+    "latest": "Neuestes Release",
+    "latestUnknown": "unbekannt",
+    "unstamped": "(Build ohne Versionsstempel)",
+    "floating": "(bewegliches Tag — kein Vergleich möglich)",
+    "updateAvailable": "{version} ist verfügbar.",
+    "upToDate": "Diese Instanz fährt das neueste Release.",
+    "checkStale": "Die Release-Prüfung hat GitHub nicht erreicht; der angezeigte Wert kann veraltet sein.",
+    "checkNow": "Jetzt prüfen",
+    "checking": "Prüfe…",
+    "notifyOnlyTitle": "Manuelles Update",
+    "notifyOnlyBody": "Es ist kein Updater konfiguriert — diese Instanz kann Versionen melden, aber kein Update ausführen. Unter Docker Compose aktiviert das optionale Overlay (docker-compose.update.yaml) die Ausführung. Sonst vom Host aus aktualisieren:",
+    "notifyOnlyComposeLabel": "Docker Compose",
+    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose up -d",
+    "notifyOnlyFlyLabel": "Fly.io",
+    "notifyOnlyFlyOrderHint": "In dieser Reihenfolge ausführen — die Middleware fährt beim Start die Schema-Migrationen, also erst ihre neue Version abwarten, dann die Admin-UI nachziehen.",
+    "notifyOnlyFlyPinHint": "Danach auch die image-Zeile in der fly.toml anpassen: --image gilt nur für diesen Deploy, ein späteres nacktes fly deploy würde die App wieder auf das alte Tag setzen.",
+    "notifyOnlyDocsHint": "Kubernetes und andere Plattformen: siehe docs/upgrading.md. Die Desktop-App aktualisiert sich selbst.",
+    "executorUnreachable": "Der Updater ist konfiguriert, hat aber nicht geantwortet: {message}",
+    "auditUnavailable": "Updates sind deaktiviert, weil keine Postgres-Verbindung besteht: Ein Stack-Austausch, der nicht protokolliert werden kann, wird nicht angeboten.",
+    "inProgressTitle": "Update läuft",
+    "inProgressBody": "Die Container werden ersetzt. Diese Seite pollt weiter — die Middleware ist während des Neustarts kurz nicht erreichbar.",
+    "rolledBack": "Das letzte Update ist fehlgeschlagen und wurde zurückgerollt: {message}",
+    "rolledBackNeverReachable": "Das Update auf {from} wurde zurückgerollt: Die neue Version hat /health nie beantwortet. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackVersionNeverMatched": "Das Update auf {from} wurde zurückgerollt: /health meldete weiterhin {observed} statt {from}. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackReplace": "Das Update auf {from} wurde zurückgerollt: Der Dienst {service} konnte nicht ersetzt werden. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackHint": "Ein neues Image, das nie hochkommt, braucht beim Start meist etwas, das das alte nicht brauchte — am häufigsten ein Secret wie CREDENTIAL_KEYCHAIN_KEY (Pflicht seit v0.115). Sieh sofort in die Middleware-Logs des fehlgeschlagenen Starts; gehostete Plattformen behalten sie nur kurz. docs/upgrading.md hat die Schritte pro Version.",
+    "progress": {
+      "kicker": "Update",
+      "titleRunning": "Update auf {version} läuft",
+      "titleRollingBack": "Rollback — {version} ist nicht hochgekommen",
+      "titleSucceeded": "Auf {version} aktualisiert",
+      "titleRolledBack": "Update auf {version} zurückgerollt",
+      "titleFailed": "Update auf {version} fehlgeschlagen",
+      "elapsed": "seit {elapsed}",
+      "seconds": "{seconds} s",
+      "stepsLabel": "Update-Schritte",
+      "steps": {
+        "resolve": "Laufende Dienste ermitteln",
+        "preflight": "Neue Images in der Registry prüfen",
+        "pin": "Zielversion festschreiben",
+        "replace": "Middleware und Admin-UI ersetzen",
+        "health_gate": "Warten, bis /health die neue Version meldet",
+        "rollback": "Zurückrollen auf {version}"
+      },
+      "replaceHint": "die Middleware startet jetzt neu — diese Seite verliert sie kurz",
+      "healthGateHint": "bis zu 5 Minuten",
+      "noPhaseYet": "Warte auf den ersten gemeldeten Schritt des Updaters.",
+      "pollingEvery": "Abfrage alle {seconds} s",
+      "pollingAttempts": "{count} Abfragen",
+      "pollingLastAnswer": "letzte Antwort vor {elapsed}",
+      "middlewareReachable": "Die Middleware antwortet.",
+      "middlewareUnreachable": "Die Middleware antwortet nicht — während des Neustarts erwartet.",
+      "stalledTitle": "Das dauert länger als erwartet.",
+      "stalledBody": "Das Health-Gate des Updaters beträgt 5 Minuten; ein so langer Lauf heißt meist, dass der Updater selbst weg ist oder diese Seite ihn aus den Augen verloren hat. Du kannst den Dialog schließen; die Update-Historie unten und die Container-Logs zeigen, was wirklich passiert ist.",
+      "succeededBody": "Die Middleware meldet {version}.",
+      "succeededReloadHint": "Die Admin-UI wurde ebenfalls ersetzt — lade neu, um sicher die neue zu sehen.",
+      "cannotClose": "Dieser Dialog schließt sich, wenn das Update abgeschlossen ist.",
+      "close": "Schließen",
+      "reload": "Admin-UI neu laden",
+      "dismissStalled": "Ausblenden",
+      "trailTitle": "Updater-Log ({count} Zeilen)",
+      "failure": {
+        "rolledBackBody": "Alle Dienste wurden auf {version} zurückgesetzt. Nichts ist verloren, aber Schema-Migrationen laufen nur vorwärts — eine bereits migrierte Datenbank bleibt migriert.",
+        "notRolledBackBody": "Der Updater konnte die vorherige Version nicht wiederherstellen. Prüfe die Dienste von Hand, bevor du etwas anderes tust.",
+        "neverReachable": {
+          "title": "Die neue Version hat /health nie beantwortet.",
+          "body": "Der Container wurde ersetzt, aber innerhalb des Gate-Fensters hat nie etwas auf dem Health-Endpoint gelauscht. Das ist fast immer ein Absturz der neuen Version beim Start, kein Netzwerkproblem. Wahrscheinliche Ursachen:",
+          "causeSecret": "Ein Secret, das die neue Version braucht und die alte nicht — am häufigsten CREDENTIAL_KEYCHAIN_KEY, Pflicht seit v0.115. Setzen, dann das Update erneut starten.",
+          "causeMigration": "Eine Schema-Migration, die an dieser Datenbank gescheitert ist.",
+          "causeLogs": "Lies jetzt die Middleware-Logs des fehlgeschlagenen Starts — gehostete Plattformen behalten sie Minuten, nicht Stunden."
+        },
+        "versionNeverMatched": {
+          "title": "/health meldete weiterhin {observed} statt der neuen Version.",
+          "body": "Es hat etwas geantwortet, aber nicht das neue Image: Der Dienst ist vielleicht auf dem alten Tag neu gestartet, oder ein Proxy davor zeigt noch auf die alte Instanz."
+        },
+        "replace": {
+          "title": "Der Dienst {service} konnte nicht ersetzt werden.",
+          "body": "Die Plattform hat den Wechsel auf das neue Image verweigert. Das Updater-Log unten enthält den genauen Fehler."
+        },
+        "unknown": {
+          "title": "Das Update ist nicht gelandet."
+        },
+        "docsLink": "docs/upgrading.md — Upgrade-Schritte pro Version"
+      }
+    },
+    "confirmTitle": "Bestätigen",
+    "confirmInstruction": "Zum Bestätigen <code>{phrase}</code> eintippen.",
+    "confirmWarning": "Das ersetzt die laufenden Middleware- und Admin-UI-Container. Schema-Migrationen laufen nur vorwärts — ein Rollback stellt die Images wieder her, nicht die Datenbank. Vor einem größeren Sprung ein Volume-Snapshot ziehen.",
+    "confirmInputLabel": "Zielversion",
+    "pinNotPersisted": "Dieser Executor kann die Version nicht festschreiben: Ein späteres nacktes fly deploy liest die fly.toml und setzt die App zurück aufs alte Tag. Dort bitte die image-Zeile mit anpassen.",
+    "triggerButton": "Auf {version} aktualisieren",
+    "triggering": "Starte…",
+    "historyTitle": "Update-Historie",
+    "outcomes": {
+      "requested": "angefordert",
+      "succeeded": "erfolgreich",
+      "failed": "fehlgeschlagen"
+    },
+    "loadError": "Update-Status konnte nicht geladen werden: {message}",
+    "errors": {
+      "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der Zielversion überein.",
+      "invalid_target_version": "Nur Release-Versionen wie v1.2.3 sind zulässig — bewegliche Tags lassen sich nicht zurückrollen.",
+      "updater_not_configured": "Auf dieser Instanz ist kein Updater konfiguriert.",
+      "audit_unavailable": "Das Update wurde abgelehnt, weil es nicht protokolliert werden konnte.",
+      "update_in_progress": "Es läuft bereits ein Update.",
+      "already_on_target": "Diese Instanz fährt diese Version bereits.",
+      "updater_unreachable": "Der Updater hat nicht geantwortet.",
+      "updater_rejected": "Der Updater hat den Auftrag abgelehnt.",
+      "audit_write_failed": "Der Audit-Eintrag konnte nicht geschrieben werden, deshalb wurde das Update nicht gestartet.",
+      "generic": "Das Update konnte nicht gestartet werden: {message}"
+    }
+  },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",
-    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel wirken nur im Knowledge-Graph. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
-    "note": "<strong>Hinweis:</strong> Pro User / Team / Channel löschen wirkt nur im Knowledge-Graph — der Agent-Scratch ist agent-scoped.",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel treffen den Knowledge-Graph und den passenden Kontext-Baum unter /memories/contexts. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
+    "note": "<strong>Hinweis:</strong> Der Selector für User / Team / Channel ist ein Kontext-Key (<code>channelType~id</code>) oder die rohe native Id — er adressiert einen Kontext-Baum über alle Agenten hinweg.",
     "targetTitle": "Ziel",
     "axisLabel": "Achse",
     "axes": {
@@ -3585,9 +4439,9 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "user-id oder Selector",
-      "team": "team-id oder Selector",
-      "channel": "channel-id oder Selector"
+      "user": "teams~29-1a2b… (nie eine nackte Id)",
+      "team": "teams~19-abc… (nie eine nackte Id)",
+      "channel": "telegram~-1001234567890 (nie eine nackte Id)"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
     "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
@@ -3605,7 +4459,13 @@
     "deleteButton": "Unwiderruflich löschen",
     "deleteError": "Lösch-Fehler: {message}",
     "deletedTitle": "Gelöscht",
-    "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte."
+    "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
+    "selectorHint": {
+      "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
+      "user": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe User-Id. Löscht das User-Tier über alle Agenten.",
+      "team": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Team-Id. Löscht das Team-Tier über alle Agenten.",
+      "channel": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Conversation-Id. Löscht das Kanal-Tier über alle Agenten."
+    }
   },
   "adminDuplicates": {
     "list": {
@@ -3613,7 +4473,7 @@
       "intro": "Memories die semantisch fast identisch sind. Tab „Memories“ zeigt MK-Paare (cosine ≥ 0.95), Tab „Excerpts“ zeigt Palaia-Excerpt-Paare (cosine ≥ 0.97). Klick auf einen Eintrag öffnet die Side-by-side-Ansicht mit Resolve-Knopf.",
       "tabs": {
         "memories": "Memories",
-        "excerpts": "Excerpts (Palaia)"
+        "excerpts": "Auszüge (Palaia)"
       },
       "confirmBulkRun": "Bulk-Merge-Detect für bis zu {count} Memories starten? Cosine-only, kostenfrei — aber der Bulk-Scan ist O(n × top-k) cosine-Vergleiche.",
       "confirmExcerptBulkRun": "Bulk Excerpt-Duplicate-Detect für bis zu {count} Excerpts? Cosine-only, kostenfrei.",
@@ -3667,7 +4527,11 @@
         }
       },
       "openMemory": "zur Memory →",
-      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "status": "Status",
+      "resolution": "Behebung"
     },
     "excerptDetail": {
       "title": "Excerpt-Duplikat auflösen",
@@ -3697,7 +4561,11 @@
       "excerptUnavailable": "Excerpt nicht zugänglich (gelöscht oder kein Owner).",
       "positionLine": "Position {position} · {source}",
       "quotedText": "„{text}“",
-      "parentMemory": "Parent-Memory: {summary}"
+      "parentMemory": "Parent-Memory: {summary}",
+      "excerptA": "Auszug A",
+      "excerptB": "Auszug B",
+      "status": "Status",
+      "resolution": "Behebung"
     }
   },
   "adminInconsistencies": {
@@ -3712,7 +4580,7 @@
       "unchecked": "ungeprüft",
       "alreadyChecked": "schon geprüft",
       "withoutEmbedding": "ohne Embedding",
-      "detectorReady": "ready",
+      "detectorReady": "bereit",
       "detectorNoKey": "kein Key",
       "limitLabel": "Limit",
       "running": "läuft",
@@ -3756,12 +4624,64 @@
         }
       },
       "openMemory": "zur Memory →",
-      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner)."
+      "memoryUnavailable": "Memory nicht zugänglich (gelöscht oder kein Owner).",
+      "memoryA": "Memory A",
+      "memoryB": "Memory B",
+      "severity": "Schweregrad",
+      "status": "Status",
+      "resolution": "Behebung"
     }
   },
   "adminKgLifecycle": {
     "quotaTooltip": "{percent}% des Quota",
-    "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted"
+    "quotaOverTooltip": "{percent}% — wird beim nächsten GC-Sweep evicted",
+    "unavailableTitle": "Knowledge-Graph-Lifecycle ist nicht verfügbar",
+    "unavailableBody": "Die Middleware hat den Lifecycle-Service nicht veröffentlicht, deshalb gibt es hier nichts anzuzeigen. Die Sweeps sind Postgres-spezifisch: Sie existieren nur, solange das Knowledge-Graph-Plugin gegen eine Postgres-/Neon-Datenbank aktiv ist. Ein In-Memory-Knowledge-Graph hat keinen Lifecycle. Diese Seite hängt an keinem Feature-Flag mehr — wenn das Plugin auf Postgres aktiv ist und das hier trotzdem erscheint, prüfe den Plugin-Status.",
+    "signedOutTitle": "Deine Session ist abgelaufen",
+    "signedOutBody": "Diese Endpoints brauchen eine Operator-Session. Melde dich erneut an und lade die Seite neu.",
+    "actions": {
+      "decayTitle": "Decay + Rotation ausführen",
+      "decayDescription": "Access-Tracker leeren → decay_score neu berechnen → HOT→WARM→COLD rotieren → erledigte Tasks nach Ablauf der TTL endgültig löschen.",
+      "gcTitle": "GC-Quoten ausführen",
+      "gcDescription": "Eviction pro Scope nach Typ-Gewicht × Decay-Score. Erzwingt hot_max_entries + max_total_chars.",
+      "accessFlushTitle": "Nur Access-Flush ausführen",
+      "accessFlushDescription": "Access-Tracker ohne Rotation in access_count + accessed_at schreiben. Nur zum Debuggen."
+    },
+    "cards": {
+      "tierBreakdown": "Verteilung nach Tier",
+      "entryTypeBreakdown": "Verteilung nach Eintragstyp",
+      "decayDistribution": "Verteilung der Decay-Scores",
+      "totalTurns": "Turns gesamt"
+    },
+    "topScopes": {
+      "heading": "Top-Scopes (nach Turn-Anzahl)",
+      "empty": "Noch keine Scopes erfasst.",
+      "colScope": "Scope",
+      "colTurns": "Turns",
+      "colQuota": "Quote",
+      "colChars": "Zeichen",
+      "colCharQuota": "Zeichen-Quote"
+    },
+    "lastRuns": {
+      "heading": "Letzte Sweep-Läufe",
+      "decay": "Decay",
+      "gc": "GC",
+      "accessFlush": "Access-Flush",
+      "neverRun": "in diesem Prozess noch nie gelaufen",
+      "updated": "Aktualisiert",
+      "hotToWarm": "HOT → WARM",
+      "warmToCold": "WARM → COLD",
+      "doneTasksDeleted": "Erledigte Tasks gelöscht",
+      "durationMs": "Dauer (ms)",
+      "scopesAffected": "Betroffene Scopes",
+      "evictedByCount": "Nach Anzahl entfernt",
+      "evictedByChars": "Nach Zeichen entfernt",
+      "flushed": "Geschrieben",
+      "promotedColdToWarm": "COLD → WARM hochgestuft"
+    },
+    "title": "Knowledge-Graph-Lifecycle",
+    "intro": "Palaia Phase 4 — Tier-Rotation, Decay, GC. Die Sweeps laufen nach Cron-Zeitplan; die Buttons unten stoßen sie sofort an.",
+    "refresh": "Aktualisieren"
   },
   "adminKgPriorities": {
     "intro": "Per-Agent Block/Boost-Liste für den Token-Budget-Assembler. Block droppt einen Turn aus dem Recall-Pool; Boost multipliziert den Score mit `weight` (Default 1.3). `manuallyAuthored=true` bringt zusätzlich einen unabhängigen ×1.3 Boost — beide kombinieren.",
@@ -3770,8 +4690,67 @@
     "load": "Laden",
     "newEntryTitle": "Neuer Eintrag",
     "weightIgnoredTitle": "weight ignoriert für block",
-    "weightMultiplierTitle": "score multiplier",
-    "empty": "Keine Einträge für diesen Agent."
+    "weightMultiplierTitle": "Score-Multiplikator",
+    "empty": "Keine Einträge für diesen Agent.",
+    "title": "Knowledge-Graph-Prioritäten",
+    "colEntryExternalId": "Externe Eintrags-ID",
+    "actionBlock": "blockieren",
+    "actionBoost": "hervorheben",
+    "reasonPlaceholder": "Grund (optional)",
+    "colAction": "Aktion",
+    "colWeight": "Gewicht",
+    "colReason": "Grund",
+    "colUpdated": "Aktualisiert"
+  },
+  "adminDatasets": {
+    "title": "Wissen · Datensätze",
+    "intro": "Eine CSV als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
+    "uploadHeading": "CSV importieren",
+    "fields": {
+      "file": "CSV-Datei",
+      "nameOptional": "Name (optional)"
+    },
+    "placeholders": {
+      "name": "Standard ist der Dateiname"
+    },
+    "upload": "Importieren",
+    "uploading": "Importiert",
+    "uploadLimits": "Höchstens {maxRows} Zeilen und {maxMb} MB pro Datei. Jede Zelle durchläuft vor dem Speichern den Privacy-Scan.",
+    "receipt": {
+      "imported": "Import abgeschlossen — {rows} Zeilen gespeichert.",
+      "privacyScan": "Privacy-Scan: {scanned} Zellen geprüft, {masked} maskiert.",
+      "truncated": "{cells} Zellen überschritten das Limit von 4.000 Zeichen pro Zelle und wurden gekürzt. Betroffene Spalten: {columns}."
+    },
+    "loading": "lädt…",
+    "loadError": "Laden fehlgeschlagen: {message}",
+    "empty": "Noch keine Datensätze importiert.",
+    "listCapped": "Es werden die {cap} neuesten Datensätze angezeigt — mehr liefert der Endpunkt nicht zurück, ältere können also existieren, ohne hier aufzutauchen.",
+    "listRange": "Zeige {from}–{to} von {total} Datensätzen",
+    "meta": "{rows} Zeilen · {columns} Spalten · importiert {created}",
+    "showDetails": "Schema & Zeilen",
+    "hideDetails": "Schließen",
+    "remove": "Löschen",
+    "confirmDelete": "Den Datensatz „{name}“ mit allen Zeilen und seinem Graph-Knoten löschen? Das lässt sich nicht rückgängig machen.",
+    "schemaHeading": "Abgeleitetes Schema",
+    "schema": {
+      "column": "Spalte",
+      "type": "Typ",
+      "sample": "Beispielwert"
+    },
+    "rowsHeading": "Zeilenvorschau",
+    "noRows": "Dieser Datensatz enthält keine Zeilen.",
+    "rowsRange": "{from}–{to} von {total} Zeilen",
+    "previousPage": "Zurück",
+    "nextPage": "Weiter",
+    "errors": {
+      "tooLarge": "Die Datei überschreitet das Upload-Limit von {maxMb} MB.",
+      "notCsv": "Bisher werden ausschließlich CSV-Dateien unterstützt.",
+      "noFile": "Es kam keine Datei an — bitte zuerst eine CSV auswählen.",
+      "importFailed": "Die CSV konnte nicht importiert werden. {detail}",
+      "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
+      "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
+      "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"
+    }
   },
   "adminMemoryBackend": {
     "title": "Memory · Speicher-Backend",
@@ -3798,6 +4777,29 @@
     "dbUrlRequiredError": "Postgres benötigt DATABASE_URL (Neon-KG/graphPool). Setze DATABASE_URL und starte neu, bevor du auf Postgres wechselst.",
     "forbiddenError": "Nicht berechtigt (403) — das Umschalten des Backends erfordert Admin-Rechte.",
     "noProviderError": "Kein Memory-Provider registriert (409) — die Auswahl kann nicht gespeichert werden."
+  },
+  "adminTranscriptionProvider": {
+    "title": "Transkription · Provider",
+    "intro": "Schaltet den aktiven transcription@1-Provider live um — ohne Neustart. Die Middleware deaktiviert den aktuellen Adapter, aktiviert das Ziel und prüft, ob es tatsächlich einen Service published; ist das Ziel unkonfiguriert (kein API-Key im Vault), wird der vorherige Provider wiederhergestellt und verifiziert.",
+    "privacyNote": "Einwilligungshinweis: Mit aktivem Provider verlassen Roh-Audiodaten von Meetings und Aufnahmen diese Installation Richtung des externen Endpoints. Transkripte gelten beim Wiedereintritt als untrusted Input und durchlaufen die Standard-Privacy-Maskierung, bevor ein Modell sie liest.",
+    "loading": "lädt…",
+    "loadFailed": "Laden fehlgeschlagen: {message}",
+    "currentStateTitle": "Aktueller Zustand",
+    "activeProviderLabel": "Aktiver Provider",
+    "noneActive": "keiner",
+    "publishedLabel": "Service published",
+    "publishedYes": "ja — {provider}",
+    "publishedNo": "nein",
+    "capabilityMissing": "Der aktive Adapter published keinen Service — er läuft, ist aber nicht konfiguriert (API-Key fehlt).",
+    "providersTitle": "Installierte Provider",
+    "noProviders": "Kein transcription@1-Adapter installiert. Zuerst einen aus dem Plugin-Store installieren (z.B. \"Transkription (OpenAI)\").",
+    "activeBadge": "aktiv",
+    "switchTo": "Aktivieren",
+    "switching": "schaltet um…",
+    "switchFailed": "Umschalten fehlgeschlagen: {message}",
+    "switchTargetUnavailable": "Der Ziel-Adapter wurde aktiviert, published aber keinen Service (API-Key fehlt) — der vorherige Provider wurde nach Möglichkeit wiederhergestellt.",
+    "switchInProgress": "Ein anderer Wechsel läuft noch — der Zustand unten wurde neu gelesen; danach erneut versuchen.",
+    "switchAlreadyActive": "Dieser Provider ist bereits aktiv."
   },
   "adminEmbeddingProvider": {
     "title": "Embeddings · Provider",
@@ -3917,7 +4919,11 @@
         "excerptDuplicate": "Excerpt-Duplikat",
         "planStep": "Plan-Schritt",
         "hasTopicTransitive": "HAS_TOPIC (Excerpt, transitiv)"
-      }
+      },
+      "zoomIn": "Vergrößern",
+      "zoomOut": "Verkleinern",
+      "fit": "Einpassen",
+      "relayout": "Neu anordnen"
     },
     "detailPanel": {
       "manualTitle": "manuell erfasst — Score-Boost ×1.3 im Token-Budget-Assembler",
@@ -3944,22 +4950,95 @@
       "auditLoading": "lädt Audit-Trail…",
       "auditEmpty": "Keine Audit-Einträge.",
       "reasonQuoted": "„{reason}“"
+    },
+    "listView": {
+      "runTrace": "Run-Trace",
+      "noEntities": "Keine Entities in diesem Turn",
+      "loadingRun": "lade Run…",
+      "noRunTrace": "Kein Run-Trace erfasst",
+      "noToolCalls": "Run ohne Tool-Calls (reine Textantwort)",
+      "toolsLabel": "Tools={count}",
+      "iterations": "{count} Iter.",
+      "orchestratorTools": "Orchestrator-Tools",
+      "toolCalls": "{count, plural, one {# Tool-Call} other {# Tool-Calls}}",
+      "userTooltip": "Benutzer: {user}"
     }
   },
   "memory": {
-    "errorMiddlewareUnreachable": "Middleware nicht erreichbar (localhost:3979). Läuft `npm run dev` im middleware-Ordner?",
-    "errorDevEndpointUnavailable": "Dev-Memory-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env und starte die Middleware neu.",
     "errorListFailed": "List fehlgeschlagen (HTTP {status})",
     "errorFileFailed": "File fehlgeschlagen (HTTP {status})",
     "backendInMemory": "In-Memory · flüchtig",
-    "descriptionInMemory": "Live-Browser des aktiven Memory-Stores (RAM, beim Neustart leer).",
-    "descriptionPostgres": "Live-Browser des aktiven Memory-Stores (persistent in Postgres).",
-    "description": "Live-Browser des aktiven Memory-Stores.",
+    "descriptionInMemory": "Read-only-Browser der Chat-Kontext-Memory-Bäume (RAM, beim Neustart leer).",
+    "descriptionPostgres": "Read-only-Browser der Chat-Kontext-Memory-Bäume (persistent in Postgres).",
+    "description": "Read-only-Browser der Chat-Kontext-Memory-Bäume.",
     "pathLabel": "Pfad",
     "reload": "↻ neu laden",
     "loading": "lädt…",
     "empty": "leer",
-    "selectEntry": "Eintrag links wählen…"
+    "selectEntry": "Eintrag links wählen…",
+    "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
+    "tab": {
+      "file": "Datei",
+      "audit": "Audit"
+    },
+    "contexts": {
+      "title": "Kontexte",
+      "loading": "lädt…",
+      "error": "Kontext-Baum konnte nicht geladen werden.",
+      "empty": "Noch kein Agent-Memory vorhanden.",
+      "axis": {
+        "team": "Teams ({count})",
+        "channel": "Kanäle ({count})",
+        "user": "Users ({count})"
+      }
+    },
+    "promote": {
+      "openButton": "Promote…",
+      "title": "Memory promoten",
+      "intro": "Kopiert oder verschiebt diese Notiz in ein weiteres Tier desselben Agents. Nie agentübergreifend, immer auditiert.",
+      "sourceLabel": "Quelle",
+      "targetPreviewLabel": "Ziel",
+      "tierLabel": "Ziel-Tier",
+      "tier": {
+        "agent": "Agent-Tier (alle Kontexte)",
+        "team": "Team-Tier"
+      },
+      "modeLabel": "Modus",
+      "mode": {
+        "copy": "Kopieren (Quelle bleibt)",
+        "move": "Verschieben (Quelle entfällt)"
+      },
+      "targetCtxKeyLabel": "Ziel-Team-Key",
+      "targetCtxKeyPlaceholder": "teams~19-abc-thread-tacv2-a1b2c3d4",
+      "targetPathLabel": "Ziel-Pfad (relativ zum Tier)",
+      "reasonLabel": "Begründung",
+      "reasonPlaceholder": "Warum darf dieses Wissen seinen Kontext verlassen?",
+      "reasonHint": "Pflichtfeld — die Begründung landet im Audit-Log.",
+      "cancel": "Abbrechen",
+      "submit": "Promoten",
+      "submitting": "promotet…",
+      "forbidden": "Nicht berechtigt (403) — Promoten erfordert Operator-Rechte.",
+      "unavailable": "Der Promote-Endpoint ist auf dieser Middleware nicht verfügbar (404).",
+      "success": "Nach {path} promotet."
+    },
+    "audit": {
+      "loading": "Audit-Log lädt…",
+      "empty": "Für diesen Agent sind keine Promotions verzeichnet.",
+      "selectAgent": "Links einen Agent oder Kontext wählen, um dessen Audit-Log zu lesen.",
+      "unavailable": "Der Audit-Endpoint ist auf dieser Middleware nicht verfügbar (404).",
+      "forbidden": "Nicht berechtigt (403) — das Audit-Log erfordert Operator-Rechte.",
+      "mode": {
+        "copy": "copy",
+        "move": "move"
+      },
+      "bytes": "{bytes} B",
+      "noReason": "Keine Begründung hinterlegt."
+    },
+    "errorUnauthenticated": "Nicht angemeldet (HTTP 401). Der Memory-Browser liest einen Operator-authentifizierten Endpoint — melde dich neu an und lade die Seite neu.",
+    "errorForbidden": "Nicht berechtigt (HTTP 403) — das Browsen von Chat-Kontext-Memory erfordert Operator-Rechte.",
+    "errorPathNotFound": "Diesen Pfad gibt es im Memory-Store nicht mehr (HTTP 404).",
+    "errorOutOfScope": "Außerhalb des Chat-Kontext-Memory. Dieser Browser liest nur /memories/contexts; Agent-Tier und geteilter Kernel werden vom Operator-Endpoint nicht ausgeliefert.",
+    "errorEndpointUnreachable": "Der Operator-Memory-Endpunkt hat nicht geantwortet (HTTP 404). Vermutlich ist der Memory-Contexts-Router in dieser Umgebung nicht eingebunden — über den Inhalt des Speichers sagt das nichts aus."
   },
   "memories": {
     "kinds": {
@@ -4026,6 +5105,7 @@
   },
   "routines": {
     "page": {
+      "metaTitle": "Routinen · omadia",
       "kicker": "Routinen",
       "title": "Cronjobs & Routinen.",
       "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
@@ -4034,10 +5114,11 @@
       "summaryPaused": "Pausiert",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden der Routinen.",
       "loadErrorTitle": "Routinen nicht erreichbar",
+      "columnUserTenant": "User · Mandant",
       "columnLastRun": "Letzter Lauf",
       "columnActions": "Aktionen",
       "emptyTitle": "Noch keine Routinen.",
-      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das {toolName} Tool und legt sie an."
+      "emptyBody": "Routinen entstehen, wenn ein User im Chat etwas wie „erinnere mich jeden Montag um 9 Uhr an X“ sagt — der Agent ruft das <toolName>manage_routine</toolName> Tool und legt sie an."
     },
     "row": {
       "neverRan": "noch nie",
@@ -4048,7 +5129,20 @@
       "historyErrorTitle": "Run-Historie nicht erreichbar",
       "historyEmpty": "Noch keine Run-Historie für diese Routine — sobald sie zum ersten Mal feuert, erscheint hier eine Zeile.",
       "columnDuration": "Dauer",
-      "columnError": "Fehler"
+      "columnError": "Fehler",
+      "promptLabel": "Prompt",
+      "fieldRoutineId": "Routine-ID",
+      "fieldUserId": "User-ID",
+      "fieldTenant": "Mandant",
+      "fieldChannel": "Channel",
+      "fieldCron": "Cron",
+      "fieldTimeout": "Timeout",
+      "fieldStatus": "Status",
+      "columnStarted": "Gestartet",
+      "columnTrigger": "Auslöser",
+      "columnStatus": "Status",
+      "columnIterTools": "Iter. · Tools",
+      "columnDetail": "Detail"
     },
     "trigger": {
       "cron": "Cron",
@@ -4063,9 +5157,14 @@
       "deleteConfirm": "Routine ''{name}'' löschen? Das kann nicht rückgängig gemacht werden."
     },
     "templateEditor": {
+      "heading": "Output Template",
+      "badgeInactive": "legacy LLM-renders",
       "badgeActive": "aktiv · {format}",
-      "description": "JSON-Schema: {schema}. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
+      "description": "JSON-Schema: <schema>{schemaShape}</schema>. Beim Trigger rendert der Server alle data- + static-Sektionen selbst; der LLM füllt nur die narrative-slot-Strings. Leerer Editor = Template entfernen, Routine läuft wieder im Legacy-Pfad.",
       "templatePlaceholder": "'{ \"format\": \"markdown\", \"sections\": [ { \"kind\": \"narrative-slot\", \"id\": \"intro\", \"hint\": \"Ein Satz Einleitung.\" } ] }'",
+      "jsonSyntaxLabel": "JSON-Syntax:",
+      "renderedMarkdownLabel": "gerendertes Markdown ({count} Zeichen)",
+      "renderedAdaptiveCardLabel": "gerenderter Adaptive-Card-Body ({count} Elemente)",
       "saveFailedLabel": "Save fehlgeschlagen:",
       "saved": "Gespeichert.",
       "save": "Speichern",
@@ -4094,10 +5193,12 @@
       "showLess": "weniger"
     },
     "runDetail": {
+      "metaTitle": "Routine-Lauf · omadia",
       "errorUnreachableFallback": "Run-Detail nicht erreichbar.",
       "breadcrumbRoutines": "Routinen",
       "loadErrorTitle": "Run nicht erreichbar",
       "fieldDuration": "Dauer",
+      "fieldIterTools": "Iter. · Tools",
       "errorLabel": "Fehler",
       "sectionAnswer": "Antwort",
       "sectionTrace": "Call-Stack · Run-Trace",
@@ -4107,6 +5208,7 @@
   },
   "system": {
     "page": {
+      "metaTitle": "System · omadia",
       "title": "Plattform-Zustand.",
       "intro": "Laufzeit, Persistenz, Backup. Nur Metadaten — keine Secrets.",
       "errorUnknownLoad": "Unbekannter Fehler beim Laden des Vault-Status.",
@@ -4136,7 +5238,62 @@
       "dotDanger": "Fehler",
       "dotInactive": "Inaktiv",
       "keySourceDevFile": "dev-file (nicht für Produktion)",
-      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)"
+      "keySourceDevFileCreated": "dev-file (neu generiert — DEV ONLY)",
+      "eyebrow": "Verschlüsselter Secret Vault",
+      "heading": "Vault",
+      "bucket": "Bucket",
+      "prefix": "Präfix"
     }
+  },
+  "help": {
+    "metaTitle": "Hilfe · omadia",
+    "kicker": "Hilfe",
+    "title": "Hilfe & Support",
+    "intro": "Antworten auf die Zustände, in denen man am ehesten hängenbleibt — und wohin du dich wenden kannst, wenn sie nicht reichen.",
+    "faq": {
+      "heading": "Häufige Fragen",
+      "invalidKey": {
+        "question": "Mein API-Schlüssel wird als ungültig gemeldet",
+        "answer": "Ein hinterlegter Schlüssel ist noch kein funktionierender Schlüssel. Öffne den LLM-Zugang, nutze „Schlüssel testen“ und prüfe ihn in der Anbieter-Konsole — ein abgelaufener oder widerrufener Schlüssel sieht bis zum Test genauso aus.",
+        "action": "LLM-Zugang öffnen"
+      },
+      "pluginNeedsConfig": {
+        "question": "Ein Plugin meldet, dass es Konfiguration braucht",
+        "answer": "Das Plugin ist installiert, aber mindestens ein Pflichtfeld hat keinen Wert. Öffne das Plugin im Store und fülle die Setup-Felder aus. Secret-Felder wollen nie ein Konto-Passwort — sie wollen einen technischen Schlüssel aus der Anbieter-Konsole.",
+        "action": "Store öffnen"
+      },
+      "cliNotInstalled": {
+        "question": "Eine Abo-CLI wird als nicht installiert angezeigt",
+        "answer": "Die CLI muss auf dem Server installiert sein, der omadia betreibt — nicht auf deinem Laptop. Der Abo-Tab zeigt den genauen Installationsbefehl; danach „Erneut prüfen“ nutzen.",
+        "action": "LLM-Zugang öffnen"
+      },
+      "noModels": {
+        "question": "Für einen Anbieter erscheinen keine Modelle",
+        "answer": "Modelle kommen vom Anbieter-Plugin. Ist die Liste leer, ist das Plugin nicht aktiv — prüfe den LLM-Zugang und den Status des Plugins im Store.",
+        "action": "LLM-Zugang öffnen"
+      }
+    },
+    "docs": {
+      "heading": "Dokumentation",
+      "documentation": "Dokumentation",
+      "repository": "Quellcode auf GitHub",
+      "discussions": "In Discussions fragen"
+    },
+    "support": {
+      "heading": "Kontakt",
+      "body": "Fehler gefunden oder etwas ergibt keinen Sinn? Leg ein Issue an — mit der Version unten und dem, was du gerade gemacht hast.",
+      "openIssue": "Issue anlegen"
+    },
+    "build": {
+      "heading": "Build",
+      "version": "Web-UI-Version {version}"
+    }
+  },
+  "pluginUi": {
+    "metaTitle": "{pluginId} — Plugin-Oberfläche",
+    "title": "{pluginId}",
+    "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
+    "frameTitle": "Oberfläche des Plugins {pluginId}",
+    "loading": "Plugin-Oberfläche wird geladen…"
   }
 }

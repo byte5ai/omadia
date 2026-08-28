@@ -6,10 +6,14 @@ import type {
   PrivacyReceipt,
   PromptMaskedSpanInfo,
 } from '../../_lib/chatSessions';
+import { MissReportForm } from './MissReportForm';
 
 interface PrivacyReceiptCardProps {
   receipt: PrivacyReceipt;
   className?: string;
+  /** #760 — threads into the miss-report intake so a filed report keeps the
+   *  turn correlation the review schema was built with. */
+  turnId?: string;
 }
 
 /**
@@ -35,11 +39,13 @@ type TFn = (key: string, values?: Record<string, string | number>) => string;
 export function PrivacyReceiptCard({
   receipt,
   className,
+  turnId,
 }: PrivacyReceiptCardProps): React.ReactElement {
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
   const bypassed = receipt.bypassedTools ?? [];
   const promptSpans = receipt.maskedPromptSpans ?? [];
+  const structured = receipt.structuredPayloads ?? [];
 
   // Palette precedence: identity-breach (red) wins over bypass-warning
   // (amber) wins over default (emerald). Breach is a transparency notice
@@ -148,6 +154,41 @@ export function PrivacyReceiptCard({
             </ul>
           </div>
         )}
+        {structured.length > 0 && (
+          <div>
+            <div
+              className={[
+                'text-[10px] font-semibold uppercase tracking-wider',
+                palette.label,
+              ].join(' ')}
+            >
+              {t('factStructured')}
+            </div>
+            <ul className="mt-1 space-y-0.5">
+              {structured.map((entry, i) => (
+                <li
+                  key={`${entry.serverName}-${entry.toolName}-${String(i)}`}
+                  className="font-mono-num flex flex-wrap items-baseline gap-x-2"
+                >
+                  <span className="font-medium">{entry.toolName}</span>
+                  <span className={palette.label}>{entry.serverName}</span>
+                  <span className={['text-[10px]', palette.label].join(' ')}>
+                    {t('structuredBytes', {
+                      kb: (entry.bytes / 1024).toFixed(1),
+                    })}
+                  </span>
+                  {/* Lume §8 — the schema state is carried by a text token, not
+                      colour alone. */}
+                  <span className={['text-[10px]', palette.label].join(' ')}>
+                    {entry.hasOutputSchema
+                      ? t('structuredSchemaYes')
+                      : t('structuredSchemaNo')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className={['text-[11px] italic', palette.muted].join(' ')}>
           {t(explainerKey)}
         </div>
@@ -161,6 +202,13 @@ export function PrivacyReceiptCard({
             {t('explainerBypassed')}
           </div>
         )}
+        {structured.length > 0 && (
+          <div className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t('explainerStructured')}
+          </div>
+        )}
+        {/* #760 — the catch basin's intake: report a value the shield missed. */}
+        <MissReportForm turnId={turnId} />
       </div>
     </details>
   );
@@ -231,6 +279,10 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   const promptSpans = r.maskedPromptSpans ?? [];
   if (promptSpans.length > 0) {
     parts.push(t('summaryPromptMasked', { count: promptSpans.length }));
+  }
+  const structured = r.structuredPayloads ?? [];
+  if (structured.length > 0) {
+    parts.push(t('summaryStructured', { count: structured.length }));
   }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {

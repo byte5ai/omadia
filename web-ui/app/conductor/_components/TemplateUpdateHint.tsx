@@ -28,6 +28,7 @@ export function TemplateUpdateHint({
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-3 text-[12px] text-[color:var(--warning)]">
       <span>{t('templateUpdateHint', { version: hint.version, latestVersion: hint.latestVersion })}</span>
+      {/* eslint-disable-next-line no-restricted-syntax -- inline warning-colored underlined text link (§10 no warning variant) */}
       <button
         type="button"
         className="cursor-pointer underline underline-offset-2 hover:text-[color:var(--fg-strong)]"

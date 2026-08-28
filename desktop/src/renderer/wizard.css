@@ -40,6 +40,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); }
 .panel { position: relative; padding: 48px 56px; display: flex; flex-direction: column; overflow-y: auto; }
 .step { flex: 1; max-width: 620px; }
 .step.hidden { display: none; }
+#apiKeyFields.hidden,
+.hint.hidden { display: none; }
 
 h1 { font-size: 26px; font-weight: 650; margin: 0 0 12px; letter-spacing: -0.02em; }
 .lead { color: var(--muted); font-size: 15px; line-height: 1.55; margin: 0 0 24px; }

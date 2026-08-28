@@ -7,7 +7,6 @@
  * the dispatch service and the MCP SDK this package already depends on.
  */
 
-import { randomUUID } from 'node:crypto';
 import {
   createServer,
   type IncomingMessage,
@@ -15,21 +14,31 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from '@modelcontextprotocol/sdk/types.js';
+// #562 Phase 1 — this surface is served by the `@modelcontextprotocol/*@2`
+// family. `createMcpHandler` IS the per-request-instance model this file used
+// to hand-roll (see `handleHttp`), and `toNodeHandler` bridges its
+// web-standard `fetch` back to the Node `(req, res)` this server speaks.
+//
+// The v1 SDK stays a dependency of this package: the MCP *client*
+// (`mcp/mcpClient.ts`) is deliberately NOT ported in this phase, because v2
+// changes how `input_required` (MRTR, #544/#570) travels on a 2025-era
+// connection. See the #562 issue thread.
+import { createMcpHandler, McpServer, type Tool } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
 } from './toolDispatchService.js';
+import { sortByToolName } from './toolOrdering.js';
 
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+
+/** #545 — `ttlMs` advertised on `tools/list` (5 minutes). Any value is true
+ *  for as long as this per-turn server exists; 5 minutes comfortably covers a
+ *  turn without pretending the list is immortal across turns. */
+const LOOPBACK_TOOLLIST_TTL_MS = 300_000;
 
 class PayloadTooLargeError extends Error {}
 
@@ -49,9 +58,9 @@ export interface LoopbackMcpServerHandle {
 
 export class LoopbackMcpServer {
   private http?: HttpServer;
-  private transport?: StreamableHTTPServerTransport;
-  private mcp?: McpServer;
   private started = false;
+  /** #562 — the long-lived serving entry; see `nodeHandler()`. */
+  private handler?: ReturnType<typeof toNodeHandler>;
 
   constructor(private readonly deps: LoopbackMcpServerDeps) {
     if (!deps.bearer) {
@@ -67,39 +76,6 @@ export class LoopbackMcpServer {
       // reusing stale transport state.
       throw new Error('LoopbackMcpServer: already started');
     }
-
-    this.mcp = new McpServer(
-      {
-        name: this.deps.serverName ?? 'omadia-loopback',
-        version: this.deps.serverVersion ?? '0.0.0',
-      },
-      { capabilities: { tools: {} } },
-    );
-
-    this.mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: this.deps.tools.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.input_schema,
-      })),
-    }));
-
-    this.mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-      const result = await this.deps.dispatch.dispatch(name, args ?? {});
-      return {
-        content: [{ type: 'text' as const, text: result.content }],
-        ...(result.isError ? { isError: true } : {}),
-      };
-    });
-
-    // Stateless-ish loopback transport; JSON responses simplify the client and
-    // session IDs remain required by the protocol.
-    this.transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: true,
-    });
-    await this.mcp.connect(this.transport);
 
     this.http = createServer((req, res) => {
       void this.handleHttp(req, res);
@@ -134,9 +110,6 @@ export class LoopbackMcpServer {
       return;
     }
 
-    await this.mcp?.close().catch(() => {});
-    await this.transport?.close().catch(() => {});
-
     if (this.http) {
       await new Promise<void>((resolve) => {
         this.http?.close(() => resolve());
@@ -144,9 +117,87 @@ export class LoopbackMcpServer {
     }
 
     this.http = undefined;
-    this.transport = undefined;
-    this.mcp = undefined;
     this.started = false;
+  }
+
+  /**
+   * Builds a fresh MCP server for a single HTTP request.
+   *
+   * #562 — the per-request lifetime is unchanged, but it is now the SERVING
+   * ENTRY's model rather than something this file arranges. `createMcpHandler`
+   * calls this factory once per request and owns the transport, so the
+   * hand-rolled "build a stateless transport, connect, handle, tear down" dance
+   * is gone along with the constraint that produced it (v1 threw "Stateless
+   * transport cannot be reused across requests" on second use, which is why the
+   * pair had to be per-request in the first place).
+   *
+   * Statelessness is preserved and is still the point: no session id is issued
+   * and none is validated, so a client may skip `initialize` and never send
+   * `Mcp-Session-Id`. Cost stays negligible — a pure in-memory handler table,
+   * no I/O, a handful of requests per CLI turn. Nothing here held cross-request
+   * state worth keeping: the tool list and dispatch service are owned by
+   * `deps`, and the bearer token is what actually scopes access.
+   */
+  private createRequestScopedServer(): McpServer {
+    const mcp = new McpServer(
+      {
+        name: this.deps.serverName ?? 'omadia-loopback',
+        version: this.deps.serverVersion ?? '0.0.0',
+      },
+      { capabilities: { tools: {} } },
+    );
+
+    // #562 — v2 keys handlers on the method string instead of a Zod schema,
+    // and they hang off `.server`. Same two methods, same shapes on the wire.
+    //
+    // W0-3 — advertise name-sorted. `ToolDispatchService` already sorts, but
+    // `deps.tools` is caller-supplied, so sorting here makes the wire order a
+    // property of this server rather than a convention every caller must know.
+    mcp.server.setRequestHandler('tools/list', async () => ({
+      tools: sortByToolName(this.deps.tools).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        // `input_schema` is a JSON Schema object whose `properties` we model as
+        // `Record<string, unknown>`; v2 types the field as a concrete JSON
+        // value. The runtime value is the same object v1 put on the wire — the
+        // cast asserts what TypeScript cannot prove about caller-supplied JSON,
+        // and nothing here reshapes it.
+        inputSchema: tool.input_schema as unknown as Tool['inputSchema'],
+      })),
+      // #545 — MCP 2026-07-28 `CacheableResult`. Both fields are honest by
+      // construction: `deps.tools` is readonly and this server lives exactly
+      // one turn, so the list cannot change while anyone holds it (`ttlMs` can
+      // afford to be generous), and it is identical for every caller — there
+      // is one bearer and no per-principal filtering (`public`).
+      ttlMs: LOOPBACK_TOOLLIST_TTL_MS,
+      cacheScope: 'public',
+    }));
+
+    mcp.server.setRequestHandler('tools/call', async (request) => {
+      const { name, arguments: args } = request.params;
+      const result = await this.deps.dispatch.dispatch(name, args ?? {});
+      return {
+        content: [{ type: 'text' as const, text: result.content }],
+        ...(result.isError ? { isError: true } : {}),
+      };
+    });
+
+    return mcp;
+  }
+
+  /**
+   * The web-standard MCP handler, adapted to Node.
+   *
+   * Built lazily and then reused: `createMcpHandler` is the long-lived object
+   * (it instantiates a server PER REQUEST via the factory above), so rebuilding
+   * it per request would defeat its own model. `toNodeHandler` converts the
+   * Node request, calls `fetch`, and writes the `Response` back to `res`.
+   */
+  private nodeHandler(): ReturnType<typeof toNodeHandler> {
+    this.handler ??= toNodeHandler(
+      createMcpHandler(() => this.createRequestScopedServer()),
+    );
+    return this.handler;
   }
 
   private async handleHttp(
@@ -173,20 +224,42 @@ export class LoopbackMcpServer {
       return;
     }
 
+    if (!this.started) {
+      throw new McpError(ErrorCode.InternalError, 'Transport not started');
+    }
+
+    // W1-2 — POST only. The MCP spec makes the GET standalone SSE stream
+    // optional and blesses 405 when a server does not offer one, and this
+    // server has nothing to deliver over it: `enableJsonResponse` answers every
+    // request inline and there are no server-initiated notifications.
+    //
+    // Declining it explicitly also avoids a leak introduced by the per-request
+    // transport: a GET opens a stream that never ends, so `handleRequest` never
+    // resolves, so the `finally` below never runs and the request-scoped
+    // server/transport pair stays alive until the client disconnects. Under the
+    // old stateful transport a session-less GET was simply rejected with 400,
+    // so nothing regresses here.
+    if (req.method !== 'POST') {
+      res.writeHead(405, {
+        'Content-Type': 'application/json',
+        Allow: 'POST',
+      });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Method Not Allowed' },
+          id: null,
+        }),
+      );
+      return;
+    }
+
+    // Read the body BEFORE handing off so an oversized POST still fails with
+    // 413 without paying for the handler wiring. The parsed value is passed
+    // through, so the adapter does not re-read a stream we already consumed.
     try {
-      const transport = this.transport;
-      if (!transport) {
-        throw new McpError(ErrorCode.InternalError, 'Transport not started');
-      }
-
-      if (req.method === 'POST') {
-        const rawBody = await this.readBody(req);
-        const parsedBody = rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
-        await transport.handleRequest(req, res, parsedBody);
-        return;
-      }
-
-      await transport.handleRequest(req, res);
+      const parsedBody = await this.parsePostBody(req);
+      await this.nodeHandler()(req, res, parsedBody);
     } catch (error) {
       if (res.headersSent) {
         res.end();
@@ -216,6 +289,15 @@ export class LoopbackMcpServer {
         }),
       );
     }
+    // #562 — no `finally` teardown any more. The per-request server and its
+    // transport are created and disposed by `createMcpHandler`; the old block
+    // existed only to dodge v1's single-use stateless transport.
+  }
+
+  /** Reads and JSON-parses a POST body, or `undefined` when the body is empty. */
+  private async parsePostBody(req: IncomingMessage): Promise<unknown> {
+    const rawBody = await this.readBody(req);
+    return rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
   }
 
   private async readBody(req: IncomingMessage): Promise<string> {

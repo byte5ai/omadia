@@ -43,6 +43,45 @@ export interface BypassedToolEntry {
 }
 
 /**
+ * #547 / #569 — one external MCP tool that returned `structuredContent` this
+ * turn, recorded so the turn's privacy receipt accounts for it.
+ *
+ * WHY THIS IS ACCOUNTING, NOT MASKING. Privacy Shield v4's data-plane boundary
+ * is server ↔ LLM PROVIDER, not server ↔ browser. The structured payload is
+ * emitted out-of-band from `McpManager.callTool` (the `structuredSink`) and
+ * never crosses the model wire — the model still sees only the interned digest
+ * of the tool's TEXT result. So no masking is owed on this path; the browser is
+ * the trusted side and legitimately receives real values. What WAS missing
+ * (#569) is that the sidecar fires beneath every dispatcher, so structured
+ * content never appeared in the receipt or dataset accounting at all. This
+ * entry closes that: an operator auditing what a turn touched now sees the
+ * structured payload the same way they see an interned dataset or a bypass.
+ *
+ * MUST stay PII-free — tool name + server name + a byte count + a schema flag
+ * only, never the structured value itself (that is exactly what does NOT need
+ * masking, but also must not be copied into a receipt that is PII-free by
+ * construction).
+ */
+export interface StructuredPayloadEntry {
+  /** The tool name as it appears in the LLM's `tool_use` block, e.g.
+   *  `crm_lookup_customer`. */
+  readonly toolName: string;
+  /** The operator-configured display name of the external MCP server the tool
+   *  belongs to (`cfg.name`, e.g. `Kunden-CRM`) — the MCP analogue of
+   *  `BypassedToolEntry.pluginId`, and readable in the receipt rather than the
+   *  opaque server UUID. The stable id already lives in `mcp_call_log`. */
+  readonly serverName: string;
+  /** Byte length of the `JSON.stringify`d structured payload. For UI
+   *  transparency only — never the payload itself. */
+  readonly bytes: number;
+  /** Whether tool discovery captured an `outputSchema` for this tool, i.e.
+   *  whether a deterministic renderer could bind the payload without an LLM
+   *  round-trip. Surfaced so the receipt distinguishes schema-backed
+   *  structured output from schema-less. */
+  readonly hasOutputSchema: boolean;
+}
+
+/**
  * The per-turn user-facing privacy report. Emitted by `finalizeTurn` and
  * attached to the assistant message metadata; channel renderers (Teams
  * card, Web disclosure) consume it to build their collapsible UI.
@@ -87,6 +126,15 @@ export interface PrivacyReceipt {
    * carry the span TYPE + detector id only, never the value.
    */
   readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #547 / #569 — external MCP tools that returned `structuredContent` this
+   * turn. Absent / empty when no connected tool emitted structured output.
+   * NOT a masking record — the payload never crossed the model boundary (see
+   * {@link StructuredPayloadEntry}); this is the dataset-accounting entry that
+   * was missing while the sidecar fired beneath every dispatcher. PII-free:
+   * tool name + server name + byte count + schema flag only.
+   */
+  readonly structuredPayloads?: readonly StructuredPayloadEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +237,25 @@ export interface PrivacyBypassedToolRequest {
 }
 
 /**
+ * #547 / #569 — record that an external MCP tool returned `structuredContent`
+ * this turn. Called from the boot-wired `McpManager.structuredSink`, which is
+ * the sidecar's first (accounting) consumer — above the manager, so it holds
+ * the turn id the payload carries, but still below no masking obligation (the
+ * payload never reaches the model). The entry lands verbatim in the per-turn
+ * receipt; one call per structured tool result. PII-free by contract.
+ */
+export interface PrivacyStructuredPayloadRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  /** Operator-configured server display name (`cfg.name`), readable in the
+   *  receipt — not the opaque server UUID. */
+  readonly serverName: string;
+  /** Byte length of the `JSON.stringify`d payload — never the payload. */
+  readonly bytes: number;
+  readonly hasOutputSchema: boolean;
+}
+
+/**
  * A datasetId resolved back to its real rows + column schema, for a
  * server-side renderer that materializes a file the user downloads (e.g.
  * `@omadia/plugin-office`'s `create_xlsx`). The rows are REAL values — the
@@ -200,8 +267,25 @@ export interface PrivacyBypassedToolRequest {
 export interface PrivacyResolvedDataset {
   /** Number of rows the dataset holds (the postcondition target). */
   readonly rowCount: number;
-  /** Column schema — `path` is the row-object key, `type` the field type. */
-  readonly columns: ReadonlyArray<{ readonly path: string; readonly type: string }>;
+  /**
+   * Column schema — `path` is the row-object key, `type` the field type.
+   *
+   * `classification` says whether the shield considers this column sensitive.
+   * It is what lets a renderer mark a column as guard-protected instead of
+   * showing a bare value with no indication of where it came from; the verdict
+   * exists on the interned dataset either way, and used to be dropped here.
+   *
+   * Optional so an alternative privacy provider stays compilable. **Absent
+   * means unknown, never "safe"** — a consumer must not render a
+   * cleartext-looking column on the strength of a missing field, because the
+   * one thing worse than an unmarked masked value is a value marked safe that
+   * is not.
+   */
+  readonly columns: ReadonlyArray<{
+    readonly path: string;
+    readonly type: string;
+    readonly classification?: 'safe-cleartext' | 'sensitive-masked';
+  }>;
   /** The full real rows, keyed by column `path`. */
   readonly rows: ReadonlyArray<Record<string, unknown>>;
 }
@@ -294,6 +378,22 @@ export interface PrivacyGuardService {
    * may call this for every bypassed dispatch and every entry is kept.
    */
   recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
+  /**
+   * #547 / #569 — record that an external MCP tool returned `structuredContent`
+   * this turn so the receipt accounts for it. Accounting only: the payload is
+   * emitted out-of-band and never crosses the LLM wire, so nothing is masked —
+   * this closes the gap where the sidecar fired beneath every dispatcher and so
+   * appeared in no receipt. The entry is PII-free (tool + server + byte count +
+   * schema flag). Idempotent within a turn: every structured tool result may
+   * call this and every entry is kept.
+   *
+   * Optional on the interface so alternative privacy providers (and test stubs)
+   * need not implement it; the boot-wired sink feature-detects and no-ops when
+   * absent (byte-identical to before).
+   */
+  recordStructuredPayload?(
+    request: PrivacyStructuredPayloadRequest,
+  ): Promise<void>;
   /**
    * Privacy Shield v4 — run a v4 verb tool or the terminal render tool the
    * LLM called. Returns the text to place in the `tool_result` block. A

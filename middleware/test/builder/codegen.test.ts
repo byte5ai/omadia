@@ -1170,6 +1170,29 @@ describe('codegen.generate', () => {
     assert.match(html, /1000\s*px\s*fixed/i);
   });
 
+  it('points the shipped admin-ui boilerplate docs at the generated plugin UI stylesheet source of truth', async () => {
+    const boilerplateRoot = path.join(
+      HERE,
+      '..',
+      '..',
+      'assets',
+      'boilerplate',
+      'agent-integration',
+      'assets',
+      'admin-ui',
+    );
+    const html = readFileSync(path.join(boilerplateRoot, 'index.html'), 'utf-8');
+    const authoringGuide = readFileSync(path.join(boilerplateRoot, 'CLAUDE.md'), 'utf-8');
+
+    assert.match(html, /web-ui\/scripts\/build-plugin-ui-css\.mjs/);
+    assert.match(html, /middleware\/assets\/plugin-ui\/plugin-ui\.css/);
+    assert.match(html, /\/bot-api\/_harness\/admin-ui\.css/);
+
+    assert.match(authoringGuide, /web-ui\/scripts\/build-plugin-ui-css\.mjs/);
+    assert.match(authoringGuide, /middleware\/assets\/plugin-ui\/plugin-ui\.css/);
+    assert.match(authoringGuide, /\/bot-api\/_harness\/plugin-ui\.css/);
+  });
+
   it('throws CodegenError for reserved tool id', async () => {
     const { slots } = loadFixture();
     const spec = parseAgentSpec({

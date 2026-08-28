@@ -2,14 +2,16 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
-import { MAX_STEER_LENGTH, steeringBus } from '@omadia/orchestrator';
+import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
 import type {
   AskObserver,
   ChatAgent,
   ChatSessionStore,
+  TurnContextValue,
 } from '@omadia/orchestrator';
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
+import { sessionIdentity } from '../auth/sessionIdentity.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -46,6 +48,25 @@ const ChatRequestSchema = z.object({
     .optional(),
 });
 
+/**
+ * The orchestrator `sessionScope` for an HTTP turn.
+ *
+ * W5 memory-ACL (#860), coordinator decision 1 — note what this route does NOT
+ * do: it never builds a `TurnOrigin`, so every HTTP turn resolves context-free
+ * and gets the agent-private memory stack, byte-identical to today. That is a
+ * decision, not an omission.
+ *
+ * The scopes this function returns (`http-<scope>`, a client-chosen
+ * `sessionId`, or the shared literal `'http-default'`) are transcript-bucketing
+ * labels supplied by the CALLER. Deriving a memory partition from them would
+ * hand any API client the ability to name — and therefore to read — another
+ * caller's memory tier by sending its scope string, and `'http-default'` would
+ * make one shared tier out of every unlabelled turn. An API caller gets no
+ * implicit team or channel memory; when a genuine tenant identity exists on
+ * this surface it has to be resolved from the authenticated principal and
+ * passed as an explicit `origin`, which is a change to make deliberately, not
+ * to inherit from a debug label.
+ */
 function resolveScope(parsed: z.infer<typeof ChatRequestSchema>): string {
   if (parsed.scope) return `http-${parsed.scope}`;
   if (parsed.sessionId) return parsed.sessionId;
@@ -90,6 +111,44 @@ function resolveUserId(req: Request): string | undefined {
   const raw = req.header('x-user-id');
   if (!raw) return undefined;
   return USER_ID_RE.test(raw) ? raw : undefined;
+}
+
+/**
+ * W4-1 — the missing `mcpUserKey` PRODUCER for the HTTP chat paths.
+ *
+ * Migration 0031 made MCP delegation explicit per server. A `per_user` server
+ * resolves its OAuth token under the CALLER's identity, which the auth provider
+ * in `src/index.ts` reads as `turnContext.current()?.mcpUserKey`. The MCP
+ * discover route set that; the chat routes never did, so every `per_user`
+ * server was unreachable from chat: no token was sent, the audit row recorded
+ * the literal `unresolved`, and the turn failed closed with
+ * `delegationBlockedMessage`. New servers default to `per_user`, so every
+ * newly-created server was broken out of the box.
+ *
+ * The scope established here is the OUTER one; the orchestrator opens its own
+ * turn scope and carries `mcpUserKey` over from this parent.
+ *
+ * Two deliberate non-decisions:
+ *
+ *  - The value is `sessionIdentity(req)`, NOT `resolveUserId(req)`. The latter
+ *    reads `req.session.omadia_user_id` and falls through to the CLIENT-SENT
+ *    `x-user-id` header; keying MCP tokens on a client-controlled header would
+ *    let any caller act as any user. `mcpUserKey` is the OAuth-shaped identity
+ *    the token table is actually keyed on.
+ *  - When no identity resolves, `mcpUserKey` is left UNSET. There is no
+ *    fallback. A `per_user` server then fails closed exactly as W0-1 intends;
+ *    inventing a substitute is the confused deputy that fix closed.
+ */
+function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
+  const identity = sessionIdentity(req);
+  return {
+    // Placeholder ids: the orchestrator overwrites both in its own inner turn
+    // scope and carries only `mcpUserKey` across. Kept descriptive so a stray
+    // log line from this scope is still attributable.
+    turnId: `http-chat-${sessionScope}`,
+    turnDate: today(),
+    ...(identity ? { mcpUserKey: identity } : {}),
+  };
 }
 
 /**
@@ -212,11 +271,17 @@ export function createChatRouter(
     try {
       const userId = resolveUserId(req);
       const sessionScope = resolveScope(parsed.data);
-      const result = await chat.chat({
-        userMessage: parsed.data.message,
-        sessionScope,
-        ...(userId ? { userId } : {}),
-      });
+      // W4-1: the whole turn runs inside the identity scope. `run` (not
+      // `enter`) because a plain async call's own async chain bounds it.
+      const result = await turnContext.run(
+        chatTurnContext(req, sessionScope),
+        () =>
+          chat.chat({
+            userMessage: parsed.data.message,
+            sessionScope,
+            ...(userId ? { userId } : {}),
+          }),
+      );
       // Snapshot capture (Phase A) — first turn pins the session to the
       // resolved Agent. Subsequent turns use the pinned snapshot via
       // resolveAgentForRequest above; this is a no-op then.
@@ -407,13 +472,23 @@ export function createChatRouter(
       // before the first token lands.
       safeWrite({ type: 'agent_bound', slug: effectiveSlug });
 
-      const iterator = chat.chatStream(
-        {
-          userMessage: parsed.data.message,
-          sessionScope: resolveScope(parsed.data),
-          ...(userId ? { userId } : {}),
-        },
-        observer,
+      // W4-1: `runGenerator`, NOT `run`/`enter`. `enterWith` binds the store to
+      // the async resource executing at that instant, and an async generator is
+      // resumed in the async context of whoever called `.next()` — so the
+      // identity would be gone the moment the orchestrator yielded its first
+      // event, which is before any tool (and therefore any MCP call) runs. See
+      // the warning on `turnContext.enter`.
+      const iterator = turnContext.runGenerator(
+        chatTurnContext(req, resolveScope(parsed.data)),
+        () =>
+          chat.chatStream(
+            {
+              userMessage: parsed.data.message,
+              sessionScope: resolveScope(parsed.data),
+              ...(userId ? { userId } : {}),
+            },
+            observer,
+          ),
       );
       // Keep draining the generator even after the client disconnects so the
       // orchestrator's 'done' path fires — that's where sessionLogger.log()

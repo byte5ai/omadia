@@ -22,7 +22,7 @@ import {
  * the gate by re-activating the whole knowledge-graph plugin. That path calls
  * `plugin.ts`'s `close()`, which calls `graphPool.end()` — and the kernel
  * captured that pool ONCE (`middleware/src/index.ts`) and shares the reference
- * with ~40 subsystems: routines, dev-platform webhooks, agent schedules, cost
+ * with ~40 subsystems: routines, plugin webhooks, agent schedules, cost
  * telemetry, MCP audit, `AgentGraphStore`, `McpConfigService`. Every one of
  * them answered `Cannot use a pool after calling end on the pool` after a
  * SUCCESSFUL switch, until the process was restarted. A feature whose entire

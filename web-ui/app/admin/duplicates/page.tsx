@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import Link from 'next/link';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
@@ -39,6 +39,7 @@ const BULK_HARD_CAP = 500;
 
 export default function DuplicatesListPage(): React.ReactElement {
   const t = useTranslations('adminDuplicates.list');
+  const format = useFormatter();
   const [tab, setTab] = useState<TabKey>('memories');
   const [statusFilter, setStatusFilter] = useState<MergeCandidateStatus | 'all'>(
     'open',
@@ -219,6 +220,7 @@ export default function DuplicatesListPage(): React.ReactElement {
       {/* Slice 12 — Tab switcher MK | Excerpt */}
       <div className="mb-6 flex flex-wrap gap-2 border-b border-[color:var(--border)]">
         {(['memories', 'excerpts'] as const).map((tabKey) => (
+          // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
           <button
             key={tabKey}
             type="button"
@@ -363,6 +365,7 @@ export default function DuplicatesListPage(): React.ReactElement {
 
       <div className="mb-4 flex flex-wrap gap-2">
         {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+          // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
           <button
             key={s}
             type="button"
@@ -424,7 +427,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                     className="font-mono text-[color:var(--fg-muted)]"
                     dateTime={mc.props.created_at}
                   >
-                    {new Date(mc.props.created_at).toLocaleString('de-DE')}
+                    {format.dateTime(new Date(mc.props.created_at))}
                   </time>
                 </div>
                 <p className="text-sm text-[color:var(--fg-strong)]">
@@ -572,6 +575,7 @@ export default function DuplicatesListPage(): React.ReactElement {
         {/* Slice 12 — Status filter for Excerpts */}
         <div className="mb-4 flex flex-wrap gap-2">
           {(['open', 'resolved', 'dismissed', 'all'] as const).map((s) => (
+            // eslint-disable-next-line no-restricted-syntax -- stateful toggle/segmented selector
             <button
               key={s}
               type="button"
@@ -635,7 +639,7 @@ export default function DuplicatesListPage(): React.ReactElement {
                         className="font-mono text-[color:var(--fg-muted)]"
                         dateTime={mc.props.created_at}
                       >
-                        {new Date(mc.props.created_at).toLocaleString('de-DE')}
+                        {format.dateTime(new Date(mc.props.created_at))}
                       </time>
                     </div>
                     <p className="text-sm text-[color:var(--fg-strong)]">

@@ -52,7 +52,13 @@ describe('ConductorRunExecutor.resolveAwait quorum=all', () => {
     transitions: [],
   };
 
-  function makeExecutor(opts: { responders: string[]; holders: string[]; onClose: () => void }) {
+  function makeExecutor(opts: {
+    responders: string[];
+    holders: string[];
+    onClose: () => void;
+    /** #333 phase 3 — simulates a holder source that could not answer. */
+    partial?: boolean;
+  }) {
     const responses = opts.responders.map((id) => ({ responderId: id, response: { approved: true } }));
     const awaitRow = {
       id: 'aw1', runId: 'run1', stepId: 'h1', principalKind: 'role', principalRef: 'approvers',
@@ -83,7 +89,16 @@ describe('ConductorRunExecutor.resolveAwait quorum=all', () => {
       runStore: runStore as never,
       awaitStore: awaitStore as never,
       effects: {} as never,
-      resolveRoleHolders: async () => opts.holders,
+      // #333 phase 3 — the resolver returns an AggregateHolderLookup so the executor can see a
+      // partially-known holder list. `partial: false` here reproduces the pre-phase-3 world:
+      // one authoritative source, fully readable.
+      resolveRoleHolders: async () => ({
+        holders: opts.holders,
+        partial: opts.partial ?? false,
+        bySource: opts.partial
+          ? [{ sourceId: 'entra', lookup: { outcome: 'unavailable' as const, code: 'source_error' as const, message: 'down' } }]
+          : [],
+      }),
     });
   }
 
@@ -100,5 +115,124 @@ describe('ConductorRunExecutor.resolveAwait quorum=all', () => {
     const exec = makeExecutor({ responders: ['alice', 'bob'], holders: ['alice', 'bob'], onClose: () => { closed = true; } });
     await exec.resolveAwait('aw1', 'bob', { approved: true });
     assert.equal(closed, true);
+  });
+
+  // #333 phase 3 — the fail-OPEN case this phase had to close.
+  //
+  // Once holders can come from more than the local table, an unreachable source shrinks the
+  // required set. Every holder the executor still knows about may then have answered, so the
+  // quorum looks satisfied — while the people the failed source knows about were never asked.
+  // A four-eyes approval would complete on two. The pre-existing `required.length > 0` guard
+  // covers the EMPTY case only; the partial case is the one that looks legitimate.
+  it('REFUSES to close when the holder list is partial, even though everyone known has responded', async () => {
+    let closed = false;
+    const exec = makeExecutor({
+      responders: ['alice'],
+      holders: ['alice'], // all *known* holders answered …
+      partial: true, // … but a source was unreachable, so this is a lower bound
+      onClose: () => { closed = true; },
+    });
+    await exec.resolveAwait('aw1', 'alice', { approved: true });
+    assert.equal(closed, false, 'a partial holder list must never satisfy quorum=all');
+  });
+
+  it('the same responses DO close once the holder list is complete', async () => {
+    // Control for the test above: identical inputs, `partial: false`. Without this pair the
+    // refusal could pass for an unrelated reason and nobody would notice.
+    let closed = false;
+    const exec = makeExecutor({
+      responders: ['alice'],
+      holders: ['alice'],
+      partial: false,
+      onClose: () => { closed = true; },
+    });
+    await exec.resolveAwait('aw1', 'alice', { approved: true });
+    assert.equal(closed, true);
+  });
+});
+
+// #754 — the other fail-OPEN path `roleHolderSource.ts` documents: "role has no holder →
+// take the fallback" may only fire on a RESOLVED empty list. On `unavailable` an empty list
+// means "we could not ask", and taking the fallback would skip the human step entirely —
+// exactly the outage-shaped bypass this regression pins down (openHumanAwait, runExecutor.ts).
+describe('ConductorRunExecutor.startRun — no-holder fallback fires on resolved-empty only (#754)', () => {
+  // Single human role step, no fallbackTransitionId → "no holder" records the step 'failed'
+  // with actor.noHolder=true instead of parking; a partial+empty lookup must park instead of
+  // reaching that record at all. Which of the two store calls fires is the assertion — not the
+  // run's final status, which this minimal fake doesn't attempt to model faithfully.
+  const graph = {
+    entryStepId: 'h1',
+    steps: [{ id: 'h1', kind: 'human', human: { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?' } }],
+    transitions: [],
+  };
+
+  function makeExecutor(lookup: { holders: string[]; partial: boolean }) {
+    const recorded: Array<{ actor: unknown; status: string }> = [];
+    let parkCount = 0;
+    let awaitCreateCount = 0;
+    const run = {
+      id: 'run1', workflowVersionId: 'v1', status: 'running', currentStepId: 'h1', context: {},
+      triggerKind: 'manual', triggerSource: null, isDryRun: false, startedAt: new Date(0), endedAt: null,
+    };
+    const workflowStore = {
+      async getBySlug() { return { id: 'w1', slug: 'wf', status: 'published', activeVersionId: 'v1' }; },
+      async getVersion() { return { id: 'v1', workflowId: 'w1', version: 1, graph }; },
+    };
+    const runStore = {
+      async create() { return run; },
+      async get() { return run; },
+      async acquireLease() {},
+      async stepsForRun() { return []; },
+      async isCancelRequested() { return false; },
+      async park() { parkCount += 1; },
+      async recordStepAndAdvance(input: { actor: unknown; status: string }) {
+        recorded.push({ actor: input.actor, status: input.status });
+      },
+    };
+    const awaitStore = {
+      async create() { awaitCreateCount += 1; },
+    };
+    const executor = new ConductorRunExecutor({
+      workflowStore: workflowStore as never,
+      runStore: runStore as never,
+      awaitStore: awaitStore as never,
+      effects: {
+        async runAgentStep() { throw new Error('effects must not run in these tests'); },
+        async runActionStep() { throw new Error('effects must not run in these tests'); },
+      } as never,
+      // #754 — the resolver Conductor is required to consult: an AggregateHolderLookup, not a
+      // bare list, so `openHumanAwait` can distinguish "genuinely resolved, nobody holds this
+      // role" from "a source could not answer, so we don't actually know".
+      resolveRoleHolders: async () => ({
+        holders: lookup.holders,
+        partial: lookup.partial,
+        bySource: lookup.partial
+          ? [{ sourceId: 'entra', lookup: { outcome: 'unavailable' as const, code: 'source_error' as const, message: 'down' } }]
+          : [],
+      }),
+    });
+    return { executor, recorded, getParkCount: () => parkCount, getAwaitCreateCount: () => awaitCreateCount };
+  }
+
+  it('a RESOLVED empty holder list ("nobody holds this role") takes the fallback — never parks', async () => {
+    const { executor, recorded, getParkCount, getAwaitCreateCount } = makeExecutor({ holders: [], partial: false });
+    await executor.startRun({ slug: 'wf', payload: {}, awaitCompletion: true });
+    assert.equal(getAwaitCreateCount(), 0, 'a resolved-empty role must never open an await for holders that do not exist');
+    assert.equal(getParkCount(), 0);
+    assert.equal(recorded.length, 1, 'the no-holder fallback path must record exactly one step');
+    assert.deepEqual(recorded[0]!.actor, { kind: 'human', noHolder: true });
+    assert.equal(recorded[0]!.status, 'failed'); // no fallbackTransitionId on this step
+  });
+
+  it('an UNAVAILABLE (partial) holder lookup does NOT take the fallback — it parks instead', async () => {
+    const { executor, recorded, getParkCount, getAwaitCreateCount } = makeExecutor({ holders: [], partial: true });
+    await executor.startRun({ slug: 'wf', payload: {}, awaitCompletion: true });
+    assert.equal(
+      recorded.length,
+      0,
+      'an unreachable holder source must never be mistaken for "no holders" and skip the human step',
+    );
+    assert.equal(getAwaitCreateCount(), 1, 'must park waiting for the real holders once the source recovers');
+    assert.equal(getParkCount(), 1);
   });
 });

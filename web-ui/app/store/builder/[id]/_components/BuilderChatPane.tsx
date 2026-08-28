@@ -38,6 +38,7 @@ import { humanizeProviderError } from '../../../../_lib/providerErrorMessage';
 import { ChoiceCard } from '../../../../_components/ChoiceCard';
 
 import { BuilderMarkdown } from './BuilderMarkdown';
+import { isSendKey } from '../../../../_lib/composerKeys';
 
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string; ts: number }
@@ -469,7 +470,7 @@ export function BuilderChatPane({
 
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (isSendKey(e)) {
         e.preventDefault();
         void onSend();
       }
@@ -631,7 +632,10 @@ export function BuilderChatPane({
             }
           >
             <span className="lume-busy-dots" aria-hidden />
-            Stream live · {formatElapsed(turnStartedAt, elapsedNow)} · model {model}
+            {t('liveness.streamLive', {
+              elapsed: formatElapsed(turnStartedAt, elapsedNow),
+              model,
+            })}
             {liveness?.phase ? (
               <span className={phasePillClass(liveness.phase)}>
                 {liveness.phase.replace('_', ' ')}
@@ -653,8 +657,11 @@ export function BuilderChatPane({
             ) : null}
             {liveness ? (
               <span>
-                · Iter {liveness.iteration} · last activity{' '}
-                {formatLivenessGap(liveness.sinceLastActivityMs)}
+                ·{' '}
+                {t('liveness.iterActivity', {
+                  iteration: liveness.iteration,
+                  gap: formatLivenessGap(liveness.sinceLastActivityMs),
+                })}
                 {liveness.toolCallsThisIter > 0
                   ? ` · ${String(liveness.toolCallsThisIter)} tools this iter`
                   : ''}
@@ -706,7 +713,9 @@ function TurnStatsLine({ stats }: { stats: TurnStats }): React.ReactElement {
         {stats.isLive ? t('turnStats.live') : t('turnStats.last')}: {toolsLabel}
       </span>
       <span className="text-[color:var(--fg-muted)]">
-        {(stats.totalLatencyMs / 1000).toFixed(2)} s tool-time
+        {t('turnStats.toolTime', {
+          seconds: (stats.totalLatencyMs / 1000).toFixed(2),
+        })}
       </span>
     </div>
   );
@@ -805,6 +814,7 @@ function ToolCard({
   const pending = item.output === null;
   return (
     <div className="rounded-md border border-[color:var(--divider)] bg-[color:var(--bg-soft)]/60 text-[12px]">
+      {/* eslint-disable-next-line no-restricted-syntax -- full-width disclosure toggle row (chevron + tool name), not a CTA */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}

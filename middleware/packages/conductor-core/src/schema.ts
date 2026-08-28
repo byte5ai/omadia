@@ -26,12 +26,20 @@ export const conductorGraphSchema = {
       additionalProperties: false,
       properties: {
         id: { type: 'string', minLength: 1 },
-        kind: { enum: ['agent', 'action', 'human'] },
+        kind: { enum: ['agent', 'action', 'human', 'timer'] },
         agentId: { type: 'string' },
         actionId: { type: 'string' },
         prompt: { type: 'string' },
         input: { type: 'object' },
         human: { $ref: '#/$defs/human' },
+        timer: {
+          type: 'object',
+          required: ['duration'],
+          additionalProperties: false,
+          properties: {
+            duration: { type: 'string', minLength: 1 },
+          },
+        },
         postcondition: { $ref: '#/$defs/predicate' },
         fallbackTransitionId: { type: 'string' },
         position: {
@@ -60,6 +68,7 @@ export const conductorGraphSchema = {
         deadline: { type: ['string', 'null'] },
         quorum: { enum: ['any', 'all'] },
         responseSchema: { type: 'object' },
+        strictApproval: { type: 'boolean' },
       },
     },
     transition: {

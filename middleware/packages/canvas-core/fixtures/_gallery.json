@@ -7,7 +7,9 @@
     {
       "type": "button",
       "id": "fixture-button",
-      "label": "Run report"
+      "label": "Run report",
+      "icon": "app:play",
+      "iconState": "default"
     },
     {
       "type": "canvas-region",
@@ -22,6 +24,7 @@
       "type": "chart",
       "id": "fixture-chart",
       "chartType": "bar",
+      "variant": "spark",
       "points": [
         {
           "pointKey": "q1",

@@ -915,10 +915,10 @@ export default function GraphCanvas({
       <div className="pointer-events-none absolute inset-0 flex items-start justify-between p-3">
         <Legend dark={dark} filter={filter} />
         <div className="pointer-events-auto flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--bg-elevated)]/90 p-2 shadow-sm backdrop-blur">
-          <IconBtn title="Zoom in" onClick={zoomIn}>＋</IconBtn>
-          <IconBtn title="Zoom out" onClick={zoomOut}>−</IconBtn>
-          <IconBtn title="Fit" onClick={fit}>⤢</IconBtn>
-          <IconBtn title="Re-Layout" onClick={relayout}>↻</IconBtn>
+          <IconBtn title={t('zoomIn')} onClick={zoomIn}>＋</IconBtn>
+          <IconBtn title={t('zoomOut')} onClick={zoomOut}>−</IconBtn>
+          <IconBtn title={t('fit')} onClick={fit}>⤢</IconBtn>
+          <IconBtn title={t('relayout')} onClick={relayout}>↻</IconBtn>
         </div>
       </div>
       {elements.length === 0 && (
@@ -943,6 +943,7 @@ function IconBtn({
   children: React.ReactNode;
 }): React.ReactElement {
   return (
+    // eslint-disable-next-line no-restricted-syntax -- icon-only canvas control (fit/zoom/re-layout) chrome, not a text CTA
     <button
       type="button"
       title={title}

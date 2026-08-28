@@ -13,6 +13,7 @@ import {
   planStepNodeId,
   runNodeId,
   sessionNodeId,
+  authSubjectProps,
   toolCallNodeId,
   topicNodeId,
   turnNodeId,
@@ -294,6 +295,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         toolCalls: turn.toolCalls,
         iterations: turn.iterations,
         ...(turn.userId ? { userId: turn.userId } : {}),
+        // #584 WS I — speaker-attributed transcript-ingest turns.
+        ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
       },
       // Palaia (OB-70 / OB-71) — mirror the Neon DB defaults on Turn
       // ingest so the in-memory backend exposes the same axes to consumers.
@@ -594,6 +597,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             (acc, inv) => acc + inv.toolCalls.length,
             0,
           ),
+        // #650 (epic #642) — the model that produced the answer and the
+        // provider that served it. Written here as well as in the Neon
+        // implementation: a provenance field present in one backend and absent
+        // in the other means the answer to "which model wrote this?" depends on
+        // which store the deployment happens to run.
+        ...(trace.model ? { model: trace.model } : {}),
+        ...(trace.provider ? { provider: trace.provider } : {}),
         ...(trace.error ? { error: trace.error } : {}),
       },
     });
@@ -837,7 +847,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         this.upsertNode({
           id: identityExtId,
           type: 'ChannelIdentity',
-          props: { ...existing.props, lastSeenAt: now },
+          props: {
+            ...existing.props,
+            lastSeenAt: now,
+            // #568 — backfill on the FAST path too. Every login re-enters
+            // here, so without this an identity created before the field
+            // existed would never acquire it and the operator would stay
+            // invisible to their own channel turns forever.
+            ...authSubjectProps(ingest),
+          },
         });
         this.upsertNode({
           id: cluster.id,
@@ -850,6 +868,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           omadiaUserId: clusterOmadiaUserId,
           isNewIdentity: false,
           isNewCluster: false,
+          ...this.clusterAuthSubject(cluster.id),
         };
       }
     }
@@ -949,6 +968,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           ? { emailVerified: ingest.emailVerified }
           : {}),
         ...(ingest.aadObjectId ? { aadObjectId: ingest.aadObjectId } : {}),
+        ...authSubjectProps(ingest),
         ...(ingest.internalChannelData
           ? { internalChannelData: ingest.internalChannelData }
           : {}),
@@ -966,6 +986,50 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       omadiaUserId: clusterOmadiaUserId,
       isNewIdentity: true,
       isNewCluster,
+      ...this.clusterAuthSubject(clusterId),
+    };
+  }
+
+  /**
+   * The IdP subject of the cluster's most recently seen authenticating
+   * identity — issue #568. Spread into the result, so a cluster with no
+   * authenticated identity yields `{}` and the key stays ABSENT rather than
+   * present-and-undefined.
+   *
+   * "Most recently seen" is a deterministic pick, not a correctness claim: a
+   * cluster that merged a local-password login and an Entra login holds two
+   * subjects, and a token authorized under the OTHER one will not be found.
+   * That case fails closed (no token ⇒ blocked with a reason), which is the
+   * safe direction; widening it means teaching the token lookup to try an
+   * ordered set of keys, which is a change to the credential read path and
+   * deliberately out of scope here.
+   */
+  private clusterAuthSubject(
+    clusterId: string,
+  ): Pick<ResolveOrCreateChannelIdentityResult, 'clusterAuthSubject'> {
+    const members = [...this.edges.values()]
+      .filter((e) => e.type === 'IS_IDENTITY_OF' && e.to === clusterId)
+      .map((e) => this.nodes.get(e.from))
+      .filter(
+        (n): n is GraphNode =>
+          n !== undefined &&
+          n.type === 'ChannelIdentity' &&
+          typeof n.props['authProvider'] === 'string' &&
+          typeof n.props['authProviderUserId'] === 'string',
+      )
+      .sort((a, b) => {
+        const bySeen = String(b.props['lastSeenAt'] ?? '').localeCompare(
+          String(a.props['lastSeenAt'] ?? ''),
+        );
+        return bySeen !== 0 ? bySeen : a.id.localeCompare(b.id);
+      });
+    const winner = members[0];
+    if (!winner) return {};
+    return {
+      clusterAuthSubject: {
+        provider: String(winner.props['authProvider']),
+        providerUserId: String(winner.props['authProviderUserId']),
+      },
     };
   }
 
@@ -1569,10 +1633,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // Mirror neon's `COALESCE(visibility, 'team')`: an MK with no explicit
       // visibility is team-visible by default; `private` is never admitted
       // by the team branch.
+      // sharedOnly implies the team branch — see the contract: asking for
+      // shared rows with the shared branch off would return only the viewer's
+      // OWN shared rows.
       const teamMatch =
-        opts.teamVisibility === true &&
+        (opts.teamVisibility === true || opts.sharedOnly === true) &&
         ['team', 'public'].includes(node.visibility ?? 'team');
-      if (!ownerMatch && !teamMatch) continue;
+      // #575 sharedOnly: narrowed as its own gate rather than by editing the
+      // branches, so an owner-owned row that IS team/public still qualifies
+      // while an owner-owned private one cannot slip through the owner branch.
+      const sharedOk =
+        opts.sharedOnly !== true || ['team', 'public'].includes(node.visibility ?? 'team');
+      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1618,9 +1690,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         owners.includes(opts.viewerOmadiaUserId) && agentMatch;
       // Excerpts inherit the parent MK's ACL + visibility.
       const teamMatch =
-        opts.teamVisibility === true &&
+        (opts.teamVisibility === true || opts.sharedOnly === true) &&
         ['team', 'public'].includes(parent.visibility ?? 'team');
-      if (!ownerMatch && !teamMatch) continue;
+      // #575 sharedOnly: the excerpt inherits its parent's tier, so the
+      // narrowing runs against the PARENT's visibility.
+      const sharedOk =
+        opts.sharedOnly !== true || ['team', 'public'].includes(parent.visibility ?? 'team');
+      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({
@@ -2923,13 +2999,21 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
   async listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    const offset = Math.max(0, opts.offset ?? 0);
     return [...this.datasets.values()]
       .filter((d) => d.ownerOmadiaUserId === opts.ownerOmadiaUserId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map((d) => this.datasetToSummary(d));
+  }
+
+  async countDatasets(opts: { ownerOmadiaUserId: string }): Promise<number> {
+    return [...this.datasets.values()].filter(
+      (d) => d.ownerOmadiaUserId === opts.ownerOmadiaUserId,
+    ).length;
   }
 
   async getDataset(

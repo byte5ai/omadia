@@ -17,8 +17,24 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
-    include: ['app/**/*.{test,spec}.{ts,tsx}'],
+    // `scripts/` is in scope for the generated-artifact parity checks (epic
+    // #470 C8b): the plugin UI stylesheet's source lives there, and the test
+    // that pins it to the committed artifact and to the vocabulary document
+    // belongs next to it rather than inside `app/`.
+    include: ['app/**/*.{test,spec}.{ts,tsx}', 'scripts/**/*.{test,spec}.{ts,tsx}'],
     globals: true,
+    // vitest's default is 5000ms, which sits BELOW the honest runtime of the
+    // heavier React Testing Library suites here — the template-proposal and
+    // slot-picker renders measure 5-13s unloaded. A ceiling under a test's real
+    // cost does not catch hangs, it manufactures them: four runs of an
+    // unchanged tree gave 0, 9, 25 and 0 failures, purely as machine load
+    // varied, every one of them a timeout rather than an assertion.
+    //
+    // 30s is deliberately generous. The job of this number is to stop a hung
+    // test from burning the CI wall with no attribution, not to police tests
+    // that are slow but honest. Raise it rather than trimming a real suite.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
   resolve: {
     alias: {

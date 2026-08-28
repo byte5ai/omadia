@@ -7,6 +7,14 @@
 // the canonical file to a shared package.
 // ===========================================================================
 
+// Epic #470 C7 / G4 — `permissions.sql` is part of the plugin CONTRACT, so its
+// shape is defined once on the plugin-api surface and re-exported here rather
+// than restated. A second declaration would drift from the one plugin authors
+// actually compile against.
+import type { SqlPermission } from '@omadia/plugin-api';
+
+export type { SqlPermission };
+
 export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
@@ -43,19 +51,58 @@ export type SetupFieldType =
   | 'integer'
   /** #91: operator-curated list of bare hostnames. Values are unioned into
    *  the plugin's effective `ctx.http` allowlist at runtime (Option B). */
-  | 'host_list';
+  | 'host_list'
+  /**
+   * #603 (OM-17): upload a JSON credential file instead of transcribing values
+   * out of it. The field itself stores NOTHING — the server parses the upload
+   * and explodes it into the keys named in `extracts`, which remain ordinary
+   * `secret`/`string` fields for every other code path.
+   *
+   * Exists because hand-transcribing a service-account key into an email field
+   * and a masked field stacked beneath it is the visual pattern of a login, and
+   * a tester duly typed their real password into it.
+   */
+  | 'json_file';
 
 export interface PluginSetupField {
   key: string;
-  label: string;
+  /**
+   * #602 (OM-17) — the field's label, as a `{ <locale>: text }` map. Authored
+   * either localized (`{ en: "…", de: "…" }`) or as a bare string the loader
+   * reads as English. Resolve with `pickLocalized` at the active locale; falls
+   * back to the field `key` when the map is empty. Localized because a manifest
+   * that shows an English label above German setup instructions is exactly the
+   * two-languages-on-one-page defect OM-17 was raised for.
+   */
+  label: LocalizedMarkdown;
   type: SetupFieldType;
-  /** Manifest-defined help text. Surfaced on the post-install credentials
-   *  editor so the operator sees the same hint as in the install wizard. */
-  help?: string;
+  /** #602 (OM-17) — Manifest-defined help text as a `{ <locale>: text }` map
+   *  (bare string tolerated, read as English). Surfaced on the install wizard
+   *  and the post-install credentials editor; render with `pickLocalized`. */
+  help?: LocalizedMarkdown;
   /** Manifest-defined input placeholder. Optional UI hint surfaced by the
    *  install wizard and post-install editor; loader passes it through
    *  unchanged. */
   placeholder?: string;
+  /**
+   * #603 — `json_file` only. MIME type for the file picker's `accept`
+   * attribute. Advisory: a picker hint, never a validation. The server decides
+   * what the upload is, and `expect` is what actually rejects the wrong file.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Target setup-field key → `$.dotted.path` into the
+   * uploaded document. The extracted values are stored under those keys; the
+   * `json_file` field itself stores nothing. See `setupJsonFile.ts` for the
+   * supported path subset and why it is not full JSONPath.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Shallow equality assertions the uploaded document
+   * must satisfy (e.g. `{ type: 'service_account' }`), checked BEFORE any value
+   * is extracted so the wrong file is rejected rather than half-consumed.
+   */
+  expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
    *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
@@ -79,6 +126,46 @@ export interface PluginSetupField {
   /** When true, this field holds MULTIPLE selected values (stored as a
    *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
   multi?: boolean;
+  /**
+   * OM-16 — whether the operator MUST supply a value for this field before the
+   * plugin can serve a request. Required-by-default: a manifest field that
+   * omits `required` is required. Parsed with exactly the same rule the
+   * install-job schema uses (`installService.ts` → `f['required'] !== false`),
+   * so the store view and the install wizard can never disagree.
+   *
+   * Consumed by `computeReadiness` (plugins/readiness.ts) to decide whether an
+   * installed plugin is actually configured, or merely present.
+   */
+  required?: boolean;
+  /**
+   * Optional validation regex (source form, no delimiters). Mirrors
+   * `InstallSetupField.pattern` so the post-install credentials editor can
+   * apply the same constraint the install wizard does.
+   */
+  pattern?: string;
+  /**
+   * OM-17 — operator-facing explanation of what `pattern` expects, e.g.
+   * "erwartet …@….iam.gserviceaccount.com" or "erwartet einen PEM-Block, der
+   * mit -----BEGIN PRIVATE KEY----- beginnt". Same `{ locale: text }` shape as
+   * `setup_guide`; the renderer picks the active locale (`pickLocalized`).
+   *
+   * Exists because a bare "entspricht nicht dem Muster" tells an operator who
+   * pasted the wrong KIND of credential nothing about what the right kind is —
+   * which is exactly how a tester ended up typing a Google account password
+   * into a service-account private-key field.
+   */
+  pattern_hint?: LocalizedMarkdown;
+  /**
+   * OM-17 — the manifest declared a `pattern`, but the server REFUSED it (it
+   * did not compile, or the catastrophic-backtracking allowlist rejected it),
+   * so this field is NOT format-checked. `pattern` is absent in that case.
+   *
+   * Fail-open is the right call for the write — refusing every value because a
+   * plugin author wrote an over-clever regex would brick the plugin — but it
+   * must not be SILENT. Without this flag the operator sees a field that looks
+   * validated and is not, which is precisely the defect OM-17 exists to fix.
+   */
+  pattern_unavailable?: boolean;
 }
 
 /** A single selectable choice returned by a field's `options_provider` tool. */
@@ -131,6 +218,13 @@ export interface OAuthProviderDescriptor {
 }
 
 export interface PluginPermissionsSummary {
+  /** Epic #470 C7 / G4 — the plugin asks to hold a Postgres pool and own its
+   *  own tables (`permissions.sql`). Present only when the manifest declares a
+   *  well-formed block whose `ledger` this plugin is allowed to own; the
+   *  loader drops a malformed one with a warning. Declaration is half the
+   *  gate — `platform/pluginSqlGrants.ts` additionally requires an operator
+   *  grant row before `graphPool` resolves or `ctx.sql` is built. */
+  sql?: SqlPermission;
   memory_reads: string[];
   memory_writes: string[];
   graph_reads: EntityURI[];
@@ -194,20 +288,27 @@ export interface PluginPermissionsSummary {
    *  descriptions of the servers the plugin expects, shown in the grant UI.
    *  Granting is ALWAYS an explicit operator action. */
   mcp_servers_hint?: string[];
-  /** Epic #470 W3: plugin declares `permissions.devJobs` (true or a block) and
-   *  receives `ctx.devJobs`, scoped to operator-granted repos
-   *  (`dev_repo_plugin_grants`). Loader defaults to `false`. */
-  dev_jobs?: boolean;
-  /** Optional author hint (`permissions.devJobs.repos_hint`): repos the plugin
-   *  expects to drive, shown in the operator grant UI. Documentation only —
-   *  granting a repo is ALWAYS an explicit operator action. */
-  dev_jobs_repos_hint?: string[];
   /** Spec 005: true when the manifest declares >=1 `oauth_providers`
    *  descriptor — the plugin acquires standard authorization-code credentials
    *  through the kernel OAuth broker (tokens stored + refreshed kernel-side;
    *  refresh tokens never reach plugin code). Surfaced as a store-detail chip.
    *  Loader defaults to `false`. */
   acquires_oauth?: boolean;
+  /**
+   * Epic #470 C4 / H1 (`permissions.public_paths`): URL prefixes the plugin
+   * asks to serve WITHOUT an operator session.
+   *
+   * This is a REQUEST, not a capability — declaring it grants nothing. The
+   * prefix is claimed exclusively at activation (first plugin wins, a second
+   * one overlapping it fails to activate), and it is only served publicly once
+   * the operator has consented and a row exists in `plugin_public_path_grants`.
+   * Until then the prefix stays behind `requireAuth` like everything else.
+   *
+   * The single most consequential thing a plugin can ask for, so it is
+   * surfaced on its own in the store consent block rather than folded in with
+   * the network/memory chips. Loader defaults to `[]`.
+   */
+  public_paths?: string[];
 }
 
 export type PluginInstallState =
@@ -306,6 +407,50 @@ export interface PluginActionStatus {
   state: PluginActionState;
   title?: string;
   detail?: string;
+  /** Kernel-stamped ISO time of the report — see plugin-api's contract. */
+  checked_at?: string;
+}
+
+/**
+ * OM-16 — kernel-derived plugin readiness.
+ *
+ * `install_state` and `InstalledAgent.status` are two independent state axes
+ * and neither answers the operator's actual question ("will this plugin serve
+ * a request?"). `install_state` stops at "is it in the registry", and
+ * `InstalledAgent.status` never leaves the server. Readiness is the derived
+ * third view: it inspects the plugin's *declared required setup fields*
+ * against the vault + the stored config and reports whether the plugin is
+ * genuinely usable.
+ *
+ * Unlike `PluginActionStatus` (push-only, plugins that call `ctx.status`),
+ * readiness is computed by the kernel and therefore also covers the majority
+ * of plugins that never report status at all.
+ *
+ * `awaiting_llm` (#884) is deliberately NOT folded into `config_required`. The
+ * plugin's own manifest-required fields are all satisfied; what is missing is a
+ * VERIFIED credential on the LLM provider it was assigned, and that lives on a
+ * different page (`/admin/providers`) entirely. Saying "configuration required"
+ * would send the operator to the plugin's own setup form, where there is
+ * nothing left to fill in.
+ */
+export type PluginReadinessState =
+  | 'not_installed'
+  | 'config_required'
+  | 'awaiting_llm'
+  | 'ready'
+  | 'errored';
+
+export interface PluginReadiness {
+  state: PluginReadinessState;
+  /** Keys of required setup fields with no stored value. Empty unless
+   *  `state === 'config_required'`. */
+  missing_fields: string[];
+  /** ISO8601 of the moment readiness was last observed as `ready`, i.e. the
+   *  plugin's last successful activation (falls back to `installed_at`).
+   *  `null` for every non-ready state. */
+  verified_at: string | null;
+  /** Tail of the last activation error. Only for `state === 'errored'`. */
+  error_detail?: string;
 }
 
 export interface Plugin {
@@ -315,6 +460,14 @@ export interface Plugin {
   version: string;
   latest_version: string;
   description: string;
+  /**
+   * OM-28/OM-06 (#602) — the manifest may declare `identity.description` as a
+   * localized map (`{ en, de, … }`). `description` stays the resolved English
+   * string so every existing consumer (search, older UIs, the hub) keeps
+   * working; this carries the full map so the web-ui can pick the viewer's
+   * locale. Absent when the manifest declared a plain string.
+   */
+  description_localized?: Record<string, string>;
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;
   icon_url: string | null;
@@ -380,6 +533,19 @@ export interface Plugin {
    *  matching `provides` across the installed plugin set. */
   requires: string[];
   /**
+   * Capabilities this plugin may use but can run without (#795). Same
+   * capability-ref syntax as {@link requires}, and the same effect on the
+   * `ctx.services` declaration gate — but NOT an activation dependency:
+   * the installer does not refuse the install when nothing provides one,
+   * the capability resolver neither orders nor demands a provider, and
+   * `ctx.services.getOptional(name)` simply answers `undefined`.
+   *
+   * Absent when the manifest declares none; read it as `?? []`. Surfaced
+   * on the install DTO so the consent UI can render these prerequisites
+   * as optional rather than as blockers.
+   */
+  optional_requires?: string[];
+  /**
    * Builder service-type declarations (OB — service-type auto-discovery).
    * Integration plugins list every `ctx.services.provide(...)` surface they
    * expose, mapped to the TypeScript type a consuming agent imports. When
@@ -409,6 +575,18 @@ export interface Plugin {
    * plugin reports `ok`.
    */
   action_status?: PluginActionStatus;
+  /**
+   * OM-16 — kernel-derived readiness. Orthogonal to `install_state`: a plugin
+   * can be `install_state: 'installed'` while every required credential is
+   * empty, in which case it cannot serve a single request. `install_state`
+   * answers "is it present?", `readiness` answers "can it actually work?".
+   *
+   * Optional on purpose — an older middleware omits it and an older web-ui
+   * ignores it, so both directions of the version skew keep working. Never
+   * widen `PluginInstallState` for this: 20+ call sites branch on
+   * `=== 'installed'`.
+   */
+  readiness?: PluginReadiness;
   /**
    * OB-29-0 marker. When `true`, this plugin is a Builder-Reference
    * (Pattern-Quelle für den BuilderAgent) and MUST NOT appear in the
@@ -440,6 +618,39 @@ export interface Plugin {
    * never parsed for behaviour.
    */
   setup_guide?: LocalizedMarkdown;
+  /**
+   * OM-15 (#602) — installation-effort profile surfaced on the store CARD,
+   * BEFORE install. Declared in the manifest's `listing.setup_profile`. Exists
+   * because a tester installed a plugin, then discovered it needed a Google
+   * Cloud service account, seven enabled APIs and Workspace super-admin rights —
+   * information they should have had while still deciding whether to install.
+   * Optional and additive; absent for plugins that declare no profile.
+   */
+  setup_profile?: SetupProfile;
+}
+
+/**
+ * OM-15 (#602) — who has to perform the setup. Renders as a localized label on
+ * the card (`it_admin` → "Einrichtung durch IT-Administrator"). Unknown values
+ * are dropped by the loader rather than shown raw.
+ */
+export type SetupAudience = 'it_admin' | 'operator' | 'end_user';
+
+/**
+ * OM-15 (#602) — structured installation-effort metadata for the store card.
+ * The platform COMPOSES the display line from these fields via next-intl (so the
+ * card stays localized and the plugin author does not hand-write German), e.g.
+ * "Einrichtung durch IT-Administrator · ca. 15 Min · Google-Workspace-Super-Admin
+ * erforderlich". Every field is optional; the card renders only the parts present.
+ */
+export interface SetupProfile {
+  /** Who performs the setup. Omitted when the manifest value is unrecognised. */
+  audience?: SetupAudience;
+  /** Rough hands-on setup time in minutes. Positive integer; omitted otherwise. */
+  estimated_minutes?: number;
+  /** A single extra prerequisite worth calling out up front (e.g. required
+   *  admin role), as a `{ <locale>: text }` map. Render with `pickLocalized`. */
+  requirement?: LocalizedMarkdown;
 }
 
 /**
@@ -514,6 +725,21 @@ export interface StoreGetResponse {
   blocking_reasons?: string[];
   /** Advisory-only — never blocks install (issue #453). */
   verdict?: PluginVerdict;
+  /** OM-06 / #671 — set when install is blocked because an ACTIVE plugin
+   *  already provides one of this plugin's capabilities. The install would be
+   *  refused with 409 `install.capability_already_provided`, so the store must
+   *  not advertise it.
+   *
+   *  Structured rather than folded into `blocking_reasons`, which is a list of
+   *  server-authored English strings the client can only print: the operator's
+   *  next step here is to CONFIGURE the provider that already exists, and a
+   *  client cannot build that link by parsing prose. */
+  blocked_by_active_provider?: {
+    /** The capability slot, e.g. `llmProvider@1`. */
+    capability: string;
+    /** Plugin id already providing it. */
+    owner_id: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -524,21 +750,120 @@ export type InstallJobState =
   | 'created'
   | 'awaiting_config'
   | 'configuring'
+  /** Installed AND activated: the registry read back `active` after the
+   *  activation hook ran. The plugin is running. */
   | 'active'
+  /**
+   * #825 — installed but NOT running.
+   *
+   * The install itself completed (vault + registry writes landed, the plugin
+   * IS installed and shows up in the runtime list), and then activation did not
+   * succeed — most commonly because the operator skipped a grant the manifest
+   * declares (epic #470 C16), so `activate()` could not obtain its SQL ledger
+   * or public path.
+   *
+   * Distinct from `failed` in the one way that matters to a caller deciding
+   * what to do next: `failed` means nothing was installed and re-submitting the
+   * form is the fix; `errored` means the plugin IS installed and the fix is a
+   * GRANT, not a retry. `activation_state` carries which one.
+   */
+  | 'errored'
+  /** The install did not complete — validation, the template gate, or a
+   *  vault/registry write failed. Nothing is installed. */
   | 'failed'
   | 'cancelled';
+
+/**
+ * #825 — one thing the manifest asked for that the operator has not granted.
+ *
+ * The canonical declaration: `routes/runtimeGrants.ts` re-exports this type
+ * rather than declaring its own, so `GET …/grants` `missing[]` and the install
+ * job's `activation_state.missing` are the same shape by construction and not
+ * by coincidence. Both are produced by `plugins/grantGap.ts`.
+ */
+export type MissingGrant =
+  | { readonly kind: 'sql'; readonly ledger: string }
+  | { readonly kind: 'public_path'; readonly path: string };
+
+/**
+ * #825 — the outcome of the ACTIVATION, reported separately from the outcome of
+ * the JOB.
+ *
+ * WHAT WAS WRONG
+ * --------------
+ * `configure()` transitioned the job to `active` immediately after the registry
+ * write and BEFORE the hook that does the activating. #799 taught the registry
+ * to correct itself when that hook fails (`markActivationFailed`, status flipped
+ * to `errored`), but the job kept the optimistic word it had already written. So
+ * an install where the operator skipped the grants answered `active` from
+ * `GET /api/v1/install/jobs/:id` while `GET …/grants` answered `errored` with
+ * `missing[]` populated — same plugin, same moment. The wizard papered over it
+ * by re-reading the grants view; automation driving the install API had no such
+ * second opinion and believed the job. It cost two false FAILs in the C16
+ * acceptance probe.
+ *
+ * WHY A FIELD AND NOT ONLY THE STATE
+ * ----------------------------------
+ * "The job finished" and "the plugin is running" are two different facts, and
+ * collapsing them into one word is what produced the lie. The job state now
+ * tells the truth about activation, and this field says WHY in machine-readable
+ * terms — so a client can tell "installed, needs a grant" from "installed,
+ * threw on activate" without parsing an error string.
+ *
+ * Present on every terminal INSTALLED state (`active` AND `errored`), including
+ * the success case, so its absence never has to be read as success. `null` while
+ * the job is still running and on `failed`/`cancelled`, where nothing was
+ * installed and there was no activation to report on.
+ */
+export interface InstallActivationState {
+  /** The registry's status for this plugin, read back AFTER the activation
+   *  attempt. This is the #799 truthful status, not an inference from the
+   *  absence of a throw. */
+  state: 'active' | 'inactive' | 'errored';
+  /** `state === 'active'`. Restated so a client need not special-case the
+   *  status vocabulary to answer "did it come up?". */
+  ok: boolean;
+  /** `last_activation_error` from the registry — the activation hook's message.
+   *  `null` on success. */
+  error: string | null;
+  /** Declared-but-not-granted permissions, derived exactly as
+   *  `GET /api/v1/admin/runtime/installed/:id/grants` derives its `missing[]`
+   *  (literally the same function — `plugins/grantGap.ts`). Non-empty here is
+   *  the operator-actionable case: the fix is a grant, not a retry.
+   *
+   *  Can be non-empty on an `active` job too — a plugin may come up while an
+   *  optional permission stays unanswered. `state`/`ok` say whether it is
+   *  running; this says what it was not given. */
+  missing: MissingGrant[];
+}
 
 export interface InstallSetupField {
   key: string;
   type: SetupFieldType;
-  label: string;
-  help?: string;
+  /** #602 (OM-17) — localized label map; see `PluginSetupField.label`. Both
+   *  projections normalise it identically so the install wizard and the store
+   *  view render the same text. */
+  label: LocalizedMarkdown;
+  /** #602 (OM-17) — localized help map; see `PluginSetupField.help`. */
+  help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
   enum?: Array<{ value: string; label: string }>;
   provider?: string;
   scopes?: string[];
   pattern?: string;
+  /** OM-17 — localized explanation of what `pattern` expects. See
+   *  `PluginSetupField.pattern_hint`; parsed by the same manifest read so the
+   *  install wizard and the post-install editor say the same thing. */
+  pattern_hint?: LocalizedMarkdown;
+  /** OM-17 — the manifest declared a `pattern` the server refused (uncompilable
+   *  or rejected by the ReDoS allowlist), so this field goes UNCHECKED. See
+   *  `PluginSetupField.pattern_unavailable`. */
+  pattern_unavailable?: boolean;
+  /** OM-17 — manifest-declared input placeholder, forwarded to the install
+   *  wizard. It used to be parsed for the catalog view only, while the wizard
+   *  hardcoded `••••••••` over every secret field. */
+  placeholder?: string;
   /** Render as multi-row textarea (string/secret only) — for values that
    *  contain newlines, e.g. PEM private keys. Older UIs ignore the flag
    *  and fall back to a single-line input. */
@@ -549,6 +874,27 @@ export interface InstallSetupField {
    *  it just isn't shown at install time. For flow-populated credentials.
    *  Older UIs ignore the flag and render the field as usual. */
   install_hidden?: boolean;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.accept}: the file
+   * picker's `accept` hint. Advisory — the server, not the picker, decides what
+   * an upload actually is.
+   */
+  accept?: string;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.extracts}.
+   *
+   * Carried on the INSTALL projection too, not just the catalog one, because
+   * `POST …/secrets/from-json` resolves the extraction map through
+   * `extractSetupSchema` — which returns THIS type. A `json_file` field that
+   * reaches the route without it carries no upload contract and is refused,
+   * so an omission here is a silently dead upload button.
+   */
+  extracts?: Record<string, string>;
+  /**
+   * #603 — `json_file` only. Mirrors {@link PluginSetupField.expect}: shallow
+   * assertions the uploaded document must satisfy before anything is extracted.
+   */
+  expect?: Record<string, unknown>;
 }
 
 export interface InstallSetupSchema {
@@ -563,6 +909,11 @@ export interface InstallJob {
   current_step: string;
   error: ApiError | null;
   setup_schema: InstallSetupSchema | null;
+  /** #825 — the activation outcome, set once the install reaches a terminal
+   *  INSTALLED state (`active` or `errored`). `null` before that, and on
+   *  `failed`/`cancelled` where nothing was installed. See
+   *  {@link InstallActivationState}. */
+  activation_state: InstallActivationState | null;
   created_at: ISO8601;
   updated_at: ISO8601;
 }

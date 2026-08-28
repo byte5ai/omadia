@@ -8,7 +8,8 @@ import {
   previewImportSkill,
   type SkillImportResult,
 } from '../../_lib/agentBuilder';
-import { ApiError } from '../../_lib/api';
+import { supportDetail } from '../../_lib/scanFailure';
+import { Button } from '../ui/Button';
 
 /**
  * Import a SKILL.md (paste or file) into the skills registry. Shows a dry-run
@@ -48,7 +49,7 @@ export function SkillImportModal({
     try {
       setPreview(await previewImportSkill({ raw, sourcePath }));
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
     } finally {
       setBusy(false);
     }
@@ -60,7 +61,7 @@ export function SkillImportModal({
     try {
       onImported(await importSkill({ raw, sourcePath }));
     } catch (err) {
-      setError(err instanceof ApiError ? err.body : String(err));
+      setError(supportDetail(err));
       setBusy(false);
     }
   }, [raw, sourcePath, onImported]);
@@ -77,6 +78,7 @@ export function SkillImportModal({
         <h2 className="text-lg font-semibold text-[color:var(--fg-strong)]">{t('title')}</h2>
         <p className="text-xs text-[color:var(--fg-muted)]">{t('hint')}</p>
 
+        {/* eslint-disable-next-line no-restricted-syntax -- bespoke dashed file-dropzone affordance, not a §4.2 Button variant */}
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
@@ -112,6 +114,23 @@ export function SkillImportModal({
             <div className="mt-1 text-xs text-[color:var(--accent)]">
               {t(`outcome.${preview.outcome}`)}
             </div>
+            {(preview.unparsedFrontmatter?.length ?? 0) > 0 && (
+              <div className="mt-2 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-2 text-xs text-[color:var(--warning)]">
+                <div className="font-semibold">{t('unparsedFrontmatter.title')}</div>
+                <p className="mt-1 text-[color:var(--fg-muted)]">
+                  {t('unparsedFrontmatter.explain')}
+                </p>
+                <ul className="mt-1 flex flex-col gap-1 font-mono">
+                  {/* Index keys: the same line can legitimately repeat (two
+                      keys with identical entries), and this list is static. */}
+                  {preview.unparsedFrontmatter?.map((line, i) => (
+                    <li key={`${i}-${line}`} className="break-all text-[color:var(--fg-muted)]">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {preview.risks.length > 0 && (
               <div className="mt-2 rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 p-2 text-xs text-[color:var(--warning)]">
                 <div className="font-semibold">{t('risks.title')}</div>
@@ -128,38 +147,38 @@ export function SkillImportModal({
           </div>
         )}
 
+        {/* OM-26 — the raw API body is never the headline. `supportDetail`
+            has already stripped request ids and key-shaped tokens; what is
+            left sits behind a disclosure aimed at a support thread. */}
         {error && (
-          <p className="rounded-md bg-[color:var(--danger)]/10 px-2 py-1 text-xs text-[color:var(--danger)]">
-            {error}
-          </p>
+          <div className="rounded-md bg-[color:var(--danger)]/10 px-2 py-1 text-xs text-[color:var(--danger)]">
+            <p>{t('importFailed')}</p>
+            <details className="mt-1">
+              <summary className="cursor-pointer text-[color:var(--fg-muted)]">
+                {t('supportDetails')}
+              </summary>
+              <pre className="mt-1 whitespace-pre-wrap break-all text-[color:var(--fg-muted)]">
+                {error}
+              </pre>
+            </details>
+          </div>
         )}
 
         <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-[color:var(--border)] px-3 py-1.5 text-sm text-[color:var(--fg-muted)]"
-          >
+          <Button variant="secondary" onClick={onClose}>
             {t('cancel')}
-          </button>
+          </Button>
           {!preview ? (
-            <button
-              type="button"
+            <Button
               disabled={busy || !raw.trim()}
               onClick={() => void runPreview()}
-              className="rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50"
             >
               {t('preview')}
-            </button>
+            </Button>
           ) : (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void confirm()}
-              className="rounded-md bg-[color:var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50"
-            >
+            <Button disabled={busy} onClick={() => void confirm()}>
               {t('confirm')}
-            </button>
+            </Button>
           )}
         </div>
       </div>

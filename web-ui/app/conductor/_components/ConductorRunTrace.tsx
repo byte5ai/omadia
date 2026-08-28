@@ -1,11 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
+
+type Formatter = ReturnType<typeof useFormatter>;
 
 import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
+  cancelConductorRun,
   getConductorRun,
   listConductorRuns,
   type ConductorRun,
@@ -20,6 +23,8 @@ const STATUS_TONE: Record<string, string> = {
   running: 'var(--accent,#3b82f6)',
   waiting: 'var(--warning,#f5a623)',
   failed: 'var(--danger,#e5484d)',
+  // #759 — operator-terminated: neutral, neither success nor failure.
+  cancelled: 'var(--fg-muted)',
 };
 
 /** A step's actor is free-form JSON (e.g. {kind:'agent',ref:'fallback'}); render it compactly. */
@@ -36,10 +41,10 @@ function actorLabel(actor: unknown): string {
   return actor == null ? '—' : JSON.stringify(actor);
 }
 
-function fmtTime(iso: string | null): string {
+function fmtTime(iso: string | null, format: Formatter): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? iso : format.dateTime(d);
 }
 
 function StatusBadge({ status }: { status: string }): React.JSX.Element {
@@ -60,6 +65,7 @@ function StatusBadge({ status }: { status: string }): React.JSX.Element {
  */
 export function ConductorRunTrace({ result }: { result: ConductorRunResult }): React.JSX.Element {
   const t = useTranslations('conductor');
+  const format = useFormatter();
   const { run, steps } = result;
   return (
     <div className="grid gap-3">
@@ -69,10 +75,10 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
           {t('runTriggerLabel')}: <span className="font-mono">{run.triggerKind}</span>
         </span>
         <span>
-          {t('startedLabel')}: {fmtTime(run.startedAt)}
+          {t('startedLabel')}: {fmtTime(run.startedAt, format)}
         </span>
         <span>
-          {t('endedLabel')}: {fmtTime(run.endedAt)}
+          {t('endedLabel')}: {fmtTime(run.endedAt, format)}
         </span>
       </div>
       {steps.length === 0 ? (
@@ -120,6 +126,7 @@ export function ConductorRunTrace({ result }: { result: ConductorRunResult }): R
  */
 export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: () => void }): React.JSX.Element {
   const t = useTranslations('conductor');
+  const format = useFormatter();
   const [runs, setRuns] = useState<ConductorRun[]>([]);
   const [selected, setSelected] = useState<ConductorRunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +163,33 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
     [slug],
   );
 
+  // #759 — operator cancel. 'waiting' ends immediately; 'running' shows the
+  // pending hint until the driver honours the flag at the next step boundary.
+  // Offered on the run-list rows too (#330 field report): the delete guard
+  // demands cancelling active runs, so the button must be findable without
+  // knowing to open a single trace first. Busy state is per run id — one
+  // pending cancel must not lock every other row.
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const cancelRun = useCallback(
+    async (runId: string) => {
+      if (!confirm(t('cancelRunConfirm'))) return;
+      setCancellingId(runId);
+      setError(null);
+      try {
+        await cancelConductorRun(slug, runId);
+        // Refresh whichever lens is open: the trace when this run is selected,
+        // and always the list (status badge flips / row button disappears).
+        if (selected?.run.id === runId) setSelected(await getConductorRun(slug, runId));
+        await reload();
+      } catch (err) {
+        setError(err instanceof ApiError ? t('cancelRunFailed') : String(err));
+      } finally {
+        setCancellingId(null);
+      }
+    },
+    [slug, t, reload, selected],
+  );
+
   return (
     <div className={`${card} mt-4`}>
       <div className="mb-3 flex items-center justify-between">
@@ -174,9 +208,25 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
       {error && <p className="mb-3 text-[14px] text-[color:var(--danger,#e5484d)]">{error}</p>}
       {selected ? (
         <div>
-          <Button variant="ghost" onClick={() => setSelected(null)}>
-            ← {t('backToRuns')}
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button variant="ghost" onClick={() => setSelected(null)}>
+              ← {t('backToRuns')}
+            </Button>
+            {(selected.run.status === 'running' || selected.run.status === 'waiting') && (
+              <Button
+                variant="danger"
+                busy={cancellingId === selected.run.id}
+                busyLabel={t('cancelRunBusy')}
+                onClick={() => void cancelRun(selected.run.id)}
+              >
+                {t('cancelRunButton')}
+              </Button>
+            )}
+          </div>
+          {(selected.run.status === 'running' || selected.run.status === 'waiting') &&
+          selected.run.cancelRequestedAt ? (
+            <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">{t('cancelPendingHint')}</p>
+          ) : null}
           <div className="mt-3">
             <ConductorRunTrace result={selected} />
           </div>
@@ -186,17 +236,32 @@ export function ConductorRunHistory({ slug, onClose }: { slug: string; onClose: 
       ) : (
         <ul className="grid gap-2">
           {runs.map((r) => (
-            <li key={r.id}>
+            <li key={r.id} className="flex items-center gap-2">
+              {/* eslint-disable-next-line no-restricted-syntax -- full-width run-list row selector opening a trace, not a §4.2 CTA */}
               <button
-                className="flex w-full items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
+                className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2 text-left hover:bg-white/5"
                 onClick={() => void openRun(r.id)}
               >
                 <span className="flex items-center gap-3">
                   <StatusBadge status={r.status} />
                   <span className="font-mono text-[12px] text-[color:var(--fg-muted)]">{r.triggerKind}</span>
                 </span>
-                <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">{fmtTime(r.startedAt)}</span>
+                <span className="font-mono text-[11px] text-[color:var(--fg-muted)]">{fmtTime(r.startedAt, format)}</span>
               </button>
+              {/* #330 field report — the delete guard demands cancelling active
+                  runs; the button has to be visible from the LIST, not hidden
+                  inside a single trace. Sibling (not nested) button: the row
+                  selector stays a plain button, valid HTML. */}
+              {(r.status === 'running' || r.status === 'waiting') && (
+                <Button
+                  variant="danger"
+                  busy={cancellingId === r.id}
+                  busyLabel={t('cancelRunBusy')}
+                  onClick={() => void cancelRun(r.id)}
+                >
+                  {t('cancelRunButton')}
+                </Button>
+              )}
             </li>
           ))}
         </ul>

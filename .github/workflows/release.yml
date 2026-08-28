@@ -28,10 +28,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # Keyless cosign signing of the dev-runner release image (spec §10): the
-      # reusable workflow signs with the workflow's GitHub OIDC token, so the
-      # CALLER must grant id-token here — a reusable workflow cannot self-grant it.
-      id-token: write
     # No `version` input -> edge build (:edge + :sha-<short>) from this commit.
     uses: ./.github/workflows/publish-images.yml
 

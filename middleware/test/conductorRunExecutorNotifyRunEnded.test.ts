@@ -37,6 +37,8 @@ function makeHarness(opts: { isDryRun: boolean; fallbackTransitionId?: string | 
     isDryRun: opts.isDryRun,
     startedAt: new Date(0),
     endedAt: null,
+    cancelRequestedBy: null,
+    cancelRequestedAt: null,
   };
   const awaitRow = {
     id: 'aw1', runId: 'run1', stepId: 'h1', principalKind: 'user', principalRef: 'alice',
@@ -69,7 +71,7 @@ function makeHarness(opts: { isDryRun: boolean; fallbackTransitionId?: string | 
     runStore: runStore as never,
     awaitStore: awaitStore as never,
     effects: {} as never,
-    resolveRoleHolders: async () => [],
+    resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
     notifyRunEnded: (endedRun) => notified.push(endedRun),
   });
   return { executor, notified };
@@ -105,6 +107,7 @@ describe('ConductorRunExecutor — notifyRunEnded (issue #437)', () => {
     let run: ConductorRun & { status: RunStatus } = {
       id: 'run1', workflowVersionId: 'v1', status: 'waiting', currentStepId: 'h1', context: {},
       triggerKind: 'manual', triggerSource: null, isDryRun: false, startedAt: new Date(0), endedAt: null,
+      cancelRequestedBy: null, cancelRequestedAt: null,
     };
     const awaitRow = {
       id: 'aw1', runId: 'run1', stepId: 'h1', principalKind: 'user', principalRef: 'alice',
@@ -135,7 +138,7 @@ describe('ConductorRunExecutor — notifyRunEnded (issue #437)', () => {
       runStore: runStore as never,
       awaitStore: awaitStore as never,
       effects: {} as never,
-      resolveRoleHolders: async () => [],
+      resolveRoleHolders: async () => ({ holders: [], partial: false, bySource: [] }),
       notifyRunEnded: () => {
         throw new Error('dispatcher blew up');
       },

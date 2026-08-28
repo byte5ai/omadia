@@ -1,4 +1,4 @@
-import { app, dialog } from 'electron';
+import { app, dialog, type MessageBoxOptions } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,9 +7,32 @@ import { getActiveSupervisor } from './supervisor';
 import { log } from './log';
 
 let installing = false;
+// This flag is only safe because electron-updater's own checkForUpdates()
+// dedupes internally — a call while one is already in flight (e.g. a manual
+// click landing during the silent startup check) returns the SAME promise
+// instead of firing a second request, so there is always exactly one
+// terminal event to gate a dialog on. Do not add a second concurrent
+// checkForUpdates() call path without re-checking that guarantee still holds.
+let manualCheckPending = false;
 /** True once the user accepted an update and we're handing off to the installer. */
 export function isUpdateInstalling(): boolean {
   return installing;
+}
+
+function takeManualCheckPending(): boolean {
+  if (!manualCheckPending) return false;
+  manualCheckPending = false;
+  return true;
+}
+
+async function showUpdaterDialog(options: MessageBoxOptions): Promise<void> {
+  try {
+    // These status dialogs are intentionally unbounded: the point of a manual
+    // check is to stay visible until the user has seen the updater outcome.
+    await dialog.showMessageBox(options);
+  } catch (err) {
+    log.error(`[updater] failed to show dialog "${options.title}": ${String(err)}`);
+  }
 }
 
 /**
@@ -29,12 +52,40 @@ export function initUpdater(): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false; // we control install timing (after snapshot)
 
-  autoUpdater.on('error', (err) => log.error(`[updater] ${String(err)}`));
-  autoUpdater.on('update-available', (info) =>
-    log.info(`[updater] update available: ${info.version}`),
-  );
+  autoUpdater.on('error', (err) => {
+    log.error(`[updater] ${String(err)}`);
+    if (!takeManualCheckPending()) return;
+    void showUpdaterDialog({
+      type: 'error',
+      title: 'Update check failed',
+      message: 'omadia could not check for updates.',
+      detail: String(err),
+    });
+  });
+  autoUpdater.on('update-available', (info) => {
+    log.info(`[updater] update available: ${info.version}`);
+    if (!takeManualCheckPending()) return;
+    void showUpdaterDialog({
+      type: 'info',
+      title: 'Update found',
+      message: `omadia ${info.version} is downloading now.`,
+      detail: 'The download is running in the background. You will be prompted to restart once it is ready to install.',
+    });
+  });
+  autoUpdater.on('update-not-available', (info) => {
+    log.info(`[updater] up to date: ${info.version}`);
+    if (!takeManualCheckPending()) return;
+    void showUpdaterDialog({
+      type: 'info',
+      title: 'No update available',
+      message: "You're already on the latest version of omadia.",
+      detail: `Current version: ${info.version}`,
+    });
+  });
   autoUpdater.on('update-downloaded', async (info) => {
     log.info(`[updater] downloaded ${info.version}`);
+    // This restart decision is intentionally unbounded: installing an update
+    // without explicit user consent would be worse than waiting for it here.
     const { response } = await dialog.showMessageBox({
       type: 'info',
       buttons: ['Restart now', 'Later'],
@@ -62,7 +113,36 @@ export function initUpdater(): void {
     autoUpdater.quitAndInstall();
   });
 
+  // electron-updater owns the request lifetime and its own network timeouts; we
+  // deliberately wait for its promise/events instead of racing a second timer.
   autoUpdater.checkForUpdates().catch((err) => log.error(`[updater] check failed: ${String(err)}`));
+}
+
+export async function checkForUpdatesManually(): Promise<void> {
+  if (!app.isPackaged) {
+    await showUpdaterDialog({
+      type: 'info',
+      title: 'Update check unavailable',
+      message: 'Update checks are only available in packaged builds.',
+      detail: 'This development run does not have a published release feed to query.',
+    });
+    return;
+  }
+
+  manualCheckPending = true;
+  try {
+    // electron-updater owns the request lifetime and its own network timeouts;
+    // the promise plus its events are the supported completion signal here.
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    if (!takeManualCheckPending()) return;
+    await showUpdaterDialog({
+      type: 'error',
+      title: 'Update check failed',
+      message: 'omadia could not check for updates.',
+      detail: String(err),
+    });
+  }
 }
 
 /** Copy the embedded DB directory into a timestamp-free, version-named snapshot. */

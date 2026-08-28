@@ -51,6 +51,9 @@ async function makeHarness(opts: {
     manifest: {},
     source_path: '<test>',
     source_kind: 'manifest-v1',
+    // #794 — test fixtures are unprivileged: only the built-in package
+    // store may assert 'bundled'.
+    origin: 'installed',
   };
   const catalog = {
     get: (id: string): PluginCatalogEntry | undefined =>
@@ -73,7 +76,7 @@ async function makeHarness(opts: {
   app.use('/api/v1/admin/runtime', router);
 
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const port = (server.address() as AddressInfo).port;
   return {

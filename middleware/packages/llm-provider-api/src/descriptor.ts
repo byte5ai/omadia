@@ -13,8 +13,14 @@ import type { ModelInfo } from './models.js';
  *  `openai-compatible` = OpenAI Chat Completions (most providers); `anthropic` =
  *  Anthropic Messages (Claude, or an Anthropic-compatible gateway); `claude-cli`
  *  = not HTTP at all but the local official `claude` CLI driven as a tool-less
- *  completion endpoint on a subscription (#309 Shape 2, keyless). */
-export type WireFormat = 'openai-compatible' | 'anthropic' | 'claude-cli';
+ *  completion endpoint on a subscription (#309 Shape 2, keyless);
+ *  `openai-responses` = the OpenAI Responses wire protocol over SSE, as spoken
+ *  by the ChatGPT/Codex backend for subscription bearers (#294, experimental). */
+export type WireFormat =
+  | 'openai-compatible'
+  | 'anthropic'
+  | 'claude-cli'
+  | 'openai-responses';
 
 /** Vendor deviations from plain OpenAI that the OpenAI adapter handles when set. */
 export interface ProviderQuirks {
@@ -43,6 +49,12 @@ export interface ProviderPolicy {
    *  factory builds the provider with an empty key instead of treating the
    *  missing key as "not connected". Default (omitted) = true. */
   readonly requiresApiKey?: boolean;
+  /** Provider runs on a PERSONAL consumer subscription (e.g. a Claude Pro/Max
+   *  CLI login). No data-processing agreement (AVV / DPA) can exist on such a
+   *  plan — a STRONGER caveat than the ordinary third-party disclosure, so the
+   *  assignment UI shows a dedicated warning instead. Default (omitted) =
+   *  false. */
+  readonly subscriptionNotice?: boolean;
 }
 
 /** A plugin-contributed (or bundled built-in) provider. `quirks` only apply to
@@ -59,5 +71,9 @@ export interface LlmProviderDescriptor {
   /** Operator-UI compliance hints (not LLM behaviour) surfaced on the admin
    *  providers page so the view stays data-driven instead of hard-coding ids. */
   readonly policy?: ProviderPolicy;
+  /** Declared when the provider connects via an OAuth login instead of (or in
+   *  addition to) an API key. `device` = the device-code flow the admin
+   *  connect routes drive (#294 "Sign in with ChatGPT", experimental). */
+  readonly oauth?: { readonly kind: 'device' };
   readonly models: ReadonlyArray<ModelInfo>;
 }

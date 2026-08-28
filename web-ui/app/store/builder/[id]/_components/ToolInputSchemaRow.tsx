@@ -80,6 +80,7 @@ export function ToolInputSchemaRow({
       )}
     >
       <div className="flex flex-wrap items-center gap-2 px-2 py-2">
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only expand/collapse toggle (chevron glyph, aria-expanded) */}
         <button
           type="button"
           onClick={() => setExpanded((p) => !p)}
@@ -131,6 +132,7 @@ export function ToolInputSchemaRow({
           />
           required
         </label>
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only remove control (X glyph, no text label) */}
         <button
           type="button"
           onClick={onRemove}
@@ -218,6 +220,7 @@ function DescriptionInput({
         <ul className="mt-1 flex flex-wrap gap-1">
           {matches.map((m) => (
             <li key={m.$id}>
+              {/* eslint-disable-next-line no-restricted-syntax -- bespoke entity-suggestion chip (accent-tint autocomplete pill), no §4.2 variant */}
               <button
                 type="button"
                 onClick={() => {
@@ -265,7 +268,7 @@ function TypeConstraintsEditor({
           onChange={(v) => onChange({ ...node, maxLength: v })}
         />
         <TextConstraint
-          label="pattern (regex)"
+          label={t('patternRegexLabel')}
           value={node.pattern ?? ''}
           mono
           onChange={(v) => onChange({ ...node, pattern: v.length > 0 ? v : undefined })}
@@ -429,6 +432,7 @@ function EnumValuesEditor({
               className="inline-flex items-center gap-1 rounded bg-[color:var(--bg)] px-2 py-0.5 font-mono-num text-[11px] text-[color:var(--fg-strong)]"
             >
               {v}
+              {/* eslint-disable-next-line no-restricted-syntax -- icon-only chip-remove control (X glyph, no text label) */}
               <button
                 type="button"
                 onClick={() => onChange(values.filter((_, j) => j !== i))}

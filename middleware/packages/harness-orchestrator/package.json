@@ -19,6 +19,8 @@
     "@omadia/orchestrator-extras": "*",
     "@omadia/plugin-api": "*",
     "@omadia/plugin-privacy-guard": "*",
+    "@omadia/publish": "*",
+    "@omadia/sandbox": "*",
     "@omadia/usage-telemetry": "*",
     "@omadia/verifier": "*",
     "pg": "^8.13.0",
@@ -28,9 +30,13 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "csv-parse": "^7.0.1",
-    "mammoth": "^1.8.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "csv-parse": "^7.0.2",
+    "mammoth": "^1.12.1",
     "pdf-parse": "^2.4.5"
   },
   "devDependencies": {

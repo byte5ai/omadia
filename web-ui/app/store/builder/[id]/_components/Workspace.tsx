@@ -1284,6 +1284,7 @@ function MobilePaneTabs({
         const isActive = it.id === active;
         const w = warnings[it.id];
         return (
+          // eslint-disable-next-line no-restricted-syntax -- segmented tablist tab (role=tab, stateful aria-selected active state)
           <button
             key={it.id}
             type="button"
@@ -1505,6 +1506,7 @@ function ViewModeToggle({
         // the tooltip on the inactive one.
         const lockedTitle = disabled ? tw('viewModeLockedTitle') : it.title;
         return (
+          // eslint-disable-next-line no-restricted-syntax -- segmented view-mode tablist tab (role=tab, stateful aria-selected active state)
           <button
             key={it.id}
             type="button"
@@ -1660,6 +1662,7 @@ function AutoFixToggle({
 }): React.ReactElement {
   const tw = useTranslations('builder.workspace');
   return (
+    // eslint-disable-next-line no-restricted-syntax -- stateful toggle switch (role=switch, aria-checked), custom label+pill layout
     <button
       type="button"
       role="switch"
@@ -1747,6 +1750,7 @@ function AutoFixIndicator({
           {tw('autoFixStoppedBody')}
         </div>
       </div>
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only dismiss control (X glyph, no text) */}
       <button
         type="button"
         onClick={onDismiss}
@@ -1833,6 +1837,7 @@ function EditorTabs({
         const active = t === current;
         const warningCount = warnings?.[t] ?? 0;
         return (
+          // eslint-disable-next-line no-restricted-syntax -- segmented editor-tab tablist tab (role=tab, stateful aria-selected active state)
           <button
             key={t}
             type="button"
@@ -1979,6 +1984,7 @@ function BuildStatusStrip({
                   })
                 : tw('buildErrorsHeading', { count: errors.length })}
             </span>
+            {/* eslint-disable-next-line no-restricted-syntax -- icon-only close control (X glyph, no text) */}
             <button
               type="button"
               onClick={() => setErrorsExpanded(false)}
@@ -2010,6 +2016,7 @@ function BuildStatusStrip({
           {tw('buildStatusLabel')}
         </span>
         {canExpand ? (
+          // eslint-disable-next-line no-restricted-syntax -- stateful build-status pill toggle (aria-expanded), bespoke pill styling, no §4.2 variant
           <button
             type="button"
             onClick={() => setErrorsExpanded((v) => !v)}
@@ -2055,12 +2062,9 @@ function BuildStatusStrip({
             {tw('fixWithBuilder')}
           </Button>
         ) : null}
-        <span className="font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
+        <span className="ml-auto font-mono-num inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
           <span className={`inline-block size-1.5 rounded-full ${busColor}`} />
           {tw('buildSse', { status: busLabel })}
-        </span>
-        <span className="ml-auto font-mono-num text-[color:var(--fg-subtle)]">
-          Phase B.5 (Workspace-UI)
         </span>
       </footer>
     </div>

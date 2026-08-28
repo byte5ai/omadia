@@ -1,0 +1,367 @@
+/* ==========================================================================
+   plugin-ui.source.css — SOURCE for the plugin stylesheet core serves.
+   --------------------------------------------------------------------------
+   Built by `web-ui/scripts/build-plugin-ui-css.mjs` into
+   `middleware/assets/plugin-ui/plugin-ui.css`, which core serves at
+   `/api/_harness/plugin-ui.css` (browser: `/bot-api/_harness/plugin-ui.css`).
+
+   WHY THIS FILE EXISTS (epic #470 §4.3a). A plugin installed at runtime from
+   another repository is never scanned by Tailwind, and it may not ship a
+   stylesheet — `.css` is deliberately absent from the plugin-ZIP extension
+   allowlist, and that absence IS the enforcement. So a plugin links this
+   sheet and is limited to the vocabulary declared below. Everything it can
+   express is a Lume token, which is the point: a plugin cannot hardcode a
+   hex and drift from the operator's active palette.
+
+   THE HARD CONSTRAINT: no arbitrary values (`w-[137px]`, `bg-[#abc]`,
+   `[&>tr]:border`). An exact arbitrary value *can* be pre-generated —
+   `@source inline("w-[137px]")` emits it — but the universe of them cannot,
+   so an undeclared one renders unstyled, which is the worst failure mode.
+   `middleware/src/plugins/tailwindArbitraryValueScan.ts` rejects them at
+   package ingest.
+
+   TO WIDEN THE VOCABULARY: edit this file, run `npm run plugin-ui:css`,
+   commit the regenerated artifact, and update
+   `specs/470-dev-platform-plugin/plugin-ui-vocabulary.md`. CI regenerates
+   and diffs, so an un-regenerated edit fails the web-ui job.
+   ========================================================================== */
+
+@import 'tailwindcss' source(none);
+@import '../app/_lib/theme.css';
+@import '../app/_lib/tailwind-bridge.css';
+
+/* --------------------------------------------------------------------------
+   1. BASELINE — the element-level styling every plugin surface inherits.
+
+   This layer replaces `middleware/src/admin-ui/harness-admin-css.ts`, 345
+   hand-written lines whose own header asked the next maintainer to "keep the
+   two roughly in sync when the design system changes". They are not mirrored
+   here — they are generated from the same `theme.css` the shell uses, which
+   removes the sync obligation instead of restating it.
+
+   In `@layer base` so a utility class always wins over the element default.
+   -------------------------------------------------------------------------- */
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.55;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    margin: 0 0 0.6rem;
+    color: var(--fg-strong);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+  }
+  h2 {
+    font-size: 1.25rem;
+  }
+  h3 {
+    font-size: 1.05rem;
+  }
+
+  p {
+    margin: 0 0 0.75rem;
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--accent-hover);
+    text-decoration: underline;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+
+  code {
+    padding: 0.1rem 0.3rem;
+    border-radius: var(--radius-sm);
+    background: var(--bg-soft);
+  }
+
+  pre {
+    overflow: auto;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-soft);
+  }
+
+  hr {
+    height: 0;
+    margin: 1.2rem 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th,
+  td {
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    color: var(--fg-muted);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+  }
+
+  input,
+  select,
+  textarea {
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--fg);
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  button {
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--fg);
+    cursor: pointer;
+  }
+
+  button:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    background: var(--bg-soft);
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   2. COMPAT HELPERS — the `.harness-*` classes already linked by shipped
+   plugin admin UIs (`/bot-api/_harness/admin-ui.css`). Kept, because deleting
+   them would restyle every installed plugin's admin page on upgrade; now
+   token-driven rather than hand-mirrored hexes. New plugin UIs should use the
+   utility vocabulary in §3 instead — these are frozen, not extended.
+   -------------------------------------------------------------------------- */
+@layer components {
+  .harness-admin {
+    max-width: var(--harness-admin-max-width, 72rem);
+    margin: 0 auto;
+    padding: var(--harness-admin-padding, 1.25rem);
+  }
+
+  .harness-subtitle {
+    margin: -0.3rem 0 1rem;
+    color: var(--fg-muted);
+    font-size: 0.92rem;
+  }
+
+  .harness-empty {
+    padding: 1.2rem;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    color: var(--fg-muted);
+    text-align: center;
+  }
+
+  .harness-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--fg);
+    cursor: pointer;
+  }
+
+  .harness-btn:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-soft);
+  }
+
+  .harness-btn--primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .harness-btn--primary:hover {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+  }
+
+  .harness-input {
+    width: 100%;
+  }
+
+  .harness-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .harness-banner-error,
+  .harness-banner-info {
+    margin-bottom: 0.85rem;
+    padding: 0.65rem 0.85rem;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    font-size: 0.92rem;
+  }
+
+  .harness-banner-error {
+    border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+    color: var(--danger);
+  }
+
+  .harness-banner-info {
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    color: var(--accent);
+  }
+}
+
+/* ==========================================================================
+   3. THE VOCABULARY.
+
+   `@source inline(...)` is v4's replacement for v3's `safelist`; combined
+   with `source(none)` above it emits exactly this set and nothing else.
+   Brace ranges (`{0..12}`) and alternations expand.
+
+   Every line here is a promise to plugin authors and a cost in bytes. Widen
+   it from what a ported page actually needs, never speculatively.
+   ========================================================================== */
+
+/* --- Layout ------------------------------------------------------------- */
+@source inline("{flex,inline-flex,grid,block,inline-block,inline,contents,hidden}");
+@source inline("flex-{row,row-reverse,col,wrap,nowrap,1,auto,initial,none}");
+@source inline("{shrink,grow}-{0,1}");
+@source inline("items-{start,center,end,baseline,stretch}");
+@source inline("justify-{start,center,end,between,around,evenly}");
+@source inline("self-{auto,start,center,end,stretch}");
+@source inline("grid-cols-{1..6}");
+@source inline("col-span-{1..6}");
+@source inline("{gap,gap-x,gap-y}-{0..8}");
+@source inline("{w,h}-{full,auto,fit,screen}");
+@source inline("{w,h}-{0,1,2,3,4,5,6,8,10,12,16,20,24,32}");
+@source inline("{min-w,min-h}-{0,full}");
+@source inline("max-w-{none,full,xs,sm,md,lg,xl,2xl,3xl,4xl,5xl,6xl,7xl}");
+@source inline("overflow-{auto,hidden,visible,x-auto,y-auto}");
+@source inline("{relative,absolute,fixed,sticky,static}");
+@source inline("{inset,top,right,bottom,left}-{0,auto}");
+@source inline("z-{0,10,20,30,40,50}");
+@source inline("mx-auto");
+
+/* --- Spacing ------------------------------------------------------------ */
+@source inline("{p,px,py,pt,pr,pb,pl}-{0..12}");
+@source inline("{m,mx,my,mt,mr,mb,ml}-{0..12}");
+@source inline("space-{x,y}-{0..6}");
+
+/* --- Typography --------------------------------------------------------- */
+@source inline("text-{xs,sm,base,lg,xl,2xl,3xl,4xl}");
+@source inline("font-{normal,medium,semibold,bold}");
+@source inline("font-{sans,mono,serif}");
+@source inline("text-{left,center,right,justify}");
+@source inline("{truncate,uppercase,lowercase,capitalize,normal-case}");
+@source inline("{underline,no-underline,line-through,italic,not-italic}");
+@source inline("leading-{none,tight,snug,normal,relaxed,loose}");
+@source inline("tracking-{tighter,tight,normal,wide,wider}");
+@source inline("whitespace-{normal,nowrap,pre,pre-wrap}");
+@source inline("break-{words,all,keep}");
+@source inline("{list-none,list-disc,list-decimal,list-inside}");
+@source inline("tabular-nums");
+@source inline("align-{top,middle,bottom,baseline}");
+
+/* --- Colour: the Lume tokens only ---------------------------------------
+   No Tailwind palette, no arbitrary hexes. This is what makes "plugins
+   inherit the design system by construction" true rather than aspirational. */
+@source inline("{hover:,focus:,}bg-{bg,bg-soft,bg-elevated,surface,accent,accent-hover,accent-subtle,danger,success,warning}");
+@source inline("{hover:,focus:,}bg-transparent");
+@source inline("{hover:,focus:,}text-{fg,fg-strong,fg-muted,fg-subtle,accent,accent-hover,danger,success,warning,bg}");
+@source inline("{hover:,focus:,}border-{border,border-strong,accent,danger,success,warning,transparent}");
+@source inline("{hover:,}decoration-{accent,fg-muted}");
+
+/* --- Borders / shape ---------------------------------------------------- */
+@source inline("border{,-0,-2,-4}");
+@source inline("border-{t,r,b,l}");
+@source inline("border-{solid,dashed,dotted,none}");
+@source inline("rounded{,-none,-sm,-md,-lg,-xl,-full}");
+@source inline("shadow{,-none,-sm,-md,-lg}");
+@source inline("divide-{y,x}");
+
+/* --- Interaction / state ------------------------------------------------ */
+@source inline("{hover:,focus:,}opacity-{0,25,50,60,75,100}");
+@source inline("cursor-{pointer,default,not-allowed,wait,text}");
+@source inline("select-{none,text,all}");
+@source inline("pointer-events-{none,auto}");
+@source inline("transition{,-none,-all,-colors,-opacity,-transform}");
+@source inline("duration-{75,100,150,200,300,500}");
+@source inline("ease-{linear,in,out,in-out}");
+@source inline("animate-{none,spin,pulse}");
+@source inline("disabled:{opacity-50,cursor-not-allowed,pointer-events-none}");
+@source inline("focus-visible:outline-none");
+@source inline("{sr-only,not-sr-only}");
+
+/* --- Responsive --------------------------------------------------------- */
+@source inline("{sm:,md:,lg:,xl:}{flex,grid,block,inline-block,hidden}");
+@source inline("{sm:,md:,lg:,xl:}grid-cols-{1..4}");
+@source inline("{sm:,md:,lg:}flex-{row,col}");
+@source inline("{sm:,md:,lg:}{p,px,py}-{0,2,4,6,8}");
+@source inline("{sm:,md:,lg:}text-{sm,base,lg,xl,2xl}");
+@source inline("{sm:,md:,lg:}max-w-{sm,md,lg,xl,2xl,4xl}");

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import type { NavEntryDto } from '../_lib/navigation';
 
@@ -17,7 +17,7 @@ import type { NavEntryDto } from '../_lib/navigation';
  * keep working; the cluster header gets a subtle `contains-active` style
  * when any of its children matches.
  *
- * Two sources feed this bar (specs/470-dev-platform-plugin):
+ * Two sources feed this bar (epic #470):
  *
  *   1. `NAV` below — the shell's own compiled surfaces. Labels come from
  *      the `nav.*` message catalogue, per web-ui/CLAUDE.md.
@@ -73,11 +73,20 @@ const NAV: readonly NavItem[] = [
       // operator-facing configuration surfaces, same audience as Admin/System.
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
-      // Dev Platform used to be hardcoded here. It is now contributed at
-      // runtime (middleware registers it while DEV_PLATFORM_ENABLED), so the
-      // entry disappears when the feature is off — see mergeNav below.
+      // #757 — persisted per-turn privacy receipts, same operator audience.
+      { kind: 'link', href: '/operator/receipts', key: 'receipts' },
+      // #760 — miss-report review queue, same operator audience.
+      { kind: 'link', href: '/operator/privacy-reports', key: 'privacyReports' },
+      // An optional feature's entry used to be hardcoded here. Plugin
+      // surfaces are now contributed at runtime, so the entry appears only
+      // while that plugin is installed and active — see mergeNav below.
     ],
   },
+  // OM-09 — there was NO in-product help at all: no help route, no `?`, no
+  // mailto, no docs link, no search. A customer stuck on a broken provider key
+  // wrote "Klingt blöd, aber ein Hilfebot wäre jetzt echt super." Top level and
+  // last, so it is reachable from every page without competing for attention.
+  { kind: 'link', href: '/help', key: 'help' },
 ] as const;
 
 /** A static or plugin-contributed item, with its label already resolved. */
@@ -220,7 +229,10 @@ export function Nav({
     [pathname, items],
   );
   return (
-    <nav className="flex items-center gap-4 text-[13px] uppercase tracking-[0.18em]">
+    // Tighter gap/tracking below xl so the bar stays inside the desktop
+    // shell's 1100px window instead of overflowing its container (OM-30).
+    // `min-w-0` lets it actually shrink — flex items default to min-width:auto.
+    <nav className="flex min-w-0 items-center gap-2 text-[13px] uppercase tracking-[0.12em] xl:gap-4 xl:tracking-[0.18em]">
       {items.map((item) =>
         item.kind === 'link' ? (
           <LeafLink
@@ -254,7 +266,7 @@ function LeafLink({
     <Link
       href={href}
       className={[
-        'relative py-1 transition-colors',
+        'relative whitespace-nowrap py-1 transition-colors',
         active
           ? 'text-[color:var(--ink)]'
           : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
@@ -268,6 +280,25 @@ function LeafLink({
   );
 }
 
+/**
+ * Why three states instead of one boolean (OM-20/40):
+ *
+ * The menu used to be a single `open` flag that `mouseenter` set to true and
+ * `click` toggled. A pointer always enters the button *before* it clicks it, so
+ * the click handler invariably observed `open === true` and toggled the menu
+ * shut — the dropdown flicked closed at the exact moment the user tried to open
+ * it, which reads as "the menu never opens".
+ *
+ * Splitting "open because the pointer is here" from "open because the user
+ * pinned it" makes the two inputs monotonic: hover can only raise `closed →
+ * hover`, click owns `pinned` exclusively, and neither can undo the other.
+ */
+type DropdownMode = 'closed' | 'hover' | 'pinned';
+
+/** Grace period before a hover-opened menu closes, so travelling diagonally
+ *  from the trigger toward the menu body does not dismiss it mid-move. */
+const HOVER_CLOSE_GRACE_MS = 150;
+
 function ClusterDropdown({
   cluster,
   activeHref,
@@ -276,20 +307,51 @@ function ClusterDropdown({
   readonly activeHref: string;
 }): React.ReactElement {
   const label = cluster.label;
-  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<DropdownMode>('closed');
+  const open = mode !== 'closed';
   const rootRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const menuId = useId();
   const containsActive = cluster.children.some(
     (child) => child.href === activeHref,
   );
 
+  const cancelClose = useCallback((): void => {
+    if (closeTimer.current === null) return;
+    clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  const close = useCallback((): void => {
+    cancelClose();
+    setMode('closed');
+  }, [cancelClose]);
+
+  /** Hover only ever *raises* the menu — it can never demote a pinned one. */
+  const hoverOpen = useCallback((): void => {
+    cancelClose();
+    setMode((m) => (m === 'pinned' ? m : 'hover'));
+  }, [cancelClose]);
+
+  /** A hover-opened menu closes after a short grace period, so a diagonal
+   *  cursor path from the button toward the menu does not dismiss it. */
+  const hoverClose = useCallback((): void => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setMode((m) => (m === 'pinned' ? m : 'closed'));
+    }, HOVER_CLOSE_GRACE_MS);
+  }, [cancelClose]);
+
+  useEffect(() => cancelClose, [cancelClose]);
+
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(e.target as Node)) close();
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') close();
     };
     document.addEventListener('mousedown', onDocClick);
     document.addEventListener('keydown', onKey);
@@ -297,23 +359,30 @@ function ClusterDropdown({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, close]);
 
   return (
     <div
       ref={rootRef}
       className="relative"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={hoverOpen}
+      onMouseLeave={hoverClose}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- menu trigger (aria-haspopup/aria-expanded), text-link styling */}
       <button
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
-        onClick={() => setOpen((v) => !v)}
+        // Keyboard parity: focusing the trigger raises the menu the same way
+        // hovering does, so a Tab-only user sees the children too.
+        onFocus={hoverOpen}
+        onClick={() => {
+          cancelClose();
+          setMode((m) => (m === 'pinned' ? 'closed' : 'pinned'));
+        }}
         className={[
-          'relative inline-flex items-center gap-1 py-1 transition-colors uppercase tracking-[0.18em]',
+          'relative inline-flex items-center gap-1 whitespace-nowrap py-1 uppercase tracking-[0.12em] transition-colors xl:tracking-[0.18em]',
           containsActive
             ? 'text-[color:var(--ink)]'
             : 'text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]',
@@ -346,7 +415,7 @@ function ClusterDropdown({
                   key={child.href}
                   href={child.href}
                   role="menuitem"
-                  onClick={() => setOpen(false)}
+                  onClick={close}
                   className={[
                     'block px-3 py-2 text-[12px] uppercase tracking-[0.16em] transition-colors',
                     active

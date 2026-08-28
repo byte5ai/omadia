@@ -10,6 +10,7 @@ import {
 import {
   MissingCapabilityError,
   findActiveProviderCollision,
+  findProvidesCollision,
   findCapabilityProvidersInCatalog,
   resolveCapabilities,
   resolveEligiblePlugins,
@@ -72,6 +73,9 @@ function makeCatalog(plugins: Partial_Plugin[]): PluginCatalog {
       manifest: {},
       source_path: `<test>/${p.id}.manifest.yaml`,
       source_kind: 'manifest-v1',
+      // #794 — test fixtures are unprivileged: only the built-in package
+      // store may assert 'bundled'.
+      origin: 'installed',
     });
   }
   // Cast to the public interface — we exercise `get(id)` and `list()`,
@@ -589,6 +593,88 @@ describe('findActiveProviderCollision', () => {
     ]);
     const result = findActiveProviderCollision('does-not-exist', cat, makeRegistry());
     assert.equal(result, null);
+  });
+});
+
+/**
+ * OM-06 / #671 — the same rule, asked with an explicit `provides` list.
+ *
+ * Exists because the store must answer it for plugins that are NOT in the
+ * local catalog: a hub-only entry has no local manifest, yet the registry
+ * summary carries `provides`. That was the gap — the store advertised an
+ * install that `InstallService.create` then refused with 409
+ * `install.capability_already_provided`.
+ */
+describe('findProvidesCollision', () => {
+  it('finds the collision for a candidate that is NOT in the catalog at all', () => {
+    // The hub-only case. `findActiveProviderCollision` returns null here
+    // because it starts with a catalog lookup — which is exactly why the
+    // store could not use it.
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const registry = makeRegistry([makeActiveAgent('kg-neon')]);
+
+    assert.equal(
+      findActiveProviderCollision('hub-only-kg', cat, registry),
+      null,
+      'precondition: the catalog-driven helper is blind to an uncatalogued candidate',
+    );
+
+    assert.deepEqual(
+      findProvidesCollision('hub-only-kg', ['knowledgeGraph@1'], cat, registry),
+      { capability: 'knowledgeGraph@1', ownerId: 'kg-neon' },
+    );
+  });
+
+  it('agrees with findActiveProviderCollision for a catalogued candidate', () => {
+    // The wrapper delegates here, so the two must not be able to drift.
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+      { id: 'kg-inmemory', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const registry = makeRegistry([makeActiveAgent('kg-neon')]);
+    assert.deepEqual(
+      findProvidesCollision('kg-inmemory', ['knowledgeGraph@1'], cat, registry),
+      findActiveProviderCollision('kg-inmemory', cat, registry),
+    );
+  });
+
+  it('returns null for an empty provides list', () => {
+    // A plugin that provides nothing can never collide — most store entries.
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    assert.equal(
+      findProvidesCollision('consumer', [], cat, makeRegistry([makeActiveAgent('kg-neon')])),
+      null,
+    );
+  });
+
+  it('ignores an inactive incumbent — its slot is free', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    const errored: InstalledAgent = { ...makeActiveAgent('kg-neon'), status: 'errored' };
+    assert.equal(
+      findProvidesCollision('hub-only-kg', ['knowledgeGraph@1'], cat, makeRegistry([errored])),
+      null,
+    );
+  });
+
+  it('ignores self, so a reinstall of the same id is not blocked by itself', () => {
+    const cat = makeCatalog([
+      { id: 'kg-neon', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    ]);
+    assert.equal(
+      findProvidesCollision(
+        'kg-neon',
+        ['knowledgeGraph@1'],
+        cat,
+        makeRegistry([makeActiveAgent('kg-neon')]),
+      ),
+      null,
+    );
   });
 });
 

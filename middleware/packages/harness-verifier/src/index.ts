@@ -32,7 +32,7 @@ export { activate } from './plugin.js';
 export type { VerifierBundle, VerifierPluginHandle } from './plugin.js';
 
 // ClaimExtractor
-export { ClaimExtractor } from './claimExtractor.js';
+export { ClaimExtractor, claimContext } from './claimExtractor.js';
 export type {
   ClaimExtractorOptions,
   ExtractInput,
@@ -41,6 +41,8 @@ export type {
 // claimTypes — shared vocabulary used by every other verifier file plus
 // the kernel-side `verifierService.ts` until sub-commit 2b moves it.
 export {
+  SOFT_ANCHOR_REF_FIELDS,
+  hasOdooRecordAnchor,
   isBorderlineVerdict,
   isHardClaim,
   isSoftClaim,

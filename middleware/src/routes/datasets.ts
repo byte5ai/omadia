@@ -29,6 +29,15 @@ const RowsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
+// Same page shape as the rows endpoint, but its own schema on purpose: a
+// future change to the rows bounds must not silently change list validation
+// (#532 review must-fix 1: without limit/offset the route served only the
+// newest 50 datasets).
+const ListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
 function requireSessionUserId(req: Request, res: Response): string | null {
   const id = req.session?.omadia_user_id;
   if (!id) {
@@ -130,13 +139,29 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
     },
   );
 
-  // ── GET / — list current user's datasets ────────────────────────────────
+  // ── GET / — list current user's datasets (paginated) ────────────────────
   router.get('/', async (req: Request, res: Response) => {
     const sessionUserId = requireSessionUserId(req, res);
     if (!sessionUserId) return;
+    const parsed = ListQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'dataset.invalid_query', issues: parsed.error.issues });
+      return;
+    }
     try {
-      const items = await deps.graph.listDatasets({ ownerOmadiaUserId: sessionUserId });
-      res.json({ items });
+      const [items, totalMatched] = await Promise.all([
+        deps.graph.listDatasets({
+          ownerOmadiaUserId: sessionUserId,
+          ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+          ...(parsed.data.offset !== undefined ? { offset: parsed.data.offset } : {}),
+        }),
+        deps.graph.countDatasets
+          ? deps.graph.countDatasets({ ownerOmadiaUserId: sessionUserId })
+          : Promise.resolve(undefined),
+      ]);
+      // `totalMatched` mirrors GET /:id/rows; absent only when the graph
+      // implementation predates the optional `countDatasets`.
+      res.json({ items, ...(totalMatched !== undefined ? { totalMatched } : {}) });
     } catch (err) {
       const { status, code, message } = mapErrorToHttp(err);
       res.status(status).json({ code, message });

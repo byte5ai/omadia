@@ -11,8 +11,8 @@ import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
+import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { StreamRunner } from './_components/StreamRunner';
-import { StreamToasts } from './_components/StreamToasts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { fetchNavEntries } from './_lib/navigation';
@@ -117,7 +117,7 @@ export default async function RootLayout({
                 <div className="mx-auto flex max-w-[1280px] items-center gap-4">
                   <Link
                     href="/"
-                    className="flex items-center transition-opacity hover:opacity-90"
+                    className="flex shrink-0 items-center transition-opacity hover:opacity-90"
                     aria-label={t('logoAriaLabel')}
                   >
                     <span className="flex flex-col leading-none">
@@ -125,11 +125,16 @@ export default async function RootLayout({
                         omadia
                       </span>
                       <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
-                        an Agentic OS
+                        {t('tagline')}
                       </span>
                     </span>
                   </Link>
-                  <div className="ml-auto flex items-center gap-4">
+                  {/* `min-w-0` + a tighter sub-xl gap: flex items default to
+                      `min-width:auto`, so at the desktop shell's 1100px window
+                      the logo, six uppercase nav items, the issue button, both
+                      selects and the auth badge over-subscribe the row and
+                      overflow instead of shrinking (OM-20/40, OM-30). */}
+                  <div className="ml-auto flex min-w-0 items-center gap-2 xl:gap-4">
                     <Nav entries={navEntries} />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
@@ -143,13 +148,13 @@ export default async function RootLayout({
                 </div>
               </header>
               <div className="min-h-0 flex-1">{children}</div>
-              {/* Background-stream toasts (only render for chats that
-                  aren't currently in view). The runner is headless — it
-                  owns the fetch + NDJSON-parse loop so that switching to
-                  another menu route doesn't kill an in-flight turn. */}
+              {/* Headless stream runner — owns the fetch + NDJSON-parse loop
+                  so switching menu route doesn't kill an in-flight turn.
+                  Background-stream state surfaces in-context on the chat tab
+                  (issue #286, Lume §7.4/§7.6), not in a floating toast. */}
               <StreamRunner />
-              <StreamToasts />
               <SessionWatcher />
+              <RuntimeReadinessBanner />
             </StreamStoreProvider>
           </ChatSessionsProvider>
         </NextIntlClientProvider>

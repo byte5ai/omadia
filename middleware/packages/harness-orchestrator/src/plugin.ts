@@ -1,4 +1,16 @@
-import type { ChatAgent } from '@omadia/channel-sdk';
+import {
+  InMemoryDisclosureSeenStore,
+  POSTURE_ORDER,
+  RoleSourceRegistry as RoleSourceRegistryImpl,
+  type ChatAgent,
+  type AiDisclosureLevel,
+  type GrantStore,
+  type SecurityPosture,
+} from '@omadia/channel-sdk';
+import type {
+  SecurityPostureSetup,
+  SecurityScreenMode,
+} from './securityScreener.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   resolveLlmProvider,
@@ -9,6 +21,12 @@ import {
 // narrow accessor shape that matches what the plugin publishes under
 // `microsoft365.graph`.
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
+import {
+  AI_DISCLOSURE_CHANNEL_KINDS as AI_DISCLOSURE_CHANNEL_KIND_LIST,
+  AI_DISCLOSURE_POSTURE_SERVICE,
+  describeAiDisclosurePosture,
+  formatDisclosureBootWarning,
+} from './aiDisclosurePosture.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -35,7 +53,11 @@ import type { MemoryStore, PluginContext } from '@omadia/plugin-api';
 import {
   PRIVACY_REDACT_SERVICE_NAME,
   RESPONSE_GUARD_SERVICE_NAME,
+  TRANSCRIPTION_SERVICE_NAME,
+  TURN_RECEIPT_STORE_SERVICE_NAME,
   type PrivacyGuardService,
+  type TranscriptionService,
+  type TurnReceiptStore,
 } from '@omadia/plugin-api';
 import type { VerifierBundle } from '@omadia/verifier';
 
@@ -47,14 +69,20 @@ import {
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
 import {
+  audienceGuardedAttachmentReader,
   createAttachmentReader,
   type AttachmentByteStore,
 } from './attachmentReaderFactory.js';
+import type { AttachmentBindingStore } from './attachmentBinding.js';
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatSessionStore } from './chatSessionStore.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
-import type { Orchestrator } from './orchestrator.js';
+import type { Orchestrator, AiDisclosureSetup } from './orchestrator.js';
 import { InMemoryDirectLineStickyStore } from './directLineSticky.js';
+import {
+  sharedMcpInputReplayer,
+  sharedPendingMcpInputStore,
+} from './mcp/pendingMcpInput.js';
 import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
@@ -65,7 +93,12 @@ import { runMultiOrchestratorMigrations } from './registry/migrator.js';
 import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
-import type { SessionLogger } from './sessionLogger.js';
+import { SessionLogger } from './sessionLogger.js';
+import {
+  TRANSCRIBE_RECORDING_TOOL_NAME,
+  TranscribeRecordingTool,
+  transcribeRecordingToolSpec,
+} from './tools/transcribeRecordingTool.js';
 import {
   EDIT_PROCESS_TOOL_NAME,
   PROCESS_MEMORY_SYSTEM_PROMPT_DOC,
@@ -81,6 +114,30 @@ import {
   runStoredProcessToolSpec,
   writeProcessToolSpec,
 } from './tools/processMemoryTool.js';
+import {
+  EXECUTE_SYSTEM_PROMPT_DOC,
+  EXECUTE_TOOL_NAME,
+  createExecuteHandler,
+  executeToolSpec,
+} from './tools/executeTool.js';
+import {
+  PUBLISH_SYSTEM_PROMPT_DOC,
+  PUBLISH_TOOL_NAME,
+  createPublishHandler,
+  publishToolSpec,
+} from './tools/publishTool.js';
+import {
+  PUBLISH_ROLLBACK_SYSTEM_PROMPT_DOC,
+  PUBLISH_ROLLBACK_TOOL_NAME,
+  createPublishRollbackHandler,
+  publishRollbackToolSpec,
+} from './tools/publishRollbackTool.js';
+import {
+  createGrantCheckedPublishHandler,
+  createGrantCheckedPublishRollbackHandler,
+} from './tools/publishGrantedTools.js';
+import { DockerSandboxBackend } from '@omadia/sandbox';
+import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -191,6 +248,204 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+/** AI-Act Art. 50 (#644) — the tokens the per-channel override map may key on:
+ *  the full `ChannelKind` set from `@omadia/plugin-api`. An override for any
+ *  other token is dropped with a warning so a typo never silently disables the
+ *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
+ *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
+ *  `web` are accepted here but currently resolve to the global level, same as
+ *  the kind-less channels — see the `ai_disclosure_level_overrides` help text.
+ *
+ *  #648 — derived from the shared list rather than spelled again here. The
+ *  posture view reports one row per accepted kind, so a second literal would
+ *  let the parser accept a channel the dashboard never shows (or vice versa). */
+const AI_DISCLOSURE_CHANNEL_KINDS = new Set<string>(
+  AI_DISCLOSURE_CHANNEL_KIND_LIST,
+);
+
+const AI_DISCLOSURE_LEVELS = new Set<AiDisclosureLevel>([
+  'standard',
+  'concise',
+  'off',
+]);
+
+function parseAiDisclosureLevel(raw: unknown): AiDisclosureLevel | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  return AI_DISCLOSURE_LEVELS.has(v as AiDisclosureLevel)
+    ? (v as AiDisclosureLevel)
+    : undefined;
+}
+
+/**
+ * Parse the compact per-channel override field `"telegram=concise,web=off"`
+ * into a `{ channelKind: level }` map. Whitespace-tolerant; unknown channel
+ * tokens and unknown levels are dropped with a warning (a silent drop would
+ * read as "marking configured" when it is not). Returns `undefined` when
+ * nothing valid parsed, so the caller can treat it as "no overrides".
+ */
+function parseAiDisclosureOverrides(
+  raw: unknown,
+): Record<string, AiDisclosureLevel> | undefined {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
+  const out: Record<string, AiDisclosureLevel> = {};
+  for (const pair of raw.split(',')) {
+    // Empty segments (trailing or doubled commas) are formatting, not a typo —
+    // skip them silently. Anything else missing its `=` falls through to the
+    // warn branch below: dropping `"telegram"` without a word would read as
+    // "override configured" when none was, the exact failure this warns about.
+    if (pair.trim().length === 0) continue;
+    const eq = pair.indexOf('=');
+    const chan = eq < 0 ? '' : pair.slice(0, eq).trim().toLowerCase();
+    const level = eq < 0 ? undefined : parseAiDisclosureLevel(pair.slice(eq + 1));
+    if (!AI_DISCLOSURE_CHANNEL_KINDS.has(chan) || level === undefined) {
+      console.warn(
+        `[orchestrator] ai_disclosure_level_overrides: ignoring invalid entry "${pair.trim()}" ` +
+          `(channel must be one of ${[...AI_DISCLOSURE_CHANNEL_KINDS].join('/')}, ` +
+          `level one of standard/concise/off)`,
+      );
+      continue;
+    }
+    out[chan] = level;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Resolve the operator's AI-disclosure setup (#644) from the plugin config.
+ * Returns `undefined` when the operator set NO disclosure field at all — the
+ * signal the orchestrator reads as "shipping default (standard, active) on
+ * every channel, `source: 'default'`" (AC1). As soon as ANY field is set the
+ * whole config is operator-sourced, so an `'off'` level is honoured (a turn
+ * cannot silence itself; only the operator can).
+ */
+function resolveAiDisclosureSetup(
+  read: (key: string) => unknown,
+): AiDisclosureSetup | undefined {
+  const level = parseAiDisclosureLevel(read('ai_disclosure_level'));
+  const overrides = parseAiDisclosureOverrides(
+    read('ai_disclosure_level_overrides'),
+  );
+  const localeRaw = read('ai_disclosure_locale');
+  const locale =
+    typeof localeRaw === 'string' && localeRaw.trim().length > 0
+      ? localeRaw.trim()
+      : undefined;
+  const nameRaw = read('ai_disclosure_assistant_name');
+  const assistantName =
+    typeof nameRaw === 'string' && nameRaw.trim().length > 0
+      ? nameRaw.trim()
+      : undefined;
+  const noteRaw = read('ai_disclosure_operator_note');
+  const operatorNote =
+    typeof noteRaw === 'string' && noteRaw.trim().length > 0
+      ? noteRaw.trim()
+      : undefined;
+
+  if (
+    level === undefined &&
+    overrides === undefined &&
+    locale === undefined &&
+    assistantName === undefined &&
+    operatorNote === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    // Level unset but other fields present → keep the shipping-default level;
+    // `source: 'operator'` (implied by a non-undefined setup) still lets an
+    // explicit `'off'` through when the operator DID set it.
+    level: level ?? 'standard',
+    ...(overrides ? { overrides } : {}),
+    ...(locale ? { locale } : {}),
+    ...(assistantName ? { assistantName } : {}),
+    ...(operatorNote ? { operatorNote } : {}),
+  };
+}
+
+/** #579 — parse a security-posture enum value. Returns undefined for unset /
+ *  unknown so the caller can fall back to the shipping floor. */
+function parseSecurityPosture(raw: unknown): SecurityPosture | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const v = raw.trim().toLowerCase();
+  return (POSTURE_ORDER as readonly string[]).includes(v)
+    ? (v as SecurityPosture)
+    : undefined;
+}
+
+/** #579 — parse the screen mode. Default (unset/unknown) → `enforce`, the safe
+ *  direction: an operator opts INTO shadow, never falls into it by a typo. */
+function parseSecurityScreenMode(raw: unknown): SecurityScreenMode {
+  if (typeof raw === 'string' && raw.trim().toLowerCase() === 'shadow') {
+    return 'shadow';
+  }
+  return 'enforce';
+}
+
+/**
+ * #579 — resolve the operator's security-posture setup from plugin config, the
+ * same arrival pattern as {@link resolveAiDisclosureSetup}. Returns `undefined`
+ * when the operator set NO security field at all — the signal the orchestrator
+ * reads as "shipping default (`auto`, enforce)". `security_posture` is the org
+ * FLOOR; `security_posture_override` may only TIGHTEN it (a looser value is
+ * warned and dropped, so it clamps to the floor at resolution — never a silent
+ * loosening). `security_screen_url` selects the external HTTP proxy;
+ * `security_screen_mode` is shadow/enforce.
+ *
+ * NAMING (#575): this field was `security_posture_scope`. It is a single
+ * deployment-wide posture VALUE with no identity, not a per-scope setting —
+ * and since #713 landed `ScopeId`, "scope" in this tree means an identified
+ * partition (`personal:` / `conversation:` / `group:` / `org:` / `system:`).
+ * Keeping the old name would have read as "the posture for a given scope",
+ * which is exactly what it is not. When the real per-scope posture arrives it
+ * folds `tightenPosture` over a scope's ancestor chain; this override stays the
+ * deployment-level knob.
+ */
+function resolveSecurityPostureSetup(
+  read: (key: string) => unknown,
+): SecurityPostureSetup | undefined {
+  const floor = parseSecurityPosture(read('security_posture'));
+  const overrideRaw = read('security_posture_override');
+  let override = parseSecurityPosture(overrideRaw);
+  const modeRaw = read('security_screen_mode');
+  const urlRaw = read('security_screen_url');
+  const screenUrl =
+    typeof urlRaw === 'string' && urlRaw.trim().length > 0
+      ? urlRaw.trim()
+      : undefined;
+
+  const anySet =
+    floor !== undefined ||
+    override !== undefined ||
+    screenUrl !== undefined ||
+    (typeof modeRaw === 'string' && modeRaw.trim().length > 0);
+  if (!anySet) return undefined;
+
+  const effectiveFloor = floor ?? 'auto';
+  // A scope that tries to LOOSEN below the floor is refused here with a warning
+  // (a silent drop would read as "floor honoured" when it was overridden). The
+  // tighten-only math is enforced again at runtime in `resolveEffectivePosture`;
+  // dropping it here keeps the setup itself honest.
+  if (
+    override !== undefined &&
+    POSTURE_ORDER.indexOf(override) < POSTURE_ORDER.indexOf(effectiveFloor)
+  ) {
+    console.warn(
+      `[orchestrator] security_posture_override="${String(overrideRaw)}" is looser than ` +
+        `the org floor "${effectiveFloor}" — refused (scopes may only tighten). ` +
+        `Falling back to the floor.`,
+    );
+    override = undefined;
+  }
+
+  return {
+    floor: effectiveFloor,
+    ...(override !== undefined ? { override } : {}),
+    mode: parseSecurityScreenMode(modeRaw),
+    ...(screenUrl ? { screenUrl } : {}),
+  };
 }
 
 /** Truthy values: '1', 'true', 'yes', 'on' (case-insensitive). Everything
@@ -336,7 +591,19 @@ export async function activate(
   // tool; harness-orchestrator stays free of any @aws-sdk dependency.
   const attachmentByteStore =
     ctx.services.get<AttachmentByteStore>('tigrisStore');
-  const attachmentReader = createAttachmentReader(attachmentByteStore);
+  // #575 — every attachment-handle redemption passes the audience floor. Wrapped
+  // here, at the ONE construction site, so the check rides with the handle rather
+  // than depending on each resolution site remembering to ask. Inert unless an
+  // audience source is installed.
+  // The binding store additionally pins each handle to the room that minted it
+  // (#575). Published by the kernel only when the audience floor is enabled —
+  // absent means that second check stands down, and the reader behaves exactly
+  // as it did before.
+  const attachmentBindings = ctx.services.get<AttachmentBindingStore>('attachmentBindings');
+  const attachmentReader = audienceGuardedAttachmentReader(
+    createAttachmentReader(attachmentByteStore),
+    attachmentBindings,
+  );
   // Phase-1 of the Kemia integration. Late-bound `responseGuard@1` getter —
   // the orchestrator generally activates BEFORE its tool plugins, so a
   // bind-at-activate lookup would always miss the responseGuard provider
@@ -353,6 +620,12 @@ export async function activate(
   // (no tokenisation, no receipt).
   const privacyGuardGetter = (): PrivacyGuardService | undefined =>
     ctx.services.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
+
+  // #757 — persistent per-turn receipt store, published by the kernel once
+  // its pg pool resolves (in-memory backend: never provided, receipts stay
+  // ephemeral). Same late-bound shape as the two getters above.
+  const turnReceiptStoreGetter = (): TurnReceiptStore | undefined =>
+    ctx.services.get<TurnReceiptStore>(TURN_RECEIPT_STORE_SERVICE_NAME);
 
   // Slice 2.5 — cross-plugin runtime-config reader for the privacy
   // bypass resolver. Published by the kernel at boot
@@ -382,6 +655,45 @@ export async function activate(
   const assistantIdentity = (
     ctx.config.get<string>('assistant_identity') ?? ''
   ).trim();
+  // AI-Act Art. 50 (#644) — resolve the operator's disclosure setup once at
+  // build time (same arrival pattern as `assistantIdentity`). Undefined → the
+  // orchestrator applies the shipping default (standard, active) on every
+  // channel; a set value flips the whole policy to operator-sourced.
+  const aiDisclosure = resolveAiDisclosureSetup((key) =>
+    ctx.config.get<unknown>(key),
+  );
+  // #579 — resolve the operator's security posture once at build time. Undefined
+  // → the orchestrator applies the shipping default (`auto`, enforce). The
+  // screener + audit sink are wired in `buildOrchestrator` (they need the
+  // provider + session logger); only the posture setup is config-derived here.
+  const securityPosture = resolveSecurityPostureSetup((key) =>
+    ctx.config.get<unknown>(key),
+  );
+  // #575 — the audience floor's capability grants. Published by the kernel
+  // BEFORE plugin activation (as a late-bound wrapper, because the Postgres
+  // pool it needs is published by the knowledge-graph plugin during this same
+  // pass) and ONLY when `AUDIENCE_FLOOR_ENABLED` is set. Undefined is the
+  // ordinary case: the orchestrator then installs no audience provider at all
+  // and every guard short-circuits, leaving behaviour unchanged.
+  const audienceGrants = ctx.services.get<GrantStore>('audienceGrants');
+  // #648 — publish the RESOLVED posture so `/health` and the operator
+  // dashboard can read what this instance actually does, and warn once at boot
+  // when it deviates from the delivered state. A reduced marking is a
+  // legitimate operator decision; the failure mode #648 is about is that it was
+  // previously invisible, so a copy-paste error in a config or a leftover from
+  // a test setup was never noticed by anyone.
+  //
+  // A plain frozen snapshot, unlike the embedding gate's live getter object:
+  // this posture is derived from setup fields read once at activation, and a
+  // config change re-activates the plugin, which re-publishes. Nothing mutates
+  // it underneath a reader.
+  const disclosurePosture = describeAiDisclosurePosture(aiDisclosure);
+  const disclosureWarning = formatDisclosureBootWarning(disclosurePosture);
+  if (disclosureWarning) console.warn(disclosureWarning);
+  const disposeDisclosurePosture = ctx.services.provide(
+    AI_DISCLOSURE_POSTURE_SERVICE,
+    disclosurePosture,
+  );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
   // persisted 4096) would otherwise truncate large file-building tool calls.
   const maxTokens = Math.max(
@@ -544,6 +856,135 @@ export async function activate(
     );
   }
 
+  // #576 P2 — `execute` native tool: a shell command runner backed by a
+  // durable per-scope sandbox (`@omadia/sandbox`). Off by default — same
+  // honest-inert opt-in convention as the #575 audience floor and #580
+  // command policy, and for the sharpest reason of all of them: this tool's
+  // entire job is running arbitrary commands, so a deployment that hasn't
+  // explicitly turned it on must not get it "for free" from a default.
+  // `executeTool.ts`'s handler runs its OWN org-floor command-policy check
+  // independently of the turn-context `commandPolicy` seam (see that
+  // module's doc) — belt AND braces, not a replacement for the existing
+  // `guardToolCommands` choke point in `orchestrator.ts`'s `dispatchTool`.
+  const disposeExecuteTool: Array<() => void> = [];
+  const sandboxExecuteEnabled = ctx.config.get<boolean>('sandbox_execute_enabled') === true;
+  if (sandboxExecuteEnabled) {
+    const sandboxBackend = new DockerSandboxBackend();
+    // No `writeCapabilities` annotation: that contract is a `{dataClass,
+    // operation}` pair for canvas inline-edit + idempotency dedupe of
+    // STRUCTURED writes (an Odoo record, a Jira ticket) — `execute`'s
+    // effects are arbitrary and untyped, so neither half of the contract
+    // fits, and re-running the "same" shell command is not safely
+    // deduplicable the way replaying a structured write is. Deliberately
+    // absent, not an oversight.
+    disposeExecuteTool.push(
+      nativeToolRegistry.register(EXECUTE_TOOL_NAME, {
+        handler: createExecuteHandler({ backend: sandboxBackend }),
+        spec: executeToolSpec,
+        promptDoc: EXECUTE_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    ctx.log('[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend)');
+  } else {
+    ctx.log('[harness-orchestrator] sandbox_execute_enabled not set — skipping execute native tool');
+  }
+
+  // Issue #581 P2 — `publish`/`publish_rollback` native tools: turn a
+  // directory in the scope sandbox into a running, immutably-versioned web
+  // app. Same honest-inert opt-in convention as `execute` above, behind its
+  // OWN flag (`sandbox_publish_enabled`, independent of
+  // `sandbox_execute_enabled` — an operator may want one without the
+  // other). `PublishStore` durability follows the shared graph pool when
+  // one is configured; without it, versions are recorded in-memory only
+  // (process-lifetime durability, same posture `InMemorySandboxRegistry`
+  // documents for #576) — a deployment can still exercise the whole
+  // publish/rollback loop with zero extra Postgres setup, just without
+  // surviving a restart.
+  //
+  // #581 P3 — sharing. When `audienceGrants` (the same `GrantStore` #575
+  // already publishes as a service — see `audienceGrants` above) is
+  // configured, both handlers are wrapped with a grant check: the app's
+  // OWNER (the scope that published its version 1) always passes, any
+  // other scope needs a `publish:write:<appId>` grant. No `GrantStore`
+  // configured ⇒ no sharing concept exists yet in this deployment, so the
+  // raw P2 handlers run exactly as they did before P3 — never a behavior
+  // change for a deployment that has not opted into grants at all.
+  // `RoleSourceRegistryImpl` here is a fresh, empty registry (no role
+  // sources registered): role-based publish grants therefore resolve to
+  // nothing today — a known v1 gap, not a silent lie, since no role
+  // source registry is published as a shared service ANYWHERE in this
+  // codebase yet (`Orchestrator` builds its own private one the same way).
+  // Direct grants (`grantToPrincipal`) work fully.
+  const disposePublishTools: Array<() => void> = [];
+  const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
+  if (sandboxPublishEnabled) {
+    const publishSandboxBackend = new DockerSandboxBackend();
+    const publishRuntime = new DockerPublishRuntime();
+    const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
+    const publishSharing = audienceGrants
+      ? { grants: audienceGrants, roles: new RoleSourceRegistryImpl() }
+      : undefined;
+    const publishHandler = publishSharing
+      ? createGrantCheckedPublishHandler({
+          sandboxBackend: publishSandboxBackend,
+          runtime: publishRuntime,
+          store: publishStore,
+          sharing: publishSharing,
+        })
+      : createPublishHandler({ sandboxBackend: publishSandboxBackend, runtime: publishRuntime, store: publishStore });
+    const publishRollbackHandler = publishSharing
+      ? createGrantCheckedPublishRollbackHandler({ store: publishStore, sharing: publishSharing })
+      : createPublishRollbackHandler({ store: publishStore });
+    disposePublishTools.push(
+      nativeToolRegistry.register(PUBLISH_TOOL_NAME, {
+        handler: publishHandler,
+        spec: publishToolSpec,
+        promptDoc: PUBLISH_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    disposePublishTools.push(
+      nativeToolRegistry.register(PUBLISH_ROLLBACK_TOOL_NAME, {
+        handler: publishRollbackHandler,
+        spec: publishRollbackToolSpec,
+        promptDoc: PUBLISH_ROLLBACK_SYSTEM_PROMPT_DOC,
+      }),
+    );
+    ctx.log(
+      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'})`,
+    );
+  } else {
+    ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
+  }
+
+  // #584 WS I — `transcribe_recording` native tool: batch ingestion of
+  // recorded audio through the `transcription@1` capability. Registered
+  // UNCONDITIONALLY with a late-bound service getter: the transcription
+  // provider is an operator-installed plugin that may (de)activate any time
+  // after this activate ran, so availability is decided per dispatch — an
+  // install without a provider gets a clear, model-readable error string,
+  // the same graceful-degrade posture read_attachment takes for a missing
+  // byte store. The per-call SessionLogger factory keys the KG partition on
+  // the CURRENT turn's agent slug (same qualification chat turns get); the
+  // markdown transcript path is shared, exactly like `buildOrchestrator`'s
+  // logger (decision A3a).
+  const transcribeRecordingTool = new TranscribeRecordingTool({
+    reader: attachmentReader,
+    getTranscription: (): TranscriptionService | undefined =>
+      ctx.services.get<TranscriptionService>(TRANSCRIPTION_SERVICE_NAME),
+    makeSessionLogger: (agentSlug): SessionLogger =>
+      new SessionLogger(memoryStore, knowledgeGraph, undefined, agentSlug),
+  });
+  const disposeTranscribeTool = nativeToolRegistry.register(
+    TRANSCRIBE_RECORDING_TOOL_NAME,
+    {
+      handler: (input): Promise<string> => transcribeRecordingTool.handle(input),
+      spec: transcribeRecordingToolSpec,
+    },
+  );
+  ctx.log(
+    '[harness-orchestrator] registered transcribe_recording native tool (transcription@1 resolved per dispatch)',
+  );
+
   // US3 — per-Agent Orchestrator construction. The orchestrator plugin
   // builds the single "default" Agent; the multi-orchestrator registry
   // (US4) calls the same factory once per configured Agent against the
@@ -557,6 +998,7 @@ export async function activate(
     nudgeRegistry,
     responseGuard: responseGuardGetter,
     privacyGuard: privacyGuardGetter,
+    turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
     ...(contextRetriever ? { contextRetriever } : {}),
@@ -576,6 +1018,19 @@ export async function activate(
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
+    ...(aiDisclosure ? { aiDisclosure } : {}),
+    // #579 — org security posture (org floor + optional scope tighten + mode +
+    // screen URL). Undefined → the orchestrator's shipping default (`auto`).
+    ...(securityPosture ? { securityPosture } : {}),
+    // #575 — the audience floor's grant store, published by the kernel only
+    // when the operator enabled the floor. Absent is the normal case and means
+    // the guards stay inert; see `OrchestratorDeps.audienceGrants`.
+    ...(audienceGrants ? { audienceGrants } : {}),
+    // #644 — one fold-dedup store for the whole process, shared by every Agent
+    // the registry builds (same lifetime rationale as `directLineStickyStore`
+    // below): a per-instance store would re-fold the marking into a live
+    // conversation whenever an unrelated config tweak rebuilt the Agent.
+    aiDisclosureSeenStore: new InMemoryDisclosureSeenStore(),
     ...(turnHookRegistry ? { turnHookRegistry } : {}),
     // #445 — one binding store for the whole process, shared by every Agent
     // the registry builds and rebuilt by none of them. Constructed
@@ -583,6 +1038,15 @@ export async function activate(
     // in deps means toggling the flag at runtime never strands a binding in a
     // store that has been thrown away.
     directLineStickyStore: new InMemoryDirectLineStickyStore(),
+    // W2-1 (#544) — the SAME store instance the kernel's `McpManager` parks
+    // into, plus the replayer the kernel registered once it had a manager and a
+    // server registry. Unconditional store (empty until something parks);
+    // `buildOrchestrator` only enables the path when BOTH are present, so a
+    // deployment without the kernel wiring stays fully inert.
+    pendingMcpInput: sharedPendingMcpInputStore(),
+    ...(sharedMcpInputReplayer()
+      ? { mcpInputReplay: sharedMcpInputReplayer()! }
+      : {}),
     attachmentReader,
   };
   // Per-turn Sonnet/Opus routing (opt-in). When `orchestrator_model_routing`
@@ -667,6 +1131,17 @@ export async function activate(
   let reloadBus: ReloadBus | undefined;
   if (graphPool) {
     try {
+      // #796 — SECOND PASS, not the owner. `middleware/migrations/` is core's
+      // directory and core now applies it at boot, before any plugin
+      // activates and regardless of whether a provider key exists. This call
+      // used to be its only production trigger, which made core's schema a
+      // side effect of an LLM key being configured.
+      //
+      // It stays because it costs one SELECT against a current ledger (the
+      // migrator takes no lock when nothing is pending) and it keeps this
+      // plugin working when it is activated outside core's boot path — an
+      // embedding host, a fixture harness. It must never be the only caller
+      // again.
       await runMultiOrchestratorMigrations(graphPool, (m) =>
         ctx.log(`[harness-orchestrator] ${m}`),
       );
@@ -787,12 +1262,39 @@ export async function activate(
       } catch {
         // best-effort
       }
+      // #648 — released like every other published service, so a reactivate
+      // (the path a disclosure config change takes) can re-publish the posture
+      // instead of failing with "duplicate provider".
+      try {
+        disposeDisclosurePosture();
+      } catch {
+        // best-effort
+      }
       for (const dispose of disposeProcessMemoryTools) {
         try {
           dispose();
         } catch {
           // best-effort
         }
+      }
+      for (const dispose of disposeExecuteTool) {
+        try {
+          dispose();
+        } catch {
+          // best-effort
+        }
+      }
+      for (const dispose of disposePublishTools) {
+        try {
+          dispose();
+        } catch {
+          // best-effort
+        }
+      }
+      try {
+        disposeTranscribeTool();
+      } catch {
+        // best-effort
       }
       // Release published services (chatAgent@1, orchestratorRegistry@1,
       // configStore, channelResolver) so a subsequent reactivate can re-publish

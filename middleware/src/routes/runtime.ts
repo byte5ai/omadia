@@ -15,7 +15,19 @@ import {
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
+import type { PatternViolation } from '../plugins/setupFieldPattern.js';
+import { extractFromJsonFile } from '../plugins/setupJsonFile.js';
+import type { JsonFileFailureCode, JsonFileFieldSpec } from '../plugins/setupJsonFile.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
+import {
+  commitGrants,
+  declaredPublicPathsOf,
+  registerGrantRoutes,
+} from './runtimeGrants.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
 const SETUP_OPTIONS_TIMEOUT_MS = 8_000;
@@ -70,6 +82,19 @@ interface RuntimeDeps {
       input: unknown,
     ): Promise<unknown>;
   };
+  /** Epic #470 C4 / H1 — durable operator consent for unauthenticated plugin
+   *  path prefixes. Optional so existing test wiring keeps compiling; the
+   *  public-path endpoints 503 when absent. */
+  publicPathGrantStore?: PublicPathGrantStore;
+  /** The live ownership registry, so a consent change takes effect without a
+   *  restart. Optional for the same reason — without it, a grant is persisted
+   *  and applies on the plugin's next activation. */
+  publicPathGrants?: PublicPathGrantRegistry;
+  /** Epic #470 C16 (#817) — durable operator consent for `permissions.sql`.
+   *  Optional for the same reason as the two above; the grants endpoint answers
+   *  503 for an `sql: true` request when it is absent, and reports the SQL grant
+   *  as ungranted (the fail-closed reading the activation path already uses). */
+  sqlGrantStore?: PluginSqlGrantStore;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -284,6 +309,107 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
     },
   );
 
+  // ── Epic #470 C16 (#817) — the unified operator consent surface ───────────
+  //
+  // GET  /installed/:id/grants   what the manifest asks for, what the operator
+  //                              granted, the resulting install state, and what
+  //                              is still missing
+  // PUT  /installed/:id/grants   { sql?: boolean, public_paths?: string[] }
+  //
+  // Lives in `runtimeGrants.ts`; see that module's header for why both grants
+  // share one route, why the ledger comes from the manifest and the consenting
+  // identity from the session, and why the plugin is re-activated in-process
+  // rather than the operator being told to restart the middleware.
+  registerGrantRoutes(router, deps);
+
+  // ── Epic #470 C4 / H1 — public-path consent (ALIAS over the same core) ────
+  //
+  // GET  /installed/:id/public-paths        what the manifest asks for, and
+  //                                         which of those the operator granted
+  // PUT  /installed/:id/public-paths        { paths: string[] } — the complete
+  //                                         consented set (grants what is new,
+  //                                         revokes what is missing)
+  //
+  // PUT takes the FULL set rather than a single path on purpose: consent to an
+  // unauthenticated surface should be reviewed as a whole. "Add one more" and
+  // "here is the complete list I agree to" are different operator intents, and
+  // only the second one is safe to build a UI on.
+  //
+  // SUPERSEDED BY `/grants`, KEPT VERBATIM. Every shipped operator guide
+  // documents this exact URL and body — `@omadia/dev-platform`'s ships a `curl`
+  // for it — so it stays, answering the shape it always has, over the same core
+  // the new route uses. Deleting it would break the one documented way an
+  // operator grants a public path today, in the very release that finally gives
+  // them a UI for it.
+  router.get('/installed/:id/public-paths', async (req: Request, res: Response) => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : undefined;
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    if (!deps.publicPathGrantStore) {
+      res.status(503).json({
+        code: 'runtime.public_paths_unavailable',
+        message: 'public-path grants require a database — none is configured',
+      });
+      return;
+    }
+    const declared = declaredPublicPathsOf(deps, id);
+    const granted = await deps.publicPathGrantStore.listForPlugin(id);
+    res.json({
+      id,
+      declared,
+      // Reported per declared path rather than as a bare list, so the UI can
+      // render "asked for, not granted" — the state that matters — without
+      // having to diff two arrays and get the semantics wrong.
+      paths: declared.map((path) => ({ path, granted: granted.has(path) })),
+      // A grant whose declaration disappeared (plugin downgraded, manifest
+      // edited). Surfaced rather than hidden: it grants nothing today, but an
+      // operator should be able to see and clear it.
+      orphaned: [...granted].filter((path) => !declared.includes(path)),
+    });
+  });
+
+  router.put('/installed/:id/public-paths', async (req: Request, res: Response) => {
+    const id = typeof req.params['id'] === 'string' ? req.params['id'] : undefined;
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    if (!deps.publicPathGrantStore) {
+      res.status(503).json({
+        code: 'runtime.public_paths_unavailable',
+        message: 'public-path grants require a database — none is configured',
+      });
+      return;
+    }
+    const body = req.body as { paths?: unknown } | null;
+    const requested = body?.paths;
+    if (!Array.isArray(requested) || requested.some((p) => typeof p !== 'string')) {
+      res.status(400).json({
+        code: 'runtime.invalid_public_paths',
+        message: 'body.paths must be an array of strings',
+      });
+      return;
+    }
+    // Everything past this point — the "consent cannot exceed the declaration"
+    // gate, the syntactic re-check, the narrow-before-widen write order, the
+    // resync on failure — is `commitGrants`. This route only translates the old
+    // body in and the old body out.
+    //
+    // The RESPONSE shape stays `{ id, paths }`, because that is what this route
+    // has always answered and what an operator's script parses. The richer state
+    // view is one GET on `/grants` away for anyone who wants it.
+    const view = await commitGrants(
+      deps,
+      id,
+      { publicPaths: [...new Set(requested as string[])] },
+      req,
+      res,
+    );
+    if (view) res.json({ id, paths: [...view.granted.public_paths] });
+  });
+
   // PATCH /installed/:id/audit-mode — #91 operator mode switch for an
   // audit/scanner plugin. Body: { mode: 'single-host'|'allowlist'|'public-web' }.
   // Rejected unless the manifest declares permissions.network.web_scanner.
@@ -484,57 +610,125 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         return;
       }
 
-      const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
-      const isSecret = (key: string): boolean =>
-        secretFieldKeys === null ? true : secretFieldKeys.has(key);
-
-      const vaultSet: Record<string, string> = {};
-      const vaultDelete: string[] = [];
-      const configSet: Record<string, unknown> = {};
-      const configDelete: string[] = [];
-      for (const [k, v] of Object.entries(setEntries)) {
-        if (isSecret(k)) vaultSet[k] = v;
-        else configSet[k] = v;
-      }
-      for (const k of deleteKeys) {
-        if (isSecret(k)) vaultDelete.push(k);
-        else configDelete.push(k);
-      }
-
-      try {
-        if (Object.keys(vaultSet).length > 0) {
-          await deps.vault.setMany(id, vaultSet);
-        }
-        for (const key of vaultDelete) {
-          await deps.vault.deleteKey(id, key);
-        }
-        if (
-          Object.keys(configSet).length > 0 ||
-          configDelete.length > 0
-        ) {
-          const nextConfig: Record<string, unknown> = {
-            ...installed.config,
-            ...configSet,
-          };
-          for (const k of configDelete) delete nextConfig[k];
-          await deps.installedRegistry.updateConfig(id, nextConfig);
-        }
-        if (deps.reactivate) {
-          await deps.reactivate(id);
-        }
-        const keys = await deps.vault.listKeys(id);
-        const updated = deps.installedRegistry.get(id);
-        const configValues = stringifyConfigValues(updated?.config);
-        const configKeys = Object.keys(configValues);
-        res.json({
-          keys: keys.sort(),
-          config_keys: configKeys.sort(),
-          config_values: configValues,
+      // OM-17 — validate VALUES before anything is written. Until this landed,
+      // the only checks here were shape checks (`Record<string,string>`), so a
+      // masked field happily accepted a Google account password and reported
+      // "gespeichert". The vault write is the server's responsibility, so the
+      // gate has to be here — a client-side check alone is theatre.
+      //
+      // Fail-closed on the FIRST violation and write NOTHING: a partial write
+      // would leave the plugin in a half-configured state that the readiness
+      // computation would report as configured.
+      const violation = await findPatternViolation(deps.catalog, id, setEntries);
+      if (violation) {
+        res.status(400).json({
+          code: 'runtime.setup_field_invalid',
+          message: `value for '${violation.field}' does not match the expected format`,
+          field: violation.field,
+          // Only ever the manifest's own hint, resolved to ENGLISH — this
+          // process has no request locale, and guessing one would smuggle an
+          // untranslatable string through the API. It is the fallback for
+          // clients without a manifest; the web-ui resolves `pattern_hint`
+          // itself from `field`. When the manifest declared no hint, this is
+          // absent and the UI renders its own localized copy.
+          // See `setupFieldPattern.ts` → `PatternViolation.hint`.
+          ...(violation.hint !== undefined ? { hint: violation.hint } : {}),
         });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        res.status(500).json({ code: 'runtime.vault_write_failed', message });
+        return;
       }
+
+      await applySetupValues(deps, id, installed, setEntries, deleteKeys, res);
+    },
+  );
+
+  // ── POST /installed/:id/secrets/from-json ──────────────────────────
+  // #603 (OM-17) — a `json_file` setup field: the operator uploads the
+  // credential file instead of transcribing values out of it.
+  //
+  // The near-miss this closes: a tester typed their real Google account
+  // password into `gw_sa_private_key`, because the form asked them to copy two
+  // values out of a service-account key into an email field and a masked field
+  // stacked beneath it — the visual pattern of a login. #599 made that mistake
+  // detectable; this makes it unavailable.
+  //
+  // The parse happens HERE, not in the browser: a client that decides which
+  // bytes become `gw_sa_private_key` is a client that can be made to decide
+  // wrongly. The raw document is never persisted and never echoed back — the
+  // response names the derived KEYS only, exactly like the PATCH above.
+  //
+  // The derived values then go down the SAME `applySetupValues` path as typed
+  // ones, so pattern validation, the vault/config split, reactivation and the
+  // response shape cannot drift between "typed it" and "uploaded it".
+  router.post(
+    '/installed/:id/secrets/from-json',
+    async (req: Request, res: Response) => {
+      const id = readId(req);
+      if (!id) {
+        res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+        return;
+      }
+      const installed = deps.installedRegistry.get(id);
+      if (!installed) {
+        res.status(404).json({
+          code: 'runtime.not_installed',
+          message: `agent '${id}' is not installed`,
+        });
+        return;
+      }
+      if (!deps.vault) {
+        res.status(503).json({
+          code: 'runtime.vault_unavailable',
+          message: 'vault not wired into runtime route',
+        });
+        return;
+      }
+      const body: unknown = req.body;
+      const fieldKey =
+        typeof body === 'object' && body !== null && !Array.isArray(body)
+          ? (body as { field?: unknown }).field
+          : undefined;
+      const content =
+        typeof body === 'object' && body !== null && !Array.isArray(body)
+          ? (body as { content?: unknown }).content
+          : undefined;
+      if (typeof fieldKey !== 'string' || typeof content !== 'string') {
+        res.status(400).json({
+          code: 'runtime.invalid_json_file_body',
+          message: 'body must be { field: string, content: string }',
+        });
+        return;
+      }
+
+      // The SPEC comes from the manifest, never from the request: the caller
+      // names which field it is uploading for, and the server looks up what
+      // that field is allowed to extract. A caller-supplied `extracts` would let
+      // anyone write any vault key from any file.
+      const spec = resolveJsonFileField(deps.catalog, id, fieldKey);
+      if (!spec) {
+        res.status(400).json({
+          code: 'runtime.unknown_json_file_field',
+          message: `'${fieldKey}' is not a json_file setup field of '${id}'`,
+        });
+        return;
+      }
+
+      const outcome = extractFromJsonFile(content, spec);
+      if (!outcome.ok) {
+        res.status(400).json({
+          // Spelled out as LITERALS in JSON_FILE_ERROR_CODES rather than built
+          // with a template. The errorHelp coverage guard
+          // (`web-ui/app/_lib/__tests__/errorHelpCoverage.test.ts`) scans these
+          // sources for error-code literals to prove every emitted one has
+          // operator help copy — a template-built value is invisible to it, so
+          // the copy could silently rot. Literals also make each value greppable
+          // from the message catalogue back to the line that emits it.
+          code: JSON_FILE_ERROR_CODES[outcome.failure.code],
+          message: outcome.failure.message,
+          field: fieldKey,
+        });
+        return;
+      }
+      await applySetupValues(deps, id, installed, outcome.values, [], res);
     },
   );
 
@@ -562,6 +756,23 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
 
   return router;
 }
+
+/**
+ * #603 — `JsonFileFailure['code']` → the wire error code.
+ *
+ * Exhaustive by type: adding a failure kind to `setupJsonFile.ts` without a
+ * code here is a compile error, which is the point. Each value is a literal so
+ * the errorHelp coverage guard can see it.
+ */
+const JSON_FILE_ERROR_CODES: Record<JsonFileFailureCode, string> = {
+  too_large: 'runtime.json_file_too_large',
+  not_json: 'runtime.json_file_not_json',
+  not_an_object: 'runtime.json_file_not_an_object',
+  unexpected_document: 'runtime.json_file_unexpected_document',
+  bad_extract_path: 'runtime.json_file_bad_extract_path',
+  missing_value: 'runtime.json_file_missing_value',
+  invalid_spec: 'runtime.json_file_invalid_spec',
+};
 
 function readId(req: Request): string | null {
   const raw = req.params['id'];
@@ -617,6 +828,139 @@ function parseDeleteKeys(raw: unknown): string[] | 'invalid' {
  * PATCH handler treats `null` as "route everything to the vault" — preserving
  * the legacy behaviour for plugins without a setup schema.
  */
+/**
+ * #603 — resolve the manifest's declaration for ONE `json_file` field.
+ *
+ * The extraction map is looked up here rather than accepted from the request, on
+ * purpose: a caller-supplied `extracts` would let anyone write any vault key
+ * from any file. The request names WHICH field it is uploading for; the manifest
+ * decides what that field may produce.
+ *
+ * Returns undefined for an unknown field, a field of any other type, or a
+ * plugin with no setup schema — all of which are "there is no upload contract
+ * here", which the route reports as a 400 rather than inventing one.
+ */
+function resolveJsonFileField(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+  fieldKey: string,
+): JsonFileFieldSpec | undefined {
+  const entry = catalog?.get(pluginId);
+  if (!entry) return undefined;
+  const schema = extractSetupSchema(entry);
+  if (!schema) return undefined;
+  const field = schema.fields.find((f) => f.key === fieldKey);
+  if (!field || field.type !== 'json_file' || !field.extracts) return undefined;
+  return {
+    key: field.key,
+    extracts: field.extracts,
+    ...(field.expect ? { expect: field.expect } : {}),
+  };
+}
+
+/**
+ * The write half of a setup-value update, shared by the typed path
+ * (`PATCH …/secrets`) and the uploaded path (`POST …/secrets/from-json`).
+ *
+ * Shared deliberately rather than copied. The security claim of #603 is that an
+ * extracted value is treated EXACTLY like a typed one — same pattern
+ * validation, same vault/config split, same reactivation, same response. Two
+ * implementations of that would be two implementations that can drift, and the
+ * drift would be invisible until a `json_file` field quietly skipped a check the
+ * typed path applies.
+ *
+ * Writes NOTHING on a validation failure: a partial write leaves the plugin
+ * half-configured, which the readiness computation would then report as
+ * configured.
+ *
+ * Sends the response itself (including error responses), so callers must not
+ * write to `res` afterwards.
+ */
+async function applySetupValues(
+  deps: RuntimeDeps,
+  id: string,
+  installed: { config?: Record<string, unknown> },
+  setEntries: Record<string, string>,
+  deleteKeys: readonly string[],
+  res: Response,
+): Promise<void> {
+  const vault = deps.vault;
+  if (!vault) {
+    res.status(503).json({
+      code: 'runtime.vault_unavailable',
+      message: 'vault not wired into runtime route',
+    });
+    return;
+  }
+  // OM-17 — validate VALUES before anything is written. Until this landed, the
+  // only checks were shape checks, so a masked field happily accepted a Google
+  // account password and reported "gespeichert". The vault write is the
+  // server's responsibility, so the gate has to be here — a client-side check
+  // alone is theatre.
+  const violation = await findPatternViolation(deps.catalog, id, setEntries);
+  if (violation) {
+    res.status(400).json({
+      code: 'runtime.setup_field_invalid',
+      message: `value for '${violation.field}' does not match the expected format`,
+      field: violation.field,
+      // Only ever the manifest's own hint, resolved to ENGLISH — this process
+      // has no request locale. See `setupFieldPattern.ts` → `PatternViolation`.
+      ...(violation.hint !== undefined ? { hint: violation.hint } : {}),
+    });
+    return;
+  }
+
+  const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
+  const isSecret = (key: string): boolean =>
+    secretFieldKeys === null ? true : secretFieldKeys.has(key);
+
+  const vaultSet: Record<string, string> = {};
+  const vaultDelete: string[] = [];
+  const configSet: Record<string, unknown> = {};
+  const configDelete: string[] = [];
+  for (const [k, v] of Object.entries(setEntries)) {
+    if (isSecret(k)) vaultSet[k] = v;
+    else configSet[k] = v;
+  }
+  for (const k of deleteKeys) {
+    if (isSecret(k)) vaultDelete.push(k);
+    else configDelete.push(k);
+  }
+
+  try {
+    if (Object.keys(vaultSet).length > 0) {
+      await vault.setMany(id, vaultSet);
+    }
+    for (const key of vaultDelete) {
+      await vault.deleteKey(id, key);
+    }
+    if (Object.keys(configSet).length > 0 || configDelete.length > 0) {
+      const nextConfig: Record<string, unknown> = {
+        ...installed.config,
+        ...configSet,
+      };
+      for (const k of configDelete) delete nextConfig[k];
+      await deps.installedRegistry.updateConfig(id, nextConfig);
+    }
+    if (deps.reactivate) {
+      await deps.reactivate(id);
+    }
+    const keys = await vault.listKeys(id);
+    const updated = deps.installedRegistry.get(id);
+    const configValues = stringifyConfigValues(updated?.config);
+    const configKeys = Object.keys(configValues);
+    // Key NAMES only — never a value, not even masked. Identical on both paths.
+    res.json({
+      keys: keys.sort(),
+      config_keys: configKeys.sort(),
+      config_values: configValues,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ code: 'runtime.vault_write_failed', message });
+  }
+}
+
 function resolveSecretFieldKeys(
   catalog: PluginCatalog | undefined,
   pluginId: string,
@@ -631,6 +975,43 @@ function resolveSecretFieldKeys(
     if (f.type === 'secret' || f.type === 'oauth') out.add(f.key);
   }
   return out;
+}
+
+/**
+ * OM-17 — run every incoming value through its field's declared `pattern`.
+ *
+ * Returns the first violation, or null when everything is acceptable. "Acceptable"
+ * deliberately includes:
+ *   - no catalog entry / no setup schema (legacy plugins without a manifest),
+ *   - a key that no declared field matches (free-form vault keys stay allowed),
+ *   - a field that declares no `pattern` (backward compatibility — the whole
+ *     ecosystem predates this feature),
+ *   - a `pattern` the load-time safety screen dropped.
+ * The check only ever tightens behaviour for a field that explicitly asked for it.
+ */
+async function findPatternViolation(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+  values: Record<string, string>,
+): Promise<PatternViolation | null> {
+  if (!catalog) return null;
+  const entry = catalog.get(pluginId);
+  if (!entry) return null;
+  const schema = extractSetupSchema(entry);
+  if (!schema) return null;
+
+  const byKey = new Map(schema.fields.map((f) => [f.key, f]));
+  for (const [key, value] of Object.entries(values)) {
+    const field = byKey.get(key);
+    if (!field) continue;
+    const violation = await checkSetupFieldPattern(
+      field,
+      value,
+      `${pluginId}/${key}`,
+    );
+    if (violation) return violation;
+  }
+  return null;
 }
 
 interface OptionsProviderField {

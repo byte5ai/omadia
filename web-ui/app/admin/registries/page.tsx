@@ -144,9 +144,9 @@ export default function AdminRegistriesPage(): React.ReactElement {
         </h1>
         <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
           {t.rich('intro', {
-            hub: () => (
+            hub: (chunks) => (
               <code className="rounded bg-[color:var(--card)] px-1 py-0.5 text-[12px]">
-                hub.omadia.ai
+                {chunks}
               </code>
             ),
           })}

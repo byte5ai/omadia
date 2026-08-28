@@ -49,8 +49,18 @@
           "properties": { "unit": { "enum": ["frame", "sample", "ms"] }, "value": { "type": "number" } }
         },
         "suggestedActions": { "type": "array", "items": { "$ref": "#/$defs/suggestedAction" } },
-        "dataClass": { "$ref": "#/$defs/dataClass" }
-      }
+        "dataClass": { "$ref": "#/$defs/dataClass" },
+        "icon": {
+          "type": "string",
+          "pattern": "^(app|lib):[A-Za-z0-9._-]+$",
+          "description": "Optional glyph affordance — canvas-protocol §12 icon trait. Additive 1.1-proposed vocabulary carried in the 1.0 whitelist (the $id stays protocol/1.0 because this is purely additive; see ADR-0010). Opaque namespaced IconRef: 'app:' = the curated built-in set, 'lib:' = a host icon library. The 'gen:' prefix (a generated SVG) is DEFERRED and DELIBERATELY EXCLUDED from this pattern — the schema is the last gate before a renderer, so gen: is rejected here until the upstream §6 sanitised-SVG + consent review lands; widen the pattern to include it in that same PR. Emission is gated on the renderer advertising iconResolver@1 in the handshake, because a Tier-1 renderer without icon support rejects unknown props wholesale (strict whitelist)."
+        },
+        "iconState": {
+          "enum": ["default", "active"],
+          "description": "State-as-glyph variant selector (docs/data-glyphs — 'show state, don't narrate it'). Presentational only; requires `icon`."
+        }
+      },
+      "dependentRequired": { "iconState": ["icon"] }
     },
 
     "actionEffect": { "enum": ["local", "internal", "external-effect"] },
@@ -153,7 +163,7 @@
     "p_choice":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "options"], "properties": { "type": { "const": "choice" }, "label": { "type": "string" }, "variant": { "enum": ["radio", "dropdown"] }, "value": { "type": "string" }, "options": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["value", "label"], "properties": { "value": { "type": "string" }, "label": { "type": "string" } } } } } } ], "unevaluatedProperties": false },
     "p_toggle":    { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "toggle" }, "label": { "type": "string" }, "value": { "type": "boolean" }, "variant": { "enum": ["checkbox", "switch"] } } } ], "unevaluatedProperties": false },
     "p_image":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "image" }, "src": { "type": "string" }, "altText": { "type": "string" } } } ], "unevaluatedProperties": false },
-    "p_chart":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "chartType", "points"], "properties": { "type": { "const": "chart" }, "chartType": { "enum": ["bar", "line", "pie"] }, "points": { "type": "array", "items": { "$ref": "#/$defs/chartPoint" } } } } ], "unevaluatedProperties": false },
+    "p_chart":     { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "chartType", "points"], "properties": { "type": { "const": "chart" }, "chartType": { "enum": ["bar", "line", "pie"] }, "variant": { "enum": ["default", "spark"], "description": "additive state-as-glyph variant (docs/data-glyphs — chart spark). 'spark' = a compact inline sparkline that shows a trend as a glyph rather than a full labelled chart; 'default' = the full chart. Same gating as the icon trait: emission is gated on iconResolver@1 because old renderers reject unknown props wholesale." }, "points": { "type": "array", "items": { "$ref": "#/$defs/chartPoint" } } } } ], "unevaluatedProperties": false },
     "p_form":      { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type"], "properties": { "type": { "const": "form" }, "title": { "type": "string" }, "contextBinding": { "$ref": "https://omadia.ai/protocol/1.0/target-ref.schema.json" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
     "p_toolbar":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "children"], "properties": { "type": { "const": "toolbar" }, "children": { "type": "array", "items": { "$ref": "#/$defs/primitive" } } } } ], "unevaluatedProperties": false },
     "p_menubar":   { "allOf": [ { "$ref": "#/$defs/commonTraits" }, { "required": ["type", "items"], "properties": { "type": { "const": "menubar" }, "items": { "type": "array" } } } ], "unevaluatedProperties": false },

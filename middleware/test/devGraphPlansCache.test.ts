@@ -9,6 +9,7 @@ import {
   type PlanWithSteps,
 } from '../src/routes/devGraph.js';
 import { PlanScopeCache } from '../src/routes/planScopeCache.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // #133 — the dev `/plans` overlay endpoint: batched step fetch + a short-TTL
 // per-scope cache. We count listPlansForScope calls to prove a second request
@@ -60,7 +61,7 @@ describe('/api/dev/graph/plans — batched + cached', () => {
     });
     const app = express();
     app.use('/api/dev/graph', createDevGraphRouter({ graph, planCache }));
-    server = app.listen(0);
+    server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}/api/dev/graph`;
   });

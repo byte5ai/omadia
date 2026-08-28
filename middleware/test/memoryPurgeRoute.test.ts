@@ -6,7 +6,9 @@ import { after, before, describe, it } from 'node:test';
 import express from 'express';
 import { Pool } from 'pg';
 
+import { resolvePgTestUrl } from './_helpers/pgTestDb.js';
 import { InMemoryMemoryStore } from '@omadia/memory';
+import { memoryContextKey } from '@omadia/channel-sdk';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import type {
   GraphNode,
@@ -15,6 +17,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { createMemoryPurgeRouter } from '../src/routes/memoryPurge.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * The router calls `knowledgeGraph.countMemorableKnowledge(filter)` and
@@ -100,7 +103,9 @@ function withPurgePrimitives(
  * not inside the router, so the test calls the router directly.
  */
 
-const PG_URL = 'postgres://postgres:test@127.0.0.1:55434/memtest';
+// No hardcoded default port (issue #572): the PG audit case runs only when an
+// explicit test-Postgres URL is set, else it skips.
+const PG_URL = resolvePgTestUrl('MEMORY_PG_TEST_URL', 'GRAPH_PG_TEST_URL');
 
 type PurgeKg = ReturnType<typeof withPurgePrimitives>;
 
@@ -113,11 +118,21 @@ interface Harness {
 
 const MOUNT = '/api/v1/admin/memory/purge';
 
+/** A real-shaped Teams team id (`:` + `@`) and the two spellings an operator
+ *  may type for it. The route must confirm against the TYPED one. */
+const TEAM_NATIVE_ID = '19:team-alpha@thread.tacv2';
+const TEAM_SELECTOR = `teams~${TEAM_NATIVE_ID}`;
+const TEAM_KEY = memoryContextKey('teams', TEAM_NATIVE_ID);
+
 async function seedScratch(store: InMemoryMemoryStore): Promise<void> {
   await store.createFile('/memories/orchestrators/a/x.md', 'ax');
   await store.createFile('/memories/orchestrators/a/notes/deep.md', 'deep');
   await store.createFile('/memories/orchestrators/b/y.md', 'by');
   await store.createFile('/memories/_rules/r.md', 'rule');
+  // Team ALPHA lives in BOTH agents — a context purge has to cross them.
+  await store.createFile(`/memories/contexts/a/team/${TEAM_KEY}/n.md`, 'a-team');
+  await store.createFile(`/memories/contexts/b/team/${TEAM_KEY}/n.md`, 'b-team');
+  await store.createFile(`/memories/contexts/a/user/teams~u-1/n.md`, 'a-user');
 }
 
 async function seedKg(kg: InMemoryKnowledgeGraph): Promise<void> {
@@ -163,8 +178,7 @@ async function makeHarness(graphPool?: Pool): Promise<Harness> {
       ...(graphPool ? { graphPool } : {}),
     }),
   );
-  const server: Server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server: Server = await listenLoopback(app);
   const { port } = server.address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${String(port)}${MOUNT}`;
 
@@ -202,6 +216,13 @@ async function postJson(
  *  pgcrypto ensured (router needs gen_random_uuid). Else undefined → audit
  *  case skipped. */
 async function maybePgPool(): Promise<Pool | undefined> {
+  if (!PG_URL) {
+    console.error(
+      '[memoryPurgeRoute] no MEMORY_PG_TEST_URL / GRAPH_PG_TEST_URL set — ' +
+        'skipping the PG audit case (issue #572).',
+    );
+    return undefined;
+  }
   const pool = new Pool({ connectionString: PG_URL, max: 2 });
   try {
     await pool.query('SELECT 1');
@@ -224,7 +245,7 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
     if (pgPool) await pgPool.end().catch(() => undefined);
   });
 
-  it('1. POST /preview {axis:agent, selector:a} → scratchCount 2, kgCount 1', async () => {
+  it('1. POST /preview {axis:agent, selector:a} → scratchCount 2 (agent tree + context forest), kgCount 1', async () => {
     const h = await makeHarness();
     try {
       const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
@@ -233,14 +254,13 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
       });
       assert.equal(res.status, 200, JSON.stringify(res.body));
       assert.equal(res.body['kgCount'], 1);
-      // DEVIATION from the prompt's "scratchCount = 2": previewMemoryPurge
-      // intentionally returns the count of top-level `/memories/...` ENTRIES
-      // a purge removes (one agent subtree = 1), NOT a recursive file count.
-      // See services/memoryPurge.ts doc: "Returns the number of top-level
-      // entries removed (NOT a recursive file count)". We assert that real
-      // contract (1) and separately prove a's 2-file footprint is intact
-      // pre-delete and (test 2) fully removed post-delete.
-      assert.equal(res.body['scratchCount'], 1);
+      // previewMemoryPurge counts TARGETS, not files: agent 'a' owns two
+      // subtrees — `/memories/orchestrators/a` and its context forest
+      // `/memories/contexts/a` — so the honest preview is 2. (Before the
+      // chat-context ACL this was 1; the second target is the new context
+      // forest, not a recursive file count.) We separately prove a's file
+      // footprint is intact pre-delete and (test 2) fully removed post-delete.
+      assert.equal(res.body['scratchCount'], 2);
       assert.equal(
         await h.store.fileExists('/memories/orchestrators/a/x.md'),
         true,
@@ -263,9 +283,19 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         confirm: 'a',
       });
       assert.equal(res.status, 200, JSON.stringify(res.body));
-      assert.equal(res.body['scratchDeleted'], 1);
+      assert.equal(res.body['scratchDeleted'], 2);
       assert.equal(res.body['kgDeleted'], 1);
 
+      assert.equal(
+        await h.store.directoryExists('/memories/contexts/a'),
+        false,
+        "a's context forest goes with the agent",
+      );
+      assert.equal(
+        await h.store.fileExists(`/memories/contexts/b/team/${TEAM_KEY}/n.md`),
+        true,
+        "b's half of the shared team survives an agent purge",
+      );
       assert.equal(
         await h.store.fileExists('/memories/orchestrators/b/y.md'),
         true,
@@ -335,6 +365,11 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         false,
         'orchestrators purged',
       );
+      assert.equal(
+        await h.store.directoryExists('/memories/contexts'),
+        false,
+        'contexts is ordinary scratch — axis:all takes it without naming it',
+      );
     } finally {
       await h.close();
     }
@@ -359,7 +394,14 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
     }
   });
 
-  it('6. DELETE / {axis:user, selector:user-2} → scratch no-op, kgDeleted 1, no warning', async () => {
+  it('6. DELETE / {axis:user, selector:user-2} → 400 invalid_selector, nothing deleted', async () => {
+    // `user-2` is a KG acl-owner id, not a context key: it has no
+    // `<channelType>~` half, so it can never name a context tree. This used to
+    // answer 200 / {scratchDeleted: 0} with a warning claiming the scratch
+    // trees WERE affected — a Danger-Zone gesture reporting success for a
+    // delete that could not possibly have matched. It is now refused loudly,
+    // and the KG leg does not run either: a selector this route cannot resolve
+    // must not half-execute.
     const h = await makeHarness();
     try {
       const res = await postJson(h.baseUrl, 'DELETE', {
@@ -367,25 +409,179 @@ describe('memory-purge router (HTTP, end-to-end)', () => {
         selector: 'user-2',
         confirm: 'user-2',
       });
-      assert.equal(res.status, 200, JSON.stringify(res.body));
-      assert.equal(res.body['scratchDeleted'], 0);
-      assert.equal(res.body['kgDeleted'], 1);
-      assert.equal(res.body['warning'], undefined, 'user IS modeled — no warning');
+      assert.equal(res.status, 400, JSON.stringify(res.body));
+      assert.equal(res.body['error'], 'invalid_selector');
+      assert.match(String(res.body['message']), /<channelType>~<id>/);
+      assert.equal(
+        await h.store.fileExists('/memories/contexts/a/user/teams~u-1/n.md'),
+        true,
+        'nothing was deleted',
+      );
+      assert.equal((await h.kg.countMemorableKnowledge({ tenantId: 'default' })).count, 2);
     } finally {
       await h.close();
     }
   });
 
-  it('7. POST /preview {axis:team, selector:t1} → warning + kgCount 0', async () => {
+  it("6b. DELETE / {axis:user, selector:teams~u-1} → the scratch tree goes, and the KG/scratch seam is named", async () => {
+    // The two legs of the user axis consume the selector in INCOMPATIBLE
+    // spellings: the KG matches it raw as an `aclOwner`, the purge service as a
+    // `<channelType>~<id>` context key. At most one can ever match, and the
+    // operator has to be told which half was a no-op instead of reading a 200
+    // as "the user was purged".
+    const h = await makeHarness();
+    try {
+      const res = await postJson(h.baseUrl, 'DELETE', {
+        axis: 'user',
+        selector: 'teams~u-1',
+        confirm: 'teams~u-1',
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body['scratchDeleted'], 1);
+      assert.equal(res.body['kgDeleted'], 0);
+      assert.match(
+        String(res.body['warning']),
+        /Knowledge-Graph rows .* NOT purged/,
+        'the no-op half must be named',
+      );
+      assert.equal(
+        await h.store.fileExists('/memories/contexts/a/user/teams~u-1/n.md'),
+        false,
+      );
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7. POST /preview {axis:team} → warning names the KG as the untouched half', async () => {
     const h = await makeHarness();
     try {
       const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
         axis: 'team',
-        selector: 't1',
+        selector: TEAM_KEY,
       });
       assert.equal(res.status, 200, JSON.stringify(res.body));
       assert.equal(res.body['kgCount'], 0);
-      assert.equal(typeof res.body['warning'], 'string', 'team not modeled → warning');
+      // Team ALPHA lives in both agents, so the honest preview is 2 trees.
+      assert.equal(res.body['scratchCount'], 2);
+      const warning = res.body['warning'];
+      assert.equal(typeof warning, 'string', 'team not modeled → warning');
+      // The warning used to claim "only scratch memory is affected", which read
+      // backwards once the context trees existed. It must now say the KG is the
+      // untouched half — and must not imply an invented KG filter.
+      assert.match(String(warning), /Knowledge-Graph is left untouched/);
+      assert.doesNotMatch(String(warning), /only scratch memory is affected/);
+      assert.match(String(warning), /scratch trees are affected/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7b. POST /preview {axis:team} that matches nothing does NOT claim an effect', async () => {
+    // The same defect class the warning above was written to fix: promising an
+    // effect that did not happen. A well-formed selector that resolves to zero
+    // trees is the likeliest operator mistake on this surface, and it must not
+    // be reported as "the scratch trees were affected".
+    const h = await makeHarness();
+    try {
+      const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
+        axis: 'team',
+        selector: 'teams~does-not-exist',
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body['scratchCount'], 0);
+      const warning = String(res.body['warning']);
+      assert.match(warning, /No matching context tree exists/);
+      assert.doesNotMatch(warning, /scratch trees are affected/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('7c. a context selector with no channel-type half is refused, not silently ignored', async () => {
+    const h = await makeHarness();
+    try {
+      for (const axis of ['team', 'channel', 'user'] as const) {
+        const res = await postJson(`${h.baseUrl}/preview`, 'POST', {
+          axis,
+          selector: '19:team-alpha@thread.tacv2',
+        });
+        assert.equal(res.status, 400, `${axis}: ${JSON.stringify(res.body)}`);
+        assert.equal(res.body['error'], 'invalid_selector');
+      }
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('9. DELETE / {axis:team} purges the context tree across agents, KG untouched', async () => {
+    const h = await makeHarness();
+    try {
+      const preview = await postJson(`${h.baseUrl}/preview`, 'POST', {
+        axis: 'team',
+        selector: TEAM_SELECTOR,
+      });
+      assert.equal(preview.status, 200, JSON.stringify(preview.body));
+      assert.equal(preview.body['scratchCount'], 2, 'one target per agent');
+
+      const res = await postJson(h.baseUrl, 'DELETE', {
+        axis: 'team',
+        selector: TEAM_SELECTOR,
+        confirm: TEAM_SELECTOR,
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      assert.equal(res.body['scratchDeleted'], 2);
+      assert.equal(res.body['kgDeleted'], 0, 'no KG filter is fabricated');
+      assert.match(String(res.body['warning']), /Knowledge-Graph was left untouched/);
+
+      assert.equal(
+        await h.store.directoryExists(`/memories/contexts/a/team/${TEAM_KEY}`),
+        false,
+      );
+      assert.equal(
+        await h.store.directoryExists(`/memories/contexts/b/team/${TEAM_KEY}`),
+        false,
+      );
+      // Agent trees and the other context axis survive.
+      assert.equal(await h.store.fileExists('/memories/orchestrators/a/x.md'), true);
+      assert.equal(
+        await h.store.fileExists('/memories/contexts/a/user/teams~u-1/n.md'),
+        true,
+      );
+      // The KG kept both MKs — the team axis has no KG column.
+      const all = await h.kg.countMemorableKnowledge({ tenantId: 'default' });
+      assert.equal(all.count, 2);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('10. type-to-confirm guards the TYPED selector, not the derived ctxKey', async () => {
+    const h = await makeHarness();
+    try {
+      // Confirming with the normalised key while having typed the raw selector
+      // must be rejected: the gesture guards the input, not the normalisation.
+      const mismatch = await postJson(h.baseUrl, 'DELETE', {
+        axis: 'team',
+        selector: TEAM_SELECTOR,
+        confirm: TEAM_KEY,
+      });
+      assert.equal(mismatch.status, 400, JSON.stringify(mismatch.body));
+      assert.equal(mismatch.body['error'], 'confirmation_mismatch');
+      assert.equal(
+        await h.store.directoryExists(`/memories/contexts/a/team/${TEAM_KEY}`),
+        true,
+        'nothing deleted on a mismatch',
+      );
+
+      // Re-typing the selector verbatim is what unlocks it.
+      const ok = await postJson(h.baseUrl, 'DELETE', {
+        axis: 'team',
+        selector: TEAM_SELECTOR,
+        confirm: TEAM_SELECTOR,
+      });
+      assert.equal(ok.status, 200, JSON.stringify(ok.body));
+      assert.equal(ok.body['scratchDeleted'], 2);
     } finally {
       await h.close();
     }

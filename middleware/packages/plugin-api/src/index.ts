@@ -58,6 +58,9 @@ export * from './agentPriorities.js';
 // renderers build against the fixtures here.
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
+// #757 — persistent per-turn audit receipts (kernel-provided store the
+// orchestrator resolves late-bound; receipts stay ephemeral when absent).
+export * from './turnReceiptStore.js';
 
 // Slice 2.5 — operator-owned per-plugin Privacy Mode contract. Shared by
 // the orchestrator dispatch hook (resolves mode at dispatch time) and the
@@ -152,3 +155,19 @@ export * from './topic.js';
 // /admin/duplicates (Excerpts tab); keep_a/keep_b deletes the loser
 // excerpt via the new `deleteExcerpt` KG method.
 export * from './excerptMerge.js';
+
+// #330 B3 — Principal-addressed targeted delivery ('targetedSend' kernel
+// service): how an agent plugin DMs a user or fans a report out to a role's
+// current holders. Optional service; plugins must feature-detect.
+export * from './targetedSend.js';
+
+// #584 WS T — `transcription@1`: provider-swappable speech-to-text capability
+// (batch + realtime), plus the day-one cost guardrails (per-call cap,
+// per-agent minute quota, metering). Adapter plugins publish the service;
+// consumers resolve it lazily and degrade when absent.
+export * from './transcription.js';
+export * from './transcriptionGuardrails.js';
+
+// #330 C3b — conversation-addressed proactive send ('conversationSend'):
+// post INTO a group conversation (the Facilitator's stall-nudges).
+export * from './conversationSend.js';

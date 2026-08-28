@@ -1,0 +1,30 @@
+{
+  "name": "@omadia/sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "pg": "^8.13.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "description": "Durable per-scope agent sandbox (issue #576, qm competitive analysis). Narrow Sandbox contract (provision/run/read/write/list/teardown) with optional capabilities behind type guards, AgentComputerProfile (persistence/egress/process declarations), and a local-Docker backend with an injectable exec seam for hermetic tests. Backends are interchangeable so a Fly/Firecracker/Satellite (#746) backend can implement the same contract later.",
+  "license": "MIT"
+}

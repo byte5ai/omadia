@@ -5,11 +5,13 @@ import { logFile } from './log';
 
 /**
  * System tray icon + menu. Lets omadia keep running in the background (the local
- * stack stays up) while giving quick access to Open / Restart / Logs / Quit.
+ * stack stays up) while giving quick access to Open / Restart / Logs / Updates /
+ * Quit.
  */
 export interface TrayActions {
   open: () => void;
   restart: () => void;
+  checkForUpdates: () => void;
   quit: () => void;
 }
 
@@ -36,6 +38,7 @@ function rebuildMenu(actions: TrayActions, status: string): void {
     { label: 'Open omadia', click: () => actions.open() },
     { label: 'Restart', click: () => actions.restart() },
     { label: 'Open Logs', click: () => void shell.openPath(logFile()) },
+    { label: 'Check for Updates…', click: () => actions.checkForUpdates() },
     { type: 'separator' },
     { label: 'Quit', click: () => actions.quit() },
   ]);

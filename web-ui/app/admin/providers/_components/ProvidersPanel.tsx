@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import { ChatGptConnectModal } from './ChatGptConnectModal';
 import {
   assignProvider,
   getProviders,
   patchSettings,
+  verifyProvider,
   ApiError,
   type AdminProvider,
   type ProviderAssignment,
@@ -26,17 +29,35 @@ function providerKeyEnv(id: string): string {
   return `${id.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
 }
 
-/** Pull the backend's `message` out of an ApiError JSON body when present. */
-function friendlyError(err: unknown): string {
-  if (err instanceof ApiError && err.body) {
-    try {
-      const j = JSON.parse(err.body) as { message?: unknown };
-      if (typeof j.message === 'string' && j.message.trim()) return j.message;
-    } catch {
-      /* fall through to the generic message */
-    }
-  }
-  return err instanceof Error ? err.message : String(err);
+/**
+ * Stable provider ordering, mirroring the server's comparator (OM-10b): keyed
+ * providers first, then by label, then by id. The server already sorts, but
+ * saving a key re-activates the plugin and re-registers its models, which used
+ * to bounce the provider the operator just configured to the bottom of the
+ * list — so the presentation order is pinned here too and never depends on the
+ * order the response happened to arrive in.
+ *
+ * Deliberately NOT `localeCompare`: server and client can resolve different
+ * collations, and a mismatch would break hydration (see `_components/Nav.tsx`).
+ */
+function compareProviders(a: AdminProvider, b: AdminProvider): number {
+  if (a.connected !== b.connected) return a.connected ? -1 : 1;
+  if (a.label !== b.label) return a.label < b.label ? -1 : 1;
+  if (a.id === b.id) return 0;
+  return a.id < b.id ? -1 : 1;
+}
+
+/**
+ * The machine code behind a failed call, or `null` when there is none.
+ *
+ * OM-09: this used to be `friendlyError`, which parsed the same body, threw
+ * the code away and returned the backend's English `message` for the panel to
+ * render as its headline. `ApiError` now parses the code once, and the
+ * headline comes from the localized catalogue instead; the server's own text
+ * survives only inside the support disclosure of `<ErrorHelp>`.
+ */
+function errorCode(err: unknown): string | null {
+  return err instanceof ApiError ? err.code : null;
 }
 
 /**
@@ -60,7 +81,9 @@ type Status = 'idle' | 'saving' | 'saved' | 'error';
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; data: ProvidersResponse }
-  | { kind: 'error'; message: string };
+  // The thrown error itself, for the same reason `errors` below keeps it: a
+  // pre-flattened string is already past the point where the code is readable.
+  | { kind: 'error'; error: unknown };
 
 export function ProvidersPanel({
   onSwitchToSubscriptions,
@@ -72,17 +95,16 @@ export function ProvidersPanel({
   const t = useTranslations('adminProviders');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [status, setStatus] = useState<Record<string, Status>>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  // The thrown error itself, not a pre-flattened string: the component decides
+  // what is headline and what is disclosed detail, not the state.
+  const [errors, setErrors] = useState<Record<string, unknown>>({});
 
   const load = useCallback(async (): Promise<void> => {
     try {
       const data = await getProviders();
       setState({ kind: 'ready', data });
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setState({ kind: 'error', error: err });
     }
   }, []);
 
@@ -118,10 +140,7 @@ export function ProvidersPanel({
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
-        setErrors((e) => ({
-          ...e,
-          [pluginId]: friendlyError(err),
-        }));
+        setErrors((e) => ({ ...e, [pluginId]: err }));
       }
     },
     [],
@@ -136,9 +155,16 @@ export function ProvidersPanel({
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">
-          {t('loadError', { message: state.message })}
-        </p>
+        // OM-09: this rendered `GET /v1/admin/providers failed: 500` — an
+        // English sentence the client itself assembled — as the whole message,
+        // in every locale. The catalogue answers `providers.read_failed` in the
+        // operator's language; `loadError` says which read failed when the
+        // server sent no code this page knows.
+        <ErrorHelp
+          code={errorCode(state.error)}
+          rawDetail={state.error}
+          fallback={t('loadError')}
+        />
       ) : (
         <div className="flex flex-col gap-10">
           {!state.data.vault_available && (
@@ -152,7 +178,7 @@ export function ProvidersPanel({
               {t('providers.heading')}
             </h2>
             <ul className="flex flex-col gap-3">
-              {state.data.providers.map((p) => (
+              {[...state.data.providers].sort(compareProviders).map((p) => (
                 <ProviderRow
                   key={p.id}
                   provider={p}
@@ -216,9 +242,33 @@ function ProviderRow({
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState('');
   const [saveStatus, setSaveStatus] = useState<Status>('idle');
-  const [saveError, setSaveError] = useState<string | undefined>(undefined);
+  // Either a per-field message from a 200 PATCH response (already a plain
+  // string the server produced per key) or the thrown ApiError itself.
+  const [saveError, setSaveError] = useState<unknown>(undefined);
+  const [verifying, setVerifying] = useState(false);
+  // #294 — device-flow connect modal for an OAuth provider ("Sign in with ChatGPT").
+  const [oauthOpen, setOauthOpen] = useState(false);
   const envKey = providerKeyEnv(p.id);
   const inputId = `provider-key-${p.id}`;
+  // OM-11 — the CLI this provider needs is not on this server. `undefined`
+  // means a pre-OM-11 middleware that cannot tell us, so we assume present and
+  // keep the previous behaviour rather than disabling an action that works.
+  const cliMissing = p.toolLess && p.installed === false;
+
+  /** Probe the stored key and refresh the row. Swallowing a failure here is
+   *  deliberate: an unreachable probe leaves the status at `unverified`, which
+   *  is exactly the honest outcome — it must never be reported as a bad key. */
+  const runVerify = async (): Promise<void> => {
+    setVerifying(true);
+    try {
+      await verifyProvider(p.id);
+      await onReload();
+    } catch {
+      await onReload();
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const saveKey = async (): Promise<void> => {
     const value = keyValue.trim();
@@ -236,10 +286,13 @@ function ProviderRow({
       setSaveStatus('saved');
       setKeyValue('');
       setEditing(false);
-      await onReload();
+      // Probe the key the operator just pasted BEFORE reloading, so the row
+      // never flashes a stale verdict — and so a typo is caught here rather
+      // than surfacing later as an unexplained failure on every chat message.
+      await runVerify();
     } catch (err) {
       setSaveStatus('error');
-      setSaveError(friendlyError(err));
+      setSaveError(err);
     }
   };
 
@@ -260,7 +313,7 @@ function ProviderRow({
       await onReload();
     } catch (err) {
       setSaveStatus('error');
-      setSaveError(friendlyError(err));
+      setSaveError(err);
     }
   };
 
@@ -277,30 +330,74 @@ function ProviderRow({
           </span>
         </span>
         <span className="flex items-center gap-3">
-          <span
-            className={[
-              'inline-flex items-center rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
-              p.connected
-                ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
-                : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
-            ].join(' ')}
-          >
-            {p.connected ? t('providers.connected') : t('providers.notConnected')}
-          </span>
-          {p.toolLess ? (
-            // Subscription CLI: connect/manage via the in-app login on the
-            // Subscriptions tab, not a vault key — switch tabs in place.
+          <ConnectionChip provider={p} t={t} />
+          {/* Explicit re-probe. Only offered where there is a credential to
+              probe — the CLI provider authenticates on the Subscriptions tab,
+              and an OAuth provider has no key to probe. */}
+          {!p.toolLess && !p.oauthConnect && p.status !== 'no_key' && (
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
             <button
               type="button"
-              onClick={onSwitchToSubscriptions}
+              onClick={() => void runVerify()}
+              disabled={verifying || saveStatus === 'saving'}
+              className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
+            >
+              {verifying ? t('providers.testing') : t('providers.testKey')}
+            </button>
+          )}
+          {p.oauthConnect ? (
+            // #294 — "Sign in with ChatGPT". No vault key: the login IS the
+            // credential, driven by a device-code modal on this same tab.
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
+            <button
+              type="button"
+              onClick={() => setOauthOpen(true)}
               className="text-[13px] font-medium text-[color:var(--accent)]"
             >
-              {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
+              {(p.connected ? t('providers.oauthReconnect') : t('providers.oauthConnect'))} →
             </button>
+          ) : p.toolLess ? (
+            // Subscription CLI: connect/manage via the in-app login on the
+            // Subscriptions tab, not a vault key — switch tabs in place.
+            //
+            // OM-11: this used to offer "Anmelden" unconditionally, because the
+            // DTO carried only `connected`/`status` and no way to know whether
+            // the CLI is even on this server. Clicking it landed the operator on
+            // a tab that said "NICHT GEFUNDEN" with no action available. When
+            // the binary is missing the action is now disabled AND says why —
+            // an offer you cannot accept is worse than no offer.
+            // `installed === undefined` (pre-OM-11 middleware) counts as
+            // installed, preserving the old behaviour on older servers.
+            cliMissing ? (
+              <span className="flex items-center gap-2">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare muted text, no border/bg) */}
+                <button
+                  type="button"
+                  disabled
+                  title={t('providers.cliNotInstalledReason')}
+                  className="cursor-not-allowed text-[13px] font-medium text-[color:var(--fg-muted)] opacity-60"
+                >
+                  {t('providers.logIn')} →
+                </button>
+                <span className="text-[12px] text-[color:var(--fg-muted)]">
+                  {t('providers.cliNotInstalledReason')}
+                </span>
+              </span>
+            ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
+              <button
+                type="button"
+                onClick={onSwitchToSubscriptions}
+                className="text-[13px] font-medium text-[color:var(--accent)]"
+              >
+                {(p.connected ? t('providers.manageCli') : t('providers.logIn'))} →
+              </button>
+            )
           ) : (
             !editing &&
             (p.connected ? (
               <span className="flex items-center gap-3">
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => setEditing(true)}
@@ -309,6 +406,7 @@ function ProviderRow({
                 >
                   {t('providers.changeKey')} →
                 </button>
+                {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare danger text, no border/bg) */}
                 <button
                   type="button"
                   onClick={() => void removeKey()}
@@ -320,6 +418,7 @@ function ProviderRow({
                 {saveStatus === 'saving' && <StatusChip status={saveStatus} t={t} />}
               </span>
             ) : (
+              // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -375,18 +474,136 @@ function ProviderRow({
             </Button>
             <StatusChip status={saveStatus} t={t} />
           </div>
-          {saveError && (
-            <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
-          )}
+          <SaveError error={saveError} />
+        </div>
+      )}
+
+      {/* The explanation for a rejected key — the single most useful text on
+          this page when chat is failing.
+          OM-09: it used to be `verifyError`, an English sentence built in the
+          middleware, rendered verbatim in every locale. `verifyErrorCode`
+          resolves against the localized catalogue instead; `verifyError` stays
+          as the fallback for a payload from a pre-#604 middleware, which is
+          the only thing such a server sends. */}
+      {p.status === 'invalid' && (p.verifyErrorCode ?? p.verifyError) && (
+        <div className="flex flex-col gap-1">
+          <ErrorHelp
+            code={p.verifyErrorCode ?? null}
+            fallback={p.verifyError}
+          />
+          <a
+            href="/help"
+            className="text-[12px] underline underline-offset-2 text-[color:var(--accent)]"
+          >
+            {t('providers.helpLink')}
+          </a>
         </div>
       )}
 
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
-      {!p.toolLess && !editing && saveError && (
-        <p className="text-[12px] text-[color:var(--danger)]">{saveError}</p>
+      {!p.toolLess && !editing && <SaveError error={saveError} />}
+
+      {/* #294 — the device-code modal for an OAuth provider connect. */}
+      {oauthOpen && (
+        <ChatGptConnectModal
+          providerId={p.id}
+          t={t}
+          onClose={() => setOauthOpen(false)}
+          onConnected={() => {
+            setOauthOpen(false);
+            void onReload();
+          }}
+        />
       )}
     </li>
+  );
+}
+
+/**
+ * One failed key save. A per-field message from a 200 PATCH response is
+ * already a plain per-key string and stays as-is; a thrown `ApiError` goes
+ * through the catalogue, so its code never reaches the screen as text.
+ */
+function SaveError({ error }: { error: unknown }): React.ReactElement | null {
+  if (error === undefined || error === null) return null;
+  if (typeof error === 'string') {
+    return <p className="text-[12px] text-[color:var(--danger)]">{error}</p>;
+  }
+  return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
+}
+
+/** Chip colours per Lume: text + edge only, never a filled state block. */
+const CHIP_CLASS: Record<AdminProvider['status'], string> = {
+  verified: 'border-[color:var(--success)]/40 text-[color:var(--success)]',
+  unverified: 'border-[color:var(--warning)]/40 text-[color:var(--warning)]',
+  invalid: 'border-[color:var(--danger)]/40 text-[color:var(--danger)]',
+  no_key: 'border-[color:var(--border)] text-[color:var(--fg-muted)]',
+};
+
+const CHIP_LABEL_KEY: Record<AdminProvider['status'], string> = {
+  verified: 'providers.verified',
+  invalid: 'providers.invalid',
+  unverified: 'providers.unverified',
+  no_key: 'providers.notConnected',
+};
+
+/** #671 — `ProviderVerificationReason` codes → localized copy. Deliberately a
+ *  closed map rather than a template lookup: an unknown code from a newer
+ *  middleware renders nothing, instead of printing the raw code at the
+ *  operator. Mirrors `ProviderVerificationReason` in
+ *  `middleware/src/platform/providerCredentialVerifier.ts`. */
+const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
+  forbidden: 'providers.unverifiedReason.forbidden',
+  non_json_response: 'providers.unverifiedReason.nonJsonResponse',
+  unexpected_body: 'providers.unverifiedReason.unexpectedBody',
+  http_error: 'providers.unverifiedReason.httpError',
+  network_error: 'providers.unverifiedReason.networkError',
+  no_probe: 'providers.unverifiedReason.noProbe',
+};
+
+/**
+ * Four-state credential chip. The old two-state version showed "CONNECTED" for
+ * any non-empty vault string, which is what let a dead key look healthy — so
+ * "a key exists" and "the key works" are now visibly different states.
+ */
+function ConnectionChip({
+  provider: p,
+  t,
+}: {
+  provider: AdminProvider;
+  t: T;
+}): React.ReactElement {
+  const format = useFormatter();
+  return (
+    <span className="flex items-center gap-2">
+      <span
+        className={[
+          'inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+          CHIP_CLASS[p.status],
+        ].join(' ')}
+      >
+        {t(CHIP_LABEL_KEY[p.status])}
+      </span>
+      {p.status === 'verified' && p.verifiedAt && (
+        <span className="text-[11px] text-[color:var(--fg-muted)]">
+          {t('providers.verifiedAt', {
+            time: format.relativeTime(new Date(p.verifiedAt)),
+          })}
+        </span>
+      )}
+      {/* #671 — `unverified` on its own is not actionable: it covers "your key
+          is fine but your region is blocked" and "the provider was down" with
+          the same chip. #599 was right to stop calling a bare 403 a bad key;
+          this says which of those it actually was. Unknown codes render
+          nothing rather than a raw string — a newer middleware must never leak
+          an untranslated code into the UI. */}
+      {p.status === 'unverified' && p.verifyReason && UNVERIFIED_REASON_KEYS[p.verifyReason] && (
+        <span className="text-[11px] text-[color:var(--fg-muted)]">
+          {t(UNVERIFIED_REASON_KEYS[p.verifyReason]!)}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -404,7 +621,8 @@ function AssignmentRow({
   assignment: ProviderAssignment;
   providers: AdminProvider[];
   status: Status;
-  error?: string;
+  /** The thrown value from the last failed apply, resolved by <ErrorHelp>. */
+  error?: unknown;
   onApply: (pluginId: string, provider: string, model: string) => void;
   t: T;
 }): React.ReactElement {
@@ -489,6 +707,14 @@ function AssignmentRow({
         </select>
       </div>
 
+      {/* OM-10: the copy is now present-tense, because `a.provider` is the
+          ALREADY-PERSISTED provider and the select above applies immediately —
+          there is no code path where the old conditional "if you switch to X"
+          phrasing was true. NOTE: on stock config the built-in `anthropic`
+          descriptor sets `requiresAvvDisclosure: false`, so this banner should
+          not render for Anthropic at all; the tester reported seeing it, which
+          means the render condition itself is worth reproducing separately.
+          The gate is deliberately left unchanged here. */}
       {showDisclosure && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
           {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}
@@ -501,7 +727,19 @@ function AssignmentRow({
           })}
         </p>
       )}
-      {error && <p className="text-[12px] text-[color:var(--danger)]">{error}</p>}
+      {/* Subscription CLIs (consumer plan): no AVV/DPA CAN exist — a stronger
+          caveat than the ordinary third-party disclosure, so it gets the
+          warning styling, not the muted note styling. */}
+      {selectedProvider?.subscriptionNotice && (
+        <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
+          {t('assignments.subscriptionNotice', {
+            provider: selectedProvider?.label ?? a.provider,
+          })}
+        </p>
+      )}
+      {error !== undefined && (
+        <ErrorHelp code={errorCode(error)} rawDetail={error} />
+      )}
     </div>
   );
 }

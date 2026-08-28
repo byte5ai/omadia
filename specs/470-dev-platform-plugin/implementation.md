@@ -83,7 +83,7 @@ The load-bearing ones:
 | `ctx.services.get` exposes the **superuser** pool | Hole confirmed; the *superuser* characterisation is unproven | Still a real ungated-capability hole. Don't overstate the privilege level |
 | `dev_repo_plugin_grants` stale-grant bug | The MCP grant bug is live; the **dev-repo grant mechanism itself is unwired** | Fix `plugin_mcp_grants`; the dev-repo half is moot until wired |
 | Arbitrary Tailwind values **cannot** be pre-generated | An *exact* arbitrary value can (`@source inline("w-[137px]")` emits it). The **unbounded universe** cannot | The vocabulary argument holds; the absolute phrasing was wrong. And ingest sees compiled Vite JS, not JSX attributes — "reject `[` in class attributes" is under-specified |
-| `src/devplatform` = 54 files / 14,498 LOC | **53 / 14,457** | Stale; the checklist is a snapshot, which is why the ratchet exists |
+| `src/devplatform` = 54 files / 14,498 LOC | **53 / 14,457** | Stale; the checklist is a snapshot, which is why the ratchet existed |
 | §4.1 vs §4.2 on `DevJob*` type ownership | **They contradict each other** | Two implementers would build incompatible package boundaries. §4.2 wins: types move to the plugin repo |
 | C1 "publish to public npm" | Residue of the corrected D1 | Removed below |
 | Proposed capability `pgPool@1` | The existing contract is **`graphPool@1`**, already provided by `harness-knowledge-graph-neon` | A second D1-class error: inventing a name that contradicts established practice. Use `graphPool@1` |
@@ -133,6 +133,7 @@ debt.
 | **C11** | core | **Migration handoff.** Seed the plugin ledger by filename, **with per-file schema witnesses** (see below). Own PR, own rollback | Plugin owns its schema |
 | **C12** | core | Delete the two `publicPaths` exemptions. **Nothing else in the PR** | Single revertible commit |
 | **C13** | core | Residue: CI matrix, `id-token: write`, compose, i18n keys, comments, fixture strings | **Ratchet reads 0**, baseline pinned there permanently |
+| **C14** | core | **Retire the ratchet.** Delete the script, its detector test, `decoupling-baseline.json` and the CI job; leave a closing note in these specs | Extraction complete — the guard has done its job |
 
 ### The migration handoff needs witnesses, not trust
 
@@ -210,7 +211,7 @@ through the host `node_modules` symlink. Removing them breaks every installed co
 Worth a comment in `middleware/package.json`.
 
 `DEV_ENDPOINTS_ENABLED` is core's dev-graph feature and merely shares the prefix — the ratchet
-already allowlists it so the count can legitimately reach 0.
+allowlisted it so the count could legitimately reach 0.
 
 ---
 
@@ -218,7 +219,7 @@ already allowlists it so the count can legitimately reach 0.
 
 | Ebene | Before the designs | After |
 |---|---|---|
-| Diagnosis | ~85 % | **~90 %** — six independent passes found six things the checklist missed, and the ratchet catches what all of them missed |
+| Diagnosis | ~85 % | **~90 %** — six independent passes found six things the checklist missed, and the ratchet caught what all of them missed |
 | Architecture | ~70 % | **~75 %** — five decisions corrected, two of them (H1 shape, H3 shape) materially better than what I had |
 | Lands as planned | ~50 % | **~55 %** — H2 got much cheaper (B5: dead code, no live awaits) and G8's SemVer risk evaporated (F2: never published); H3 and P4 got visibly more expensive |
 

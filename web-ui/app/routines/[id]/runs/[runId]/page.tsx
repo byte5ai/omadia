@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { getTranslations } from 'next-intl/server';
+import { getFormatter, getTranslations } from 'next-intl/server';
 
 import { Markdown } from '../../../../_components/Markdown';
 import {
@@ -18,9 +18,10 @@ interface RouteParams {
 
 export const dynamic = 'force-dynamic';
 
-export const metadata: Metadata = {
-  title: 'Routine Run · omadia',
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getTranslations('routines.runDetail');
+  return { title: t('metaTitle') };
+}
 
 export default async function RoutineRunDetailPage({
   params,
@@ -80,11 +81,12 @@ async function RunDetail({
 }): Promise<React.ReactElement> {
   const t = await getTranslations('routines.runDetail');
   const tTrigger = await getTranslations('routines.trigger');
+  const format = await getFormatter();
   return (
     <>
       <header className="mt-6 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-6 lg:p-8">
         <h1 className="font-display text-[clamp(1.75rem,3vw,2.5rem)] leading-[1.1] text-[color:var(--fg-strong)]">
-          Run · {formatDate(run.startedAt)}
+          Run · {formatDate(run.startedAt, format)}
         </h1>
         <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 text-[12px] sm:grid-cols-4">
           <Field label="Trigger" value={triggerLabel(run.trigger, tTrigger)} mono />
@@ -106,14 +108,14 @@ async function RunDetail({
             mono
           />
           <Field
-            label="Iter · Tools"
+            label={t('fieldIterTools')}
             value={`${run.iterations ?? '—'} · ${run.toolCalls ?? '—'}`}
             mono
           />
-          <Field label="Started" value={formatDate(run.startedAt)} mono />
+          <Field label="Started" value={formatDate(run.startedAt, format)} mono />
           <Field
             label="Finished"
-            value={run.finishedAt ? formatDate(run.finishedAt) : '—'}
+            value={run.finishedAt ? formatDate(run.finishedAt, format) : '—'}
             mono
           />
           <Field label="Run-ID" value={run.id} mono />
@@ -209,6 +211,7 @@ function Field({
 }
 
 type TFn = (key: string, values?: Record<string, string | number>) => string;
+type Formatter = Awaited<ReturnType<typeof getFormatter>>;
 
 function triggerLabel(trigger: 'cron' | 'catchup' | 'manual', t: TFn): string {
   return trigger === 'cron'
@@ -218,11 +221,10 @@ function triggerLabel(trigger: 'cron' | 'catchup' | 'manual', t: TFn): string {
       : t('manual');
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, format: Formatter): string {
   try {
     const d = new Date(iso);
-    return d.toLocaleString('de-DE', {
-      timeZone: 'Europe/Berlin',
+    return format.dateTime(d, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',

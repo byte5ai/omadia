@@ -2,8 +2,6 @@ import path from 'node:path';
 import type { NextConfig } from 'next';
 import createNextIntlPlugin from 'next-intl/plugin';
 
-const middlewareUrl = process.env.MIDDLEWARE_URL ?? 'http://localhost:3979';
-
 // next-intl plugin: wires `i18n/request.ts` into the Next compile so that
 // `getRequestConfig` is invoked on every RSC request and the resolved
 // messages reach `<NextIntlClientProvider>`.
@@ -29,37 +27,24 @@ const nextConfig: NextConfig = {
     '/**': ['./node_modules/@swc/helpers/**'],
   },
 
-  // Rewrite /bot-api/* on this Next server to the middleware's /api/* so the
-  // browser only ever sees same-origin requests. No CORS dance, no separate
-  // API-route proxy. The prefix is /bot-api intentionally — /api/* is reserved
-  // for Next's own route handlers, which we don't use here but shouldn't shadow.
-  //
-  // MIDDLEWARE_URL is environment-dependent:
-  //   - dev:     http://localhost:3979              (middleware on same machine)
-  //   - on Fly:  http://odoo-bot-middleware.internal:8080
-  //             (flycast — private network, no public edge hop)
+  // NB: /bot-api/* and /p/* are deliberately NOT rewrites. Next evaluates
+  // rewrites() at build time and freezes the destination into
+  // routes-manifest.json, which baked the compose hostname into the
+  // published Docker image and broke MIDDLEWARE_URL as a runtime setting
+  // on every other platform. They are route handlers now
+  // (app/bot-api/[[...path]]/route.ts, app/p/[[...path]]/route.ts) that
+  // resolve MIDDLEWARE_URL per request — see app/_lib/middlewareProxy.ts.
   async rewrites() {
     return [
-      {
-        source: '/bot-api/:path*',
-        destination: `${middlewareUrl}/api/:path*`,
-      },
       // Friction-free pairing discovery (#293). `.well-known` segments are
       // ignored by the App Router file system, so the canonical public path is
       // served by the `/pairing-discovery` route handler via this rewrite. The
       // desktop app GETs the operator URL it already knows and gets back a
-      // connect-ready descriptor (absolute wsUrl + auth).
+      // connect-ready descriptor (absolute wsUrl + auth). Static destination,
+      // so the build-time freeze is harmless here.
       {
         source: '/.well-known/omadia-ui',
         destination: '/pairing-discovery',
-      },
-      // Plugin-served UI surfaces. Plugins register Express routers under
-      // /p/<pluginId>/... via ctx.routes.register; iframes embedded in
-      // Teams Tabs hit this rewrite so the browser only ever sees the
-      // web-ui origin.
-      {
-        source: '/p/:path*',
-        destination: `${middlewareUrl}/p/:path*`,
       },
     ];
   },

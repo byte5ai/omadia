@@ -69,6 +69,7 @@ export default function DetailPanel({
             ✎ manual
           </span>
         ) : null}
+        {/* eslint-disable-next-line no-restricted-syntax -- icon-only close (×) chrome, not a text CTA */}
         <button
           type="button"
           onClick={onClose}

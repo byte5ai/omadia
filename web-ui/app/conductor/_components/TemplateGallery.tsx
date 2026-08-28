@@ -224,6 +224,7 @@ export function TemplateGallery({
         {FACETS.map(([key, labelKey]) => {
           const active = facet === key;
           return (
+            // eslint-disable-next-line no-restricted-syntax -- aria-pressed facet-filter selector chip (accent-fill active state), not a §4.2 CTA
             <button
               key={key}
               type="button"
@@ -265,6 +266,7 @@ export function TemplateGallery({
             {useCases.map((useCase) => {
               const active = useCaseFilter === useCase;
               return (
+                // eslint-disable-next-line no-restricted-syntax -- aria-pressed use-case toggle chip (bespoke accent state), not a §4.2 CTA
                 <button
                   key={useCase}
                   type="button"

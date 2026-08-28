@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import Link from 'next/link';
 
@@ -42,6 +42,7 @@ const KIND_BADGE: Record<MemorableKind, string> = {
  */
 export default function MemoriesPage(): React.ReactElement {
   const t = useTranslations('memories');
+  const format = useFormatter();
   const [items, setItems] = useState<MemorableKnowledgeNode[]>([]);
   const [filter, setFilter] = useState<MemorableKind | 'all'>('all');
   const [loading, setLoading] = useState(true);
@@ -89,6 +90,7 @@ export default function MemoriesPage(): React.ReactElement {
             const active = filter === k;
             const label = k === 'all' ? t('list.filterAll') : t(`kinds.${k}`);
             return (
+              // eslint-disable-next-line no-restricted-syntax -- segmented kind-filter selector with active-state styling
               <button
                 key={k}
                 type="button"
@@ -146,7 +148,7 @@ export default function MemoriesPage(): React.ReactElement {
                       className="font-mono text-[10px] text-[color:var(--fg-muted)]"
                       dateTime={mk.props.created_at}
                     >
-                      {new Date(mk.props.created_at).toLocaleString('de-DE')}
+                      {format.dateTime(new Date(mk.props.created_at))}
                     </time>
                   </div>
                   <p className="mt-2 text-sm text-[color:var(--fg-strong)]">

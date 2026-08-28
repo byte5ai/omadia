@@ -148,6 +148,13 @@ export interface ContextBuildInput {
   userMessage: string;
   sessionScope?: string;
   userId?: string;
+  /**
+   * #575 — curated-memory recall admits only SHARED knowledge (`team` /
+   * `public`), never a row the recalling user merely owns. Set by the
+   * assembler when the room is restricted; see the field of the same name on
+   * {@link AssembleForBudgetInput}.
+   */
+  sharedRecallOnly?: boolean;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -240,6 +247,36 @@ export interface AssembleForBudgetInput {
    * (direct-retriever callers and sub-agents are unaffected).
    */
   agentScopePrefix?: string;
+  /**
+   * #575 — admit only turns from THIS conversation, dropping cross-session
+   * hits before they are rendered.
+   *
+   * Set by the orchestrator when the audience floor is installed and the room
+   * does not hold `memory:recall:cross_scope`. Recall is ACL-gated by the
+   * RECALLING user (`viewerOmadiaUserId`), so in a shared room a hit from that
+   * person's other conversations lands in the one prompt everyone's answer is
+   * derived from — the participant it belongs to is the only one entitled to
+   * it, and the rest of the room never asked for it.
+   *
+   * It has to be applied HERE rather than by the caller: `build` returns
+   * rendered text, so a consumer filtering `sources` afterwards would be
+   * editing a trace, not the prompt.
+   *
+   * Undefined ⇒ unrestricted, which is every deployment that has not opted into
+   * the floor and every 1:1 conversation.
+   */
+  restrictToScope?: string;
+  /**
+   * #575 — curated-memory recall admits only SHARED knowledge (`team` /
+   * `public`), never a row the recalling user merely owns.
+   *
+   * Set alongside {@link restrictToScope}: a room that may not reach outside
+   * itself is equally not entitled to one participant's private knowledge, and
+   * recall is ACL-gated by that participant. Unlike the turn legs this does not
+   * drop the leg — shared knowledge is shared by construction, so the room
+   * keeps it.
+   */
+  sharedRecallOnly?: boolean;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -251,6 +288,9 @@ export type AssembledHitReason =
   | 'manual-boost'
   | 'agent-boost';
 
+/** The recall leg that produced a hit — never rewritten by a boost. */
+export type AssembledHitOrigin = 'tail' | 'entity' | 'fts';
+
 export interface AssembledHit {
   turnId: string;
   /** Final score after all multipliers (raw × manual × agent). */
@@ -259,13 +299,23 @@ export interface AssembledHit {
   chars: number;
   /** Which recall path delivered this hit / which multiplier boosted it,
    *  if any. `manual-boost` / `agent-boost` only override `entity`/`fts`
-   *  when relevant — the audit card shows the dominant reason. */
+   *  when relevant — the audit card shows the dominant reason.
+   *
+   *  PRESENTATIONAL. A boost overwrites the path that found the hit, so this
+   *  cannot answer "where did this come from" — use {@link origin} for that. */
   reason: AssembledHitReason;
+  /** Which leg actually delivered the hit, before any boost renamed it.
+   *  `'tail'` is the verbatim window of the CURRENT conversation; `'entity'`
+   *  and `'fts'` are topical recall the retriever went looking for. Unlike
+   *  {@link reason} this is never overwritten, so it is the field to branch on
+   *  when the distinction has to hold (e.g. the Fresh-Check gate, which must
+   *  not treat a boosted tail turn as recall). */
+  origin: AssembledHitOrigin;
 }
 
 export interface AssembledExclusion {
   turnId: string;
-  reason: 'budget-exceeded' | 'agent-blocked';
+  reason: 'budget-exceeded' | 'agent-blocked' | 'audience-scope';
 }
 
 // Cross-session recall payload types (RecalledContext / RecalledPlan /
@@ -538,8 +588,22 @@ export class ContextRetriever {
     // continuation) would otherwise surface the most-recent-N plans/processes/
     // insights regardless of relevance — the "earlier sessions" panel showing
     // unrelated content. In-session recall (tail / entity / FTS) is unaffected.
-    const runCrossSessionRecall =
-      !this.opts.recallRequiresTerms || extractedTerms.length > 0;
+    //
+    // #575 adds a second, independent reason to skip them: a room restricted to
+    // its own scope must not receive plans, processes or curated insights from
+    // other sessions either. They bypass the candidate pool entirely and are
+    // rendered as their own blocks, so the scope filter further down would never
+    // see them — gating here is what makes that filter honest rather than
+    // partial.
+    const hasTopicalAnchor = !this.opts.recallRequiresTerms || extractedTerms.length > 0;
+    const runCrossSessionRecall = input.restrictToScope === undefined && hasTopicalAnchor;
+    // #575 — curated memory is TIERED, unlike plans and processes: `team` /
+    // `public` knowledge is shared by construction, and a restricted room is
+    // entitled to it. So the memory leg narrows rather than dying with the
+    // others — the same "narrow instead of skip" step this whole cluster is
+    // built on, one level deeper.
+    const runMemoryRecall = hasTopicalAnchor;
+    const sharedRecallOnly = input.restrictToScope !== undefined;
     const emptyPlans: Promise<RecalledPlan[]> = Promise.resolve([]);
     const emptyProcesses: Promise<RecalledProcess[]> = Promise.resolve([]);
     const emptyMemory: Promise<MemoryRecallHit[]> = Promise.resolve([]);
@@ -560,7 +624,9 @@ export class ContextRetriever {
       this.loadAgentPriorities(input.agentId),
       runCrossSessionRecall ? this.loadPlanHits(buildInput) : emptyPlans,
       runCrossSessionRecall ? this.loadProcessHits(buildInput) : emptyProcesses,
-      runCrossSessionRecall ? this.loadMemoryHits(buildInput) : emptyMemory,
+      runMemoryRecall
+        ? this.loadMemoryHits({ ...buildInput, ...(sharedRecallOnly ? { sharedRecallOnly } : {}) })
+        : emptyMemory,
       this.loadDurableHits(buildInput),
     ]);
 
@@ -630,6 +696,14 @@ export class ContextRetriever {
     const excluded: AssembledExclusion[] = [];
     const filtered: CandidateHit[] = [];
     for (const c of candidates) {
+      // #575 — drop hits from other conversations before ranking, so a
+      // restricted room narrows its recall instead of losing it entirely.
+      // Recorded as an exclusion rather than skipped silently: an operator
+      // looking at a thin context block needs to see that the floor trimmed it.
+      if (input.restrictToScope !== undefined && c.scope !== input.restrictToScope) {
+        excluded.push({ turnId: c.turnId, reason: 'audience-scope' });
+        continue;
+      }
       const pri = prioritiesIndex.get(c.turnId);
       if (pri?.action === 'block') {
         excluded.push({ turnId: c.turnId, reason: 'agent-blocked' });
@@ -820,6 +894,7 @@ export class ContextRetriever {
         score: c.rawScore,
         chars: chunkChars,
         reason: pickReason(c),
+        origin: c.origin,
       });
       // Defensive: budget check on chars too (rounding can edge out the
       // token estimate by 1-2 tokens; chars cap is the hard ceiling).
@@ -1185,6 +1260,7 @@ export class ContextRetriever {
         this.graph.searchMemorableKnowledgeByEmbedding({
           queryEmbedding: queryVector,
           viewerOmadiaUserId: input.userId,
+          ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
@@ -1193,6 +1269,7 @@ export class ContextRetriever {
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
           viewerOmadiaUserId: input.userId,
+          ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,

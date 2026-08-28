@@ -9,6 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 
 import { createDatasetsRouter } from '../src/routes/datasets.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 
 /**
  * HTTP integration test for the #430 datasets REST surface, mirroring the
@@ -45,8 +46,7 @@ async function makeHarness(
   const app = express();
   app.use(express.json());
   app.use(MOUNT, withSession(userId), createDatasetsRouter({ graph }));
-  const server: Server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const server: Server = await listenLoopback(app);
   const { port } = server.address() as AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${String(port)}${MOUNT}`,
@@ -135,6 +135,45 @@ describe('POST /api/v1/datasets', () => {
     assert.equal(body.code, 'dataset.internal_error');
     assert.equal(body.message, 'simulated ingest failure');
     await throwing.close();
+  });
+
+  it('paginates the list: limit/offset pass through and totalMatched is returned (#532)', async () => {
+    const graph = new InMemoryKnowledgeGraph();
+    const paged = await makeHarness('user-1', graph);
+    for (let i = 0; i < 5; i++) {
+      await graph.ingestDataset({
+        name: `ds-${String(i)}`,
+        sourceFileName: `ds-${String(i)}.csv`,
+        ownerOmadiaUserId: 'user-1',
+        columns: [{ name: 'a', type: 'string' }],
+        rows: [{ a: 'x' }],
+      });
+    }
+
+    const page = (await (await fetch(`${paged.baseUrl}?limit=2`)).json()) as {
+      items: unknown[];
+      totalMatched: number;
+    };
+    assert.equal(page.items.length, 2);
+    assert.equal(page.totalMatched, 5);
+
+    const lastPage = (await (await fetch(`${paged.baseUrl}?limit=2&offset=4`)).json()) as {
+      items: unknown[];
+      totalMatched: number;
+    };
+    assert.equal(lastPage.items.length, 1);
+    assert.equal(lastPage.totalMatched, 5);
+
+    await paged.close();
+  });
+
+  it('400s on an invalid list query instead of silently ignoring it', async () => {
+    for (const qs of ['?limit=0', '?limit=201', '?offset=-1', '?limit=abc']) {
+      const res = await fetch(`${h.baseUrl}${qs}`);
+      assert.equal(res.status, 400, qs);
+      const body = (await res.json()) as { code: string };
+      assert.equal(body.code, 'dataset.invalid_query', qs);
+    }
   });
 
   it('scopes datasets per owner — a different session cannot see or delete them', async () => {

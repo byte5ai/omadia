@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   DeterministicChecker,
+  hasOdooRecordAnchor,
+  type Claim,
   type GraphReader,
   type HardClaim,
   type OdooReader,
@@ -324,5 +326,133 @@ describe('verifier/deterministicChecker - error handling', () => {
     if (verdict.status === 'unverified') {
       assert.match(verdict.reason, /timeout/);
     }
+  });
+});
+
+// #129 golden flake — the extractor sometimes types an invoice-reference claim
+// as `qualitative` instead of `id` while still populating `odooRecord.ref`.
+// Record existence is checkable regardless of claim type.
+describe('verifier/deterministicChecker - checkRecordExists (any claim type)', () => {
+  function anchoredQualitative(overrides: Partial<Claim> = {}): Claim {
+    return {
+      id: 'c_q',
+      text: 'die Rechnung INV/2026/0099 ist verbucht und abgeschlossen',
+      type: 'qualitative',
+      expectedSource: 'odoo',
+      odooRecord: { model: 'account.move', ref: 'INV/2026/0099' },
+      relatedEntities: [],
+      ...overrides,
+    };
+  }
+
+  it('contradicts a qualitative claim whose anchored ref does not exist', async () => {
+    const calls: OdooCall[] = [];
+    const odoo = stubOdoo(() => [], calls);
+    const checker = new DeterministicChecker({ odoo });
+    const verdict = await checker.checkRecordExists(anchoredQualitative());
+    assert.equal(verdict.status, 'contradicted');
+    assert.equal(calls[0]!.method, 'search');
+    assert.deepEqual(calls[0]!.positionalArgs, [[['name', '=', 'INV/2026/0099']]]);
+  });
+
+  it('verifies a qualitative claim whose anchored id exists', async () => {
+    const odoo = stubOdoo(() => [{ id: 42 }]);
+    const checker = new DeterministicChecker({ odoo });
+    const verdict = await checker.checkRecordExists(
+      anchoredQualitative({ odooRecord: { model: 'account.move', id: 42 } }),
+    );
+    assert.equal(verdict.status, 'verified');
+  });
+
+  it('returns unverified (never throws) when the reader fails or is missing', async () => {
+    const throwing = new DeterministicChecker({
+      odoo: stubOdoo(() => {
+        throw new Error('boom');
+      }),
+      log: () => undefined,
+    });
+    assert.equal(
+      (await throwing.checkRecordExists(anchoredQualitative())).status,
+      'unverified',
+    );
+    const none = new DeterministicChecker({});
+    assert.equal(
+      (await none.checkRecordExists(anchoredQualitative())).status,
+      'unverified',
+    );
+  });
+
+  it('returns unverified for a non-odoo or unanchored claim', async () => {
+    const checker = new DeterministicChecker({ odoo: stubOdoo(() => [1]) });
+    assert.equal(
+      (await checker.checkRecordExists(anchoredQualitative({ expectedSource: 'graph' }))).status,
+      'unverified',
+    );
+    const noAnchor = await checker.checkRecordExists(anchoredQualitative({ odooRecord: undefined }));
+    assert.equal(noAnchor.status, 'unverified');
+    if (noAnchor.status === 'unverified') assert.match(noAnchor.reason, /no odoo record anchor/);
+  });
+
+  it('falls back to the model-specific reference field (vendor bill `ref`) before contradicting', async () => {
+    const calls: OdooCall[] = [];
+    const odoo = stubOdoo((call) => {
+      const [[field]] = call.positionalArgs[0] as [[string, string, string]];
+      return field === 'ref' ? [7] : [];
+    }, calls);
+    const checker = new DeterministicChecker({ odoo });
+    const verdict = await checker.checkRecordExists(
+      anchoredQualitative({
+        text: 'Die Lieferantenrechnung RE-4711 ist verbucht',
+        odooRecord: { model: 'account.move', ref: 'RE-4711' },
+      }),
+    );
+    assert.equal(verdict.status, 'verified');
+    assert.deepEqual(
+      calls.map((c) => (c.positionalArgs[0] as [[string]])[0][0]),
+      ['name', 'ref'],
+    );
+  });
+
+  it('stays unverified (judge decides) for a model without a known reference field', async () => {
+    const calls: OdooCall[] = [];
+    const checker = new DeterministicChecker({ odoo: stubOdoo(() => [], calls) });
+    const verdict = await checker.checkRecordExists(
+      anchoredQualitative({ odooRecord: { model: 'hr.leave', ref: 'Urlaub 2026-03' } }),
+    );
+    assert.equal(verdict.status, 'unverified');
+    assert.equal(calls.length, 0);
+  });
+
+  it('does not treat `name` claims or bare person/company refs as anchors', () => {
+    assert.equal(
+      hasOdooRecordAnchor(anchoredQualitative({ type: 'name' })),
+      false,
+      'name claims stay on the judge path',
+    );
+    assert.equal(
+      hasOdooRecordAnchor(
+        anchoredQualitative({ odooRecord: { model: 'res.partner', ref: 'ACME GmbH' } }),
+      ),
+      false,
+      'ref without a digit is not a document reference',
+    );
+    assert.equal(
+      hasOdooRecordAnchor(anchoredQualitative({ odooRecord: { model: 'account.move', ref: '' } })),
+      false,
+    );
+    assert.equal(
+      hasOdooRecordAnchor(anchoredQualitative({ odooRecord: { model: '', ref: 'INV/1' } })),
+      false,
+    );
+    assert.equal(
+      hasOdooRecordAnchor(anchoredQualitative({ odooRecord: { model: 'account.move', id: 0 } })),
+      false,
+    );
+    assert.equal(
+      hasOdooRecordAnchor(anchoredQualitative({ odooRecord: { model: 'hr.leave', id: 12 } })),
+      true,
+      'numeric id anchors on any model',
+    );
+    assert.equal(hasOdooRecordAnchor(anchoredQualitative()), true);
   });
 });

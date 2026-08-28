@@ -172,6 +172,41 @@ describe('InMemoryKnowledgeGraph — datasets (#430)', () => {
     assert.equal(fetched?.rowCount, 2);
   });
 
+  it('pages listDatasets with offset and counts all owned datasets (#532)', async () => {
+    const g = new InMemoryKnowledgeGraph();
+    for (let i = 0; i < 5; i++) {
+      await g.ingestDataset({
+        ownerOmadiaUserId: 'user-1',
+        name: `ds-${String(i)}`,
+        sourceFileName: `ds-${String(i)}.csv`,
+        columns: [{ name: 'v', type: 'number' }],
+        rows: [{ v: i }],
+      });
+    }
+    await g.ingestDataset({
+      ownerOmadiaUserId: 'user-2',
+      name: 'other',
+      sourceFileName: 'other.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 0 }],
+    });
+
+    const firstPage = await g.listDatasets({ ownerOmadiaUserId: 'user-1', limit: 2 });
+    assert.equal(firstPage.length, 2);
+    const lastPage = await g.listDatasets({ ownerOmadiaUserId: 'user-1', limit: 2, offset: 4 });
+    assert.equal(lastPage.length, 1);
+    // Pages are disjoint slices of the same ordering.
+    const all = await g.listDatasets({ ownerOmadiaUserId: 'user-1' });
+    assert.deepEqual(
+      [...firstPage, ...(await g.listDatasets({ ownerOmadiaUserId: 'user-1', limit: 2, offset: 2 })), ...lastPage].map((d) => d.id),
+      all.map((d) => d.id),
+    );
+
+    assert.equal(await g.countDatasets({ ownerOmadiaUserId: 'user-1' }), 5);
+    assert.equal(await g.countDatasets({ ownerOmadiaUserId: 'user-2' }), 1);
+    assert.equal(await g.countDatasets({ ownerOmadiaUserId: 'nobody' }), 0);
+  });
+
   it('hides a dataset from a non-owner (getDataset/listDatasets/queryDatasetRows all return null/empty)', async () => {
     const g = new InMemoryKnowledgeGraph();
     const result = await g.ingestDataset({

@@ -1,3 +1,4 @@
+import type { MemoryAxes } from '@omadia/channel-sdk';
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 
 /**
@@ -28,12 +29,31 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  *                              Agent's own model-notes + its per-plugin
  *                              sub-trees under `.../plugins/<pluginId>/`).
  *   - `session:*`            — matches `/memories/sessions/...`.
+ *   - `team:<ctxKey>:*`      — matches `/memories/contexts/<agentSlug>/team/<ctxKey>/...`.
+ *   - `channel:<ctxKey>:*`   — matches `/memories/contexts/<agentSlug>/channel/<ctxKey>/...`.
+ *   - `user:<ctxKey>:*`      — matches `/memories/contexts/<agentSlug>/user/<ctxKey>/...`.
+ *   - `ro:<pattern>`         — access modifier: `<pattern>` counts for reads
+ *                              (read / list / exists) only; write, delete and
+ *                              rename against it raise `MemoryScopeViolation`.
  *   - `/memories/foo`        — exact path match.
  *   - `/memories/foo/*`      — prefix match (everything under `/memories/foo/`).
  *
  * Unknown patterns are conservative: they match nothing (deny by default)
  * and the constructor surfaces them as a warning so a typo in a manifest
  * shows up in the log without breaking the boot.
+ *
+ * Chat-context tiers (`team:` / `channel:` / `user:`) deliberately live under
+ * the NEW top-level segment `/memories/contexts/` and NOT under
+ * `/memories/orchestrators/<slug>/`: the already-compiled `orchestrator:<slug>:*`
+ * pattern would otherwise match every context tree of that agent, so a
+ * legacy agent scope would silently unlock all chat contexts. Keeping the
+ * trees in disjoint top-level segments is what makes the two grammars
+ * collision-free: no legacy scope reaches a context tree and no context
+ * scope reaches the agent tree. Do not "tidy" the two trees together.
+ *
+ * `<ctxKey>` never contains `:` (guaranteed by the key derivation in the
+ * channel SDK), which is what lets the token be parsed with a plain
+ * `/^team:([^:]+):\*$/`-style regex.
  */
 
 /**
@@ -46,6 +66,171 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  */
 export function orchestratorMemoryScope(agentSlug: string): readonly string[] {
   return ['core', `orchestrator:${agentSlug}:*`];
+}
+
+/**
+ * The axes a turn may reach come from `@omadia/channel-sdk`: they are derived
+ * from a `TurnOrigin` that only a channel adapter can build, so the canonical
+ * type and its only producer (`memoryAxesForOrigin`) live there and this module
+ * CONSUMES them. Re-exported so orchestrator-side callers do not have to reach
+ * into the SDK for a type they only ever hand to `effectiveMemoryScope`.
+ */
+export type { MemoryAxes, MemoryAxis } from '@omadia/channel-sdk';
+
+/**
+ * How strictly a context turn is quarantined from the agent-global tree.
+ *
+ *  - `'enforce'` — the default. A context turn READS the agent tier
+ *    (`ro:orchestrator:<slug>:*`) so existing knowledge stays quotable, but
+ *    cannot write to it.
+ *  - `'enforce-strict'` — design §10 Q3: full quarantine of legacy knowledge.
+ *    A context turn cannot even read the agent tier.
+ *
+ * `'off'` is deliberately absent: it is a *routing* decision made one layer up
+ * (the binder hands over the context-free axes and never calls this with a
+ * mode), not a second fail-open branch inside the scope resolver.
+ */
+export type ContextMemoryEnforcement = 'enforce' | 'enforce-strict';
+
+export interface EffectiveMemoryScopeOptions {
+  /** Default `'enforce'`. */
+  readonly mode?: ContextMemoryEnforcement;
+  /** Structured warn-level sink. Never throws; see {@link effectiveMemoryScope}. */
+  readonly log?: (msg: string, fields?: Record<string, unknown>) => void;
+}
+
+/**
+ * The only patterns {@link effectiveMemoryScope} will accept from `MemoryAxes`.
+ *
+ * An allowlist rather than a passthrough, because `axes.patterns` crosses a
+ * package boundary from an independently versioned channel plugin, and a
+ * passthrough would make that boundary scope-granting: a plugin that emitted
+ * `'core'`, `'orchestrator:<other-agent>:*'` or `'/memories/*'` would widen the
+ * turn's scope instead of narrowing it. Everything outside the three context
+ * tiers is dropped and logged.
+ *
+ * `[^:]+` on the key mirrors the tier patterns' own regexes and is what makes
+ * `memoryContextKey`'s "never a `:` in a key" guarantee load-bearing here: a
+ * key that smuggled a `:` in could otherwise re-parse as a different tier.
+ */
+const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
+
+/**
+ * The effective memory scope for one turn: the static agent scope intersected
+ * with the dynamic context axes, fail-closed (design #870 §2, §4 step 7).
+ *
+ * ```
+ * scope = axes.isContextFree
+ *   ? ['core',    `orchestrator:${slug}:*`]                       // exactly today
+ *   : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]    // enforce
+ *   : ['ro:core',                              …axes.patterns]    // enforce-strict
+ * ```
+ *
+ * Four properties are the whole point, and each fails in the safe direction:
+ *
+ *  1. **Fail-closed.** A missing `origin`, an `unscoped` scope, an unknown
+ *     `channelType` — every one of them reaches this function as
+ *     `isContextFree: true` and gets row 1 of the §2 table: byte-identical to
+ *     what a turn does today, with NO context tree reachable. So does a
+ *     context turn whose patterns are all unusable. The context-free branch
+ *     delegates to {@link orchestratorMemoryScope} rather than re-spelling it,
+ *     which is what keeps the golden comparison true by construction instead
+ *     of by test.
+ *  2. **The agent tier is read-only from context turns.** Without the `ro:`
+ *     modifier, "note this globally" in team A would be a permanent leak
+ *     channel into team B — the exact hole this design closes. New knowledge
+ *     leaves a context only through the operator promote action.
+ *  3. **The shared trees are read-only from context turns.** `ro:core`, not
+ *     `core`: the namespacer passes `/memories/core`, `sessions`,
+ *     `chat-sessions` and top-level `_*` through untouched, so they are the ONE
+ *     model-facing surface that two different chat contexts address by the same
+ *     path. Writable, `/memories/core/notes.md` would be a one-line bypass of
+ *     every tier boundary below it. They stay writable from a context-FREE turn
+ *     (operator, CLI, pre-W5 plugin).
+ *  4. **Never a throw on the message path.** A malformed `axes` is a bug in a
+ *     channel plugin, not a reason to drop a user's turn; it degrades to the
+ *     agent-private scope and says so in the log. Never a throw, never a wider
+ *     scope.
+ *
+ * Note what this function does NOT do: it decides no path, it only names
+ * scopes. `ScopedMemoryStore` compiles the emitted tokens and stays the
+ * backstop that turns a mapping bug into a `MemoryScopeViolation` rather than a
+ * leak — including for a token it does not recognise, which it soft-denies.
+ * That is also why emitting `ro:orchestrator:<slug>:*` before the grammar knows
+ * `ro:` is safe: an unknown token matches nothing, so the interim behaviour is
+ * *narrower* than the target, not wider.
+ *
+ * Pure and synchronous, so the security decision is testable as a table.
+ */
+export function effectiveMemoryScope(
+  agentSlug: string,
+  axes: MemoryAxes,
+  options: EffectiveMemoryScopeOptions = {},
+): readonly string[] {
+  const strict = options.mode === 'enforce-strict';
+
+  // `agentSlug` is interpolated into `orchestrator:<slug>:*`, whose compiled
+  // regex is `[^:]+`. A slug carrying a `:` therefore produces a token that
+  // matches nothing — fail-closed, and identical to how
+  // `orchestratorMemoryScope` already behaves for such a slug.
+  const contextFree = (reason: string): readonly string[] => {
+    // `context-free` is a legitimate turn shape — the operator UI, the CLI and
+    // every pre-W5 channel plugin land here by design, so auditing it in the
+    // default mode would be pure noise. `axes-missing` and
+    // `no-usable-context-pattern` are NOT legitimate: they only happen when a
+    // channel plugin emits a broken axes object, and this log line is the sole
+    // signal an operator gets that context memory silently stopped working.
+    // Those two are therefore audited in BOTH modes.
+    if (strict || reason !== 'context-free') {
+      options.log?.(
+        '[security-audit] effectiveMemoryScope: no resolvable turn context — agent-private scope',
+        { agentSlug, reason, mode: strict ? 'enforce-strict' : 'enforce' },
+      );
+    }
+    return orchestratorMemoryScope(agentSlug);
+  };
+
+  // Defensive on the whole object: it crosses a plugin boundary, and a missing
+  // one must not become a TypeError on the message path.
+  if (axes === undefined || axes === null) return contextFree('axes-missing');
+  if (axes.isContextFree !== false) {
+    // Anything but an explicit `false` is treated as context-free, so a
+    // half-built axes object cannot open a context tree by omission. Stray
+    // patterns on a context-free axes are ignored by construction.
+    return contextFree('context-free');
+  }
+
+  const patterns: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of axes.patterns ?? []) {
+    if (typeof raw !== 'string' || !CONTEXT_AXIS_PATTERN.test(raw)) {
+      options.log?.('effectiveMemoryScope: dropping non-context axis pattern — deny-default', {
+        agentSlug,
+        pattern: raw,
+      });
+      continue;
+    }
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    patterns.push(raw);
+  }
+
+  // A context turn that named no usable tier is indistinguishable from one that
+  // named no tier at all. Both take row 1.
+  if (patterns.length === 0) return contextFree('no-usable-context-pattern');
+
+  // `ro:core`, NOT `core`. The shared trees (`/memories/core`, `sessions`,
+  // `chat-sessions`, top-level `_*`) are passed through untouched by the
+  // namespacer, so they are the ONE model-facing surface that two different
+  // chat contexts address by the same path. Leaving them writable would make
+  // `/memories/core/notes.md` a one-line bypass of the entire ACL: team A
+  // writes, team B reads, and every tier boundary below is irrelevant. Shared
+  // trees stay writable from a context-FREE turn (operator, CLI, pre-W5
+  // plugin); new knowledge leaves a context only through the operator promote
+  // action (coordinator decision 2).
+  return strict
+    ? ['ro:core', ...patterns]
+    : ['ro:core', `ro:orchestrator:${agentSlug}:*`, ...patterns];
 }
 
 export class MemoryScopeViolation extends Error {
@@ -69,15 +254,93 @@ const CORE_PREFIXES = [
   '/memories/chat-sessions/',
 ];
 
+/**
+ * Subtrees inside `core` that no agent may ever write, whatever else its scope
+ * grants — a deny list, evaluated before any positive pattern.
+ *
+ * `/memories/core/audit/` holds the tamper-evident record of privileged
+ * OPERATOR actions (currently the promotion log written by
+ * `services/memoryPromote.ts`). It was placed under `core` so agents can READ
+ * it, but `core` is a read/write grant every agent holds, so without this
+ * carve-out any agent could overwrite or delete the log that records what an
+ * operator did to its memory — which is precisely the property an audit trail
+ * must not have. It is written by kernel services on the ROOT store, which
+ * never passes through this wrapper, so nothing legitimate loses a write.
+ */
+const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/'];
+
+function isAgentUnwritable(path: string): boolean {
+  return AGENT_UNWRITABLE_PREFIXES.some(
+    (pre) => path === pre.slice(0, -1) || path.startsWith(pre),
+  );
+}
+
+/** Access modifier prefix: `ro:<pattern>` — read/list/exists only. */
+const READ_ONLY_PREFIX = 'ro:';
+
+/** `team:<ctxKey>:*` / `channel:<ctxKey>:*` / `user:<ctxKey>:*`. */
+const CONTEXT_TOKEN = /^(team|channel|user):([^:]+):\*$/;
+
+/** Root of the chat-context trees — a top-level segment of its own. */
+const CONTEXTS_ROOT = '/memories/contexts';
+
+/** The three chat-context tiers, in the order the design spec lists them. */
+export const CONTEXT_AXES = Object.freeze(['team', 'channel', 'user'] as const);
+export type ContextAxis = (typeof CONTEXT_AXES)[number];
+
+/**
+ * Physical root of one context tier for one Agent — the SINGLE source of truth
+ * shared by the pattern compiler here and by `ContextMemoryNamespacer`, which
+ * rewrites the model-facing `/memories/…` namespace into it. Two spellings of
+ * this path would mean the namespacer could emit a path the compiler does not
+ * grant (or, worse, one it grants for a different context).
+ */
+export function contextTierRoot(
+  agentSlug: string,
+  axis: ContextAxis,
+  ctxKey: string,
+): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
+}
+
 interface CompiledPattern {
   match(path: string): boolean;
   source: string;
+  /** `true` for `ro:`-prefixed patterns — they grant reads but never writes. */
+  readOnly: boolean;
 }
 
-function compilePattern(pattern: string): CompiledPattern | undefined {
+/** Matches `prefix` itself (without its trailing slash) and everything below it. */
+function prefixMatcher(prefix: string): (path: string) => boolean {
+  const root = prefix.slice(0, -1);
+  return (p) => p === root || p.startsWith(prefix);
+}
+
+function compilePattern(
+  pattern: string,
+  agentSlug: string,
+): CompiledPattern | undefined {
+  if (pattern.startsWith(READ_ONLY_PREFIX)) {
+    // Single level only: `ro:ro:<x>` is not a pattern, it is a typo — falls
+    // through to the unknown-pattern soft-deny below.
+    const inner = compileAccessPattern(
+      pattern.slice(READ_ONLY_PREFIX.length),
+      agentSlug,
+    );
+    if (!inner) return undefined;
+    return { source: pattern, match: inner.match, readOnly: true };
+  }
+  return compileAccessPattern(pattern, agentSlug);
+}
+
+function compileAccessPattern(
+  pattern: string,
+  agentSlug: string,
+): CompiledPattern | undefined {
   if (pattern === 'core') {
     return {
       source: pattern,
+      readOnly: false,
       match: (p) => {
         for (const pre of CORE_PREFIXES) {
           if (p === pre.slice(0, -1) || p.startsWith(pre)) return true;
@@ -92,10 +355,22 @@ function compilePattern(pattern: string): CompiledPattern | undefined {
   const agentMatch = /^agent:([^:]+):\*$/.exec(pattern);
   if (agentMatch) {
     const id = agentMatch[1]!;
-    const prefix = `/memories/agents/${id}/`;
     return {
       source: pattern,
-      match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),
+      readOnly: false,
+      match: prefixMatcher(`/memories/agents/${id}/`),
+    };
+  }
+  // Chat-context tiers — always relative to THIS agent's slug, so a context
+  // key alone can never address another agent's tree.
+  const ctxMatch = CONTEXT_TOKEN.exec(pattern);
+  if (ctxMatch) {
+    const axis = ctxMatch[1] as ContextAxis;
+    const ctxKey = ctxMatch[2]!;
+    return {
+      source: pattern,
+      readOnly: false,
+      match: prefixMatcher(`${contextTierRoot(agentSlug, axis, ctxKey)}/`),
     };
   }
   // Per-orchestrator isolation (strict): an Agent's own private tree —
@@ -104,30 +379,31 @@ function compilePattern(pattern: string): CompiledPattern | undefined {
   const orchMatch = /^orchestrator:([^:]+):\*$/.exec(pattern);
   if (orchMatch) {
     const slug = orchMatch[1]!;
-    const prefix = `/memories/orchestrators/${slug}/`;
     return {
       source: pattern,
-      match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),
+      readOnly: false,
+      match: prefixMatcher(`/memories/orchestrators/${slug}/`),
     };
   }
   if (pattern === 'session:*') {
-    const prefix = '/memories/sessions/';
     return {
       source: pattern,
-      match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),
+      readOnly: false,
+      match: prefixMatcher('/memories/sessions/'),
     };
   }
   if (pattern.startsWith('/')) {
     if (pattern.endsWith('/*')) {
-      const prefix = pattern.slice(0, -1);
       return {
         source: pattern,
-        match: (p) => p === prefix.slice(0, -1) || p.startsWith(prefix),
+        readOnly: false,
+        match: prefixMatcher(pattern.slice(0, -1)),
       };
     }
     const exact = pattern;
     return {
       source: pattern,
+      readOnly: false,
       match: (p) => p === exact,
     };
   }
@@ -149,7 +425,7 @@ export class ScopedMemoryStore implements MemoryStore {
   constructor(private readonly options: ScopedMemoryStoreOptions) {
     const compiled: CompiledPattern[] = [];
     for (const raw of options.scope) {
-      const c = compilePattern(raw);
+      const c = compilePattern(raw, options.agentSlug);
       if (c) {
         compiled.push(c);
       } else {
@@ -162,62 +438,91 @@ export class ScopedMemoryStore implements MemoryStore {
     this.patterns = compiled;
   }
 
-  private allowed(virtualPath: string): boolean {
+  /**
+   * Read access — every compiled pattern counts, `ro:` ones included.
+   * Denial stays SOFT on the read paths that have a "not there" answer
+   * (`list` filters, `*Exists` returns false); an explicit `readFile` still
+   * throws so a caller cannot mistake a denial for an empty file.
+   */
+  private allowedRead(virtualPath: string): boolean {
     for (const p of this.patterns) if (p.match(virtualPath)) return true;
     return false;
   }
 
+  /**
+   * Write access — `ro:` is a VETO, not a weak grant. A matching read-only
+   * pattern rejects the write even when another pattern in the same scope
+   * would have granted it; without that precedence a scope such as
+   * `['ro:orchestrator:hr:*', '/memories/orchestrators/hr/notes.md']` would
+   * silently re-open the tier the `ro:` token exists to quarantine, and the
+   * grammar is an exported primitive other scopes compose against.
+   * Denial is always HARD here.
+   */
+  private allowedWrite(virtualPath: string): boolean {
+    if (isAgentUnwritable(virtualPath)) return false;
+    let granted = false;
+    for (const p of this.patterns) {
+      if (!p.match(virtualPath)) continue;
+      if (p.readOnly) return false;
+      granted = true;
+    }
+    return granted;
+  }
+
   list(virtualPath: string): Promise<MemoryEntry[]> {
-    if (!this.allowed(virtualPath)) {
+    if (!this.allowedRead(virtualPath)) {
       // Soft-deny — listing a directory the agent can't see returns empty
       // rather than throwing, so UI surfaces stay stable.
       return Promise.resolve([]);
     }
     return this.options.inner
       .list(virtualPath)
-      .then((entries) => entries.filter((e) => this.allowed(e.virtualPath)));
+      .then((entries) => entries.filter((e) => this.allowedRead(e.virtualPath)));
   }
 
   fileExists(virtualPath: string): Promise<boolean> {
-    if (!this.allowed(virtualPath)) return Promise.resolve(false);
+    if (!this.allowedRead(virtualPath)) return Promise.resolve(false);
     return this.options.inner.fileExists(virtualPath);
   }
 
   directoryExists(virtualPath: string): Promise<boolean> {
-    if (!this.allowed(virtualPath)) return Promise.resolve(false);
+    if (!this.allowedRead(virtualPath)) return Promise.resolve(false);
     return this.options.inner.directoryExists(virtualPath);
   }
 
   async readFile(virtualPath: string): Promise<string> {
-    if (!this.allowed(virtualPath)) {
+    if (!this.allowedRead(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'read', virtualPath);
     }
     return this.options.inner.readFile(virtualPath);
   }
 
   async createFile(virtualPath: string, content: string): Promise<void> {
-    if (!this.allowed(virtualPath)) {
+    if (!this.allowedWrite(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'write', virtualPath);
     }
     return this.options.inner.createFile(virtualPath, content);
   }
 
   async writeFile(virtualPath: string, content: string): Promise<void> {
-    if (!this.allowed(virtualPath)) {
+    if (!this.allowedWrite(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'write', virtualPath);
     }
     return this.options.inner.writeFile(virtualPath, content);
   }
 
   async delete(virtualPath: string): Promise<void> {
-    if (!this.allowed(virtualPath)) {
+    if (!this.allowedWrite(virtualPath)) {
       throw new MemoryScopeViolation(this.options.agentSlug, 'delete', virtualPath);
     }
     return this.options.inner.delete(virtualPath);
   }
 
   async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
-    if (!this.allowed(fromVirtualPath) || !this.allowed(toVirtualPath)) {
+    if (
+      !this.allowedWrite(fromVirtualPath) ||
+      !this.allowedWrite(toVirtualPath)
+    ) {
       throw new MemoryScopeViolation(
         this.options.agentSlug,
         'rename',

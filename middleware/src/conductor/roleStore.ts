@@ -18,8 +18,14 @@ interface RoleRow {
 /**
  * Roles + assignments (the "baton"). The default RoleResolver: a role's current holders are the
  * assignment rows that are still open (valid_to null or future). `resolve()` is late-bound — call
- * it at dispatch and on every reminder so a moved baton routes to the current holder (FR-022). An
- * integration could register an external resolver in front of this; that seam is a follow-up.
+ * it at dispatch and on every reminder so a moved baton routes to the current holder (FR-022).
+ *
+ * #754 — the external-resolver seam is filled: this store is registered as the
+ * `'conductor-local'` `RoleHolderSource` (see `roleHolderResolver.ts`) alongside whatever
+ * external sources (Entra, an Odoo HR org chart) the operator activates. Conductor's executor
+ * and workers resolve role → holders through the `RoleHolderRegistry`, never through this
+ * class's `resolve()` directly — that union carries the `partial`/`unavailable` discipline this
+ * store's own `string[]` return type cannot express.
  */
 export class ConductorRoleStore {
   constructor(private readonly pool: Pool) {}

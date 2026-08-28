@@ -25,6 +25,8 @@
  * "needs verification" and not yet recommended.
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { CLI_ENV_SCRUB_KEYS } from '@omadia/orchestrator';
 
 /** Tri-state: we are honest about what a read-only probe can actually prove. */
@@ -48,6 +50,10 @@ export interface CliBackendStatus {
   readonly billing: CliBillingPosture;
   /** Short human note explaining the current state / next step. */
   readonly detail: string;
+  /** Whether the in-app runtime install (`cliInstallService`) supports this CLI. */
+  readonly installable: boolean;
+  /** Where the probed binary came from: the runtime install dir, or PATH. */
+  readonly installedVia?: 'runtime' | 'path';
 }
 
 interface CliBackendSpec {
@@ -61,6 +67,8 @@ interface CliBackendSpec {
   /** Map a successful auth-probe result → login state + optional account. */
   readonly parseAuth?: (out: string) => { state: CliLoginState; account?: string };
   readonly billing: CliBillingPosture;
+  /** npm package the runtime installer may install for this backend. */
+  readonly installPackage?: string;
 }
 
 /**
@@ -97,6 +105,7 @@ const CLI_BACKENDS: ReadonlyArray<CliBackendSpec> = [
       return { state: 'unknown' };
     },
     billing: 'subscription',
+    installPackage: '@anthropic-ai/claude-code',
   },
   {
     id: 'codex',
@@ -104,6 +113,7 @@ const CLI_BACKENDS: ReadonlyArray<CliBackendSpec> = [
     bin: 'codex',
     versionArgs: ['--version'],
     billing: 'needs-verification',
+    installPackage: '@openai/codex',
   },
   {
     id: 'gemini',
@@ -111,8 +121,39 @@ const CLI_BACKENDS: ReadonlyArray<CliBackendSpec> = [
     bin: 'gemini',
     versionArgs: ['--version'],
     billing: 'needs-verification',
+    installPackage: '@google/gemini-cli',
   },
 ];
+
+/**
+ * Directory the runtime installer (`cliInstallService`) uses as its npm
+ * `--prefix`. Defaults under `PLATFORM_DATA_DIR` (e.g. the persisted `/data`
+ * volume on Fly) so installs survive machine restarts; local dev falls back to
+ * `data/cli-tools` under the working directory.
+ */
+export function cliToolsDir(): string {
+  const explicit = process.env['CLI_TOOLS_DIR'];
+  if (explicit) return explicit;
+  const dataDir = process.env['PLATFORM_DATA_DIR'];
+  return dataDir ? path.join(dataDir, 'cli-tools') : path.join(process.cwd(), 'data', 'cli-tools');
+}
+
+/**
+ * Resolve the binary to spawn for a backend: prefer the runtime install dir
+ * (`<cliToolsDir>/bin/<bin>`), else the bare name via PATH. This is what makes
+ * a volume install visible to detection and login without mutating PATH.
+ * POSIX layout only — on Windows npm puts `<bin>.cmd` directly in the prefix,
+ * so there the PATH fallback is the effective path. Deployment is Linux.
+ */
+export function resolveCliBin(bin: string): string {
+  const candidate = path.join(cliToolsDir(), 'bin', bin);
+  return existsSync(candidate) ? candidate : bin;
+}
+
+/** npm package for a backend id, or undefined when not runtime-installable. */
+export function getInstallPackage(cliId: string): string | undefined {
+  return CLI_BACKENDS.find((s) => s.id === cliId)?.installPackage;
+}
 
 const PROBE_TIMEOUT_MS = 4000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -186,7 +227,8 @@ function pickString(obj: Record<string, unknown>, keys: readonly string[]): stri
 }
 
 async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
-  const ver = await runProbe(spec.bin, spec.versionArgs);
+  const binPath = resolveCliBin(spec.bin);
+  const ver = await runProbe(binPath, spec.versionArgs);
   if (!ver.ok && ver.stderr === 'not found') {
     return {
       id: spec.id,
@@ -196,6 +238,7 @@ async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
       loggedIn: 'no',
       billing: spec.billing,
       detail: `${spec.bin} is not installed in this environment.`,
+      installable: Boolean(spec.installPackage),
     };
   }
 
@@ -204,7 +247,7 @@ async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
   let loggedIn: CliLoginState = 'unknown';
   let account: string | undefined;
   if (spec.authArgs && spec.parseAuth) {
-    const auth = await runProbe(spec.bin, spec.authArgs);
+    const auth = await runProbe(binPath, spec.authArgs);
     const parsed = spec.parseAuth(`${auth.stdout}\n${auth.stderr}`);
     loggedIn = parsed.state;
     account = parsed.account;
@@ -229,6 +272,8 @@ async function detectOne(spec: CliBackendSpec): Promise<CliBackendStatus> {
     ...(account ? { account } : {}),
     billing: spec.billing,
     detail,
+    installable: Boolean(spec.installPackage),
+    installedVia: binPath === spec.bin ? 'path' : 'runtime',
   };
 }
 
@@ -236,6 +281,8 @@ export interface CliBackendsSnapshot {
   readonly backends: ReadonlyArray<CliBackendStatus>;
   /** Epoch ms when this snapshot was produced. */
   readonly generatedAt: number;
+  /** Runtime install prefix so the UI can show accurate manual-install instructions. */
+  readonly cliToolsDir: string;
 }
 
 let cache: CliBackendsSnapshot | undefined;
@@ -253,7 +300,7 @@ export async function detectCliBackends(
     return cache;
   }
   const backends = await Promise.all(CLI_BACKENDS.map((s) => detectOne(s)));
-  cache = { backends, generatedAt: now };
+  cache = { backends, generatedAt: now, cliToolsDir: cliToolsDir() };
   return cache;
 }
 

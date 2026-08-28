@@ -25,9 +25,15 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Anthropic',
     wireFormat: 'anthropic',
     baseURL: 'https://api.anthropic.com',
-    // Preserves the previous hard-coded behaviour (`provider !== 'anthropic'`):
-    // the AVV third-party disclosure is suppressed for Anthropic.
-    policy: { requiresAvvDisclosure: false },
+    // The AVV disclosure used to be suppressed here ("preserves the previous
+    // hard-coded behaviour: provider !== 'anthropic'"). That legacy carve-out
+    // was backwards: Anthropic is the DEFAULT provider, and prompt data sent
+    // to api.anthropic.com is third-party processing under DSGVO Art. 28 like
+    // any other API provider — a German-market customer explicitly praised
+    // this disclosure in the first field test (OM-10) and it must not vanish
+    // exactly on the stock configuration. Omitting the flag lets the
+    // catalogue default (`requiresAvvDisclosure ?? true`) apply.
+    policy: {},
     models: [
       {
         id: 'anthropic:claude-opus-4-8',
@@ -126,7 +132,16 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     label: 'Claude (subscription CLI)',
     wireFormat: 'claude-cli',
     baseURL: '',
-    policy: { requiresApiKey: false, requiresAvvDisclosure: false },
+    // `requiresAvvDisclosure: false` is NOT a privacy carve-out here — the
+    // Art. 28 AVV framing simply does not fit: a consumer Claude subscription
+    // offers no data-processing agreement at all. That is a STRONGER caveat,
+    // not a weaker one, and `subscriptionNotice` surfaces exactly that in the
+    // assignment UI (field-test follow-up, OM-10 family).
+    policy: {
+      requiresApiKey: false,
+      requiresAvvDisclosure: false,
+      subscriptionNotice: true,
+    },
     models: [
       // modelId is suffixed `-cli` so it never collides with another provider's
       // alias (the registry requires globally-unique aliases and id ==
@@ -210,12 +225,76 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
 ];
 
 /**
+ * Experimental providers, kept OUT of {@link BUILTIN_LLM_PROVIDERS} so the
+ * stable set (and everything that flattens it) is unaffected. Registered only
+ * behind an explicit opt-in.
+ *
+ * `openai-chatgpt` (#294 "Sign in with ChatGPT"): connects via an OAuth device
+ * flow instead of an API key; the resulting subscription bearer is scoped to
+ * the ChatGPT/Codex Responses backend (verified live), NOT the public
+ * api.openai.com surface — hence the dedicated `openai-responses` wire format
+ * and its own baseURL.
+ */
+export const EXPERIMENTAL_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
+  {
+    id: 'openai-chatgpt',
+    label: 'ChatGPT (subscription)',
+    wireFormat: 'openai-responses',
+    baseURL: 'https://chatgpt.com/backend-api/codex',
+    oauth: { kind: 'device' },
+    // No API key — the login IS the credential. Like `claude-cli`, a consumer
+    // subscription has no data-processing agreement, so `subscriptionNotice`
+    // surfaces the stronger caveat (and the connect modal shows the ToS notice).
+    policy: {
+      requiresApiKey: false,
+      requiresAvvDisclosure: false,
+      subscriptionNotice: true,
+    },
+    models: [
+      {
+        id: 'openai-chatgpt:gpt-5.5',
+        provider: 'openai-chatgpt',
+        modelId: 'gpt-5.5',
+        label: 'GPT-5.5 (ChatGPT)',
+        class: 'frontier',
+        maxTokens: 128_000,
+        contextWindow: 400_000,
+        vision: true,
+      },
+      {
+        id: 'openai-chatgpt:gpt-5.4',
+        provider: 'openai-chatgpt',
+        modelId: 'gpt-5.4',
+        label: 'GPT-5.4 (ChatGPT)',
+        class: 'balanced',
+        maxTokens: 128_000,
+        contextWindow: 400_000,
+        vision: true,
+        classDefault: true,
+      },
+    ],
+  },
+];
+
+/**
  * Register the bundled built-in providers into a catalog (which also registers
  * their models into the global overlay). Idempotent per catalog. Call at boot
  * before plugin activation, and in tests that need a populated model registry.
+ *
+ * `includeExperimental` (default false) additionally registers
+ * {@link EXPERIMENTAL_LLM_PROVIDERS} — the `openai-chatgpt` "Sign in with
+ * ChatGPT" backend (#294) — gated on `CHATGPT_SUBSCRIPTION_EXPERIMENTAL`.
  */
-export function registerBuiltinLlmProviders(catalog: LlmProviderCatalog): void {
+export function registerBuiltinLlmProviders(
+  catalog: LlmProviderCatalog,
+  opts: { includeExperimental?: boolean } = {},
+): void {
   for (const descriptor of BUILTIN_LLM_PROVIDERS) {
     catalog.register(descriptor);
+  }
+  if (opts.includeExperimental === true) {
+    for (const descriptor of EXPERIMENTAL_LLM_PROVIDERS) {
+      catalog.register(descriptor);
+    }
   }
 }

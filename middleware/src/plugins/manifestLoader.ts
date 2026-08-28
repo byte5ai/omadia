@@ -22,7 +22,17 @@ import type {
   PluginPermissionsSummary,
   PluginSetupField,
   ServiceTypeDecl,
+  SetupAudience,
+  SetupProfile,
 } from '../api/admin-v1.js';
+import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
+import {
+  MAX_DECLARED_PUBLIC_PATHS,
+  publicPathEntrySchema,
+  publicPathsDeclarationSchema,
+} from '../platform/publicPathGrants.js';
+import { compileSetupPattern } from './setupFieldPattern.js';
+import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -47,12 +57,36 @@ const DEFAULT_MANIFEST_DIR =
   process.env['PLUGIN_MANIFEST_DIR'] ??
   path.join(REPO_ROOT, 'docs', 'harness-platform', 'examples');
 
+/**
+ * Where a catalog entry came from — issue #794.
+ *
+ * `bundled` means the package ships INSIDE the middleware image, under
+ * `middleware/packages/*`, and is therefore code this repository controls and
+ * reviews. `installed` means everything else: uploaded zips, local-dev
+ * packages, and the example manifests. The distinction exists because the
+ * dated SQL migration ramp (`LEGACY_SQL_GRANTS_2026_08_20`) may only ever
+ * apply to code we ship — an upload must never be able to reach it.
+ *
+ * It is derived by the LOADER, never read from the manifest. A manifest is
+ * author-supplied data; letting a package declare its own origin would make
+ * the security boundary a self-assessment, which is exactly the bar C7 was
+ * written to raise above.
+ *
+ * Default is `installed` at every construction site: an entry whose origin
+ * nobody asserted is not privileged.
+ */
+export type PluginOrigin = 'bundled' | 'installed';
+
 export interface PluginCatalogOptions {
   manifestDir?: string;
   /** Additional manifest sources (e.g. extracted zip uploads). Each entry
    *  points at a package-root directory that contains a `manifest.yaml`.
-   *  On ID collision with the built-in catalog the uploaded version wins. */
-  extraSources?: () => Array<{ packageRoot: string }>;
+   *  On ID collision with the built-in catalog the uploaded version wins.
+   *
+   *  `origin` is asserted by the CALLER (see the wiring in `index.ts`, which
+   *  is the only place that passes `'bundled'`, and only for the built-in
+   *  package store). Omitting it means `installed`. */
+  extraSources?: () => Array<{ packageRoot: string; origin?: PluginOrigin }>;
 }
 
 export interface PluginCatalogEntry {
@@ -63,10 +97,30 @@ export interface PluginCatalogEntry {
   source_path: string;
   /** Loader that produced this entry. Only manifest-v1 is supported today. */
   source_kind: 'manifest-v1';
+  /** #794 — whether this package ships inside the middleware image. Set by the
+   *  loader from WHERE the manifest was found, never from its content. */
+  origin: PluginOrigin;
 }
 
 export class PluginCatalog {
   private entries = new Map<string, PluginCatalogEntry>();
+
+  /**
+   * #789 — every id an `origin: 'bundled'` source offered during the last
+   * `load()`, INCLUDING ids an installed package went on to shadow.
+   *
+   * `entries` cannot answer this. Collisions resolve in the upload's favour
+   * (the documented "the uploaded version wins" rule), so the moment a zip
+   * claims `@omadia/orchestrator` the entry under that key reads
+   * `origin: 'installed'` and every trace of the bundled package is gone from
+   * the map. A gate that asked `entries` "is this a bundled id?" would be
+   * asking the shadow about the thing it is hiding, and the answer erodes
+   * exactly when it matters.
+   *
+   * Rebuilt from scratch on each `load()` from `extraSources()`, so a package
+   * that stops shipping in the image stops being a bundled id.
+   */
+  private bundled = new Set<string>();
 
   constructor(private readonly options: PluginCatalogOptions = {}) {}
 
@@ -77,11 +131,17 @@ export class PluginCatalog {
     for (const entry of manifestEntries) next.set(entry.plugin.id, entry);
 
     const extras = this.options.extraSources?.() ?? [];
+    const nextBundled = new Set<string>();
     for (const src of extras) {
       const manifestPath = path.join(src.packageRoot, 'manifest.yaml');
       const entry = await loadManifestFromPath(manifestPath);
       if (entry) {
-        next.set(entry.plugin.id, entry);
+        // #794 — the origin the CALLER asserted, not one the package claimed.
+        const origin = src.origin ?? 'installed';
+        // #789 — recorded BEFORE the collision resolves, so a later upload
+        // claiming this id cannot erase the fact that we ship it.
+        if (origin === 'bundled') nextBundled.add(entry.plugin.id);
+        next.set(entry.plugin.id, { ...entry, origin });
       } else {
         console.warn(
           `[catalog] skipped uploaded manifest at ${manifestPath}: not a recognised schema-v1 manifest`,
@@ -89,6 +149,7 @@ export class PluginCatalog {
       }
     }
     this.entries = next;
+    this.bundled = nextBundled;
   }
 
   list(): PluginCatalogEntry[] {
@@ -99,6 +160,23 @@ export class PluginCatalog {
 
   get(id: string): PluginCatalogEntry | undefined {
     return this.entries.get(id);
+  }
+
+  /**
+   * #789 — is `id` the id of a package this middleware image ships, regardless
+   * of who currently occupies that key in the catalog?
+   *
+   * Two callers, both asking because an id alone proves nothing:
+   *  - `platform/pluginServiceGrants.ts` refuses the dated legacy service ramp
+   *    to an installed package sitting on a bundled id;
+   *  - `plugins/packageUploadService.ts` refuses such a package at ingest, so
+   *    it normally never reaches the catalog at all.
+   *
+   * Differs from `get(id)?.origin === 'bundled'` precisely in the shadowed
+   * case, which is the only case either caller cares about.
+   */
+  isBundledId(id: string): boolean {
+    return this.bundled.has(id);
   }
 }
 
@@ -120,6 +198,10 @@ export async function loadManifestFromPath(
       manifest: doc,
       source_path: absPath,
       source_kind: 'manifest-v1',
+      // #794 — a single manifest read in isolation carries no evidence of
+      // where the package came from, so it gets the unprivileged origin.
+      // `PluginCatalog.load` re-stamps it from the source that asked for it.
+      origin: 'installed',
     };
   } catch (err) {
     console.warn(`[catalog] failed to parse ${absPath}:`, err);
@@ -149,6 +231,11 @@ async function loadManifestV1Entries(
           manifest: doc,
           source_path: fullPath,
           source_kind: 'manifest-v1',
+          // #794 — the example-manifest directory is operator-pointable via
+          // `PLUGIN_MANIFEST_DIR` and carries no package code (so these
+          // entries cannot even be activated: `resolvePackagePath` finds no
+          // package root for them). Unprivileged.
+          origin: 'installed',
         });
       } else {
         console.warn(
@@ -222,10 +309,39 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     const key = asString(f['key']);
     const type = asString(f['type']);
     if (!key || !type) continue;
-    const label = asString(f['label']) ?? key;
+    // #602 (OM-17) — label is a localized map; a bare string is read as English,
+    // and a field with no usable label falls back to its own key. Kept
+    // byte-for-byte identical to installService's projection.
+    const label = normalizeLocalized(f['label']) ?? { en: key };
     if (!isSetupFieldType(type)) continue;
     const entry: PluginSetupField = { key, label, type };
-    const help = asString(f['help']);
+    // OM-16 — required-by-default. MUST stay byte-for-byte the same rule as
+    // installService.ts's install-schema projection (`f['required'] !== false`),
+    // otherwise the store's "configuration required" view and the install
+    // wizard's validation silently disagree. A shared-fixture test asserts the
+    // two paths agree (test/manifestLoaderSetupFields.test.ts).
+    entry.required = f['required'] !== false;
+    // OM-17 — compile the pattern at LOAD time, not at request time. A manifest
+    // is untrusted input: an uncompilable or catastrophically-backtracking
+    // pattern is dropped here with a warning (never a throw, never a 500), so a
+    // bad manifest degrades to "field has no pattern" instead of breaking the
+    // catalog or the vault write. `compileSetupPattern` caches, so the request
+    // path pays nothing.
+    const pattern = asString(f['pattern']);
+    if (pattern) {
+      if (compileSetupPattern(pattern, `${id}/${key}`)) {
+        entry.pattern = pattern;
+        const patternHint = normalizeLocalized(f['pattern_hint']);
+        if (patternHint) entry.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — fail-open for the WRITE (bricking a plugin because its
+        // author wrote an over-clever regex is worse), but never fail SILENT.
+        // This flag is what the setup form and the credentials editor render as
+        // "this field declares a format check that could not be applied".
+        entry.pattern_unavailable = true;
+      }
+    }
+    const help = normalizeLocalized(f['help']);
     if (help) entry.help = help;
     const placeholder = asString(f['placeholder']);
     if (placeholder) entry.placeholder = placeholder;
@@ -241,6 +357,34 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
+    }
+    if (type === 'json_file') {
+      // #603 (OM-17) — the upload's extraction map. Validated HERE, at load
+      // time, for the same reason `pattern` is: a manifest is untrusted input,
+      // and a `json_file` field whose `extracts` is missing or unusable would
+      // otherwise reach the operator as a file picker that silently produces
+      // nothing. Dropping the field entirely is the honest degradation — the
+      // form then shows the underlying `secret` fields, i.e. exactly the
+      // pre-#603 behaviour, instead of an upload that cannot work.
+      const extractsRaw = asRecord(f['extracts']);
+      const extracts: Record<string, string> = {};
+      for (const [target, path] of Object.entries(extractsRaw ?? {})) {
+        const p = asString(path);
+        if (target.length > 0 && p !== undefined) extracts[target] = p;
+      }
+      if (Object.keys(extracts).length === 0) {
+        console.warn(
+          `[manifestLoader] ${id}: setup field '${key}' is type json_file but declares no usable 'extracts' — dropping the field.`,
+        );
+        continue;
+      }
+      entry.extracts = extracts;
+      const expectRaw = asRecord(f['expect']);
+      if (expectRaw && Object.keys(expectRaw).length > 0) {
+        entry.expect = expectRaw;
+      }
+      const accept = asString(f['accept']);
+      if (accept) entry.accept = accept;
     }
     if (type === 'enum') {
       const enumRaw = f['enum'];
@@ -291,6 +435,11 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const jobs = extractJobs(doc['jobs']);
   const provides = extractCapabilityList(doc['provides'], id, 'provides');
   const requires = extractCapabilityList(doc['requires'], id, 'requires');
+  const optionalRequires = extractCapabilityList(
+    doc['optional_requires'],
+    id,
+    'optional_requires',
+  );
   const serviceTypes = extractServiceTypes(doc['service_types'], id);
   const channel =
     kind === 'channel' ? extractChannelBlock(doc['channel']) : undefined;
@@ -360,15 +509,18 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const privacyClass: 'strict' | 'default' =
     privacyClassRaw === 'strict' ? 'strict' : 'default';
 
-  const setupGuide = asLocalizedGuide(setup?.['guide']);
+  const setupGuide = normalizeLocalized(setup?.['guide']);
+  const setupProfile = extractSetupProfile(doc['listing']);
 
   // Spec 005 — declarative OAuth-provider descriptors. Inert data the kernel
   // broker reads at flow time; no plugin code runs during the OAuth dance.
   const oauthProviders = extractOAuthProviders(doc['oauth_providers'], id);
-  const permissionsSummary = extractPermissions(permissions);
+  const permissionsSummary = extractPermissions(permissions, id);
   if (oauthProviders.length > 0) {
     permissionsSummary.acquires_oauth = true;
   }
+
+  const descriptionMap = normalizeLocalized(identity['description']);
 
   const base: Plugin = {
     id,
@@ -376,7 +528,10 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     name,
     version,
     latest_version: version,
-    description: asString(identity['description']) ?? '',
+    // OM-28/OM-06 (#602) — `identity.description` accepts a localized map.
+    // `description` stays the English-resolved string (search, hub, older
+    // consumers); the full map rides along in `description_localized` below.
+    description: resolveLocalized(descriptionMap, 'en') ?? '',
     authors: extractAuthors(identity['authors']),
     license: asString(identity['license']) ?? 'Unknown',
     icon_url: null,
@@ -397,6 +552,22 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     privacy_class: privacyClass,
   };
   let result: Plugin = base;
+  // Attached only when the manifest declared MORE than a bare English string —
+  // a plain-string description round-trips exactly as before.
+  if (
+    descriptionMap &&
+    (Object.keys(descriptionMap).length > 1 || descriptionMap['en'] === undefined)
+  ) {
+    result = { ...result, description_localized: descriptionMap };
+  }
+  // Only attached when the manifest actually declares one, mirroring
+  // `service_types` below: `undefined` and `[]` mean the same thing to every
+  // consumer (all of which read it as `?? []`), and omitting the key keeps
+  // the catalog entry byte-identical for the overwhelming majority of
+  // manifests that declare no optional dependency.
+  if (optionalRequires.length > 0) {
+    result = { ...result, optional_requires: optionalRequires };
+  }
   if (oauthProviders.length > 0) {
     result = { ...result, oauth_providers: oauthProviders };
   }
@@ -404,6 +575,7 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
     result = { ...result, service_types: serviceTypes };
   }
   if (setupGuide) result = { ...result, setup_guide: setupGuide };
+  if (setupProfile) result = { ...result, setup_profile: setupProfile };
   if (channel) result = { ...result, channel };
   if (adminUiPath) result = { ...result, admin_ui_path: adminUiPath };
   if (isReferenceOnly) result = { ...result, is_reference_only: true };
@@ -417,17 +589,19 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
 }
 
 /**
- * Parses a `provides:` or `requires:` array. Each entry must be a non-empty
- * string that {@link parseCapabilityRef} accepts. Malformed entries are
- * dropped with a `console.warn` so that one bad manifest doesn't break
- * catalog-load for the rest; the capability resolver additionally re-parses
- * at activation time and surfaces a hard error if a `requires` has no
- * provider — so dropping here is safe from a correctness standpoint.
+ * Parses a `provides:`, `requires:` or `optional_requires:` array. Each entry
+ * must be a non-empty string that {@link parseCapabilityRef} accepts — the
+ * three fields share one syntax so a capability can be moved between them
+ * without rewriting it. Malformed entries are dropped with a `console.warn`
+ * so that one bad manifest doesn't break catalog-load for the rest; the
+ * capability resolver additionally re-parses at activation time and surfaces
+ * a hard error if a `requires` has no provider — so dropping here is safe
+ * from a correctness standpoint.
  */
 function extractCapabilityList(
   raw: unknown,
   pluginId: string,
-  field: 'provides' | 'requires',
+  field: 'provides' | 'requires' | 'optional_requires',
 ): string[] {
   const arr = asArray(raw);
   const out: string[] = [];
@@ -630,7 +804,9 @@ function extractChannelBlock(
 
 function extractPermissions(
   permissions: Record<string, unknown> | undefined,
+  pluginId: string,
 ): PluginPermissionsSummary {
+  warnOnUnknownPermissionKeys(permissions, pluginId);
   const memory = asRecord(permissions?.['memory']);
   const graph = asRecord(permissions?.['graph']);
   const network = asRecord(permissions?.['network']);
@@ -671,14 +847,12 @@ function extractPermissions(
   const mcpBlock = permissions?.['mcp'];
   const mcpDeclared =
     mcpBlock === true || (typeof mcpBlock === 'object' && mcpBlock !== null);
-  // Epic #470 W3 — ctx.devJobs gate. `permissions.devJobs: true` or a block
-  // ({ repos_hint: [...] }) opts in; absent → no accessor. The repos_hint is
-  // documentation for the operator grant UI, not enforcement (the real grant
-  // lives in dev_repo_plugin_grants).
-  const devJobsBlock = permissions?.['devJobs'];
-  const devJobsDeclared =
-    devJobsBlock === true ||
-    (typeof devJobsBlock === 'object' && devJobsBlock !== null);
+  // NOTE: unknown permission keys are IGNORED here rather than rejected, which
+  // is what makes a permission removable. When a capability is retired its key
+  // stops being parsed and its accessor stops being built; a stale manifest
+  // that still declares the key stays installable and activatable and simply
+  // receives no accessor. Regression-tested in
+  // `test/manifestRetiredPermissionKey.test.ts`.
   return {
     memory_reads: extractStringArray(memory?.['reads']),
     memory_writes: extractStringArray(memory?.['writes']),
@@ -704,12 +878,118 @@ function extractPermissions(
     events_emit: asRecord(permissions?.['events'])?.['emit'] === true,
     mcp: mcpDeclared,
     mcp_servers_hint: extractStringArray(asRecord(mcpBlock)?.['servers_hint']),
-    dev_jobs: devJobsDeclared,
-    dev_jobs_repos_hint: extractStringArray(asRecord(devJobsBlock)?.['repos_hint']),
     // Spec 005 — overridden to true in adaptManifestV1 when the manifest
     // declares >=1 valid oauth_providers descriptor.
     acquires_oauth: false,
+    // Epic #470 C7 / G4 — the plugin ASKS to hold a Postgres pool and own
+    // tables. Shape-validated here (including ledger ownership, which needs
+    // only the plugin's own id); operator consent is a separate, durable
+    // decision read from `plugin_sql_grants` at activation. A malformed block
+    // is dropped with a warning rather than rejecting the manifest, matching
+    // this loader's graceful-degradation rule — and dropping is the safe
+    // direction, because a dropped block is one fewer plugin holding the
+    // operator's database, never one more.
+    sql: parseSqlPermission(permissions?.['sql'], pluginId),
+    // Epic #470 C4 / H1 — the prefixes the plugin ASKS to serve without a
+    // session. Validated here for shape only; ownership and operator consent
+    // are decided at activation (`platform/publicPathGrants.ts`). A malformed
+    // entry is dropped with a warning rather than rejecting the manifest,
+    // matching this loader's graceful-degradation rule everywhere else — and
+    // dropping is the safe direction, because a dropped entry is one fewer
+    // unauthenticated surface, never one more.
+    public_paths: extractPublicPaths(permissions?.['public_paths'], pluginId),
   };
+}
+
+/**
+ * Keys this loader understands under `permissions:`. Anything else is a typo,
+ * a key from a newer core, or a key from a core that dropped it — all three of
+ * which used to be silently ignored (recorded in `implementation.md` §2.5 as
+ * the reason a plugin could declare a permission against an unpatched core and
+ * activate with no grant and no error).
+ *
+ * The manifest is still not rejected over an unknown key — that would make
+ * every core upgrade a breaking change for plugins built against a newer
+ * schema. It is now VISIBLE, which is the part that was missing.
+ */
+const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
+  'events',
+  'flows',
+  'graph',
+  'llm',
+  'mcp',
+  'memory',
+  'network',
+  'public_paths',
+  'secrets',
+  'sql',
+  'subAgents',
+  'templates',
+]);
+
+/**
+ * Retired keys are deliberately NOT listed above (the retired one is named in
+ * the NOTE inside `extractPermissions`). A manifest still declaring one keeps
+ * loading and activating exactly as before — the warning is the whole point:
+ * "core removed this, your manifest still asks for it" is information the
+ * plugin author needs, and it is the same signal a typo gets.
+ */
+
+function warnOnUnknownPermissionKeys(
+  permissions: Record<string, unknown> | undefined,
+  pluginId: string,
+): void {
+  if (!permissions) return;
+  const unknown = Object.keys(permissions).filter(
+    (key) => !KNOWN_PERMISSION_KEYS.has(key),
+  );
+  if (unknown.length === 0) return;
+  console.warn(
+    `[catalog] plugin '${pluginId}' declares unknown permission key(s) ${unknown
+      .map((k) => `permissions.${k}`)
+      .join(', ')} — ignored. Check the spelling, or the core version this ` +
+      'manifest was written against.',
+  );
+}
+
+/**
+ * Epic #470 C4 / H1 — shape-validate `permissions.public_paths`.
+ *
+ * Only the syntactic gate lives here; it deliberately does NOT decide whether
+ * the path is claimable. Ownership needs to know about every other installed
+ * plugin, and the "must be a prefix this plugin actually serves" rule needs the
+ * live route registry — neither exists at catalog-load time. Both run at
+ * activation, where a violation is a loud activation failure rather than a
+ * quietly-shortened list.
+ */
+function extractPublicPaths(raw: unknown, pluginId: string): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths must be an array of path prefixes — ignored.`,
+    );
+    return [];
+  }
+  const parsed = publicPathsDeclarationSchema.safeParse(raw);
+  if (parsed.success) return [...parsed.data];
+
+  // Keep the entries that are individually well-formed, name the ones that are
+  // not. A single bad entry must not silently take a plugin's whole
+  // declaration with it, and it must not pass unmentioned either.
+  const kept: string[] = [];
+  for (const entry of raw) {
+    const one = publicPathEntrySchema.safeParse(entry);
+    if (one.success) {
+      kept.push(one.data);
+      continue;
+    }
+    console.warn(
+      `[catalog] plugin '${pluginId}': permissions.public_paths entry ${JSON.stringify(entry)} rejected — ${
+        one.error.issues[0]?.message ?? 'invalid'
+      }`,
+    );
+  }
+  return kept.slice(0, MAX_DECLARED_PUBLIC_PATHS);
 }
 
 /**
@@ -859,24 +1139,54 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+const SETUP_AUDIENCES: readonly SetupAudience[] = [
+  'it_admin',
+  'operator',
+  'end_user',
+];
+
 /**
- * Normalise a manifest `setup.guide` into a `{ <locale>: markdown }` map.
- * Accepts the canonical object form (`{ en: "…", de: "…" }`) and tolerates a
- * bare string (treated as English). Empty strings and non-string values are
- * dropped; returns undefined when nothing usable remains.
+ * OM-15 (#602) — parse a `setup_profile` object. Additive and lenient: an
+ * unknown `audience`, a non-positive / non-integer `estimated_minutes`, or an
+ * empty `requirement` is DROPPED (not rejected), and an object with nothing
+ * usable returns undefined so the card renders no prerequisites row. Never
+ * throws — malformed input (manifest OR untrusted registry teaser) must not
+ * break the catalog. Exported so the store's remote-registry projection
+ * validates the same way the local catalog does.
  */
-function asLocalizedGuide(value: unknown): Record<string, string> | undefined {
-  if (typeof value === 'string') {
-    const s = value.trim();
-    return s.length > 0 ? { en: value } : undefined;
-  }
-  const rec = asRecord(value);
+export function parseSetupProfile(raw: unknown): SetupProfile | undefined {
+  const rec = asRecord(raw);
   if (!rec) return undefined;
-  const out: Record<string, string> = {};
-  for (const [locale, text] of Object.entries(rec)) {
-    if (typeof text === 'string' && text.trim().length > 0) out[locale] = text;
+
+  const profile: SetupProfile = {};
+
+  const audience = asString(rec['audience']);
+  if (audience && (SETUP_AUDIENCES as readonly string[]).includes(audience)) {
+    profile.audience = audience as SetupAudience;
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+
+  const minutes = rec['estimated_minutes'];
+  if (typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0) {
+    profile.estimated_minutes = minutes;
+  }
+
+  const requirement = normalizeLocalized(rec['requirement']);
+  if (requirement) profile.requirement = requirement;
+
+  return Object.keys(profile).length > 0 ? profile : undefined;
+}
+
+/**
+ * Read `listing.setup_profile` from a full manifest doc's `listing` block.
+ *
+ * Deliberately under `listing`, NOT `setup` (where `setup.guide` lives): the
+ * profile is store-CARD presentation shown BEFORE install (audience/effort,
+ * alongside the card's name/description), not setup-wizard content the operator
+ * reads DURING install. Keeping the pre-install teaser separate from the
+ * install-step copy is why it gets its own block.
+ */
+function extractSetupProfile(listing: unknown): SetupProfile | undefined {
+  return parseSetupProfile(asRecord(listing)?.['setup_profile']);
 }
 
 function extractStringArray(value: unknown): string[] {
@@ -913,6 +1223,8 @@ function isSetupFieldType(value: string): value is PluginSetupField['type'] {
     value === 'enum' ||
     value === 'boolean' ||
     value === 'integer' ||
-    value === 'host_list'
+    value === 'host_list' ||
+    // #603 (OM-17) — upload a JSON credential file instead of transcribing it.
+    value === 'json_file'
   );
 }

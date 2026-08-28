@@ -4,10 +4,8 @@ import { strict as assert } from 'node:assert';
 import {
   DIRECT_LINE_EXIT_TOKENS,
   InMemoryDirectLineStickyStore,
-  SHARED_SCOPES,
   STICKY_IDLE_TTL_MS,
   STICKY_MAX_BINDINGS,
-  SYNTHETIC_SCOPE_PREFIXES,
   classifyStickyScope,
   decideDirectLineTurn,
   isDirectLineExitMessage,
@@ -123,10 +121,40 @@ describe('#445 classifyStickyScope', () => {
   });
 
   it('exposes the gate constants it reasons over', () => {
-    assert.ok(SHARED_SCOPES.has('http-default'));
-    assert.ok(SYNTHETIC_SCOPE_PREFIXES.includes('routine:'));
     assert.ok(DIRECT_LINE_EXIT_TOKENS.has('end'));
     assert.ok(DIRECT_LINE_EXIT_TOKENS.has('orchestrator'));
+  });
+
+  // #575 Phase 1 — the denylists this module used to own (`SHARED_SCOPES`,
+  // `SYNTHETIC_SCOPE_PREFIXES`) are deleted; the same refusals now come out of
+  // `ScopeId`. These lock the behaviour to the TYPE rather than to a list, so a
+  // regression that reintroduces a list-shaped gate fails here.
+  it('derives every refusal from the scope type, not from a local denylist', () => {
+    assert.equal(
+      classifyStickyScope({ agentSlug: 'a', sessionScope: 'teams-unknown' }).kind === 'refused' &&
+        classifyStickyScope({ agentSlug: 'a', sessionScope: 'teams-unknown' }).kind,
+      'refused',
+    );
+    // A machine scope the old prefix list would have had to enumerate.
+    assert.deepEqual(
+      classifyStickyScope({ agentSlug: 'a', sessionScope: 'conductor-builder:x:y', userId: 'u1' }),
+      { kind: 'refused', reason: 'synthetic-scope' },
+      'a userId must NOT redeem a machine scope',
+    );
+  });
+
+  it('keeps the sticky key byte-identical to the pre-#575 key', () => {
+    // The key is derived through parse+format now. If that round-trip were
+    // lossy, every live binding would be silently orphaned on deploy.
+    for (const scope of ['http-default', 'teams::19:abc@thread.tacv2', 'telegram:12345', 'tab-7']) {
+      const classified = classifyStickyScope({ agentSlug: 'a', sessionScope: scope, userId: 'u1' });
+      assert.equal(classified.kind, 'eligible', `expected ${scope} eligible`);
+      assert.equal(
+        classified.kind === 'eligible' && classified.key,
+        stickyKeyFor({ agentSlug: 'a', sessionScope: scope, userId: 'u1' }),
+        `key moved for ${scope}`,
+      );
+    }
   });
 });
 

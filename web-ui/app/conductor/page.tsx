@@ -1,11 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
   ApiError,
+  deleteConductorWorkflow,
   fetchConductorTemplates,
   getAuthMe,
   getConductorRun,
@@ -26,6 +28,7 @@ import {
 import { ConductorCanvas, type CanvasGraphRequest } from './_components/ConductorCanvas';
 import { ConductorChatPane } from './_components/ConductorChatPane';
 import { ConductorEmitSection } from './_components/ConductorEmitSection';
+import { FacilitationsPanel } from './_components/FacilitationsPanel';
 import { ConductorRolesSection } from './_components/ConductorRolesSection';
 import { ConductorRunHistory, ConductorRunTrace } from './_components/ConductorRunTrace';
 import { SaveAsTemplateDialog } from './_components/SaveAsTemplateDialog';
@@ -35,6 +38,7 @@ import { TemplateUpdateHint } from './_components/TemplateUpdateHint';
 
 export default function ConductorPage(): React.JSX.Element {
   const t = useTranslations('conductor');
+  const format = useFormatter();
 
   const [workflows, setWorkflows] = useState<ConductorWorkflow[]>([]);
   const [templates, setTemplates] = useState<ConductorTemplate[]>([]);
@@ -83,6 +87,11 @@ export default function ConductorPage(): React.JSX.Element {
   // identity for the dialog's ownership pre-check (AuthUser.id = session sub), and
   // the post-publish notice (text-only success feedback, Lume state-color rule).
   const [saveTemplateSlug, setSaveTemplateSlug] = useState<string | null>(null);
+  // Delete flow: "Delete" arms the confirm dialog for one workflow; confirming
+  // fires the DELETE (physical or logical server-side) and reloads the list.
+  const [deleteSlug, setDeleteSlug] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<string | null>(null);
   // Distinguishes "viewer unknown because getAuthMe is still in flight" from
   // "resolved without a viewer": the save-as-template dialog must not read an
@@ -124,6 +133,35 @@ export default function ConductorPage(): React.JSX.Element {
       }
     },
     [reload],
+  );
+
+  const handleDelete = useCallback(
+    async (wfSlug: string) => {
+      if (deleteBusy || !guardAction()) return;
+      setDeleteBusy(true);
+      setDeleteError(null);
+      try {
+        await deleteConductorWorkflow(wfSlug);
+        setDeleteSlug(null);
+        // Panels keyed to the deleted workflow must not keep rendering it.
+        setHistorySlug((s) => (s === wfSlug ? null : s));
+        setSaveTemplateSlug((s) => (s === wfSlug ? null : s));
+        await reload();
+      } catch (err) {
+        // Catalog copy, not the raw ApiError text (i18n hard rule) — the 409
+        // active-runs case gets its own actionable message AND opens the run
+        // history right away (#330 field report): the guard demands cancelling
+        // active runs, so put the cancel buttons on screen instead of making
+        // the operator hunt for them.
+        setDeleteSlug(null);
+        const hasActiveRuns = err instanceof ApiError && err.status === 409;
+        if (hasActiveRuns) setHistorySlug(wfSlug);
+        setDeleteError(hasActiveRuns ? t('deleteHasActiveRuns') : t('deleteFailed'));
+      } finally {
+        setDeleteBusy(false);
+      }
+    },
+    [deleteBusy, guardAction, reload, t],
   );
 
   const handleEdit = useCallback((wfSlug: string) => {
@@ -301,6 +339,11 @@ export default function ConductorPage(): React.JSX.Element {
         </section>
       )}
 
+      {/* #330 round 4 — live facilitations (invisible in the library by design) */}
+      <section className="mb-10">
+        <FacilitationsPanel />
+      </section>
+
       {/* Workflows list with quick-run */}
       <section className="mb-10">
         <div className="mb-3 flex items-center justify-between">
@@ -328,6 +371,16 @@ export default function ConductorPage(): React.JSX.Element {
                   {wf.template ? <TemplateUpdateHint hint={wf.template} onReinstantiate={handleReinstantiate} /> : null}
                 </div>
                 <div className="flex shrink-0 gap-2">
+                  <Button
+                    variant="ghost"
+                    disabled={deleteBusy}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeleteSlug(wf.slug);
+                    }}
+                  >
+                    {t('deleteButton')}
+                  </Button>
                   <Button
                     variant="ghost"
                     onClick={() => setHistorySlug((s) => (s === wf.slug ? null : wf.slug))}
@@ -384,6 +437,21 @@ export default function ConductorPage(): React.JSX.Element {
             />
           </div>
         )}
+        {deleteError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{deleteError}</p>}
+        {/* Destructive-action gate: same ConfirmDialog as chat-reset / MCP revoke.
+            The server keeps the run history as audit trace when runs exist. */}
+        <ConfirmDialog
+          open={deleteSlug !== null}
+          title={t('deleteConfirmTitle')}
+          body={t('deleteConfirmBody', { slug: deleteSlug ?? '' })}
+          confirmLabel={t('deleteConfirmButton')}
+          cancelLabel={t('deleteCancelButton')}
+          tone="danger"
+          onConfirm={() => {
+            if (deleteSlug) void handleDelete(deleteSlug);
+          }}
+          onCancel={() => setDeleteSlug(null)}
+        />
         {runError && <p className="mt-3 text-[14px] text-[color:var(--danger,#e5484d)]">{runError}</p>}
         {runResult && (
           <div className={`${card} mt-4`}>
@@ -420,7 +488,7 @@ export default function ConductorPage(): React.JSX.Element {
                       : ''}
                     {' · '}
                     {aw.channelType}
-                    {aw.deadlineAt ? ` · deadline ${new Date(aw.deadlineAt).toLocaleString()}` : ''}
+                    {aw.deadlineAt ? ` · deadline ${format.dateTime(new Date(aw.deadlineAt))}` : ''}
                   </div>
                 </div>
                 <div className="flex gap-2">

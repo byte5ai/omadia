@@ -2,6 +2,10 @@ import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import type { MemoryStore } from '@omadia/plugin-api';
+import {
+  getSecurityScreenMetrics,
+  UNSCREENABLE_STREAK_ALERT,
+} from '@omadia/orchestrator';
 
 const PutBodySchema = z.object({
   path: z.string().min(1).startsWith('/memories'),
@@ -37,6 +41,29 @@ export function createAdminRouter(deps: AdminDeps): Router {
       return;
     }
     next();
+  });
+
+  /**
+   * #749 — is inbound security screening (#579) actually running?
+   *
+   * The counters are the answer to a question that had none. Screening is
+   * fail-open: a screener that raises yields `unscreenable` and the turn
+   * proceeds, so a totally broken screener is invisible from the outside. Until
+   * #748 that was not hypothetical — every turn failed, screening was a no-op,
+   * and nothing reported it.
+   *
+   * `healthy` is the derived judgement so an operator (or a probe) does not have
+   * to know the threshold. It is false only on a RUN of failures, never on a
+   * single miss: a transient miss is precisely what the fail-open policy exists
+   * for, and flagging it would teach people to ignore this endpoint.
+   */
+  router.get('/security/screening', (_req: Request, res: Response) => {
+    const metrics = getSecurityScreenMetrics();
+    res.json({
+      ...metrics,
+      alertThreshold: UNSCREENABLE_STREAK_ALERT,
+      healthy: metrics.consecutiveUnscreenable < UNSCREENABLE_STREAK_ALERT,
+    });
   });
 
   router.put('/memory', async (req: Request, res: Response) => {

@@ -242,6 +242,7 @@ function UploadingRow({
           style={{ width: `${pct}%` }}
         />
       </div>
+      {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
       <button
         type="button"
         onClick={onCancel}
@@ -291,6 +292,7 @@ function SuccessRow({
         </p>
       )}
       <div className="mt-3 flex gap-3">
+        {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
         <button
           type="button"
           onClick={onDismiss}
@@ -323,6 +325,7 @@ function ErrorRow({
         </span>
       </div>
       <p className="mt-2 text-sm text-[color:var(--fg-strong)]">{message}</p>
+      {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
       <button
         type="button"
         onClick={onDismiss}

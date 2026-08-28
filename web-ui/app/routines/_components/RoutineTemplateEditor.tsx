@@ -200,7 +200,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]">
-          Output Template
+          {t('heading')}
         </div>
         <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.16em] text-[color:var(--fg-subtle)]">
           {routine.outputTemplate ? (
@@ -209,7 +209,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
             </span>
           ) : (
             <span className="rounded-full border border-[color:var(--border)] px-2 py-0.5 font-semibold text-[color:var(--fg-muted)]">
-              legacy LLM-renders
+              {t('badgeInactive')}
             </span>
           )}
         </div>
@@ -217,10 +217,11 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
       <p className="text-[12px] leading-relaxed text-[color:var(--fg-muted)]">
         {t.rich('description', {
-          schema: () => (
-            <code className="font-mono text-[11px]">
-              {`{ format, sections: [...] }`}
-            </code>
+          // Passed as a plain ICU value, not baked into the message: the
+          // literal contains braces, which ICU would parse as placeholders.
+          schemaShape: '{ format, sections: [...] }',
+          schema: (chunks) => (
+            <code className="font-mono text-[11px]">{chunks}</code>
           ),
         })}
       </p>
@@ -239,7 +240,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
       {draftParseError ? (
         <div className="rounded-md border border-[color:var(--warn)]/40 bg-[color:var(--warn)]/5 p-2 text-[11px] text-[color:var(--warn)]">
-          <span className="font-semibold">JSON syntax:</span>{' '}
+          <span className="font-semibold">{t('jsonSyntaxLabel')}</span>{' '}
           <span className="font-mono">{draftParseError}</span>
         </div>
       ) : null}
@@ -282,6 +283,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
         >
           {t('discard')}
         </Button>
+        {/* eslint-disable-next-line no-restricted-syntax -- warning-outline clear-editor action (§10 no warning variant) */}
         <button
           type="button"
           onClick={handleClear}
@@ -293,6 +295,7 @@ export function RoutineTemplateEditor({ routine }: Props): React.ReactElement {
 
         <span className="ml-auto" />
 
+        {/* eslint-disable-next-line no-restricted-syntax -- preview open/close toggle (aria-expanded), not a §4.2 CTA */}
         <button
           type="button"
           onClick={(): void => setPreviewOpen((v) => !v)}
@@ -395,7 +398,7 @@ function PreviewOutput({
     return (
       <div>
         <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--ok)]">
-          rendered markdown ({result.text.length} chars)
+          {t('renderedMarkdownLabel', { count: result.text.length })}
         </div>
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)]">
           {result.text}
@@ -406,7 +409,7 @@ function PreviewOutput({
   return (
     <div>
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--ok)]">
-        rendered adaptive-card body ({result.items.length} items)
+        {t('renderedAdaptiveCardLabel', { count: result.items.length })}
       </div>
       <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 font-mono text-[11px] leading-relaxed text-[color:var(--fg-strong)]">
         {JSON.stringify(result.items, null, 2)}

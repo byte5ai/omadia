@@ -73,7 +73,7 @@ async function makeApp(email: string | null, store: DraftStore): Promise<TestApp
     }),
   );
   const server: Server = await new Promise((r) => {
-    const s = app.listen(0, () => r(s));
+    const s = app.listen(0, '127.0.0.1', () => r(s));
   });
   const port = (server.address() as AddressInfo).port;
   return {
@@ -270,7 +270,7 @@ describe('self-extension routes — template path', () => {
       }),
     );
     const server: Server = await new Promise((r) => {
-      const s = expressApp.listen(0, () => r(s));
+      const s = expressApp.listen(0, '127.0.0.1', () => r(s));
     });
     const port = (server.address() as AddressInfo).port;
     app = {

@@ -14,7 +14,12 @@
 // `GET /registry/index.json` implementation.
 // ===========================================================================
 
-import type { ISO8601, LocalizedMarkdown, PluginKind } from './admin-v1.js';
+import type {
+  ISO8601,
+  LocalizedMarkdown,
+  PluginKind,
+  SetupProfile,
+} from './admin-v1.js';
 
 /** A single installable version of a plugin, as advertised by a registry. */
 export interface RegistryVersionEntry {
@@ -39,6 +44,10 @@ export interface RegistryVersionEntry {
 export interface RegistryManifestSummary {
   provides?: string[];
   requires?: string[];
+  /** Capabilities the plugin can run without (#795). Same capability-ref
+   *  syntax as `requires`, but never a reason to refuse an install — the
+   *  consent UI renders these as optional prerequisites. */
+  optional_requires?: string[];
   depends_on?: string[];
   /** Setup fields the operator must fill at install-time. Mirrors
    *  `PluginSetupField` but kept loose here to avoid a hard schema coupling. */
@@ -49,6 +58,10 @@ export interface RegistryManifestSummary {
    *  `setup.guide`. Display-only — rendered on the hub detail page and the
    *  Omadia store; never parsed for behaviour. */
   setup_guide?: LocalizedMarkdown;
+  /** OM-15 (#602) — installation-effort profile for the store card (audience,
+   *  time, a key prerequisite). Kept loose; the store re-validates it through
+   *  the same parser the local catalog uses before rendering. */
+  setup_profile?: SetupProfile;
   permissions?: Record<string, unknown>;
 }
 
@@ -59,6 +72,9 @@ export interface RegistryPluginEntry {
   kind: PluginKind;
   domain: string;
   description: string;
+  /** OM-28 (#602) — optional localized description map mirrored from the
+   *  manifest; `description` stays the English string. */
+  description_localized?: Record<string, string>;
   categories: string[];
   authors: Array<{ name: string; email?: string; url?: string }>;
   license: string;

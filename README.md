@@ -24,10 +24,6 @@ data stays in the house and never leaves in clear text. Every answer is checked
 before it ships. Every action carries a receipt. Bring your own LLM key and switch
 providers by config, not code.
 
-#### 🎬 The 2-minute pitch
-
-https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
-
 ---
 
 ## Prerequisites
@@ -47,6 +43,16 @@ needed when you build the services from source or develop plugins:
   built against a specific ABI.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full from-source setup.
+
+> **⚠️ Deploying anywhere other than local `docker compose up`?** The shipped
+> image runs with `NODE_ENV=production`, and since v0.115 the middleware
+> refuses to boot unless **two** secrets are set: `VAULT_KEY` **and**
+> `CREDENTIAL_KEYCHAIN_KEY` (each `openssl rand -base64 32`, two different
+> values, never rotated casually). The Render blueprint and `fly/deploy.sh`
+> generate both; on a self-managed host set them yourself before first boot.
+> Missing either one fails the boot health gate, and on an existing
+> instance the rolling updater then rolls back to the previous version. See
+> [Deployment](#deployment) and [Troubleshooting](#troubleshooting).
 
 ## ⚡ Quickstart
 
@@ -80,6 +86,30 @@ docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
 > **Pull fails with `manifest unknown`?** The GHCR images publish on each
 > release, so a brand-new checkout can briefly predate the first published
 > image. Build from source with the `--build` line above until a release lands.
+
+### No Docker? Let your AI assistant install it
+
+Prefer not to touch a terminal? If you have the **Claude** desktop app (or
+another AI assistant that can run commands on your machine, such as Codex), paste
+the prompt below into a chat. The assistant fetches a public skill file and
+installs the native omadia desktop app (no Docker, no build tools) from the
+newest GitHub Release that has a build for your OS, then opens the onboarding
+wizard for you.
+
+```text
+Install omadia on my machine by following this skill file, step by step:
+https://raw.githubusercontent.com/byte5ai/omadia/main/docs/onboarding/SKILL.md
+```
+
+On a **Claude Pro/Max** subscription you can pick the CLI-subscription provider in
+the wizard instead of a metered API key — provided the `claude` CLI is installed
+and signed in on the same machine (omadia detects it there). Otherwise the API-key
+option always works. See
+[`docs/onboarding/SKILL.md`](docs/onboarding/SKILL.md) for exactly what it runs.
+
+## 🎬 The 2-minute pitch
+
+https://github.com/user-attachments/assets/644f9dae-c8a9-44af-a47f-183d2fcdcf34
 
 ## 🚀 First run: from prompt to audit receipt
 
@@ -268,15 +298,43 @@ the differentiating logic, and verifying with the smoke runner before install.
 ## Deployment
 
 - **Local / single-tenant**: `docker compose up`, see Quickstart above
+- **One-click cloud**: deploy the minimal core into your own Render
+  workspace — [`render.yaml`](render.yaml) provisions the middleware,
+  admin UI, and Postgres (pgvector), generates `VAULT_KEY` and
+  `CREDENTIAL_KEYCHAIN_KEY`, and the `/setup` wizard collects your LLM key
+  on first boot. Runs on paid instance types (the middleware needs a persistent disk).
+
+  [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/byte5ai/omadia)
+
+- **One-command Fly.io**: Fly has no blueprint-style deploy button, so the
+  equivalent is one command. [`fly/deploy.sh`](fly/deploy.sh) provisions
+  three apps in your Fly org — middleware (persistent `/data` volume),
+  admin UI, and a private [`pgvector/pgvector`](https://hub.docker.com/r/pgvector/pgvector)
+  Postgres (the same image the compose stack uses; Fly's own Postgres
+  offerings either lack pgvector or gate it behind a dashboard toggle) —
+  generates `VAULT_KEY`, `CREDENTIAL_KEYCHAIN_KEY` and the database password,
+  and deploys the GHCR
+  images. Needs a logged-in `flyctl`; roughly $10/month:
+
+  ```bash
+  git clone https://github.com/byte5ai/omadia.git && cd omadia
+  ./fly/deploy.sh
+  ```
+
 - **Bring-your-own**: the runtime is a stock Node + Postgres app; any host
   that can run both works (Kubernetes, ECS, plain VM).
 
-> **Required production secret.** The shipped image runs with
-> `NODE_ENV=production`, which makes `VAULT_KEY` mandatory at boot; without
-> it the middleware refuses to start (this is intentional; the dev fallback
-> writes the master key into the data volume, which is not safe at rest).
-> Generate one with `openssl rand -base64 32` and wire it as a platform
-> secret before the first deploy. The bundled `docker-compose.yaml` pins
+> **Required production secrets.** The shipped image runs with
+> `NODE_ENV=production`, which makes **two** keys mandatory at boot:
+> `VAULT_KEY` (secret vault) and, since v0.115, `CREDENTIAL_KEYCHAIN_KEY`
+> (credential keychain — a separate trust domain, so a separate key). Without
+> either the middleware refuses to start (this is intentional; the dev
+> fallback writes the master keys into the data volume, which is not safe at
+> rest). Generate each with `openssl rand -base64 32` and wire both as
+> platform secrets before the first deploy. Upgrading an existing instance
+> from a version older than v0.115? Add `CREDENTIAL_KEYCHAIN_KEY` **before**
+> pulling the new image, or the boot health gate fails and the rolling
+> updater rolls back. The bundled `docker-compose.yaml` pins
 > `NODE_ENV=development` so the dev fallback stays available for local
 > `docker compose up` without configuration; drop that override (and set
 > `VAULT_KEY` in `.env`) when you re-use the compose file as a starting
@@ -295,9 +353,10 @@ without notice until `1.0.0`.
 
 Active development tracks:
 
-- **Conductor**: multi-step composition with a human sign-off path. Landing from
-  branch `005-omadia-conductor`; it graduates to a first-class feature once that
-  merges to `main`.
+- **Conductor**: shipped — a deterministic workflow engine (graph of agent /
+  action / human steps) with durable human approvals, crash-safe resume,
+  operator run cancellation, and a visual designer at `/conductor`. See
+  `specs/005-omadia-conductor/` and `docs/architecture.md`.
 - **Plugin marketplace**: discovery and signed-package distribution (post-1.0)
 - **Multi-tenant hosting**: out of scope for v1; a separate fork is planned
 - **Web-IDE for plugin development**: moves the Builder authoring loop into the
@@ -320,9 +379,19 @@ Postgres port. If another process holds one of them, the affected container
 exits on start. Free the port, or remap it in your own compose override, then
 re-run `docker compose up -d`.
 
-**`VAULT_KEY` missing at boot.** A production image (`NODE_ENV=production`)
-refuses to start without `VAULT_KEY`, on purpose. Generate one with `openssl
-rand -base64 32` and set it in your project-root `.env` before deploying. The
+**`VAULT_KEY` or `CREDENTIAL_KEYCHAIN_KEY` missing at boot.** A production
+image (`NODE_ENV=production`) refuses to start without both keys, on purpose
+(`CREDENTIAL_KEYCHAIN_KEY is required when NODE_ENV=production` is the
+message since v0.115). Generate each with `openssl rand -base64 32` and set
+them as secrets before deploying.
+
+**Update rolled back with `health gate failed: never_reachable`.** The new
+image never answered `/health` within the gate window, so the updater restored
+the previous version — the instance keeps running. The most common cause is a
+secret the new version requires at boot that the old one did not, above all
+`CREDENTIAL_KEYCHAIN_KEY` when coming from a version older than v0.115. Check
+the middleware logs from the failed boot right away (hosted log retention is
+short), add the missing secret, and re-run the update. The
 bundled `docker-compose.yaml` pins `NODE_ENV=development`, so a local `docker
 compose up` keeps the dev fallback. Full context lives in
 [Deployment](#deployment).

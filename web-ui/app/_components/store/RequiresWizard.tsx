@@ -19,7 +19,11 @@ import type {
   UnresolvedCapabilityEntry,
 } from '../../_lib/storeTypes';
 import { Chip } from './Chip';
-import { FieldRow, extractValues } from './setupForm';
+import {
+  FieldRow,
+  extractValues,
+  type SetupFieldError,
+} from './setupForm';
 import { Button } from '@/app/_components/ui/Button';
 
 /**
@@ -72,6 +76,21 @@ type Phase =
   | { kind: 'success' }
   | { kind: 'error'; message: string };
 
+/**
+ * #825 — in this flow "installed" and "running" are different questions.
+ *
+ * The chained-install wizard's contract is to leave every dependency
+ * INSTALLED so the next step can proceed. `errored` still answers "yes" to
+ * that question: the package is installed, and the remedy is a grant on the
+ * plugin's own consent surface. This wizard has no step for that consent, so
+ * aborting on `errored` would strand the operator with an installed
+ * dependency and a dead wizard — strictly worse than the pre-#833 behaviour it
+ * replaced.
+ */
+function isInstalledTerminal(state: InstallJob['state']): boolean {
+  return state === 'active' || state === 'errored';
+}
+
 export function RequiresWizard({
   targetPluginId,
   targetPluginName,
@@ -95,7 +114,9 @@ export function RequiresWizard({
     initialSelections,
   );
   const [phase, setPhase] = useState<Phase>({ kind: 'review' });
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<
+    Record<string, SetupFieldError>
+  >({});
   const formRef = useRef<HTMLFormElement | null>(null);
   // Promise-resolver for the inline pause: when a provider needs setup
   // input, the install-loop awaits this before continuing.
@@ -113,6 +134,7 @@ export function RequiresWizard({
       aria-modal="true"
       aria-label={t('dialogAria', { name: targetPluginName })}
     >
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (full-bleed modal backdrop/scrim, no text) */}
       <button
         type="button"
         onClick={installing ? undefined : onClose}
@@ -141,6 +163,7 @@ export function RequiresWizard({
               {t('intro')}
             </p>
           </div>
+          {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (close ×, X icon only) */}
           <button
             type="button"
             onClick={onClose}
@@ -325,7 +348,7 @@ export function RequiresWizard({
         }
 
         const configured = await configureInstallJob(job.id, values);
-        if (configured.job.state !== 'active') {
+        if (!isInstalledTerminal(configured.job.state)) {
           const message =
             configured.job.error?.message ??
             t('stepEndedInState', {
@@ -479,7 +502,7 @@ function InstallingBody({
   onFormSubmit,
 }: {
   phase: Extract<Phase, { kind: 'installing' }>;
-  fieldErrors: Record<string, string>;
+  fieldErrors: Record<string, SetupFieldError>;
   formRef: React.MutableRefObject<HTMLFormElement | null>;
   onFormSubmit: (values: Record<string, unknown>) => void;
 }): React.ReactElement {

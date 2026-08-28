@@ -2,7 +2,7 @@
  * Shared harness for the `/api/v1/admin/embedding-provider` route tests.
  *
  * Extracted so the spec file stays about behaviour. Same convention as
- * `devplatform/devPlatformRoutes.harness.ts` — the `.harness.ts` suffix keeps
+ * the other route harnesses in this tree — the `.harness.ts` suffix keeps
  * it out of the test-file glob the runner uses.
  *
  * It models the runtime the way it actually behaves: `activate(id)` publishes
@@ -294,7 +294,7 @@ export async function makeHarness(
   );
 
   const server: Server = await new Promise((resolve) => {
-    const s = app.listen(0, () => resolve(s));
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${String(port)}/api/v1/admin/embedding-provider`;

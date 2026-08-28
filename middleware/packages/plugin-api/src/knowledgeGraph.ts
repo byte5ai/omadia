@@ -54,6 +54,13 @@ export interface KnowledgeGraph {
    * EXECUTED / INVOKED_* / PRODUCED edges. Safe to call independently of
    * {@link ingestTurn}; missing Turn/Entity nodes are tolerated (edges
    * pointing at non-existent external ids are skipped rather than aborting).
+   *
+   * #684 — BEST-EFFORT. This call MAY throw and its caller
+   * (`SessionLogger`) deliberately does not fail the user's turn when it does:
+   * implementations refuse to write a Run whose Turn or User-Cluster node does
+   * not exist, and no channel except the browser-login flow resolves a
+   * User-Cluster per turn. Treat a present trace as evidence and an absent one
+   * as no evidence either way — see {@link RunTrace} for the full contract.
    */
   ingestRun(trace: RunTrace): Promise<RunIngestResult>;
   /**
@@ -704,11 +711,25 @@ export interface KnowledgeGraph {
    * KnowledgeGraph boundary, never inside it.
    */
   ingestDataset(input: DatasetIngest): Promise<DatasetIngestResult>;
-  /** #430 — list datasets owned by the caller, most-recent first. */
+  /**
+   * #430 — list datasets owned by the caller, most-recent first.
+   * `limit` is clamped by implementations (default 50, max 200); `offset`
+   * skips that many newest datasets so the admin UI can page past the cap
+   * (#532 review: without it, datasets beyond the cap were invisible AND
+   * undeletable).
+   */
   listDatasets(opts: {
     ownerOmadiaUserId: string;
     limit?: number;
+    offset?: number;
   }): Promise<DatasetSummary[]>;
+  /**
+   * #532 — total number of datasets owned by the caller, so list surfaces
+   * can render real pagination ("showing N of M") instead of a silently
+   * truncated page. Optional for plugin-api back-compat: implementations
+   * that predate it keep working, and callers fall back to the page length.
+   */
+  countDatasets?(opts: { ownerOmadiaUserId: string }): Promise<number>;
   /**
    * #430 — read one dataset's metadata + inferred schema. Null when
    * missing or the viewer doesn't own it (ACL mirrors `/api/v1/memory`:
@@ -847,6 +868,21 @@ export interface MemorableKnowledgeSearchOptions {
    */
   teamVisibility?: boolean;
   /**
+   * #575 — admit ONLY shared knowledge: rows whose `visibility` is `team` or
+   * `public`, never a row the viewer merely owns.
+   *
+   * `teamVisibility` WIDENS the ACL (owner rows plus shared ones); this NARROWS
+   * it to the shared tier alone. The two are not opposites and not
+   * interchangeable: the audience floor asks "what may everyone present see",
+   * and a row the recalling user owns privately is exactly what the rest of the
+   * room is not entitled to.
+   *
+   * Implies `teamVisibility` in every implementation — asking for shared rows
+   * while the shared branch is off would silently return only the viewer's OWN
+   * shared rows, a misconfiguration with no legitimate use.
+   */
+  sharedOnly?: boolean;
+  /**
    * Per-orchestrator isolation — the recalling Agent's slug. When set,
    * owner-gated MK is additionally constrained to rows the viewing Agent
    * produced (`origin_agent = viewerAgentSlug`); MK with no `origin_agent`
@@ -884,6 +920,21 @@ export interface ExcerptSearchOptions {
    * against the parent MK's `visibility`. Default false.
    */
   teamVisibility?: boolean;
+  /**
+   * #575 — admit ONLY shared knowledge: rows whose `visibility` is `team` or
+   * `public`, never a row the viewer merely owns.
+   *
+   * `teamVisibility` WIDENS the ACL (owner rows plus shared ones); this NARROWS
+   * it to the shared tier alone. The two are not opposites and not
+   * interchangeable: the audience floor asks "what may everyone present see",
+   * and a row the recalling user owns privately is exactly what the rest of the
+   * room is not entitled to.
+   *
+   * Implies `teamVisibility` in every implementation — asking for shared rows
+   * while the shared branch is off would silently return only the viewer's OWN
+   * shared rows, a misconfiguration with no legitimate use.
+   */
+  sharedOnly?: boolean;
   /**
    * Per-orchestrator isolation — mirrors
    * {@link MemorableKnowledgeSearchOptions.viewerAgentSlug}. Constrains the
@@ -1198,6 +1249,30 @@ export interface ChannelIdentityIngest {
    * them deterministically land on the same User-Cluster.
    */
   aadObjectId?: string;
+  /**
+   * The IdP subject this identity authenticates as — issue #568.
+   *
+   * `provider` is the auth-provider id (`local`, `entra`, …) and
+   * `providerUserId` is that provider's own subject for the user: exactly
+   * the value the session JWT carries as `sub`, and therefore exactly the
+   * key `/mcp-servers/:id/authorize` stores a `per_user` OAuth token under
+   * (see `middleware/src/auth/sessionIdentity.ts`).
+   *
+   * Stored so a CHANNEL turn — which only ever knows the KG-canonical
+   * `omadiaUserId` — can find the token an operator authorized in the web
+   * UI. Without it the two namespaces never meet and every `per_user`
+   * server fails closed on Teams/Telegram/Slack.
+   *
+   * Recorded as an explicit FACT rather than inferred from the shape of
+   * other fields. The tempting inference — "for the local provider
+   * `providerUserId` IS the lowercased email, so reuse `email`" — happens
+   * to hold today and is exactly the kind of convention that rots
+   * silently in a credential path.
+   *
+   * Only set by a login flow that has actually authenticated the subject;
+   * a channel adapter must NOT populate it from channel-side payload.
+   */
+  authSubject?: { provider: string; providerUserId: string };
   /** Free-form channel-side payload (Telegram from-object, etc.).
    *  AAD oid is NOT stored here — it has its own first-class field. */
   internalChannelData?: Record<string, unknown>;
@@ -1214,6 +1289,48 @@ export interface ResolveOrCreateChannelIdentityResult {
   isNewIdentity: boolean;
   /** True if a fresh User-Cluster was spun up (vs. joining an existing one). */
   isNewCluster: boolean;
+  /**
+   * The IdP subject of ANY identity in the resolved cluster that carries one
+   * — issue #568. `undefined` when no identity in the cluster has ever been
+   * through an authenticating login (the common case for a channel-only
+   * user), which must be read as "no web-authorized token to inherit", never
+   * as a licence to substitute another key.
+   *
+   * Returned from THIS call rather than a follow-up lookup because the
+   * per-turn channel path already pays for exactly one identity round-trip
+   * and deliberately avoids a second (see `orchestrator.ts`'s `mcpUserKey`
+   * producer).
+   *
+   * Cluster-level, not identity-level: the subject typically belongs to a
+   * SIBLING `web:` identity (the operator's Admin-UI login), which is the
+   * whole point — that sibling is who authorized the token.
+   */
+  clusterAuthSubject?: { provider: string; providerUserId: string };
+}
+
+/**
+ * The ChannelIdentity node properties that carry {@link
+ * ChannelIdentityIngest.authSubject} — issue #568.
+ *
+ * Lives in the contract package because BOTH graph backends persist these
+ * and both must read them back under the same names; two private copies of
+ * a property name is one that drifts, and the drift would surface as a
+ * `per_user` MCP server silently failing closed on one backend only.
+ *
+ * Returns an empty object when there is no subject, so the result spreads
+ * into a props literal without introducing `undefined`-valued keys.
+ */
+export function authSubjectProps(
+  ingest: Pick<ChannelIdentityIngest, 'authSubject'>,
+): Record<string, string> {
+  const subject = ingest.authSubject;
+  if (!subject) return {};
+  const provider = subject.provider.trim();
+  const providerUserId = subject.providerUserId.trim();
+  // A blank half is not a subject. Storing one would create an identity that
+  // claims to be authenticated and matches nothing.
+  if (provider === '' || providerUserId === '') return {};
+  return { authProvider: provider, authProviderUserId: providerUserId };
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,6 +1587,14 @@ export interface TurnIngest {
    */
   userId?: string;
   /**
+   * #584 WS I — human speaker of `userMessage` for transcript-ingest turns
+   * (speaker-attributed utterances from a transcribed recording). Optional and
+   * additive: backends that store it gain a queryable turn property, backends
+   * that ignore it stay correct — the markdown transcript carries the
+   * attribution either way.
+   */
+  speaker?: string;
+  /**
    * Palaia (OB-71) — optional Capture-Pipeline classification result. When
    * the orchestrator-extras `CaptureFilter` runs ahead of the write, it
    * routes its `CaptureFilterDecision` through these fields. Backends MUST
@@ -1597,6 +1722,35 @@ export interface RunAgentInvocation {
   toolCalls: RunToolCall[];
 }
 
+/**
+ * The agentic trace of one turn.
+ *
+ * #684 (epic #642) — **this is best-effort telemetry, not a provenance
+ * record.** The distinction is load-bearing and was decided rather than
+ * inherited: a missing trace means "not recorded", never "no such turn".
+ *
+ * A turn can complete successfully and leave no trace at all, for four reasons
+ * that are all deliberate:
+ *
+ *  - no knowledge-graph plugin is configured (the sink is optional — the
+ *    Markdown transcript is the guaranteed surface, not this);
+ *  - the transcript write failed, so graph ingest was skipped on purpose to
+ *    keep both surfaces consistent;
+ *  - `ingestTurn` failed, so no Run is written that would dangle off a missing
+ *    Turn;
+ *  - `ingestRun` refused because no User-Cluster node exists for the user —
+ *    which is the ordinary state for every channel except the browser-login
+ *    flow, since nothing else calls `resolveOrCreateChannelIdentity` per turn.
+ *
+ * The alternative — guaranteeing the ingest — was rejected because it would
+ * require auto-creating User-Cluster nodes, which both implementations refuse
+ * precisely so that channel-resolution bugs cannot hide behind orphan clusters.
+ *
+ * Consequence for anyone building on this: do not phrase a compliance or audit
+ * claim as "the trace shows". Drops are counted and warned about at the call
+ * site (`runTraceObservability.ts`), so the size of the gap is at least
+ * knowable.
+ */
 export interface RunTrace {
   /** Must match the turn-id returned by a matching ingestTurn call. */
   turnId: string;
@@ -1612,6 +1766,30 @@ export interface RunTrace {
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
   error?: string;
+  /**
+   * #650 (epic #642) — which model actually produced the answer, e.g.
+   * `claude-sonnet-4-5-20250929`.
+   *
+   * The trace recorded how long a turn ran, which sub-agents ran and which
+   * tools were called, but not the one fact a provenance question about a past
+   * turn starts from. The id already existed in the system (on the `done` event
+   * and in the cost telemetry); it just never reached the persisted record.
+   *
+   * Optional, and that is load-bearing: every trace written before this field
+   * existed stays readable. `graph_nodes.properties` is a generic JSONB column
+   * and `RunPropsSchema` is `.passthrough()`, so no schema migration is
+   * involved — a row simply does not carry the key.
+   */
+  model?: string;
+  /**
+   * #650 — the provider that served the turn (`anthropic`, `openai`, …).
+   *
+   * Recorded alongside the model rather than derived from it: the same model id
+   * can be served through different providers (direct, Bedrock, a gateway), and
+   * a provenance record that infers the route instead of stating it is a
+   * record that can be wrong.
+   */
+  provider?: string;
 }
 
 export interface RunIngestResult {

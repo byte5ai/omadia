@@ -7,9 +7,12 @@ import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-cor
 import { ConductorBuilderUnavailableError } from './builderAgent.js';
 import type { BuilderChatMessage, ConductorBuilderAgent } from './builderAgent.js';
 import { emptyGraph } from './graphPatch.js';
+import { EPHEMERAL_SLUG_PREFIX } from './ephemeralRunService.js';
+import { WorkflowSlugExistsError } from './workflowStore.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
+import type { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
@@ -17,6 +20,7 @@ import type { ConductorEventRouter } from './eventRouter.js';
 import {
   AwaitNotPendingError,
   AwaitResponderNotHolderError,
+  RunAlreadyEndedError,
   WorkflowDisabledError,
   WorkflowNotFoundError,
   WorkflowNotPublishedError,
@@ -48,6 +52,9 @@ export interface ConductorRouterDeps {
   workflowStore: ConductorWorkflowStore;
   runStore: ConductorRunStore;
   awaitStore: ConductorAwaitStore;
+  /** #330 round 4 — operator lens + terminate for live facilitations
+   *  (ephemeral workflows are hidden from the library by design). */
+  facilitationAdmin?: ConductorFacilitationAdmin;
   roleStore: ConductorRoleStore;
   scheduleStore: ConductorScheduleStore;
   executor: ConductorRunExecutor;
@@ -86,6 +93,25 @@ export interface ConductorRouterDeps {
    *  `window.location.origin` client-side — in the standard local dev setup those
    *  resolve to the Next.js dev server, which does not proxy `/api/hooks/*`. */
   webhookInboundBaseUrl?: string;
+  /**
+   * #759 — audit sink for role-holder changes. Every add/remove of a baton
+   * holder is a security-relevant event (any operator can make themselves an
+   * approver — a single-role system has no finer permission today), so it
+   * must land in the admin audit trail. Optional so tests and hosts without
+   * an audit log keep working; best-effort at the call site (an audit-write
+   * failure must not fail the mutation, but it is logged loudly).
+   */
+  auditRoleChange?: (entry: {
+    actor: string;
+    /** #775 — the session's omadia user uuid, when the session carries one.
+     *  `actor` above is the SUB (an email under local auth), which must never
+     *  be written to the uuid `admin_audit.actor_id` column. */
+    actorUserId?: string;
+    roleKey: string;
+    action: 'add' | 'remove';
+    holderId: string;
+    holdersAfter: string[];
+  }) => Promise<void>;
 }
 
 /**
@@ -124,6 +150,12 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(400).json({ code: 'conductor.invalid_input', message: 'slug and name are required' });
       return;
     }
+    // #330 — 'eph-' is the agent-generated namespace (createEphemeralRun); a manual
+    // workflow squatting on it would collide with the reaper's lifecycle.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `slug prefix '${EPHEMERAL_SLUG_PREFIX}' is reserved for ephemeral workflows` });
+      return;
+    }
     const graph = body.graph as unknown as WorkflowGraph;
     const result = validate(graph);
     if (!result.ok) {
@@ -144,8 +176,19 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(201).json({
         workflow: out.workflow,
         version: { id: out.version.id, version: out.version.version },
+        // #759 — non-blocking findings (timeout_equals_approval,
+        // approval_fail_open): the publish stands, but the designer must SEE
+        // a legal-but-dangerous shape to keep it consciously.
+        ...(result.warnings && result.warnings.length > 0 ? { warnings: result.warnings } : {}),
       });
     } catch (err) {
+      // Reaped slugs surface here: the upsert's reaped_at guard turns a publish
+      // onto a deleted workflow into a slug conflict instead of a silent,
+      // hidden resurrection.
+      if (err instanceof WorkflowSlugExistsError) {
+        res.status(409).json({ code: 'conductor.slug_exists', message: err.message });
+        return;
+      }
       console.error('[conductor] publish failed:', err);
       res.status(500).json({ code: 'conductor.publish_failed', message: errMsg(err) });
     }
@@ -295,13 +338,80 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const key = paramStr(req.params.key);
       if (action === 'remove') await deps.roleStore.removeHolder(key, holderId);
       else await deps.roleStore.addHolder(key, holderId);
-      res.status(200).json({ holders: await deps.roleStore.resolve(key) });
+      const holders = await deps.roleStore.resolve(key);
+      // #759 — baton moves decide who may approve; they belong in the audit
+      // trail. Best-effort: the mutation stands even if the audit write fails,
+      // but the failure is loud, never silent.
+      if (deps.auditRoleChange) {
+        try {
+          await deps.auditRoleChange({
+            actor: req.session?.sub ?? 'operator',
+            actorUserId: req.session?.omadia_user_id,
+            roleKey: key,
+            action,
+            holderId,
+            holdersAfter: holders,
+          });
+        } catch (auditErr) {
+          console.error('[conductor] role-holder audit write failed:', auditErr);
+        }
+      }
+      res.status(200).json({ holders });
     } catch (err) {
       res.status(500).json({ code: 'conductor.role_assign_failed', message: errMsg(err) });
     }
   });
 
   // Operator inbox — all pending human awaits across runs, with role principals resolved live.
+  // #330 round 4 — live facilitations (ephemeral workflows are hidden from
+  // the library by design, which made them invisible to operators). Declared
+  // BEFORE the parametric '/:slug' routes so 'facilitations' never reads as a
+  // workflow slug.
+  router.get('/facilitations', async (_req: Request, res: Response): Promise<void> => {
+    if (!deps.facilitationAdmin) {
+      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
+      return;
+    }
+    try {
+      res.json({ facilitations: await deps.facilitationAdmin.list() });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.facilitations_failed', message: errMsg(err) });
+    }
+  });
+
+  // Operator stop: cancel active runs (#759 semantics) + dispose of the
+  // scaffold (binding + role go with it). Idempotent.
+  router.post('/facilitations/:workflowId/terminate', async (req: Request, res: Response): Promise<void> => {
+    if (!deps.facilitationAdmin) {
+      res.status(501).json({ code: 'conductor.facilitations_unavailable', message: 'facilitation admin not wired on this host' });
+      return;
+    }
+    try {
+      const result = await deps.facilitationAdmin.terminate(
+        paramStr(req.params.workflowId),
+        req.session?.sub ?? 'operator',
+        req.session?.omadia_user_id,
+      );
+      if (result.outcome === 'not_found') {
+        res.status(404).json({ code: 'conductor.not_found', message: 'no such facilitation' });
+        return;
+      }
+      if (result.outcome === 'cancel_failed') {
+        // Disposal was SKIPPED on purpose: reaping with a live run would hide
+        // it from this very lens. 502 tells the operator to retry.
+        res.status(502).json({
+          code: 'conductor.facilitation_cancel_failed',
+          message: `cancel failed for ${String(result.failedRuns)} run(s) — nothing was disposed, retry`,
+          cancelledRuns: result.cancelledRuns,
+        });
+        return;
+      }
+      res.json({ cancelledRuns: result.cancelledRuns, disposed: true });
+    } catch (err) {
+      res.status(500).json({ code: 'conductor.facilitation_terminate_failed', message: errMsg(err) });
+    }
+  });
+
   router.get('/awaits/pending', async (_req: Request, res: Response): Promise<void> => {
     try {
       const awaits = await deps.awaitStore.listWaiting();
@@ -329,8 +439,8 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       if (err instanceof AwaitNotPendingError) {
         res.status(409).json({ code: 'conductor.await_not_pending', message: err.message });
       } else if (err instanceof AwaitResponderNotHolderError) {
-        // A non-holder tried to answer (incl. the phantom `dev_job:<id>` principal an operator
-        // must never own). The authz gate already refused; surface it as 403, not a generic 500.
+        // A non-holder tried to answer. The authz gate already refused; surface it as 403,
+        // not a generic 500.
         res.status(403).json({ code: 'conductor.await_forbidden', message: err.message });
       } else {
         console.error('[conductor] respond failed:', err);
@@ -344,7 +454,9 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   router.get('/:slug', async (req: Request, res: Response): Promise<void> => {
     try {
       const wf = await deps.workflowStore.getBySlug(paramStr(req.params.slug));
-      if (!wf || !wf.activeVersionId) {
+      // A logically removed workflow is deleted from the operator's point of
+      // view — it must not be readable (or leak its existence) via GET either.
+      if (!wf || !wf.activeVersionId || wf.reapedAt) {
         res.status(404).json({ code: 'conductor.not_found', message: 'workflow or active version missing' });
         return;
       }
@@ -363,11 +475,58 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.status(400).json({ code: 'conductor.invalid_input', message: "status must be 'enabled' or 'disabled'" });
       return;
     }
+    // #330 — ephemeral workflows are lifecycle-managed by their reaper, never by
+    // operators: re-enabling a reaped definition would create a permanently
+    // startable zombie the reaper can no longer see (reaped_at is stamped once).
+    if (paramStr(req.params.slug).startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `status of '${EPHEMERAL_SLUG_PREFIX}' workflows is managed by the ephemeral lifecycle` });
+      return;
+    }
     try {
       await deps.workflowStore.setStatus(paramStr(req.params.slug), status);
       res.status(204).end();
     } catch (err) {
       res.status(500).json({ code: 'conductor.status_failed', message: errMsg(err) });
+    }
+  });
+
+  // Delete a workflow. Two removal shapes, mirroring the #330 ephemeral reaper:
+  // physical DELETE when no run references any version (versions/drafts/schedules
+  // cascade with the row), logical removal otherwise (disabled + reaped_at — the
+  // run history stays as audit trace, the list() filter hides the row from the
+  // library AND the event router, and the cron worker skips disabled workflows).
+  // Active (running/waiting) runs block with 409 — the operator cancels first.
+  router.delete('/:slug', async (req: Request, res: Response): Promise<void> => {
+    const slug = paramStr(req.params.slug);
+    // #330 — ephemeral workflows are lifecycle-managed by their reaper, never by operators.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `deletion of '${EPHEMERAL_SLUG_PREFIX}' workflows is managed by the ephemeral lifecycle` });
+      return;
+    }
+    try {
+      const wf = await deps.workflowStore.getBySlug(slug);
+      if (!wf || (wf.origin ?? 'manual') !== 'manual' || wf.reapedAt) {
+        res.status(404).json({ code: 'conductor.not_found', message: 'workflow not found' });
+        return;
+      }
+      if (await deps.workflowStore.hasActiveRuns(wf.id)) {
+        res.status(409).json({ code: 'conductor.has_active_runs', message: 'workflow has running or waiting runs — cancel them first' });
+        return;
+      }
+      // TOCTOU guard: a run inserted between the NOT-EXISTS snapshot and the
+      // DELETE commit raises FK 23503 (conductor_runs blocks the cascade) —
+      // that race falls back to the logical shape instead of a 500.
+      let hard = false;
+      try {
+        hard = await deps.workflowStore.hardDeleteUnreferenced(wf.id);
+      } catch (err) {
+        if ((err as { code?: string }).code !== '23503') throw err;
+      }
+      if (!hard) await deps.workflowStore.removeLogical(wf.id);
+      res.status(200).json({ deleted: true, mode: hard ? 'hard' : 'soft' });
+    } catch (err) {
+      console.error('[conductor] delete failed:', err);
+      res.status(500).json({ code: 'conductor.delete_failed', message: errMsg(err) });
     }
   });
 
@@ -394,6 +553,13 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   router.post('/:slug/runs', async (req: Request, res: Response): Promise<void> => {
     const slug = paramStr(req.params.slug);
     const payload = asObject(asObject(req.body).payload);
+    // #330 — an ephemeral workflow is run-scoped: exactly one run, started by
+    // createEphemeralRun. A manual run would delay the reap (listReapable waits
+    // for all-terminal) and count against the creating agent's quota.
+    if (slug.startsWith(EPHEMERAL_SLUG_PREFIX)) {
+      res.status(400).json({ code: 'conductor.reserved_slug_prefix', message: `runs of '${EPHEMERAL_SLUG_PREFIX}' workflows are managed by the ephemeral lifecycle` });
+      return;
+    }
     try {
       // Async: the run is created + driven in the background (real agent turns are slow).
       // 202 Accepted; the client polls GET /:slug/runs/:runId for the final status + trace.
@@ -425,6 +591,27 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ runs: await deps.runStore.listForVersion(wf.activeVersionId) });
     } catch (err) {
       res.status(500).json({ code: 'conductor.list_runs_failed', message: errMsg(err) });
+    }
+  });
+
+  // #759 — cancel a run. 'waiting' finalizes immediately (awaits close as
+  // 'cancelled'); 'running' flags the driver, honoured at the next step
+  // boundary; terminal runs answer 409.
+  router.post('/:slug/runs/:runId/cancel', async (req: Request, res: Response): Promise<void> => {
+    const runId = paramStr(req.params.runId);
+    const requestedBy = req.session?.sub ?? 'operator';
+    try {
+      const run = await deps.executor.cancelRun(runId, requestedBy);
+      res.json({ run });
+    } catch (err) {
+      if (err instanceof WorkflowNotFoundError) {
+        res.status(404).json({ code: 'conductor.not_found', message: err.message });
+      } else if (err instanceof RunAlreadyEndedError) {
+        res.status(409).json({ code: 'conductor.run_already_ended', message: err.message });
+      } else {
+        console.error('[conductor] cancel failed:', err);
+        res.status(500).json({ code: 'conductor.cancel_failed', message: errMsg(err) });
+      }
     }
   });
 

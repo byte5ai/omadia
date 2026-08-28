@@ -27,7 +27,11 @@ import type {
 import { defaultLlmAdapters } from './adapterRegistry.js';
 import type { ProviderId } from './modelRegistry.js';
 import type { LlmProviderCatalog } from './providerCatalog.js';
-import { readProviderApiKey } from './providerCredentials.js';
+import { readProviderApiKey, readProviderOAuthTokens } from './providerCredentials.js';
+import {
+  getProviderOAuthBearer,
+  type ProviderOAuthDeps,
+} from './providerOAuthTokenStore.js';
 
 /**
  * Default API base URLs for well-known OpenAI-compatible providers, so an
@@ -65,6 +69,10 @@ export interface ResolveLlmProviderOptions {
    *  `defaultLlmAdapters` (the app registers its bundled adapters into it at
    *  boot); tests pass an isolated registry. */
   readonly adapters?: LlmAdapterRegistry;
+  /** OAuth deps forwarded to the token store when the provider connects via
+   *  OAuth (#294). Test seam — production omits it (global fetch + the real
+   *  Codex config). */
+  readonly oauth?: ProviderOAuthDeps;
   readonly log?: (...args: unknown[]) => void;
 }
 
@@ -84,11 +92,18 @@ export async function resolveLlmProvider(
   const descriptor = opts.catalog?.get(opts.providerId);
 
   const apiKey = await readProviderApiKey(opts.getSecret, opts.providerId);
+  // OAuth-connected providers (#294 "Sign in with ChatGPT") carry no API key —
+  // "connected" means device-flow tokens are stored in this scope. The bearer
+  // itself is resolved per request via the process-wide token store (rotation-
+  // safe); here we only decide connectivity.
+  const oauthConnected =
+    descriptor?.oauth !== undefined &&
+    (await readProviderOAuthTokens(opts.getSecret, opts.providerId)) !== undefined;
   // Local / self-hosted providers (e.g. Ollama) declare `policy.requiresApiKey:
   // false` and run without credentials. For every other provider, a missing key
   // means "not connected" → no provider (caller skips publishing its capability).
   const keyless = descriptor?.policy?.requiresApiKey === false;
-  if (apiKey === undefined && !keyless) return undefined;
+  if (apiKey === undefined && !keyless && !oauthConnected) return undefined;
   // The SDK constructors reject a falsy apiKey, so a keyless provider (no
   // credential by design — Ollama ignores the Authorization header) gets a
   // non-empty placeholder instead of ''. Only reached when apiKey is genuinely
@@ -128,6 +143,13 @@ export async function resolveLlmProvider(
     );
   }
 
+  // When the provider is OAuth-connected, hand the adapter a per-request bearer
+  // resolver instead of a static key. The closure captures only the providerId;
+  // the token (and its rotation) lives in the process-wide store.
+  const bearerProvider = oauthConnected
+    ? (): Promise<string> => getProviderOAuthBearer(opts.providerId, opts.oauth)
+    : undefined;
+
   // `id` stamps a non-default openai-compatible provider (mistral/minimax/…);
   // 'openai' and the anthropic adapter use their own fixed id. `quirks` apply to
   // the openai-compatible adapter only; other adapters ignore them.
@@ -137,6 +159,7 @@ export async function resolveLlmProvider(
     ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
     ...(opts.providerId !== 'openai' ? { id: opts.providerId } : {}),
     ...(descriptor?.quirks !== undefined ? { quirks: descriptor.quirks } : {}),
+    ...(bearerProvider !== undefined ? { bearerProvider } : {}),
     ...(opts.log !== undefined ? { log: opts.log } : {}),
   });
 }

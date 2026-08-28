@@ -1,3 +1,4 @@
+import { extractFromJsonFile } from './setupJsonFile.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -11,21 +12,33 @@ import type { TemplateManifest } from '@omadia/conductor-core';
 
 import type {
   ApiError,
+  InstallActivationState,
   InstallJob,
   InstallJobState,
   InstallSetupField,
   InstallSetupSchema,
 } from '../api/admin-v1.js';
+import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import {
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
-import type { InstalledRegistry } from './installedRegistry.js';
+import type {
+  InstalledAgent,
+  InstalledRegistry,
+} from './installedRegistry.js';
+import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './pluginTemplates.js';
+import {
+  checkSetupFieldPattern,
+  compileSetupPattern,
+} from './setupFieldPattern.js';
+import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 export interface InstallServiceDeps {
   catalog: PluginCatalog;
@@ -47,6 +60,42 @@ export interface InstallServiceDeps {
    *  only the catalog registration is skipped when no registrar is wired
    *  (boot re-registers via registerInstalledPluginTemplates). */
   conductorTemplates?: () => PluginTemplateRegistrar | undefined;
+  /**
+   * Epic #470 C16 / B6 — operator consent that must not outlive the plugin.
+   *
+   * B6 in the epic's design notes: the per-plugin grant tables were never
+   * cleaned on uninstall, so a plugin that re-claimed a used id silently
+   * inherited the previous one's consent. For `plugin_public_path_grants` that
+   * means inheriting an UNAUTHENTICATED surface; for `plugin_sql_grants` it
+   * means inheriting the operator's database and a ledger table full of another
+   * package's migration history. Neither is something the operator agreed to.
+   *
+   * Both are optional so existing wiring (and every test) keeps compiling; a
+   * deployment without a database has no rows to clean either way. Failures are
+   * logged and swallowed for the same reason `vault.purge` failures are: the
+   * uninstall itself must complete, and a surviving row is visible in the
+   * grants panel where a half-uninstalled plugin would not be.
+   *
+   * `plugin_mcp_grants` (migration 0012) is deliberately absent: nothing in
+   * `src/` reads or writes that table today, so there is no store to call and
+   * no consent that could be inherited through it. It joins this list the day
+   * it gets a reader.
+   */
+  publicPathGrantStore?: PublicPathGrantStore;
+  sqlGrantStore?: PluginSqlGrantStore;
+}
+
+/**
+ * #825 — terminal states in which the plugin IS installed.
+ *
+ * `active` and `errored` differ in whether the plugin came up, not in whether
+ * it is installed, so every guard that asks "is this job done and the plugin on
+ * disk?" must accept both. Written as one predicate because the two call sites
+ * that ask (`cancel`, `uninstall`) got it wrong in opposite directions when the
+ * check was an inline `=== 'active'`.
+ */
+function isInstalledTerminal(state: InstallJobState): boolean {
+  return state === 'active' || state === 'errored';
 }
 
 /**
@@ -56,8 +105,12 @@ export interface InstallServiceDeps {
  * Express.
  *
  * Slice 1.2a scope: synchronous jobs with two meaningful states —
- * `awaiting_config` after creation, `active` after successful configure.
+ * `awaiting_config` after creation, and a terminal state after configure.
  * SSE progress, persistent jobs, and self-test hooks arrive in 1.2b.
+ *
+ * #825 — that terminal state is `active` or `errored` depending on whether the
+ * plugin ACTIVATED, not merely on whether the writes landed. See
+ * `finishInstall`.
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
@@ -161,6 +214,7 @@ export class InstallService {
       current_step: 'Warte auf Konfiguration',
       error: null,
       setup_schema: setupSchema,
+      activation_state: null,
       created_at: now,
       updated_at: now,
     };
@@ -191,6 +245,7 @@ export class InstallService {
   async configure(
     jobId: string,
     values: Record<string, unknown>,
+    jsonFiles?: Record<string, string>,
   ): Promise<InstallJob> {
     const job = this.get(jobId);
 
@@ -213,7 +268,43 @@ export class InstallService {
 
     this.transition(job, 'configuring', 'Validiere Eingaben');
 
-    const validated = validateValues(schema, values);
+    // #603 (OM-17) — a `json_file` upload submitted WITH the install form. The
+    // parse happens HERE, per the platform doctrine on the post-install
+    // `secrets/from-json` route: a client that decides which bytes become
+    // `gw_sa_private_key` is a client that can be made to decide wrongly. The
+    // raw document is never persisted; only the extracted values continue, and
+    // they continue through the SAME validation as typed input (patterns,
+    // required, vault/config split), so "uploaded it" cannot drift from
+    // "typed it". A value the operator explicitly typed wins over the file —
+    // the visible field is the truth the operator sees.
+    if (jsonFiles) {
+      for (const field of schema.fields) {
+        if (field.type !== 'json_file') continue;
+        const raw = jsonFiles[field.key];
+        if (typeof raw !== 'string' || raw.length === 0) continue;
+        const out = extractFromJsonFile(raw, {
+          key: field.key,
+          extracts: field.extracts ?? {},
+          ...(field.expect ? { expect: field.expect } : {}),
+        });
+        if (!out.ok) {
+          this.fail(job, {
+            code: 'install.validation_failed',
+            message: 'Eingaben enthalten Fehler',
+            details: [
+              { key: field.key, code: out.failure.code, message: out.failure.message },
+            ],
+          });
+          return job;
+        }
+        for (const [k, v] of Object.entries(out.values)) {
+          const existing = values[k];
+          if (existing === undefined || existing === '') values[k] = v;
+        }
+      }
+    }
+
+    const validated = await validateValues(schema, values);
     if (validated.errors.length > 0) {
       this.fail(job, {
         code: 'install.validation_failed',
@@ -259,6 +350,12 @@ export class InstallService {
       templateManifests = loaded.manifests;
     }
 
+    // #825 — the activation hook's verdict, captured where it happens. The
+    // hook's failure is swallowed (the install itself completed and must not be
+    // rolled back over it), so without this the only surviving trace inside
+    // this function would be a console line.
+    let hookError: string | undefined;
+
     try {
       if (Object.keys(secrets).length > 0) {
         await this.deps.vault.setMany(job.plugin_id, secrets);
@@ -270,7 +367,14 @@ export class InstallService {
         status: 'active',
         config,
       });
-      this.transition(job, 'active', 'Installation abgeschlossen');
+      // #825 — NOT `active` yet. The registry row above says `active` because
+      // that is what an install intends; whether the plugin actually comes up
+      // is decided by the `onInstalled` hook a few lines down, and the job's
+      // terminal word is now derived from that outcome in `finishInstall`
+      // rather than written optimistically here. Writing `active` at this point
+      // is the whole of #825: it made the job disagree with the registry (and
+      // with `GET …/grants`) for every install whose activation failed.
+      this.transition(job, 'configuring', 'Aktiviere Plugin');
 
       // #478 — register the gated template manifests as read-only 'plugin'
       // catalog entries. Registration is in-memory; boot re-registers via
@@ -290,12 +394,42 @@ export class InstallService {
         try {
           await this.deps.onInstalled(job.plugin_id);
         } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // #825 — remember the throw. This is the FIRST-HAND observation of
+          // whether the plugin came up; everything below is the recording of it.
+          hookError = message;
           console.error(
             `[install] onInstalled hook failed for ${job.plugin_id}:`,
-            err instanceof Error ? err.message : err,
+            message,
           );
+          // The registry was written `status: 'active'` a few lines above —
+          // BEFORE the hook that does the activating. Swallowing the hook's
+          // failure there left the entry claiming `active` while the plugin's
+          // own `undo()` had rolled back every route, tool and nav entry it
+          // registered: a green status over a plugin serving nothing, with the
+          // only trace a console line. Correct it here.
+          //
+          // Two writes, because they answer different questions.
+          // `markActivationFailed` records WHY and feeds
+          // `bootstrap.retryErroredPlugins`. It does not flip the status on its
+          // own — `CIRCUIT_BREAKER_THRESHOLD` is 3, which is right for a boot
+          // loop retrying a transient failure and wrong here: an install-time
+          // activation failure is a single definitive event an operator is
+          // watching, not the first of three strikes. So the status is set
+          // explicitly, and only when the entry still reads `active` (the
+          // threshold may already have done it).
+          await this.deps.registry.markActivationFailed(job.plugin_id, message);
+          const entry = this.deps.registry.get(job.plugin_id);
+          if (entry && entry.status === 'active') {
+            await this.deps.registry.register({ ...entry, status: 'errored' });
+          }
         }
       }
+
+      // #825 — the job's terminal word, derived from the activation outcome.
+      // Deliberately AFTER the catch above, so it sees both the hook's verdict
+      // and the corrected registry status rather than the optimistic one.
+      await this.finishInstall(job, hookError);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.fail(job, {
@@ -305,6 +439,107 @@ export class InstallService {
     }
 
     return job;
+  }
+
+  /**
+   * #825 — settle a completed install into `active` or `errored`, and attach
+   * the machine-readable reason.
+   *
+   * The plugin IS installed by the time this runs: the vault and registry
+   * writes landed, and `uninstall` is the only way back out. So neither outcome
+   * here is `failed` — that word belongs to installs that never got that far,
+   * and a client that retried the form on an activation failure would be
+   * answering the wrong question. What it needs is a GRANT.
+   */
+  private async finishInstall(
+    job: InstallJob,
+    hookError: string | undefined,
+  ): Promise<void> {
+    const activation = await this.buildActivationState(job.plugin_id, hookError);
+    job.activation_state = activation;
+    if (activation.ok) {
+      this.transition(job, 'active', 'Installation abgeschlossen');
+      return;
+    }
+    this.transition(
+      job,
+      'errored',
+      activation.missing.length > 0
+        ? 'Installiert — Berechtigungen fehlen'
+        : 'Installiert — Aktivierung fehlgeschlagen',
+    );
+  }
+
+  /**
+   * Read the activation outcome for an installed plugin: whether it came up,
+   * why not, and which declared permissions it was never granted.
+   *
+   * WHAT COUNTS AS FAILURE, AND WHY IT IS NOT "the registry did not say active"
+   * --------------------------------------------------------------------------
+   * There are two sources here and they are not interchangeable:
+   *
+   *   * `hookError` — the first-hand observation. `onInstalled` threw, so the
+   *     plugin did not come up. Nothing beats this.
+   *   * the registry status — the RECORDING of that fact (#799
+   *     `markActivationFailed` plus the explicit flip), which also carries
+   *     failures this call did not cause: a circuit breaker that had already
+   *     tripped, or a boot-path verdict written by `toolPluginRuntime`.
+   *
+   * So failure is `hookError` OR an explicit `errored` on record. Anything else
+   * is success — INCLUDING a registry that reports no status at all.
+   *
+   * That last clause is load-bearing and was got wrong once already. Treating
+   * "no status" as failure sounds pleasingly fail-closed and is simply untrue:
+   * a registry implementation that does not track a status field is not
+   * claiming the plugin is broken, it is saying nothing, and inventing an
+   * `errored` from silence would break every install on such a core — which is
+   * exactly what it did, across three existing test suites, before this was
+   * corrected. Absence of a claim is not a claim. A failure must be OBSERVED
+   * (the hook threw) or RECORDED (the status literally reads `errored`).
+   *
+   * The grant-gap read is wrapped: it touches two optional stores, and a
+   * database hiccup while reading a DIAGNOSTIC must not turn a completed
+   * install into `install.write_failed`. An empty `missing` on a plugin that is
+   * genuinely missing grants is a less-informative answer to a question the
+   * grants panel also answers; a spurious failure would be a wrong one.
+   */
+  private async buildActivationState(
+    pluginId: string,
+    hookError: string | undefined,
+  ): Promise<InstallActivationState> {
+    const entry = this.deps.registry.get(pluginId);
+    const recordedStatus = entry?.status;
+    const failed = hookError !== undefined || recordedStatus === 'errored';
+
+    // Start with the registry's word when it has one, so this field and
+    // `GET …/grants` read identically. Fall back to the observation only when
+    // the registry tracks no status — silence is not failure.
+    const recorded: InstallActivationState['state'] =
+      recordedStatus ?? (failed ? 'errored' : 'active');
+    // The hook throw is first-hand observation. If that says the plugin did
+    // not come up, a stale recorded `active` may not overrule it.
+    const state: InstallActivationState['state'] =
+      failed && recorded === 'active' ? 'errored' : recorded;
+
+    let missing: InstallActivationState['missing'] = [];
+    try {
+      const gap = await readGrantGap(this.deps, pluginId);
+      missing = [...gap.missing];
+    } catch (err) {
+      console.error(
+        `[install] grant-gap read failed for ${pluginId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    return {
+      state,
+      ok: state === 'active',
+      // Prefer what the registry recorded (it is what the grants panel shows);
+      // fall back to the throw we saw, for registries that record nothing.
+      error: entry?.last_activation_error ?? hookError ?? null,
+      missing,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -333,9 +568,29 @@ export class InstallService {
    * No-op if the plugin is not installed. Hook errors are logged but not
    * re-thrown: a stuck old instance is better than a hard failure that
    * blocks the operator from saving config.
+   *
+   * NOT RE-THROWING IS NOT THE SAME AS NOT RECORDING (epic #470 C16).
+   *
+   * `completeInstall` learned this in #799: swallowing the activation hook's
+   * failure left the registry claiming `active` over a plugin whose `undo()`
+   * had already rolled everything back. This path had exactly the same bug for
+   * exactly the same reason, and it matters more here than there — the grant
+   * consent flow (C16) re-activates a plugin precisely to find out whether the
+   * grant took, and answering "fine" out of a swallowed catch would make the
+   * whole consent surface a liar.
+   *
+   * So the hook failure is still not re-thrown (the operator's config save must
+   * not fail over a stuck plugin) and is now WRITTEN DOWN: `markActivationFailed`
+   * records why, and the status is flipped explicitly rather than waiting for
+   * `CIRCUIT_BREAKER_THRESHOLD` — a re-activation the operator triggered and is
+   * watching is a single definitive event, not the first of three strikes.
+   *
+   * @returns the registry status after the attempt, or `undefined` when the
+   *          plugin is not installed. Reading it is optional; every existing
+   *          caller ignores it.
    */
-  async reactivate(agentId: string): Promise<void> {
-    if (!this.deps.registry.has(agentId)) return;
+  async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
+    if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {
         await this.deps.onUninstall(agentId);
@@ -346,16 +601,44 @@ export class InstallService {
         );
       }
     }
-    if (this.deps.onInstalled) {
-      try {
-        await this.deps.onInstalled(agentId);
-      } catch (err) {
-        console.error(
-          `[install] reactivate.onInstalled hook failed for ${agentId}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+    if (!this.deps.onInstalled) {
+      // NO HOOK MEANS NOTHING WAS ACTIVATED, SO THERE IS NO SUCCESS TO RECORD.
+      //
+      // Falling through to the success writes below would run
+      // `clearActivationError`, which lifts `errored` → `active` and deletes
+      // `last_activation_error` / `unresolved_requires` — over a plugin this
+      // call never started. That is the #799 bug in its mirror image, and worse
+      // in one respect: the registry would also forget WHY the plugin was
+      // errored, so the next operator has neither the status nor the reason.
+      await this.refreshInstalledJobs(agentId, undefined);
+      return this.deps.registry.get(agentId)?.status;
     }
+    try {
+      await this.deps.onInstalled(agentId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[install] reactivate.onInstalled hook failed for ${agentId}:`,
+        message,
+      );
+      await this.deps.registry.markActivationFailed(agentId, message);
+      const failed = this.deps.registry.get(agentId);
+      if (failed && failed.status === 'active') {
+        await this.deps.registry.register({ ...failed, status: 'errored' });
+      }
+      await this.refreshInstalledJobs(agentId, message);
+      return this.deps.registry.get(agentId)?.status;
+    }
+    // Success. `markActivationSucceeded` clears the failure fields but
+    // deliberately does not lift `errored` — that is `clearActivationError`'s
+    // job — so both run, in that order: lift the circuit breaker, then stamp
+    // `last_activated_at`. A plugin that comes back up after the operator
+    // granted the missing permission must stop reading `errored`, or the
+    // consent flow would appear not to have worked.
+    await this.deps.registry.clearActivationError(agentId);
+    await this.deps.registry.markActivationSucceeded(agentId);
+    await this.refreshInstalledJobs(agentId, undefined);
+    return this.deps.registry.get(agentId)?.status;
   }
 
   async uninstall(agentId: string): Promise<void> {
@@ -376,9 +659,16 @@ export class InstallService {
       );
     }
 
-    // Remove from all open jobs so the re-install path is clean.
+    // Remove from all open jobs so the re-install path is clean. Jobs that
+    // already reached a terminal INSTALLED state are kept, so a client still
+    // polling one keeps getting its final answer instead of a 404.
+    //
+    // #825 — `errored` is such a state: the install completed and the plugin
+    // was installed, it just did not come up. Testing `!== 'active'` alone
+    // would have deleted exactly the jobs whose outcome a caller most needs to
+    // read back.
     for (const [jobId, job] of this.jobs) {
-      if (job.plugin_id === agentId && job.state !== 'active') {
+      if (job.plugin_id === agentId && !isInstalledTerminal(job.state)) {
         this.jobs.delete(jobId);
       }
     }
@@ -402,9 +692,47 @@ export class InstallService {
         err instanceof Error ? err.message : err,
       );
     }
+    // Epic #470 C16 / B6 — operator consent leaves with the plugin, in the same
+    // breath as its secrets. A reinstall under the same id must start
+    // un-granted; anything else is consent the operator gave to a package that
+    // is no longer there.
+    await this.purgeGrants(agentId);
     // #478 — contributed workflow templates leave the catalog with the plugin.
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
+  }
+
+  /**
+   * Drop every operator grant recorded for one plugin. Best-effort per table:
+   * one store being unreachable must not stop the other from being cleaned, and
+   * neither may stop the uninstall.
+   */
+  private async purgeGrants(agentId: string): Promise<void> {
+    try {
+      const removed =
+        await this.deps.publicPathGrantStore?.revokeAllForPlugin(agentId);
+      if (removed) {
+        console.log(
+          `[install] removed ${String(removed)} public-path grant(s) for ${agentId}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[install] public-path grant purge failed for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    try {
+      const removed = await this.deps.sqlGrantStore?.revoke(agentId);
+      if (removed) {
+        console.log(`[install] removed the SQL grant for ${agentId}`);
+      }
+    } catch (err) {
+      console.error(
+        `[install] SQL grant purge failed for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   private findDependents(parentId: string): string[] {
@@ -420,13 +748,50 @@ export class InstallService {
     return dependents;
   }
 
+  /**
+   * #825 — keep every completed install job in sync with the plugin's current
+   * activation outcome, not just the registry row.
+   *
+   * The install route already settled jobs through `buildActivationState` →
+   * `finishInstall`. Re-activation must reuse that SAME derivation, or the job
+   * and `GET …/grants` drift apart again as soon as a later grant changes the
+   * truth. Only terminal installed jobs are refreshed: `failed`/`cancelled`
+   * describe a different lifecycle, and in-flight jobs are answering work that
+   * is still happening.
+   *
+   * Errors are logged with the job + plugin id and swallowed. `reactivate()` is
+   * called from config-save and consent paths that must not fail because a
+   * stale job object could not be re-derived.
+   */
+  private async refreshInstalledJobs(
+    agentId: string,
+    hookError: string | undefined,
+  ): Promise<void> {
+    for (const job of this.jobs.values()) {
+      if (job.plugin_id !== agentId || !isInstalledTerminal(job.state)) continue;
+      try {
+        await this.finishInstall(job, hookError);
+      } catch (err) {
+        console.error(
+          `[install] failed to refresh install job '${job.id}' for ${agentId}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Cancel
   // -------------------------------------------------------------------------
 
   cancel(jobId: string): InstallJob {
     const job = this.get(jobId);
-    if (job.state === 'active' || job.state === 'cancelled') {
+    // #825 — `errored` is as un-cancellable as `active`: both mean the plugin
+    // is installed. Stamping `cancelled` over one would tell the operator the
+    // install was called off while the plugin sits in the registry — the same
+    // class of untruth this issue removed from `active`. Uninstall is the way
+    // back out of both.
+    if (isInstalledTerminal(job.state) || job.state === 'cancelled') {
       return job;
     }
     this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen');
@@ -506,14 +871,64 @@ export function extractSetupSchema(
     const field: InstallSetupField = {
       key,
       type,
-      label: asString(f['label']) ?? key,
+      // #602 (OM-17) — localized label map, byte-for-byte identical to the
+      // catalog projection in manifestLoader (bare string → English, empty →
+      // the field key). The shared-fixture test guards that agreement.
+      label: normalizeLocalized(f['label']) ?? { en: key },
       required: f['required'] !== false,
     };
-    const help = asString(f['help']);
+    const help = normalizeLocalized(f['help']);
     if (help) field.help = help;
+    // OM-17 — forward the manifest placeholder to the install wizard, which
+    // previously masked every secret field with a hardcoded `••••••••`.
+    const placeholder = asString(f['placeholder']);
+    if (placeholder) field.placeholder = placeholder;
+    // #603 (OM-17) — the `json_file` upload contract. Must stay in agreement
+    // with the catalog projection in `manifestLoader.ts`, which applies the SAME
+    // "no usable extracts ⇒ drop the field" rule: a `json_file` field that
+    // survives one projection but not the other is a file picker that renders on
+    // one screen and cannot save from the other.
+    if (type === 'json_file') {
+      const extractsRaw = f['extracts'];
+      const extracts: Record<string, string> = {};
+      if (extractsRaw && typeof extractsRaw === 'object' && !Array.isArray(extractsRaw)) {
+        for (const [target, path] of Object.entries(
+          extractsRaw as Record<string, unknown>,
+        )) {
+          const p = asString(path);
+          if (target.length > 0 && p !== undefined) extracts[target] = p;
+        }
+      }
+      if (Object.keys(extracts).length === 0) continue;
+      field.extracts = extracts;
+      const expectRaw = f['expect'];
+      if (expectRaw && typeof expectRaw === 'object' && !Array.isArray(expectRaw)) {
+        const expect = expectRaw as Record<string, unknown>;
+        if (Object.keys(expect).length > 0) field.expect = expect;
+      }
+      const accept = asString(f['accept']);
+      if (accept) field.accept = accept;
+    }
     if (f['default'] !== undefined) field.default = f['default'];
+    // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
+    // catastrophically-backtracking pattern is dropped (warned once, cached) so
+    // it can never reach the request path. Keeps the install-schema projection
+    // byte-for-byte in agreement with the catalog projection.
     const pattern = asString(f['pattern']);
-    if (pattern) field.pattern = pattern;
+    if (pattern) {
+      if (compileSetupPattern(pattern, `install/${key}`)) {
+        field.pattern = pattern;
+        const patternHint = normalizeLocalized(f['pattern_hint']);
+        if (patternHint) field.pattern_hint = patternHint;
+      } else {
+        // OM-17 / F2 — a DROPPED pattern must never silently look like a field
+        // that was never pattern-checked. The manifest asked for a format check
+        // and is not getting one; say so at the field instead of only in a log
+        // line, otherwise this path quietly reinstates the very defect the
+        // module exists to prevent.
+        field.pattern_unavailable = true;
+      }
+    }
     if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
       field.multiline = true;
     }
@@ -610,10 +1025,13 @@ function privacyModeField(entry: PluginCatalogEntry): InstallSetupField {
   return {
     key: PRIVACY_MODE_CONFIG_KEY,
     type: 'enum',
-    label: 'Privacy Mode',
+    // #602 (OM-17) — label/help are localized maps now. These kernel-injected
+    // fields carry German copy, so tag them `de`; a non-German UI resolves via
+    // the same fallback and still shows this text (unchanged from before).
+    label: { de: 'Privacy Mode' },
     required: false,
     default: PRIVACY_MODE_DEFAULT,
-    help,
+    help: { de: help },
     enum: PRIVACY_MODE_VALUES.map((value) => ({
       value,
       label: privacyModeLabel(value),
@@ -646,14 +1064,17 @@ function privacyBypassScopesField(): InstallSetupField {
   return {
     key: PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
     type: 'string',
-    label: 'Bypass-Tool-Whitelist (nur bei Privacy Mode = Per-Tool)',
+    // #602 (OM-17) — German kernel copy tagged `de`; see privacyModeField.
+    label: { de: 'Bypass-Tool-Whitelist (nur bei Privacy Mode = Per-Tool)' },
     required: false,
-    help:
-      'Komma- oder Leerzeichen-getrennte Liste von Tool-Namen, die bei ' +
-      'Privacy Mode "Per-Tool" unmaskiert durchgelassen werden. Beispiel: ' +
-      '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
-      'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
-      '"Geschützt" oder "Bypass" steht.',
+    help: {
+      de:
+        'Komma- oder Leerzeichen-getrennte Liste von Tool-Namen, die bei ' +
+        'Privacy Mode "Per-Tool" unmaskiert durchgelassen werden. Beispiel: ' +
+        '"confluence_get_page, confluence_get_page_by_title". Tools die hier ' +
+        'NICHT stehen bleiben "guarded". Wird ignoriert wenn Privacy Mode auf ' +
+        '"Geschützt" oder "Bypass" steht.',
+    },
   };
 }
 
@@ -679,14 +1100,22 @@ interface ValidationResult {
   errors: Array<{ key: string; code: string; message: string }>;
 }
 
-function validateValues(
+async function validateValues(
   schema: InstallSetupSchema,
   incoming: Record<string, unknown>,
-): ValidationResult {
+): Promise<ValidationResult> {
   const values: Record<string, unknown> = {};
   const errors: Array<{ key: string; code: string; message: string }> = [];
 
   for (const field of schema.fields) {
+    // #602 (OM-17) — these validation messages are German templates and this
+    // path has no request locale, so resolve the localized label to German
+    // (falling back to en/any, else the key). A German sentence with a German
+    // label beats the mixed-locale message that was a named cause of OM-17.
+    // NB: 'de' is hardcoded because the surrounding templates are German-only;
+    // if they ever localize, thread the request locale here — same root cause
+    // as the server-side always-English pattern hint tracked in #605.
+    const label = resolveLocalized(field.label, 'de') ?? field.key;
     const raw = incoming[field.key];
     const missing =
       raw === undefined ||
@@ -707,7 +1136,7 @@ function validateValues(
         errors.push({
           key: field.key,
           code: 'required',
-          message: `Feld "${field.label}" ist erforderlich.`,
+          message: `Feld "${label}" ist erforderlich.`,
         });
       } else if (field.default !== undefined) {
         values[field.key] = field.default;
@@ -725,20 +1154,34 @@ function validateValues(
       continue;
     }
 
-    if (field.pattern && typeof coerced.value === 'string') {
-      try {
-        const re = new RegExp(field.pattern);
-        if (!re.test(coerced.value)) {
-          errors.push({
-            key: field.key,
-            code: 'pattern_mismatch',
-            message: `"${field.label}" entspricht nicht dem erwarteten Muster.`,
-          });
-          continue;
-        }
-      } catch {
-        // Ignore invalid regex in manifest; a separate manifest-lint step
-        // will catch these later.
+    if (typeof coerced.value === 'string') {
+      // OM-17 — one shared implementation with the post-install secrets patch
+      // (routes/runtime.ts), so an install-time reject and a later credential
+      // edit can never disagree about what a field accepts. `checkSetupFieldPattern`
+      // returns null for fields without a pattern and for patterns that were
+      // dropped by the load-time safety screen — backward compatible by design.
+      const violation = await checkSetupFieldPattern(
+        field,
+        coerced.value,
+        `install/${field.key}`,
+      );
+      if (violation) {
+        errors.push({
+          key: field.key,
+          code: 'pattern_mismatch',
+          // The manifest's own hint when it declared one, otherwise the
+          // pre-existing generic message (kept byte-identical so existing
+          // install-flow assertions and operator muscle memory still hold).
+          //
+          // The hint is ENGLISH — this process has no request locale. The
+          // wizard's `FieldRow` re-resolves it from `field.pattern_hint` in the
+          // active locale, keyed on this entry's `code`, so a German operator
+          // reads German. See `setupFieldPattern.ts` → `PatternViolation.hint`.
+          message:
+            violation.hint ??
+            `"${label}" entspricht nicht dem erwarteten Muster.`,
+        });
+        continue;
       }
     }
 
@@ -753,7 +1196,23 @@ type CoerceResult =
   | { error: { code: string; message: string } };
 
 function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
+  // #602 (OM-17) — see validateValues: German templates, no request locale.
+  const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
+    // #603 (OM-17) — a `json_file` field is an INPUT affordance, not a stored
+    // value: the server explodes the upload into the keys named in `extracts`
+    // and stores only those. So nothing may be submitted under this field's own
+    // key, and a value arriving here means the client tried to write the raw
+    // document into the vault — which is exactly what this feature exists to
+    // avoid. Refused rather than ignored: silently dropping it would let a
+    // client believe it had stored a credential.
+    case 'json_file':
+      return {
+        error: {
+          code: 'not_submittable',
+          message: `"${label}" wird hochgeladen, nicht eingegeben — es kann nicht direkt gesetzt werden.`,
+        },
+      };
     case 'string':
     case 'secret':
       return typeof raw === 'string'
@@ -761,7 +1220,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         : {
             error: {
               code: 'wrong_type',
-              message: `"${field.label}" muss Text sein.`,
+              message: `"${label}" muss Text sein.`,
             },
           };
     case 'url': {
@@ -769,7 +1228,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine URL sein.`,
+            message: `"${label}" muss eine URL sein.`,
           },
         };
       }
@@ -782,7 +1241,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'invalid_url',
-            message: `"${field.label}" ist keine gültige http(s)-URL.`,
+            message: `"${label}" ist keine gültige http(s)-URL.`,
           },
         };
       }
@@ -795,7 +1254,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       return {
         error: {
           code: 'wrong_type',
-          message: `"${field.label}" muss true oder false sein.`,
+          message: `"${label}" muss true oder false sein.`,
         },
       };
     case 'integer': {
@@ -804,7 +1263,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine ganze Zahl sein.`,
+            message: `"${label}" muss eine ganze Zahl sein.`,
           },
         };
       }
@@ -815,7 +1274,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss ein Text sein.`,
+            message: `"${label}" muss ein Text sein.`,
           },
         };
       }
@@ -824,7 +1283,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'enum_mismatch',
-            message: `"${field.label}" muss einer der erlaubten Werte sein: ${allowed.join(', ')}.`,
+            message: `"${label}" muss einer der erlaubten Werte sein: ${allowed.join(', ')}.`,
           },
         };
       }
@@ -841,7 +1300,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
         return {
           error: {
             code: 'wrong_type',
-            message: `"${field.label}" muss eine Liste von Hostnamen sein.`,
+            message: `"${label}" muss eine Liste von Hostnamen sein.`,
           },
         };
       }
@@ -851,7 +1310,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
           return {
             error: {
               code: 'wrong_type',
-              message: `"${field.label}" darf nur Text-Hostnamen enthalten.`,
+              message: `"${label}" darf nur Text-Hostnamen enthalten.`,
             },
           };
         }
@@ -914,6 +1373,12 @@ const SUPPORTED_TYPES = new Set<string>([
   'boolean',
   'integer',
   'host_list',
+  // #603 (OM-17). Fifth place this union is mirrored — the issue named three
+  // (`admin-v1.ts`, `manifestLoader.isSetupFieldType`, `agentSpec`'s z.enum);
+  // this set and `InstallSetupField`'s shape are the other two. A member missing
+  // HERE does not error: `isSupportedType` simply skips the field, so the upload
+  // disappears from the install wizard with no diagnostic at all.
+  'json_file',
 ]);
 
 function isSupportedType(t: string): t is InstallSetupField['type'] {
