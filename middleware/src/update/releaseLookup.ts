@@ -44,15 +44,33 @@ export interface ReleaseLookupOptions {
   readonly now?: () => number;
 }
 
+export interface ReleaseListResult {
+  /** Newest first, as GitHub returns them. Empty when the lookup has never
+   *  succeeded — never a partial guess. */
+  readonly releases: readonly LatestRelease[];
+  readonly checkedAt: number | null;
+  readonly stale: boolean;
+  readonly error?: string;
+}
+
 export interface ReleaseLookup {
   /** Cached read; refreshes when the TTL expired or `force` is set. Never
    *  rejects — transport failures surface as `stale` + `error`. */
   get(force?: boolean): Promise<ReleaseLookupResult>;
+  /** The releases the operator may choose between — same caching and
+   *  offline-tolerance contract as `get`. Separate cache because it is a
+   *  separate GitHub call; the admin page only asks for it when the updater
+   *  can actually execute something. */
+  list(force?: boolean): Promise<ReleaseListResult>;
 }
 
 const DEFAULT_REPO = 'byte5ai/omadia';
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 8_000;
+/** How many releases the operator gets to choose from. One GitHub page; far
+ *  enough back to reach any version worth rolling forward or back to, without
+ *  turning the picker into an archive. */
+const RELEASE_PAGE_SIZE = 30;
 
 interface GithubReleasePayload {
   tag_name?: unknown;
@@ -144,6 +162,64 @@ export function createReleaseLookup(
     }
   }
 
+  let cachedList: readonly LatestRelease[] = [];
+  let listCheckedAt: number | null = null;
+  let listError: string | undefined;
+  let listInFlight: Promise<ReleaseListResult> | null = null;
+
+  function listSnapshot(stale: boolean): ReleaseListResult {
+    return {
+      releases: cachedList,
+      checkedAt: listCheckedAt,
+      stale,
+      ...(stale && listError !== undefined ? { error: listError } : {}),
+    };
+  }
+
+  async function refreshList(): Promise<ReleaseListResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+    try {
+      const res = await doFetch(
+        `https://api.github.com/repos/${repo}/releases?per_page=${RELEASE_PAGE_SIZE}`,
+        {
+          headers: {
+            accept: 'application/vnd.github+json',
+            'user-agent': 'omadia-self-update',
+            ...(options.token !== undefined && options.token.length > 0
+              ? { authorization: `Bearer ${options.token}` }
+              : {}),
+          },
+          signal: controller.signal,
+        },
+      );
+      if (!res.ok) {
+        listError = `github_status_${res.status}`;
+        return listSnapshot(true);
+      }
+      const payload: unknown = await res.json();
+      if (!Array.isArray(payload)) {
+        listError = 'github_payload_unusable';
+        return listSnapshot(true);
+      }
+      // Drafts have no usable tag to deploy and are dropped by `toRelease`
+      // returning null; keeping the rest in GitHub's own order preserves
+      // "newest first" without re-implementing semver ordering here.
+      const parsed = payload
+        .map((entry) => toRelease(entry, repo))
+        .filter((entry): entry is LatestRelease => entry !== null);
+      cachedList = parsed;
+      listCheckedAt = now();
+      listError = undefined;
+      return listSnapshot(false);
+    } catch (err) {
+      listError = err instanceof Error ? err.message : String(err);
+      return listSnapshot(true);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   return {
     async get(force = false): Promise<ReleaseLookupResult> {
       const fresh =
@@ -151,6 +227,16 @@ export function createReleaseLookup(
       if (!force && fresh) return snapshot(false);
       inFlight ??= refresh().finally(() => { inFlight = null; });
       return inFlight;
+    },
+
+    async list(force = false): Promise<ReleaseListResult> {
+      const fresh =
+        listCheckedAt !== null &&
+        now() - listCheckedAt < ttlMs &&
+        listError === undefined;
+      if (!force && fresh) return listSnapshot(false);
+      listInFlight ??= refreshList().finally(() => { listInFlight = null; });
+      return listInFlight;
     },
   };
 }

@@ -32,6 +32,28 @@ describe('splitImageRef', () => {
     });
   });
 
+  // The regression behind `repo:v0.136.2:v0.140.1 is not available`: Fly
+  // reports a machine's image with BOTH a tag and a digest, and returning the
+  // tagged part as the repository made the caller append a second tag.
+  it('strips the tag when a digest is also present', () => {
+    assert.deepEqual(
+      splitImageRef('ghcr.io/byte5ai/omadia-middleware:v0.136.2@sha256:abc'),
+      {
+        repo: 'ghcr.io/byte5ai/omadia-middleware',
+        tag: 'v0.136.2',
+        digest: 'sha256:abc',
+      },
+    );
+  });
+
+  it('keeps a registry port intact alongside a digest', () => {
+    assert.deepEqual(splitImageRef('registry.local:5000/omadia/mw@sha256:abc'), {
+      repo: 'registry.local:5000/omadia/mw',
+      tag: null,
+      digest: 'sha256:abc',
+    });
+  });
+
   it('handles a bare repo', () => {
     assert.deepEqual(splitImageRef('postgres'), {
       repo: 'postgres',

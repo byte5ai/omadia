@@ -11,9 +11,10 @@
  *   - target versions must be release tags; floating tags are rejected
  *
  * Wire contract (mirrored by `middleware/src/update/updaterClient.ts`):
- *   GET  /healthz  → 200 {"ok":true}                        (unauthenticated)
- *   GET  /status   → 200 UpdaterStatus
- *   POST /update   → 202 {"accepted":true} | 409 | 400
+ *   GET  /healthz    → 200 {"ok":true}                      (unauthenticated)
+ *   GET  /status     → 200 UpdaterStatus
+ *   GET  /preflight  → 200 {targetVersion,ok,images[]} | 400   (read-only)
+ *   POST /update     → 202 {"accepted":true} | 409 | 400
  */
 
 import http from 'node:http';
@@ -25,6 +26,7 @@ import { createDockerApi } from './dockerApi.mjs';
 import { createEngine } from './engine/index.mjs';
 import { assertEnvFileUsable } from './envFile.mjs';
 import { createFlyApi } from './flyApi.mjs';
+import { checkImages } from './imageCheck.mjs';
 import { detectComposeProject, runUpdate } from './updateJob.mjs';
 
 const MAX_STEPS = 200;
@@ -102,7 +104,8 @@ function send(res, status, payload) {
 
 /**
  * @param {{ config?: any, docker?: any, runUpdateImpl?: typeof runUpdate,
- *           detectProjectImpl?: typeof detectComposeProject, hostname?: string }} [deps]
+ *           detectProjectImpl?: typeof detectComposeProject, hostname?: string,
+ *           manifestCheck?: (repo: string, tag: string) => Promise<{exists: boolean, reason?: string}> }} [deps]
  */
 export function createServer(deps = {}) {
   const config = deps.config ?? loadConfig();
@@ -131,6 +134,27 @@ export function createServer(deps = {}) {
     if (status.steps.length > MAX_STEPS) status.steps.shift();
   };
 
+  /**
+   * Build the platform engine. Shared by the update job and the read-only
+   * preflight so both look at the stack through exactly the same lens — a
+   * check that resolved services differently from the run it precedes would
+   * be worse than no check at all.
+   *
+   * @param {(msg: string) => void} [trace]
+   */
+  async function buildEngine(trace) {
+    // The compose project is a docker-engine concern; on Fly the app names
+    // come from config and there is nothing to detect.
+    let project = '';
+    if (!onFly) {
+      project = config.composeProject ?? (await detectProjectImpl(docker, hostname));
+      trace?.(`compose project: ${project}`);
+    }
+    const engine = deps.engine ?? createEngine({ config, docker, flyApi, project });
+    trace?.(`engine: ${engine.kind}`);
+    return engine;
+  }
+
   async function startUpdate(targetVersion) {
     status = {
       ...createState(),
@@ -140,16 +164,7 @@ export function createServer(deps = {}) {
       startedAt: new Date().toISOString(),
     };
     try {
-      // The compose project is a docker-engine concern; on Fly the app names
-      // come from config and there is nothing to detect.
-      let project = '';
-      if (!onFly) {
-        project = config.composeProject ?? (await detectProjectImpl(docker, hostname));
-        log(`compose project: ${project}`);
-      }
-      const engine =
-        deps.engine ?? createEngine({ config, docker, flyApi, project });
-      log(`engine: ${engine.kind}`);
+      const engine = await buildEngine(log);
       const result = await runUpdateImpl({
         engine,
         config,
@@ -196,6 +211,36 @@ export function createServer(deps = {}) {
         engine: config.engine,
         pinPersisted: !onFly,
       });
+      return;
+    }
+
+    // Read-only. Answers "is every image for this version actually in the
+    // registry?" without pulling, writing, or touching a container — so the
+    // admin page can show the verdict while the operator is still choosing.
+    if (req.method === 'GET' && url.pathname === '/preflight') {
+      const target = (url.searchParams.get('targetVersion') ?? '').trim();
+      if (!isValidTargetVersion(target)) {
+        send(res, 400, { error: 'invalid_target_version' });
+        return;
+      }
+      buildEngine()
+        .then((engine) =>
+          checkImages({
+            engine,
+            config,
+            targetVersion: target,
+            ...(deps.manifestCheck !== undefined
+              ? { manifestCheck: deps.manifestCheck }
+              : {}),
+          }),
+        )
+        .then((result) => { send(res, 200, result); })
+        .catch((err) => {
+          send(res, 502, {
+            error: 'preflight_failed',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
       return;
     }
 

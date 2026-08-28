@@ -5504,13 +5504,58 @@ export async function getUpdateHistory(): Promise<{
   return getJson(`${UPDATE_BASE}/history`);
 }
 
+export interface UpdateRelease {
+  tag: string;
+  url: string;
+  publishedAt: string;
+  prerelease: boolean;
+}
+
 /**
- * Trigger the update. `confirm` must be the target tag retyped by the
- * operator; the backend re-checks it server-side and refuses on mismatch.
+ * The versions the operator may move to — newest first, NOT filtered to
+ * "newer than current". A rollback to a known-good build is a legitimate
+ * target and the update job treats it like any other pinned version.
  */
+export async function getUpdateReleases(refresh = false): Promise<{
+  releases: UpdateRelease[];
+  current: { version: string; source: AppVersionSource };
+  check: { checkedAt: number | null; stale: boolean; error?: string };
+}> {
+  return getJson(`${UPDATE_BASE}/releases${refresh ? '?refresh=true' : ''}`);
+}
+
+export interface UpdateImageCheck {
+  service: string;
+  currentImage: string;
+  image: string;
+  available: boolean;
+  /** Registry verdict when unavailable (`tag_not_found`, `registry_unreachable: …`). */
+  reason: string | null;
+}
+
+export interface UpdatePreflight {
+  targetVersion: string;
+  ok: boolean;
+  images: UpdateImageCheck[];
+}
+
+/**
+ * Read-only image check for a candidate version. Pulls nothing, changes
+ * nothing. Throws `ApiError` with code `preflight_unsupported` against a
+ * sidecar that predates the endpoint — which the UI must show as "could not
+ * check", never as a missing image.
+ */
+export async function getUpdatePreflight(
+  targetVersion: string,
+): Promise<UpdatePreflight> {
+  return getJson(
+    `${UPDATE_BASE}/preflight?targetVersion=${encodeURIComponent(targetVersion)}`,
+  );
+}
+
+/** Trigger the update. The target is whatever version the operator picked. */
 export async function triggerUpdate(body: {
   targetVersion: string;
-  confirm: string;
 }): Promise<{ accepted: boolean; targetVersion: string; auditId: string }> {
   return postJson(UPDATE_BASE, body);
 }

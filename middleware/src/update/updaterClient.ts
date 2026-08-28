@@ -66,10 +66,38 @@ export interface UpdaterStatus {
   readonly pinPersisted?: boolean;
 }
 
+/** One service's verdict from the read-only image check. */
+export interface UpdaterImageCheck {
+  readonly service: string;
+  readonly currentImage: string;
+  /** The image the update WOULD use, e.g. `ghcr.io/.../middleware:v0.140.1`. */
+  readonly image: string;
+  readonly available: boolean;
+  /** Registry verdict when unavailable — `tag_not_found`, `registry_status_…`,
+   *  `registry_unreachable: …`. Null when available. */
+  readonly reason: string | null;
+}
+
+export interface UpdaterPreflight {
+  readonly targetVersion: string;
+  /** True only when every service's image is present. */
+  readonly ok: boolean;
+  readonly images: readonly UpdaterImageCheck[];
+}
+
 export interface UpdaterClient {
   /** Never rejects — an unreachable sidecar is a normal state to render. */
   getStatus(): Promise<
     { ok: true; status: UpdaterStatus } | { ok: false; error: string }
+  >;
+  /** Read-only: does every image for `targetVersion` exist in the registry?
+   *  Pulls nothing and touches no container. Absent on an older sidecar, which
+   *  answers 404 — surfaced as `ok:false` so the UI can say "cannot check"
+   *  rather than "not available". */
+  preflight(
+    targetVersion: string,
+  ): Promise<
+    { ok: true; result: UpdaterPreflight } | { ok: false; error: string; status?: number }
   >;
   /** Ask the sidecar to move the stack to `targetVersion`. Resolves as soon as
    *  the sidecar has ACCEPTED the job; the update itself outlives this call
@@ -136,6 +164,21 @@ export function createUpdaterClient(
       const res = await call('/status', { method: 'GET' });
       if (!res.ok) return { ok: false, error: res.error };
       return { ok: true, status: res.body as UpdaterStatus };
+    },
+
+    async preflight(targetVersion) {
+      const res = await call(
+        `/preflight?targetVersion=${encodeURIComponent(targetVersion)}`,
+        { method: 'GET' },
+      );
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: res.error,
+          ...(res.status !== undefined ? { status: res.status } : {}),
+        };
+      }
+      return { ok: true, result: res.body as UpdaterPreflight };
     },
 
     async requestUpdate(targetVersion) {

@@ -20,7 +20,7 @@ import type { AppVersion } from '../src/update/version.js';
  *
  * The route that matters is the POST: it replaces every application container
  * in the stack. The tests below are written against the ways that can go wrong
- * rather than the happy path alone — a mistyped confirmation, a floating tag,
+ * rather than the happy path alone — a floating tag,
  * a missing executor, a second click while one update is already running, and
  * (the one that would be invisible in production) an execution that happens
  * without an audit record.
@@ -36,6 +36,11 @@ const RELEASE = {
 function fakeLookup(release = RELEASE, stale = false): ReleaseLookup {
   return {
     get: async () => ({ release, checkedAt: 1, stale }),
+    list: async () => ({
+      releases: release === null ? [] : [release],
+      checkedAt: 1,
+      stale,
+    }),
   };
 }
 
@@ -58,6 +63,22 @@ function fakeUpdater(overrides: Partial<UpdaterStatus> = {}): {
     requested,
     client: {
       getStatus: async () => ({ ok: true, status }),
+      preflight: async (target: string) => ({
+        ok: true as const,
+        result: {
+          targetVersion: target,
+          ok: true,
+          images: [
+            {
+              service: 'middleware',
+              currentImage: 'ghcr.io/byte5ai/omadia-middleware:v0.74.0',
+              image: `ghcr.io/byte5ai/omadia-middleware:${target}`,
+              available: true,
+              reason: null,
+            },
+          ],
+        },
+      }),
       requestUpdate: async (target: string) => {
         requested.push(target);
         return { ok: true };
@@ -237,6 +258,7 @@ describe('GET /api/v1/admin/update/status', () => {
     const { baseUrl } = harness({
       updater: {
         getStatus: async () => ({ ok: false, error: 'ECONNREFUSED' }),
+        preflight: async () => ({ ok: false as const, error: 'not_wired' }),
         requestUpdate: async () => ({ ok: true }),
       },
     });
@@ -327,16 +349,85 @@ describe('GET /api/v1/admin/update/status', () => {
   });
 });
 
+describe('GET /api/v1/admin/update/releases', () => {
+  it('lists the releases the operator may pick between', async () => {
+    const { baseUrl } = harness({ releaseLookup: fakeLookup() });
+    const res = await fetch(`${baseUrl}/releases`);
+    assert.equal(res.status, 200);
+    const body = await readJson<{
+      releases: { tag: string }[];
+      current: { version: string };
+      check: { stale: boolean };
+    }>(res);
+    assert.deepEqual(body.releases.map((r) => r.tag), ['v0.75.0']);
+    assert.equal(body.current.version, 'v0.74.0');
+    assert.equal(body.check.stale, false);
+  });
+
+  it('degrades to an empty list rather than an error when GitHub is unreachable', async () => {
+    const { baseUrl } = harness({
+      releaseLookup: {
+        get: async () => ({ release: null, checkedAt: null, stale: true, error: 'offline' }),
+        list: async () => ({ releases: [], checkedAt: null, stale: true, error: 'offline' }),
+      },
+    });
+    const res = await fetch(`${baseUrl}/releases`);
+    assert.equal(res.status, 200);
+    const body = await readJson<{ releases: unknown[]; check: { stale: boolean } }>(res);
+    assert.deepEqual(body.releases, []);
+    assert.equal(body.check.stale, true);
+  });
+});
+
+describe('GET /api/v1/admin/update/preflight', () => {
+  it('reports the per-service image verdict', async () => {
+    const updater = fakeUpdater();
+    const { baseUrl } = harness({ updater: updater.client });
+    const res = await fetch(`${baseUrl}/preflight?targetVersion=v0.75.0`);
+    assert.equal(res.status, 200);
+    const body = await readJson<{ ok: boolean; images: { image: string }[] }>(res);
+    assert.equal(body.ok, true);
+    assert.equal(body.images[0]?.image, 'ghcr.io/byte5ai/omadia-middleware:v0.75.0');
+  });
+
+  it('rejects a floating tag', async () => {
+    const updater = fakeUpdater();
+    const { baseUrl } = harness({ updater: updater.client });
+    const res = await fetch(`${baseUrl}/preflight?targetVersion=latest`);
+    assert.equal(res.status, 400);
+    assert.equal((await readJson<ErrorBody>(res)).error, 'invalid_target_version');
+  });
+
+  // An old sidecar answers 404. That is "could not look", NOT "image missing" —
+  // conflating the two would talk an operator out of a good update.
+  it('distinguishes an unsupported check from a failed one', async () => {
+    const { baseUrl } = harness({
+      updater: {
+        getStatus: async () => ({ ok: false as const, error: 'unused' }),
+        preflight: async () => ({ ok: false as const, error: 'not_found', status: 404 }),
+        requestUpdate: async () => ({ ok: true as const }),
+      },
+    });
+    const res = await fetch(`${baseUrl}/preflight?targetVersion=v0.75.0`);
+    assert.equal(res.status, 501);
+    assert.equal((await readJson<ErrorBody>(res)).error, 'preflight_unsupported');
+  });
+
+  it('refuses without an executor', async () => {
+    const { baseUrl } = harness();
+    const res = await fetch(`${baseUrl}/preflight?targetVersion=v0.75.0`);
+    assert.equal(res.status, 409);
+    assert.equal((await readJson<ErrorBody>(res)).error, 'updater_not_configured');
+  });
+});
+
 describe('POST /api/v1/admin/update', () => {
-  it('accepts a correctly confirmed release tag and returns 202', async () => {
+  it('accepts a release tag and returns 202', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
-    const res = await post(baseUrl, {
-      targetVersion: 'v0.75.0',
-      confirm: 'v0.75.0',
-    });
+    const res = await post(baseUrl, { targetVersion: 'v0.75.0' });
 
     assert.equal(res.status, 202, 'the update outlives this request');
     const body = await readJson<AcceptedBody>(res);
@@ -370,6 +461,7 @@ describe('POST /api/v1/admin/update', () => {
             steps: [],
           },
         }),
+        preflight: async () => ({ ok: false as const, error: 'not_wired' }),
         requestUpdate: async () => {
           order.push('execute');
           return { ok: true };
@@ -377,7 +469,7 @@ describe('POST /api/v1/admin/update', () => {
       },
     });
 
-    await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
+    await post(baseUrl, { targetVersion: 'v0.75.0' });
 
     assert.deepEqual(
       order,
@@ -389,31 +481,44 @@ describe('POST /api/v1/admin/update', () => {
     assert.equal(audit.rows[0]?.toVersion, 'v0.75.0');
   });
 
-  it('rejects a mistyped confirmation without contacting the executor', async () => {
+  // The type-to-confirm gate is gone (an update is health-gated and rolled
+  // back; a purge is not), but an older admin page still posts the field.
+  it('ignores a leftover confirm field instead of refusing the request', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     const res = await post(baseUrl, {
       targetVersion: 'v0.75.0',
-      confirm: 'v0.75.1',
+      confirm: 'something else entirely',
     });
 
-    assert.equal(res.status, 400);
-    assert.equal((await readJson<ErrorBody>(res)).error, 'confirmation_mismatch');
-    assert.deepEqual(updater.requested, []);
-    assert.deepEqual(audit.rows, []);
+    assert.equal(res.status, 202);
+    assert.deepEqual(updater.requested, ['v0.75.0']);
   });
 
-  it('accepts a confirmation that differs only by the v prefix', async () => {
+  it('canonicalises a target given without the v prefix', async () => {
     const updater = fakeUpdater();
     const audit = fakeAudit();
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: '0.75.0' });
+    const res = await post(baseUrl, { targetVersion: '0.75.0' });
 
     assert.equal(res.status, 202);
     assert.deepEqual(updater.requested, ['v0.75.0']);
+  });
+
+  // A rollback to a known-good build is a legitimate target: the picker offers
+  // older releases, so the route must not quietly require "newer than running".
+  it('accepts a downgrade', async () => {
+    const updater = fakeUpdater();
+    const audit = fakeAudit();
+    const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
+
+    const res = await post(baseUrl, { targetVersion: 'v0.70.0' });
+
+    assert.equal(res.status, 202);
+    assert.deepEqual(updater.requested, ['v0.70.0']);
   });
 
   it('rejects a floating tag — rollback and the health gate need a fixed target', async () => {
@@ -422,7 +527,7 @@ describe('POST /api/v1/admin/update', () => {
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
     for (const target of ['latest', 'edge', 'sha-1a2b3c4', 'v0.75']) {
-      const res = await post(baseUrl, { targetVersion: target, confirm: target });
+      const res = await post(baseUrl, { targetVersion: target });
       assert.equal(res.status, 400, `${target} must be refused`);
       assert.equal((await readJson<ErrorBody>(res)).error, 'invalid_target_version');
     }
@@ -433,7 +538,7 @@ describe('POST /api/v1/admin/update', () => {
     const audit = fakeAudit();
     const { baseUrl } = harness({ audit: audit.store });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
+    const res = await post(baseUrl, { targetVersion: 'v0.75.0' });
 
     assert.equal(res.status, 409);
     assert.equal((await readJson<ErrorBody>(res)).error, 'updater_not_configured');
@@ -444,7 +549,7 @@ describe('POST /api/v1/admin/update', () => {
     const updater = fakeUpdater();
     const { baseUrl } = harness({ updater: updater.client });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
+    const res = await post(baseUrl, { targetVersion: 'v0.75.0' });
 
     assert.equal(res.status, 409);
     assert.equal((await readJson<ErrorBody>(res)).error, 'audit_unavailable');
@@ -460,7 +565,7 @@ describe('POST /api/v1/admin/update', () => {
     const audit = fakeAudit();
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.76.0', confirm: 'v0.76.0' });
+    const res = await post(baseUrl, { targetVersion: 'v0.76.0' });
 
     assert.equal(res.status, 409);
     assert.equal((await readJson<ErrorBody>(res)).error, 'update_in_progress');
@@ -472,7 +577,7 @@ describe('POST /api/v1/admin/update', () => {
     const audit = fakeAudit();
     const { baseUrl } = harness({ updater: updater.client, audit: audit.store });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.74.0', confirm: 'v0.74.0' });
+    const res = await post(baseUrl, { targetVersion: 'v0.74.0' });
 
     assert.equal(res.status, 400);
     assert.equal((await readJson<ErrorBody>(res)).error, 'already_on_target');
@@ -495,11 +600,12 @@ describe('POST /api/v1/admin/update', () => {
             steps: [],
           },
         }),
+        preflight: async () => ({ ok: false as const, error: 'not_wired' }),
         requestUpdate: async () => ({ ok: false, error: 'invalid_target_version', status: 400 }),
       },
     });
 
-    const res = await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
+    const res = await post(baseUrl, { targetVersion: 'v0.75.0' });
 
     assert.equal(res.status, 502);
     const body = await readJson<ErrorBody>(res);
@@ -509,7 +615,7 @@ describe('POST /api/v1/admin/update', () => {
 
   it('rejects a malformed body', async () => {
     const { baseUrl } = harness();
-    const res = await post(baseUrl, { confirm: 'v0.75.0' });
+    const res = await post(baseUrl, { notTheTarget: 'v0.75.0' });
     assert.equal(res.status, 400);
     assert.equal((await readJson<ErrorBody>(res)).error, 'invalid_request');
   });
@@ -528,8 +634,8 @@ describe('GET /api/v1/admin/update/history', () => {
       audit: audit.store,
       updater: fakeUpdater().client,
     });
-    await post(baseUrl, { targetVersion: 'v0.75.0', confirm: 'v0.75.0' });
-    await post(baseUrl, { targetVersion: 'v0.76.0', confirm: 'v0.76.0' });
+    await post(baseUrl, { targetVersion: 'v0.75.0' });
+    await post(baseUrl, { targetVersion: 'v0.76.0' });
 
     const body = await readJson<HistoryBody>(await fetch(`${baseUrl}/history`));
     assert.equal(body.available, true);

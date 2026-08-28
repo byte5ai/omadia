@@ -2,6 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../../_lib/api';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { UpdateClient } from '../_components/UpdateClient';
 
@@ -11,16 +12,23 @@ import { UpdateClient } from '../_components/UpdateClient';
  * The page's job is to be honest about which of three capability tiers is
  * active, and to make the destructive action reachable ONLY in the tier that
  * can actually carry it out. Each test below pins one of those tiers, plus the
- * type-to-confirm gate that stands in front of the trigger.
+ * version picker and the registry image check that stand in front of the
+ * trigger.
  */
 
-const { mockGetUpdateStatus, mockGetUpdateHistory, mockTriggerUpdate } = vi.hoisted(
-  () => ({
-    mockGetUpdateStatus: vi.fn(),
-    mockGetUpdateHistory: vi.fn(),
-    mockTriggerUpdate: vi.fn(),
-  }),
-);
+const {
+  mockGetUpdateStatus,
+  mockGetUpdateHistory,
+  mockGetUpdateReleases,
+  mockGetUpdatePreflight,
+  mockTriggerUpdate,
+} = vi.hoisted(() => ({
+  mockGetUpdateStatus: vi.fn(),
+  mockGetUpdateHistory: vi.fn(),
+  mockGetUpdateReleases: vi.fn(),
+  mockGetUpdatePreflight: vi.fn(),
+  mockTriggerUpdate: vi.fn(),
+}));
 
 vi.mock('../../../_lib/api', () => ({
   ApiError: class ApiError extends Error {
@@ -41,8 +49,41 @@ vi.mock('../../../_lib/api', () => ({
   },
   getUpdateStatus: mockGetUpdateStatus,
   getUpdateHistory: mockGetUpdateHistory,
+  getUpdateReleases: mockGetUpdateReleases,
+  getUpdatePreflight: mockGetUpdatePreflight,
   triggerUpdate: mockTriggerUpdate,
 }));
+
+const RELEASES = [
+  {
+    tag: 'v0.75.0',
+    url: 'https://github.com/byte5ai/omadia/releases/tag/v0.75.0',
+    publishedAt: '2026-08-13T13:00:41Z',
+    prerelease: false,
+  },
+  {
+    tag: 'v0.74.0',
+    url: 'https://github.com/byte5ai/omadia/releases/tag/v0.74.0',
+    publishedAt: '2026-08-01T13:00:41Z',
+    prerelease: false,
+  },
+];
+
+function preflight(version: string, ok = true) {
+  return {
+    targetVersion: version,
+    ok,
+    images: [
+      {
+        service: 'middleware',
+        currentImage: 'ghcr.io/byte5ai/omadia-middleware:v0.74.0',
+        image: `ghcr.io/byte5ai/omadia-middleware:${version}`,
+        available: ok,
+        reason: ok ? null : 'tag_not_found',
+      },
+    ],
+  };
+}
 
 function status(overrides: Record<string, unknown> = {}) {
   return {
@@ -64,6 +105,14 @@ function status(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   mockGetUpdateStatus.mockResolvedValue(status());
   mockGetUpdateHistory.mockResolvedValue({ entries: [], available: true });
+  mockGetUpdateReleases.mockResolvedValue({
+    releases: RELEASES,
+    current: { version: 'v0.74.0', source: 'release' },
+    check: { checkedAt: 1, stale: false },
+  });
+  mockGetUpdatePreflight.mockImplementation(async (version: string) =>
+    preflight(version),
+  );
   mockTriggerUpdate.mockResolvedValue({
     accepted: true,
     targetVersion: 'v0.75.0',
@@ -213,37 +262,85 @@ describe('/admin/update', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('keeps the trigger disabled until the target version is retyped exactly', async () => {
+  it('offers every published release, defaulting to the newest', async () => {
+    renderWithIntl(<UpdateClient />);
+
+    const select = await screen.findByLabelText(/target version/i);
+    // Older releases are offered on purpose — a rollback is a valid target.
+    await waitFor(() => {
+      expect(screen.getAllByRole('option')).toHaveLength(2);
+    });
+    expect(select).toHaveValue('v0.75.0');
+    expect(
+      screen.getByRole('option', { name: /v0\.74\.0 \(currently running\)/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the image check for the selected version and arms the button', async () => {
+    renderWithIntl(<UpdateClient />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('image-check-summary')).toHaveTextContent(
+        /every image for v0\.75\.0 is in the registry/i,
+      );
+    });
+    expect(
+      screen.getByText('ghcr.io/byte5ai/omadia-middleware:v0.75.0'),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /update to v0\.75\.0/i }),
+      ).toBeEnabled();
+    });
+  });
+
+  it('blocks the trigger when an image for the chosen version is missing', async () => {
+    mockGetUpdatePreflight.mockImplementation(async (version: string) =>
+      preflight(version, false),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('image-check-summary')).toHaveTextContent(
+        /at least one image for v0\.75\.0 is missing/i,
+      );
+    });
+    expect(screen.getByText(/missing — tag_not_found/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /update to v0\.75\.0/i }),
+    ).toBeDisabled();
+  });
+
+  // An old sidecar cannot check. That must not read as "bad release", or the
+  // operator is talked out of an update that would have worked.
+  it('still allows the update when the check is unsupported', async () => {
+    mockGetUpdatePreflight.mockRejectedValue(
+      new ApiError(501, 'unsupported', JSON.stringify({ error: 'preflight_unsupported' })),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('image-check-summary')).toHaveTextContent(
+        /cannot check images up front/i,
+      );
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: /update to v0\.75\.0/i }),
+      ).toBeEnabled();
+    });
+  });
+
+  it('sends the picked target and switches to the in-progress view', async () => {
     const user = userEvent.setup();
     renderWithIntl(<UpdateClient />);
 
     const button = await screen.findByRole('button', { name: /update to v0\.75\.0/i });
-    expect(button).toBeDisabled();
-
-    const input = screen.getByLabelText(/target version/i);
-    await user.type(input, 'v0.75.1');
-    expect(button).toBeDisabled();
-
-    await user.clear(input);
-    await user.type(input, 'v0.75.0');
-    await waitFor(() => {
-      expect(button).toBeEnabled();
-    });
-  });
-
-  it('sends the confirmed target and switches to the in-progress view', async () => {
-    const user = userEvent.setup();
-    renderWithIntl(<UpdateClient />);
-
-    const input = await screen.findByLabelText(/target version/i);
-    await user.type(input, 'v0.75.0');
-    await user.click(screen.getByRole('button', { name: /update to v0\.75\.0/i }));
+    await waitFor(() => { expect(button).toBeEnabled(); });
+    await user.click(button);
 
     await waitFor(() => {
-      expect(mockTriggerUpdate).toHaveBeenCalledWith({
-        targetVersion: 'v0.75.0',
-        confirm: 'v0.75.0',
-      });
+      expect(mockTriggerUpdate).toHaveBeenCalledWith({ targetVersion: 'v0.75.0' });
     });
     // The page is covered by the progress dialog, not decorated with a box.
     const dialog = await screen.findByRole('dialog');
@@ -527,7 +624,9 @@ describe('/admin/update', () => {
     expect(button).toBeDisabled();
   });
 
-  it('reports an up-to-date instance without a confirm box', async () => {
+  it('keeps the picker on an up-to-date instance but disarms the button', async () => {
+    // Being current is not "nothing to do here": rolling back to an older
+    // release is exactly what this page is for when a build misbehaves.
     mockGetUpdateStatus.mockResolvedValue(
       status({
         current: { version: 'v0.75.0', source: 'release' },
@@ -539,7 +638,35 @@ describe('/admin/update', () => {
     await waitFor(() => {
       expect(screen.getByText(/running the latest release/i)).toBeInTheDocument();
     });
-    expect(screen.queryByLabelText(/target version/i)).not.toBeInTheDocument();
+    expect(await screen.findByLabelText(/target version/i)).toHaveValue('v0.75.0');
+    expect(
+      screen.getByRole('button', { name: /update to v0\.75\.0/i }),
+    ).toBeDisabled();
+  });
+
+  it('lets the operator pick an older release and roll back to it', async () => {
+    const user = userEvent.setup();
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        current: { version: 'v0.75.0', source: 'release' },
+        updateAvailable: false,
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    const select = await screen.findByLabelText(/target version/i);
+    await waitFor(() => {
+      expect(screen.getAllByRole('option')).toHaveLength(2);
+    });
+    await user.selectOptions(select, 'v0.74.0');
+
+    const button = await screen.findByRole('button', { name: /update to v0\.74\.0/i });
+    await waitFor(() => { expect(button).toBeEnabled(); });
+    await user.click(button);
+
+    await waitFor(() => {
+      expect(mockTriggerUpdate).toHaveBeenCalledWith({ targetVersion: 'v0.74.0' });
+    });
   });
 
   it('warns that the release check is stale rather than presenting it as fact', async () => {

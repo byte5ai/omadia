@@ -10,9 +10,13 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   getUpdateHistory,
+  getUpdatePreflight,
+  getUpdateReleases,
   getUpdateStatus,
   triggerUpdate,
   type UpdateAuditEntry,
+  type UpdatePreflight,
+  type UpdateRelease,
   type UpdateStatus,
 } from '../../../_lib/api';
 
@@ -23,9 +27,20 @@ import { UpdateProgressModal, type PollingInfo } from './UpdateProgressModal';
  * Admin → Update (#432).
  *
  * Reports the running build, whether a newer release exists, and — only when
- * the opt-in updater overlay is deployed — lets the operator move the stack to
- * a chosen version behind a type-to-confirm gate (re-checked server-side, like
- * the Danger Zone).
+ * the opt-in updater overlay is deployed — lets the operator pick a published
+ * release and move the stack to it.
+ *
+ * The version is CHOSEN, not implied: the picker lists the published releases
+ * newest-first and includes older ones, because rolling back to a known-good
+ * build is the most useful thing this page can offer when something is wrong.
+ * Whichever version is selected is checked against the registry first, and the
+ * per-service verdict is shown before the button is armed — the operator sees
+ * "these two images exist" instead of discovering a missing tag mid-update.
+ *
+ * There is no type-to-confirm box. It was borrowed from the Danger Zone, but
+ * an update is version-pinned, health-gated and auto-rolled-back, so retyping
+ * the tag added friction without adding a decision the picker does not already
+ * make explicit.
  *
  * Two behaviours that are not cosmetic:
  *
@@ -97,7 +112,6 @@ function writeInflight(value: InflightUpdate | null): void {
 /** Error codes the backend returns for a refused trigger. Anything else falls
  *  back to the generic message with the technical detail behind it. */
 const KNOWN_ERRORS = new Set([
-  'confirmation_mismatch',
   'invalid_target_version',
   'updater_not_configured',
   'audit_unavailable',
@@ -122,7 +136,21 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [confirmInput, setConfirmInput] = useState('');
+  // The version the operator picked. Empty until the release list (or, if
+  // GitHub is unreachable, the last known release) supplies a default.
+  const [selected, setSelected] = useState('');
+  const [releases, setReleases] = useState<UpdateRelease[]>([]);
+  const [releasesFailed, setReleasesFailed] = useState(false);
+
+  /** `unsupported` and `error` are NOT "image missing" — an old sidecar or a
+   *  failed check must never be rendered as a bad tag, or the operator gets
+   *  talked out of a perfectly good update. Only `failed` blocks the button. */
+  const [checkState, setCheckState] = useState<
+    'idle' | 'checking' | 'ok' | 'failed' | 'unsupported' | 'error'
+  >('idle');
+  const [preflight, setPreflight] = useState<UpdatePreflight | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
   // The run this browser is watching; null when no dialog is open. Restored
@@ -227,7 +255,6 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     }
     setInflight(null);
     writeInflight(null);
-    setConfirmInput('');
     void load(true);
   }, [inflight, load, status?.executor.startedAt]);
 
@@ -247,7 +274,72 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     // switches cadence, which is the only time the interval should change.
   }, [load, active]);
 
-  const target = status?.latest?.tag ?? '';
+  const executorReady =
+    status?.executor.configured === true && status.executor.reachable;
+  const updating = status?.executor.state === 'updating';
+
+  // The release list is only fetched where it can be acted on. On a notify-only
+  // instance there is nothing to pick between, and the call would spend GitHub
+  // budget to populate a control that is never rendered.
+  useEffect(() => {
+    if (!executorReady || releases.length > 0 || releasesFailed) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getUpdateReleases();
+        if (cancelled) return;
+        setReleases(res.releases);
+        // An empty list is a failed lookup as far as the picker is concerned:
+        // there is nothing to choose from either way, and saying so is more
+        // useful than an empty dropdown.
+        setReleasesFailed(res.releases.length === 0);
+      } catch {
+        if (!cancelled) setReleasesFailed(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [executorReady, releases.length, releasesFailed]);
+
+  // The picker defaults to the newest release — from the list if it loaded,
+  // otherwise from the single `latest` the status already carries, so the page
+  // still works with GitHub's list endpoint unreachable. Derived rather than
+  // synced into state: an effect that writes the default would race the load
+  // and briefly render a selection the operator never made.
+  const latestTag = releases[0]?.tag ?? status?.latest?.tag ?? '';
+  const target = selected !== '' ? selected : latestTag;
+
+  // Check the chosen version against the registry. Re-runs on every change of
+  // selection; a stale answer for a version the operator has already moved on
+  // from would be worse than none, so late responses are dropped.
+  useEffect(() => {
+    if (!executorReady || target === '') {
+      setCheckState('idle');
+      setPreflight(null);
+      return;
+    }
+    let cancelled = false;
+    setCheckState('checking');
+    setPreflight(null);
+    setCheckError(null);
+    void (async () => {
+      try {
+        const result = await getUpdatePreflight(target);
+        if (cancelled) return;
+        setPreflight(result);
+        setCheckState(result.ok ? 'ok' : 'failed');
+      } catch (err) {
+        if (cancelled) return;
+        const code = err instanceof ApiError ? err.code : null;
+        if (code === 'preflight_unsupported') {
+          setCheckState('unsupported');
+          return;
+        }
+        setCheckError(err instanceof Error ? err.message : String(err));
+        setCheckState('error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [executorReady, target]);
 
   // Fill the manual Fly command in with the operator's ACTUAL app names when
   // we know them: the middleware reports its own via /status, the server shell
@@ -255,7 +347,10 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
   // the operator has to go and look up before they can run it.
   const onFly = status?.platform?.kind === 'fly';
   const flyCommand = useMemo(() => {
-    const version = target.length > 0 ? target : 'vX.Y.Z';
+    // Falls back to the newest known release, not the picker: this block is
+    // rendered on notify-only instances, where nothing is ever selected.
+    const version =
+      target.length > 0 ? target : (status?.latest?.tag ?? 'vX.Y.Z');
     const mw = status?.platform?.appName ?? '<middleware-app>';
     const ui = webUiApp ?? '<web-ui-app>';
     return [
@@ -265,23 +360,48 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
       `fly deploy --app ${ui} --config fly/web-ui.fly.toml \\`,
       `  --image ghcr.io/byte5ai/omadia-web-ui:${version}`,
     ].join('\n');
-  }, [status?.platform?.appName, target, webUiApp]);
-  const executorReady =
-    status?.executor.configured === true && status.executor.reachable;
-  const updating = status?.executor.state === 'updating';
+  }, [status?.latest?.tag, status?.platform?.appName, target, webUiApp]);
 
-  const confirmMatches = useMemo(
-    () =>
-      target.length > 0 &&
-      confirmInput.trim().replace(/^v/, '') === target.replace(/^v/, ''),
-    [confirmInput, target],
+  const currentSource = status?.current.source ?? null;
+
+  /** Tag comparison ignoring a leading `v`, the way the backend canonicalises
+   *  it — so a `0.140.1` release next to a `v0.140.1` build is still "same". */
+  const isCurrentTag = useCallback(
+    (tag: string): boolean =>
+      currentVersion !== null &&
+      currentSource === 'release' &&
+      tag.replace(/^v/, '') === currentVersion.replace(/^v/, ''),
+    [currentSource, currentVersion],
   );
 
+  const latestRelease = status?.latest ?? null;
+
+  /** What the picker offers. Falls back to the single `latest` the status
+   *  already carries when the list endpoint could not be reached, so the page
+   *  degrades to the old one-version behaviour instead of an empty control. */
+  const versionOptions = useMemo(() => {
+    const source: UpdateRelease[] =
+      releases.length > 0 ? releases : latestRelease !== null ? [latestRelease] : [];
+    return source.map((release) => ({
+      tag: release.tag,
+      label: isCurrentTag(release.tag)
+        ? t('targetCurrent', { version: release.tag })
+        : release.prerelease
+          ? t('targetPrerelease', { version: release.tag })
+          : release.tag,
+    }));
+  }, [isCurrentTag, latestRelease, releases, t]);
+
   const canTrigger =
-    status?.updateAvailable === true &&
     executorReady &&
-    status.auditAvailable &&
-    confirmMatches &&
+    status?.auditAvailable === true &&
+    target.length > 0 &&
+    !isCurrentTag(target) &&
+    // A version whose images demonstrably are not in the registry cannot
+    // succeed; the job would abort in preflight. An unsupported or failed
+    // CHECK does not block — that is missing information, not a bad target.
+    checkState !== 'failed' &&
+    checkState !== 'checking' &&
     !triggering &&
     !updating &&
     !awaitingRestart;
@@ -293,11 +413,11 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
   }, [load]);
 
   const onTrigger = useCallback(async (): Promise<void> => {
-    if (!confirmMatches) return;
+    if (target.length === 0) return;
     setTriggering(true);
     setTriggerError(null);
     try {
-      await triggerUpdate({ targetVersion: target, confirm: confirmInput.trim() });
+      await triggerUpdate({ targetVersion: target });
       // From here the middleware is expected to disappear and come back on the
       // new image; polling takes over and the dialog shows it.
       const run: InflightUpdate = {
@@ -323,7 +443,7 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     } finally {
       setTriggering(false);
     }
-  }, [confirmInput, confirmMatches, currentVersion, target, t]);
+  }, [currentVersion, target, t]);
 
   const rolledBackBanner = useMemo(() => {
     if (status?.executor.state !== 'rolled_back' || awaitingRestart) return null;
@@ -403,7 +523,7 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
 
         {status?.updateAvailable === true && (
           <p className="mt-3 rounded border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 p-2 text-sm">
-            {t('updateAvailable', { version: target })}
+            {t('updateAvailable', { version: status.latest?.tag ?? '' })}
           </p>
         )}
         {status !== null && !status.updateAvailable && status.current.source === 'release' && (
@@ -508,22 +628,87 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
         </section>
       )}
 
-      {executorReady && status?.updateAvailable === true && (
+      {executorReady && (
         <section className="mb-6 rounded-lg border border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/5 p-4">
           <h2 className="mb-3 text-[10px] font-semibold tracking-wider text-[color:var(--danger)] uppercase">
-            {t('confirmTitle')}
+            {t('applyTitle')}
           </h2>
-          <p className="mb-2 text-sm text-[color:var(--fg-muted)]">
-            {t.rich('confirmInstruction', {
-              phrase: target,
-              code: (chunks) => (
-                <code className="rounded bg-[color:var(--danger)]/15 px-2 py-0.5 font-mono text-[color:var(--danger)]">
-                  {chunks}
-                </code>
-              ),
-            })}
-          </p>
-          <p className="mb-2 text-xs text-[color:var(--fg-muted)]">
+
+          <label
+            htmlFor="update-target-version"
+            className="mb-1 block text-xs text-[color:var(--fg-muted)]"
+          >
+            {t('targetLabel')}
+          </label>
+          <select
+            id="update-target-version"
+            value={target}
+            onChange={(e) => { setSelected(e.target.value); }}
+            disabled={triggering || updating || awaitingRestart}
+            className="w-full rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-2 font-mono text-sm"
+          >
+            {versionOptions.map((option) => (
+              <option key={option.tag} value={option.tag}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-[color:var(--fg-muted)]">{t('targetHint')}</p>
+          {releasesFailed && (
+            <p className="mt-1 text-xs text-[color:var(--danger)]">
+              {t('releasesUnavailable')}
+            </p>
+          )}
+
+          {/* The registry verdict, before anything is touched. `checking` and
+              `unsupported` are shown as themselves — an operator who cannot
+              tell "missing" from "could not look" will read every ambiguity
+              as a broken release. */}
+          <div className="mt-4 rounded border border-[color:var(--border)] bg-[color:var(--bg)]/60 p-3">
+            <h3 className="mb-2 text-[10px] font-semibold tracking-wider text-[color:var(--fg-muted)] uppercase">
+              {t('imageCheckTitle')}
+            </h3>
+            <p
+              data-testid="image-check-summary"
+              className={`text-sm ${
+                checkState === 'failed'
+                  ? 'text-[color:var(--danger)]'
+                  : 'text-[color:var(--fg-muted)]'
+              }`}
+            >
+              {checkState === 'checking' && t('imageCheckChecking', { version: target })}
+              {checkState === 'ok' && t('imageCheckOk', { version: target })}
+              {checkState === 'failed' && t('imageCheckFailed', { version: target })}
+              {checkState === 'unsupported' && t('imageCheckUnsupported')}
+              {checkState === 'error' &&
+                t('imageCheckError', { message: checkError ?? '' })}
+            </p>
+            {preflight !== null && preflight.images.length > 0 && (
+              <ul className="mt-2 flex flex-col gap-1 text-xs">
+                {preflight.images.map((image) => (
+                  <li key={image.service} className="flex flex-wrap items-baseline gap-x-2">
+                    <span aria-hidden="true">{image.available ? '✓' : '✗'}</span>
+                    <span className="font-mono break-all">
+                      {image.image.length > 0 ? image.image : image.service}
+                    </span>
+                    <span
+                      className={
+                        image.available
+                          ? 'text-[color:var(--fg-muted)]'
+                          : 'text-[color:var(--danger)]'
+                      }
+                    >
+                      {image.available
+                        ? t('imageAvailable')
+                        : t('imageMissing', { reason: image.reason ?? '' })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <p className="mt-3 mb-2 text-xs text-[color:var(--fg-muted)]">
             {t('confirmWarning')}
           </p>
           {/* #696 — on Fly the updater moves the machines but cannot write the
@@ -535,15 +720,6 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
               {t('pinNotPersisted')}
             </p>
           )}
-          <input
-            type="text"
-            value={confirmInput}
-            onChange={(e) => { setConfirmInput(e.target.value); }}
-            placeholder={target}
-            disabled={triggering || updating || awaitingRestart}
-            aria-label={t('confirmInputLabel')}
-            className="w-full rounded border border-[color:var(--danger-edge)] px-2 py-2 font-mono text-sm"
-          />
           <div className="mt-4 flex items-center justify-end">
             <Button
               variant="danger"

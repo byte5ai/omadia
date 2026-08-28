@@ -21,22 +21,33 @@ import type { AppVersion } from '../update/version.js';
  * the same admin surface the Danger Zone uses — not the machine-to-machine
  * `ADMIN_TOKEN` path, because this is driven from a logged-in browser.
  *
- * Three routes with sharply different risk:
- *   GET  /status   — read-only; always answers, even offline / without executor
- *   GET  /history  — the audit trail
- *   POST /         — the destructive one: type-to-confirm enforced SERVER-side
- *                    (`routes/memoryPurge.ts` pattern), audited, then handed to
- *                    the sidecar
+ * Five routes with sharply different risk:
+ *   GET  /status    — read-only; always answers, even offline / without executor
+ *   GET  /releases  — the versions the operator may pick between
+ *   GET  /preflight — read-only: are this version's images actually pullable?
+ *   GET  /history   — the audit trail
+ *   POST /          — the destructive one: audited, then handed to the sidecar
  *
  * The POST deliberately returns 202 and does not wait: applying the update
  * recreates the very container serving the request, so awaiting a result here
  * would guarantee a dropped connection that the UI could only read as failure.
  * The client polls `GET /status` instead.
+ *
+ * There is no type-to-confirm gate. It was modelled on the Danger Zone, but
+ * the two are not the same risk: a memory purge is irreversible, whereas an
+ * update is version-pinned, health-gated and rolled back automatically when
+ * the new build does not come up. Retyping the tag proved nothing the picker
+ * does not already establish — the operator selects the version explicitly —
+ * so it was pure friction on the way to a reversible action. The real
+ * safeguards stay: a release tag is still the only accepted target, the audit
+ * row is still written before the handoff, and `/preflight` now shows whether
+ * the images exist BEFORE anything is touched.
  */
 
 const UpdateBodySchema = z.object({
   targetVersion: z.string().min(1).max(64),
-  confirm: z.string(),
+  /** Accepted and ignored — older admin pages still send it. */
+  confirm: z.string().optional(),
 });
 
 export interface AdminUpdateDeps {
@@ -144,6 +155,56 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
     });
   });
 
+  /**
+   * The versions the operator may choose between. Deliberately not filtered to
+   * "newer than current": a rollback to a known-good build is the single most
+   * useful thing this page can offer when something is wrong, and the update
+   * job treats a downgrade like any other pinned target.
+   */
+  router.get('/releases', async (req: Request, res: Response) => {
+    const force = req.query['refresh'] === 'true';
+    const list = await deps.releaseLookup.list(force);
+    res.json({
+      releases: list.releases,
+      current: { version: current.version, source: current.source },
+      check: {
+        checkedAt: list.checkedAt,
+        stale: list.stale,
+        ...(list.error !== undefined ? { error: list.error } : {}),
+      },
+    });
+  });
+
+  /**
+   * Read-only: would this version's images actually pull? Answering it before
+   * the trigger is the whole point — the same check runs inside the job, but
+   * by then the operator has already committed to the run.
+   */
+  router.get('/preflight', async (req: Request, res: Response) => {
+    const raw = req.query['targetVersion'];
+    const targetVersion = typeof raw === 'string' ? raw.trim() : '';
+    if (parseVersion(targetVersion) === null) {
+      res.status(400).json({ error: 'invalid_target_version' });
+      return;
+    }
+    if (!deps.updater) {
+      res.status(409).json({ error: 'updater_not_configured' });
+      return;
+    }
+    const result = await deps.updater.preflight(toTag(targetVersion));
+    if (!result.ok) {
+      // An older sidecar has no /preflight and answers 404. That is "cannot
+      // check", not "not available" — the UI must not render it as a missing
+      // image and talk the operator out of a perfectly good update.
+      res.status(result.status === 404 ? 501 : 502).json({
+        error: result.status === 404 ? 'preflight_unsupported' : 'preflight_failed',
+        message: result.error,
+      });
+      return;
+    }
+    res.json(result.result);
+  });
+
   router.get('/history', async (_req: Request, res: Response) => {
     if (!deps.audit) {
       res.json({ entries: [], available: false });
@@ -167,7 +228,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
         .json({ error: 'invalid_request', issues: parsed.error.issues });
       return;
     }
-    const { targetVersion, confirm } = parsed.data;
+    const { targetVersion } = parsed.data;
 
     // Only a pinnable release tag is accepted. `latest` / `edge` / `sha-…`
     // are rejected on purpose: this value is written into the project `.env`
@@ -178,14 +239,6 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
       return;
     }
     const target = toTag(targetVersion);
-
-    // Server-side type-to-confirm — the operator retypes the exact target tag.
-    // Compared against the CANONICAL form so `0.75.0` typed against a `v0.75.0`
-    // target still has to match the tag the operator was shown.
-    if (toTag(confirm.trim()) !== target) {
-      res.status(400).json({ error: 'confirmation_mismatch' });
-      return;
-    }
 
     if (!deps.updater) {
       res.status(409).json({ error: 'updater_not_configured' });

@@ -29,6 +29,60 @@ const RELEASE = {
   prerelease: false,
 };
 
+describe('createReleaseLookup.list', () => {
+  it('returns every usable release, newest first, and caches for the TTL', async () => {
+    let calls = 0;
+    let clock = 0;
+    const older = { ...RELEASE, tag_name: 'v0.74.0' };
+    const lookup = createReleaseLookup({
+      ttlMs: 1_000,
+      now: () => clock,
+      fetchImpl: async (input: RequestInfo | URL) => {
+        calls += 1;
+        assert.match(String(input), /\/releases\?per_page=/);
+        return jsonResponse([RELEASE, older]);
+      },
+    });
+
+    const first = await lookup.list();
+    assert.deepEqual(first.releases.map((r) => r.tag), ['v0.75.0', 'v0.74.0']);
+    assert.equal(first.stale, false);
+
+    clock = 500;
+    await lookup.list();
+    assert.equal(calls, 1, 'inside the TTL the cached list is reused');
+  });
+
+  it('drops entries without a usable tag rather than half-filling them', async () => {
+    const lookup = createReleaseLookup({
+      fetchImpl: async () => jsonResponse([RELEASE, { tag_name: '' }, null]),
+    });
+    const result = await lookup.list();
+    assert.deepEqual(result.releases.map((r) => r.tag), ['v0.75.0']);
+  });
+
+  it('reports an unreachable GitHub as stale instead of throwing', async () => {
+    const lookup = createReleaseLookup({
+      fetchImpl: async () => { throw new Error('getaddrinfo ENOTFOUND'); },
+    });
+    const result = await lookup.list();
+    assert.deepEqual(result.releases, []);
+    assert.equal(result.stale, true);
+    assert.match(result.error ?? '', /ENOTFOUND/);
+  });
+
+  it('does not let a list failure poison the latest-release cache', async () => {
+    const lookup = createReleaseLookup({
+      fetchImpl: async (input: RequestInfo | URL) =>
+        String(input).includes('per_page')
+          ? jsonResponse({}, 500)
+          : jsonResponse(RELEASE),
+    });
+    assert.equal((await lookup.list()).stale, true);
+    assert.equal((await lookup.get()).release?.tag, 'v0.75.0');
+  });
+});
+
 describe('createReleaseLookup', () => {
   it('returns the latest release and caches it for the TTL', async () => {
     let calls = 0;

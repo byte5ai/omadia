@@ -29,6 +29,24 @@ describe('updater HTTP control plane (#432)', () => {
       config: CONFIG,
       docker: {},
       detectProjectImpl: async () => 'omadia',
+      // No network in tests: the registry answer is injected, so the route's
+      // own wiring is what is under test, not GHCR's availability.
+      manifestCheck: async () => ({ exists: true }),
+      engine: {
+        kind: 'docker',
+        canPersistPin: true,
+        resolveTarget: async (service) => ({
+          service,
+          currentImage: 'ghcr.io/byte5ai/omadia-middleware:v0.136.2@sha256:abc',
+          repo: 'ghcr.io/byte5ai/omadia-middleware',
+          handle: {},
+        }),
+        preflight: async () => {},
+        pin: async () => null,
+        restorePin: async () => {},
+        pinDescription: () => CONFIG.envFilePath,
+        replace: async () => {},
+      },
       runUpdateImpl: async ({ targetVersion, log, setPhase }) => {
         log(`fake update to ${targetVersion}`);
         setPhase('health_gate');
@@ -55,6 +73,33 @@ describe('updater HTTP control plane (#432)', () => {
   });
 
   const auth = { authorization: `Bearer ${TOKEN}` };
+
+  it('answers /preflight without touching anything', async () => {
+    const res = await fetch(`${base}/preflight?targetVersion=v0.140.1`, {
+      headers: auth,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.targetVersion, 'v0.140.1');
+    assert.equal(body.ok, true);
+    assert.equal(
+      body.images[0].image,
+      'ghcr.io/byte5ai/omadia-middleware:v0.140.1',
+    );
+  });
+
+  it('rejects a floating tag on /preflight', async () => {
+    const res = await fetch(`${base}/preflight?targetVersion=latest`, {
+      headers: auth,
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, 'invalid_target_version');
+  });
+
+  it('requires a token for /preflight', async () => {
+    const res = await fetch(`${base}/preflight?targetVersion=v0.140.1`);
+    assert.equal(res.status, 401);
+  });
 
   it('serves /healthz without a token (compose healthcheck)', async () => {
     const res = await fetch(`${base}/healthz`);

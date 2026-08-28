@@ -41,6 +41,7 @@ Mirrored by `middleware/src/update/updaterClient.ts`.
 |---|---|---|
 | `GET /healthz` | none | `200 {"ok":true}` — compose healthcheck |
 | `GET /status` | bearer | `200` `UpdaterStatus` |
+| `GET /preflight?targetVersion=vX.Y.Z` | bearer | `200 {targetVersion,ok,images[]}`, `400 invalid_target_version`, `502 preflight_failed` — read-only: asks the registry whether every service's image for that version exists. Pulls nothing, touches no container. |
 | `POST /update` | bearer | `202 {"accepted":true}`, `400 invalid_target_version`, `409 update_in_progress` |
 
 `UpdaterStatus`:

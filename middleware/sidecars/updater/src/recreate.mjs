@@ -20,27 +20,30 @@ const VERSION_ENV_PREFIX = 'OMADIA_VERSION=';
  * Split an image reference into repository + tag.
  * Handles registries with a port (`reg:5000/img:tag`) and digest pins.
  *
+ * A ref may carry BOTH a tag and a digest — `repo:v1.2.3@sha256:…` is the form
+ * Fly reports in `machine.config.image` after a deploy, and the form Docker
+ * shows for a digest-pinned pull. Returning the whole `repo:tag` part as the
+ * repository there is not a cosmetic slip: the caller appends `:${target}` to
+ * it, producing `repo:v0.136.2:v0.140.1`, which no registry can resolve. The
+ * tag is therefore stripped independently of the digest, not instead of it.
+ *
  * @param {string} ref
  * @returns {{ repo: string, tag: string | null, digest: string | null }}
  */
 export function splitImageRef(ref) {
   const atIndex = ref.indexOf('@');
-  if (atIndex !== -1) {
-    return {
-      repo: ref.slice(0, atIndex),
-      tag: null,
-      digest: ref.slice(atIndex + 1),
-    };
-  }
-  const colonIndex = ref.lastIndexOf(':');
+  const digest = atIndex === -1 ? null : ref.slice(atIndex + 1);
+  const named = atIndex === -1 ? ref : ref.slice(0, atIndex);
+
+  const colonIndex = named.lastIndexOf(':');
   // A colon that is part of a registry host:port has a `/` after it.
-  if (colonIndex === -1 || ref.includes('/', colonIndex)) {
-    return { repo: ref, tag: null, digest: null };
+  if (colonIndex === -1 || named.includes('/', colonIndex)) {
+    return { repo: named, tag: null, digest };
   }
   return {
-    repo: ref.slice(0, colonIndex),
-    tag: ref.slice(colonIndex + 1),
-    digest: null,
+    repo: named.slice(0, colonIndex),
+    tag: named.slice(colonIndex + 1),
+    digest,
   };
 }
 
