@@ -83,5 +83,18 @@ export const PERSONA_AXIS_LABELS: Record<
 /** Default value when an axis is unset — visual mid-point, no delta emission. */
 export const PERSONA_AXIS_NEUTRAL = 50;
 
+/**
+ * Kebab-case preset/template id → the camelCase segment its copy lives under
+ * (`customer-service` → `customerService`).
+ *
+ * The data modules key their entries by the id the SPEC persists; the message
+ * catalogue keys them the way the rest of the catalogue is keyed. One mapper,
+ * because three copies of it (gallery, culture dropdown, agent identity) is
+ * three chances for a label to silently render as its own key.
+ */
+export function personaMessageId(id: string): string {
+  return id.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+
 /** Hard cap for `custom_notes`; the Builder-Tool enforces this server-side. */
 export const PERSONA_CUSTOM_NOTES_MAX_LENGTH = 2000;

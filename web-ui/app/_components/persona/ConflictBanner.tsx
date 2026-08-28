@@ -4,8 +4,8 @@ import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 import { AlertOctagon, AlertTriangle, X } from 'lucide-react';
 
-import { cn } from '../../../../_lib/cn';
-import type { PersonaConflictWarning } from '../../../../_lib/personaConflicts';
+import { cn } from '../../_lib/cn';
+import type { PersonaConflictWarning } from '../../_lib/personaConflicts';
 
 /**
  * Phase 3 / OB-67 Slice 4 — persona × quality conflict banner.
