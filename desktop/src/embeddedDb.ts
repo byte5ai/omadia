@@ -35,8 +35,12 @@ export interface EmbeddedDb {
   databaseUrl: string;
   /** The bound loopback port. */
   port: number;
-  /** Stop the Postgres server. */
-  stop(): Promise<void>;
+  /**
+   * Stop the Postgres server. Resolves true only when the process is confirmed
+   * gone; false means the shutdown deadline expired and it may still be
+   * holding files (see #927).
+   */
+  stop(): Promise<boolean>;
 }
 
 let current: { proc: ChildProcess; port: number } | null = null;
@@ -62,7 +66,7 @@ function pgBin(name: string): string {
   return path.join(pgNativeDir(), 'bin', exe(name));
 }
 
-export async function startEmbeddedDb(): Promise<EmbeddedDb> {
+async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
   if (current) return toHandle(current.port);
 
   const dataDir = embeddedDbDir();
@@ -178,29 +182,32 @@ function toHandle(port: number): EmbeddedDb {
     databaseUrl: `postgresql://${DB_USER}@127.0.0.1:${port}/${DB_NAME}`,
     port,
     async stop() {
-      if (current) {
-        stopping = true;
-        await stopProc(current.proc);
-        current = null;
-        stopping = false;
-      }
+      return stopEmbeddedDb();
     },
   };
 }
 
-/** Fast, clean Postgres shutdown: SIGINT → wait → SIGQUIT → SIGKILL. */
-function stopProc(proc: ChildProcess): Promise<void> {
-  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve();
-  return new Promise<void>((resolve) => {
+/**
+ * Fast, clean Postgres shutdown: SIGINT → wait → SIGQUIT → SIGKILL.
+ *
+ * Resolves true when the process is confirmed gone, false when the 8s deadline
+ * expired first. The deadline itself is deliberate (a quit must not hang), but
+ * an expired one used to be indistinguishable from a real exit, and a Postgres
+ * still running out of the app bundle is exactly what blocks the macOS
+ * installer (#926/#927).
+ */
+function stopProc(proc: ChildProcess): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
     let settled = false;
-    const finish = (): void => {
+    const finish = (exited: boolean): void => {
       if (settled) return;
       settled = true;
       clearTimeout(t1);
       clearTimeout(t2);
-      resolve();
+      resolve(exited);
     };
-    proc.once('exit', finish);
+    proc.once('exit', () => finish(true));
     log.info('[db] stopping embedded Postgres (fast shutdown)');
     proc.kill('SIGINT'); // fast shutdown
     const t1 = setTimeout(() => {
@@ -208,12 +215,33 @@ function stopProc(proc: ChildProcess): Promise<void> {
     }, 4_000);
     const t2 = setTimeout(() => {
       if (proc.exitCode === null) proc.kill('SIGKILL');
-      finish();
+      log.warn('[db] embedded Postgres did not exit within 8s of SIGINT');
+      finish(false);
     }, 8_000);
   });
 }
 
-export function isEmbeddedDbRunning(): boolean {
+/**
+ * Stop whatever embedded Postgres this process started, whether or not anyone
+ * still holds its handle.
+ *
+ * A `start()` interrupted between `startEmbeddedDb()` and the assignment of the
+ * supervisor's `db` field leaves a running server nobody owns; the old
+ * `if (this.db)` check in Supervisor.stop() then skipped it and Postgres
+ * survived the app quit (#927). Reaping from module state closes that window.
+ */
+async function stopRealEmbeddedDb(): Promise<boolean> {
+  if (!current) return true;
+  stopping = true;
+  try {
+    return await stopProc(current.proc);
+  } finally {
+    current = null;
+    stopping = false;
+  }
+}
+
+function isRealEmbeddedDbRunning(): boolean {
   return current !== null;
 }
 
@@ -238,4 +266,36 @@ async function stableDbPort(): Promise<number> {
   const port = await findFreePort('127.0.0.1');
   fs.writeFileSync(file, String(port), 'utf8');
   return port;
+}
+
+/**
+ * Test seam for the database lifecycle (#932).
+ *
+ * Same pattern as `cliInstallService.__setCliInstallRunner`. The supervisor's
+ * generation races cannot be exercised against a real Postgres, and the defect
+ * they guard against is specifically about *when* this module registers its
+ * server relative to a concurrent stop() -- so a test has to own that timing.
+ */
+export interface EmbeddedDbHooks {
+  start: () => Promise<EmbeddedDb>;
+  stop: () => Promise<boolean>;
+  isRunning: () => boolean;
+}
+
+let hooks: EmbeddedDbHooks | null = null;
+
+export function __setEmbeddedDbHooks(next: EmbeddedDbHooks | null): void {
+  hooks = next;
+}
+
+export function startEmbeddedDb(): Promise<EmbeddedDb> {
+  return hooks === null ? startRealEmbeddedDb() : hooks.start();
+}
+
+export function stopEmbeddedDb(): Promise<boolean> {
+  return hooks === null ? stopRealEmbeddedDb() : hooks.stop();
+}
+
+export function isEmbeddedDbRunning(): boolean {
+  return hooks === null ? isRealEmbeddedDbRunning() : hooks.isRunning();
 }
