@@ -2088,18 +2088,31 @@
         "unknown": {
           "what": "Das Provisioning wurde aus einem Grund gestoppt, den omadia nicht einordnen kann.",
           "next": "Sieh dir das technische Detail unten an, behebe die Ursache und starte das Provisioning erneut."
+        },
+        "config_sync_failed": {
+          "what": "Die Teams-Identität ist provisioniert und installiert — nur das automatische Schreiben in die Konfiguration des Teams-Channel-Plugins hat nicht geklappt.",
+          "reason": "Grund: {reason}",
+          "next": "Füge den unten gezeigten Konfigurationsblock im Teams-Channel-Plugin ein und speichere, oder starte das Provisioning erneut, um den automatischen Schreibvorgang zu wiederholen. In Azure muss nichts wiederholt werden."
         }
       },
       "teamsBot": {
         "heading": "Konfiguration für das Teams-Channel-Plugin",
         "notReady": "Es gibt noch keine Bot-Konfiguration — sie erscheint, sobald die Entra-App-Registrierung existiert.",
-        "manualStep": "Ein manueller Schritt bleibt: Dieser Block muss von Hand in das Teams-Channel-Plugin eingetragen werden.",
         "instructions": "Kopiere den Block, füge ihn im Setup-Feld {field} des Teams-Channel-Plugins ein und speichere.",
         "secretRefNote": "Der Block enthält nur eine Referenz auf das Bot-Passwort, niemals das Passwort selbst — das Geheimnis bleibt im Vault des M365-Connectors.",
-        "followUp": "Diese Konfiguration automatisch zu schreiben ist als Folgeschritt geplant und passiert heute nicht.",
         "blockLabel": "teams_bots-Konfigurationsblock für {botSlug}",
         "copy": "Kopieren",
-        "copied": "Kopiert"
+        "copied": "Kopiert",
+        "applied": "Bereits übernommen — das Provisioning hat diese Konfiguration in {plugin} geschrieben und das Plugin neu geladen. Der Bot ist live, hier ist nichts mehr zu tun.",
+        "appliedFallback": "Der Block wird weiterhin angezeigt, damit Du ihn mit dem Konfigurierten vergleichen oder in einer anderen Installation wiederverwenden kannst.",
+        "notApplied": {
+          "missing": "Ein manueller Schritt fehlt noch: Dieser Bot steht noch nicht in der Konfiguration des Teams-Channel-Plugins. Normalerweise schreibt das Provisioning ihn automatisch — starte das Provisioning erneut oder füge den Block unten ein.",
+          "out_of_sync": "Achtung: Im Teams-Channel-Plugin steht eine abweichende Konfiguration für diesen Bot. Entweder wurde sie von Hand bearbeitet, oder ein automatischer Schreibvorgang lief nicht zu Ende. Ersetze sie durch den Block unten oder starte das Provisioning erneut.",
+          "plugin_not_installed": "Das Teams-Channel-Plugin ist nicht installiert, es gibt also noch kein Ziel für diese Konfiguration. Installiere und aktiviere es — das Provisioning schreibt den Eintrag beim nächsten Lauf, alternativ fügst Du ihn unten ein.",
+          "unreadable": "Im Feld {field} des Teams-Channel-Plugins steht aktuell ein Wert, der sich nicht als JSON lesen lässt. Es wurde nichts überschrieben. Korrigiere das Feld von Hand und füge dann den Block unten ein.",
+          "not_applicable": "Die Bot-Konfiguration ist noch nicht vollständig — sie erscheint, sobald die Entra-App-Registrierung existiert.",
+          "unknown": "Ob diese Konfiguration bereits übernommen wurde, lässt sich gerade nicht feststellen. Vergleiche sie mit dem Teams-Channel-Plugin und füge den Block unten ein, falls er fehlt."
+        }
       },
       "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten."
     }

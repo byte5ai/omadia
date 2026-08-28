@@ -32,14 +32,22 @@
  *      belt-and-braces shape check so a value that is not ref-shaped drops the
  *      whole block instead of being rendered into a copy-paste box.
  *
- * OUT OF SCOPE, ON PURPOSE: pushing this block into channel-teams' config
- * automatically. The operator pastes it, and the copy says so plainly rather
- * than letting them assume a sync that does not exist. Automatic `teams_bots[]`
- * sync is the documented follow-up (see the route's own note at
- * `operatorAgents.ts`, "`teams_bots[]` sync (follow-up)").
+ * SINCE #910 THE PASTE IS A FALLBACK, NOT THE PATH. Provisioning writes this
+ * entry into the channel-teams config itself and reloads the plugin. The block
+ * stays — for operators who configure explicitly, and for every case where the
+ * automatic write could not land (plugin not installed, a value the sync
+ * refuses to overwrite, a failed write). Which of the two applies is not
+ * guessed here: the route reports the LIVE state as `teams_bots_sync`, and
+ * {@link teamsBotConfigMessages} turns it into copy that either says "already
+ * applied" or says why the operator still has to paste.
  */
 
-import type { TeamsIdentityLastErrorDetailDto } from './agents';
+import {
+  parseTeamsBotsSync,
+  type TeamsBotsSyncDto,
+  type TeamsBotsSyncState,
+  type TeamsIdentityLastErrorDetailDto,
+} from './agents';
 
 /**
  * An i18n key plus its ICU arguments. Every user-facing string this module and
@@ -143,6 +151,8 @@ export interface TeamsIdentityView {
   readonly updatedAt: string | null;
   /** `null` until the Entra app exists, or when the ref is not ref-shaped. */
   readonly teamsBot: TeamsBotConfigEntry | null;
+  /** #910 — whether {@link teamsBot} is actually configured in the plugin. */
+  readonly botsSync: TeamsBotsSyncDto;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +227,7 @@ export function parseTeamsIdentityEnvelope(value: unknown): TeamsIdentityView | 
     createdAt: optionalString(identity.created_at),
     updatedAt: optionalString(identity.updated_at),
     teamsBot: parseTeamsBot(value.teams_bot),
+    botsSync: parseTeamsBotsSync(value.teams_bots_sync),
   };
 }
 
@@ -248,18 +259,53 @@ export function formatTeamsBotsConfig(
 }
 
 /**
- * The copy around the block. Says the quiet part out loud: pasting is a MANUAL
- * step, and nothing syncs it for you.
+ * Sync states in which provisioning has NOT put the entry into the plugin
+ * config, so the operator still has to paste it. `synced` is the only state
+ * where the manual step is genuinely done; every other state — including
+ * `unknown`, where this build cannot tell — keeps the instructions visible,
+ * because a missing instruction is worse than a redundant one.
+ */
+export function isTeamsBotConfigApplied(state: TeamsBotsSyncState): boolean {
+  return state === 'synced';
+}
+
+/**
+ * The copy around the block.
+ *
+ * Since #910 the leading line is the ANSWER to "do I still have to do
+ * something?": `applied` when provisioning wrote the entry itself, otherwise a
+ * per-state reason followed by the paste instructions. The block itself is
+ * rendered either way — an operator who configures explicitly, or who is
+ * diffing against what is live, wants to see it regardless.
  */
 export function teamsBotConfigMessages(
   view: TeamsIdentityView,
 ): readonly LocalizedMessage[] {
   if (!view.teamsBot) return [{ key: 'teamsBot.notReady' }];
+  const state = view.botsSync.state;
+  if (isTeamsBotConfigApplied(state)) {
+    return [
+      { key: 'teamsBot.applied', values: { plugin: view.botsSync.plugin_id } },
+      { key: 'teamsBot.appliedFallback' },
+      { key: 'teamsBot.secretRefNote' },
+    ];
+  }
   return [
-    { key: 'teamsBot.manualStep' },
-    { key: 'teamsBot.instructions', values: { field: 'teams_bots' } },
+    {
+      key: `teamsBot.notApplied.${state}`,
+      // Both arguments go to every state's line: which plugin, and which
+      // setup field. Only some states name them, and ICU ignores the rest —
+      // that beats a per-state argument table that drifts from the copy.
+      values: {
+        field: view.botsSync.config_key,
+        plugin: view.botsSync.plugin_id,
+      },
+    },
+    {
+      key: 'teamsBot.instructions',
+      values: { field: view.botsSync.config_key },
+    },
     { key: 'teamsBot.secretRefNote' },
-    { key: 'teamsBot.followUp' },
   ];
 }
 
@@ -333,6 +379,15 @@ export function teamsIdentityErrorMessages(
     messages.push({
       key: `${base}.fields`,
       values: { fields: fields.join(', '), count: fields.length },
+    });
+  }
+
+  // #910 — the write failure carries a technical sentence, shown as an ICU
+  // argument on its own line rather than pasted into the copy.
+  if (detail.code === 'config_sync_failed' && (detail.reason ?? '') !== '') {
+    messages.push({
+      key: `${base}.reason`,
+      values: { reason: detail.reason as string },
     });
   }
 

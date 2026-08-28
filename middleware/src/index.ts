@@ -44,6 +44,7 @@ import {
 } from './routes/operatorAgents.js';
 import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
+import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
 import {
   buildTeamsBotMessagingEndpoint,
   getTeamsProvisioner,
@@ -1903,6 +1904,23 @@ async function main(): Promise<void> {
         },
         getPublicBaseUrl: teamsPublicBaseUrl,
       }),
+      // #910 — the finishing move: after `installed`, write the identity's
+      // `teams_bots` entry into the channel-teams plugin config and reactivate
+      // the plugin, so the provisioned bot has an adapter and a route without
+      // an operator pasting JSON between two screens. `reactivateAgent` is the
+      // same funnel every other live config change goes through (it also
+      // re-sources host credentials); the write itself is idempotent by
+      // botSlug and never touches an entry it does not own. A failure here is
+      // a WARNING on an identity that is already valid in Azure — the runner
+      // records it and keeps the run `installed`.
+      syncBotConfig: (identity) =>
+        syncTeamsBotConfig(
+          {
+            getInstalledRegistry: () => installedRegistry,
+            reactivate: reactivateAgent,
+          },
+          identity,
+        ),
     });
     serviceRegistry.provide('teamsProvisioningJobRunner', teamsProvisioningRunner);
     backgroundJobRegistry.register(teamsProvisioningRunner.asBackgroundJob());

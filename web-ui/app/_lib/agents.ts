@@ -451,6 +451,10 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   'consent_missing',
   'arm_not_configured',
   'throttled',
+  // #910 — the one code that is a WARNING, not a failure: the identity is
+  // provisioned and installed, only the automatic `teams_bots` write did not
+  // land, so the operator falls back to the copy-paste block.
+  'config_sync_failed',
   'unknown',
 ] as const;
 
@@ -472,6 +476,10 @@ export interface TeamsIdentityLastErrorDetailDto {
   fields?: string[];
   /** Backoff hint (`throttled`). */
   retryAfterSeconds?: number;
+  /** Why the automatic `teams_bots` write did not land
+   *  (`config_sync_failed`) — a technical sentence, rendered as the ICU
+   *  argument of a localized line, never as the copy itself. */
+  reason?: string;
   raw: string;
 }
 
@@ -508,6 +516,7 @@ export function parseTeamsIdentityLastErrorDetail(
   const scopes = stringList(obj?.['scopes']);
   const fields = stringList(obj?.['fields']);
   const retry = obj?.['retryAfterSeconds'];
+  const reason = obj?.['reason'];
   const rawText = obj?.['raw'];
   return {
     code,
@@ -516,6 +525,7 @@ export function parseTeamsIdentityLastErrorDetail(
     ...(typeof retry === 'number' && Number.isFinite(retry)
       ? { retryAfterSeconds: retry }
       : {}),
+    ...(typeof reason === 'string' && reason !== '' ? { reason } : {}),
     raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
   };
 }
@@ -557,6 +567,65 @@ export interface TeamsBotConfigEntryDto {
   appPasswordSecretRef: string;
 }
 
+/**
+ * #910 — is the `teams_bot` entry above ACTUALLY in the channel-teams plugin
+ * config right now?
+ *
+ * Derived server-side from the live plugin config on every read, never from a
+ * stored "we synced it" flag: an operator can edit or delete the entry at any
+ * time, and a remembered intention would then tell this screen a comfortable
+ * lie. Additive — a middleware predating #910 omits the field, which the
+ * boundary narrows to `unknown`.
+ */
+export const TEAMS_BOTS_SYNC_STATES = [
+  'synced',
+  'out_of_sync',
+  'missing',
+  'plugin_not_installed',
+  'unreadable',
+  'not_applicable',
+  'unknown',
+] as const;
+
+export type TeamsBotsSyncState = (typeof TEAMS_BOTS_SYNC_STATES)[number];
+
+const TEAMS_BOTS_SYNC_STATE_SET: ReadonlySet<string> = new Set(
+  TEAMS_BOTS_SYNC_STATES,
+);
+
+export interface TeamsBotsSyncDto {
+  state: TeamsBotsSyncState;
+  /** The plugin the entry belongs to — named in the operator copy. */
+  plugin_id: string;
+  /** The setup field the entry lives in (`teams_bots`). */
+  config_key: string;
+}
+
+/** Narrow `teams_bots_sync` at the boundary. Total: an absent or unknown
+ *  shape yields `unknown`, which renders as "we cannot tell — the manual
+ *  block below still works". */
+export function parseTeamsBotsSync(value: unknown): TeamsBotsSyncDto {
+  const obj =
+    value !== null && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : null;
+  const rawState = obj?.['state'];
+  const pluginId = obj?.['plugin_id'];
+  const configKey = obj?.['config_key'];
+  return {
+    state:
+      typeof rawState === 'string' && TEAMS_BOTS_SYNC_STATE_SET.has(rawState)
+        ? (rawState as TeamsBotsSyncState)
+        : 'unknown',
+    plugin_id:
+      typeof pluginId === 'string' && pluginId !== ''
+        ? pluginId
+        : '@omadia/channel-teams',
+    config_key:
+      typeof configKey === 'string' && configKey !== '' ? configKey : 'teams_bots',
+  };
+}
+
 export interface TeamsIdentityStatusDto {
   ok: boolean;
   agent: string;
@@ -567,6 +636,8 @@ export interface TeamsIdentityStatusDto {
   provisioner_installed: boolean;
   identity: TeamsIdentityDto;
   teams_bot: TeamsBotConfigEntryDto | null;
+  /** Additive (#910) — see {@link parseTeamsBotsSync}. */
+  teams_bots_sync?: unknown;
 }
 
 /** `GET /v1/operator/agents/:slug/teams-identity`. Rejects with a 404

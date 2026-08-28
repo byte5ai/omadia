@@ -83,6 +83,14 @@ function statusDto(
       updated_at: '2026-08-27T08:05:00.000Z',
     },
     teams_bot: TEAMS_BOT,
+    // #910 — the live sync signal. `missing` is the pre-sync default, i.e.
+    // "provisioning has not written it (yet)", which is what most of the
+    // block-rendering assertions below want.
+    teams_bots_sync: {
+      state: 'missing',
+      plugin_id: '@omadia/channel-teams',
+      config_key: 'teams_bots',
+    },
     ...overrides,
   };
 }
@@ -138,23 +146,70 @@ describe('AgentTeamsIdentity — teams_bots config block (#860 W2a)', () => {
     ]);
   });
 
-  it('states plainly that the paste is manual and that automatic sync is a follow-up', async () => {
+  it('asks for the manual paste when the entry is NOT in the plugin config (#910)', async () => {
     renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
 
-    expect(
-      await screen.findByText(
-        'One manual step is left: this block has to be pasted into the Teams channel plugin by hand.',
-      ),
-    ).toBeTruthy();
+    const headline = await screen.findByTestId('teams-bot-sync-headline');
+    expect(headline.textContent).toContain('One manual step is left');
     expect(
       screen.getByText(
         'Copy the block and paste it into the teams_bots setup field of the Teams channel plugin, then save.',
       ),
     ).toBeTruthy();
-    // The out-of-scope promise, said out loud rather than left to assumption.
+  });
+
+  it('says the configuration is already applied once provisioning wrote it (#910)', async () => {
+    mockGet.mockResolvedValue(
+      statusDto({
+        teams_bots_sync: {
+          state: 'synced',
+          plugin_id: '@omadia/channel-teams',
+          config_key: 'teams_bots',
+        },
+      }),
+    );
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    const headline = await screen.findByTestId('teams-bot-sync-headline');
+    expect(headline.textContent).toContain('Already applied');
+    expect(headline.textContent).toContain('@omadia/channel-teams');
+    // The instruction to paste is gone — but the block itself is not: an
+    // operator diffing against what is live still needs to see it.
+    expect(
+      screen.queryByText(
+        'Copy the block and paste it into the teams_bots setup field of the Teams channel plugin, then save.',
+      ),
+    ).toBeNull();
+    expect(await readRenderedBlock()).toEqual([TEAMS_BOT]);
+  });
+
+  it('explains a hand-edited plugin entry rather than claiming success (#910)', async () => {
+    mockGet.mockResolvedValue(
+      statusDto({
+        teams_bots_sync: {
+          state: 'out_of_sync',
+          plugin_id: '@omadia/channel-teams',
+          config_key: 'teams_bots',
+        },
+      }),
+    );
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    const headline = await screen.findByTestId('teams-bot-sync-headline');
+    expect(headline.textContent).toContain('a different configuration');
+  });
+
+  it('falls back to "cannot tell" when the middleware sends no sync state (#910)', async () => {
+    // A middleware predating #910 omits the field. Claiming "already applied"
+    // there would strand the operator with a bot that never answers.
+    mockGet.mockResolvedValue(statusDto({ teams_bots_sync: undefined }));
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    const headline = await screen.findByTestId('teams-bot-sync-headline');
+    expect(headline.textContent).toContain('cannot be determined');
     expect(
       screen.getByText(
-        'Writing this configuration automatically is a planned follow-up and does not happen today.',
+        'Copy the block and paste it into the teams_bots setup field of the Teams channel plugin, then save.',
       ),
     ).toBeTruthy();
   });

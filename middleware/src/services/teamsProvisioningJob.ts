@@ -298,6 +298,32 @@ export type ProvisioningRunResult =
     }
   | { readonly status: 'stopped'; readonly agentId: string };
 
+/**
+ * Outcome of the post-provisioning `teams_bots` config write (#910). A
+ * structural subset of `TeamsBotsConfigSyncOutcome` in
+ * `services/teamsBotsConfigSync.ts` — the runner only needs to know whether
+ * something was written, so it can log it; every branch is non-fatal.
+ */
+export interface TeamsBotsConfigSyncReport {
+  readonly status: 'synced' | 'unchanged' | 'skipped';
+  readonly reason?: string;
+}
+
+/**
+ * Write this identity's entry into the channel-teams plugin config and reload
+ * the plugin, so the provisioned bot answers without a restart (#910).
+ *
+ * Optional: a wiring without an installed registry (tests, minimal mounts)
+ * simply leaves the operator on the documented copy-paste path.
+ *
+ * MAY REJECT. The runner treats a rejection as a warning on an
+ * already-successful run — see {@link TeamsProvisioningJobRunner} on why the
+ * identity is never rolled back for it.
+ */
+export type TeamsBotsConfigSyncPort = (
+  identity: TeamsIdentityJobRecord,
+) => Promise<TeamsBotsConfigSyncReport>;
+
 export interface TeamsProvisioningJobOptions {
   readonly store: TeamsIdentityJobStore;
   /** Resolves the accessor; throws its typed 'unavailable' error when the
@@ -316,6 +342,9 @@ export interface TeamsProvisioningJobOptions {
   readonly maxRetryDelayMs?: number;
   /** Test seam — defaults to real timers. */
   readonly timers?: TimerSeam;
+  /** #910 — the finishing move that makes the bot live. Absent means the
+   *  operator configures channel-teams by hand, exactly as before. */
+  readonly syncBotConfig?: TeamsBotsConfigSyncPort;
   readonly log?: (msg: string) => void;
 }
 
@@ -343,6 +372,7 @@ export class TeamsProvisioningJobRunner {
   private readonly baseRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
   private readonly timers: TimerSeam;
+  private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
   private readonly log: (msg: string) => void;
 
   private readonly inFlight = new Map<
@@ -365,6 +395,7 @@ export class TeamsProvisioningJobRunner {
       MAX_TIMER_DELAY_MS,
     );
     this.timers = opts.timers ?? REAL_TIMERS;
+    this.syncBotConfig = opts.syncBotConfig;
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -599,7 +630,15 @@ export class TeamsProvisioningJobRunner {
         `no teams identity row for agent '${agentId}' — create it before enqueueing provisioning`,
       );
     }
-    if (row.state === 'installed') return { status: 'installed', agentId };
+    if (row.state === 'installed') {
+      // #910 — a re-run of an already-installed identity is the self-healing
+      // path: identity fields may have changed (a new display name), or an
+      // operator may have removed the entry from the plugin config. The chain
+      // itself has nothing left to do, but the config write is re-asserted so
+      // "re-run provisioning" always ends with the bot actually configured.
+      await this.syncTeamsBotsConfig(row);
+      return { status: 'installed', agentId };
+    }
     if (this.stopped) return { status: 'stopped', agentId };
 
     const provisioner = this.getProvisioner();
@@ -699,8 +738,53 @@ export class TeamsProvisioningJobRunner {
       teamId: request.teamId,
       teamsAppId: row.teamsAppId as string,
     });
-    await this.store.update(agentId, { state: 'installed', lastError: null });
+    row = await this.store.update(agentId, { state: 'installed', lastError: null });
+
+    // Step 6 (#910) — the finishing move: write the `teams_bots` entry into
+    // channel-teams and reload it, so the bot answers without an operator
+    // pasting JSON between two screens. Deliberately AFTER the terminal state
+    // write and deliberately unable to change it.
+    await this.syncTeamsBotsConfig(row);
     return { status: 'installed', agentId };
+  }
+
+  /**
+   * Best-effort `teams_bots` config write (#910).
+   *
+   * NEVER throws, never changes `state`. By the time this runs the Entra app,
+   * the Azure bot, the catalog entry and the team install all exist and are
+   * this agent's — failing the run over a config write would report a
+   * provisioning failure that did not happen, and re-running it would re-walk
+   * a chain that is already complete. So a failure is recorded as an
+   * ACTIONABLE warning in `last_error` (`config_sync_failed`, which the
+   * operator UI renders as "paste the block by hand, here is why") while the
+   * identity stays `installed`.
+   */
+  private async syncTeamsBotsConfig(row: TeamsIdentityJobRecord): Promise<void> {
+    const sync = this.syncBotConfig;
+    if (!sync) return;
+    try {
+      const report = await sync(row);
+      this.log(
+        `[teams-provisioning] teams_bots config sync for ${row.agentId} (${row.botSlug}): ${report.status}${
+          report.reason !== undefined ? ` (${report.reason})` : ''
+        }`,
+      );
+      // Retiring OUR OWN stale warning is part of "re-run provisioning to
+      // retry the write": without this, a run that fixed the problem would
+      // leave the operator staring at the warning that sent them here.
+      // Scoped to the `config_sync_failed` prefix on purpose — an unrelated
+      // error on the row is not this method's to clear.
+      if (row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
+        await this.recordError(row.agentId, { lastError: null });
+      }
+    } catch (err) {
+      const detail = configSyncFailedDetail(errorMessage(err));
+      this.log(
+        `[teams-provisioning] teams_bots config sync for ${row.agentId} (${row.botSlug}) failed: ${errorMessage(err)} — identity stays installed; the operator can paste the block manually`,
+      );
+      await this.recordError(row.agentId, { lastError: detail });
+    }
   }
 }
 
@@ -747,10 +831,32 @@ export function throttledDetail(
   return `throttled: ${message} (gave up after ${String(attempts)} attempts${hint})`;
 }
 
+/**
+ * The one sentence this runner writes that is a WARNING, not a failure (#910).
+ *
+ * The identity is provisioned and valid in Azure; only the automatic write of
+ * the channel-teams `teams_bots` entry did not land. The reason is carried in
+ * brackets like the other structured sentences, with bracket and newline
+ * characters stripped so the classifier's `[...]` group round-trips exactly.
+ */
+/** Machine-readable prefix of {@link configSyncFailedDetail}. Shared by the
+ *  producer, the classifier and the runner's stale-warning cleanup. */
+export const CONFIG_SYNC_FAILED_PREFIX = 'config_sync_failed:';
+
+export function configSyncFailedDetail(reason: string): string {
+  const safe = reason.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
+  return `config_sync_failed: [${safe.length > 0 ? safe : CONFIG_SYNC_REASON_UNSPECIFIED}] — the Teams identity is provisioned and installed; only the automatic teams_bots entry in the Teams channel plugin was not written. Paste the shown block into that setup field to bring the bot online, or re-run provisioning to retry the write`;
+}
+
+/** Bracket filler when the failure carried no usable message. Shared by the
+ *  producer and the classifier so the empty case round-trips. */
+const CONFIG_SYNC_REASON_UNSPECIFIED = 'no reason reported';
+
 export type TeamsProvisioningErrorCode =
   | 'consent_missing'
   | 'arm_not_configured'
   | 'throttled'
+  | 'config_sync_failed'
   | 'unknown';
 
 /** Structured projection of one `last_error` sentence. `raw` is always the
@@ -764,6 +870,10 @@ export interface TeamsProvisioningErrorDetail {
   readonly fields?: readonly string[];
   /** Connector `Retry-After` hint in seconds (`throttled`), when it had one. */
   readonly retryAfterSeconds?: number;
+  /** Why the automatic `teams_bots` write did not land (`config_sync_failed`).
+   *  A technical sentence, shown as the argument of a localized line — never
+   *  as the copy itself. */
+  readonly reason?: string;
   readonly raw: string;
 }
 
@@ -799,6 +909,14 @@ export function classifyTeamsProvisioningError(
     return {
       code: 'arm_not_configured',
       fields: bracketList(sentence, ARM_FIELDS_UNSPECIFIED),
+      raw,
+    };
+  }
+  if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
+    const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
+    return {
+      code: 'config_sync_failed',
+      reason: inner === CONFIG_SYNC_REASON_UNSPECIFIED ? '' : inner,
       raw,
     };
   }

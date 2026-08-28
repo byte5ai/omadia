@@ -67,6 +67,14 @@ import {
   consentMissingDetail,
   throttledDetail,
 } from '../src/services/teamsProvisioningJob.js';
+import {
+  InMemoryInstalledRegistry,
+  type InstalledRegistry,
+} from '../src/plugins/installedRegistry.js';
+import {
+  CHANNEL_TEAMS_PLUGIN_ID,
+  TEAMS_BOTS_CONFIG_KEY,
+} from '../src/services/teamsBotsConfigSync.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 interface AgentMem {
@@ -467,6 +475,10 @@ describe('createOperatorAgentsRouter', () => {
   /** #900 — the accessor the route feature-detects on. `undefined` models a
    *  connector that is not installed at all. */
   let provisioner: FakeTeamsProvisioner | LegacyTeamsProvisioner | undefined;
+  /** #910 — the installed registry the `teams_bots_sync` projection reads.
+   *  `undefined` by default so every pre-existing test keeps the exact mount
+   *  it was written against; the sync tests below bind it per case. */
+  let installedPlugins: InstalledRegistry | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -477,6 +489,7 @@ describe('createOperatorAgentsRouter', () => {
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
     provisioner = new FakeTeamsProvisioner();
+    installedPlugins = undefined;
     const app = express();
     app.use(express.json());
     app.use(
@@ -486,6 +499,8 @@ describe('createOperatorAgentsRouter', () => {
         getRegistry: () => registry as unknown as OrchestratorRegistry,
         getChatSessionStore: () => sessionStore as unknown as ChatSessionStore,
         getAgentGraphStore: () => graph as unknown as AgentGraphStore,
+        // #910 — read live, like every other getter here.
+        getInstalledRegistry: () => installedPlugins,
         // W1a (#860) — getters read the CURRENT fakes so afterEach resets apply.
         getTeamsIdentity: () => ({
           store: teamsStore,
@@ -514,6 +529,7 @@ describe('createOperatorAgentsRouter', () => {
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
     provisioner = new FakeTeamsProvisioner();
+    installedPlugins = undefined;
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
@@ -1073,6 +1089,36 @@ describe('createOperatorAgentsRouter', () => {
     assert.match(mount, /new AgentGraphStore\(graphPool\)/, 'the option must construct the real store from graphPool');
   });
 
+  it('index.ts wires syncBotConfig into the provisioning runner (wiring pin, #910)', async () => {
+    // The runner treats a missing sync port as "the operator configures
+    // channel-teams by hand" — exactly the pre-#910 behaviour, and exactly the
+    // regression a unit test with an injected port cannot see. Pin the real
+    // boot wiring instead.
+    const indexSource = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+    const runner = /new TeamsProvisioningJobRunner\(\{([\s\S]*?)\n    \}\)/.exec(
+      indexSource,
+    )?.[1];
+    assert.ok(
+      runner,
+      'index.ts no longer constructs TeamsProvisioningJobRunner — update this pin',
+    );
+    assert.match(
+      runner,
+      /syncBotConfig:/,
+      'index.ts must pass syncBotConfig to TeamsProvisioningJobRunner — without it a provisioned bot stays unconfigured until an operator pastes the block by hand',
+    );
+    assert.match(
+      runner,
+      /syncTeamsBotConfig\(/,
+      'the port must delegate to services/teamsBotsConfigSync.ts, not re-implement the write',
+    );
+    assert.match(
+      runner,
+      /reactivate: reactivateAgent/,
+      'the sync must reload the plugin through the same funnel every other live config change uses',
+    );
+  });
+
   it('index.ts supplies getTeamsIdentity to the operator-agents mount (wiring pin, W1a #860)', async () => {
     // Same rationale as the getAgentGraphStore pin above: the route tests
     // inject their own deps and cannot see a missing option at the REAL
@@ -1459,6 +1505,132 @@ describe('createOperatorAgentsRouter', () => {
     // a second, drifting copy would hand operators a config channel-teams
     // silently refuses to parse.
     assert.deepEqual(body.teams_bot, projectTeamsBotConfig(row));
+  });
+
+  // ── #910: the teams_bots sync signal on the status route ────────────
+
+  it('GET /:slug/teams-identity reports the LIVE teams_bots sync state', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    const row: OperatorTeamsIdentityRecord = {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    teamsStore.rows.set(agent.id, row);
+
+    const read = async (): Promise<{
+      state: string;
+      plugin_id: string;
+      config_key: string;
+    }> => {
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      const body = (await res.json()) as {
+        teams_bots_sync: { state: string; plugin_id: string; config_key: string };
+      };
+      return body.teams_bots_sync;
+    };
+
+    // No registry bound at all — the status is genuinely unknown, and the
+    // route says so instead of guessing "not synced".
+    assert.equal((await read()).state, 'unknown');
+
+    const plugins = new InMemoryInstalledRegistry();
+    installedPlugins = plugins;
+    assert.equal((await read()).state, 'plugin_not_installed');
+
+    await plugins.register({
+      id: CHANNEL_TEAMS_PLUGIN_ID,
+      installed_version: '0.21.0',
+      installed_at: new Date(0).toISOString(),
+      status: 'active',
+      config: {},
+    });
+    assert.equal((await read()).state, 'missing');
+
+    // The very block the UI offers for pasting, now actually configured.
+    await plugins.updateConfig(CHANNEL_TEAMS_PLUGIN_ID, {
+      [TEAMS_BOTS_CONFIG_KEY]: JSON.stringify([projectTeamsBotConfig(row)]),
+    });
+    const synced = await read();
+    assert.equal(synced.state, 'synced');
+    // The UI names both in its copy, so both are part of the contract.
+    assert.equal(synced.plugin_id, CHANNEL_TEAMS_PLUGIN_ID);
+    assert.equal(synced.config_key, 'teams_bots');
+
+    // A hand edit is visible immediately — the signal is derived by LOOKING,
+    // never from a stored "we synced it once" flag.
+    await plugins.updateConfig(CHANNEL_TEAMS_PLUGIN_ID, {
+      [TEAMS_BOTS_CONFIG_KEY]: JSON.stringify([
+        { ...projectTeamsBotConfig(row), displayName: 'edited by hand' },
+      ]),
+    });
+    assert.equal((await read()).state, 'out_of_sync');
+  });
+
+  it('GET /:slug/teams-identity: an unreadable teams_bots value is reported, not hidden', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'installed',
+      teamId: '19:team-a',
+      appId: 'app-123',
+      tenantId: 'tenant-456',
+      teamsAppId: 'teams-app-789',
+      teamsAppExternalId: 'ext-000',
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const plugins = new InMemoryInstalledRegistry();
+    await plugins.register({
+      id: CHANNEL_TEAMS_PLUGIN_ID,
+      installed_version: '0.21.0',
+      installed_at: new Date(0).toISOString(),
+      status: 'active',
+      config: { [TEAMS_BOTS_CONFIG_KEY]: '{ not json' },
+    });
+    installedPlugins = plugins;
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { teams_bots_sync: { state: string } };
+    assert.equal(body.teams_bots_sync.state, 'unreadable');
+  });
+
+  it('GET /:slug/teams-identity: sync is not_applicable before the app registration exists', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'pending',
+      teamId: '19:team-a',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    installedPlugins = new InMemoryInstalledRegistry();
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    const body = (await res.json()) as {
+      teams_bot: unknown;
+      teams_bots_sync: { state: string };
+    };
+    assert.equal(body.teams_bot, null);
+    assert.equal(body.teams_bots_sync.state, 'not_applicable');
   });
 
   it('the GET projects through deps.clientSecretRef — not just through the default', async () => {

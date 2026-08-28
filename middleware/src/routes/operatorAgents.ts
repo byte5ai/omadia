@@ -25,6 +25,10 @@ import {
   supportsTeamUninstall,
   type TeamsProvisionerAccessor,
 } from '../platform/teamsProvisionerService.js';
+import {
+  projectTeamsBotConfig,
+  projectTeamsBotsConfigSyncStatus,
+} from '../services/teamsBotsConfigSync.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -305,77 +309,19 @@ export interface OperatorTeamsIdentityDeps {
 }
 
 /**
- * Custody convention for the provisioned bot's app password: the
- * `agent_teams_identities` table stores NO secret material — the M365
- * connector's `createAppRegistration` keeps the generated client secret in
- * the CONNECTOR's vault and hands back only the opaque, deterministic ref
- * `teams_bot_password:<appId>` (teamsProvisioner contract v0.3.1). The
- * status endpoint re-derives that ref from `app_id` so channel-teams'
- * `teams_bots[]` sync (follow-up, out of scope for W1a) can reference it
- * without the secret ever appearing in an HTTP response or a middleware
- * table. Keyed by appId (globally unique per registration), NOT by bot
- * slug, so no two identities can ever alias one credential.
+ * The `teams_bots[]` projection and its secret-ref convention MOVED to
+ * `services/teamsBotsConfigSync.ts` (#910): the same entry is now WRITTEN
+ * into the channel-teams plugin config after provisioning, and a projection
+ * that lives in a route module could not be the producer for both. Re-exported
+ * here because this router is still the surface that publishes it, and because
+ * two producers of a config contract is exactly the drift the choke point
+ * exists to prevent.
  */
-export function defaultTeamsBotSecretRef(record: {
-  readonly appId: string | null;
-}): string {
-  if (!record.appId) {
-    throw new Error(
-      'defaultTeamsBotSecretRef requires a provisioned appId — the secret ref is derived from it',
-    );
-  }
-  return `teams_bot_password:${record.appId}`;
-}
-
-/**
- * One `teams_bots[]` entry of channel-teams' plugin config — shaped EXACTLY
- * like a `parseTeamsBotsConfig` entry (camelCase keys), so an operator can
- * paste it into the plugin's `teams_bots` setup field verbatim.
- */
-export interface TeamsBotConfigProjection {
-  readonly botSlug: string;
-  readonly displayName: string;
-  readonly appId: string;
-  /** Literal — the epic provisions SingleTenant apps only (new MultiTenant
-   *  registrations are deprecated since 07/2025). */
-  readonly appType: 'SingleTenant';
-  readonly tenantId: string;
-  /** Opaque connector-vault ref (teamsProvisioner contract v0.3.1), NEVER
-   *  the password itself. */
-  readonly appPasswordSecretRef: string;
-}
-
-/**
- * THE single `teams_bot` projection of this router (W2a, epic #860).
- *
- * Every team↔agent route that surfaces a provisioned identity must project
- * through here rather than re-assembling the block: the entry is a config
- * contract with channel-teams, and a second, drifting copy of it would hand
- * operators a config that silently does not parse.
- *
- * `null` until BOTH the Entra app and its tenant are known — an incomplete
- * entry is worse than none, because channel-teams would reject the whole
- * `teams_bots[]` array over it.
- *
- * NOTE (documented follow-up, deliberately out of scope): pasting the block
- * into channel-teams is a MANUAL operator step. Nothing here syncs it into
- * the plugin's config automatically.
- */
-export function projectTeamsBotConfig(
-  record: OperatorTeamsIdentityRecord,
-  clientSecretRef?: (record: OperatorTeamsIdentityRecord) => string,
-): TeamsBotConfigProjection | null {
-  if (!record.appId || !record.tenantId) return null;
-  return {
-    botSlug: record.botSlug,
-    displayName: record.displayName,
-    appId: record.appId,
-    appType: 'SingleTenant',
-    tenantId: record.tenantId,
-    appPasswordSecretRef:
-      clientSecretRef?.(record) ?? defaultTeamsBotSecretRef(record),
-  };
-}
+export {
+  defaultTeamsBotSecretRef,
+  projectTeamsBotConfig,
+  type TeamsBotConfigProjection,
+} from '../services/teamsBotsConfigSync.js';
 
 /** Structured form of the identity's `last_error`, decoded by the runner's
  *  own classifier so the UI renders from a code + typed arguments instead of
@@ -1284,9 +1230,26 @@ export function createOperatorAgentsRouter(
         return;
       }
       // `teams_bot` is the channel-teams `teams_bots[]` projection. It goes
-      // through the router's ONE choke point so every team↔agent route
-      // emits a byte-identical entry — see projectTeamsBotConfig.
+      // through the platform's ONE choke point so the entry the operator can
+      // paste and the entry provisioning WRITES are the same bytes — see
+      // `services/teamsBotsConfigSync.ts`.
       const teamsBot = projectTeamsBotConfig(row, deps.clientSecretRef);
+      // #910 — does channel-teams actually hold this entry right now? Derived
+      // by LOOKING at the live plugin config, never from a remembered "we
+      // synced it" flag: an operator can edit or delete the entry at any time
+      // and a recorded intention would then tell the UI a comfortable lie.
+      const secretRef = deps.clientSecretRef;
+      const teamsBotsSync = projectTeamsBotsConfigSyncStatus(
+        {
+          getInstalledRegistry: () => options.getInstalledRegistry?.(),
+          // Bound to THIS row rather than passed through: the dependency is
+          // typed for the router's record, the projection for the structural
+          // identity source, and the closure is the honest bridge between
+          // them (it is only ever called with this row anyway).
+          ...(secretRef ? { clientSecretRef: () => secretRef(row) } : {}),
+        },
+        row,
+      );
       res.json({
         ok: true,
         agent: existing.slug,
@@ -1316,6 +1279,10 @@ export function createOperatorAgentsRouter(
           updated_at: row.updatedAt ?? null,
         },
         teams_bot: teamsBot,
+        // Additive (#910): the sync state of `teams_bot` inside the
+        // channel-teams plugin config. The copy-paste block above STAYS —
+        // this tells the operator whether they still need it.
+        teams_bots_sync: teamsBotsSync,
       });
     } catch (err) {
       badRequest(res, err);
