@@ -192,6 +192,16 @@ export class TeamsProvisioningEventStore {
    * The trim is a CTE rather than a second statement so a note costs exactly
    * one query: events are written from a hot path (every step boundary, every
    * retry) and the runner awaits each one.
+   *
+   * WHY THE CAP IS PASSED AS `MAX - 1`. Every part of one statement reads the
+   * SAME snapshot, so the DELETE's subquery cannot see the row the CTE is
+   * inserting: it ranks the PRE-EXISTING rows only. Keeping `MAX` of those and
+   * then adding the new one leaves `MAX + 1` behind — the cap would be off by
+   * one forever, and only ever on the agent that already has the longest log.
+   * Reserving the slot the insert is about to occupy makes the arithmetic come
+   * out at exactly `MAX`. Pinned by the "caps the log per agent even when the
+   * clear never ran" case in `teamsProvisioningEventStore.pg.test.ts`, which
+   * caught this against a real Postgres.
    */
   async record(input: RecordTeamsProvisioningEventInput): Promise<void> {
     if (!isTeamsProvisioningEventStatus(input.status)) {
@@ -217,7 +227,9 @@ export class TeamsProvisioningEventStore {
         input.status,
         clampAttempt(input.attempt),
         clampDetail(input.detail),
-        MAX_EVENTS_PER_AGENT,
+        // Not MAX: the row being inserted is invisible to the subquery above
+        // and still lands. See the note on this method.
+        MAX_EVENTS_PER_AGENT - 1,
       ],
     );
   }
