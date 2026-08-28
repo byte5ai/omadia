@@ -61,6 +61,18 @@ async function waitForTerminal(cliId: string): Promise<ReturnType<typeof getCliI
   return getCliInstallStatus(cliId);
 }
 
+/** Run `body` with a known PATH so the searched-PATH detail is assertable. */
+async function withPath(pathValue: string, body: () => Promise<void>): Promise<void> {
+  const previousPath = process.env['PATH'];
+  process.env['PATH'] = pathValue;
+  try {
+    await body();
+  } finally {
+    if (previousPath === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previousPath;
+  }
+}
+
 describe('cliInstallService', () => {
   let dir: string;
   let prevToolsDir: string | undefined;
@@ -131,19 +143,51 @@ describe('cliInstallService', () => {
     assert.equal(done.code, 'cli_install.npm_failed');
     assert.equal(done.error, 'npm install failed — see the log tail.');
     assert.match(done.logTail ?? '', /EAI_AGAIN/);
+    // The searched-PATH hint belongs to the no-output branch only — here the
+    // log tail already carries npm's own diagnosis (#925).
+    assert.doesNotMatch(done.error ?? '', /Searched PATH:/);
   });
 
-  it('a failed npm run with no output reports no_output instead of pointing at an empty log tail', async () => {
-    __setCliInstallRunner(async () => ({ ok: false, output: '' }));
-    await startCliInstall('codex', '1.2.3');
-    const done = await waitForTerminal('codex');
-    assert.equal(done.status, 'failed');
-    assert.equal(done.code, 'cli_install.no_output');
-    assert.equal(
-      done.error,
-      'npm install failed — no output at all; npm was most likely not found.',
-    );
-    assert.equal(done.logTail, undefined);
+  it('a failed npm run with no output reports no_output and names the PATH npm was searched on', async () => {
+    // A no-output failure is npm-not-found; the PATH the child was actually
+    // handed is the whole diagnosis, so it must reach the UI detail (#925).
+    await withPath('/sentinel/bin:/sentinel/sbin', async () => {
+      let seenPath: string | undefined;
+      __setCliInstallRunner(async (_args, env) => {
+        seenPath = env['PATH'];
+        return { ok: false, output: '' };
+      });
+      await startCliInstall('codex', '1.2.3');
+      const done = await waitForTerminal('codex');
+      assert.equal(done.status, 'failed');
+      assert.equal(done.code, 'cli_install.no_output');
+      assert.ok(
+        done.error?.startsWith(
+          'npm install failed — no output at all; npm was most likely not found.',
+        ),
+        done.error ?? '(no error)',
+      );
+      assert.match(done.error ?? '', /Searched PATH:/);
+      assert.equal(seenPath, '/sentinel/bin:/sentinel/sbin');
+      assert.ok(done.error?.includes(seenPath ?? '<unset>'), done.error ?? '(no error)');
+      assert.equal(done.logTail, undefined);
+    });
+  });
+
+  it('bounds the searched-PATH line instead of emitting an over-long PATH in full', async () => {
+    const longPath = Array.from({ length: 200 }, (_, i) => `/very/long/dir/number-${i}`).join(':');
+    await withPath(longPath, async () => {
+      __setCliInstallRunner(async () => ({ ok: false, output: '' }));
+      await startCliInstall('codex', '1.2.3');
+      const done = await waitForTerminal('codex');
+      assert.equal(done.code, 'cli_install.no_output');
+      const searchedLine = (done.error ?? '')
+        .split('\n')
+        .find((line) => line.startsWith('Searched PATH:'));
+      assert.ok(searchedLine, done.error ?? '(no error)');
+      assert.ok(longPath.length > 1000, 'fixture PATH must exceed the cap to be a real test');
+      assert.ok(searchedLine.length < 600, `searched-PATH line unbounded: ${searchedLine.length}`);
+    });
   });
 
   it('reserves the single-flight slot across the idempotency probe (no TOCTOU race)', async () => {

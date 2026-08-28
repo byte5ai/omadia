@@ -38,7 +38,38 @@ cd ../web-ui   && npm run build      # next.config.ts already sets output:"stand
 cd ../desktop
 npm install
 npm run dev                          # runs against the sibling repo builds
+
+npm test                             # unit + build-script tests
 ```
+
+`npm test` runs plain `node --test` — the TypeScript unit tests under `test/` rely
+on Node's native type stripping, so they need **Node >= 22.18** (the repo's
+`.nvmrc` pins 22.22.3) and no test dependency. Test files live in `test/`, never
+in `src/`: `tsconfig.json` compiles `src/**/*.ts` only, which is what keeps them
+out of `dist/` and out of the shipped bundle.
+
+## The child-process PATH
+
+macOS/Linux GUI apps inherit a launcher-truncated PATH, so `src/pathEnv.ts`
+builds the PATH handed to the forked kernel and web-ui itself. It probes:
+
+- the standard system bins (`/opt/homebrew/{bin,sbin}`, `/usr/local/{bin,sbin}`,
+  `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`) and `/snap/bin` on Linux
+- `~/.volta/bin` and `~/.asdf/shims`
+- `~/.local/bin` plus every `~/.local/<tool>/bin` one level deep — the shape an
+  unpacked Node tarball takes, e.g. `~/.local/node/bin` (#925)
+- one nvm bin dir, from `~/.nvm/alias/default` followed transitively (`lts/*`,
+  `lts/<name>`, and `node` = the newest installed version all resolve)
+
+Two invariants:
+
+- **Appended, never prepended.** The discovered directories go *after* the
+  inherited PATH, so a system install always keeps precedence.
+- **Computed once at import** (`supervisor.ts`). A Node installed while the app
+  is running stays invisible until the app restarts.
+
+Every probe is failure-tolerant by design: a missing, unreadable, or hostile
+`~/.local` or `~/.nvm` is skipped silently, so app boot never depends on it.
 
 ## Package installers
 
