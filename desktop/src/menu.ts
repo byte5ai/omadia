@@ -32,16 +32,28 @@
  * roles, zoom) so muscle memory and localized role labels keep working —
  * Electron localizes `role:` items with the OS language for free, which
  * matters for the German-market audience (OM-28).
+ *
+ * OM-59 follow-up: that free localization covers role ENTRIES only. The
+ * top-level headings are plain labels, so a German user saw "File / Edit / View
+ * / Window / Help" above correctly-translated submenus. They now go through the
+ * shell dictionary like every other main-process string.
+ *
+ * OM-58 follow-up: the Help menu also carries "Show recovery key…". The wizard
+ * step that offers the key could be skipped without the user noticing, and until
+ * now there was no second way to ever see it.
  */
 import { Menu, app, type MenuItemConstructorOptions } from 'electron';
+import { createShellTranslate } from './shellStrings';
 
 export interface MenuActions {
   checkForUpdates: () => void;
+  showRecoveryKey: () => void;
 }
 
 export function installApplicationMenu(actions: MenuActions): void {
   const isMac = process.platform === 'darwin';
   const showDevTools = !app.isPackaged;
+  const t = createShellTranslate(app.getLocale());
 
   const template: MenuItemConstructorOptions[] = [
     // App menu (macOS only — holds About/Hide/Quit by convention).
@@ -62,11 +74,11 @@ export function installApplicationMenu(actions: MenuActions): void {
         ]
       : []),
     {
-      label: 'File',
+      label: t('menu.file', 'File'),
       submenu: [isMac ? { role: 'close' } : { role: 'quit' }],
     },
     {
-      label: 'Edit',
+      label: t('menu.edit', 'Edit'),
       submenu: [
         { role: 'undo' },
         { role: 'redo' },
@@ -80,7 +92,7 @@ export function installApplicationMenu(actions: MenuActions): void {
       ],
     },
     {
-      label: 'View',
+      label: t('menu.view', 'View'),
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
@@ -99,7 +111,7 @@ export function installApplicationMenu(actions: MenuActions): void {
       ],
     },
     {
-      label: 'Window',
+      label: t('menu.window', 'Window'),
       submenu: [
         { role: 'minimize' },
         { role: 'zoom' },
@@ -109,8 +121,18 @@ export function installApplicationMenu(actions: MenuActions): void {
       ],
     },
     {
-      label: 'Help',
-      submenu: [{ label: 'Check for Updates…', click: () => actions.checkForUpdates() }],
+      label: t('menu.help', 'Help'),
+      submenu: [
+        {
+          label: t('menu.checkForUpdates', 'Check for Updates…'),
+          click: () => actions.checkForUpdates(),
+        },
+        { type: 'separator' },
+        {
+          label: t('recovery.menuItem', 'Show recovery key…'),
+          click: () => actions.showRecoveryKey(),
+        },
+      ],
     },
   ];
 

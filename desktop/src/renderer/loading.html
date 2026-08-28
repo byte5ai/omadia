@@ -6,7 +6,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; style-src 'self'; script-src 'self';"
     />
-    <title>Starting omadia…</title>
+    <title data-i18n="loading.docTitle">Starting omadia…</title>
     <link rel="stylesheet" href="wizard.css" />
   </head>
   <body>
@@ -14,10 +14,21 @@
       <div class="brand" style="font-size:28px;">omadia</div>
       <div class="progress" style="width:520px;max-width:100%;">
         <div class="bar"><div id="barFill" class="bar-fill"></div></div>
-        <p id="progressMsg" class="progress-msg" style="text-align:center;">Starting local services…</p>
+        <p id="progressMsg" class="progress-msg" style="text-align:center;" data-i18n="loading.starting">Starting local services…</p>
       </div>
-      <pre id="bootLog" class="boot-log" style="width:520px;max-width:100%;" aria-label="startup log"></pre>
+      <!--
+        OM-60: the full log is still here and still complete, but it no longer
+        greets a business user with `.env` instructions on every start. An ERROR
+        line opens this by itself (bootView.shouldAutoRevealDetails) so a stuck
+        boot never hides its own explanation.
+      -->
+      <details id="bootDetails" class="boot-details" style="width:520px;max-width:100%;">
+        <summary id="bootDetailsSummary" data-i18n="loading.details.empty">Startup log</summary>
+        <pre id="bootLog" class="boot-log" aria-label="startup log"></pre>
+      </details>
     </div>
+    <script src="wizard-i18n.js"></script>
+    <script src="bootView.js"></script>
     <script src="loading.js"></script>
   </body>
 </html>
