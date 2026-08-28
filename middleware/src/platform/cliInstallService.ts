@@ -68,12 +68,17 @@ const MAX_PATH_DETAIL_CHARS = 512;
  *
  * A spawn failure means the OS never started npm, so there is no failed
  * install and no log to read. The two buckets are deliberately NOT merged:
- * `ENOEXEC`/`EACCES`/`EPERM`/`EISDIR` mean a file WAS found and refused
- * execution, so the operator has to look at that file; `ENOENT` means there
- * was nothing to execute, which is what `no_output` already says and what its
- * searched-PATH line already answers. Telling an operator with no npm that
- * "the npm file found is not executable" is the same class of untrue message
- * this issue was filed about.
+ * `ENOEXEC`/`EACCES`/`EPERM` mean a file WAS found and refused execution, so
+ * the operator has to look at that file; `ENOENT` means there was nothing to
+ * execute, which is what `no_output` already says and what its searched-PATH
+ * line already answers. Telling an operator with no npm that "the npm file
+ * found is not executable" is the same class of untrue message this issue was
+ * filed about.
+ *
+ * Measured on Node v22.23.2 spawning bare `npm` off a doctored PATH: a 0-byte
+ * `+x` file throws ENOEXEC synchronously; a file without `+x` AND a directory
+ * both report EACCES. `EISDIR` is mapped for completeness but is unreachable
+ * that way on POSIX, so it buys no coverage on its own.
  */
 const SPAWN_FAILURE_KINDS: Readonly<Record<string, 'unrunnable' | 'not_found'>> = {
   ENOEXEC: 'unrunnable',
@@ -217,12 +222,17 @@ export async function startCliInstall(
         if (spawnFailure?.kind === 'unrunnable') {
           job.code = 'cli_install.spawn_failed';
           job.error = spawnFailedDetail(spawnFailure, env);
+        } else if (spawnFailure?.kind === 'not_found') {
+          // Explicit rather than leaning on `logTail` being empty. It happens
+          // to be empty for npmRunner today, but a resolved ENOENT carrying
+          // any stderr would otherwise fall through to npm_failed — the exact
+          // conflation this classification exists to remove.
+          job.code = 'cli_install.no_output';
+          job.error = noOutputDetail(env, { proven: true });
         } else if (job.logTail) {
           job.code = 'cli_install.npm_failed';
           job.error = 'npm install failed — see the log tail.';
         } else {
-          // A spawn ENOENT also lands here, and correctly so: there is no npm
-          // to name, and the searched PATH is the whole diagnosis.
           job.code = 'cli_install.no_output';
           job.error = noOutputDetail(env);
         }
@@ -242,7 +252,7 @@ export async function startCliInstall(
       }
       if (spawnFailure?.kind === 'not_found') {
         job.code = 'cli_install.no_output';
-        job.error = noOutputDetail(env);
+        job.error = noOutputDetail(env, { proven: true });
         return;
       }
       // Any other thrown runner error still has a concrete failure message, so
@@ -313,11 +323,25 @@ function asSpawnFailure(failure: unknown): SpawnFailure | undefined {
   const kind = SPAWN_FAILURE_KINDS[code];
   if (!kind) return undefined;
   if (typeof syscall === 'string' && !syscall.startsWith('spawn')) return undefined;
-  return {
-    kind,
-    errno: code,
-    ...(typeof failedFile === 'string' && failedFile ? { file: failedFile } : {}),
-  };
+  const file = asNamedFile(failedFile);
+  return { kind, errno: code, ...(file ? { file } : {}) };
+}
+
+/**
+ * `err.path`, but only when it actually names a file.
+ *
+ * Node sets `path` to the spawnfile EXACTLY as passed, and `npmRunner` passes
+ * bare `npm` — so on every callback-delivered failure (EACCES, ENOENT) this is
+ * the string `'npm'`, which identifies nothing. Measured on Node v22.23.2.
+ * Accepting it would silently defeat {@link resolvedNpmFile}, which exists
+ * precisely to turn this failure into one the operator can act on, and would
+ * make the help copy's promise that the file is named untrue in the COMMON
+ * case while staying true in the rare one.
+ */
+function asNamedFile(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  const namesAPath = path.isAbsolute(value) || value.includes(path.sep);
+  return namesAPath ? value : undefined;
 }
 
 /**
@@ -333,12 +357,10 @@ function resolvedNpmFile(env: NodeJS.ProcessEnv): string | undefined {
   for (const dir of searchedPath.split(path.delimiter)) {
     if (!dir) continue;
     for (const filename of NPM_FILENAMES) {
+      // existsSync reports false for anything it cannot stat, including an
+      // unreadable directory or a malformed name, and never throws.
       const candidate = path.join(dir, filename);
-      try {
-        if (existsSync(candidate)) return candidate;
-      } catch {
-        /* an unreadable directory is simply not a match */
-      }
+      if (existsSync(candidate)) return candidate;
     }
   }
   return undefined;
@@ -353,12 +375,18 @@ function spawnFailedDetail(failure: SpawnFailure, env: NodeJS.ProcessEnv): strin
   );
 }
 
-/** Operator-facing detail for "npm produced nothing at all" (#925). */
-function noOutputDetail(env: NodeJS.ProcessEnv): string {
-  return (
-    'npm install failed — no output at all; npm was most likely not found.' +
-    `\nSearched PATH: ${searchedPathDetail(env)}`
-  );
+/**
+ * Operator-facing detail for the "npm was not found" path (#925).
+ *
+ * `proven` is set when a spawn `ENOENT` established the absence, as opposed to
+ * it being inferred from npm having produced no output. The classifier knows
+ * the difference now, so the sentence stops hedging (#933).
+ */
+function noOutputDetail(env: NodeJS.ProcessEnv, opts?: { readonly proven: boolean }): string {
+  const cause = opts?.proven
+    ? 'npm was not found on the PATH, so it never ran.'
+    : 'no output at all; npm was most likely not found.';
+  return `npm install failed — ${cause}\nSearched PATH: ${searchedPathDetail(env)}`;
 }
 
 /** Test seams. */
