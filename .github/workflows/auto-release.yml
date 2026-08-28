@@ -7,16 +7,34 @@ name: auto-release
 #
 # TWO-PHASE PUBLISH (#928). The release is created as a DRAFT and only promoted
 # to published+latest once `desktop-apps` has attached the merged
-# `latest-mac.yml`. It has to be a draft, not merely `--latest=false`:
-# electron-updater's GitHubProvider resolves "latest" by fetching
-# `<repo>/releases.atom` and taking the FIRST entry, and that feed is ordered by
-# publication with no notion of GitHub's `make_latest` flag — so an unflagged
-# but published release is still the one every client queries. Drafts are absent
-# from the feed entirely, which is the only thing that actually holds clients on
-# the previous release. Before this, every release opened a 30-60 minute window
-# (macOS arm64 21 min + Intel >30 min + Apple-controlled notarization) in which
-# every macOS install asked for a `latest-mac.yml` that did not exist yet and got
-# a 404 — 144 releases since 2026-07-06, five on one day.
+# `latest-mac.yml` AND the installers that feed references.
+#
+# The problem: `desktop-apps` runs `needs: release`, and `latest-mac.yml` only
+# exists once both mac architectures finish and merge-mac-update-feed.mjs has
+# combined them — macOS arm64 21 min + Intel >30 min by that workflow's own
+# measurements, plus notarization on Apple's clock. Flagging the release latest
+# up front therefore opened a 30-60 minute window per release in which every
+# macOS install asked for a file that did not exist yet and got a 404. 144
+# releases since 2026-07-06, five on one day.
+#
+# Why a DRAFT rather than just clearing `make_latest`: clearing the flag alone
+# would in fact work today. electron-updater (6.8.9, GitHubProvider) resolves the
+# version through `getLatestTagName()` -> `GET <repo>/releases/latest` with
+# `Accept: application/json`, reading `tag_name` — and that endpoint honours
+# `make_latest`. It also fetches `releases.atom`, but in our configuration only to
+# locate the matching entry for the release notes.
+#
+# A draft is preferred because it is strictly stronger, in two ways that matter:
+#   1. It is absent from BOTH `/releases/latest` and `releases.atom`, so it does
+#      not depend on which of the two the provider happens to consult.
+#   2. That choice is conditional on `allowPrerelease`, which AppUpdater derives
+#      from the running version (`hasPrereleaseComponents`). It is false only
+#      because set-desktop-version.mjs writes plain semver. Adopt any prerelease
+#      version scheme and it flips true, activating the first-atom-entry path
+#      where `make_latest` is ignored entirely — and this protection would
+#      silently stop working. A draft is invisible either way.
+# A draft also keeps a half-built release off the Releases page while it is
+# unusable, rather than showing one nobody can install.
 #
 # HARD RULE: every tagged release gets a clean, categorized changelog with no
 # manual step required — enforced by construction, since it's part of the
@@ -187,6 +205,14 @@ jobs:
   # this job fails loudly instead of exiting 0 — a red run is the signal. Recover
   # by re-running the desktop-apps job, or publish by hand once the artifacts are
   # attached: `gh release edit <tag> --draft=false --latest`.
+  #
+  # Do not leave a stuck draft sitting, for two reasons beyond the invisible
+  # notes. `publish-images` only needs `release`, so the container `:latest` tag
+  # ships from a version desktop clients cannot get — the two channels drift
+  # apart for as long as the draft stands. And the changelog range comes from
+  # `git tag -l` while the tag is pushed before the release is created, so the
+  # NEXT release's notes start after the stuck tag: those commits then appear in
+  # no published release notes at all unless the draft is published.
   #
   # Note: publishing via GITHUB_TOKEN does NOT fire a `release: published` event
   # (GitHub's Actions loop protection — the same reason publish-images and
