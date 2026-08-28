@@ -36,6 +36,16 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 30; i += 1) await Promise.resolve();
 };
 
+/** A child whose kill() throws, the way EPERM does against a vanished process. */
+class ThrowingChild extends EventEmitter {
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+
+  kill(): boolean {
+    throw new Error('kill EPERM');
+  }
+}
+
 /** A child process that exits only when its gate is opened. */
 class GatedChild extends EventEmitter {
   exitCode: number | null = null;
@@ -70,6 +80,12 @@ function pretendRunning(sup: Supervisor, kernel: GatedChild): void {
   internals.kernel = kernel;
   internals.state = 'running';
   internals.uiUrl = 'http://127.0.0.1:65535';
+}
+
+/** Read the private lifecycle fields, for failure messages only. */
+function peek(sup: Supervisor): { state: string; stopping: boolean } {
+  const internals = sup as unknown as { state: string; stopping: boolean };
+  return { state: internals.state, stopping: internals.stopping };
 }
 
 function fakeHandle(stop: () => Promise<boolean>): EmbeddedDb {
@@ -238,4 +254,115 @@ test('a boot is refused once a shutdown has begun', async () => {
   assert.equal(starts, 0, 'no database may be started while shutting down');
   dbStopRelease.resolve();
   await stopping;
+});
+
+test('a boot landing while a superseded restart has reset the state is refused', async () => {
+  // The three-actor interleaving. A restart loses to a stop at its supersession
+  // re-check and sets state = 'idle' on the way out, while `stopping` is still
+  // true and runStop() is only part-way through its own teardown. Any start()
+  // arriving in that window sees an idle-looking supervisor, and only the
+  // `stopping` guard turns it away - which is why that guard, and not the
+  // re-check beside it, is the load-bearing one.
+  //
+  // main.ts reaches start() here for real: bootExistingInstall() via
+  // app.on('activate') and via the "Re-run setup" button.
+  const kernelExit = deferred();
+  const dbStopGate = deferred();
+  const latePortLookup = deferred();
+  let dbStarts = 0;
+  let dbRegistered = false;
+  const events: string[] = [];
+
+  __setEmbeddedDbHooks({
+    start: async () => {
+      dbStarts += 1;
+      events.push(`db-start#${dbStarts}`);
+      // Models startEmbeddedDb(): the port lookup precedes registration.
+      await latePortLookup.promise;
+      dbRegistered = true;
+      events.push('db-registered');
+      return fakeHandle(async () => {
+        dbRegistered = false;
+        return true;
+      });
+    },
+    stop: async () => {
+      // stopEmbeddedDb() decides on entry: `if (!current) return true`. The
+      // snapshot here is what makes that faithful.
+      const wasRegistered = dbRegistered;
+      events.push(`module-stop(registered=${wasRegistered})`);
+      await dbStopGate.promise;
+      if (!wasRegistered) return true;
+      dbRegistered = false;
+      return true;
+    },
+    isRunning: () => dbRegistered,
+  });
+
+  const sup = new Supervisor();
+  pretendRunning(sup, new GatedChild(kernelExit.promise));
+
+  const restarting = sup.restart();
+  await settle();
+  const stopping = sup.stop();
+  await settle();
+
+  // Let the restart's teardown finish so it loses at the re-check.
+  kernelExit.resolve();
+  // Any rejection will do. Which message the restart loses with is not the
+  // point, and asserting it here would make this test fail for a wording change
+  // rather than for a safety leak.
+  await restarting.catch(() => {});
+  await settle();
+
+  const window = peek(sup);
+  events.push(`window(state=${window.state},stopping=${window.stopping})`);
+
+  // The third actor.
+  await assert.rejects(sup.start(), /Cannot start while stopping/);
+
+  dbStopGate.resolve();
+  const outcome = await stopping;
+  events.push(`stop-resolved(clean=${outcome.clean},survivors=[${outcome.survivors.join(',')}])`);
+  latePortLookup.resolve();
+  await settle();
+
+  assert.equal(
+    dbStarts,
+    0,
+    `no database may be started during a shutdown; sequence: ${events.join(' / ')}`,
+  );
+  assert.equal(
+    dbRegistered,
+    false,
+    `a database came up after stop() reported clean; sequence: ${events.join(' / ')}`,
+  );
+});
+
+test('a kill() that throws is reported as a survivor, not raised out of stop()', async () => {
+  let dbRegistered = true;
+  let dbStops = 0;
+  __setEmbeddedDbHooks({
+    start: async () => fakeHandle(async () => true),
+    stop: async () => {
+      dbStops += 1;
+      dbRegistered = false;
+      return true;
+    },
+    isRunning: () => dbRegistered,
+  });
+
+  const sup = new Supervisor();
+  pretendRunning(sup, new ThrowingChild() as unknown as GatedChild);
+
+  // Before: this rejected with the raw EPERM. The database teardown was then
+  // skipped (orphaning Postgres), `state` stayed wedged at 'stopping' so nothing
+  // could start again, and the quit handler's second stop() failed identically.
+  const outcome = await sup.stop();
+
+  assert.equal(outcome.clean, false);
+  assert.deepEqual(outcome.survivors, ['kernel']);
+  assert.equal(dbStops >= 1, true, 'the database teardown must still have run');
+  assert.equal(dbRegistered, false, 'Postgres must not be orphaned by a failed child kill');
+  assert.equal(peek(sup).state, 'idle', 'the supervisor must not stay wedged in stopping');
 });

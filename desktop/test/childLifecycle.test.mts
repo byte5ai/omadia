@@ -99,3 +99,49 @@ test('a late exit event cannot flip an already-reported deadline', async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(outcome, 'deadline');
 });
+
+test('a child that exits synchronously from kill() still resolves', async () => {
+  // A double can do this even though a real ChildProcess defers 'exit' through
+  // libuv. finish() used to run before the timer consts were initialised and
+  // rejected with a ReferenceError, which is precisely the "stopping can throw"
+  // case the rest of this module rules out.
+  class SyncExitChild extends EventEmitter implements StoppableChild {
+    exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
+
+    kill(): boolean {
+      this.exitCode = 0;
+      this.emit('exit');
+      return true;
+    }
+  }
+
+  const outcome = await stopChild(new SyncExitChild(), 'kernel', silentLogger, 20);
+  assert.equal(outcome, 'exited');
+  assert.equal(isConfirmedStopped(outcome), true);
+});
+
+test('a kill() that throws resolves as kill-failed instead of rejecting', async () => {
+  class ThrowingKillChild extends EventEmitter implements StoppableChild {
+    exitCode: number | null = null;
+    signalCode: NodeJS.Signals | null = null;
+
+    kill(): boolean {
+      throw new Error('kill EPERM');
+    }
+  }
+
+  const logger = collectingLogger();
+  const started = Date.now();
+  const outcome = await stopChild(new ThrowingKillChild(), 'kernel', logger, 4_000);
+
+  assert.equal(outcome, 'kill-failed');
+  assert.equal(isConfirmedStopped(outcome), false);
+  // Resolves at once rather than leaking the escalation timers and letting the
+  // SIGKILL retry throw uncaught 4s later.
+  assert.ok(Date.now() - started < 1_000, 'must not wait out the escalation timers');
+  assert.equal(
+    logger.messages.some((m) => m.includes('SIGTERM failed')),
+    true,
+  );
+});
