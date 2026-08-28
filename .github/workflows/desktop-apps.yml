@@ -546,6 +546,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: omadia-installers-${{ matrix.os }}
+          # Artifact names are unique per run, not per attempt. Without this, the
+          # documented stuck-draft recovery ("re-run the failed jobs") 409s here,
+          # skips the release upload below, and wedges the draft a second time.
+          overwrite: true
           if-no-files-found: ignore
           path: |
             desktop/release/*.dmg
@@ -703,8 +707,11 @@ jobs:
           # would flag a release latest whose latest-mac.yml references assets
           # that were never attached — OM-69's exact user-visible symptom, under
           # a green run. So assert attachment before claiming the feed is usable.
+          # `state` is `starter` until the upload body finishes; such a record is
+          # listed but 404s on download. Counting it would let the gate go green
+          # on exactly the transient-upload failure it was added to catch.
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
-            --jq '.[].name' > /tmp/release-assets.txt
+            --jq '.[] | select(.state == "uploaded") | .name' > /tmp/release-assets.txt
           node --input-type=module -e '
             import fs from "node:fs";
             const { parseFeed } = await import("./desktop/scripts/merge-mac-update-feed.mjs");

@@ -30,9 +30,11 @@ name: auto-release
 #   2. That choice is conditional on `allowPrerelease`, which AppUpdater derives
 #      from the running version (`hasPrereleaseComponents`). It is false only
 #      because set-desktop-version.mjs writes plain semver. Adopt any prerelease
-#      version scheme and it flips true, activating the first-atom-entry path
-#      where `make_latest` is ignored entirely — and this protection would
-#      silently stop working. A draft is invisible either way.
+#      version scheme and it flips true, moving version selection onto the atom
+#      feed, where `make_latest` is ignored entirely — and this protection would
+#      silently stop working. (Which atom branch depends on the channel: with no
+#      channel it takes the first entry, with one it scans entries for a match.
+#      Either way the flag is not consulted.) A draft is invisible either way.
 # A draft also keeps a half-built release off the Releases page while it is
 # unusable, rather than showing one nobody can install.
 #
@@ -200,7 +202,15 @@ jobs:
   # Failure semantics, deliberately chosen: if the feed never published, the
   # release STAYS A DRAFT and this job fails red. The previous release keeps the
   # latest flag, so existing installs keep updating to the last version that can
-  # actually be downloaded; nothing half-published ever becomes latest. The cost
+  # actually be downloaded; no release lacking its macOS feed becomes latest.
+  #
+  # Note the limit of that promise: this gate is macOS-only, by the same design
+  # decision as gating on the feed output rather than the job result. A red
+  # WINDOWS leg still promotes, so `latest.yml` can be missing while the release
+  # is flagged latest, and Windows clients then hit OM-69's 404 on their own feed.
+  # That is a deliberate trade — withholding promotion on any red leg would leave
+  # macOS auto-update dead until the next fully green release — not a guarantee.
+  # Extending the assertion to `latest.yml` is the obvious follow-up. The cost
   # is that the new release notes stay invisible until someone acts, which is why
   # this job fails loudly instead of exiting 0 — a red run is the signal. Recover
   # by re-running the desktop-apps job, or publish by hand once the artifacts are
