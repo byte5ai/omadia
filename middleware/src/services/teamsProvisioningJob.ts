@@ -248,6 +248,65 @@ export type TeamsAppPackageAssetLoader = (
 ) => Promise<TeamsAppPackageAssets>;
 
 // ---------------------------------------------------------------------------
+// Bot handle composition (byte5ai/omadia#921)
+// ---------------------------------------------------------------------------
+
+/**
+ * Azure bot handles live in ONE GLOBAL namespace shared by every Azure
+ * customer — they behave like DNS labels, not like tenant- or
+ * subscription-scoped resource names. The operator's `botSlug` is a local
+ * label (`hr`, `sales`, `test-hr`); handing it to ARM raw means every natural
+ * slug collides with a stranger's bot registered years ago, and the operator
+ * reads "already registered to another bot application" as evidence of a
+ * leftover of their own.
+ *
+ * So the runner qualifies the handle here, for the same reason it qualifies
+ * `uniqueName` two steps below: the naming convention is the runner's, not
+ * the connector's. The connector validates the RESULT against the ARM/Bot
+ * Framework grammar (`requireBotName`) — it owns the rules, we own the shape.
+ *
+ * Shape: `omadia-<slug>-<first appId segment>`. The app registration always
+ * runs first, so its `appId` GUID is available and already globally unique;
+ * its first segment is 8 hex chars, enough to separate two omadia
+ * installations that picked the same slug while staying readable in the
+ * portal.
+ *
+ * TRUNCATION CUTS THE SLUG, NEVER THE SUFFIX — shortening the unique part
+ * would reintroduce exactly the collision this function exists to prevent.
+ * The slug is normalised to the handle charset (lowercased, every run of
+ * non-alphanumerics folded to a single hyphen) and then trimmed to whatever
+ * budget the fixed parts leave.
+ */
+export const BOT_HANDLE_PREFIX = 'omadia';
+/** Bot Framework's upper bound; the connector enforces the same number. */
+export const BOT_HANDLE_MAX_LENGTH = 42;
+/** Hex characters of the appId taken as the uniqueness suffix. */
+export const BOT_HANDLE_APP_ID_SEGMENT_LENGTH = 8;
+
+export function buildBotHandle(botSlug: string, appId: string): string {
+  const suffix = appId
+    .replace(/[^0-9a-fA-F]/g, '')
+    .slice(0, BOT_HANDLE_APP_ID_SEGMENT_LENGTH)
+    .toLowerCase();
+  if (suffix.length === 0) {
+    throw new TeamsProvisioningJobError(
+      `cannot build a bot handle: app id '${appId}' has no hex characters to qualify the slug with`,
+    );
+  }
+  // `omadia` + `-` + slug + `-` + suffix — the slug gets whatever is left.
+  const budget =
+    BOT_HANDLE_MAX_LENGTH - BOT_HANDLE_PREFIX.length - 2 - suffix.length;
+  const normalized = botSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const slugPart = normalized.slice(0, Math.max(budget, 0)).replace(/-+$/g, '');
+  return slugPart.length > 0
+    ? `${BOT_HANDLE_PREFIX}-${slugPart}-${suffix}`
+    : `${BOT_HANDLE_PREFIX}-${suffix}`;
+}
+
+// ---------------------------------------------------------------------------
 // Duck-typed connector error guards (see module doc on why not instanceof)
 // ---------------------------------------------------------------------------
 
@@ -275,6 +334,41 @@ function missingSetupFieldsOf(err: unknown): readonly string[] | undefined {
   if (!(err instanceof Error) || err.name !== 'ArmNotConfiguredError') return undefined;
   const fields = (err as Error & { missingSetupFields?: unknown }).missingSetupFields;
   return isStringArray(fields) ? fields : [];
+}
+
+/**
+ * The connector's typed verdict that the global bot handle is taken (#921).
+ * Duck-typed like every other cross-plugin guard in this module.
+ */
+function botHandleUnavailableOf(err: unknown): { readonly botName?: string } | undefined {
+  if (!(err instanceof Error) || err.name !== 'BotHandleUnavailableError') {
+    return undefined;
+  }
+  const botName = (err as Error & { botName?: unknown }).botName;
+  return typeof botName === 'string' ? { botName } : {};
+}
+
+/**
+ * Would re-running this step UNCHANGED plausibly produce a different answer?
+ *
+ * A `ProvisioningRequestError` carrying a deterministic 4xx says no: the
+ * request was rejected on its content, and the content is identical next
+ * time. Retrying it five times (which is what this runner did until #921 —
+ * `retryable` was computed but only consulted at exhaustion) buys nothing but
+ * a slower failure and a misleading "gave up after 5 attempts".
+ *
+ * 408 and 429 are excluded because they ARE time-dependent, and 403 never
+ * reaches here — `ConsentMissingError` is handled above. This guard is
+ * deliberately connector-version-independent: an older connector that still
+ * reports a taken handle as an untyped 400 also stops after one attempt.
+ */
+const TIME_DEPENDENT_CLIENT_STATUSES: ReadonlySet<number> = new Set([408, 429]);
+
+function isDeterministicRequestFailure(err: unknown): boolean {
+  if (!(err instanceof Error) || err.name !== 'ProvisioningRequestError') return false;
+  const status = (err as Error & { status?: unknown }).status;
+  if (typeof status !== 'number') return false;
+  return status >= 400 && status < 500 && !TIME_DEPENDENT_CLIENT_STATUSES.has(status);
 }
 
 function isProvisionerUnavailable(err: unknown): boolean {
@@ -317,7 +411,7 @@ export type ProvisioningRunResult =
   | {
       readonly status: 'failed';
       readonly agentId: string;
-      readonly reason: 'consent_missing' | 'error';
+      readonly reason: 'consent_missing' | 'bot_handle_unavailable' | 'error';
       readonly detail: string;
     }
   | {
@@ -594,7 +688,27 @@ export class TeamsProvisioningJobRunner {
       };
     }
 
+    const takenHandle = botHandleUnavailableOf(err);
+    if (takenHandle !== undefined) {
+      // TERMINAL and DETERMINISTIC — the global namespace will not free the
+      // name on the next attempt. Fail on attempt 1 with an explanation
+      // instead of five identical 400s (#921).
+      const detail = botHandleUnavailableDetail(errorMessage(err), takenHandle.botName);
+      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      return { status: 'failed', agentId, reason: 'bot_handle_unavailable', detail };
+    }
+
     const throttle = throttleHintOf(err);
+
+    if (throttle === undefined && isDeterministicRequestFailure(err)) {
+      // A 4xx on identical input is a verdict, not a hiccup — see
+      // isDeterministicRequestFailure. Stop now, keep the reached state's
+      // evidence, and report the real reason on attempt 1.
+      const detail = `${errorMessage(err)} (deterministic — not retried)`;
+      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      return { status: 'failed', agentId, reason: 'error', detail };
+    }
+
     const retryable = throttle !== undefined || isProvisionerUnavailable(err);
 
     if (attempt >= this.maxAttempts) {
@@ -747,7 +861,8 @@ export class TeamsProvisioningJobRunner {
     // the accessor module's URL builder, injected — never composed here.
     if (STATE_RANK[row.state] < STATE_RANK.bot_created) {
       const outcome = await provisioner.createBot({
-        botName: row.botSlug,
+        // Qualified, NOT the raw slug: the handle namespace is global (#921).
+        botName: buildBotHandle(row.botSlug, row.appId as string),
         displayName: row.displayName,
         msaAppId: row.appId as string,
         msaAppTenantId: row.tenantId as string,
@@ -958,6 +1073,27 @@ export function armNotConfiguredDetail(missingSetupFields: readonly string[]): s
   return `arm_not_configured: bot creation needs the ARM setup fields [${fields}] on the M365 connector — configure them, then re-run provisioning (the app registration is kept)`;
 }
 
+/** Machine-readable prefix of {@link botHandleUnavailableDetail}. The
+ *  connector's own message already starts with this code, so the producer
+ *  passes it through rather than double-prefixing. */
+export const BOT_HANDLE_UNAVAILABLE_PREFIX = 'bot_handle_unavailable:';
+
+/**
+ * The global bot handle is taken (#921).
+ *
+ * The explanatory text — global namespace, automatic qualification, rename
+ * the slug — is authored by the CONNECTOR, which is where the ARM semantics
+ * live; the runner only guarantees the sentence carries the code the operator
+ * UI switches on. An older connector reports the same condition without the
+ * prefix, so it is added when missing.
+ */
+export function botHandleUnavailableDetail(message: string, botName?: string): string {
+  const handle = botName !== undefined ? ` [${botName}]` : '';
+  return message.startsWith(BOT_HANDLE_UNAVAILABLE_PREFIX)
+    ? message
+    : `${BOT_HANDLE_UNAVAILABLE_PREFIX}${handle} ${message} — Azure bot handles share one global namespace across all Azure customers, so a name can be taken by a bot outside your tenant. Rename the agent's bot slug and re-run provisioning`;
+}
+
 /** Throttle budget exhausted. The reached state is KEPT — this is a "come
  *  back later", not a failure — so the sentence carries the connector's
  *  `Retry-After` hint when it had one. */
@@ -997,6 +1133,7 @@ export type TeamsProvisioningErrorCode =
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
+  | 'bot_handle_unavailable'
   | 'unknown';
 
 /** Structured projection of one `last_error` sentence. `raw` is always the
@@ -1051,6 +1188,9 @@ export function classifyTeamsProvisioningError(
       fields: bracketList(sentence, ARM_FIELDS_UNSPECIFIED),
       raw,
     };
+  }
+  if (sentence.startsWith(BOT_HANDLE_UNAVAILABLE_PREFIX)) {
+    return { code: 'bot_handle_unavailable', raw };
   }
   if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';

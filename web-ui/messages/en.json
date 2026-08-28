@@ -2095,6 +2095,10 @@
           "what": "The Teams identity is provisioned and installed — only the automatic write into the Teams channel plugin configuration did not go through.",
           "reason": "Reason: {reason}",
           "next": "Paste the configuration block shown below into the Teams channel plugin and save, or re-run provisioning to retry the automatic write. Nothing in Azure has to be repeated."
+        },
+        "bot_handle_unavailable": {
+          "what": "Microsoft refused the bot name: it is already registered to another bot application.",
+          "next": "Azure bot handles share one global namespace across every Azure customer — like a domain name, not a name inside your tenant. omadia already qualifies the handle automatically with the app registration's id, so this name is taken even in its qualified form. Give the agent a different bot slug and start provisioning again."
         }
       },
       "teamsBot": {
