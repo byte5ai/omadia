@@ -456,7 +456,7 @@ class FakeTeamsEventStore {
   readError: Error | undefined;
   lastLimit: number | undefined;
 
-  listRecent(agentId: string, limit?: number): Promise<readonly typeof this.rows> {
+  listRecent(agentId: string, limit?: number): Promise<typeof this.rows> {
     this.lastLimit = limit;
     if (this.readError) return Promise.reject(this.readError);
     return Promise.resolve(
