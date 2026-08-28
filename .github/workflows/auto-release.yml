@@ -5,6 +5,19 @@ name: auto-release
 # tag + a GitHub Release with a categorized changelog (Added/Changed/Fixed,
 # generated from commit subjects by .github/scripts/generate-changelog.mjs).
 #
+# TWO-PHASE PUBLISH (#928). The release is created as a DRAFT and only promoted
+# to published+latest once `desktop-apps` has attached the merged
+# `latest-mac.yml`. It has to be a draft, not merely `--latest=false`:
+# electron-updater's GitHubProvider resolves "latest" by fetching
+# `<repo>/releases.atom` and taking the FIRST entry, and that feed is ordered by
+# publication with no notion of GitHub's `make_latest` flag — so an unflagged
+# but published release is still the one every client queries. Drafts are absent
+# from the feed entirely, which is the only thing that actually holds clients on
+# the previous release. Before this, every release opened a 30-60 minute window
+# (macOS arm64 21 min + Intel >30 min + Apple-controlled notarization) in which
+# every macOS install asked for a `latest-mac.yml` that did not exist yet and got
+# a 404 — 144 releases since 2026-07-06, five on one day.
+#
 # HARD RULE: every tagged release gets a clean, categorized changelog with no
 # manual step required — enforced by construction, since it's part of the
 # same job that creates the tag: there is no code path that tags a release
@@ -116,7 +129,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$new" -m "omadia $new"
           git push origin "$new"
-          gh release create "$new" --notes-file /tmp/release-notes.md --title "omadia $new" --latest
+          # --draft, NOT --latest: see TWO-PHASE PUBLISH at the top of this file.
+          # The `promote-release` job below publishes it once macOS clients can
+          # actually resolve an update for it.
+          gh release create "$new" --notes-file /tmp/release-notes.md --title "omadia $new" --draft
           # Hand the new tag to the publish-images job below. A GITHUB_TOKEN
           # release does not fire a `release` event, so the image build must run
           # here in the same workflow rather than via an event trigger.
@@ -147,4 +163,60 @@ jobs:
     uses: ./.github/workflows/desktop-apps.yml
     with:
       tag: ${{ needs.release.outputs.new_tag }}
+      # The release exists by construction here, so a lookup miss is a real
+      # fault: fail rather than silently attaching nothing to it.
+      require_release: true
     secrets: inherit
+
+  # Phase two of TWO-PHASE PUBLISH (#928): flip the draft to published + latest,
+  # but only once the merged macOS update feed is attached to it.
+  #
+  # Gated on desktop-apps' `mac_feed_published` output rather than on its result:
+  # `build` is fail-fast:false, so a broken Windows leg fails the called workflow
+  # while the macOS feed published fine — and withholding the promotion for that
+  # would leave macOS auto-update dead until the next fully green release, which
+  # is the failure mode OM-69 describes rather than a fix for it.
+  #
+  # `always()` so this still evaluates when desktop-apps reports failure.
+  #
+  # Failure semantics, deliberately chosen: if the feed never published, the
+  # release STAYS A DRAFT and this job fails red. The previous release keeps the
+  # latest flag, so existing installs keep updating to the last version that can
+  # actually be downloaded; nothing half-published ever becomes latest. The cost
+  # is that the new release notes stay invisible until someone acts, which is why
+  # this job fails loudly instead of exiting 0 — a red run is the signal. Recover
+  # by re-running the desktop-apps job, or publish by hand once the artifacts are
+  # attached: `gh release edit <tag> --draft=false --latest`.
+  #
+  # Note: publishing via GITHUB_TOKEN does NOT fire a `release: published` event
+  # (GitHub's Actions loop protection — the same reason publish-images and
+  # desktop-apps are called in-run here), so this cannot re-trigger
+  # desktop-apps.yml's `release` trigger. Do not "fix" that by switching to a PAT
+  # without re-checking it.
+  promote-release:
+    needs: [release, desktop-apps]
+    if: ${{ always() && needs.release.outputs.new_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft and flag it latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.new_tag }}
+          MAC_FEED_PUBLISHED: ${{ needs.desktop-apps.outputs.mac_feed_published }}
+          DESKTOP_RESULT: ${{ needs.desktop-apps.result }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MAC_FEED_PUBLISHED" != "true" ]; then
+            echo "::error::$TAG stays a DRAFT: desktop-apps finished $DESKTOP_RESULT without" >&2
+            echo "         attaching a merged latest-mac.yml, so a macOS client could not" >&2
+            echo "         download this version. The previous release keeps the latest flag." >&2
+            echo "         Re-run the desktop-apps job, or once its artifacts are attached:" >&2
+            echo "           gh release edit $TAG --draft=false --latest" >&2
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false --latest
+          echo "published $TAG and flagged it latest (desktop-apps: $DESKTOP_RESULT)"
