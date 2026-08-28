@@ -104,7 +104,8 @@ if [ "${OMADIA_WITH_UPDATER:-0}" = "1" ]; then
     UPDATER_FLY_TOKEN_MIDDLEWARE="$MW_TOKEN" \
     UPDATER_FLY_APP_WEB_UI="$UI_APP" \
     UPDATER_FLY_TOKEN_WEB_UI="$UI_TOKEN" \
-    UPDATER_HEALTH_URL="http://${MW_APP}.internal:8080/health"
+    UPDATER_HEALTH_URL="http://${MW_APP}.internal:8080/health" \
+    UPDATER_HEALTH_URL_WEB_UI="http://${UI_APP}.internal:3000/health"
 
   # This pair is what flips the admin page out of notify-only mode.
   "$FLY" secrets set --app "$MW_APP" \

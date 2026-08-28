@@ -14,7 +14,9 @@
  *      stack (compose only — see `canPersistPin`)
  *   4. replace in the configured order (middleware before web-ui: it applies
  *      the schema migrations at boot)
- *   5. gate on the middleware's `/health` REPORTING THE NEW VERSION
+ *   5. gate EVERY replaced service on its own `/health` REPORTING THE NEW
+ *      VERSION — not just the middleware's, or a web-ui that never came up
+ *      would ride along on the middleware's answer
  *   6. on failure, roll every replaced instance back to its previous image and
  *      restore the previous pin
  *
@@ -43,14 +45,15 @@ export { detectComposeProject } from './engine/docker.mjs';
  * Why an update did not land, in a shape the UI can decode without parsing
  * the human-readable `error` string.
  *
- *   - `health_gate` — every service was replaced but the middleware never
- *     reported the target version. `reason` is the health waiter's verdict
- *     (`never_reachable` / `version_never_matched`), `observedVersion` what
- *     `/health` last said, if anything.
+ *   - `health_gate` — every service was replaced but one of them never
+ *     reported the target version. `service` names which, `reason` is the
+ *     health waiter's verdict (`never_reachable` / `version_never_matched`),
+ *     `observedVersion` what its `/health` last said, if anything.
  *   - `replace` — a service could not be moved to the new image.
  *
  * @typedef {{
  *   kind: 'health_gate',
+ *   service?: string,
  *   reason: string,
  *   observedVersion: string | null,
  * } | {
@@ -153,36 +156,59 @@ export async function runUpdate(opts) {
     };
   }
 
-  // 5 — health gate on the NEW version.
+  // 5 — health gate on the NEW version, for EVERY service that has a health
+  // URL. Gating only the middleware was a hole: it applies the migrations and
+  // is the noisiest thing to get wrong, but a web-ui that never came up left
+  // the middleware happily reporting the new version, the gate satisfied, and
+  // the update declared landed with half the stack down. A service with no
+  // configured URL is skipped and SAID to be skipped — silence there would be
+  // the same lie in a smaller box.
   setPhase('health_gate');
-  log(`waiting for ${config.healthUrl} to report ${targetVersion}`);
-  const health = await healthWaiter({
-    url: config.healthUrl,
-    expectVersion: targetVersion,
-    timeoutMs: config.healthTimeoutMs,
-    log,
-  });
-  if (health.ok) {
-    log(`health gate passed (${health.reason})`);
-    setPhase('done');
-    return { ok: true, rolledBack: false };
+  for (const target of targets) {
+    // `healthUrls` is what `loadConfig` produces; the `healthUrl` fallback
+    // keeps a config object from before this existed gating the middleware
+    // exactly as it always did, rather than silently gating nothing.
+    const url =
+      config.healthUrls?.[target.service] ??
+      (target.service === 'middleware' ? config.healthUrl : undefined);
+    if (typeof url !== 'string' || url.length === 0) {
+      log(`no health URL configured for ${target.service} — not gated`);
+      continue;
+    }
+    log(`waiting for ${target.service} at ${url} to report ${targetVersion}`);
+    const health = await healthWaiter({
+      url,
+      expectVersion: targetVersion,
+      timeoutMs: config.healthTimeoutMs,
+      log,
+    });
+    if (health.ok) {
+      log(`health gate passed for ${target.service} (${health.reason})`);
+      continue;
+    }
+
+    // 6 — revert. The first service that fails ends the run: the stack is
+    // already inconsistent, and spending another timeout window on the next
+    // one only delays the rollback.
+    const reason = `health gate failed for ${target.service}: ${health.reason} (observed version: ${health.observedVersion ?? 'none'})`;
+    log(reason);
+    setPhase('rollback');
+    await rollback({ engine, replaced, previousPin, log });
+    return {
+      ok: false,
+      rolledBack: true,
+      error: reason,
+      failure: {
+        kind: 'health_gate',
+        service: target.service,
+        reason: health.reason,
+        observedVersion: health.observedVersion ?? null,
+      },
+    };
   }
 
-  // 6 — revert.
-  const reason = `health gate failed: ${health.reason} (observed version: ${health.observedVersion ?? 'none'})`;
-  log(reason);
-  setPhase('rollback');
-  await rollback({ engine, replaced, previousPin, log });
-  return {
-    ok: false,
-    rolledBack: true,
-    error: reason,
-    failure: {
-      kind: 'health_gate',
-      reason: health.reason,
-      observedVersion: health.observedVersion ?? null,
-    },
-  };
+  setPhase('done');
+  return { ok: true, rolledBack: false };
 }
 
 /**

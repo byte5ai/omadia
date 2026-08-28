@@ -36,6 +36,9 @@ export type UpdaterPhase =
 export type UpdaterFailure =
   | {
       readonly kind: 'health_gate';
+      /** Which service failed its gate. Absent on a sidecar that gated the
+       *  middleware only. */
+      readonly service?: string | null;
       /** `never_reachable` | `version_never_matched` (health.mjs verdicts). */
       readonly reason: string;
       readonly observedVersion: string | null;

@@ -4298,6 +4298,8 @@
     "rolledBack": "The last update failed and was rolled back: {message}",
     "rolledBackNeverReachable": "The update to {from} was rolled back: the new version never answered /health. This instance is back on {to}.",
     "rolledBackVersionNeverMatched": "The update to {from} was rolled back: /health kept reporting {observed} instead of {from}. This instance is back on {to}.",
+    "rolledBackNeverReachableService": "The update to {from} was rolled back: {service} never answered /health. This instance is back on {to}.",
+    "rolledBackVersionNeverMatchedService": "The update to {from} was rolled back: /health on {service} kept reporting {observed} instead of {from}. This instance is back on {to}.",
     "rolledBackReplace": "The update to {from} was rolled back: the {service} service could not be replaced. This instance is back on {to}.",
     "rolledBackHint": "A new image that never comes up usually needs something at boot the old one did not — most often a secret such as CREDENTIAL_KEYCHAIN_KEY (required since v0.115). Check the middleware logs from the failed boot right away; hosted log retention is short. docs/upgrading.md has the per-version steps.",
     "progress": {
@@ -4340,6 +4342,7 @@
         "notRolledBackBody": "The updater could not restore the previous version. Check the services by hand before doing anything else.",
         "neverReachable": {
           "title": "The new version never answered /health.",
+    "titleService": "{service} never answered /health.",
           "body": "The container was replaced, but nothing ever listened on the health endpoint within the gate window. That is almost always the new version dying at boot, not a network problem. Likely causes:",
           "causeSecret": "A secret the new version requires and the old one did not — most often CREDENTIAL_KEYCHAIN_KEY, mandatory since v0.115. Set it, then run the update again.",
           "causeMigration": "A schema migration that failed against this database.",
@@ -4347,6 +4350,7 @@
         },
         "versionNeverMatched": {
           "title": "/health kept reporting {observed} instead of the new version.",
+    "titleService": "/health on {service} kept reporting {observed} instead of the new version.",
           "body": "Something answered, but it was not the new image: the service may have been restarted on the old tag, or a proxy in front of it is still pointing at the old instance."
         },
         "replace": {

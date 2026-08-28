@@ -58,7 +58,7 @@ Mirrored by `middleware/src/update/updaterClient.ts`.
   // which of the six numbered steps the job is in; null while idle
   "phase": "resolve|preflight|pin|replace|health_gate|rollback|done",
   // structured reason for a failed / rolled_back outcome, null otherwise:
-  //   { "kind": "health_gate", "reason": "never_reachable|version_never_matched", "observedVersion": "v0.90.1"|null }
+  //   { "kind": "health_gate", "service": "web-ui", "reason": "never_reachable|version_never_matched", "observedVersion": "v0.90.1"|null }
   //   { "kind": "replace", "service": "middleware" }
   "failure": null
 }
@@ -86,8 +86,12 @@ the connection open would only guarantee it dies mid-flight. Callers poll
 4. Recreate each service from its own inspect output — same labels, mounts,
    ports, restart policy, network aliases; only `Image` changes. The stale
    `OMADIA_VERSION` env entry is dropped so the new image's baked stamp wins.
-5. Gate on the middleware's `/health` **reporting the new version**, not merely
-   answering.
+5. Gate **every replaced service** on its own `/health` **reporting the new
+   version**, not merely answering. Gating the middleware alone was a hole: it
+   answers for itself only, so a web-ui that never came up rode along on the
+   middleware's verdict and the update was reported as landed. A service with
+   no configured health URL is skipped and *logged as skipped* — "not checked"
+   must stay distinguishable from "verified".
 6. On any failure: restore the previous `.env` pin and recreate every replaced
    container on its previous image, in reverse order.
 
@@ -107,7 +111,8 @@ the `postgres-data` volume before a major bump — see `docs/upgrading.md`.
 | `UPDATER_SERVICES` | `middleware,web-ui` | Update order. Protected services are refused. |
 | `UPDATER_COMPOSE_PROJECT` | auto-detected | From this container's own compose labels |
 | `UPDATER_ENV_FILE` | `/workspace/.env` | Bind-mounted project-root `.env` |
-| `UPDATER_HEALTH_URL` | `http://middleware:8080/health` | Health gate target |
+| `UPDATER_HEALTH_URL` | `http://middleware:8080/health` | Health gate target for `middleware` |
+| `UPDATER_HEALTH_URL_<SERVICE>` | unset | Health gate target for that service (`UPDATER_HEALTH_URL_WEB_UI`). Unset ⇒ that service is replaced but not gated. |
 | `UPDATER_HEALTH_TIMEOUT_MS` | `300000` | Rollback after this |
 | `UPDATER_PORT` | `8090` | Compose-network only |
 

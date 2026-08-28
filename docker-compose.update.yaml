@@ -104,6 +104,11 @@ services:
       UPDATER_SERVICES: middleware,web-ui
       UPDATER_ENV_FILE: /workspace/.env
       UPDATER_HEALTH_URL: http://middleware:8080/health
+      # Every replaced service is gated on its OWN /health reporting the new
+      # version. Without this line the web-ui is replaced but never verified,
+      # and a container that never came up would ride along on the
+      # middleware's answer.
+      UPDATER_HEALTH_URL_WEB_UI: http://web-ui:3000/health
     volumes:
       # Single-file bind mount of the compose project's .env — the updater
       # rewrites OMADIA_VERSION in place so the operator's next manual

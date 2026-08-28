@@ -32,6 +32,7 @@ export function envSuffix(service) {
  *   composeProject: string | null,
  *   envFilePath: string,
  *   healthUrl: string,
+ *   healthUrls: Record<string, string>,
  *   port: number,
  *   healthTimeoutMs: number,
  *   selfService: string,
@@ -93,6 +94,18 @@ export function loadConfig(env = process.env) {
     }
   }
 
+  // One health URL per service, so every replaced app is verified on its own
+  // terms. `UPDATER_HEALTH_URL` keeps meaning the middleware's, which is what
+  // every existing deployment has set — a service with no URL is simply not
+  // gated, and the job says so rather than pretending it checked.
+  const healthUrl = env.UPDATER_HEALTH_URL ?? 'http://middleware:8080/health';
+  const healthUrls = {};
+  for (const service of services) {
+    const explicit = (env[`UPDATER_HEALTH_URL_${envSuffix(service)}`] ?? '').trim();
+    if (explicit.length > 0) healthUrls[service] = explicit;
+  }
+  healthUrls['middleware'] ??= healthUrl;
+
   return {
     token,
     engine,
@@ -103,7 +116,8 @@ export function loadConfig(env = process.env) {
     services,
     composeProject: (env.UPDATER_COMPOSE_PROJECT ?? '').trim() || null,
     envFilePath: env.UPDATER_ENV_FILE ?? '/workspace/.env',
-    healthUrl: env.UPDATER_HEALTH_URL ?? 'http://middleware:8080/health',
+    healthUrl,
+    healthUrls,
     port: Number.parseInt(env.UPDATER_PORT ?? '8090', 10),
     healthTimeoutMs: Number.parseInt(
       env.UPDATER_HEALTH_TIMEOUT_MS ?? String(5 * 60_000),

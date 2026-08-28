@@ -287,9 +287,21 @@ export function UpdateProgressModal({
             className="rounded border border-[color:var(--danger-edge)] px-3 py-3 text-sm"
           >
             <p className="font-medium text-[color:var(--danger)]">
-              {decoded.kind === 'never_reachable' && t('failure.neverReachable.title')}
+              {/* Two services are gated now, so an unnamed "the new version
+                  never answered" would leave the operator guessing which one.
+                  The unnamed wording survives for an older sidecar that does
+                  not report a service. */}
+              {decoded.kind === 'never_reachable' &&
+                (decoded.service === null
+                  ? t('failure.neverReachable.title')
+                  : t('failure.neverReachable.titleService', { service: decoded.service }))}
               {decoded.kind === 'version_never_matched' &&
-                t('failure.versionNeverMatched.title', { observed: decoded.observedVersion })}
+                (decoded.service === null
+                  ? t('failure.versionNeverMatched.title', { observed: decoded.observedVersion })
+                  : t('failure.versionNeverMatched.titleService', {
+                      observed: decoded.observedVersion,
+                      service: decoded.service,
+                    }))}
               {decoded.kind === 'replace' &&
                 t('failure.replace.title', { service: decoded.service ?? '?' })}
               {decoded.kind === 'unknown' && t('failure.unknown.title')}

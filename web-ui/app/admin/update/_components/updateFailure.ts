@@ -67,8 +67,8 @@ export function stepStates(
 }
 
 export type DecodedFailure =
-  | { kind: 'never_reachable' }
-  | { kind: 'version_never_matched'; observedVersion: string }
+  | { kind: 'never_reachable'; service: string | null }
+  | { kind: 'version_never_matched'; observedVersion: string; service: string | null }
   | { kind: 'replace'; service: string | null }
   | { kind: 'unknown'; message: string };
 
@@ -81,18 +81,27 @@ export function decodeFailure(
   error: string | undefined,
 ): DecodedFailure {
   if (failure?.kind === 'health_gate') {
-    if (failure.reason === 'never_reachable') return { kind: 'never_reachable' };
+    // `service` is absent on a sidecar that only ever gated the middleware.
+    // Null then means "not told which", which the catalog words differently
+    // from naming a service — guessing "middleware" would be a fabrication.
+    const service = failure.service ?? null;
+    if (failure.reason === 'never_reachable') {
+      return { kind: 'never_reachable', service };
+    }
     if (failure.reason === 'version_never_matched') {
       return {
         kind: 'version_never_matched',
         observedVersion: failure.observedVersion ?? '?',
+        service,
       };
     }
     return { kind: 'unknown', message: error ?? failure.reason };
   }
   if (failure?.kind === 'replace') return { kind: 'replace', service: failure.service };
   // Older sidecar: the only signal is the English trail line.
-  if (error !== undefined && /never_reachable/.test(error)) return { kind: 'never_reachable' };
+  if (error !== undefined && /never_reachable/.test(error)) {
+    return { kind: 'never_reachable', service: null };
+  }
   return { kind: 'unknown', message: error ?? '' };
 }
 

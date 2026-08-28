@@ -81,16 +81,39 @@ describe('stepStates', () => {
 describe('decodeFailure', () => {
   it('prefers the structured failure', () => {
     expect(decodeFailure({ kind: 'health_gate', reason: 'never_reachable', observedVersion: null }, 'whatever'))
-      .toEqual({ kind: 'never_reachable' });
+      .toEqual({ kind: 'never_reachable', service: null });
     expect(decodeFailure({ kind: 'health_gate', reason: 'version_never_matched', observedVersion: 'v0.90.1' }, ''))
-      .toEqual({ kind: 'version_never_matched', observedVersion: 'v0.90.1' });
+      .toEqual({ kind: 'version_never_matched', observedVersion: 'v0.90.1', service: null });
     expect(decodeFailure({ kind: 'replace', service: 'middleware' }, ''))
       .toEqual({ kind: 'replace', service: 'middleware' });
   });
 
+  // Two services are gated now, so "which one" is part of the answer. An
+  // older sidecar reports no service at all, and null must stay distinguishable
+  // from a named one — guessing "middleware" would be a fabrication.
+  it('carries the failing service through, and null when none was reported', () => {
+    expect(
+      decodeFailure(
+        { kind: 'health_gate', service: 'web-ui', reason: 'never_reachable', observedVersion: null },
+        '',
+      ),
+    ).toEqual({ kind: 'never_reachable', service: 'web-ui' });
+    expect(
+      decodeFailure(
+        {
+          kind: 'health_gate',
+          service: 'web-ui',
+          reason: 'version_never_matched',
+          observedVersion: 'v0.74.0',
+        },
+        '',
+      ),
+    ).toEqual({ kind: 'version_never_matched', observedVersion: 'v0.74.0', service: 'web-ui' });
+  });
+
   it('falls back to the trail line for a sidecar that predates `failure`', () => {
     expect(decodeFailure(null, 'health gate failed: never_reachable (observed version: none)'))
-      .toEqual({ kind: 'never_reachable' });
+      .toEqual({ kind: 'never_reachable', service: null });
     expect(decodeFailure(undefined, 'something else')).toEqual({ kind: 'unknown', message: 'something else' });
   });
 

@@ -452,9 +452,18 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
     const to = status.current.version;
     switch (decoded.kind) {
       case 'never_reachable':
-        return t('rolledBackNeverReachable', { from, to });
+        return decoded.service === null
+          ? t('rolledBackNeverReachable', { from, to })
+          : t('rolledBackNeverReachableService', { from, to, service: decoded.service });
       case 'version_never_matched':
-        return t('rolledBackVersionNeverMatched', { from, to, observed: decoded.observedVersion });
+        return decoded.service === null
+          ? t('rolledBackVersionNeverMatched', { from, to, observed: decoded.observedVersion })
+          : t('rolledBackVersionNeverMatchedService', {
+              from,
+              to,
+              observed: decoded.observedVersion,
+              service: decoded.service,
+            });
       case 'replace':
         return t('rolledBackReplace', { from, to, service: decoded.service ?? '?' });
       default:

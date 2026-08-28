@@ -28,6 +28,10 @@ function makeConfig(envFilePath, overrides = {}) {
     selfService: 'updater',
     envFilePath,
     healthUrl: 'http://middleware:8080/health',
+    healthUrls: {
+      middleware: 'http://middleware:8080/health',
+      'web-ui': 'http://web-ui:3000/health',
+    },
     healthTimeoutMs: 1_000,
     ...overrides,
   };
@@ -208,13 +212,102 @@ describe('runUpdate (#432)', () => {
     assert.equal(result.rolledBack, true);
     assert.deepEqual(result.failure, {
       kind: 'health_gate',
+      service: 'middleware',
       reason: 'never_reachable',
       observedVersion: null,
     });
     // The human trail still carries the same verdict — the two must not drift.
-    assert.match(result.error, /health gate failed: never_reachable \(observed version: none\)/);
+    assert.match(
+      result.error,
+      /health gate failed for middleware: never_reachable \(observed version: none\)/,
+    );
     assert.equal(phases.at(-1), 'rollback');
     assert.ok(phases.includes('health_gate'));
+  });
+
+  // THE GAP: before per-service gating, a web-ui that never came up was
+  // invisible — the middleware answered with the new version, the gate was
+  // satisfied, and the update was reported as landed with half the stack down.
+  it('rolls back when a NON-middleware service fails its own health gate', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+    const asked = [];
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async ({ url }) => {
+        asked.push(url);
+        return url.includes('web-ui')
+          ? { ok: false, reason: 'never_reachable', observedVersion: null }
+          : { ok: true, reason: 'version_match', observedVersion: 'v0.75.0' };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.rolledBack, true);
+    assert.deepEqual(result.failure, {
+      kind: 'health_gate',
+      service: 'web-ui',
+      reason: 'never_reachable',
+      observedVersion: null,
+    });
+    // Both were asked, in job order — the middleware's pass must not stand in
+    // for the web-ui's.
+    assert.deepEqual(asked, [
+      'http://middleware:8080/health',
+      'http://web-ui:3000/health',
+    ]);
+    // And the whole stack went back, not just the service that failed.
+    assert.equal(
+      (await fs.readFile(envFile, 'utf8')).includes('OMADIA_VERSION=v0.74.0'),
+      true,
+    );
+  });
+
+  it('stops at the first failing gate instead of burning a second timeout', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+    const asked = [];
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile),
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async ({ url }) => {
+        asked.push(url);
+        return { ok: false, reason: 'never_reachable', observedVersion: null };
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(asked, ['http://middleware:8080/health']);
+  });
+
+  // Silence would be the same lie in a smaller box: an operator reading the
+  // trail must be able to tell "verified" from "not checked".
+  it('says out loud when a service has no health URL to gate on', async () => {
+    const docker = createFakeDocker({ services: SERVICES });
+    const envFile = await makeEnvFile();
+
+    const result = await runUpdate({
+      engine: createDockerEngine({ docker, config: makeConfig(envFile), project: 'omadia' }),
+      config: makeConfig(envFile, {
+        healthUrls: { middleware: 'http://middleware:8080/health' },
+      }),
+      targetVersion: 'v0.75.0',
+      log,
+      healthWaiter: async () => ({ ok: true, reason: 'version_match', observedVersion: 'v0.75.0' }),
+    });
+
+    assert.equal(result.ok, true);
+    assert.ok(
+      logs.some((line) => /no health URL configured for web-ui/.test(line)),
+      'the trail names the service that was not gated',
+    );
   });
 
   it('names the service that could not be replaced in the failure', async () => {

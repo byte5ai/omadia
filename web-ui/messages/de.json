@@ -4298,6 +4298,8 @@
     "rolledBack": "Das letzte Update ist fehlgeschlagen und wurde zurückgerollt: {message}",
     "rolledBackNeverReachable": "Das Update auf {from} wurde zurückgerollt: Die neue Version hat /health nie beantwortet. Diese Instanz läuft wieder auf {to}.",
     "rolledBackVersionNeverMatched": "Das Update auf {from} wurde zurückgerollt: /health meldete weiterhin {observed} statt {from}. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackNeverReachableService": "Das Update auf {from} wurde zurückgerollt: {service} hat /health nie beantwortet. Diese Instanz läuft wieder auf {to}.",
+    "rolledBackVersionNeverMatchedService": "Das Update auf {from} wurde zurückgerollt: /health von {service} meldete weiterhin {observed} statt {from}. Diese Instanz läuft wieder auf {to}.",
     "rolledBackReplace": "Das Update auf {from} wurde zurückgerollt: Der Dienst {service} konnte nicht ersetzt werden. Diese Instanz läuft wieder auf {to}.",
     "rolledBackHint": "Ein neues Image, das nie hochkommt, braucht beim Start meist etwas, das das alte nicht brauchte — am häufigsten ein Secret wie CREDENTIAL_KEYCHAIN_KEY (Pflicht seit v0.115). Sieh sofort in die Middleware-Logs des fehlgeschlagenen Starts; gehostete Plattformen behalten sie nur kurz. docs/upgrading.md hat die Schritte pro Version.",
     "progress": {
@@ -4340,6 +4342,7 @@
         "notRolledBackBody": "Der Updater konnte die vorherige Version nicht wiederherstellen. Prüfe die Dienste von Hand, bevor du etwas anderes tust.",
         "neverReachable": {
           "title": "Die neue Version hat /health nie beantwortet.",
+    "titleService": "{service} hat /health nie beantwortet.",
           "body": "Der Container wurde ersetzt, aber innerhalb des Gate-Fensters hat nie etwas auf dem Health-Endpoint gelauscht. Das ist fast immer ein Absturz der neuen Version beim Start, kein Netzwerkproblem. Wahrscheinliche Ursachen:",
           "causeSecret": "Ein Secret, das die neue Version braucht und die alte nicht — am häufigsten CREDENTIAL_KEYCHAIN_KEY, Pflicht seit v0.115. Setzen, dann das Update erneut starten.",
           "causeMigration": "Eine Schema-Migration, die an dieser Datenbank gescheitert ist.",
@@ -4347,6 +4350,7 @@
         },
         "versionNeverMatched": {
           "title": "/health meldete weiterhin {observed} statt der neuen Version.",
+    "titleService": "/health von {service} meldete weiterhin {observed} statt der neuen Version.",
           "body": "Es hat etwas geantwortet, aber nicht das neue Image: Der Dienst ist vielleicht auf dem alten Tag neu gestartet, oder ein Proxy davor zeigt noch auf die alte Instanz."
         },
         "replace": {

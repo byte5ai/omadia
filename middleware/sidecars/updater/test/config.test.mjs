@@ -136,3 +136,30 @@ describe('isValidTargetVersion', () => {
     }
   });
 });
+
+describe('per-service health URLs', () => {
+  const base = { UPDATER_TOKEN: 'k'.repeat(32) };
+
+  it('keeps UPDATER_HEALTH_URL meaning the middleware', () => {
+    const config = loadConfig({ ...base });
+    assert.equal(config.healthUrls['middleware'], 'http://middleware:8080/health');
+  });
+
+  it('gates each service on its own URL when one is configured', () => {
+    const config = loadConfig({
+      ...base,
+      UPDATER_HEALTH_URL_WEB_UI: 'http://web-ui:3000/health',
+    });
+    assert.deepEqual(config.healthUrls, {
+      middleware: 'http://middleware:8080/health',
+      'web-ui': 'http://web-ui:3000/health',
+    });
+  });
+
+  // No URL is not the same as a passing gate — the job skips it and says so,
+  // so an operator can tell "verified" from "not checked".
+  it('leaves a service without a URL out of the map entirely', () => {
+    const config = loadConfig({ ...base, UPDATER_SERVICES: 'middleware,web-ui' });
+    assert.equal('web-ui' in config.healthUrls, false);
+  });
+});

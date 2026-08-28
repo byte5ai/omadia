@@ -5432,6 +5432,9 @@ export type UpdaterPhase =
 export type UpdaterFailure =
   | {
       kind: 'health_gate';
+      /** Which service failed its gate. Absent on a sidecar that gated the
+       *  middleware only — the UI then falls back to the unnamed wording. */
+      service?: string | null;
       /** `never_reachable` | `version_never_matched` — the health waiter's
        *  verdict. Kept as string so an unknown future verdict still renders. */
       reason: string;
