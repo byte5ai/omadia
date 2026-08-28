@@ -7,16 +7,134 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The canonical, always-current changelog per version is each release's GitHub
 Release notes — generated automatically by `.github/workflows/auto-release.yml`
-from Conventional Commit messages, no release ships without one. This file is
-a periodically-refreshed mirror of the same data (every section from
-`[0.2.1]` onward via `.github/scripts/generate-changelog.mjs backfill`), not
-auto-committed on every release. Add hand-written notes under
-`## [Unreleased]` any time; they carry over verbatim into the next version's
-entry. See `CONTRIBUTING.md` § Releases & changelog.
+from Conventional Commit messages, no release ships without one.
+
+This file is a mirror of the same data, and the mirror is refreshed **by hand**:
+
+```
+node .github/scripts/generate-changelog.mjs backfill
+```
+
+Nothing refreshes it automatically, and that is deliberate rather than an
+oversight — `main` requires a pull request and this org forbids GitHub Actions
+from opening one, so the alternatives were a standing PAT-backed bot identity
+or a PR per release to merge manually. Both were judged worse than a mirror
+that drifts. See the reasoning in `.github/workflows/auto-release.yml`.
+
+**So this file can be behind, and it has been.** To check before you trust it,
+compare the newest `## [x.y.z]` heading below against `git tag --sort=-v:refname
+| head -1`. If they differ, the mirror is stale and the GitHub Releases are
+authoritative. It drifted for 145 versions between 2026-07-06 and 2026-08-28
+(#937), during which everything shipped in that span sat under `[Unreleased]`
+and read as unreleased to anyone outside the team.
+
+Add hand-written notes under `## [Unreleased]` any time; they carry over
+verbatim into the next version's entry. See `CONTRIBUTING.md` § Releases &
+changelog.
 
 ---
 
 ## [Unreleased]
+
+### Fixed — omadia beta test round 3: the desktop shell (OM-50 to OM-69, #938)
+
+2026-08-28 — Silvio Lange (TE Printline GmbH) reached the application for the
+first time in three rounds of beta testing, and every serious finding of that
+round sat in one directory: `desktop/src`, which was also the only directory in
+the repository with no tests and no CI run. Thirteen issues, five pull requests.
+The pieces already tagged are noted per version below; #944 and #946 ship in the
+next release.
+
+**The path that blocked the whole test (#925, OM-62, in 0.142.1 via #941).**
+`resolveAugmentedPath()` probed a fixed list of directories, so npm installed at
+`~/.local/node/bin` was invisible and the subscription CLI install failed with
+"npm was most likely not found" on a machine where Node was installed correctly.
+It now scans one level below `~/.local` for `*/bin` instead of naming single
+paths, resolves the nvm `default` alias rather than discarding `lts/*` and
+`node`, and the failure detail names the PATH that was actually searched. With
+no API key a business user has no other way in, so this closed the only door.
+
+**A process that never started, reported as a failed install (#933, OM-68, in
+0.142.2 via #945).** Every thrown runner error was labelled
+`cli_install.npm_failed`, whose help text says npm ran and points at log details
+that do not exist. `npmRunner` had also collapsed `execFile`'s error to
+`ok: !err`, discarding the `code`/`syscall` that made the distinction possible
+at all. Spawn failures now classify as `cli_install.spawn_failed` and name the
+offending file; a spawn `ENOENT` deliberately stays on `no_output`, whose
+searched-PATH line is the right answer for "npm is not installed here".
+
+**The macOS update channel was dead for 30 to 60 minutes after every release
+(#928, OM-69, in 0.142.2 via #943).** `auto-release.yml` flagged a release
+`--latest` before the `desktop-apps` job had built and attached the macOS
+artifacts, so every macOS install queried a `latest-mac.yml` that did not exist
+yet — measured live at roughly 55 minutes on v0.142.1, and silent, because the
+startup check logs a 404 without telling anyone. Releases are now created as
+drafts and promoted only once the merged mac feed is attached AND every file it
+references is present on the release with `state: uploaded`. A repeatedly
+failing silent check now surfaces once instead of never.
+
+**The shutdown path lied to the updater (#927, #926, #934, OM-64/OM-55/OM-66,
+via #944).** `Supervisor.stop()` could return while the kernel and the embedded
+Postgres were still running out of the app bundle — an early return that did not
+await the in-flight stop, a backstop timer that resolved whether or not the
+child exited, and no guard against `stop()` racing `start()` or `restart()`. So
+`quitAndInstall()` handed off to ShipIt, ShipIt could not replace a bundle it
+was still executing, and the updater offered the same version again on the next
+launch: three download-and-snapshot cycles in nine minutes with no error logged
+anywhere, ending with an application that would not start. `stop()` now returns
+`{clean, survivors}` and an unclean stop aborts the install instead of
+installing anyway; attempts are recorded so the same failure is explained once
+rather than re-offered; snapshots get per-attempt names pruned to three instead
+of overwriting the previous backup on every retry; and the data directory warns
+when it points into a cloud-synced folder.
+
+**The desktop shell now says what is happening (#929, #930, #931, #935, #936,
+OM-57/OM-58/OM-56/OM-59/OM-60, via #946).** A superseded boot reached the user
+as `Error: boot superseded` with two buttons that both did damage mid-update,
+while the only correct action, waiting, was not offered. A failed navigation left
+the window showing nothing but its own background colour, because no
+`did-fail-load`, `render-process-gone` or `unresponsive` handler existed. Three
+independent `loadURL` sites raced with no notion of what the window was showing,
+which is what overwrote the setup wizard and cost the user both the data-location
+step and the recovery key without telling them. Electron dialogs, the loading
+screen and the menu headings stayed English against a German UI even though the
+German strings already existed. And the loading screen streamed the raw
+developer log, `.env` instructions included, to every user on every start. A
+navigation arbiter now decides who may replace the window, recovery is bounded
+and explained, an outstanding recovery key is reminded until it has been shown,
+and the boot log is summarized with detail one click away that opens itself on
+an error.
+
+**The gap behind all of it (#932, OM-65, via #944).** `desktop/src` had 0 test
+files and no CI job while `middleware` had 725 and `web-ui` 110. It now has a
+test suite and its own `desktop` job in `ci.yml` running typecheck plus tests,
+including a typecheck of the test tree itself — which immediately caught an
+assertion written as `a < b < c`, i.e. `(a < b) < c`, that had been passing for
+any values.
+
+**Mirror hygiene (#937, OM-67).** This file listed 145 released versions under
+`[Unreleased]`, which is how a reviewer came to report a fix as unreleased two
+hours after it shipped. The mirror is caught up, the stale section is named
+honestly, and the header now says the refresh is manual and how to tell in one
+command whether the file is behind.
+
+Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
+plausible from the code and matches the observed timing, but provoking the race
+would have required a build that still started.
+
+
+---
+
+## Hand-written notes awaiting a mirror refresh (2026-07-06 to 2026-08-28)
+
+These entries were written under `[Unreleased]` while the mirror was not being
+refreshed, so they accumulated for 145 versions and **every one of them has
+shipped**. They are kept because they carry the reasoning behind each change,
+which the generated per-version sections below do not. Each entry is dated;
+match that date against the `## [x.y.z]` sections below, or against the GitHub
+Release, to find the version it went out in.
+
+Do not add to this section. New notes go under `[Unreleased]` above.
 
 ### Added — provisioning writes the `teams_bots` entry itself (#910)
 
@@ -4497,6 +4615,1303 @@ Three live defects in the MCP OAuth path, one migration
 
 ---
 
+## [0.142.2] - 2026-08-28
+
+### Fixed
+
+- promote a release to latest only once its artifacts exist (#943)
+- tell a spawn failure apart from a failed npm install (#945)
+
+---
+
+## [0.142.1] - 2026-08-28
+
+### Fixed
+
+- PATH augmentation misses ~/.local/node/bin for CLI install (#941)
+
+---
+
+## [0.142.0] - 2026-08-28
+
+### Added
+
+- the full persona designer on the agent's own identity page (#940)
+
+---
+
+## [0.141.0] - 2026-08-28
+
+### Added
+
+- agents own their identity, decoupled from the Agent Builder (#923)
+- persist team bindings per (agent, team) and show teams by name (#919)
+
+---
+
+## [0.140.3] - 2026-08-28
+
+### Fixed
+
+- qualify the Azure bot handle, and stop retrying a taken one (#922)
+- **web-ui**: render localized setup-field labels in the plugin config drawer (#917)
+
+---
+
+## [0.140.2] - 2026-08-28
+
+### Fixed
+
+- persist the Entra app id the moment the registration exists (#920)
+
+---
+
+## [0.140.1] - 2026-08-28
+
+### Fixed
+
+- **#911**: runtime-readiness banner now points to the actual LLM access page (#913)
+
+---
+
+## [0.140.0] - 2026-08-28
+
+### Added
+
+- write the teams_bots entry automatically after provisioning (#912)
+
+---
+
+## [0.139.1] - 2026-08-27
+
+### Fixed
+
+- sub-agent memory tool writes through the scoped store (#908)
+- **#906**: desktop kernel PATH augmentation now checks ~/.local/bin (#907)
+
+---
+
+## [0.139.0] - 2026-08-27
+
+### Added
+
+- enable team uninstall for provisioned agent identities (#905)
+- make the context-memory ACL switchable from the operator UI (#903)
+
+---
+
+## [0.138.2] - 2026-08-27
+
+### Fixed
+
+- **#887**: billing-posture badge no longer reads as a second status (#902)
+
+---
+
+## [0.138.1] - 2026-08-27
+
+### Fixed
+
+- **#886**: dashboard onboarding step 3 shows a result, not a stale CTA, when done (#901)
+
+---
+
+## [0.138.0] - 2026-08-27
+
+### Added
+
+- operator UI for Teams agent identities + end-to-end smoke (#896)
+
+---
+
+## [0.137.5] - 2026-08-27
+
+### Fixed
+
+- **#889**: dashboard onboarding step 1 links to both API-key and subscription paths (#895)
+
+---
+
+## [0.137.4] - 2026-08-27
+
+### Fixed
+
+- **#884**: plugin Hub stops counting a plugin ready with no verified LLM credential (#894)
+
+---
+
+## [0.137.3] - 2026-08-27
+
+### Fixed
+
+- **#890**: desktop first-run wizard offers a subscription path, not just API key (#893)
+
+---
+
+## [0.137.2] - 2026-08-27
+
+### Fixed
+
+- **#883**: write real version into desktop package before packaging (#892)
+
+---
+
+## [0.137.1] - 2026-08-27
+
+### Fixed
+
+- **#882**: augment kernel PATH so npm-based CLI install/builder work on desktop (#891)
+
+---
+
+## [0.137.0] - 2026-08-27
+
+### Added
+
+- chat-context memory ACL — per-team/channel/user agent memory with fail-closed scoping (#881)
+
+---
+
+## [0.136.2] - 2026-08-26
+
+### Fixed
+
+- accept the Teams app-package template on plugin ingest (#880)
+
+---
+
+## [0.136.1] - 2026-08-26
+
+### Fixed
+
+- Fresh-Check-Button nur bei echtem Recall, nicht beim Chat-Tail (#878)
+
+---
+
+## [0.136.0] - 2026-08-26
+
+### Added
+
+- agent factory — Teams identity provisioning via teamsProvisioner@1 (#877)
+
+---
+
+## [0.135.0] - 2026-08-25
+
+### Added
+
+- per-agent plugin & MCP grant assignment (operator UI + endpoints) (#876)
+
+---
+
+## [0.134.3] - 2026-08-25
+
+### Fixed
+
+- teams_conversation_refs migration was orphaned — move to KG-neon series as 0031 with per-bot key (#875)
+
+---
+
+## [0.134.2] - 2026-08-25
+
+### Fixed
+
+- gate verifier badge on real checked claims + memoryUsed signal for Fresh Check (#859)
+
+---
+
+## [0.134.1] - 2026-08-25
+
+### Fixed
+
+- facilitation lens must read the verdict from ctx.steps.moderate, not ctx.stepResult (#330 follow-up) (#858)
+
+---
+
+## [0.134.0] - 2026-08-25
+
+### Added
+
+- interim results table per DoD point in the facilitation details modal (#330 follow-up) (#857)
+
+---
+
+## [0.133.0] - 2026-08-24
+
+### Added
+
+- facilitation details modal; hide the panel when nothing runs (#330 follow-up) (#856)
+
+---
+
+## [0.132.0] - 2026-08-24
+
+### Added
+
+- readable facilitation cards and tick nudge discipline (#330 follow-up) (#855)
+
+---
+
+## [0.131.0] - 2026-08-24
+
+### Added
+
+- admin lens and stop for running facilitations (#330 round 4) (#854)
+
+### Fixed
+
+- **publish**: atomic version allocation — upsert instead of SELECT FOR UPDATE + bare INSERT (fixes #834) (#852)
+
+---
+
+## [0.130.0] - 2026-08-24
+
+### Added
+
+- **channels**: channel directory entries can carry resolved member names (#851)
+
+---
+
+## [0.129.0] - 2026-08-24
+
+### Added
+
+- bot_present opens facilitation eligibility (#330 round 3) (#850)
+
+---
+
+## [0.128.0] - 2026-08-23
+
+### Added
+
+- restart-proof facilitation groundwork (#330 field report) (#841)
+
+---
+
+## [0.127.0] - 2026-08-22
+
+### Added
+
+- cancel Conductor runs straight from the run list (#330 field report) (#840)
+
+---
+
+## [0.126.1] - 2026-08-21
+
+### Fixed
+
+- **install**: derive the install job's terminal state from the activation outcome — errored vs failed, activation_state (fixes #825) (#833)
+
+---
+
+## [0.126.0] - 2026-08-21
+
+### Added
+
+- delete conductor workflows from the library (#836)
+
+### Fixed
+
+- **verifier**: pass enclosing sentence to judge for fragment claims (#831)
+- **platform**: provides: grants only after a real provide(), gate replace(), origin-scoped legacy allowlist, refuse bundled-id uploads (fixes #788 #789) (#835)
+
+---
+
+## [0.125.0] - 2026-08-21
+
+### Added
+
+- persist observed-invite index across restarts (0048) (#837)
+- timer steps, machine-checkable DoD loops and scoped conversation nudges (#330 C3) (#830)
+
+---
+
+## [0.124.0] - 2026-08-21
+
+### Added
+
+- transcription@1 capability + batch recording ingestion (#584 WS T+I) (#829)
+
+---
+
+## [0.123.0] - 2026-08-21
+
+### Added
+
+- **update**: blocking progress dialog with stepper, visible polling, decoded rollback (#828)
+
+---
+
+## [0.122.0] - 2026-08-21
+
+### Added
+
+- zero-touch facilitator setup — agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a) (#827)
+
+---
+
+## [0.121.0] - 2026-08-21
+
+### Added
+
+- **runtime**: one operator consent for plugin SQL + public-path grants — wizard step, grants panel, in-process re-activation (epic #470 C16, fixes #817) (#824)
+
+---
+
+## [0.120.0] - 2026-08-21
+
+### Added
+
+- **llm**: Sign in with ChatGPT — OAuth device flow (#294) (#823)
+
+---
+
+## [0.119.0] - 2026-08-21
+
+### Added
+
+- knowledge-graph datasets admin UI with paginated list (#532) (#821)
+- channel-SDK group-conversation primitives + principal-addressed targeted delivery (#330 Workstream B1) (#822)
+
+---
+
+## [0.118.0] - 2026-08-21
+
+### Added
+
+- pattern-based ephemeral conductor workflows with TTL reaper (#330 Workstream A) (#818)
+
+### Fixed
+
+- **#764, #775**: run workspace package suites in CI; land the role-holders audit row (#820)
+
+---
+
+## [0.117.1] - 2026-08-21
+
+### Fixed
+
+- run the declared ledger handoff before core's pre-activate migrations (#470 C15) (#815)
+
+---
+
+## [0.117.0] - 2026-08-21
+
+### Added
+
+- **admin**: runtime install of subscription CLIs from the admin UI (#816)
+
+### Changed
+
+- **auth**: drop the two static public-path exemptions of the extracted subsystem (epic #470 C12) (#807)
+
+---
+
+## [0.116.0] - 2026-08-21
+
+### Added
+
+- **platform**: plugin migration handoff with schema witnesses + ctx.sql.seedLedger (epic #470 C11) (#806)
+
+### Changed
+
+- **core**: delete the Dev Platform — now byte5ai/omadia-dev-platform (epic #470 C10) (#804)
+
+---
+
+## [0.115.3] - 2026-08-21
+
+### Fixed
+
+- **#603**: native required on upload-covered fields blocked the submit silently (#812)
+
+---
+
+## [0.115.2] - 2026-08-21
+
+### Fixed
+
+- **#603**: the install wizard's json_file upload was wired to nothing (#811)
+
+---
+
+## [0.115.1] - 2026-08-21
+
+### Fixed
+
+- fresh installs died at first boot — supervisor never passed CREDENTIAL_KEYCHAIN_KEY (#810)
+
+---
+
+## [0.115.0] - 2026-08-20
+
+### Added
+
+- close the field-test gap list — localized descriptions, visible connection verdicts, error classes, app menu, subscription notice (#809)
+
+---
+
+## [0.114.0] - 2026-08-20
+
+### Added
+
+- **platform**: optional_requires, core migrations at boot, pluginUi nav (epic #470 C9; fixes #795 #796 #798) (#802)
+
+### Fixed
+
+- **platform**: bundled plugins reach graphPool through the C7 SQL gate (#794) (#801)
+
+---
+
+## [0.113.1] - 2026-08-20
+
+### Fixed
+
+- four defects found retesting the packaged Intel app against the field-test report (#800)
+
+---
+
+## [0.113.0] - 2026-08-20
+
+### Added
+
+- **platform**: permissions.sql gate for graphPool + shared advisory-locked plugin migrations (epic #470 C7/G4) (#787)
+
+### Fixed
+
+- **#470**: make the C8 plugin-UI host actually work — same-origin frame, scoped ids, emitted CSS (C8b) (#793)
+- **install**: report a failed activation as errored, not active (#470 P5) (#799)
+
+---
+
+## [0.112.0] - 2026-08-20
+
+### Added
+
+- **#778**: wire #577 skill-promotion route + #578 credential-asks mount (W1) (#792)
+- **platform**: plugin route auth modes + route-local raw body slot (epic #470 C6) (#791)
+
+---
+
+## [0.111.0] - 2026-08-20
+
+### Added
+
+- **platform**: operator-consented plugin public-path grants with terminating early mount (epic #470 C4/H1) (#782)
+
+---
+
+## [0.110.0] - 2026-08-20
+
+### Added
+
+- **#470**: grant-gate ctx.services.get and cut plugin-api 1.0.0 (C2b) (#783)
+- **#470**: plugin UI — generated Tailwind subset, static SPA serving, ingest gate (C8) (#784)
+- **#581**: publish sharing via GrantStore — read=use, write=redeploy/rollback (P3) (#790)
+
+---
+
+## [0.109.0] - 2026-08-20
+
+### Added
+
+- **#581**: publish/publish_rollback native tools behind sandbox_publish_enabled (P2) (#786)
+- **#581**: publish primitive P1 — version store + Docker runtime + origin-isolating gateway (#785)
+- **plugin-api**: golden .d.ts API snapshot test (epic #470 C1) (#780)
+
+---
+
+## [0.108.0] - 2026-08-20
+
+### Added
+
+- **#576**: durable per-scope sandbox — P3 scope durability + RO-layer content hash + reaper (#779)
+
+### Fixed
+
+- **verifier**: check Odoo record existence for anchored soft claims (#781)
+
+---
+
+## [0.107.0] - 2026-08-20
+
+### Added
+
+- **#576**: durable per-scope sandbox — P2 execute tool + command-policy gate (#777)
+- **#576**: durable per-scope sandbox — P1 interface + Docker backend (#776)
+- **#578**: keychain-asks — request, owner-approval, grant (phase 3/4) (#774)
+
+---
+
+## [0.106.0] - 2026-08-20
+
+### Added
+
+- **#578**: credential broker — the egress-stamping layer (phase 2/4) (#772)
+- **#578**: credential keychain data model + store (phase 1/4) (#769)
+- **#577**: sharing via GrantStore + admin-gated promotion + cron write-guard (P3) (#771)
+
+---
+
+## [0.105.0] - 2026-08-20
+
+### Added
+
+- provenance verification surface — verify API, signed export, offline verifier (#761) (#773)
+- **#577**: scope-ordered skill resolution with shadowing (P2) (#768)
+- **#577**: skill ownership + lifecycle model (P1) (#767)
+- tamper-evident receipt chain with signed checkpoints (#758) (#770)
+
+---
+
+## [0.104.0] - 2026-08-20
+
+### Added
+
+- privacy shield operator deny-lists, miss queue, idnum, eval gate (#760) (#766)
+- conductor run cancellation + strict approvals + baton audit (#759) (#765)
+
+---
+
+## [0.103.0] - 2026-08-20
+
+### Added
+
+- persist per-turn privacy receipts with operator API (#757) (#763)
+
+---
+
+## [0.102.0] - 2026-08-20
+
+### Added
+
+- **i18n**: sweep the remaining #687 translate-category literals (#762)
+- **i18n**: sweep the I6 toLocaleString tail (#687) (#756)
+
+---
+
+## [0.101.0] - 2026-08-20
+
+### Added
+
+- **i18n**: resolve #687 tagline and roadmap-stamp product questions (#755)
+
+---
+
+## [0.100.0] - 2026-08-20
+
+### Added
+
+- **ci**: deterministic Odoo fixture + full verified/contradicted coverage (#753)
+- **#343**: adopt Lume icon + state-as-glyph specs (additive, gate-ready) (#725)
+
+---
+
+## [0.99.0] - 2026-08-20
+
+### Added
+
+- **#749**: make a failing security screener visible (#750)
+
+---
+
+## [0.98.4] - 2026-08-20
+
+### Fixed
+
+- **#687**: triage the I3 literal tail — 21 sites, 7 files on the ratchet (#751)
+
+---
+
+## [0.98.3] - 2026-08-20
+
+### Fixed
+
+- **ci**: the decoupling ratchet was timing out before it ran (#752)
+
+---
+
+## [0.98.2] - 2026-08-19
+
+### Fixed
+
+- **#687**: measure i18n literals with an AST scan, sweep ListView (#747)
+
+---
+
+## [0.98.1] - 2026-08-19
+
+### Fixed
+
+- drop temperature for models that reject it (screener was fail-open) (#748)
+
+---
+
+## [0.98.0] - 2026-08-19
+
+### Added
+
+- **#498**: adversarial injection/manipulation eval suite (#730)
+
+---
+
+## [0.97.0] - 2026-08-19
+
+### Added
+
+- **#580**: shell-normalizing command policy + honest-inert enforcement seam (#736)
+
+---
+
+## [0.96.1] - 2026-08-19
+
+### Fixed
+
+- **#727**: mask ISO-8601 dates as dates, not phone numbers (#744)
+
+---
+
+## [0.96.0] - 2026-08-19
+
+### Added
+
+- **#575**: sharedOnly recall — a restricted room keeps what it may have (#745)
+
+---
+
+## [0.95.1] - 2026-08-19
+
+### Fixed
+
+- **#326**: render masked columns on the canvas dataset-publish path (#743)
+
+---
+
+## [0.95.0] - 2026-08-19
+
+### Added
+
+- **#575**: a restricted room narrows its recall instead of losing it (#742)
+
+---
+
+## [0.94.0] - 2026-08-19
+
+### Added
+
+- **#575**: read outbound hosts as an allow-list, behind a flag (#741)
+
+---
+
+## [0.93.0] - 2026-08-19
+
+### Added
+
+- **#575**: a room can forbid an outbound host (#740)
+
+---
+
+## [0.92.0] - 2026-08-18
+
+### Added
+
+- **#575**: prohibitions — one participant's veto binds the whole room (#739)
+- **#575**: bind an attachment handle to the room that minted it (#738)
+
+---
+
+## [0.91.0] - 2026-08-18
+
+### Added
+
+- **#575**: durable audience-floor grants + an operator surface for them (#737)
+
+---
+
+## [0.90.1] - 2026-08-18
+
+### Fixed
+
+- **channel-sdk**: keep NO_REPLY suppressible after the Art. 50 disclosure fold (#735)
+
+---
+
+## [0.90.0] - 2026-08-18
+
+### Added
+
+- **#575**: let a deployment switch the audience floor on (#734)
+- **#575**: wire the audience floor's handle-resolution guard (#733)
+
+---
+
+## [0.89.0] - 2026-08-18
+
+### Added
+
+- **#575**: wire the audience floor's context-recall guard (#732)
+
+---
+
+## [0.88.0] - 2026-08-18
+
+### Added
+
+- **#575**: wire the audience floor's egress guard into tool dispatch (#731)
+
+---
+
+## [0.87.0] - 2026-08-18
+
+### Added
+
+- **#575**: the audience floor and capability grants (phase 2) (#729)
+
+---
+
+## [0.86.0] - 2026-08-18
+
+### Added
+
+- **#333**: role sources + pluggable role→holder resolution (phases 2 and 3) (#726)
+
+---
+
+## [0.85.0] - 2026-08-17
+
+### Added
+
+- **#333**: Principal — the platform's typed answer to "who is this?" (phase 1) (#724)
+
+---
+
+## [0.84.0] - 2026-08-17
+
+### Added
+
+- **#579**: org security postures + provenance-labelled inbound scree… (#681)
+
+---
+
+## [0.83.0] - 2026-08-17
+
+### Added
+
+- **#575**: unsharedConversationScope — a channel turn never lands in a shared scope (#714)
+
+---
+
+## [0.82.0] - 2026-08-17
+
+### Added
+
+- **#575**: ScopeId, and directLineSticky drops both denylists (#713)
+
+---
+
+## [0.81.2] - 2026-08-16
+
+### Fixed
+
+- **#709**: anchor the resume/reaper test on the store's own clock (#710)
+
+---
+
+## [0.81.1] - 2026-08-16
+
+### Fixed
+
+- **#707**: route the remaining test servers through a loopback listen helper (#708)
+
+---
+
+## [0.81.0] - 2026-08-15
+
+### Added
+
+- **issue-545**: cache mcp tool lists (#702)
+
+---
+
+## [0.80.0] - 2026-08-14
+
+### Added
+
+- **#700**: serve MRTR to 2026-07-28 clients on the public MCP endpoint (#704)
+
+---
+
+## [0.79.3] - 2026-08-14
+
+### Fixed
+
+- bind test servers to the IPv4 loopback they dial (#703)
+
+---
+
+## [0.79.2] - 2026-08-14
+
+### Fixed
+
+- **#696**: cap the Fly machine-wait at the API limit and roll back what was really replaced (#706)
+
+---
+
+## [0.79.1] - 2026-08-14
+
+### Fixed
+
+- **#696**: thread the Fly lease nonce so the updater stops blocking itself (#705)
+
+---
+
+## [0.79.0] - 2026-08-14
+
+### Added
+
+- **#432**: name the operator's actual Fly apps in the manual update command (#698)
+
+---
+
+## [0.78.0] - 2026-08-14
+
+### Added
+
+- **#562**: read MRTR off the declared 2026-07-28 contract (phase 3) (#699)
+
+---
+
+## [0.77.0] - 2026-08-14
+
+### Added
+
+- **#562**: connect http MCP servers on the v2 client family (phase 2) (#697)
+
+---
+
+## [0.76.0] - 2026-08-14
+
+### Added
+
+- **#562**: serve the loopback MCP server on the v2 SDK family (phase 1) (#695)
+
+### Fixed
+
+- **skills**: surface frontmatter the SKILL.md import silently drops (#690)
+
+---
+
+## [0.75.0] - 2026-08-14
+
+### Added
+
+- **#432**: publish the updater sidecar image, document the Fly path (#693)
+
+---
+
+## [0.74.2] - 2026-08-14
+
+### Fixed
+
+- **#568**: bridge channel turns to per_user MCP tokens via the IdP subject (#691)
+
+---
+
+## [0.74.1] - 2026-08-13
+
+### Fixed
+
+- **#679**: close the structural i18n categories I3-I6 (#688)
+
+---
+
+## [0.74.0] - 2026-08-13
+
+### Added
+
+- **#648**: make the AI-marking posture readable per channel (#686)
+
+---
+
+## [0.73.0] - 2026-08-13
+
+### Added
+
+- **#650**: record model and provider on the persisted run trace (#683)
+
+---
+
+## [0.72.0] - 2026-08-13
+
+### Added
+
+- **#603**: json_file setup fields — upload the key, do not transcribe it (#682)
+
+---
+
+## [0.71.2] - 2026-08-13
+
+### Fixed
+
+- **#641,#667**: give turn errors a correlation handle and stop blaming the middleware (#680)
+
+---
+
+## [0.71.1] - 2026-08-13
+
+### Fixed
+
+- **#601**: translate the flagged German strings and make the i18n gate real (#678)
+
+---
+
+## [0.71.0] - 2026-08-13
+
+### Added
+
+- **#544**: render MRTR input_required on the public MCP endpoint (#677)
+
+---
+
+## [0.70.2] - 2026-08-13
+
+### Fixed
+
+- **#570**: exempt the MRTR sentinel from interning by provenance, not by prefix (#676)
+- **ci**: stop source-building better-sqlite3 in the desktop build (#675)
+
+---
+
+## [0.70.1] - 2026-08-13
+
+### Fixed
+
+- **#561**: fence the orphan-sweep metric at the store, not the schedule (#670)
+
+---
+
+## [0.70.0] - 2026-08-13
+
+### Added
+
+- **#602**: localized setup-field labels + store-card setup profile (OM-17/OM-15) (#673)
+
+---
+
+## [0.69.0] - 2026-08-13
+
+### Added
+
+- **#560**: durable Postgres TaskStore + boot resume driver for long-running tools (#663)
+
+---
+
+## [0.68.5] - 2026-08-12
+
+### Fixed
+
+- **#669**: authenticate /api/dev and lift the KG operator surfaces off the dev flag (#674)
+
+---
+
+## [0.68.4] - 2026-08-12
+
+### Fixed
+
+- **#671**: stop the store offering installs the server refuses, and say why a key is unverified (#672)
+
+---
+
+## [0.68.3] - 2026-08-12
+
+### Fixed
+
+- **#665**: stop the KG plugin ending the process-wide pg pool (#668)
+
+---
+
+## [0.68.2] - 2026-08-12
+
+### Fixed
+
+- **#566**: guard the file-scoped test timeout instead of splitting by size (#666)
+
+---
+
+## [0.68.1] - 2026-08-12
+
+### Changed
+
+- **dev-platform**: one-way layering + namespaced config (epic #470 C3) (#557)
+- **plugins**: delete the never-provided ctx.devJobs surface (epic #470 C2a) (#555)
+- **conductor**: delete the dead dev-job step coupling (epic #470 C5) (#554)
+
+### Fixed
+
+- **#605**: declare the ICU parser, correct the i18n docs, pin test concurrency (#664)
+
+---
+
+## [0.68.0] - 2026-08-12
+
+### Added
+
+- **#567**: admin UI for channel API keys (#608)
+
+---
+
+## [0.67.2] - 2026-08-11
+
+### Fixed
+
+- **#573**: typecheck test/ + scripts/ trees behind a ratchet (#611)
+
+---
+
+## [0.67.1] - 2026-08-11
+
+### Fixed
+
+- **ci**: run *.pg.test.ts suites — middleware job had no postgres ser… (#612)
+
+---
+
+## [0.67.0] - 2026-08-11
+
+### Added
+
+- **channel-sdk**: channel-agnostic AI-disclosure carrier in outgoing… (#661)
+
+---
+
+## [0.66.0] - 2026-08-11
+
+### Added
+
+- **ci**: golden-set regression eval for LLM verifier behaviour (#129) (#640)
+
+---
+
+## [0.65.0] - 2026-08-11
+
+### Added
+
+- **office**: deterministic OOXML provenance metadata in .docx/.xlsx … (#656)
+- **channel-api**: AI-Act Art. 50 provenance marker in public chat-API and MCP envelope (#647) (#660)
+
+---
+
+## [0.64.0] - 2026-08-11
+
+### Added
+
+- **diagrams**: stamp AI-Act provenance iTXt chunk into rendered diagram PNGs (#646) (#657)
+
+---
+
+## [0.63.0] - 2026-08-10
+
+### Added
+
+- **privacy-guard**: locale-aware C0 prompt-PII patterns for es/fr/nl (#482) (#614)
+
+---
+
+## [0.62.1] - 2026-08-09
+
+### Fixed
+
+- **deps**: bump nanoid to 3.3.18 (GHSA-2v37-7h3g-55p8) (#627)
+
+---
+
+## [0.62.0] - 2026-08-09
+
+### Added
+
+- **web-ui**: migrate drifted buttons to canonical Button + add raw-<button> lint gate (#290) (#616)
+
+---
+
+## [0.61.0] - 2026-08-07
+
+### Added
+
+- OM-09 in-product help — localized error help catalogue (#621)
+
+### Changed
+
+- **mcp**: give pooled connections an explicit lifetime (#563) (#622)
+
+---
+
+## [0.60.0] - 2026-08-07
+
+### Added
+
+- **privacy**: account MCP structured output in the turn receipt (#569) (#624)
+
+---
+
+## [0.59.2] - 2026-08-07
+
+### Fixed
+
+- **web-ui**: override js-yaml to ^4.3.1 (GHSA-5p4m-2wfm-xmqj) (#623)
+
+---
+
+## [0.59.1] - 2026-08-06
+
+### Fixed
+
+- **web-ui**: route chat stream writes by session id (#617) (#620)
+
+---
+
+## [0.59.0] - 2026-08-05
+
+### Added
+
+- **chat**: surface background streams as per-tab status dots (#409)
+
+### Changed
+
+- **read-me**: docs: hoist Prerequisites and Quickstart above the 2-minute pitch (#597)
+
+---
+
+## [0.58.3] - 2026-08-04
+
+### Fixed
+
+- **plugins**: bound the setup-field match, not the worker's birth (#607) (#609)
+
+---
+
+## [0.58.2] - 2026-08-03
+
+### Fixed
+
+- accept {n,} patterns and localize setup-field hints (#606)
+
+---
+
+## [0.58.1] - 2026-08-03
+
+### Fixed
+
+- honest status reporting, routines crash, and setup-field safety (#599)
+
+---
+
+## [0.58.0] - 2026-07-31
+
+### Added
+
+- **desktop**: build and ship a macOS Intel (x64) installer (#574)
+
+---
+
+## [0.57.1] - 2026-07-31
+
+### Fixed
+
+- **desktop**: macOS installer ships an unopenable, unsigned app bundle (#558)
+
+---
+
+## [0.57.0] - 2026-07-31
+
+### Added
+
+- **plugins**: allow .sql in packages + make the 8 migrators concurrency-safe (#552)
+- **channel-api**: public API channel with server-to-server API keys + scopes (#438, #439) (#549)
+- **embeddings**: pluggable embedding provider with a live switch and a model/dimension safety gate (#440) (#537)
+- **platform**: plugin-contributed navigation (phase 1 of Dev Platform extraction) (#536)
+- **direct-line**: sticky multi-turn mode for Direct Line (#445) (#535)
+- **conductor**: add inbound/outbound webhooks (#437) (#534)
+- **issues**: attach sanitized diagnostics excerpt to issues (#433) (#486)
+- **knowledge-graph**: structured dataset ingestion via CSV import (#533)
+- **builder**: decompose health score into seven context-quality criteria (#499) (#522)
+- **dev-platform**: epic #470 implementation — W0–W5 (job spine, isolation, Fly/webhooks/budget, hardening) (#485)
+- **scripts**: spec-driven wave workflows + W0 unit manifest (epic #470) (#476)
+- issue-adapt workflow pair — research-first adaptation of external toolset features (#480)
+- **conductor**: workflow-template library — bundled catalog, slot mapping, guided instantiation (#429) (#479)
+- **scripts**: add checklist reconciliation to the issue-triage workflow (#467)
+- **mcp**: MCP as a first-class capability across Orchestrator/Sub-Agent/Skill/Plugin + Control Center (epic #459) (#464)
+
+### Changed
+
+- **470**: Dev Platform → installable plugin in its own repo — plan + implementation (#539)
+
+### Fixed
+
+- **ci**: auto-release never detects feat/fix once the log exceeds the pipe buffer (#556)
+- **channel-api**: drop dev-platform cross-references from API-key comments (#553)
+- **plugins**: reject path traversal in manifest identity before the install rm (#548)
+- **dev-platform**: wire the runner image into the middleware's job policy + delete jobs (#529)
+- MCP OAuth callback 401 + per-user token key mismatch (#531)
+- **dev-platform**: wire GitHub-App onboarding + device-flow into the composition root (#497)
+- **dev-platform**: make the local docker-compose deploy actually run a job (#496)
+- **orchestrator**: gate unauthenticated plugin tools from the orchestrator's tool surface (#474) (#528)
+- honest done-vs-error reporting on committed tools + routine retry reconciliation (#506) (#527)
+- **orchestrator**: embed image attachments as vision input (#525)
+- **builder**: synthesize manifest capabilities per tool (#507) (#523)
+- **ci**: grant id-token: write to release.yml's edge-images job (#514)
+- **scripts**: issue-loop follow-ups from the first live run (#475)
+- **routines**: hot-enable on LLM key save — resolve chat agent live per run (#483)
+- **web-ui**: humanize provider errors across chat surfaces (#403) (#472)
+- **mcp**: store registry bearer tokens in the vault, not the DB row (#463) (#466)
+
+---
+
+## [0.56.0] - 2026-07-06
+
+### Added
+
+- **skills**: add skill verdict system (issue #436, OpenClaw/SkillSpector eval) (#452)
+
+---
+
+## [0.55.3] - 2026-07-06
+
+### Fixed
+
+- **release**: drop the PR-based docs/CHANGELOG.md auto-sync entirely (#451)
+- **web-ui**: make session-warning "Relogin now" actually re-login (#412) (#449)
+
+---
+
+## [0.55.2] - 2026-07-06
+
+### Fixed
+
+- **web-ui**: replace hardcoded German UI strings with next-intl translations (#447)
+- close #332 gaps — agentId, Direct Line privacy masking, standing L3 obligation, web-ui render (#446)
+
+---
+
+## [0.55.1] - 2026-07-06
+
+### Fixed
+
+- **release**: isolate the changelog PR job from image/desktop publishing (#444)
+
+---
+
+## [0.55.0] - 2026-07-06
+
+### ⚠ BREAKING CHANGES
+
+- **release**: automate a categorized changelog for every release (#443)
+
+### Added
+
+- **release**: automate a categorized changelog for every release (#443)
+
+---
+
 ## [0.54.0] - 2026-07-06
 
 ### Added
@@ -5412,7 +6827,154 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.142.2...HEAD
+[0.142.2]: https://github.com/byte5ai/omadia/compare/v0.142.1...v0.142.2
+[0.142.1]: https://github.com/byte5ai/omadia/compare/v0.142.0...v0.142.1
+[0.142.0]: https://github.com/byte5ai/omadia/compare/v0.141.0...v0.142.0
+[0.141.0]: https://github.com/byte5ai/omadia/compare/v0.140.3...v0.141.0
+[0.140.3]: https://github.com/byte5ai/omadia/compare/v0.140.2...v0.140.3
+[0.140.2]: https://github.com/byte5ai/omadia/compare/v0.140.1...v0.140.2
+[0.140.1]: https://github.com/byte5ai/omadia/compare/v0.140.0...v0.140.1
+[0.140.0]: https://github.com/byte5ai/omadia/compare/v0.139.1...v0.140.0
+[0.139.1]: https://github.com/byte5ai/omadia/compare/v0.139.0...v0.139.1
+[0.139.0]: https://github.com/byte5ai/omadia/compare/v0.138.2...v0.139.0
+[0.138.2]: https://github.com/byte5ai/omadia/compare/v0.138.1...v0.138.2
+[0.138.1]: https://github.com/byte5ai/omadia/compare/v0.138.0...v0.138.1
+[0.138.0]: https://github.com/byte5ai/omadia/compare/v0.137.5...v0.138.0
+[0.137.5]: https://github.com/byte5ai/omadia/compare/v0.137.4...v0.137.5
+[0.137.4]: https://github.com/byte5ai/omadia/compare/v0.137.3...v0.137.4
+[0.137.3]: https://github.com/byte5ai/omadia/compare/v0.137.2...v0.137.3
+[0.137.2]: https://github.com/byte5ai/omadia/compare/v0.137.1...v0.137.2
+[0.137.1]: https://github.com/byte5ai/omadia/compare/v0.137.0...v0.137.1
+[0.137.0]: https://github.com/byte5ai/omadia/compare/v0.136.2...v0.137.0
+[0.136.2]: https://github.com/byte5ai/omadia/compare/v0.136.1...v0.136.2
+[0.136.1]: https://github.com/byte5ai/omadia/compare/v0.136.0...v0.136.1
+[0.136.0]: https://github.com/byte5ai/omadia/compare/v0.135.0...v0.136.0
+[0.135.0]: https://github.com/byte5ai/omadia/compare/v0.134.3...v0.135.0
+[0.134.3]: https://github.com/byte5ai/omadia/compare/v0.134.2...v0.134.3
+[0.134.2]: https://github.com/byte5ai/omadia/compare/v0.134.1...v0.134.2
+[0.134.1]: https://github.com/byte5ai/omadia/compare/v0.134.0...v0.134.1
+[0.134.0]: https://github.com/byte5ai/omadia/compare/v0.133.0...v0.134.0
+[0.133.0]: https://github.com/byte5ai/omadia/compare/v0.132.0...v0.133.0
+[0.132.0]: https://github.com/byte5ai/omadia/compare/v0.131.0...v0.132.0
+[0.131.0]: https://github.com/byte5ai/omadia/compare/v0.130.0...v0.131.0
+[0.130.0]: https://github.com/byte5ai/omadia/compare/v0.129.0...v0.130.0
+[0.129.0]: https://github.com/byte5ai/omadia/compare/v0.128.0...v0.129.0
+[0.128.0]: https://github.com/byte5ai/omadia/compare/v0.127.0...v0.128.0
+[0.127.0]: https://github.com/byte5ai/omadia/compare/v0.126.1...v0.127.0
+[0.126.1]: https://github.com/byte5ai/omadia/compare/v0.126.0...v0.126.1
+[0.126.0]: https://github.com/byte5ai/omadia/compare/v0.125.0...v0.126.0
+[0.125.0]: https://github.com/byte5ai/omadia/compare/v0.124.0...v0.125.0
+[0.124.0]: https://github.com/byte5ai/omadia/compare/v0.123.0...v0.124.0
+[0.123.0]: https://github.com/byte5ai/omadia/compare/v0.122.0...v0.123.0
+[0.122.0]: https://github.com/byte5ai/omadia/compare/v0.121.0...v0.122.0
+[0.121.0]: https://github.com/byte5ai/omadia/compare/v0.120.0...v0.121.0
+[0.120.0]: https://github.com/byte5ai/omadia/compare/v0.119.0...v0.120.0
+[0.119.0]: https://github.com/byte5ai/omadia/compare/v0.118.0...v0.119.0
+[0.118.0]: https://github.com/byte5ai/omadia/compare/v0.117.1...v0.118.0
+[0.117.1]: https://github.com/byte5ai/omadia/compare/v0.117.0...v0.117.1
+[0.117.0]: https://github.com/byte5ai/omadia/compare/v0.116.0...v0.117.0
+[0.116.0]: https://github.com/byte5ai/omadia/compare/v0.115.3...v0.116.0
+[0.115.3]: https://github.com/byte5ai/omadia/compare/v0.115.2...v0.115.3
+[0.115.2]: https://github.com/byte5ai/omadia/compare/v0.115.1...v0.115.2
+[0.115.1]: https://github.com/byte5ai/omadia/compare/v0.115.0...v0.115.1
+[0.115.0]: https://github.com/byte5ai/omadia/compare/v0.114.0...v0.115.0
+[0.114.0]: https://github.com/byte5ai/omadia/compare/v0.113.1...v0.114.0
+[0.113.1]: https://github.com/byte5ai/omadia/compare/v0.113.0...v0.113.1
+[0.113.0]: https://github.com/byte5ai/omadia/compare/v0.112.0...v0.113.0
+[0.112.0]: https://github.com/byte5ai/omadia/compare/v0.111.0...v0.112.0
+[0.111.0]: https://github.com/byte5ai/omadia/compare/v0.110.0...v0.111.0
+[0.110.0]: https://github.com/byte5ai/omadia/compare/v0.109.0...v0.110.0
+[0.109.0]: https://github.com/byte5ai/omadia/compare/v0.108.0...v0.109.0
+[0.108.0]: https://github.com/byte5ai/omadia/compare/v0.107.0...v0.108.0
+[0.107.0]: https://github.com/byte5ai/omadia/compare/v0.106.0...v0.107.0
+[0.106.0]: https://github.com/byte5ai/omadia/compare/v0.105.0...v0.106.0
+[0.105.0]: https://github.com/byte5ai/omadia/compare/v0.104.0...v0.105.0
+[0.104.0]: https://github.com/byte5ai/omadia/compare/v0.103.0...v0.104.0
+[0.103.0]: https://github.com/byte5ai/omadia/compare/v0.102.0...v0.103.0
+[0.102.0]: https://github.com/byte5ai/omadia/compare/v0.101.0...v0.102.0
+[0.101.0]: https://github.com/byte5ai/omadia/compare/v0.100.0...v0.101.0
+[0.100.0]: https://github.com/byte5ai/omadia/compare/v0.99.0...v0.100.0
+[0.99.0]: https://github.com/byte5ai/omadia/compare/v0.98.4...v0.99.0
+[0.98.4]: https://github.com/byte5ai/omadia/compare/v0.98.3...v0.98.4
+[0.98.3]: https://github.com/byte5ai/omadia/compare/v0.98.2...v0.98.3
+[0.98.2]: https://github.com/byte5ai/omadia/compare/v0.98.1...v0.98.2
+[0.98.1]: https://github.com/byte5ai/omadia/compare/v0.98.0...v0.98.1
+[0.98.0]: https://github.com/byte5ai/omadia/compare/v0.97.0...v0.98.0
+[0.97.0]: https://github.com/byte5ai/omadia/compare/v0.96.1...v0.97.0
+[0.96.1]: https://github.com/byte5ai/omadia/compare/v0.96.0...v0.96.1
+[0.96.0]: https://github.com/byte5ai/omadia/compare/v0.95.1...v0.96.0
+[0.95.1]: https://github.com/byte5ai/omadia/compare/v0.95.0...v0.95.1
+[0.95.0]: https://github.com/byte5ai/omadia/compare/v0.94.0...v0.95.0
+[0.94.0]: https://github.com/byte5ai/omadia/compare/v0.93.0...v0.94.0
+[0.93.0]: https://github.com/byte5ai/omadia/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/byte5ai/omadia/compare/v0.91.0...v0.92.0
+[0.91.0]: https://github.com/byte5ai/omadia/compare/v0.90.1...v0.91.0
+[0.90.1]: https://github.com/byte5ai/omadia/compare/v0.90.0...v0.90.1
+[0.90.0]: https://github.com/byte5ai/omadia/compare/v0.89.0...v0.90.0
+[0.89.0]: https://github.com/byte5ai/omadia/compare/v0.88.0...v0.89.0
+[0.88.0]: https://github.com/byte5ai/omadia/compare/v0.87.0...v0.88.0
+[0.87.0]: https://github.com/byte5ai/omadia/compare/v0.86.0...v0.87.0
+[0.86.0]: https://github.com/byte5ai/omadia/compare/v0.85.0...v0.86.0
+[0.85.0]: https://github.com/byte5ai/omadia/compare/v0.84.0...v0.85.0
+[0.84.0]: https://github.com/byte5ai/omadia/compare/v0.83.0...v0.84.0
+[0.83.0]: https://github.com/byte5ai/omadia/compare/v0.82.0...v0.83.0
+[0.82.0]: https://github.com/byte5ai/omadia/compare/v0.81.2...v0.82.0
+[0.81.2]: https://github.com/byte5ai/omadia/compare/v0.81.1...v0.81.2
+[0.81.1]: https://github.com/byte5ai/omadia/compare/v0.81.0...v0.81.1
+[0.81.0]: https://github.com/byte5ai/omadia/compare/v0.80.0...v0.81.0
+[0.80.0]: https://github.com/byte5ai/omadia/compare/v0.79.3...v0.80.0
+[0.79.3]: https://github.com/byte5ai/omadia/compare/v0.79.2...v0.79.3
+[0.79.2]: https://github.com/byte5ai/omadia/compare/v0.79.1...v0.79.2
+[0.79.1]: https://github.com/byte5ai/omadia/compare/v0.79.0...v0.79.1
+[0.79.0]: https://github.com/byte5ai/omadia/compare/v0.78.0...v0.79.0
+[0.78.0]: https://github.com/byte5ai/omadia/compare/v0.77.0...v0.78.0
+[0.77.0]: https://github.com/byte5ai/omadia/compare/v0.76.0...v0.77.0
+[0.76.0]: https://github.com/byte5ai/omadia/compare/v0.75.0...v0.76.0
+[0.75.0]: https://github.com/byte5ai/omadia/compare/v0.74.2...v0.75.0
+[0.74.2]: https://github.com/byte5ai/omadia/compare/v0.74.1...v0.74.2
+[0.74.1]: https://github.com/byte5ai/omadia/compare/v0.74.0...v0.74.1
+[0.74.0]: https://github.com/byte5ai/omadia/compare/v0.73.0...v0.74.0
+[0.73.0]: https://github.com/byte5ai/omadia/compare/v0.72.0...v0.73.0
+[0.72.0]: https://github.com/byte5ai/omadia/compare/v0.71.2...v0.72.0
+[0.71.2]: https://github.com/byte5ai/omadia/compare/v0.71.1...v0.71.2
+[0.71.1]: https://github.com/byte5ai/omadia/compare/v0.71.0...v0.71.1
+[0.71.0]: https://github.com/byte5ai/omadia/compare/v0.70.2...v0.71.0
+[0.70.2]: https://github.com/byte5ai/omadia/compare/v0.70.1...v0.70.2
+[0.70.1]: https://github.com/byte5ai/omadia/compare/v0.70.0...v0.70.1
+[0.70.0]: https://github.com/byte5ai/omadia/compare/v0.69.0...v0.70.0
+[0.69.0]: https://github.com/byte5ai/omadia/compare/v0.68.5...v0.69.0
+[0.68.5]: https://github.com/byte5ai/omadia/compare/v0.68.4...v0.68.5
+[0.68.4]: https://github.com/byte5ai/omadia/compare/v0.68.3...v0.68.4
+[0.68.3]: https://github.com/byte5ai/omadia/compare/v0.68.2...v0.68.3
+[0.68.2]: https://github.com/byte5ai/omadia/compare/v0.68.1...v0.68.2
+[0.68.1]: https://github.com/byte5ai/omadia/compare/v0.68.0...v0.68.1
+[0.68.0]: https://github.com/byte5ai/omadia/compare/v0.67.2...v0.68.0
+[0.67.2]: https://github.com/byte5ai/omadia/compare/v0.67.1...v0.67.2
+[0.67.1]: https://github.com/byte5ai/omadia/compare/v0.67.0...v0.67.1
+[0.67.0]: https://github.com/byte5ai/omadia/compare/v0.66.0...v0.67.0
+[0.66.0]: https://github.com/byte5ai/omadia/compare/v0.65.0...v0.66.0
+[0.65.0]: https://github.com/byte5ai/omadia/compare/v0.64.0...v0.65.0
+[0.64.0]: https://github.com/byte5ai/omadia/compare/v0.63.0...v0.64.0
+[0.63.0]: https://github.com/byte5ai/omadia/compare/v0.62.1...v0.63.0
+[0.62.1]: https://github.com/byte5ai/omadia/compare/v0.62.0...v0.62.1
+[0.62.0]: https://github.com/byte5ai/omadia/compare/v0.61.0...v0.62.0
+[0.61.0]: https://github.com/byte5ai/omadia/compare/v0.60.0...v0.61.0
+[0.60.0]: https://github.com/byte5ai/omadia/compare/v0.59.2...v0.60.0
+[0.59.2]: https://github.com/byte5ai/omadia/compare/v0.59.1...v0.59.2
+[0.59.1]: https://github.com/byte5ai/omadia/compare/v0.59.0...v0.59.1
+[0.59.0]: https://github.com/byte5ai/omadia/compare/v0.58.3...v0.59.0
+[0.58.3]: https://github.com/byte5ai/omadia/compare/v0.58.2...v0.58.3
+[0.58.2]: https://github.com/byte5ai/omadia/compare/v0.58.1...v0.58.2
+[0.58.1]: https://github.com/byte5ai/omadia/compare/v0.58.0...v0.58.1
+[0.58.0]: https://github.com/byte5ai/omadia/compare/v0.57.1...v0.58.0
+[0.57.1]: https://github.com/byte5ai/omadia/compare/v0.57.0...v0.57.1
+[0.57.0]: https://github.com/byte5ai/omadia/compare/v0.56.0...v0.57.0
+[0.56.0]: https://github.com/byte5ai/omadia/compare/v0.55.3...v0.56.0
+[0.55.3]: https://github.com/byte5ai/omadia/compare/v0.55.2...v0.55.3
+[0.55.2]: https://github.com/byte5ai/omadia/compare/v0.55.1...v0.55.2
+[0.55.1]: https://github.com/byte5ai/omadia/compare/v0.55.0...v0.55.1
+[0.55.0]: https://github.com/byte5ai/omadia/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/byte5ai/omadia/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/byte5ai/omadia/compare/v0.52.3...v0.53.0
 [0.52.3]: https://github.com/byte5ai/omadia/compare/v0.52.2...v0.52.3
