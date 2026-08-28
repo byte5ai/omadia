@@ -116,6 +116,13 @@ function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
     calls,
     async createAppRegistration(input) {
       calls.push(`createAppRegistration:${input.uniqueName ?? input.displayName}`);
+      // Like the connector: the app id is handed over the moment the
+      // registration exists, BEFORE the secret and the service principal.
+      await input.onRegistrationCreated?.(
+        { appId: 'app-123', tenantId: 'tenant-9' },
+        'created',
+      );
+      calls.push('registrationCreatedNotified');
       await behaviour.createAppRegistration?.();
       return {
         outcome: 'created',
@@ -245,6 +252,8 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     ]);
     assert.deepEqual(provisioner.calls, [
       'createAppRegistration:omadia-teams-bot-hr-bot',
+      // app_id reaches the store here, before the chain moves on (#916).
+      'registrationCreatedNotified',
       'createBot:hr-bot:https://mw.example.com/api/teams/hr-bot/messages',
       'getCatalogApp:external-abc',
       'buildAppPackage',
@@ -329,7 +338,12 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     assert.deepEqual(store.updates, []);
   });
 
-  it('resumes from failed using evidence columns, without re-creating', async () => {
+  it('resumes from failed by re-running the idempotent registration step', async () => {
+    // A 'failed' row ranks below app_registered, so step 1 runs again — and
+    // that is deliberate since byte5ai/omadia#916: app_id alone is no longer
+    // evidence that the step FINISHED (it is now written the moment the
+    // registration exists, before the secret). Re-running is safe: the
+    // connector adopts the existing registration by its uniqueName.
     const { runner, store, provisioner } = makeRunner({
       storeOverrides: {
         state: 'failed',
@@ -341,11 +355,16 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
     assert.ok(
-      !provisioner.calls.some((c) => c.startsWith('createAppRegistration')),
-      'existing registration must be reused',
+      provisioner.calls.some(
+        (c) => c === 'createAppRegistration:omadia-teams-bot-hr-bot',
+      ),
+      'the step re-runs under the same idempotency key',
+    );
+    assert.ok(
+      provisioner.calls.some((c) => c.startsWith('createBot:')),
+      'the chain continues past step 1',
     );
     assert.equal(store.row?.state, 'installed');
-    assert.equal(store.row?.appId, 'app-kept');
     assert.equal(store.row?.lastError, null);
   });
 
@@ -960,5 +979,75 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     const detail = classifyTeamsProvisioningError(configSyncFailedDetail('   '));
     assert.equal(detail.code, 'config_sync_failed');
     assert.equal(detail.reason, '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// byte5ai/omadia#916 — the first real run against the byte5 tenant created an
+// Entra app whose id never reached the identity row. The runner could then
+// neither find it nor create it again: every retry collided with the
+// uniqueName of an app it did not know about.
+// ---------------------------------------------------------------------------
+
+describe('TeamsProvisioningJobRunner — app_id is persisted early (#916)', () => {
+  it('writes app_id before the rest of the registration step finishes', async () => {
+    const { runner, store, provisioner } = makeRunner();
+    await runner.enqueue(REQUEST);
+
+    const early = store.updates[0];
+    assert.ok(early, 'expected an update before anything else');
+    assert.equal(early.appId, 'app-123');
+    assert.equal(early.tenantId, 'tenant-9');
+    assert.equal(
+      early.state,
+      undefined,
+      'the step is not finished yet — the state must not claim it is',
+    );
+    // …and it really happened inside the step, not after it returned.
+    assert.deepEqual(provisioner.calls.slice(0, 2), [
+      'createAppRegistration:omadia-teams-bot-hr-bot',
+      'registrationCreatedNotified',
+    ]);
+  });
+
+  it('an interruption after that write leaves a resumable row, not an orphan', async () => {
+    // The exact field failure: the app exists, the chain dies before the
+    // secret is stored. The row must carry app_id (so nothing is orphaned)
+    // AND still re-run step 1 (so the secret is actually created).
+    const boom = (): never => {
+      throw new Error('connection reset');
+    };
+    const first = makeRunner({
+      maxAttempts: 1,
+      behaviour: { createAppRegistration: boom },
+    });
+    const failed = await first.runner.enqueue(REQUEST);
+    assert.equal(failed.status, 'failed');
+    assert.equal(first.store.row?.appId, 'app-123', 'app_id survived');
+    assert.equal(first.store.row?.tenantId, 'tenant-9');
+
+    // Resume against a row in exactly that shape.
+    const second = makeRunner({
+      storeOverrides: { state: 'pending', appId: 'app-123', tenantId: 'tenant-9' },
+    });
+    const result = await second.runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.ok(
+      second.provisioner.calls.some((c) =>
+        c.startsWith('createAppRegistration:omadia-teams-bot-hr-bot'),
+      ),
+      'app_id alone must not be read as "step 1 completed"',
+    );
+  });
+
+  it('a completed step 1 is still skipped on resume', async () => {
+    const { runner, provisioner } = makeRunner({
+      storeOverrides: { state: 'app_registered', appId: 'app-x', tenantId: 't-x' },
+    });
+    await runner.enqueue(REQUEST);
+    assert.ok(
+      !provisioner.calls.some((c) => c.startsWith('createAppRegistration')),
+      'state app_registered is the evidence that the step finished',
+    );
   });
 });
