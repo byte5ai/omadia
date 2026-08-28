@@ -67,6 +67,37 @@ the problem as API-key-specific when the body describes both paths. The
 banner test now pins the CTA href so this exact regression is covered
 under #911.
 
+### Fixed — desktop PATH augmentation missed ~/.local/*/bin and non-literal nvm defaults (#925)
+
+2026-08-28 — #906 taught `resolveAugmentedPath()` about `~/.local/bin`, but a
+Node installed the other common way under that prefix — an unpacked tarball
+kept under its own name, `~/.local/node/bin` — was still invisible. On a
+machine where that is the only `node`/`npm`, the subscription-CLI install in
+the admin panel spawned `npm` with a PATH that could not contain it,
+`execFile` failed with empty stdout and stderr, and the UI showed the opaque
+`cli_install.no_output` message. The probe now also scans `~/.local` one level
+deep and adds every existing `~/.local/<tool>/bin` — sorted for a
+deterministic PATH, capped in count so boot stays bounded, and still appended
+*after* the inherited PATH so a system install keeps precedence.
+
+The nvm probe had a second dead end: it only accepted a literal version in
+`~/.nvm/alias/default` and returned "no nvm" for the two most common defaults,
+`lts/*` and `node`. It now follows the alias transitively (`default` →
+`lts/*` → `lts/krypton` → `v24.19.0`), resolves `node` to the newest installed
+version — compared numerically, so `v22.x` beats `v8.x` rather than losing a
+lexical sort — and terminates safely on hostile data: a depth cap, a
+visited-set for cycles, and rejection of an alias value that is absolute or
+escapes `~/.nvm/alias`. As before, any unreadable state is swallowed; app boot
+never depends on the probe succeeding.
+
+Finally, a `cli_install.no_output` failure now states the PATH the npm child
+was actually handed (`Searched PATH: …`, capped at 512 characters) in the
+existing failure detail, so the diagnosis no longer requires a manual
+`which npm` on the host. The `cli_install.npm_failed` branch, which already
+carries an npm log tail, is unchanged. `desktop/` also gains real unit tests
+for the PATH rules, run by its own `npm test` on Node's native TypeScript type
+stripping — no new dependency, no lockfile change.
+
 ### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
 
 2026-08-27 — #882's PATH augmentation checked Homebrew, Volta, asdf, and nvm,
