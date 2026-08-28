@@ -444,7 +444,8 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "teamsSignIn": "Teams-Anmeldung"
   },
   "conductor": {
     "title": "Conductor",
@@ -2159,7 +2160,13 @@
           "error": "Fehler",
           "retries_exhausted": "Wiederholungen aufgebraucht — der erreichte Stand bleibt erhalten",
           "team_conflict": "Für diesen Orchestrator läuft bereits ein anderer Lauf",
-          "stopped": "durch das Herunterfahren unterbrochen"
+          "stopped": "durch das Herunterfahren unterbrochen",
+          "delegated_upload": "Katalog-Upload über die Teams-Anmeldung dieses Tenants",
+          "delegated_token_refreshed": "Zugriffstoken automatisch erneuert",
+          "delegated_sign_in_required": "Wartet auf die Teams-Anmeldung",
+          "delegated_consent_required": "Wartet auf die Zustimmung einer Administration",
+          "delegated_token_expired": "Anmeldung abgelaufen",
+          "device_code_flow_failed": "Anmeldevorgang abgelehnt"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2230,6 +2237,30 @@
         "bot_handle_unavailable": {
           "what": "Microsoft hat den Bot-Namen abgelehnt: Er ist bereits für eine andere Bot-Anwendung registriert.",
           "next": "Azure-Bot-Handles teilen sich einen einzigen globalen Namensraum über alle Azure-Kunden hinweg — wie ein Domainname, nicht wie ein Name innerhalb deines Tenants. omadia qualifiziert den Handle bereits automatisch mit der ID der App-Registrierung, dieser Name ist also auch in qualifizierter Form vergeben. Vergib dem Agenten einen anderen Bot-Slug und starte das Provisioning erneut."
+        },
+        "tenantSignInLink": "Zur Teams-Anmeldung für diesen Tenant",
+        "delegated_sign_in_required": {
+          "what": "Der Katalog-Upload braucht eine angemeldete Tenant-Administration. Microsoft erlaubt diesen Schritt nur im Namen einer Person, App-Berechtigungen genügen dafür nicht.",
+          "scopes": "Benötigte Berechtigungen ({count}): {scopes}",
+          "next": "Melde dich einmal unter „Teams-Anmeldung\" an und starte das Provisioning danach erneut. Jeder weitere Agent nutzt diese Anmeldung dann automatisch.",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Entra-App, Azure-Bot und das gebaute Paket bleiben bestehen — es geht genau an dieser Stelle weiter."
+        },
+        "delegated_consent_required": {
+          "what": "Die Anmeldung steht, aber den benötigten Berechtigungen hat im Tenant noch niemand zugestimmt.",
+          "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
+          "next": "Lass eine Tenant-Administration auf der Zustimmungsseite zustimmen und starte das Provisioning danach erneut.",
+          "consentLink": "Zustimmungsseite für diesen Tenant öffnen",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Es wurde nichts zurückgebaut."
+        },
+        "delegated_token_expired": {
+          "what": "Die gespeicherte Anmeldung dieses Tenants ist nicht mehr gültig und ließ sich nicht automatisch erneuern.",
+          "next": "Melde dich unter „Teams-Anmeldung\" erneut an und starte das Provisioning danach noch einmal.",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Alles, was bereits angelegt wurde, bleibt bestehen."
+        },
+        "device_code_flow_failed": {
+          "what": "Microsoft hat den Anmeldevorgang selbst abgelehnt — nicht die Berechtigungen, sondern den Weg dorthin.",
+          "reason": "Von Microsoft gemeldet: {reason}",
+          "next": "Prüfe, ob die Publisher-App des Microsoft-365-Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert. Ein erneuter Versuch ändert ohne diese Anpassung nichts."
         }
       },
       "teamsBot": {
@@ -2251,7 +2282,12 @@
           "unknown": "Ob diese Konfiguration bereits übernommen wurde, lässt sich gerade nicht feststellen. Vergleiche sie mit dem Teams-Channel-Plugin und füge den Block unten ein, falls er fehlt."
         }
       },
-      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten."
+      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten.",
+      "package": {
+        "heading": "App-Paket herunterladen",
+        "hint": "Das Provisioning lädt dieses Paket selbst in den Tenant-Katalog — ein manueller Upload pro Agent ist nicht nötig. Der Download bleibt als Rückfallebene: für Tenants, in denen programmatische Katalog-Uploads nicht erlaubt sind, oder wenn du das Manifest vorher ansehen willst. Es wird bei jeder Anfrage neu erzeugt und entspricht damit genau dem, was das Provisioning hochladen würde.",
+        "download": "Teams-App-Paket (.zip) herunterladen"
+      }
     }
   },
   "builder": {
@@ -5395,5 +5431,58 @@
     "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
     "frameTitle": "Oberfläche des Plugins {pluginId}",
     "loading": "Plugin-Oberfläche wird geladen…"
+  },
+  "operatorTeamsSignIn": {
+    "metaTitle": "Teams-Anmeldung",
+    "heading": "Teams-Anmeldung für diesen Tenant",
+    "why": "Microsoft erlaubt das Hochladen einer Teams-App in den Tenant-Katalog nur im Namen einer angemeldeten Person — App-Berechtigungen sind dafür ausdrücklich nicht unterstützt. Deshalb meldet sich einmal eine Tenant-Administration an; jeder Agent, der danach provisioniert wird, nutzt diese Anmeldung automatisch.",
+    "loading": "Anmeldestatus wird geladen …",
+    "refresh": "Aktualisieren",
+    "unsupported": "Der installierte Microsoft-365-Connector kennt die delegierte Anmeldung noch nicht. Aktualisiere ihn auf Version 0.6.0 oder neuer — installiert ist er bereits.",
+    "technicalReason": "Technischer Grund:",
+    "start": "Anmeldung starten",
+    "startBusy": "Anmeldung wird gestartet",
+    "signOut": "Abmelden",
+    "signOutBusy": "Wird abgemeldet",
+    "signedOut": {
+      "body": "Für diesen Tenant ist noch niemand angemeldet. Solange das so bleibt, kommt das Provisioning bis zum Katalog-Upload und bleibt dort stehen — alles davor bleibt erhalten und läuft weiter, sobald die Anmeldung steht."
+    },
+    "pending": {
+      "instructions": "Öffne die Anmeldeseite auf einem beliebigen Gerät und gib diesen Code ein. Angemeldet werden muss eine Tenant-Administration.",
+      "codeLabel": "Anmeldecode",
+      "copy": "Code kopieren",
+      "copied": "Kopiert",
+      "openVerification": "Anmeldeseite von Microsoft öffnen",
+      "expiresIn": "Der Code läuft in {seconds} Sekunden ab.",
+      "consentHint": "Falls die Anmeldeseite zuerst eine Genehmigung verlangt: hier zustimmen, danach den Code eingeben.",
+      "consentLink": "Zustimmungsseite öffnen",
+      "waiting": "omadia wartet auf den Abschluss der Anmeldung. Diese Seite aktualisiert sich von selbst."
+    },
+    "signedIn": {
+      "badge": "Angemeldet",
+      "as": "Angemeldet als {who}",
+      "unknownAccount": "unbekanntes Konto",
+      "since": "Angemeldet seit",
+      "tokenExpires": "Zugriffstoken läuft ab",
+      "tenant": "Tenant",
+      "scopes": "Berechtigungen",
+      "staleNote": "Das Zugriffstoken ist abgelaufen. Das ist kein Fehler — omadia erneuert es beim nächsten Upload automatisch, die Anmeldung bleibt bestehen."
+    },
+    "expired": {
+      "headline": "Der Anmeldecode ist abgelaufen.",
+      "body": "Es wurde nichts angelegt und nichts verändert. Starte die Anmeldung einfach neu."
+    },
+    "declined": {
+      "headline": "Die Anmeldung wurde nicht abgeschlossen.",
+      "body": "Microsoft meldet das sowohl bei einem Abbruch als auch dann, wenn eine Richtlinie den Vorgang blockiert — etwa Conditional Access oder eine Geräteanforderung. Der technische Grund unten sagt, welcher Fall vorliegt."
+    },
+    "errors": {
+      "teams_sign_in_unavailable": "Die Teams-Anmeldung ist in diesem Deployment nicht verdrahtet.",
+      "teams_provisioner_unavailable": "Der Microsoft-365-Connector ist nicht installiert — installiere und aktiviere ihn zuerst.",
+      "delegated_sign_in_unsupported": "Der installierte Microsoft-365-Connector ist zu alt für die delegierte Anmeldung. Aktualisiere ihn auf 0.6.0 oder neuer.",
+      "device_code_flow_failed": "Microsoft hat den Anmeldevorgang abgelehnt. Prüfe, ob die Publisher-App des Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert.",
+      "teams_sign_in_failed": "Die Teams-Anmeldung ist fehlgeschlagen.",
+      "unknown": "Die Anfrage zur Teams-Anmeldung ist fehlgeschlagen: {detail}"
+    }
   }
 }

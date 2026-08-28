@@ -527,8 +527,11 @@ describe('TeamsProvisioningJobRunner — connector error policy', () => {
     const { runner, store } = makeRunner({ behaviour: { createBot: 'registration-only' } });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'halted');
+    // `halted` gained a second shape with #924 (the delegated sign-in parks
+    // here too), so the reason has to be narrowed before its payload is read.
     assert.ok(
       result.status === 'halted' &&
+        result.reason === 'arm_not_configured' &&
         result.missingSetupFields.includes('azureSubscriptionId'),
     );
     assert.equal(store.row?.state, 'app_registered');

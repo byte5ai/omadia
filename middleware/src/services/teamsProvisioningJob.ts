@@ -63,6 +63,17 @@ import {
   TEAMS_PROVISIONING_STATES,
   type TeamsProvisioningState,
 } from '../platform/agentTeamsIdentityStore.js';
+import {
+  adminConsentUrlOf,
+  delegatedStepOf,
+  isDelegatedConsentRequiredError,
+  isDelegatedSignInRequiredError,
+  isDelegatedTokenExpiredError,
+  isDeviceCodeFlowError,
+  isRecoverableByRefresh,
+  requiredScopesOf,
+  type DelegatedTokenSet,
+} from '../platform/teamsDelegatedSignIn.js';
 import type { TimerSeam } from '../plugins/jobScheduler.js';
 import type {
   BackgroundJob,
@@ -260,6 +271,40 @@ export const AWAITING_ENTRA_REPLICATION_DETAIL = 'awaiting_entra_replication';
  *  and its id is persisted; what follows is the wait. */
 export const REGISTRATION_CREATED_DETAIL = 'registration_created';
 
+/** `detail` of the `progress` event emitted when the catalog upload runs on
+ *  the tenant's delegated sign-in rather than app-only (#924). No token, no
+ *  account, no flow handle — just the fact, which is what an operator
+ *  watching a stalled panel actually needs. */
+export const DELEGATED_UPLOAD_DETAIL = 'delegated_upload';
+
+/** `detail` of the `progress` event for a silent token rotation. Worth a line
+ *  because it is the one moment the run pauses for a reason that is NOT a
+ *  fault and that the operator would otherwise never see. */
+export const DELEGATED_TOKEN_REFRESHED_DETAIL = 'delegated_token_refreshed';
+
+// ---------------------------------------------------------------------------
+// Delegated token custody port (#924)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the tenant's delegated token set is kept — a structural subset of
+ * `platform/teamsDelegatedTokenStore.ts`.
+ *
+ * TENANT-SCOPED, NOT AGENT-SCOPED, and that is the whole point of #924: one
+ * admin signs in once, and every agent provisioned afterwards uses that sign-in.
+ * There is deliberately no agent id in this port — adding one would re-create
+ * the per-agent manual upload the feature exists to remove.
+ *
+ * OPTIONAL ON THE RUNNER. A mount without it (and every existing test) behaves
+ * exactly as before: app-only upload, which is correct against a connector
+ * older than 0.6.0 and against a tenant that never needed the delegated path.
+ */
+export interface TeamsDelegatedTokenPort {
+  read(): Promise<DelegatedTokenSet | undefined>;
+  /** Called the instant the connector reports `refreshed === true`. */
+  write(tokens: DelegatedTokenSet): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioner port (structural subset of TeamsProvisionerAccessor)
 // ---------------------------------------------------------------------------
@@ -331,6 +376,34 @@ export interface TeamsProvisionerPort {
     readonly packageZip: Uint8Array;
     readonly externalId: string;
   }): Promise<Idempotent<{ readonly teamsAppId: string }>>;
+
+  /**
+   * The DELEGATED catalog upload (connector >= 0.6.0, byte5ai/omadia#924).
+   *
+   * OPTIONAL, and the runner feature-detects it exactly like every other
+   * version-skewed method: absent means an older connector, which keeps using
+   * the app-only {@link uploadToCatalog} above and keeps failing the way it
+   * always did against a tenant that requires delegated permissions.
+   *
+   * Returns the token set it used, with `refreshed` telling the caller whether
+   * it rotated — a rotation MUST be persisted immediately or the next run
+   * signs in from scratch.
+   */
+  uploadToCatalogDelegated?(input: {
+    readonly packageZip: Uint8Array;
+    readonly externalId: string;
+    readonly tokens: DelegatedTokenSet;
+  }): Promise<{
+    readonly app: { readonly value: { readonly teamsAppId: string } };
+    readonly tokens: DelegatedTokenSet;
+    readonly refreshed: boolean;
+  }>;
+
+  /** Silent token refresh (connector >= 0.6.0). Optional for the same
+   *  reason; without it an expired access token needs a human. */
+  refreshDelegatedToken?(input: {
+    readonly tokens: DelegatedTokenSet;
+  }): Promise<DelegatedTokenSet>;
 
   getCatalogApp(input: {
     readonly teamsAppExternalId: string;
@@ -533,9 +606,33 @@ export type ProvisioningRunResult =
       readonly missingSetupFields: readonly string[];
     }
   | {
+      /**
+       * #924 — the delegated catalog upload cannot proceed until a tenant
+       * admin has signed in (or consented). NOT a failure: every step already
+       * taken is real, the row keeps its state, and the run resumes from here
+       * the moment the sign-in exists. A run that fell to `failed` because
+       * nobody had signed in yet would send an operator hunting a fault that
+       * is not there — and would drop the chain's evidence with it.
+       */
+      readonly status: 'halted';
+      readonly agentId: string;
+      readonly reason:
+        | 'delegated_sign_in_required'
+        | 'delegated_consent_required'
+        | 'delegated_token_expired';
+      readonly detail: string;
+    }
+  | {
       readonly status: 'failed';
       readonly agentId: string;
-      readonly reason: 'consent_missing' | 'bot_handle_unavailable' | 'error';
+      readonly reason:
+        | 'consent_missing'
+        | 'bot_handle_unavailable'
+        /** #924 — the device-code flow itself is broken (publisher app not
+         *  configured for it, Conditional Access refusing it). Terminal:
+         *  retrying the same flow produces the same refusal. */
+        | 'device_code_flow_failed'
+        | 'error';
       readonly detail: string;
     }
   | {
@@ -617,6 +714,11 @@ export interface TeamsProvisioningJobOptions {
    * run is identical, it simply leaves no timeline behind.
    */
   readonly events?: TeamsProvisioningEventSink;
+  /**
+   * #924 — the tenant's delegated token set. Absent means app-only catalog
+   * upload, i.e. exactly the pre-0.6.0 behaviour.
+   */
+  readonly delegatedTokens?: TeamsDelegatedTokenPort;
   readonly log?: (msg: string) => void;
 }
 
@@ -650,6 +752,7 @@ export class TeamsProvisioningJobRunner {
     | ((teamId: string) => Promise<string | null>)
     | undefined;
   private readonly events: TeamsProvisioningEventSink | undefined;
+  private readonly delegatedTokens: TeamsDelegatedTokenPort | undefined;
   private readonly log: (msg: string) => void;
 
   /**
@@ -697,6 +800,7 @@ export class TeamsProvisioningJobRunner {
     this.installs = opts.installs;
     this.resolveTeamName = opts.resolveTeamName;
     this.events = opts.events;
+    this.delegatedTokens = opts.delegatedTokens;
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -1007,6 +1111,62 @@ export class TeamsProvisioningJobRunner {
       return { status: 'failed', agentId, reason: 'bot_handle_unavailable', detail };
     }
 
+    // #924 — THE FOUR DELEGATED ERRORS, EACH WITH A DIFFERENT INSTRUCTION.
+    // They are classified before the throttle/deterministic paths below
+    // because none of them is a transport problem and none is fixable by
+    // retrying: three need a specific human action and the fourth needs a
+    // configuration change on the publisher app. Collapsing them into one
+    // "delegated failed" would collapse four different instructions into an
+    // operator staring at a dead end.
+    //
+    // Three of the four PARK rather than fail. The Entra app, the Azure bot
+    // and the built package all exist and are this agent's; the only thing
+    // missing is a sign-in. A row that dropped to `failed` would throw that
+    // evidence away and re-walk the chain on the next run.
+
+    if (isDelegatedSignInRequiredError(err)) {
+      const detail = delegatedSignInRequiredDetail(
+        requiredScopesOf(err),
+        delegatedStepOf(err),
+      );
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_sign_in_required', detail };
+    }
+
+    if (isDelegatedConsentRequiredError(err)) {
+      // The consent URL is the difference between an actionable message and a
+      // dead end, so it travels in `last_error` — it is a public Microsoft URL
+      // naming a tenant and a client id, not a credential. It is validated as
+      // absolute https by `adminConsentUrlOf` before it gets anywhere near a
+      // link, and it is NOT put into a progress-event detail.
+      const detail = delegatedConsentRequiredDetail(
+        requiredScopesOf(err),
+        adminConsentUrlOf(err),
+      );
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_consent_required', detail };
+    }
+
+    if (isDelegatedTokenExpiredError(err)) {
+      // The refreshable case is recovered inside `uploadPackage` and never
+      // reaches here; arriving with one means the refresh itself failed, which
+      // has the same answer as the invalid one — sign in again. Its OWN code,
+      // though, not `delegated_sign_in_required`: "your sign-in expired" and
+      // "nobody has ever signed in" send an operator to the same button for
+      // different reasons, and only one of them is worth investigating.
+      const detail = delegatedTokenExpiredDetail(err.reason);
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_token_expired', detail };
+    }
+
+    if (isDeviceCodeFlowError(err)) {
+      // TERMINAL and DETERMINISTIC: the flow is refused by configuration, not
+      // by load. Retrying it five times produces five identical refusals.
+      const detail = deviceCodeFlowFailedDetail(errorMessage(err), err.oauthError);
+      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      return { status: 'failed', agentId, reason: 'device_code_flow_failed', detail };
+    }
+
     const throttle = throttleHintOf(err);
 
     if (throttle === undefined && isDeterministicRequestFailure(err)) {
@@ -1180,12 +1340,18 @@ export class TeamsProvisioningJobRunner {
         params: assets.params,
         icons: assets.icons,
       });
-      const uploaded = await provisioner.uploadToCatalog({
+      // Same upload path as the chain's step 4 — a republish that bypassed it
+      // would be the one code path still doing an app-only upload, which is
+      // precisely the call Microsoft refuses (#924).
+      const uploaded = await this.uploadPackage(
+        agentId,
+        provisioner,
         packageZip,
-        externalId: assets.externalId,
-      });
+        assets.externalId,
+      );
+      if (uploaded.kind === 'sign_in_required') return uploaded.result;
       row = await this.store.update(agentId, {
-        teamsAppId: uploaded.value.teamsAppId,
+        teamsAppId: uploaded.teamsAppId,
         teamsAppExternalId: assets.externalId,
         lastError: null,
       });
@@ -1323,11 +1489,17 @@ export class TeamsProvisioningJobRunner {
             params: assets.params,
             icons: assets.icons,
           });
-          const uploaded = await provisioner.uploadToCatalog({
+          const uploaded = await this.uploadPackage(
+            agentId,
+            provisioner,
             packageZip,
-            externalId: assets.externalId,
-          });
-          teamsAppId = uploaded.value.teamsAppId;
+            assets.externalId,
+          );
+          // PARKED, not failed: the package is built and every earlier step
+          // is real. The row keeps `package_built`, `last_error` says which
+          // human action is missing, and the next run resumes right here.
+          if (uploaded.kind === 'sign_in_required') return uploaded.result;
+          teamsAppId = uploaded.teamsAppId;
         }
       }
       row = await this.store.update(agentId, {
@@ -1376,6 +1548,113 @@ export class TeamsProvisioningJobRunner {
     // write and deliberately unable to change it.
     await this.syncTeamsBotsConfig(row);
     return { status: 'installed', agentId };
+  }
+
+  // -------------------------------------------------------------------------
+  // Catalog upload (#924)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Upload the rendered package to the tenant catalog — delegated when the
+   * connector can, app-only when it cannot.
+   *
+   * WHY THIS BRANCH EXISTS AT ALL. `POST /appCatalogs/teamsApps` is
+   * delegated-only at Microsoft; Application permissions are documented as
+   * "Not supported". So the app-only call below is the ONE step of the whole
+   * chain that a fully-consented tenant still refuses, and a connector that
+   * publishes `uploadToCatalogDelegated` (>= 0.6.0) is the only way to do it
+   * properly — on a token set a tenant admin produced by signing in once.
+   *
+   * NOT SIGNED IN IS NOT A FAILURE. It is the absence of a human action, so
+   * this parks rather than throws: it returns a `halted` result the caller
+   * turns into "keep the state, record what is missing, resume later".
+   * Letting the connector throw and classifying it downstream would work too,
+   * but it would burn the retry budget on a condition no retry can fix and
+   * make the first run of a fresh install look broken.
+   *
+   * A ROTATED TOKEN IS PERSISTED IMMEDIATELY, before the upload's result is
+   * used for anything else. Had the process died between the connector
+   * rotating and us writing, the refresh token still in the vault would
+   * already have been spent — and the tenant would be silently signed out
+   * until the next run failed and somebody investigated.
+   */
+  private async uploadPackage(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    packageZip: Uint8Array,
+    externalId: string,
+  ): Promise<
+    | { readonly kind: 'uploaded'; readonly teamsAppId: string }
+    | { readonly kind: 'sign_in_required'; readonly result: ProvisioningRunResult }
+  > {
+    const delegatedUpload = provisioner.uploadToCatalogDelegated;
+    const custody = this.delegatedTokens;
+    // Feature detection, not configuration: an older connector and a mount
+    // without token custody both mean "app-only", which is what this
+    // middleware did before #924 and stays correct for those deployments.
+    if (typeof delegatedUpload !== 'function' || custody === undefined) {
+      const uploaded = await provisioner.uploadToCatalog({ packageZip, externalId });
+      return { kind: 'uploaded', teamsAppId: uploaded.value.teamsAppId };
+    }
+
+    const tokens = await custody.read();
+    if (tokens === undefined) {
+      const detail = delegatedSignInRequiredDetail([]);
+      // State deliberately untouched — every step already taken is real, and
+      // the row's own rank is what makes the next run resume from here.
+      await this.recordError(agentId, { lastError: detail });
+      return {
+        kind: 'sign_in_required',
+        result: {
+          status: 'halted',
+          agentId,
+          reason: 'delegated_sign_in_required',
+          detail,
+        },
+      };
+    }
+
+    // The one honest thing the runner can say from outside another repo's
+    // call: which credential this upload rides on. No token, no account, no
+    // flow handle — this column is read by a screen.
+    await this.emit(agentId, 'catalog_uploaded', 'progress', {
+      detail: DELEGATED_UPLOAD_DETAIL,
+    });
+
+    const attemptUpload = async (set: DelegatedTokenSet): Promise<string> => {
+      const result = await delegatedUpload.call(provisioner, {
+        packageZip,
+        externalId,
+        tokens: set,
+      });
+      if (result.refreshed) {
+        await custody.write(result.tokens);
+        await this.emit(agentId, 'catalog_uploaded', 'progress', {
+          detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
+        });
+      }
+      return result.app.value.teamsAppId;
+    };
+
+    try {
+      return { kind: 'uploaded', teamsAppId: await attemptUpload(tokens) };
+    } catch (err) {
+      // The ONE delegated failure an operator must never be shown: an access
+      // token past its expiry with a refresh token that is still good. It is
+      // recovered right here — refresh, retry once — because surfacing it
+      // would ask a human to fix something no human needs to touch. Anything
+      // else, INCLUDING a refresh that itself fails, travels on to
+      // {@link handleFailure}, which is where the four errors are told apart.
+      if (!isDelegatedTokenExpiredError(err) || !isRecoverableByRefresh(err)) throw err;
+      const refresh = provisioner.refreshDelegatedToken;
+      if (typeof refresh !== 'function') throw err;
+      const rotated = await refresh.call(provisioner, { tokens });
+      await custody.write(rotated);
+      await this.emit(agentId, 'catalog_uploaded', 'progress', {
+        detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
+      });
+      return { kind: 'uploaded', teamsAppId: await attemptUpload(rotated) };
+    }
   }
 
   /**
@@ -1574,12 +1853,96 @@ export function configSyncFailedDetail(reason: string): string {
  *  producer and the classifier so the empty case round-trips. */
 const CONFIG_SYNC_REASON_UNSPECIFIED = 'no reason reported';
 
+// ---------------------------------------------------------------------------
+// The delegated sentences (#924)
+//
+// Four codes for four errors, because each one sends the operator somewhere
+// else: start a sign-in, send an admin to a consent URL, sign in again, or go
+// look at the publisher app's device-code / Conditional Access configuration.
+// A single `delegated_failed` code would have been shorter and would have made
+// the panel useless.
+// ---------------------------------------------------------------------------
+
+export const DELEGATED_SIGN_IN_REQUIRED_PREFIX = 'delegated_sign_in_required:';
+export const DELEGATED_CONSENT_REQUIRED_PREFIX = 'delegated_consent_required:';
+export const DELEGATED_TOKEN_EXPIRED_PREFIX = 'delegated_token_expired:';
+export const DEVICE_CODE_FLOW_FAILED_PREFIX = 'device_code_flow_failed:';
+
+/** Token carrying the admin-consent URL. Its own `key=value` rather than a
+ *  second bracket group, because a URL and a comma-split list do not mix. */
+const CONSENT_URL_TOKEN = 'consent_url=';
+
+/** Bracket filler for "the connector named no scopes", shared by producer and
+ *  classifier so the empty case round-trips to `[]`. */
+const DELEGATED_SCOPES_UNSPECIFIED = 'the delegated Teams scopes';
+
+/** Nobody is signed in for this tenant — the ordinary state of a fresh
+ *  install, and the reason the very first agent cannot reach the catalog. */
+export function delegatedSignInRequiredDetail(
+  requiredScopes: readonly string[],
+  step?: string,
+): string {
+  const scopes =
+    requiredScopes.length > 0
+      ? requiredScopes.join(', ')
+      : DELEGATED_SCOPES_UNSPECIFIED;
+  const where = step !== undefined ? ` (step: ${step.replace(/[[\]]/g, '')})` : '';
+  return `${DELEGATED_SIGN_IN_REQUIRED_PREFIX} the Teams app catalog upload is delegated-only at Microsoft, so it needs a tenant admin signed in with [${scopes}]${where} — sign in once under Teams sign-in; every agent provisioned afterwards uses it automatically`;
+}
+
+/** Signed in, but the scopes were never consented to. A DIFFERENT person may
+ *  be needed here (a global admin), which is why it is not the same code. */
+export function delegatedConsentRequiredDetail(
+  requiredScopes: readonly string[],
+  adminConsentUrl?: string,
+): string {
+  const scopes =
+    requiredScopes.length > 0
+      ? requiredScopes.join(', ')
+      : DELEGATED_SCOPES_UNSPECIFIED;
+  const link =
+    adminConsentUrl !== undefined ? ` ${CONSENT_URL_TOKEN}${adminConsentUrl}` : '';
+  return `${DELEGATED_CONSENT_REQUIRED_PREFIX} a tenant admin still has to grant consent for [${scopes}] before the delegated catalog upload is allowed — open the consent URL, approve, then re-run provisioning${link}`;
+}
+
+/**
+ * The sign-in itself is spent. The refreshable variant never reaches an
+ * operator (see `uploadPackage`), so a row carrying this sentence means the
+ * refresh token is gone — a re-sign-in, not a wait.
+ */
+export function delegatedTokenExpiredDetail(reason?: string): string {
+  const because =
+    reason === 'access-token-expired'
+      ? 'the access token expired and could not be refreshed'
+      : 'the refresh token is no longer valid';
+  return `${DELEGATED_TOKEN_EXPIRED_PREFIX} ${because} — the stored tenant sign-in cannot be used any more; sign in again under Teams sign-in, then re-run provisioning`;
+}
+
+/**
+ * The device-code flow is refused by configuration. Not the operator's tenant
+ * data — the publisher app itself, or a Conditional Access policy that will
+ * not let a device-code sign-in through.
+ */
+export function deviceCodeFlowFailedDetail(
+  message: string,
+  oauthError?: string,
+): string {
+  const safe = message.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const code = oauthError !== undefined ? ` [${oauthError.replace(/[[\]]/g, '')}]` : '';
+  return `${DEVICE_CODE_FLOW_FAILED_PREFIX}${code} ${safe.length > 0 ? safe : 'the device-code sign-in was refused'} — check that the M365 connector's publisher app allows public-client device-code flows and that no Conditional Access policy blocks them`;
+}
+
 export type TeamsProvisioningErrorCode =
   | 'consent_missing'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
   | 'bot_handle_unavailable'
+  /** #924 — the four delegated codes, one per producer above. */
+  | 'delegated_sign_in_required'
+  | 'delegated_consent_required'
+  | 'delegated_token_expired'
+  | 'device_code_flow_failed'
   | 'unknown';
 
 /** Structured projection of one `last_error` sentence. `raw` is always the
@@ -1593,6 +1956,13 @@ export interface TeamsProvisioningErrorDetail {
   readonly fields?: readonly string[];
   /** Connector `Retry-After` hint in seconds (`throttled`), when it had one. */
   readonly retryAfterSeconds?: number;
+  /**
+   * Where an admin grants the delegated scopes (`delegated_consent_required`).
+   * Absolute https by construction — `adminConsentUrlOf` rejects anything
+   * else before the sentence is ever written, so a UI may render it as a link
+   * without re-validating.
+   */
+  readonly adminConsentUrl?: string;
   /** Why the automatic `teams_bots` write did not land (`config_sync_failed`).
    *  A technical sentence, shown as the argument of a localized line — never
    *  as the copy itself. */
@@ -1613,6 +1983,24 @@ function bracketList(sentence: string, sentinel?: string): readonly string[] {
     return [];
   }
   return entries;
+}
+
+/**
+ * The `consent_url=` token of a `delegated_consent_required` sentence.
+ *
+ * Re-validated as absolute https on the way OUT as well as on the way in: the
+ * sentence is a database column, and a row written by an older build (or edited
+ * by hand) must not be able to put a `javascript:` href in front of an
+ * operator. Cheap, and the only alternative is trusting stored text.
+ */
+function consentUrlOf(sentence: string): string | undefined {
+  const raw = new RegExp(`${CONSENT_URL_TOKEN}(\\S+)`).exec(sentence)?.[1];
+  if (raw === undefined) return undefined;
+  try {
+    return new URL(raw).protocol === 'https:' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1643,6 +2031,36 @@ export function classifyTeamsProvisioningError(
     return {
       code: 'config_sync_failed',
       reason: inner === CONFIG_SYNC_REASON_UNSPECIFIED ? '' : inner,
+      raw,
+    };
+  }
+  // #924 — the four delegated codes. Each keeps whatever the producer
+  // captured, so the panel can name the scopes and link the consent URL
+  // instead of telling the operator to "check the logs".
+  if (sentence.startsWith(DELEGATED_SIGN_IN_REQUIRED_PREFIX)) {
+    return {
+      code: 'delegated_sign_in_required',
+      scopes: bracketList(sentence, DELEGATED_SCOPES_UNSPECIFIED),
+      raw,
+    };
+  }
+  if (sentence.startsWith(DELEGATED_CONSENT_REQUIRED_PREFIX)) {
+    const url = consentUrlOf(sentence);
+    return {
+      code: 'delegated_consent_required',
+      scopes: bracketList(sentence, DELEGATED_SCOPES_UNSPECIFIED),
+      ...(url !== undefined ? { adminConsentUrl: url } : {}),
+      raw,
+    };
+  }
+  if (sentence.startsWith(DELEGATED_TOKEN_EXPIRED_PREFIX)) {
+    return { code: 'delegated_token_expired', raw };
+  }
+  if (sentence.startsWith(DEVICE_CODE_FLOW_FAILED_PREFIX)) {
+    const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
+    return {
+      code: 'device_code_flow_failed',
+      ...(inner !== '' ? { reason: inner } : {}),
       raw,
     };
   }

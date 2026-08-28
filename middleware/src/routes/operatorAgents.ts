@@ -354,6 +354,24 @@ export interface OperatorTeamsIdentityDeps {
    * never a precondition for reporting it.
    */
   readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
+  /**
+   * Render this identity's Teams app package ON DEMAND (byte5ai/omadia#924).
+   *
+   * BUILT PER REQUEST, NEVER STORED. A package saved at provisioning time
+   * starts drifting the moment the agent's identity is edited — name,
+   * description, accent colour, avatar all feed the manifest — and the
+   * operator would be handed a zip that differs from what a re-run would
+   * upload. Since the render is pure and cheap (`loadPackageAssets` reads
+   * files, `buildAppPackage` is documented "pure, no network"), rebuilding is
+   * both the correct and the simpler answer.
+   *
+   * Optional: a mount without the connector or without the channel-teams
+   * package cannot render one, and the route says so as a capability rather
+   * than 500ing.
+   */
+  readonly buildAppPackage?: (
+    record: OperatorTeamsIdentityRecord,
+  ) => Promise<Uint8Array>;
 }
 
 /**
@@ -381,6 +399,30 @@ export interface OperatorTeamsProvisioningEventRecord {
   readonly status: string;
   readonly attempt: number | null;
   readonly detail: string | null;
+}
+
+/**
+ * Filename stem for a downloaded Teams app package (byte5ai/omadia#924).
+ *
+ * Derived from the BOT slug, because that is the name the package carries into
+ * the Teams catalogue — an operator comparing a download against what is live
+ * matches on that, not on the orchestrator's slug.
+ *
+ * Sanitised rather than trusted: the value lands in a `Content-Disposition`
+ * header, where a quote or a newline is a header-injection primitive. The bot
+ * slug is already constrained upstream (`BOT_SLUG_RE` in
+ * `platform/teamsProvisionerService.ts`), so this narrowing normally changes
+ * nothing — which is exactly the property a defence at a boundary should have.
+ */
+export function teamsPackageFilenameFor(record: {
+  readonly botSlug: string;
+}): string {
+  const safe = record.botSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 64);
+  return `omadia-teams-${safe.length > 0 ? safe : 'app'}`;
 }
 
 /** How many events the status endpoint publishes. A run emits roughly a
@@ -2073,6 +2115,77 @@ export function createOperatorAgentsRouter(
     }
     return { agent: { id: existing.id, slug: existing.slug }, row };
   }
+
+  /**
+   * Download this agent's Teams app package (byte5ai/omadia#924).
+   *
+   * A FALLBACK, NOT THE PATH. Provisioning uploads the package itself — since
+   * #924 through the tenant's delegated sign-in, which is what made the
+   * per-agent manual upload unnecessary. This endpoint exists for the cases
+   * that are always left over: a tenant whose policy forbids programmatic
+   * catalog writes, an admin who wants to inspect the manifest before it goes
+   * live, a support conversation. Offering it does not make it the documented
+   * route, and the UI is deliberately explicit about that.
+   *
+   * AVAILABLE WHENEVER IT IS BUILDABLE, not only after a failure. The package
+   * is a pure render of the identity, so gating it on an error state would
+   * have withheld a harmless artefact exactly from the operators calmly
+   * preparing a rollout, and handed it only to the ones already in trouble.
+   *
+   * REBUILT PER REQUEST — see `buildAppPackage` on the deps for why a stored
+   * blob would be a lie.
+   */
+  router.get(
+    '/:slug/teams-identity/package',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const deps = teamsIdentity(res);
+      if (!deps) return;
+      try {
+        const found = await teamsIdentityRow(req, res, live, deps);
+        if (!found) return;
+        const { agent, row } = found;
+        const build = deps.buildAppPackage;
+        if (!build) {
+          // A capability, not a fault: this mount cannot render a package
+          // (no connector, or no installed channel-teams package to take the
+          // manifest template and icons from).
+          res.status(501).json({
+            error: 'teams_app_package_unavailable',
+            message:
+              'This deployment cannot render a Teams app package — the M365 connector and the channel-teams plugin package must both be installed.',
+          });
+          return;
+        }
+        const zip = await build(row);
+        // The bot slug, not the agent slug: the package IS the bot, and an
+        // operator with two downloads open needs to tell them apart by the
+        // name that appears in the Teams catalogue.
+        const filename = `${teamsPackageFilenameFor(row)}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${filename}"`,
+        );
+        res.setHeader('Content-Length', String(zip.byteLength));
+        // No caching: the package is rendered from the CURRENT identity, and a
+        // cached copy is the stored-blob drift this endpoint exists to avoid.
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(200).end(Buffer.from(zip));
+      } catch (err) {
+        console.warn(
+          `[operator-agents] Teams app package for '${req.params.slug ?? ''}' could not be rendered:`,
+          err,
+        );
+        res.status(500).json({
+          error: 'teams_app_package_failed',
+          message:
+            'The Teams app package could not be rendered — see the middleware log for the underlying error.',
+        });
+      }
+    },
+  );
 
   router.get('/:slug/teams', async (req: Request, res: Response) => {
     const live = svc();

@@ -60,6 +60,7 @@
  */
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from './serviceRegistry.js';
+import type { TeamsDelegatedProvisionerMethods } from './teamsDelegatedSignIn.js';
 
 /** Service-registry key (bare, unversioned). */
 export const TEAMS_PROVISIONER_SERVICE_NAME = 'teamsProvisioner';
@@ -321,7 +322,8 @@ export interface UninstallFromTeamResult {
  * module doc's version-skew note. Never call it without
  * {@link supportsTeamUninstall}.
  */
-export interface TeamsProvisionerAccessor {
+export interface TeamsProvisionerAccessor
+  extends Partial<TeamsDelegatedProvisionerMethods> {
   readonly tenantMode: TenantMode;
   /** `true` when the ARM setup fields are configured (bot creation possible). */
   readonly canCreateBots: boolean;
@@ -364,6 +366,22 @@ export interface TeamsProvisionerAccessor {
    * alone.
    */
   getTeam?(input: GetTeamInput): Promise<GetTeamResult>;
+
+  /**
+   * THE DELEGATED HALF — connector >= 0.6.0 only (byte5ai/omadia#924). All six
+   * are optional together, for the same version-skew reason as the two methods
+   * above, and the ONE guard for all of them is
+   * `supportsDelegatedCatalogUpload` (`platform/teamsDelegatedSignIn.ts`).
+   *
+   * They exist because `POST /appCatalogs/teamsApps` is delegated-only at
+   * Microsoft — Application permissions are documented as "Not supported", so
+   * no amount of admin consent makes the app-only {@link uploadToCatalog}
+   * work. An admin signs in once per TENANT; every agent provisioned after
+   * that rides on the stored token set.
+   *
+   * `getDelegatedSignInStatus` and `revokeDelegatedSignIn` are SYNCHRONOUS by
+   * contract — do not await them into a promise-typed seam.
+   */
 }
 
 /** Input of the optional {@link TeamsProvisionerAccessor.getTeam}. */
@@ -405,6 +423,32 @@ export function supportsTeamLookup(
  * onto {@link getTeamsProvisioner} without a second null check: no
  * connector at all is also no uninstall.
  */
+/**
+ * The delegated surface is re-exported from this choke point so every consumer
+ * has ONE import site for `teamsProvisioner@1`, exactly as they do for the
+ * app-only half. The definitions live in `teamsDelegatedSignIn.ts` because
+ * they are a coherent feature of their own (a device-code flow, a token set,
+ * four errors) and putting them here would have pushed this module past the
+ * size where anyone reads it.
+ */
+export {
+  adminConsentUrlOf,
+  delegatedStepOf,
+  isDelegatedConsentRequiredError,
+  isDelegatedSignInRequiredError,
+  isDelegatedTokenExpiredError,
+  isDeviceCodeFlowError,
+  isRecoverableByRefresh,
+  redactDelegated,
+  requiredScopesOf,
+  summarizeTokenSet,
+  supportsDelegatedCatalogUpload,
+  type DelegatedTokenSet,
+  type DeviceCodePollResult,
+  type DeviceCodeStart,
+  type TeamsDelegatedProvisionerMethods,
+} from './teamsDelegatedSignIn.js';
+
 export function supportsTeamUninstall(
   provisioner: TeamsProvisionerAccessor | undefined,
 ): boolean {
@@ -622,8 +666,59 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
             ),
         }
       : {}),
+    // The delegated half (#924), forwarded under the SAME conditional-spread
+    // contract as the two methods above and for the same hard-won reason: a
+    // `uploadToCatalogDelegated: (i) => raw.uploadToCatalogDelegated?.(i)`
+    // here would make every connector look capable, and turn an old one's
+    // honest absence into a silent `undefined` at the call site.
+    //
+    // Forwarded one by one rather than as a group, even though
+    // `supportsDelegatedCatalogUpload` requires all six: this wrapper's job is
+    // to report the raw provider's shape truthfully, and a half-shipped
+    // connector must read as half-shipped rather than as absent.
+    ...forwardDelegated(raw),
   };
 }
+
+/**
+ * Conditional forwarding of the six delegated methods.
+ *
+ * Its own function purely to keep {@link guardAccessor} readable; the rule it
+ * implements is identical — a method appears on the wrapper if and only if the
+ * raw provider actually has it, so `supportsDelegatedCatalogUpload` can read
+ * the WRAPPER and still get the truth about the connector behind it.
+ *
+ * NO SECRET STRIPPING HERE, deliberately. `stripCleartextSecrets` exists
+ * because the app-only contract must never hand a cleartext client secret
+ * across the boundary. The delegated contract is the opposite case: the token
+ * set IS the payload, the middleware is its custodian
+ * (`platform/teamsDelegatedTokenStore.ts`), and stripping it would break the
+ * feature. The guarantee that it never LEAKS lives at the log/response
+ * boundaries instead — `redactDelegated` in `teamsDelegatedSignIn.ts`.
+ */
+function forwardDelegated(
+  raw: TeamsProvisionerAccessor,
+): Partial<TeamsDelegatedProvisionerMethods> {
+  const out: Record<string, unknown> = {};
+  for (const name of DELEGATED_METHOD_NAMES) {
+    const method = raw[name];
+    if (typeof method !== 'function') continue;
+    out[name] = (...args: unknown[]) =>
+      (method as (...a: unknown[]) => unknown).apply(raw, args);
+  }
+  return out as Partial<TeamsDelegatedProvisionerMethods>;
+}
+
+/** The six method names of the delegated half, as data — so the forwarder
+ *  above cannot silently drift from the interface. */
+const DELEGATED_METHOD_NAMES = [
+  'uploadToCatalogDelegated',
+  'startDelegatedSignIn',
+  'pollDelegatedSignIn',
+  'getDelegatedSignInStatus',
+  'refreshDelegatedToken',
+  'revokeDelegatedSignIn',
+] as const satisfies readonly (keyof TeamsDelegatedProvisionerMethods)[];
 
 /**
  * Resolve the provisioner, or `undefined` when the connector plugin is not
