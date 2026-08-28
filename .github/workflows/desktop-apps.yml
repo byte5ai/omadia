@@ -138,10 +138,14 @@ jobs:
       run:
         shell: bash
     steps:
+      # TEMPORARY TEST-ONLY OVERRIDE — will be reverted before merge. Checks out
+      # this branch's HEAD instead of the release tag, purely so a
+      # workflow_dispatch test run exercises the electron-builder.yml fixes
+      # that only exist on this branch, not yet on any tag.
       - name: Checkout the released tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.event.release.tag_name || github.ref }}
 
       - uses: actions/setup-node@v7
         with:
