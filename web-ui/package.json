@@ -39,7 +39,7 @@
     "cytoscape": "^3.34.1",
     "cytoscape-fcose": "^2.2.0",
     "framer-motion": "^13.1.1",
-    "lucide-react": "^1.31.0",
+    "lucide-react": "^1.33.0",
     "monaco-editor": "^0.56.0",
     "next": "^16.3.1",
     "next-intl": "^4.13.7",
