@@ -124,7 +124,7 @@ function ReadinessCard({
       </p>
       <div className="mt-4 flex items-center gap-2">
         <Link
-          href="/admin/settings"
+          href="/admin/providers"
           onClick={onDismiss}
           className="flex-1 border border-[color:var(--ink)] bg-[color:var(--ink)] px-3 py-2 text-center text-[11px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
         >

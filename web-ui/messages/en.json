@@ -1315,9 +1315,9 @@
     "expiredCta": "Sign in again"
   },
   "runtimeReadiness": {
-    "title": "LLM API key missing",
-    "body": "The agent runtime is offline — usually because no LLM API key is configured yet. Add your key in the settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
-    "cta": "Open settings",
+    "title": "LLM access missing",
+    "body": "The agent runtime is offline — usually because no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "cta": "Open LLM access",
     "dismiss": "Later"
   },
   "agentDetailsModal": {
