@@ -27,9 +27,40 @@
 
 import type { Pool } from 'pg';
 
+import type {
+  PersonaConfig,
+  QualityConfig,
+} from '../plugins/builder/agentSpec.js';
+
 // ---------------------------------------------------------------------------
 // Records
 // ---------------------------------------------------------------------------
+
+/**
+ * The authored CHARACTER of an identity: the persona axes and the quality
+ * block (boundaries + sycophancy).
+ *
+ * Same shapes the Agent Builder's spec carries and `agent.md` frontmatter
+ * mirrors — deliberately, so one Zod schema validates both storage sites and
+ * one set of compilers renders both prompts. `null` means the operator never
+ * opened that control.
+ */
+export interface AgentIdentityCharacter {
+  readonly persona: PersonaConfig | null;
+  readonly quality: QualityConfig | null;
+}
+
+/**
+ * The compiled system-prompt cache. Written by the caller (the route, which
+ * owns the compilers) rather than derived here: this store must not learn
+ * how a prompt is built, and the compilers must not learn about `pg`.
+ */
+export interface AgentIdentityComposedPrompt {
+  /** `null` = nothing authored; the platform assistant identity applies. */
+  readonly text: string | null;
+  /** Which model family the persona deltas were computed against. */
+  readonly family: string | null;
+}
 
 /** The authored text of an identity. `null` = not authored, inherit. */
 export interface AgentIdentityText {
@@ -47,8 +78,12 @@ export interface AgentIdentityAvatarMeta {
   readonly etag: string;
 }
 
-export interface AgentIdentityRecord extends AgentIdentityText {
+export interface AgentIdentityRecord
+  extends AgentIdentityText,
+    AgentIdentityCharacter {
   readonly agentId: string;
+  /** The compiled prompt this identity currently resolves to. */
+  readonly composed: AgentIdentityComposedPrompt;
   /** Monotonic; rendered as the Teams manifest version `1.0.<revision>`. */
   readonly revision: number;
   /** `null` while no avatar was uploaded (the packaged default is used). */
@@ -65,6 +100,19 @@ export interface AgentIdentityRecord extends AgentIdentityText {
  * `AgentPatch` needs a COALESCE to answer.
  */
 export type AgentIdentityTextInput = AgentIdentityText;
+
+/**
+ * One identity write: the authored text, the character, and the prompt the
+ * caller compiled from both. They travel together because they are one
+ * edit — storing the persona without its compiled prompt would leave the
+ * running agent speaking with the previous character until the next
+ * unrelated save.
+ */
+export interface AgentIdentitySaveInput extends AgentIdentityText {
+  readonly persona: PersonaConfig | null;
+  readonly quality: QualityConfig | null;
+  readonly composed: AgentIdentityComposedPrompt;
+}
 
 /** The three PNGs of one avatar upload, already derived by the route. */
 export interface AgentIdentityAvatarInput {
@@ -112,6 +160,8 @@ export interface AgentIdentityFallback {
  * disagreeing about it would ship two different names for one agent.
  */
 export interface ResolvedAgentIdentity {
+  readonly persona: PersonaConfig | null;
+  readonly quality: QualityConfig | null;
   readonly displayName: string;
   readonly shortDescription: string | null;
   readonly longDescription: string | null;
@@ -135,6 +185,8 @@ export function resolveAgentIdentity(
     longDescription: nonEmpty(identity?.longDescription),
     instructions: nonEmpty(identity?.instructions),
     accentColor: nonEmpty(identity?.accentColor),
+    persona: identity?.persona ?? null,
+    quality: identity?.quality ?? null,
     revision: identity?.revision ?? 1,
     hasAvatar: identity?.avatar !== null && identity?.avatar !== undefined,
   };
@@ -153,7 +205,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 
 /** Everything except the three BYTEA columns. */
 const META_COLUMNS =
-  'agent_id, display_name, short_description, long_description, instructions, accent_color, avatar_etag, revision, created_at, updated_at';
+  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, avatar_etag, revision, created_at, updated_at';
 
 interface AgentIdentityMetaRow {
   agent_id: string;
@@ -162,6 +214,10 @@ interface AgentIdentityMetaRow {
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  persona: PersonaConfig | null;
+  quality: QualityConfig | null;
+  composed_prompt: string | null;
+  composed_family: string | null;
   avatar_etag: string | null;
   revision: number;
   created_at: Date;
@@ -176,6 +232,12 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
     longDescription: row.long_description,
     instructions: row.instructions,
     accentColor: row.accent_color,
+    persona: row.persona,
+    quality: row.quality,
+    composed: {
+      text: row.composed_prompt,
+      family: row.composed_family,
+    },
     // `revision` is an INT; `pg` hands INT4 back as a number, but a driver
     // that ever changes its mind must not turn the manifest version into
     // `1.0.[object Object]`.
@@ -186,10 +248,20 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
   };
 }
 
-/** Text equality across the five authored columns — the no-op-save guard. */
-function sameText(
-  a: AgentIdentityText | undefined,
-  b: AgentIdentityText,
+/**
+ * Did this write change anything? The no-op-save guard, and therefore the
+ * gate in front of a Teams re-publish.
+ *
+ * Covers the character as well as the text: a persona edit changes the
+ * package's compiled prompt but none of its five text columns, so a
+ * text-only comparison would call the most consequential edit in this form
+ * "unchanged". JSON comparison of a document that always comes back from the
+ * same serializer is exact enough for that decision — and the alternative
+ * (a deep structural diff over 12 optional axes) buys nothing.
+ */
+function sameContent(
+  a: AgentIdentityRecord | undefined,
+  b: AgentIdentitySaveInput,
 ): boolean {
   if (!a) return false;
   return (
@@ -197,7 +269,9 @@ function sameText(
     nonEmpty(a.shortDescription) === nonEmpty(b.shortDescription) &&
     nonEmpty(a.longDescription) === nonEmpty(b.longDescription) &&
     nonEmpty(a.instructions) === nonEmpty(b.instructions) &&
-    nonEmpty(a.accentColor) === nonEmpty(b.accentColor)
+    nonEmpty(a.accentColor) === nonEmpty(b.accentColor) &&
+    JSON.stringify(a.persona ?? null) === JSON.stringify(b.persona ?? null) &&
+    JSON.stringify(a.quality ?? null) === JSON.stringify(b.quality ?? null)
   );
 }
 
@@ -217,17 +291,23 @@ export class AgentIdentityStore {
   }
 
   /**
-   * Replace the authored text. Creates the row when absent, bumps `revision`
-   * only when the stored text actually differs — an unchanged save must not
-   * queue a Teams re-publish, and `updated_at` must not start lying about
+   * Replace the authored identity — text, character and the compiled prompt
+   * the caller derived from them. Creates the row when absent, bumps
+   * `revision` only when the content actually differs: an unchanged save must
+   * not queue a Teams re-publish, and `updated_at` must not start lying about
    * when the identity last changed.
+   *
+   * A no-op save returns before touching the compiled prompt, which is
+   * correct: the same content compiles to the same prompt. The one input
+   * that changes without a content change is the model family — see
+   * {@link recompose}.
    */
-  async saveText(
+  async save(
     agentId: string,
-    input: AgentIdentityTextInput,
+    input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord> {
     const existing = await this.getByAgentId(agentId);
-    if (sameText(existing, input)) return existing as AgentIdentityRecord;
+    if (sameContent(existing, input)) return existing as AgentIdentityRecord;
     const values = [
       agentId,
       nonEmpty(input.displayName),
@@ -235,24 +315,60 @@ export class AgentIdentityStore {
       nonEmpty(input.longDescription),
       nonEmpty(input.instructions),
       nonEmpty(input.accentColor),
+      input.persona === null ? null : JSON.stringify(input.persona),
+      input.quality === null ? null : JSON.stringify(input.quality),
+      input.composed.text,
+      input.composed.family,
     ];
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
-         instructions, accent_color
-       ) VALUES ($1, $2, $3, $4, $5, $6)
+         instructions, accent_color, persona, quality,
+         composed_prompt, composed_family
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (agent_id) DO UPDATE SET
          display_name      = EXCLUDED.display_name,
          short_description = EXCLUDED.short_description,
          long_description  = EXCLUDED.long_description,
          instructions      = EXCLUDED.instructions,
          accent_color      = EXCLUDED.accent_color,
+         persona           = EXCLUDED.persona,
+         quality           = EXCLUDED.quality,
+         composed_prompt   = EXCLUDED.composed_prompt,
+         composed_family   = EXCLUDED.composed_family,
          revision          = agent_identities.revision + 1,
          updated_at        = now()
        RETURNING ${META_COLUMNS}`,
       values,
     );
     return mapRow(res.rows[0] as AgentIdentityMetaRow);
+  }
+
+  /**
+   * Refresh ONLY the compiled prompt, for the one input that changes outside
+   * this form: the agent's model. Persona axes are emitted as deltas against
+   * the model family's baseline, so re-routing an agent from Sonnet to Opus
+   * changes which traits need saying — without touching a single identity
+   * field.
+   *
+   * Deliberately does NOT bump `revision`: nothing an operator authored
+   * changed, so nothing about the Teams package did either. Returns
+   * `undefined` when the agent has no identity row (nothing to recompose).
+   */
+  async recompose(
+    agentId: string,
+    composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const res = await this.pool.query<AgentIdentityMetaRow>(
+      `UPDATE agent_identities SET
+         composed_prompt = $2,
+         composed_family = $3
+       WHERE agent_id = $1
+       RETURNING ${META_COLUMNS}`,
+      [agentId, composed.text, composed.family],
+    );
+    const row = res.rows[0];
+    return row ? mapRow(row) : undefined;
   }
 
   /**
