@@ -105,6 +105,20 @@ export interface AgentRuntimeConfig {
    *  Per-agent, unlike the platform-shared `OrchestratorDeps` fields below. */
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
+   * #914 — this Agent's authored behaviour text (`agent_identities.
+   * instructions`, migration 0051), which REPLACES the platform-wide
+   * `OrchestratorDeps.assistantIdentity` for this Agent.
+   *
+   * Same slot, not an additional block: `assistantIdentity` is the opening
+   * section of the system prompt, and an agent whose operator wrote its
+   * behaviour down means that text, not that text appended to a generic
+   * one. Absent/blank → the platform identity, exactly as before.
+   *
+   * Per-turn persona skills (Wave 8) still win over both — they replace this
+   * slot for one turn, which is what they always did.
+   */
+  readonly identityInstructions?: string;
+  /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
    *
@@ -407,6 +421,12 @@ export function buildOrchestratorForAgent(
       console.warn(`[security-audit] ${JSON.stringify(event)}`);
     };
 
+  // #914 — per-Agent identity beats the platform default. A blank authored
+  // value is not an identity, so it falls through rather than silencing the
+  // opening section of the system prompt.
+  const agentAssistantIdentity =
+    config.identityInstructions?.trim() || deps.assistantIdentity;
+
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
   const orchestrator = new Orchestrator({
@@ -488,8 +508,11 @@ export function buildOrchestratorForAgent(
       : {}),
     ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
-    ...(deps.assistantIdentity
-      ? { assistantIdentity: deps.assistantIdentity }
+    // #914 — the Agent's own behaviour text wins over the platform-wide one.
+    // Resolved once, here, so the two call sites below cannot disagree about
+    // which identity this Agent speaks with.
+    ...(agentAssistantIdentity
+      ? { assistantIdentity: agentAssistantIdentity }
       : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
@@ -545,8 +568,8 @@ export function buildOrchestratorForAgent(
         agent: new CliChatAgent({
           dispatch,
           model: config.model.replace(/-cli$/, '') || 'sonnet',
-          ...(deps.assistantIdentity
-            ? { systemPrompt: deps.assistantIdentity }
+          ...(agentAssistantIdentity
+            ? { systemPrompt: agentAssistantIdentity }
             : {}),
         }),
         raw: orchestrator,

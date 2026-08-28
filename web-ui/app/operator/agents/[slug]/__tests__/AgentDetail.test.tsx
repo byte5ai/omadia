@@ -7,7 +7,6 @@ import type {
   OperatorAgentDto,
   PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
-import type { DraftSummary } from '../../../../_lib/builderTypes';
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import { AgentDetail } from '../_components/AgentDetail';
 
@@ -28,25 +27,20 @@ import { AgentDetail } from '../_components/AgentDetail';
  * PluginsDnd itself (dnd-kit drag) stays out of jsdom scope per the
  * vitest.config note — it is stubbed and driven via its onReplace callback.
  *
- * Wave W2a adds the Agent-Builder link. Persona design lives in the native
- * builder, so what is worth guarding is the HREF: the deep link when exactly
- * one builder draft published one of this orchestrator's agent plugins, and
- * the builder overview — never a guessed `[id]` that would 404 — otherwise.
+ * #914 removed the Agent-Builder link that Wave W2a added here, along with
+ * the draft-matching heuristic behind it. What is guarded now is the opposite:
+ * the identity section is mounted, and NOTHING on this page links to the
+ * builder. The agent's identity belongs to the agent.
  */
 
-const {
-  mockCatalog,
-  mockToggle,
-  mockReplace,
-  mockRefresh,
-  mockListDrafts,
-} = vi.hoisted(() => ({
-  mockCatalog: vi.fn(),
-  mockToggle: vi.fn(),
-  mockReplace: vi.fn(),
-  mockRefresh: vi.fn(),
-  mockListDrafts: vi.fn(),
-}));
+const { mockCatalog, mockToggle, mockReplace, mockRefresh } = vi.hoisted(
+  () => ({
+    mockCatalog: vi.fn(),
+    mockToggle: vi.fn(),
+    mockReplace: vi.fn(),
+    mockRefresh: vi.fn(),
+  }),
+);
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: mockRefresh }),
@@ -60,12 +54,6 @@ vi.mock('next/link', () => ({
     children: React.ReactNode;
     href: string;
   }): React.ReactElement => <a href={href}>{children}</a>,
-}));
-
-// Only the drafts listing is stubbed; everything else in _lib/api stays real.
-vi.mock('../../../../_lib/api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../../../_lib/api')>()),
-  listBuilderDrafts: mockListDrafts,
 }));
 
 // Spread the real module so parseOperatorAgentErrorCode (the code→copy
@@ -84,6 +72,10 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
 // AgentTeamsInstalls.test.tsx. Stubbing them keeps this suite's alert
 // assertions about AgentDetail's OWN write errors, exactly as the PluginsDnd
 // stub below keeps the dnd editor out of scope.
+vi.mock('../_components/AgentIdentity', () => ({
+  AgentIdentity: () => <div data-testid="agent-identity" />,
+}));
+
 vi.mock('../_components/AgentTeamsIdentity', () => ({
   AgentTeamsIdentity: () => <div data-testid="agent-teams-identity" />,
 }));
@@ -207,8 +199,6 @@ beforeEach(() => {
   mockToggle.mockReset();
   mockReplace.mockReset();
   mockRefresh.mockReset();
-  mockListDrafts.mockReset();
-  mockListDrafts.mockResolvedValue({ items: [], quota: null });
   mockCatalog.mockResolvedValue({
     items: [
       catalogEntry({}),
@@ -349,121 +339,28 @@ describe('AgentDetail plugin assignment', () => {
   });
 });
 
-describe('AgentDetail Agent-Builder link', () => {
-  async function builderLink(): Promise<HTMLAnchorElement> {
-    return (await screen.findByRole('link', {
-      name: /Open the Agent Builder/,
-    })) as HTMLAnchorElement;
-  }
-
-  it('deep-links to the draft that published this orchestrator’s agent plugin', async () => {
-    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
-    mockListDrafts.mockResolvedValue({
-      items: [
-        draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' }),
-        draft({ id: 'draft-2', publishedAgentId: 'de.byte5.agent.other' }),
-        draft({ id: 'draft-3', publishedAgentId: null }),
-      ],
-      quota: null,
-    });
-
-    renderWithIntl(
-      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
-    );
-
-    const link = await builderLink();
-    await waitFor(() =>
-      expect(link.getAttribute('href')).toBe('/store/builder/draft-1'),
-    );
-    // The deep link resolved, so the "overview instead" hint must be gone.
-    expect(screen.queryByText(/opens the builder overview/)).toBeNull();
+describe('AgentDetail identity section (#914)', () => {
+  beforeEach(() => {
+    mockCatalog.mockResolvedValue({ items: [] });
   });
 
-  it('falls back to the builder overview when no draft matches — never a 404 id', async () => {
-    // Default fixtures: two integration plugins, no drafts at all.
+  it('mounts the agent identity section', async () => {
     renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
 
-    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
-    expect(
-      await screen.findByText(/opens the builder overview/),
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId('agent-identity')).toBeTruthy();
   });
 
-  it('falls back to the overview when the match is ambiguous', async () => {
-    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
-    mockListDrafts.mockResolvedValue({
-      items: [
-        draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' }),
-        // A second draft pinned to the SAME published agent — guessing one of
-        // them would send the operator to the wrong persona.
-        draft({ id: 'draft-2', publishedAgentId: 'de.byte5.agent.hr' }),
-      ],
-      quota: null,
-    });
-
-    renderWithIntl(
-      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
+  it('links nowhere near the Agent Builder', async () => {
+    // The regression this issue exists to prevent. The old section in this
+    // slot resolved a builder draft by heuristic and linked into
+    // /store/builder — for most agents, into the builder OVERVIEW, which has
+    // nothing to do with the agent in front of the operator.
+    const { container } = renderWithIntl(
+      <AgentDetail agent={agent()} isFallback={false} />,
     );
+    await screen.findByTestId('agent-identity');
 
-    await screen.findByText(/opens the builder overview/);
-    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
-  });
-
-  it('states nothing about the match until BOTH sources have settled', async () => {
-    // `builderDrafts` starts as [], which is also the legitimate "no drafts"
-    // answer. Without an explicit settled flag the page asserts, in a
-    // permanent-looking sentence, that no draft matches — on every load, for
-    // orchestrators that DO have one — and a click in that window silently
-    // drops the deep link.
-    mockCatalog.mockResolvedValue(AGENT_KIND_CATALOG);
-    let resolveDrafts: (value: unknown) => void = () => undefined;
-    mockListDrafts.mockReturnValue(
-      new Promise((resolve) => {
-        resolveDrafts = resolve;
-      }),
-    );
-
-    renderWithIntl(
-      <AgentDetail agent={agentWithBuilderPlugin()} isFallback={false} />,
-    );
-
-    // While resolving: no false negative, and no link that would navigate to
-    // the overview instead of the draft.
-    expect(screen.queryByText(/opens the builder overview/)).toBeNull();
-    await waitFor(() =>
-      expect(screen.queryByRole('link', { name: /Agent Builder/i })).toBeNull(),
-    );
-
-    resolveDrafts({
-      items: [draft({ id: 'draft-1', publishedAgentId: 'de.byte5.agent.hr' })],
-      quota: null,
-    });
-
-    const link = await builderLink();
-    await waitFor(() =>
-      expect(link.getAttribute('href')).toBe('/store/builder/draft-1'),
-    );
-  });
-
-  it('still renders the link when the drafts listing fails', async () => {
-    mockListDrafts.mockRejectedValue(new Error('boom'));
-
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
-
-    expect((await builderLink()).getAttribute('href')).toBe('/store/builder');
-    // A drafts-fetch failure is not one of this page's write errors.
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('does not render a persona editor — design happens in the builder', async () => {
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
-
-    await builderLink();
-    expect(screen.queryByRole('textbox')).toBeNull();
-    expect(
-      screen.getByText(
-        /Persona, tone and behaviour are designed in the Agent Builder/,
-      ),
-    ).toBeInTheDocument();
+    expect(container.querySelectorAll('a[href*="builder"]').length).toBe(0);
+    expect(screen.queryByText(/Agent Builder/)).toBeNull();
   });
 });

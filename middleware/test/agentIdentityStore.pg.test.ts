@@ -1,0 +1,235 @@
+/**
+ * #914 — `agent_identities` store against a real Postgres.
+ *
+ * The schema is applied from the ACTUAL migration files (0001 for `agents`,
+ * which 0051 references, then 0051), each twice, so this suite doubles as the
+ * double-apply proof the migrations README demands and so the store and the
+ * migration cannot drift apart silently: the accent-colour CHECK, the
+ * revision CHECK, the cascade from `agents` and the one-row-per-agent primary
+ * key are all exercised against the real constraints.
+ *
+ * The revision rules get the most attention here, because they are the ones
+ * with a consequence outside the database: the revision is the Teams manifest
+ * version, so a bump that does not happen means an edit Teams will refuse to
+ * accept, and a bump that happens for nothing means a pointless re-publish.
+ *
+ * Runs in its own schema (search_path pinned per connection), mirroring
+ * `agentTeamsIdentityStore.pg.test.ts`. Skips cleanly when no test Postgres
+ * is reachable.
+ */
+
+import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { after, before, beforeEach, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { Pool } from 'pg';
+
+import { probePgTest } from './_helpers/pgTestDb.js';
+
+import {
+  AgentIdentityStore,
+  DEFAULT_AGENT_ACCENT_COLOR,
+  resolveAgentIdentity,
+} from '../src/platform/agentIdentityStore.js';
+import type { OperatorAgentIdentityStore } from '../src/routes/operatorAgents.js';
+
+const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
+  label: 'agentIdentityStore',
+  vars: ['GRAPH_PG_TEST_URL', 'MEMORY_PG_TEST_URL', 'DATABASE_URL'],
+  timeoutMs: 1_500,
+});
+
+const MIGRATIONS_DIR = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'migrations',
+);
+
+const SCHEMA = `agent_identity_${String(process.pid)}`;
+
+/** The five authored fields, all blank — the shape a PUT sends. */
+const EMPTY = {
+  displayName: null,
+  shortDescription: null,
+  longDescription: null,
+  instructions: null,
+  accentColor: null,
+};
+
+describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailable }, () => {
+  let pool: Pool;
+  let store: AgentIdentityStore;
+  let agentId: string;
+
+  before(async () => {
+    const bootstrap = new Pool({ connectionString: PG_URL, max: 1 });
+    await bootstrap.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await bootstrap.query(`CREATE SCHEMA ${SCHEMA}`);
+    await bootstrap.end();
+    pool = new Pool({
+      connectionString: PG_URL,
+      max: 2,
+      options: `-c search_path=${SCHEMA},public`,
+    });
+    // 0002 is not optional scenery: 0001 ships a notify trigger whose
+    // payload expression (`NEW.agent_id`) does not exist on `agents`, so an
+    // INSERT into the table this migration references fails until 0002
+    // replaces the function. A suite that applied only 0001 would report a
+    // broken fixture as a broken store.
+    for (const file of [
+      '0001_multi_orchestrator.sql',
+      '0002_fix_notify_trigger.sql',
+      '0051_agent_identities.sql',
+    ]) {
+      const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
+      // Twice: the schema CI gate double-applies every file in the series.
+      await pool.query(sql);
+      await pool.query(sql);
+    }
+    store = new AgentIdentityStore(pool);
+  });
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE agents CASCADE');
+    const res = await pool.query<{ id: string }>(
+      `INSERT INTO agents (slug, name, description) VALUES ('sales', 'Sales Agent', 'Sells') RETURNING id`,
+    );
+    agentId = (res.rows[0] as { id: string }).id;
+  });
+
+  after(async () => {
+    await pool.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await pool.end();
+  });
+
+  it('is a drop-in OperatorAgentIdentityStore for the operator router', () => {
+    // Compile-time pin: the routes talk to the port, not to this class.
+    const routerStore: OperatorAgentIdentityStore = store;
+    assert.ok(routerStore);
+  });
+
+  it('reports no identity for an agent that never authored one', async () => {
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('creates the row on first save and starts the revision at 1', async () => {
+    const saved = await store.saveText(agentId, {
+      ...EMPTY,
+      displayName: 'Vertrieb',
+    });
+    assert.equal(saved.displayName, 'Vertrieb');
+    assert.equal(saved.revision, 1);
+    assert.equal(saved.avatar, null);
+  });
+
+  it('bumps the revision when the text changes and leaves it when it does not', async () => {
+    const first = await store.saveText(agentId, {
+      ...EMPTY,
+      displayName: 'Vertrieb',
+    });
+    const same = await store.saveText(agentId, {
+      ...EMPTY,
+      // Same content, differently whitespaced: the manifest would be
+      // byte-identical, so re-publishing it would be pure waste.
+      displayName: '  Vertrieb  ',
+    });
+    assert.equal(same.revision, first.revision);
+    const changed = await store.saveText(agentId, {
+      ...EMPTY,
+      displayName: 'Vertrieb DACH',
+    });
+    assert.equal(changed.revision, first.revision + 1);
+  });
+
+  it('treats a blank string as "inherit", not as an empty name', async () => {
+    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    const cleared = await store.saveText(agentId, { ...EMPTY, displayName: '   ' });
+    assert.equal(cleared.displayName, null);
+    const resolved = resolveAgentIdentity(cleared, {
+      name: 'Sales Agent',
+      description: 'Sells',
+    });
+    assert.equal(resolved.displayName, 'Sales Agent');
+  });
+
+  it('refuses an accent colour the Teams manifest would reject', async () => {
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO agent_identities (agent_id, accent_color) VALUES ($1, 'purple')`,
+        [agentId],
+      ),
+      /agent_identities_accent_color_check/,
+    );
+    // The product default is a valid one, which is what the fallback ships.
+    assert.match(DEFAULT_AGENT_ACCENT_COLOR, /^#[0-9A-Fa-f]{6}$/);
+  });
+
+  it('stores an avatar with its icons and hands the icons back for provisioning', async () => {
+    const saved = await store.setAvatar(agentId, {
+      original: new Uint8Array([1, 2, 3]),
+      color: new Uint8Array([4, 5]),
+      outline: new Uint8Array([6]),
+      etag: 'abc123',
+    });
+    assert.deepEqual(saved.avatar, { etag: 'abc123' });
+    const icons = await store.getIcons(agentId);
+    assert.deepEqual(Buffer.from(icons?.color ?? []), Buffer.from([4, 5]));
+    assert.deepEqual(Buffer.from(icons?.outline ?? []), Buffer.from([6]));
+    const avatar = await store.getAvatar(agentId);
+    assert.deepEqual(Buffer.from(avatar?.bytes ?? []), Buffer.from([1, 2, 3]));
+    assert.equal(avatar?.etag, 'abc123');
+  });
+
+  it('keeps the colour icon usable when no outline could be derived', async () => {
+    await store.setAvatar(agentId, {
+      original: new Uint8Array([1]),
+      color: new Uint8Array([2]),
+      outline: null,
+      etag: 'no-outline',
+    });
+    const icons = await store.getIcons(agentId);
+    assert.ok(icons, 'an avatar without an outline is still an avatar');
+    assert.equal(icons.outline, null);
+  });
+
+  it('an avatar write does not disturb the authored text', async () => {
+    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    const withAvatar = await store.setAvatar(agentId, {
+      original: new Uint8Array([1]),
+      color: new Uint8Array([2]),
+      outline: null,
+      etag: 'e1',
+    });
+    assert.equal(withAvatar.displayName, 'Vertrieb');
+    assert.equal(withAvatar.revision, 2);
+  });
+
+  it('clearing an avatar bumps the revision once, and never when there was none', async () => {
+    await store.setAvatar(agentId, {
+      original: new Uint8Array([1]),
+      color: new Uint8Array([2]),
+      outline: null,
+      etag: 'e1',
+    });
+    const cleared = await store.clearAvatar(agentId);
+    assert.equal(cleared?.avatar, null);
+    assert.equal(cleared?.revision, 2);
+    assert.equal(await store.getIcons(agentId), undefined);
+
+    const again = await store.clearAvatar(agentId);
+    assert.equal(again?.revision, 2, 'a second clear is not a change');
+  });
+
+  it('clearing an avatar of an agent without an identity creates nothing', async () => {
+    assert.equal(await store.clearAvatar(agentId), undefined);
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('drops the identity with its agent', async () => {
+    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    await pool.query('DELETE FROM agents WHERE id = $1', [agentId]);
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+});

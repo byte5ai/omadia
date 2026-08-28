@@ -1,10 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { ArrowRight } from 'lucide-react';
 
 import {
   listAgentPluginCatalog,
@@ -14,45 +12,26 @@ import {
   type OperatorAgentDto,
   type PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
-import { listBuilderDrafts } from '../../../../_lib/api';
-import type { DraftSummary } from '../../../../_lib/builderTypes';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { PluginsDnd } from '../../_components/PluginsDnd';
+import { AgentIdentity } from './AgentIdentity';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
 
-/** Route of the native Agent Builder overview — the never-404 fallback. */
-const BUILDER_INDEX_HREF = '/store/builder';
-
 /**
- * Wave W2a — deep link from an orchestrator to the native Agent Builder.
+ * #914 — the Agent Builder deep link that used to live here is GONE, along
+ * with `resolveBuilderDraftId`, the best-effort draft listing it needed and
+ * the four `persona*` copy keys.
  *
- * The builder route is keyed by a draft `[id]`, the operator page by an
- * orchestrator `slug`; there is no direct column joining the two. What DOES
- * join them is the published agent plugin: a builder draft pins the plugin
- * it published (`publishedAgentId`), and an orchestrator carries that same
- * plugin id in its assigned set. So: take the assigned plugins whose catalog
- * entry is `kind === 'agent'`, and look for a draft that published one of
+ * It joined an orchestrator to a builder draft by intersecting the agent's
+ * assigned `kind === 'agent'` plugins with the plugin ids drafts had
+ * published, and fell back to the builder overview whenever that produced
+ * zero or several matches — which is every agent the Builder never authored,
+ * i.e. every provisioned Teams bot. The Builder authors agent PLUGINS; an
+ * agent's identity is a property of the deployed agent and is authored in
+ * {@link AgentIdentity} below. Two concerns, two surfaces, no link between
  * them.
- *
- * Deliberately conservative — a deep link is only returned when exactly ONE
- * draft matches. Zero matches (an orchestrator with no builder-authored
- * agent) and ambiguous matches (several agent plugins, several drafts) both
- * fall back to the builder overview, which always exists. A guessed `[id]`
- * would 404, and picking one of several drafts would silently send the
- * operator to the wrong persona.
  */
-export function resolveBuilderDraftId(
-  agentPluginIds: ReadonlySet<string>,
-  drafts: readonly DraftSummary[],
-): string | null {
-  if (agentPluginIds.size === 0) return null;
-  const matches = drafts.filter(
-    (d) => d.publishedAgentId !== null && agentPluginIds.has(d.publishedAgentId),
-  );
-  return matches.length === 1 ? (matches[0]?.id ?? null) : null;
-}
-
 interface AgentDetailProps {
   readonly agent: OperatorAgentDto;
   /** Fallback agents always run plugins with the global store config —
@@ -85,10 +64,9 @@ interface AgentDetailProps {
  * fallback sentence with the technical detail as an ICU argument — raw
  * bodies never reach the UI (web-ui i18n hard rule).
  *
- * Wave W2a adds ONE more thing and deliberately nothing else: a link to the
- * native Agent Builder. Persona, tone and behaviour are designed THERE
- * (PersonaPillar et al.); this page stays a capability-assignment surface —
- * no persona editor is duplicated here.
+ * #914 — the page also composes the agent's own identity section. What an
+ * agent is called, says about itself and looks like belongs to the agent, not
+ * to the tool that authored one of its plugins.
  */
 export function AgentDetail(props: AgentDetailProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
@@ -98,25 +76,6 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<PluginCatalogEntryDto[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  /**
-   * Builder drafts, fetched best-effort ONLY to deep-link the builder CTA.
-   * A rejection is swallowed into an empty list on purpose: the link must
-   * still render (pointing at the builder overview), and this page's error
-   * banner is reserved for failures of the writes it actually owns.
-   */
-  const [builderDrafts, setBuilderDrafts] = useState<readonly DraftSummary[]>(
-    [],
-  );
-  /**
-   * Whether the draft listing has SETTLED — `builderDrafts` alone cannot say.
-   *
-   * It starts as `[]`, which is also the legitimate "this deployment has no
-   * drafts" answer, so without this flag `builderDraftId === null` conflates
-   * "still loading" with "resolved to no match": the page would state, on every
-   * single load, that no draft could be matched — and a click landing in that
-   * window would drop the deep link and open the builder overview instead.
-   */
-  const [draftsSettled, setDraftsSettled] = useState(false);
   /**
    * Remount key for PluginsDnd, bumped ONLY by the editor's own save path.
    *
@@ -148,23 +107,6 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    listBuilderDrafts()
-      .then((res) => {
-        if (!cancelled) setBuilderDrafts(res.items);
-      })
-      .catch(() => {
-        if (!cancelled) setBuilderDrafts([]);
-      })
-      .finally(() => {
-        if (!cancelled) setDraftsSettled(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const catalogById = useMemo(() => {
     const m = new Map<string, PluginCatalogEntryDto>();
     for (const entry of catalog ?? []) m.set(entry.id, entry);
@@ -176,25 +118,6 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
       [...props.agent.plugins].sort((a, b) => a.id.localeCompare(b.id)),
     [props.agent.plugins],
   );
-
-  const builderDraftId = useMemo(() => {
-    const agentPluginIds = new Set(
-      props.agent.plugins
-        .filter((p) => catalogById.get(p.id)?.kind === 'agent')
-        .map((p) => p.id),
-    );
-    return resolveBuilderDraftId(agentPluginIds, builderDrafts);
-  }, [builderDrafts, catalogById, props.agent.plugins]);
-
-  // The match needs BOTH sources: the catalog says which assigned plugins are
-  // agents, the draft listing says which draft owns them. Until both have
-  // settled there is no answer yet — only an unfinished one.
-  const builderResolving = catalog === null || !draftsSettled;
-
-  const builderHref =
-    builderDraftId !== null
-      ? `${BUILDER_INDEX_HREF}/${encodeURIComponent(builderDraftId)}`
-      : BUILDER_INDEX_HREF;
 
   const disabled = pending || busy !== null;
 
@@ -239,44 +162,20 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
         </div>
       )}
 
+      {/* #914 — identity first: who this agent is comes before what it is
+          allowed to do. Fetches its own read model by slug, so it is safe to
+          mount for an agent that has neither an identity row nor a Teams
+          bot. */}
+      <AgentIdentity slug={props.agent.slug} />
+
       {/* Teams sections (epic #860, wave W2a). This component is the single
           composition point for them, so the sibling Teams units (config
-          block, installs panel, builder link) extend one file instead of
-          racing over the page shell. The assignment panel fetches its own
-          read model by slug and disables what the platform cannot do, so it
-          is safe to mount before an identity exists. */}
+          block, installs panel) extend one file instead of racing over the
+          page shell. The assignment panel fetches its own read model by slug
+          and disables what the platform cannot do, so it is safe to mount
+          before an identity exists. */}
       <AgentTeamsIdentity slug={props.agent.slug} />
       <AgentTeamsInstalls slug={props.agent.slug} />
-
-      <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
-        <h2 className="mb-1 text-lg font-medium">{t('personaHeading')}</h2>
-        <p className="mb-3 text-xs text-[color:var(--fg-muted)]">
-          {t('personaHint')}
-        </p>
-        {builderResolving ? (
-          // No href yet: following the fallback here would silently lose the
-          // deep link that is the whole point of this section.
-          <span
-            aria-busy="true"
-            className="inline-flex items-center gap-2 rounded-md bg-[color:var(--bg-soft)]/60 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--fg-muted)]"
-          >
-            {t('personaOpenBuilder')}
-          </span>
-        ) : (
-          <Link
-            href={builderHref}
-            className="inline-flex items-center gap-2 rounded-md bg-[color:var(--accent)]/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent)] hover:text-[color:var(--fg-on-dark)]"
-          >
-            {t('personaOpenBuilder')}
-            <ArrowRight className="size-3.5" aria-hidden />
-          </Link>
-        )}
-        {!builderResolving && builderDraftId === null && (
-          <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
-            {t('personaNoDraftHint')}
-          </p>
-        )}
-      </section>
 
       <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
         <h2 className="mb-1 text-lg font-medium">

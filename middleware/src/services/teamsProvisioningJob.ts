@@ -278,6 +278,21 @@ export interface ProvisionTeamsIdentityRequest {
   readonly agentId: string;
   /** Team (group) id the generated app is installed into. */
   readonly teamId: string;
+  /**
+   * #914 — re-render and re-upload the app package for an identity that is
+   * already `installed`. Set by the identity routes after an edit that
+   * changed what the package contains (name, description, accent colour,
+   * avatar): without it, {@link TeamsProvisioningJobRunner} short-circuits at
+   * `installed` and the tenant keeps serving the package built from the old
+   * identity.
+   *
+   * Only meaningful for an installed row — every other state rebuilds anyway.
+   * A republish enqueued while a normal run for the same team is in flight
+   * JOINS that run (see {@link TeamsProvisioningJobRunner.enqueue}); the
+   * identity write that triggered it is already persisted, so the worst case
+   * is one more explicit "re-run provisioning" click, not a lost edit.
+   */
+  readonly republish?: boolean;
 }
 
 export type ProvisioningRunResult =
@@ -642,18 +657,53 @@ export class TeamsProvisioningJobRunner {
         `no teams identity row for agent '${agentId}' — create it before enqueueing provisioning`,
       );
     }
-    if (row.state === 'installed') {
+    if (row.state === 'installed' && request.republish !== true) {
       // #910 — a re-run of an already-installed identity is the self-healing
-      // path: identity fields may have changed (a new display name), or an
-      // operator may have removed the entry from the plugin config. The chain
-      // itself has nothing left to do, but the config write is re-asserted so
-      // "re-run provisioning" always ends with the bot actually configured.
+      // path: an operator may have removed the entry from the plugin config.
+      // The chain itself has nothing left to do, but the config write is
+      // re-asserted so "re-run provisioning" always ends with the bot
+      // actually configured.
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
     if (this.stopped) return { status: 'stopped', agentId };
 
     const provisioner = this.getProvisioner();
+
+    // #914 — republish: the chain is complete, but the PACKAGE is stale
+    // because the agent's identity changed. Steps 3+4 below skip themselves
+    // once `teams_app_id` is set (by design: they are resume logic, and
+    // re-uploading an unchanged package on every re-run would be waste), so
+    // the rebuild gets its own branch rather than a condition threaded
+    // through theirs. The catalog upload is an update here — same
+    // `externalId`, higher manifest version, which is what Teams requires
+    // before it accepts one.
+    if (row.state === 'installed') {
+      const assets = await this.loadPackageAssets(row);
+      const packageZip = provisioner.buildAppPackage({
+        manifestTemplate: assets.manifestTemplate,
+        params: assets.params,
+        icons: assets.icons,
+      });
+      const uploaded = await provisioner.uploadToCatalog({
+        packageZip,
+        externalId: assets.externalId,
+      });
+      row = await this.store.update(agentId, {
+        teamsAppId: uploaded.value.teamsAppId,
+        teamsAppExternalId: assets.externalId,
+        lastError: null,
+      });
+      // The install is idempotent and cheap, and it is what makes an already
+      // installed team pick the updated app up. The state stays `installed`:
+      // nothing about this run moves the identity backwards.
+      await provisioner.installToTeam({
+        teamId: request.teamId,
+        teamsAppId: row.teamsAppId as string,
+      });
+      await this.syncTeamsBotsConfig(row);
+      return { status: 'installed', agentId };
+    }
 
     // Step 1 — Entra app registration (idempotent by Graph uniqueName).
     //

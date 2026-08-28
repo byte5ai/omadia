@@ -369,6 +369,13 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'multi_orchestrator_unavailable',
   'not_found',
   'plugin_not_assigned',
+  // #914 — the agent identity routes. Listed here rather than in a second
+  // catalogue so one page needs one mapping: the identity section renders
+  // `detailErrors.<code>` exactly like every other operator-agents surface.
+  'agent_identity_unavailable',
+  'invalid_avatar',
+  'payload_too_large',
+  'unsupported_media_type',
 ] as const;
 
 export type OperatorAgentErrorCode = (typeof OPERATOR_AGENT_ERROR_CODES)[number];

@@ -1758,6 +1758,10 @@
     "detailAssignedEmpty": "No plugins are assigned to this orchestrator yet. Attach one in the editor below.",
     "detailToggleAria": "Enable or disable {plugin}",
     "detailErrors": {
+      "agent_identity_unavailable": "The identity store is not wired — it registers once DATABASE_URL is set and migration 0051 has been applied.",
+      "invalid_avatar": "That image could not be used as an avatar — a PNG, JPEG or WebP of up to 2 MB is expected.",
+      "payload_too_large": "The image is too large — 2 MB is the limit.",
+      "unsupported_media_type": "That file type does not work here — PNG, JPEG and WebP are accepted.",
       "agent_graph_store_unavailable": "The orchestrator registry is unavailable right now. Try again in a moment.",
       "config_validation": "The server rejected the plugin configuration.",
       "invalid_body": "The server rejected the request payload.",
@@ -2008,10 +2012,37 @@
       },
       "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error."
     },
-    "personaHeading": "Persona and behaviour",
-    "personaHint": "Persona, tone and behaviour are designed in the Agent Builder. This page only assigns capabilities to the orchestrator.",
-    "personaOpenBuilder": "Open the Agent Builder",
-    "personaNoDraftHint": "No single builder draft could be matched to this orchestrator, so the link opens the builder overview.",
+    "identity": {
+      "heading": "Identity",
+      "hint": "This agent's name, description, behaviour, colour and avatar. An empty field inherits what the registry holds. What you put here is what its Teams app package ships.",
+      "loading": "Loading the identity…",
+      "save": "Save identity",
+      "saving": "Saving…",
+      "unsaved": "Unsaved changes",
+      "avatarAlt": "Avatar of {name}",
+      "avatarNone": "No picture",
+      "avatarUpload": "Upload a picture",
+      "avatarBusy": "Uploading…",
+      "avatarRemove": "Remove the picture",
+      "avatarHint": "PNG, JPEG or WebP up to 2 MB. It becomes the 192×192 colour icon of the Teams package; a 32×32 outline icon follows only if the picture has transparent areas, otherwise the default outline stays.",
+      "fields": {
+        "displayName": "Display name",
+        "displayNameHint": "What the agent is called in Teams. Leave it empty to use the registry name.",
+        "accentColor": "Accent colour",
+        "accentColorHint": "As #RRGGBB. Colours the Teams app package.",
+        "shortDescription": "Short description",
+        "shortDescriptionHint": "At most 80 characters — the limit the Teams manifest itself sets.",
+        "longDescription": "Full description",
+        "instructions": "Behaviour",
+        "instructionsHint": "How this agent should present itself and answer. For this agent it replaces the platform-wide default text — leave it empty to keep the default."
+      },
+      "republish": {
+        "queued": "Republishing the Teams package.",
+        "not_needed": "Nothing changed, so there is nothing to publish.",
+        "no_installed_app": "Saved. This agent has no installed Teams app yet, so nothing was published.",
+        "provisioner_unavailable": "Saved. The M365 connector is not installed right now, so the Teams package could not be republished."
+      }
+    },
     "teamsIdentity": {
       "heading": "Teams identity",
       "hint": "Give this orchestrator its own Teams bot identity: a bot slug, a display name and an optional target team. Provisioning registers the Entra app, creates the bot, builds and uploads the Teams app package, and installs it.",
