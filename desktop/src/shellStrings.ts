@@ -56,7 +56,6 @@ const DE: Dictionary = {
     'omadia konnte die Oberfläche nach mehreren Versuchen nicht laden.',
   'shell.loadFailed.exhausted.detail':
     'Weitere Versuche werden nicht unternommen, um eine Endlosschleife zu vermeiden.\n\nStarte omadia neu. Bleibt der Fehler, sende bitte die Logdatei an den Support:\n{logFile}',
-  'shell.loadFailed.exhausted.quit': 'Beenden',
   'shell.loadFailed.exhausted.ok': 'OK',
 
   // --- Restart refused while the wizard is open (OM-58 follow-up) ----------

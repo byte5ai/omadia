@@ -87,7 +87,11 @@ describe('bootView.phasePercent', () => {
   it('advances monotonically through the boot', () => {
     // Pairwise on purpose: `a < b < c` in JS is `(a < b) < c`, which coerces the
     // boolean and passes for ANY values. The first draft of this test did that
-    // and asserted nothing; the test-tree typecheck is what caught it.
+    // and asserted nothing. What caught it was running `tsc` over these files by
+    // hand (TS2365) — NOT anything in the repo's normal loop: `npm test` uses
+    // Node's type STRIPPING, which checks nothing, and the root tsconfig covers
+    // only `src/**/*.ts`. #932 wires a real `typecheck:test` job; until that is
+    // in, a test file here can type-lie and still go green.
     const order = ['starting-db', 'starting-kernel', 'waiting-kernel', 'starting-ui', 'ready'];
     for (let i = 1; i < order.length; i += 1) {
       const previous = view.phasePercent(order[i - 1] as string);

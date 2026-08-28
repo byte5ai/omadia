@@ -17,17 +17,13 @@ import {
   type LoadFailureEvent,
   type RecoveryBudget,
 } from './loadFailure';
+import type { ShellView } from './shellView';
 import {
-  abandonNavigation,
-  beginNavigation,
-  commitNavigation,
-  initialViewState,
-  mayCommitNavigation,
-  mayStartNavigation,
-  type NavSource,
-  type ShellView,
-  type ViewState,
-} from './shellView';
+  abandonNavigationTo,
+  currentView,
+  finishNavigation,
+  startNavigation,
+} from './shellNavigator';
 import { createShellTranslate, type ShellTranslate } from './shellStrings';
 import {
   showBootFailure,
@@ -55,17 +51,6 @@ let quitting = false;
 // no longer listens.
 let streamBootLogs = false;
 
-/**
- * Who owns the window right now (OM-58).
- *
- * Three independent code paths used to end in an unconditional `loadURL`, so a
- * boot finishing while the first-run wizard was open overwrote it and dropped
- * the user on the sign-in form mid-setup — skipping the data-directory step and,
- * worse, the recovery-key step. Every navigation now goes through the arbiter in
- * `shellView.ts`. See that file for the two rules.
- */
-let viewState: ViewState = initialViewState();
-
 /** Bounded budget for replacing a dead renderer (OM-57). See `loadFailure.ts`. */
 let recoveryBudget: RecoveryBudget = initialRecoveryBudget();
 
@@ -78,35 +63,6 @@ let t: ShellTranslate = (_key, fallback) => fallback;
 
 function rendererPath(file: string): string {
   return path.join(app.getAppPath(), 'dist', 'renderer', file);
-}
-
-/**
- * Take ownership of the window for `source`, or refuse.
- *
- * Returns the navigation token to hand back to {@link finishNavigation}, or
- * `null` when the arbiter refused — refusals are logged, never silent, because
- * a silently dropped navigation is how the original bug hid.
- */
-function startNavigation(target: ShellView, source: NavSource): number | null {
-  const decision = mayStartNavigation(viewState, source);
-  if (!decision.allowed) {
-    log.warn(`[main] navigation refused: ${decision.reason}`);
-    return null;
-  }
-  const next = beginNavigation(viewState, target);
-  viewState = next.state;
-  return next.token;
-}
-
-/** Whether a navigation that began with `token` may still commit. */
-function finishNavigation(token: number, target: ShellView, source: NavSource): boolean {
-  const decision = mayCommitNavigation(viewState, token, source);
-  if (!decision.allowed) {
-    log.warn(`[main] navigation not committed: ${decision.reason}`);
-    return false;
-  }
-  viewState = commitNavigation(viewState, target);
-  return true;
 }
 
 function createWindow(): BrowserWindow {
@@ -139,7 +95,7 @@ function createWindow(): BrowserWindow {
 
 /** Which page a recovery would load, and the view it establishes. */
 function recoveryTarget(): { readonly view: ShellView; readonly page: string } {
-  return viewState.showing === 'wizard'
+  return currentView() === 'wizard'
     ? { view: 'wizard', page: WIZARD_PAGE }
     : { view: 'boot', page: LOADING_PAGE };
 }
@@ -174,6 +130,10 @@ function installRendererGuards(w: BrowserWindow): void {
   );
 
   w.webContents.on('render-process-gone', (_event, details) => {
+    // A clean exit is not a crash, and during shutdown the webContents can be
+    // gone while `win.isDestroyed()` is still false — recovering either would
+    // fire a stray navigation or pop the exhausted-dialog while quitting.
+    if (details.reason === 'clean-exit' || quitting) return;
     // No URL to compare here at all, so the budget is the only guard.
     log.error(`[main] render process gone: ${details.reason} (exitCode ${details.exitCode})`);
     void recoverRenderer();
@@ -192,22 +152,26 @@ function installRendererGuards(w: BrowserWindow): void {
     // Without this the tray stayed red forever after a transient hang, which
     // undercuts the whole reason `unresponsive` does not navigate away.
     log.info('[main] renderer responsive again');
-    setTrayStatus(trayActions(), viewState.showing === 'app' ? 'running' : 'starting');
+    setTrayStatus(trayActions(), currentView() === 'app' ? 'running' : 'starting');
   });
 
   w.webContents.on('did-finish-load', () => {
-    // Something rendered, so by definition the shell is not looping.
-    recoveryBudget = clearRecoveryBudget();
+    // Only a committed 'app' view clears the budget. Clearing on ANY successful
+    // load was wrong: the fallback page loading IS part of the recovery, so
+    // `die → recover → loading.html loads → clear → die` hands out a fresh
+    // budget every cycle. Not silent (each cycle costs a page load, reddens the
+    // tray, shows a message) but unbounded all the same.
+    if (currentView() === 'app') recoveryBudget = clearRecoveryBudget();
   });
 }
 
 /**
  * Put a working page back up and say what happened.
  *
- * No automatic retry of the page that died: a reload loop against a genuinely
- * dead stack is worse than a screen that names the problem, and the tray already
- * offers Restart. The budget bounds even the recovery itself, so a fallback page
- * that cannot load reaches a terminal, explained state instead of spinning.
+ * No automatic retry of the page that died: a reload loop against a dead stack
+ * is worse than a screen naming the problem, and the tray offers Restart. The
+ * budget bounds the recovery itself, so a fallback that cannot load reaches a
+ * terminal, explained state instead of spinning.
  */
 async function recoverRenderer(): Promise<void> {
   if (!win || win.isDestroyed()) return;
@@ -243,15 +207,16 @@ async function recoverRenderer(): Promise<void> {
     }
     setTrayStatus(trayActions(), 'error');
   } catch (err) {
-    // The load itself rejected; release the claim so the arbiter is not frozen.
-    viewState = abandonNavigation(viewState, view);
+    // 'boot', NOT `view`: `startNavigation` already claimed `view`, so abandoning
+    // to it is a no-op and would leave `showing === 'wizard'` — the frozen
+    // arbiter this PR fixes in `startWizard`, reached via the crash path. Frozen
+    // here is worse: nothing on screen, no renderer left to emit events, and
+    // tray → Restart refused with "setup is still open". 'boot' keeps it usable.
+    abandonNavigationTo(token, 'boot');
     log.error(`[main] renderer recovery failed: ${describeError(err)}`);
   }
 }
 
-function sendBootProgress(progress: BootProgress): void {
-  if (win && !win.isDestroyed()) win.webContents.send(CH.bootProgress, progress);
-}
 
 function checkForUpdatesAction(): void {
   // The updater reports every terminal outcome itself via dialogs/logs, so the
@@ -278,7 +243,7 @@ function trayActions(): TrayActions {
       }
       await win.loadFile(rendererPath(LOADING_PAGE));
       setTrayStatus(trayActions(), 'starting');
-      supervisor.on('progress', forwardProgress);
+      supervisor.on('progress', sendBootProgress);
       streamBootLogs = true;
       try {
         const uiUrl = await supervisor.restart();
@@ -292,7 +257,7 @@ function trayActions(): TrayActions {
         setTrayStatus(trayActions(), 'error');
       } finally {
         streamBootLogs = false;
-        supervisor.off('progress', forwardProgress);
+        supervisor.off('progress', sendBootProgress);
       }
     },
     checkForUpdates: checkForUpdatesAction,
@@ -303,7 +268,14 @@ function trayActions(): TrayActions {
   };
 }
 
-function forwardProgress(p: BootProgress): void {
+/**
+ * Push a boot-progress payload to whatever page is showing.
+ *
+ * Doubles as the supervisor's `progress` listener and as the way a recovery
+ * explains itself, because both are literally "tell the renderer where the boot
+ * stands" — they were two identical functions until this was noticed.
+ */
+function sendBootProgress(p: BootProgress): void {
   if (win && !win.isDestroyed()) win.webContents.send(CH.bootProgress, p);
 }
 
@@ -320,7 +292,7 @@ async function bootExistingInstall(): Promise<void> {
   const token = startNavigation('boot', 'boot-existing');
   if (token === null) return;
   await win.loadFile(rendererPath(LOADING_PAGE));
-  supervisor.on('progress', forwardProgress);
+  supervisor.on('progress', sendBootProgress);
   streamBootLogs = true;
   try {
     const uiUrl = await supervisor.start();
@@ -334,7 +306,7 @@ async function bootExistingInstall(): Promise<void> {
     await presentBootFailure(err);
   } finally {
     streamBootLogs = false;
-    supervisor.off('progress', forwardProgress);
+    supervisor.off('progress', sendBootProgress);
   }
 }
 
@@ -380,7 +352,7 @@ function startWizard(): void {
     (err: unknown) => {
       // Release the optimistic claim. Leaving it would freeze the arbiter on
       // 'wizard' forever, refusing every later boot and restart with no way back.
-      viewState = abandonNavigation(viewState, 'boot');
+      abandonNavigationTo(token, 'boot');
       log.error(`[main] wizard failed to load: ${describeError(err)}`);
     },
   );

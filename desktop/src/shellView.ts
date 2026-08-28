@@ -137,6 +137,17 @@ export function commitNavigation(state: ViewState, target: ShellView): ViewState
  * Keeps the token: the intent did happen and must still invalidate anything
  * older, even though it failed.
  */
-export function abandonNavigation(state: ViewState, fallback: ShellView): ViewState {
+export function abandonNavigation(
+  state: ViewState,
+  token: number,
+  fallback: ShellView,
+): ViewState {
+  // Only the navigation that still owns the window may release it. Without the
+  // token check a late rejection could overwrite `showing` while a NEWER
+  // navigation held the token — clobbering a view that had already moved on.
+  // No reachable ordering was found (Electron aborts a superseded load when the
+  // next one starts), but the guard removes the class rather than relying on
+  // that remaining true.
+  if (token !== state.token) return state;
   return { showing: fallback, token: state.token };
 }

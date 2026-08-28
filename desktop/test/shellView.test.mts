@@ -127,31 +127,42 @@ describe('shellView — bookkeeping', () => {
 });
 
 describe('shellView — abandoning a navigation that never landed', () => {
+  it('refuses to release when a newer navigation owns the window', () => {
+    // The dangerous direction: a late rejection must not clobber `showing` for a
+    // navigation that has already moved on. The token-preservation test below
+    // does not cover this — it only asserts the safe direction.
+    const claimed = beginNavigation(initialViewState(), 'wizard');
+    const newer = beginNavigation(claimed.state, 'app');
+    const attempted = abandonNavigation(newer.state, claimed.token, 'boot');
+    assert.equal(attempted.showing, 'app', 'the newer view must survive');
+    assert.equal(attempted.token, newer.token);
+  });
+
   it('releases the optimistic claim so later boots are not refused forever', () => {
     // The bug: startWizard() claims 'wizard' before the load runs. When the load
     // REJECTED, only a log line ran — leaving showing='wizard' permanently, so
     // the arbiter refused every boot-existing and restart from then on and
     // tray → Restart became a silent no-op with no way back.
-    const claimed = beginNavigation(initialViewState(), 'wizard').state;
-    assert.equal(mayStartNavigation(claimed, 'restart').allowed, false, 'claim is held');
+    const claimed = beginNavigation(initialViewState(), 'wizard');
+    assert.equal(mayStartNavigation(claimed.state, 'restart').allowed, false, 'claim is held');
 
-    const released = abandonNavigation(claimed, 'boot');
+    const released = abandonNavigation(claimed.state, claimed.token, 'boot');
     assert.equal(mayStartNavigation(released, 'restart').allowed, true, 'claim released');
     assert.equal(mayStartNavigation(released, 'boot-existing').allowed, true);
   });
 
   it('keeps the token, because the intent did happen', () => {
     const claimed = beginNavigation(initialViewState(), 'wizard');
-    const released = abandonNavigation(claimed.state, 'boot');
+    const released = abandonNavigation(claimed.state, claimed.token, 'boot');
     assert.equal(released.token, claimed.token);
     // An older navigation still must not land.
     assert.equal(mayCommitNavigation(released, claimed.token - 1, 'boot-existing').allowed, false);
   });
 
   it('does not mutate the state it is given', () => {
-    const claimed = beginNavigation(initialViewState(), 'wizard').state;
-    const snapshot = { ...claimed };
-    abandonNavigation(claimed, 'boot');
-    assert.deepEqual(claimed, snapshot);
+    const claimed = beginNavigation(initialViewState(), 'wizard');
+    const snapshot = { ...claimed.state };
+    abandonNavigation(claimed.state, claimed.token, 'boot');
+    assert.deepEqual(claimed.state, snapshot);
   });
 });

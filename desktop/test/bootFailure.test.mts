@@ -81,48 +81,70 @@ describe('the supervisor marker is actually bridged to the classifier', () => {
    * reaches Electron through `paths.ts`, so a Node test cannot import the real
    * `Supervisor` to provoke a real rejection.
    *
-   * An earlier version of this suite only mutation-tested the classifier, so
-   * changing the SUPERVISOR'S message left everything green — while the effect
-   * would have been the destructive Quit / Re-run-setup dialog returning during
-   * updates. PR #944 is reworking that exact path, so this reads the literals
-   * the supervisor actually throws and runs them through the classifier.
+   * Mutation-testing the classifier alone was not enough: changing the
+   * SUPERVISOR'S message left everything green, while the effect would have been
+   * the destructive Quit / Re-run-setup dialog returning during updates.
    *
-   * If it goes red: the supervisor's supersession signal changed. Re-point this
-   * test, and check `classifyBootFailure` still recognises the new signal —
-   * do not just delete the assertion.
+   * IF THIS GOES RED: the set of literals `supervisor.ts` throws no longer
+   * matches what this test expects. That is usually benign — a reworded message,
+   * or a literal extracted into a `const`, which this regex cannot follow. Read
+   * the assertion message, confirm `classifyBootFailure` still sorts the new
+   * signals correctly, and re-point the test. Do not delete the assertion.
    */
   const source = fs.readFileSync(path.join(here, '..', 'src', 'supervisor.ts'), 'utf8');
-  const thrownLiterals = [...source.matchAll(/throw new Error\(\s*['\`]([^'\`]+)['\`]/g)].map(
-    (match) => match[1] as string,
-  );
+  // Single, double or backtick quotes. A `const`-extracted message is invisible
+  // to this and shows up as a missing literal, not as a wrong classification.
+  const thrownLiterals = [
+    ...source.matchAll(/throw new Error\(\s*(['"`])([^'"`]+)\1/g),
+  ].map((match) => match[2] as string);
 
   it('finds literal rejections in the supervisor at all', () => {
     assert.ok(
       thrownLiterals.length > 0,
-      'no `throw new Error(<literal>)` found in supervisor.ts — if it now throws a typed error or returns a sentinel, re-point this tripwire and re-check classifyBootFailure',
+      'no `throw new Error(<literal>)` found in supervisor.ts. If it now throws a typed error, returns a sentinel, or builds messages from constants, re-point this tripwire and re-check classifyBootFailure.',
     );
   });
 
-  it("classifies the supervisor's own supersession rejection as a state", () => {
+  it("classifies the supervisor's supersession rejection as a state, not a failure", () => {
     const superseded = thrownLiterals.filter(
       (message) => classifyBootFailure(new Error(message)).kind === 'superseded',
     );
     assert.equal(
       superseded.length >= 1,
       true,
-      `supervisor.ts throws ${JSON.stringify(thrownLiterals)}, none of which classifies as 'superseded'. The marker was renamed or removed, and the destructive boot-failure dialog is back during updates.`,
+      `none of supervisor.ts's thrown literals classifies as 'superseded': ${JSON.stringify(thrownLiterals)}. If the supersession signal was renamed, SUPERSEDED_MARKER needs updating — otherwise a discarded boot is presented as a failure with two destructive buttons.`,
     );
   });
 
-  it("does not classify the supervisor's real failures as a state", () => {
-    // Guards the opposite regression: a marker so loose that a genuine failure
-    // gets the harmless wait-dialog and the user is never told anything broke.
-    const fatal = thrownLiterals.filter(
-      (message) => classifyBootFailure(new Error(message)).kind === 'fatal',
-    );
-    assert.ok(
-      fatal.length >= 1,
-      `every literal in supervisor.ts classified as 'superseded': ${JSON.stringify(thrownLiterals)}`,
-    );
-  });
+  /**
+   * The inverse regression, asserted PER LITERAL.
+   *
+   * A cardinality check ("at least one literal is fatal") is near-vacuous: it
+   * passes while `SUPERSEDED_MARKER` is loose enough to swallow a real failure.
+   * Loosening it to `/superseded|did not become healthy/` left the suite green
+   * while making a hard boot timeout render as "omadia is applying an update,
+   * please wait" — forever. Only a marker matching literally everything failed.
+   *
+   * So each genuinely-fatal signal is named and checked on its own.
+   */
+  const MUST_BE_FATAL: ReadonlyArray<{ readonly label: string; readonly match: RegExp }> = [
+    { label: 'health-check timeout', match: /did not become healthy/i },
+    { label: 'start refused while busy', match: /cannot start while/i },
+    { label: 'restart refused while stopping', match: /cannot restart while stopping/i },
+  ];
+
+  for (const { label, match } of MUST_BE_FATAL) {
+    it(`classifies the ${label} rejection as fatal`, () => {
+      const literal = thrownLiterals.find((message) => match.test(message));
+      assert.ok(
+        literal,
+        `supervisor.ts no longer throws a literal matching ${String(match)} (${label}). Found: ${JSON.stringify(thrownLiterals)}. Re-point this expectation.`,
+      );
+      assert.equal(
+        classifyBootFailure(new Error(literal)).kind,
+        'fatal',
+        `"${literal}" classified as a state rather than a failure. SUPERSEDED_MARKER is too loose: this failure would render as "applying an update, please wait" and the user would never be told anything broke.`,
+      );
+    });
+  }
 });
