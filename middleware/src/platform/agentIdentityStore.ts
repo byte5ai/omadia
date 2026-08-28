@@ -1,5 +1,5 @@
 /**
- * `agent_identities` store (#914) — backing migration 0051.
+ * `agent_identities` store (#914) — backing migration 0052.
  *
  * The identity of a DEPLOYED agent: what it is called, what it says about
  * itself, how it behaves, what colour and face it wears. Sits

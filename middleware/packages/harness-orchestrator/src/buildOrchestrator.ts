@@ -106,7 +106,7 @@ export interface AgentRuntimeConfig {
   readonly personaSkills?: readonly OrchestratorPersonaSkill[];
   /**
    * #914 — this Agent's authored behaviour text (`agent_identities.
-   * instructions`, migration 0051), which REPLACES the platform-wide
+   * instructions`, migration 0052), which REPLACES the platform-wide
    * `OrchestratorDeps.assistantIdentity` for this Agent.
    *
    * Same slot, not an additional block: `assistantIdentity` is the opening

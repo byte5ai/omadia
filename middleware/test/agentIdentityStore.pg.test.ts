@@ -2,7 +2,7 @@
  * #914 — `agent_identities` store against a real Postgres.
  *
  * The schema is applied from the ACTUAL migration files (0001 for `agents`,
- * which 0051 references, then 0051), each twice, so this suite doubles as the
+ * which 0052 references, then 0052), each twice, so this suite doubles as the
  * double-apply proof the migrations README demands and so the store and the
  * migration cannot drift apart silently: the accent-colour CHECK, the
  * revision CHECK, the cascade from `agents` and the one-row-per-agent primary
@@ -81,7 +81,7 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
     for (const file of [
       '0001_multi_orchestrator.sql',
       '0002_fix_notify_trigger.sql',
-      '0051_agent_identities.sql',
+      '0052_agent_identities.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       // Twice: the schema CI gate double-applies every file in the series.

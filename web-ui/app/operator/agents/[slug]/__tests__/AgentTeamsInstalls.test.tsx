@@ -252,6 +252,96 @@ describe('AgentTeamsInstalls (#866)', () => {
     expect(screen.queryByText(/team_install_conflict/)).toBeNull();
   });
 
+  // ── migration 0051: several bindings, shown by NAME ──────────────────
+
+  it('lists every attached team by name, resolving the id beneath it', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [
+          {
+            team_id: 'team-abc',
+            team_display_name: 'Marketing',
+            display_name_synced_at: '2026-08-28T08:00:00.000Z',
+            teams_app_id: 'app-xyz',
+            installed_at: '2026-08-25T09:00:00.000Z',
+            evidence: 'install_row',
+          },
+          {
+            team_id: 'team-def',
+            team_display_name: 'Vertrieb',
+            display_name_synced_at: '2026-08-28T08:00:00.000Z',
+            teams_app_id: 'app-xyz',
+            installed_at: '2026-08-26T09:00:00.000Z',
+            evidence: 'install_row',
+          },
+        ],
+        capabilities: capabilities({ uninstall: true, multi_team: true }),
+      }),
+    );
+    await renderPanel();
+
+    // Both bindings are listed — the whole point of the persisted table.
+    expect(await screen.findByText('Marketing')).toBeTruthy();
+    expect(screen.getByText('Vertrieb')).toBeTruthy();
+    // The id stays visible: it is what addresses the team unambiguously.
+    expect(screen.getByText('team-abc')).toBeTruthy();
+    expect(screen.getByText('team-def')).toBeTruthy();
+  });
+
+  it('falls back to the bare id, and says why, when no name was resolved', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [
+          {
+            team_id: 'team-abc',
+            team_display_name: null,
+            display_name_synced_at: null,
+            teams_app_id: 'app-xyz',
+            installed_at: '2026-08-25T09:00:00.000Z',
+            evidence: 'install_row',
+          },
+        ],
+      }),
+    );
+    await renderPanel();
+
+    expect(await screen.findByText('team-abc')).toBeTruthy();
+    // A naked GUID with no explanation reads as a bug; the copy says it is not.
+    expect(
+      screen.getByText(
+        'Name not resolved — the M365 connector cannot provide it right now.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('names the team in the uninstall confirmation, id included', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [
+          {
+            team_id: 'team-abc',
+            team_display_name: 'Marketing',
+            display_name_synced_at: '2026-08-28T08:00:00.000Z',
+            teams_app_id: 'app-xyz',
+            installed_at: '2026-08-25T09:00:00.000Z',
+            evidence: 'install_row',
+          },
+        ],
+        capabilities: capabilities({ uninstall: true }),
+      }),
+    );
+    const user = await renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Uninstall' }));
+    // Confirming a destructive action against a GUID alone asks the operator
+    // to verify something they cannot read.
+    expect(
+      screen.getByText(
+        "The orchestrator's app is removed from the team “Marketing” (team-abc) and stops answering there.",
+      ),
+    ).toBeTruthy();
+  });
+
   it('uninstalls behind a confirm once the connector publishes one', async () => {
     mockGetAgentTeams.mockResolvedValue(
       view({ capabilities: capabilities({ uninstall: true }) }),

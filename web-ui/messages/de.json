@@ -1980,6 +1980,8 @@
       "uninstallBusy": "Wird deinstalliert",
       "uninstallTitle": "App aus diesem Team entfernen?",
       "uninstallBody": "Die App des Orchestrators wird aus Team {teamId} entfernt und antwortet dort nicht mehr.",
+      "uninstallBodyNamed": "Die App des Orchestrators wird aus dem Team „{teamName}“ ({teamId}) entfernt und antwortet dort nicht mehr.",
+      "teamNameUnresolved": "Name nicht aufgelöst — der M365-Connector kann ihn gerade nicht liefern.",
       "uninstallConfirm": "Entfernen",
       "uninstallAlreadyAbsent": "Die App war nicht in Team {teamId} installiert — die Zuordnung wurde aufgehoben.",
       "uninstalled": "App aus Team {teamId} entfernt.",

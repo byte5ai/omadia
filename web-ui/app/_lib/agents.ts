@@ -979,13 +979,34 @@ export function isSeededAgentDescription(
 /** One team the agent's Teams app is known to be installed in. */
 export interface InstalledTeamDto {
   team_id: string;
+  /**
+   * Graph display name of the team, as the middleware last resolved it —
+   * `null` when it never could (connector absent, below 0.5.0, or the team is
+   * not visible). Optional on the wire: a middleware predating migration 0051
+   * omits the field entirely, which {@link parseInstalledTeamName} narrows to
+   * `null` so the UI shows the id alone instead of an `undefined` label.
+   */
+  team_display_name?: string | null;
+  /** When that name was last refreshed. Presentational only. */
+  display_name_synced_at?: string | null;
   /** Catalog id of the installed app; null until the upload step ran. */
   teams_app_id: string | null;
   /** ISO timestamp of the row write that recorded the install — NOT a Graph
    *  timestamp, the connector reports none. */
   installed_at: string | null;
-  /** Where the entry comes from. Derived, never enumerated. */
-  evidence: 'identity_row';
+  /**
+   * Where the entry comes from — a persisted binding
+   * (`agent_teams_installs`, migration 0051) or the legacy single-column
+   * derivation. Neither is a live Graph enumeration.
+   */
+  evidence: 'identity_row' | 'install_row';
+}
+
+/** The team's name, or `null` — the one place the wire's optional/nullable
+ *  field is narrowed, so no component renders `undefined` into a label. */
+export function parseInstalledTeamName(team: InstalledTeamDto): string | null {
+  const name = team.team_display_name;
+  return typeof name === 'string' && name.trim() !== '' ? name : null;
 }
 
 export type TeamsConsentStatus = 'granted' | 'missing' | 'unknown';

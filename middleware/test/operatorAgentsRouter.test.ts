@@ -60,6 +60,7 @@ import {
   TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
   teamsAssignmentCapabilities,
   type OperatorTeamsIdentityRecord,
+  type OperatorTeamsInstallRecord,
 } from '../src/routes/operatorAgents.js';
 import type { TeamsProvisionerAccessor } from '../src/platform/teamsProvisionerService.js';
 import {
@@ -397,6 +398,46 @@ class FakeTeamsProvisioner {
 /** A connector too old to know about uninstalls: no method, not a stub. */
 class LegacyTeamsProvisioner {}
 
+/** Migration 0051 — the persisted team↔agent bindings, in memory. Bound only
+ *  by the multi-team cases below, so every pre-existing test keeps running
+ *  against the single-column read model it was written for. */
+class FakeTeamsInstallStore {
+  rows: OperatorTeamsInstallRecord[] = [];
+  nameWrites: Array<{ teamId: string; displayName: string }> = [];
+  removeCalls: Array<{ agentId: string; teamId: string }> = [];
+
+  listForAgent(agentId: string): Promise<readonly OperatorTeamsInstallRecord[]> {
+    return Promise.resolve(this.rows.filter((row) => row.agentId === agentId));
+  }
+
+  setDisplayName(
+    agentId: string,
+    teamId: string,
+    displayName: string,
+  ): Promise<boolean> {
+    this.nameWrites.push({ teamId, displayName });
+    const row = this.rows.find(
+      (entry) => entry.agentId === agentId && entry.teamId === teamId,
+    );
+    if (!row) return Promise.resolve(false);
+    this.rows = this.rows.map((entry) =>
+      entry === row
+        ? { ...entry, teamDisplayName: displayName, displayNameSyncedAt: new Date() }
+        : entry,
+    );
+    return Promise.resolve(true);
+  }
+
+  remove(agentId: string, teamId: string): Promise<boolean> {
+    this.removeCalls.push({ agentId, teamId });
+    const before = this.rows.length;
+    this.rows = this.rows.filter(
+      (entry) => !(entry.agentId === agentId && entry.teamId === teamId),
+    );
+    return Promise.resolve(this.rows.length < before);
+  }
+}
+
 /** W1a (#860) — stubbed provisioning job runner. `enqueue` returns a promise
  *  that NEVER settles: if the POST handler awaited the run, its test would
  *  hang into the suite timeout, so a green run proves the async contract. */
@@ -479,6 +520,12 @@ describe('createOperatorAgentsRouter', () => {
    *  `undefined` by default so every pre-existing test keeps the exact mount
    *  it was written against; the sync tests below bind it per case. */
   let installedPlugins: InstalledRegistry | undefined;
+  /** Migration 0051 — `undefined` keeps the pre-0051 contract every existing
+   *  case pins; the multi-team cases bind it per test. */
+  let teamsInstalls: FakeTeamsInstallStore | undefined;
+  /** Team-name resolver the route backfills from. `undefined` models a
+   *  connector below 0.5.0, which has no `getTeam`. */
+  let resolveTeamName: ((teamId: string) => Promise<string | null>) | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -508,6 +555,8 @@ describe('createOperatorAgentsRouter', () => {
           isProvisionerInstalled: () => provisionerInstalled,
           getProvisioner: () =>
             provisioner as unknown as TeamsProvisionerAccessor | undefined,
+          ...(teamsInstalls === undefined ? {} : { installs: teamsInstalls }),
+          ...(resolveTeamName === undefined ? {} : { resolveTeamName }),
         }),
       }),
     );
@@ -530,6 +579,8 @@ describe('createOperatorAgentsRouter', () => {
     provisionerInstalled = true;
     provisioner = new FakeTeamsProvisioner();
     installedPlugins = undefined;
+    teamsInstalls = undefined;
+    resolveTeamName = undefined;
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
@@ -2034,6 +2085,10 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(body.teams, [
       {
         team_id: '19:team-a',
+        // No installs store is bound in this suite, so nothing ever resolved
+        // a name — the UI shows the bare id rather than inventing one.
+        team_display_name: null,
+        display_name_synced_at: null,
         teams_app_id: 'teams-app-789',
         installed_at: '2026-08-02T11:00:00.000Z',
         // The entry says where it comes from: the row, never a Graph listing.
@@ -2173,7 +2228,12 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(teamsStore.ensureCalls, []);
   });
 
-  it('POST /:slug/teams → 409 for a SECOND team, writing nothing', async () => {
+  // Without an installs store bound (migration 0051), a second team is still
+  // refused: `agent_teams_identities.team_id` is the only slot there is, and
+  // accepting would overwrite the record of an install that stays live in
+  // Graph. The multi-team case is covered by its own suite below, which binds
+  // the store.
+  it('POST /:slug/teams → 409 for a SECOND team without an installs store, writing nothing', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
     const res = await fetch(`${baseUrl}/sales/teams`, {
@@ -2191,12 +2251,177 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(body.error, 'team_install_conflict');
     assert.equal(body.installed_team_id, '19:team-a');
     assert.equal(body.requested_team_id, '19:team-b');
-    assert.match(body.message, /no uninstall/);
+    assert.match(body.message, /agent_teams_installs/);
     // The tracked install must survive a refused re-target: overwriting the
     // single team_id would leave the team-a install with nothing recording it.
     assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
     assert.deepEqual(teamsStore.ensureCalls, []);
     assert.deepEqual(teamsRunner.enqueueCalls, []);
+  });
+
+  // ── migration 0051: persisted bindings, several teams, resolved names ──
+  //
+  // The symptom this closes: before the installs table the "binding" was the
+  // identity row's single `team_id`, so a second team could only be recorded
+  // by destroying the first — which is why bindings looked like they did not
+  // persist. These cases bind the store and pin the contract that replaces it.
+
+  function seedInstall(
+    agentId: string,
+    teamId: string,
+    patch: Partial<OperatorTeamsInstallRecord> = {},
+  ): void {
+    teamsInstalls ??= new FakeTeamsInstallStore();
+    teamsInstalls.rows.push({
+      agentId,
+      teamId,
+      teamsAppId: 'teams-app-789',
+      teamDisplayName: null,
+      displayNameSyncedAt: null,
+      installedAt: new Date('2026-08-02T11:00:00.000Z'),
+      ...patch,
+    });
+  }
+
+  it('GET /:slug/teams lists EVERY persisted binding and reports multi_team', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+    seedInstall(agent.id, '19:team-a', { teamDisplayName: 'Marketing' });
+    seedInstall(agent.id, '19:team-b', {
+      installedAt: new Date('2026-08-03T09:00:00.000Z'),
+    });
+    const res = await fetch(`${baseUrl}/sales/teams`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      teams: Array<Record<string, unknown>>;
+      capabilities: typeof TEAMS_ASSIGNMENT_CAPABILITIES;
+    };
+    assert.deepEqual(
+      body.teams.map((team) => [team['team_id'], team['team_display_name']]),
+      [
+        ['19:team-a', 'Marketing'],
+        // Never resolved — the UI shows the id, it does not invent a label.
+        ['19:team-b', null],
+      ],
+    );
+    // Both entries say they came from a recorded install, not a Graph listing.
+    assert.deepEqual(
+      body.teams.map((team) => team['evidence']),
+      ['install_row', 'install_row'],
+    );
+    assert.equal(body.capabilities.multi_team, true);
+    assert.equal(body.capabilities.unsupported_reason['multi_team'], undefined);
+    // Still not enumerable — the connector publishes no listing method, and
+    // saying otherwise would claim knowledge of installs made outside omadia.
+    assert.equal(body.capabilities.enumerate, false);
+  });
+
+  it('GET /:slug/teams backfills a missing team name and PERSISTS it', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+    seedInstall(agent.id, '19:team-a');
+    const lookups: string[] = [];
+    resolveTeamName = (teamId) => {
+      lookups.push(teamId);
+      return Promise.resolve('Marketing');
+    };
+    const res = await fetch(`${baseUrl}/sales/teams`);
+    const body = (await res.json()) as { teams: Array<Record<string, unknown>> };
+    assert.equal(body.teams[0]?.['team_display_name'], 'Marketing');
+    assert.deepEqual(lookups, ['19:team-a']);
+    // Written through, so the next read needs no lookup — and so the name
+    // survives a connector that is later removed or downgraded.
+    assert.deepEqual(teamsInstalls?.nameWrites, [
+      { teamId: '19:team-a', displayName: 'Marketing' },
+    ]);
+  });
+
+  it('GET /:slug/teams survives a failing name lookup — ids, never a 500', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+    seedInstall(agent.id, '19:team-a');
+    resolveTeamName = () => Promise.reject(new Error('graph down'));
+    const res = await fetch(`${baseUrl}/sales/teams`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { teams: Array<Record<string, unknown>> };
+    assert.equal(body.teams[0]?.['team_id'], '19:team-a');
+    assert.equal(body.teams[0]?.['team_display_name'], null);
+  });
+
+  it('POST /:slug/teams accepts an ADDITIONAL team once bindings persist', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedInstall(agent.id, '19:team-a');
+    const res = await fetch(`${baseUrl}/sales/teams`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-b' }),
+    });
+    assert.equal(res.status, 202);
+    const body = (await res.json()) as { team_id: string; already_installed: boolean };
+    assert.equal(body.team_id, '19:team-b');
+    assert.equal(body.already_installed, false);
+    // The chain is resumed for the NEW team; the existing binding is untouched.
+    assert.deepEqual(teamsRunner.enqueueCalls, [
+      { agentId: agent.id, teamId: '19:team-b' },
+    ]);
+    assert.deepEqual(
+      teamsInstalls?.rows.map((row) => row.teamId),
+      ['19:team-a'],
+    );
+  });
+
+  it('POST /:slug/teams is idempotent per BINDING, not per identity row', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    // The identity's scratch `team_id` points elsewhere on purpose: the answer
+    // must come from the bindings table, which is the record of what happened.
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-b' });
+    seedInstall(agent.id, '19:team-a');
+    const res = await fetch(`${baseUrl}/sales/teams`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ team_id: '19:team-a' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { already_installed: boolean }).already_installed, true);
+    assert.deepEqual(teamsRunner.enqueueCalls, []);
+  });
+
+  it('DELETE /:slug/teams/:teamId drops ONE binding and leaves the rest installed', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedInstall(agent.id, '19:team-a');
+    seedInstall(agent.id, '19:team-b');
+    const res = await fetch(`${baseUrl}/sales/teams/19%3Ateam-a`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      team_id: string;
+      state: string;
+      remaining_team_ids: string[];
+    };
+    assert.equal(body.team_id, '19:team-a');
+    assert.deepEqual(body.remaining_team_ids, ['19:team-b']);
+    // An agent still installed somewhere is still installed — walking the
+    // identity back to catalog_uploaded would report team-b as pending.
+    assert.equal(body.state, 'installed');
+    assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
+    assert.deepEqual(
+      teamsInstalls?.rows.map((row) => row.teamId),
+      ['19:team-b'],
+    );
+  });
+
+  it('DELETE /:slug/teams/:teamId → 404 for a team this agent is not bound to', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedInstall(agent.id, '19:team-a');
+    const res = await fetch(`${baseUrl}/sales/teams/19%3Aghost`, { method: 'DELETE' });
+    assert.equal(res.status, 404);
+    assert.equal(
+      ((await res.json()) as { error: string }).error,
+      'team_install_not_found',
+    );
+    assert.deepEqual(teamsInstalls?.removeCalls, []);
   });
 
   it('POST /:slug/teams: 400 without team_id, 404 unknown agent, 503 without the provisioner', async () => {

@@ -308,11 +308,14 @@ export interface UninstallFromTeamResult {
  * `installToTeam` since connector 0.4.0 (byte5ai/omadia#900) — but there is
  * still no way to LIST the teams an app is installed in (`getCatalogApp`
  * answers tenant-catalog presence, never a team install). The operator's
- * team<->agent read model therefore still DERIVES what it reports from
- * `agent_teams_identities` and marks enumeration as unsupported
- * (`routes/operatorAgents.ts` -> `teamsAssignmentCapabilities`). Widening
- * this mirrored contract is a connector change, not a middleware one: add
- * the methods there first, then mirror them here.
+ * team<->agent read model therefore RECORDS every install it performs
+ * (`agent_teams_installs`, migration 0051) and keeps marking live
+ * enumeration as unsupported (`routes/operatorAgents.ts` ->
+ * `teamsAssignmentCapabilities`): the list is what omadia did, not what
+ * Graph currently holds. Widening this mirrored contract is a connector
+ * change, not a middleware one: add the methods there first, then mirror
+ * them here — which is exactly how `getTeam` (>= 0.5.0) arrived, and it
+ * resolves a NAME for a known id rather than enumerating anything.
  *
  * `uninstallFromTeam` is OPTIONAL on this interface on purpose — see the
  * module doc's version-skew note. Never call it without
@@ -351,6 +354,45 @@ export interface TeamsProvisionerAccessor {
    * with {@link supportsTeamUninstall}.
    */
   uninstallFromTeam?(input: UninstallFromTeamInput): Promise<UninstallFromTeamResult>;
+
+  /**
+   * Connector >= 0.5.0 only — ABSENT on older installs. Guard every call
+   * with {@link supportsTeamLookup}.
+   *
+   * Resolves ONE team id to its Graph display name. Read-only and additive:
+   * every screen that shows a team keeps working without it, showing the id
+   * alone.
+   */
+  getTeam?(input: GetTeamInput): Promise<GetTeamResult>;
+}
+
+/** Input of the optional {@link TeamsProvisionerAccessor.getTeam}. */
+export interface GetTeamInput {
+  /** Teams team (group) id — the AAD group object id. */
+  readonly teamId: string;
+}
+
+/**
+ * Result of {@link TeamsProvisionerAccessor.getTeam}.
+ *
+ * `found: false` is the ordinary answer for a team that was deleted or that
+ * the tenant app cannot see — NOT an error. The caller then keeps whatever
+ * name it had cached rather than blanking a label over a transient lookup.
+ */
+export type GetTeamResult =
+  | { readonly found: true; readonly teamId: string; readonly displayName: string }
+  | { readonly found: false };
+
+/**
+ * Does the CURRENTLY INSTALLED connector publish the team lookup
+ * (connector >= 0.5.0)? Same shape and same reason as
+ * {@link supportsTeamUninstall}: the contract is mirrored, not imported, so
+ * a middleware newer than its connector must ASK before it calls.
+ */
+export function supportsTeamLookup(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.getTeam === 'function';
 }
 
 /**
@@ -566,6 +608,18 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
             (raw.uninstallFromTeam as NonNullable<
               TeamsProvisionerAccessor['uninstallFromTeam']
             >).call(raw, input),
+        }
+      : {}),
+    // Same conditional-spread contract as `uninstallFromTeam` above, for the
+    // same reason: `supportsTeamLookup` must read the WRAPPER and still get
+    // the truth about the connector behind it.
+    ...(typeof raw.getTeam === 'function'
+      ? {
+          getTeam: (input: GetTeamInput) =>
+            (raw.getTeam as NonNullable<TeamsProvisionerAccessor['getTeam']>).call(
+              raw,
+              input,
+            ),
         }
       : {}),
   };

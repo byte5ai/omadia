@@ -176,10 +176,11 @@ describe('teams provisioning — republish of an installed identity (#914)', () 
       'installToTeam:team-42:catalog-77',
     ]);
     assert.equal(store.row.state, 'installed');
-    // Nothing in the run demotes the identity.
+    // Nothing in the run demotes the identity: the only state write is step
+    // 5 re-asserting the terminal one it already had.
     assert.deepEqual(
-      store.updates.filter((u) => u.state !== undefined),
-      [],
+      store.updates.flatMap((u) => (u.state === undefined ? [] : [u.state])),
+      ['installed'],
     );
   });
 

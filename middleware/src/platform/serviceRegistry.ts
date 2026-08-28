@@ -75,8 +75,11 @@ export type ServiceName =
   // operator teams-identity routes resolve late-bound.
   | 'teamsProvisioner'
   | 'agentTeamsIdentityStore'
+  // Migration 0051 — the persisted team<->agent bindings, consumed by the
+  // operator teams routes and the provisioning runner.
+  | 'agentTeamsInstallStore'
   | 'teamsProvisioningJobRunner'
-  // #914 — the agent identity store (migration 0051). Kernel boot
+  // #914 — the agent identity store (migration 0052). Kernel boot
   // registration; the operator identity routes and the Teams app-package
   // loader both resolve it late-bound.
   | 'agentIdentityStore'
