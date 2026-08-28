@@ -13,6 +13,7 @@ import {
   writeUpdateAttempts,
 } from './updateAttempts';
 import { SNAPSHOTS_TO_KEEP, snapshotDirName, snapshotsToPrune } from './snapshotRetention';
+import { prepareInstall } from './installPreflight';
 
 let installing = false;
 // This flag is only safe because electron-updater's own checkForUpdates()
@@ -194,11 +195,12 @@ export async function checkForUpdatesManually(): Promise<void> {
 }
 
 /**
- * Clear a spent install marker.
+ * Clear the marker once the version it recorded is the one we are running.
  *
- * Running at all proves the previous handoff is history: either it succeeded
- * (our version is the one recorded) or the recorded version is no longer what
- * the feed offers, in which case a fresh count is the honest starting point.
+ * Running that version at all proves the handoff finally worked, so the count
+ * has done its job. A marker for some *other* version is left in place on
+ * purpose: whether it still matters is decided later, per offer, by the version
+ * comparisons in `installKeepsFailing` and `nextAttempt`.
  */
 function reconcileUpdateHistory(): void {
   const file = updateAttemptsFile();
@@ -218,38 +220,42 @@ function reconcileUpdateHistory(): void {
  * torn, unrestorable copy.
  */
 async function quiesceForInstall(version: string): Promise<boolean> {
-  try {
-    const sup = getActiveSupervisor();
-    if (sup) {
-      const outcome = await sup.stop();
-      if (!outcome.clean) {
-        log.error(
-          `[updater] aborting install of ${version}: still running - ${outcome.survivors.join(', ')}`,
-        );
-        await showUpdaterDialog({
-          type: 'error',
-          title: 'Update not applied',
-          message: `omadia could not shut down cleanly, so ${version} was not installed.`,
-          detail:
-            `These parts of omadia did not stop: ${outcome.survivors.join(', ')}.\n\n` +
-            'Your data was not changed. Quit omadia completely and try the update again. ' +
-            `If it keeps happening, attach this log:\n${logFile()}`,
-        });
-        return false;
-      }
-    }
-    snapshotDbDir(version);
-    return true;
-  } catch (err) {
-    log.error(`[updater] pre-install stop/snapshot failed for ${version}: ${String(err)}`);
+  const sup = getActiveSupervisor();
+  const result = await prepareInstall(
+    { stop: sup ? () => sup.stop() : null, snapshot: snapshotDbDir },
+    version,
+  );
+  if (result.ok) return true;
+
+  // Both branches leave the stack down, so both have to tell the user how to
+  // get back to a working app. Saying only "your data was not changed" left
+  // them looking at a dead window.
+  const relaunch =
+    'Your data was not changed. Quit omadia completely and start it again, then retry the update.';
+
+  if (result.reason === 'unclean') {
+    log.error(
+      `[updater] aborting install of ${version}: still running - ${result.survivors.join(', ')}`,
+    );
     await showUpdaterDialog({
       type: 'error',
       title: 'Update not applied',
-      message: `omadia could not prepare for the update, so ${version} was not installed.`,
-      detail: `${String(err)}\n\nYour data was not changed. Log:\n${logFile()}`,
+      message: `omadia could not shut down cleanly, so ${version} was not installed.`,
+      detail:
+        `These parts of omadia did not stop: ${result.survivors.join(', ')}.\n\n` +
+        `${relaunch}\n\nIf it keeps happening, attach this log:\n${logFile()}`,
     });
     return false;
   }
+
+  log.error(`[updater] pre-install stop/snapshot failed for ${version}: ${result.error}`);
+  await showUpdaterDialog({
+    type: 'error',
+    title: 'Update not applied',
+    message: `omadia could not prepare for the update, so ${version} was not installed.`,
+    detail: `${result.error}\n\n${relaunch}\n\nLog:\n${logFile()}`,
+  });
+  return false;
 }
 
 /** Copy the embedded DB directory into a snapshot unique to this attempt. */
@@ -257,28 +263,42 @@ function snapshotDbDir(version: string): void {
   const src = embeddedDbDir();
   if (!fs.existsSync(src)) return;
   const root = snapshotDir();
+
+  // Prune BEFORE copying, and to one below the cap, so peak disk usage is
+  // SNAPSHOTS_TO_KEEP clusters rather than one more. Copying first meant a
+  // full disk threw ENOSPC before pruning had ever run, so nothing was
+  // reclaimed and every later update failed identically - a permanent block
+  // instead of the data-loss bug #934 removed. Both orders have to be safe.
+  pruneOldSnapshots(root, Math.max(0, SNAPSHOTS_TO_KEEP - 1));
+
   // A name per attempt, not per version: the old scheme removed the existing
   // directory and wrote the same name again, so a second attempt destroyed the
   // backup the first had made (#934).
   const dest = path.join(root, snapshotDirName(version, new Date()));
-  fs.cpSync(src, dest, { recursive: true });
+  try {
+    fs.cpSync(src, dest, { recursive: true });
+  } catch (err) {
+    // A half-copied directory is worse than no directory: it looks like a
+    // backup and would be counted as one by retention.
+    fs.rmSync(dest, { recursive: true, force: true });
+    throw err;
+  }
   log.info(`[updater] snapshotted DB → ${dest}`);
-  pruneOldSnapshots(root);
 }
 
 /** Keep the newest few snapshots; each is a full copy of the cluster. */
-function pruneOldSnapshots(root: string): void {
+function pruneOldSnapshots(root: string, keep: number): void {
   try {
     const names = fs.readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);
-    for (const stale of snapshotsToPrune(names, SNAPSHOTS_TO_KEEP)) {
+    for (const stale of snapshotsToPrune(names, keep)) {
       fs.rmSync(path.join(root, stale), { recursive: true, force: true });
       log.info(`[updater] pruned old snapshot ${stale}`);
     }
   } catch (err) {
-    // Pruning is housekeeping: a failure here must never abort an update that
-    // has already taken its snapshot successfully.
+    // Pruning is housekeeping: a failure here must never abort an update whose
+    // snapshot has already been taken.
     log.warn(`[updater] snapshot pruning failed: ${String(err)}`);
   }
 }

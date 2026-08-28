@@ -34,7 +34,10 @@ function isRecord(value: unknown): value is UpdateAttemptRecord {
     candidate.version.length > 0 &&
     typeof candidate.attempts === 'number' &&
     Number.isInteger(candidate.attempts) &&
-    candidate.attempts >= 0
+    candidate.attempts >= 0 &&
+    // Validated rather than coerced: `lastAttemptAt` is typed `string`, so
+    // letting a number through here would hand callers a typed lie.
+    (candidate.lastAttemptAt === undefined || typeof candidate.lastAttemptAt === 'string')
   );
 }
 

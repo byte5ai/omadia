@@ -1,4 +1,5 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,7 +11,8 @@ import {
   platformDataDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
-import { startEmbeddedDb, stopEmbeddedDb, EmbeddedDb } from './embeddedDb';
+import { startEmbeddedDb, stopEmbeddedDb, isEmbeddedDbRunning } from './embeddedDb';
+import type { EmbeddedDb } from './embeddedDb';
 import { stopChild, isConfirmedStopped } from './childLifecycle';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
@@ -66,6 +68,15 @@ export class Supervisor extends EventEmitter {
    */
   private stopInFlight: Promise<StopOutcome> | null = null;
   /**
+   * Cleanup promises for boots that have not finished yet, each resolving with
+   * whatever that boot's own teardown could not kill.
+   *
+   * A superseded boot cleans up inside its own catch, which nobody used to
+   * await. So stop() could resolve `{clean: true}` while a superseded boot was
+   * still SIGTERM-ing its kernel - the same lie this class exists to remove.
+   */
+  private bootsInFlight = new Set<Promise<readonly string[]>>();
+  /**
    * Bumped on every stop/restart. A child's exit handler and the in-flight
    * health-poll loops compare against this so a process we intentionally killed
    * (or a boot we superseded) is never misreported as a crash.
@@ -105,16 +116,51 @@ export class Supervisor extends EventEmitter {
     }
     this.state = 'starting';
     const gen = ++this.generation;
-    // Children this particular boot spawned. `this.kernel`/`this.ui` can be
+
+    // Filled by this attempt's own cleanup with anything it could not kill, so
+    // a concurrent stop() can fold it into its outcome instead of reporting
+    // clean by omission.
+    const ownSurvivors: string[] = [];
+    const attempt = this.bootOnce(gen, ownSurvivors);
+    // Deliberately never rejects: the rejection belongs to our caller, while a
+    // waiting stop() only needs to know when cleanup finished and what is left.
+    const tracked = attempt.then(
+      (): readonly string[] => ownSurvivors,
+      (): readonly string[] => ownSurvivors,
+    );
+    this.bootsInFlight.add(tracked);
+    try {
+      return await attempt;
+    } finally {
+      this.bootsInFlight.delete(tracked);
+    }
+  }
+
+  private async bootOnce(gen: number, ownSurvivors: string[]): Promise<string> {
+    // Processes this particular boot spawned. `this.kernel`/`this.ui` can be
     // reassigned by a newer generation, so a superseded boot must reap what it
     // created from its own locals, not from the shared fields.
     let ownKernel: ChildProcess | null = null;
     let ownUi: ChildProcess | null = null;
+    let ownDb: EmbeddedDb | null = null;
 
     try {
       this.progress('starting-db', 'Starting embedded database…');
       if (!this.db) {
-        this.db = await startEmbeddedDb();
+        const db = await startEmbeddedDb();
+        // startEmbeddedDb() awaits a free port BEFORE it registers anything in
+        // module state, so a stop() inside that window found no database and
+        // reported a clean shutdown. Publishing this handle anyway would leave
+        // a live Postgres running out of the very bundle the installer is about
+        // to replace - the #926 loop, now with false reassurance on top. And
+        // assigning it when a stop() already killed it would poison the next
+        // boot, which skips `startEmbeddedDb()` whenever `this.db` is set and
+        // would then wait out a 90s health timeout against a dead server.
+        if (gen !== this.generation) {
+          ownDb = db;
+          throw new Error('boot superseded');
+        }
+        this.db = db;
       }
       // A stop() that landed while the database was coming up has already run
       // its teardown; anything we spawn from here on would be an orphan.
@@ -159,6 +205,9 @@ export class Supervisor extends EventEmitter {
       this.uiUrl = `http://127.0.0.1:${uiPort}`;
       await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen);
 
+      // Nothing checks the generation between that poll resolving and the state
+      // flip, and a stop() landing there would otherwise be overwritten.
+      this.assertLiveGeneration(gen);
       this.state = 'running';
       this.progress('ready', 'omadia is ready.');
       return this.uiUrl;
@@ -170,7 +219,7 @@ export class Supervisor extends EventEmitter {
       // cleanup here is what left an unowned kernel and Postgres running out of
       // the app bundle, and ShipIt then waited forever for a bundle it was not
       // allowed to replace (#927 → #926).
-      await this.reapOwnChildren(ownKernel, ownUi);
+      await this.reapOwnChildren(ownKernel, ownUi, ownDb, ownSurvivors);
       // The state and the shared fields belong to the live generation only.
       if (!superseded) {
         this.state = 'idle';
@@ -192,11 +241,15 @@ export class Supervisor extends EventEmitter {
   private async reapOwnChildren(
     ownKernel: ChildProcess | null,
     ownUi: ChildProcess | null,
+    ownDb: EmbeddedDb | null,
+    survivors: string[],
   ): Promise<void> {
-    await Promise.all([
+    const [uiOutcome, kernelOutcome] = await Promise.all([
       stopChild(ownUi, 'web-ui', log),
       stopChild(ownKernel, 'kernel', log),
     ]);
+    if (!isConfirmedStopped(uiOutcome)) survivors.push('web-ui');
+    if (!isConfirmedStopped(kernelOutcome)) survivors.push('kernel');
     if (ownUi !== null && this.ui === ownUi) {
       this.ui = null;
       this.uiUrl = null;
@@ -204,6 +257,27 @@ export class Supervisor extends EventEmitter {
     if (ownKernel !== null && this.kernel === ownKernel) {
       this.kernel = null;
     }
+    // Only ever set when this boot started the database itself and was then
+    // superseded, so there is no live generation depending on it.
+    if (ownDb !== null) {
+      try {
+        if (!(await ownDb.stop())) survivors.push('embedded-postgres');
+      } catch (err) {
+        log.error(`[db] stop failed for a superseded boot: ${String(err)}`);
+        survivors.push('embedded-postgres');
+      }
+    }
+  }
+
+  /**
+   * Wait for every in-flight boot to finish its own cleanup, and report what
+   * outlived it. Callers must invalidate the generation FIRST, otherwise a boot
+   * happily waits out its full 90s kernel health timeout before noticing.
+   */
+  private async settleInFlightBoots(): Promise<string[]> {
+    if (this.bootsInFlight.size === 0) return [];
+    const settled = await Promise.all([...this.bootsInFlight]);
+    return settled.flatMap((survivors) => [...survivors]);
   }
 
   private kernelEnv(port: number): NodeJS.ProcessEnv {
@@ -342,9 +416,16 @@ export class Supervisor extends EventEmitter {
       throw new Error('Cannot restart while stopping.');
     }
     this.state = 'stopping';
-    const survivors = await this.teardownChildren();
+    // Invalidate first, then wait. A boot we superseded stops the database it
+    // started itself, so restarting on top of one still in flight could
+    // otherwise pull the server out from under the boot we are about to do.
+    this.generation++;
+    const survivors = [
+      ...(await this.settleInFlightBoots()),
+      ...(await this.teardownChildren()),
+    ];
     if (survivors.length > 0) {
-      log.warn(`[boot] restarting with ${survivors.join(' + ')} still alive`);
+      log.warn(`[boot] restarting with ${[...new Set(survivors)].join(' + ')} still alive`);
     }
     this.state = 'idle';
     return this.start();
@@ -371,22 +452,43 @@ export class Supervisor extends EventEmitter {
 
   private async runStop(): Promise<StopOutcome> {
     this.state = 'stopping';
-    const survivors = [...(await this.teardownChildren())];
+    // Invalidate in-flight boots BEFORE waiting on them: their next generation
+    // checkpoint and their health polls (which re-check every 750ms) are what
+    // make them bail out promptly. Waiting first would mean sitting through a
+    // full 90s kernel health timeout.
+    this.generation++;
+    const survivors = [...(await this.settleInFlightBoots())];
+    survivors.push(...(await this.teardownChildren()));
+
     // Reap from module state, not from `this.db`: a start() interrupted before
     // it assigned the handle still left a live Postgres, and the old
     // `if (this.db)` guard walked straight past it (#927).
-    try {
-      if (!(await stopEmbeddedDb())) survivors.push('embedded-postgres');
-    } catch (err) {
-      log.error(`[db] stop failed: ${String(err)}`);
-      survivors.push('embedded-postgres');
+    survivors.push(...(await this.stopDatabase()));
+    // A boot that was inside startEmbeddedDb()'s port lookup when we
+    // invalidated it registers its server only afterwards. It has settled by
+    // now, so a database still registered here is a real leak, not a race.
+    if (isEmbeddedDbRunning()) {
+      log.warn('[db] a database was still registered after shutdown; stopping it again');
+      survivors.push(...(await this.stopDatabase()));
     }
+
     this.db = null;
     this.state = 'idle';
-    if (survivors.length > 0) {
-      log.error(`[boot] shutdown incomplete — still alive: ${survivors.join(', ')}`);
+    const unique = [...new Set(survivors)];
+    if (unique.length > 0) {
+      log.error(`[boot] shutdown incomplete — still alive: ${unique.join(', ')}`);
     }
-    return { clean: survivors.length === 0, survivors };
+    return { clean: unique.length === 0, survivors: unique };
+  }
+
+  /** Stop the embedded database, returning a survivor label if it outlived it. */
+  private async stopDatabase(): Promise<string[]> {
+    try {
+      return (await stopEmbeddedDb()) ? [] : ['embedded-postgres'];
+    } catch (err) {
+      log.error(`[db] stop failed: ${String(err)}`);
+      return ['embedded-postgres'];
+    }
   }
 }
 

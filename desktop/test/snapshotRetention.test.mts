@@ -49,12 +49,14 @@ test('nothing is pruned while under the cap', () => {
   assert.deepEqual(snapshotsToPrune(names, 3), []);
 });
 
-test('the oldest snapshots are pruned down to the cap', () => {
+test('the oldest snapshots are pruned down to the cap, oldest first', () => {
   const oldest = snapshotDirName('0.139.0', at('2026-08-25T10:00:00.000Z'));
   const older = snapshotDirName('0.140.0', at('2026-08-26T10:00:00.000Z'));
   const newer = snapshotDirName('0.140.1', at('2026-08-27T10:00:00.000Z'));
   const newest = snapshotDirName('0.140.2', at('2026-08-28T10:00:00.000Z'));
-  assert.deepEqual(snapshotsToPrune([newer, oldest, newest, older], 2), [older, oldest]);
+  // Oldest first, so a caller that dies part-way through has deleted the least
+  // valuable backups and still holds the most recent one.
+  assert.deepEqual(snapshotsToPrune([newer, oldest, newest, older], 2), [oldest, older]);
 });
 
 test('stampless legacy snapshots are pruned before stamped ones', () => {

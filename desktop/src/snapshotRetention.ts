@@ -53,6 +53,9 @@ export function parseSnapshotName(name: string): ParsedSnapshotName | null {
 /**
  * The snapshot directory names to delete, oldest first, so that at most `keep`
  * remain. Anything that is not a snapshot name is left completely alone.
+ *
+ * Oldest-first is deliberate: a caller that crashes part-way through the list
+ * has then removed the least valuable backups and kept the most recent one.
  */
 export function snapshotsToPrune(
   names: readonly string[],
@@ -74,5 +77,8 @@ export function snapshotsToPrune(
   });
 
   const surplus = Math.max(0, newestFirst.length - Math.max(0, keep));
-  return newestFirst.slice(newestFirst.length - surplus).map((entry) => entry.name);
+  return newestFirst
+    .slice(newestFirst.length - surplus)
+    .map((entry) => entry.name)
+    .reverse();
 }
