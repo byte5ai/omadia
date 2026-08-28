@@ -2,9 +2,17 @@ import { app, dialog, type MessageBoxOptions } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
 import path from 'node:path';
-import { embeddedDbDir, snapshotDir } from './paths';
+import { embeddedDbDir, snapshotDir, updateAttemptsFile } from './paths';
 import { getActiveSupervisor } from './supervisor';
-import { log } from './log';
+import { log, logFile } from './log';
+import {
+  clearUpdateAttempts,
+  installKeepsFailing,
+  nextAttempt,
+  readUpdateAttempts,
+  writeUpdateAttempts,
+} from './updateAttempts';
+import { SNAPSHOTS_TO_KEEP, snapshotDirName, snapshotsToPrune } from './snapshotRetention';
 
 let installing = false;
 // This flag is only safe because electron-updater's own checkForUpdates()
@@ -52,6 +60,11 @@ export function initUpdater(): void {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = false; // we control install timing (after snapshot)
 
+  // We are running, so whatever we last handed to the installer either landed
+  // (running version matches) or is stale history for a version we have since
+  // moved past. Either way the counter has done its job (#926).
+  reconcileUpdateHistory();
+
   autoUpdater.on('error', (err) => {
     log.error(`[updater] ${String(err)}`);
     if (!takeManualCheckPending()) return;
@@ -84,6 +97,31 @@ export function initUpdater(): void {
   });
   autoUpdater.on('update-downloaded', async (info) => {
     log.info(`[updater] downloaded ${info.version}`);
+
+    // Offering the same version a third time, having twice failed to apply it,
+    // is the loop the tester hit: three prompts in nine minutes, three DB
+    // snapshots, no error, and the machine still on the old build. Say what is
+    // happening once instead (#926).
+    const history = readUpdateAttempts(updateAttemptsFile());
+    if (installKeepsFailing(history, info.version, app.getVersion())) {
+      log.error(
+        `[updater] ${info.version} was handed to the installer ${history?.attempts ?? 0}x ` +
+          `and we are still on ${app.getVersion()}; not offering it again`,
+      );
+      await showUpdaterDialog({
+        type: 'warning',
+        title: 'Update could not be applied',
+        message: `omadia could not install ${info.version}.`,
+        detail:
+          `The update was downloaded and applied ${history?.attempts ?? 0} times, but omadia is ` +
+          `still running ${app.getVersion()}. Something is preventing the installed ` +
+          'application from being replaced.\n\n' +
+          `Please install ${info.version} manually from the omadia releases page, and attach ` +
+          `this log if you report it:\n${logFile()}`,
+      });
+      return;
+    }
+
     // This restart decision is intentionally unbounded: installing an update
     // without explicit user consent would be worse than waiting for it here.
     const { response } = await dialog.showMessageBox({
@@ -97,17 +135,27 @@ export function initUpdater(): void {
     });
     if (response !== 0) return;
 
-    // Quiesce the stack FIRST so the embedded DB is flushed + closed before we
-    // copy its directory — a live cpSync could capture a torn, unrestorable
-    // snapshot. Then snapshot, then hand off to the installer.
     installing = true;
-    try {
-      const sup = getActiveSupervisor();
-      if (sup) await sup.stop();
-      snapshotDbDir(info.version);
-    } catch (err) {
-      log.error(`[updater] pre-install stop/snapshot failed (installing anyway): ${String(err)}`);
+    if (!(await quiesceForInstall(info.version))) {
+      // Handing a live stack to Squirrel is what caused the loop: ShipIt cannot
+      // replace a bundle whose kernel and Postgres are still running out of it,
+      // so it waits forever and the next launch is the old version again. Stop
+      // here instead of installing "anyway" (#926/#927).
+      installing = false;
+      return;
     }
+
+    try {
+      writeUpdateAttempts(
+        updateAttemptsFile(),
+        nextAttempt(history, info.version, new Date()),
+      );
+    } catch (err) {
+      // Losing the counter only costs us the ability to notice a repeat; it must
+      // not block an update the user just approved.
+      log.warn(`[updater] ${String(err)}`);
+    }
+
     // quitAndInstall drives the app quit itself; main's before-quit checks
     // isUpdateInstalling() and steps aside so the installer isn't bypassed.
     autoUpdater.quitAndInstall();
@@ -145,12 +193,92 @@ export async function checkForUpdatesManually(): Promise<void> {
   }
 }
 
-/** Copy the embedded DB directory into a timestamp-free, version-named snapshot. */
+/**
+ * Clear a spent install marker.
+ *
+ * Running at all proves the previous handoff is history: either it succeeded
+ * (our version is the one recorded) or the recorded version is no longer what
+ * the feed offers, in which case a fresh count is the honest starting point.
+ */
+function reconcileUpdateHistory(): void {
+  const file = updateAttemptsFile();
+  const history = readUpdateAttempts(file);
+  if (history === null) return;
+  if (history.version === app.getVersion()) {
+    log.info(`[updater] ${history.version} installed successfully; clearing attempt marker`);
+    clearUpdateAttempts(file);
+  }
+}
+
+/**
+ * Bring the stack down and snapshot the database, and report whether the app
+ * bundle is actually free for the installer to replace.
+ *
+ * Quiescing FIRST matters for the snapshot too: a live cpSync could capture a
+ * torn, unrestorable copy.
+ */
+async function quiesceForInstall(version: string): Promise<boolean> {
+  try {
+    const sup = getActiveSupervisor();
+    if (sup) {
+      const outcome = await sup.stop();
+      if (!outcome.clean) {
+        log.error(
+          `[updater] aborting install of ${version}: still running - ${outcome.survivors.join(', ')}`,
+        );
+        await showUpdaterDialog({
+          type: 'error',
+          title: 'Update not applied',
+          message: `omadia could not shut down cleanly, so ${version} was not installed.`,
+          detail:
+            `These parts of omadia did not stop: ${outcome.survivors.join(', ')}.\n\n` +
+            'Your data was not changed. Quit omadia completely and try the update again. ' +
+            `If it keeps happening, attach this log:\n${logFile()}`,
+        });
+        return false;
+      }
+    }
+    snapshotDbDir(version);
+    return true;
+  } catch (err) {
+    log.error(`[updater] pre-install stop/snapshot failed for ${version}: ${String(err)}`);
+    await showUpdaterDialog({
+      type: 'error',
+      title: 'Update not applied',
+      message: `omadia could not prepare for the update, so ${version} was not installed.`,
+      detail: `${String(err)}\n\nYour data was not changed. Log:\n${logFile()}`,
+    });
+    return false;
+  }
+}
+
+/** Copy the embedded DB directory into a snapshot unique to this attempt. */
 function snapshotDbDir(version: string): void {
   const src = embeddedDbDir();
   if (!fs.existsSync(src)) return;
-  const dest = path.join(snapshotDir(), `pgdata-pre-${version}`);
-  fs.rmSync(dest, { recursive: true, force: true });
+  const root = snapshotDir();
+  // A name per attempt, not per version: the old scheme removed the existing
+  // directory and wrote the same name again, so a second attempt destroyed the
+  // backup the first had made (#934).
+  const dest = path.join(root, snapshotDirName(version, new Date()));
   fs.cpSync(src, dest, { recursive: true });
   log.info(`[updater] snapshotted DB → ${dest}`);
+  pruneOldSnapshots(root);
+}
+
+/** Keep the newest few snapshots; each is a full copy of the cluster. */
+function pruneOldSnapshots(root: string): void {
+  try {
+    const names = fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    for (const stale of snapshotsToPrune(names, SNAPSHOTS_TO_KEEP)) {
+      fs.rmSync(path.join(root, stale), { recursive: true, force: true });
+      log.info(`[updater] pruned old snapshot ${stale}`);
+    }
+  } catch (err) {
+    // Pruning is housekeeping: a failure here must never abort an update that
+    // has already taken its snapshot successfully.
+    log.warn(`[updater] snapshot pruning failed: ${String(err)}`);
+  }
 }
