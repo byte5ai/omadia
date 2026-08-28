@@ -165,11 +165,11 @@ describe('cliInstallService', () => {
         done.error?.startsWith(
           'npm install failed — no output at all; npm was most likely not found.',
         ),
-        done.error,
+        done.error ?? '(no error)',
       );
       assert.match(done.error ?? '', /Searched PATH:/);
       assert.equal(seenPath, '/sentinel/bin:/sentinel/sbin');
-      assert.ok(done.error?.includes(seenPath ?? '<unset>'), done.error);
+      assert.ok(done.error?.includes(seenPath ?? '<unset>'), done.error ?? '(no error)');
       assert.equal(done.logTail, undefined);
     });
   });
@@ -184,7 +184,7 @@ describe('cliInstallService', () => {
       const searchedLine = (done.error ?? '')
         .split('\n')
         .find((line) => line.startsWith('Searched PATH:'));
-      assert.ok(searchedLine, done.error);
+      assert.ok(searchedLine, done.error ?? '(no error)');
       assert.ok(longPath.length > 1000, 'fixture PATH must exceed the cap to be a real test');
       assert.ok(searchedLine.length < 600, `searched-PATH line unbounded: ${searchedLine.length}`);
     });
