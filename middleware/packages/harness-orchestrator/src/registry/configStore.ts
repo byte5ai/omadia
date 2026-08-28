@@ -61,6 +61,17 @@ export interface AgentRow {
    * flag itself, not just to the scope it controls.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /**
+   * #914 — the agent's authored behaviour text (`agent_identities.
+   * instructions`). Read-only here: the identity is written through
+   * `platform/agentIdentityStore.ts`, and this column is joined in so the
+   * registry can build the Agent's system prompt from it without a second
+   * round trip per Agent.
+   *
+   * `null`/absent means "not authored" — the platform-wide assistant identity
+   * applies, exactly as before this column existed.
+   */
+  readonly instructions?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -230,6 +241,11 @@ interface AgentDbRow {
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
   context_memory?: string | null;
+  /** #914 — `agent_identities.instructions`, joined in by the three read
+   *  queries below. Absent on the RETURNING rows of the write paths, which do
+   *  not join: a write never changes the identity, and a caller that needs it
+   *  re-reads. */
+  identity_instructions?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -279,6 +295,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
+    instructions: row.identity_instructions ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -312,20 +329,33 @@ function mapPlatformSettings(
   };
 }
 
+/**
+ * #914 — every agent read joins the agent's authored identity, so the
+ * registry can build an Agent's system prompt from `instructions` without a
+ * per-Agent second query. `a.*` keeps the row shape every existing caller
+ * already gets; the LEFT JOIN keeps an agent without an identity intact.
+ *
+ * Only the TEXT column is joined. The identity's avatar columns are BYTEA and
+ * this query runs on every dashboard load and every registry rebuild.
+ */
+const AGENT_SELECT =
+  'SELECT a.*, i.instructions AS identity_instructions FROM agents a ' +
+  'LEFT JOIN agent_identities i ON i.agent_id = a.id';
+
 export class ConfigStore {
   constructor(private readonly pool: Pool) {}
 
   // ── agents ────────────────────────────────────────────────────────────
   async listAgents(): Promise<readonly AgentRow[]> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents ORDER BY slug',
+      `${AGENT_SELECT} ORDER BY a.slug`,
     );
     return rows.map(mapAgent);
   }
 
   async getAgentBySlug(slug: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents WHERE slug = $1',
+      `${AGENT_SELECT} WHERE a.slug = $1`,
       [slug],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;
@@ -333,7 +363,7 @@ export class ConfigStore {
 
   async getAgentById(id: string): Promise<AgentRow | undefined> {
     const { rows } = await this.pool.query<AgentDbRow>(
-      'SELECT * FROM agents WHERE id = $1',
+      `${AGENT_SELECT} WHERE a.id = $1`,
       [id],
     );
     return rows[0] ? mapAgent(rows[0]) : undefined;

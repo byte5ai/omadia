@@ -39,12 +39,14 @@ import { createMemoryBackendRouter } from './routes/memoryBackend.js';
 import { createChatRouter } from './routes/chat.js';
 import {
   createOperatorAgentsRouter,
+  type OperatorAgentIdentityStore,
   type OperatorTeamsIdentityDeps,
   type OperatorTeamsIdentityStore,
   type OperatorTeamsInstallStore,
   type OperatorTeamsProvisioningRunner,
 } from './routes/operatorAgents.js';
 import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
+import { AgentIdentityStore } from './platform/agentIdentityStore.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
 import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
@@ -1907,6 +1909,13 @@ async function main(): Promise<void> {
   if (graphPool) {
     const agentTeamsIdentityStore = new AgentTeamsIdentityStore(graphPool);
     serviceRegistry.provide('agentTeamsIdentityStore', agentTeamsIdentityStore);
+    // #914 — the agent's own identity (migration 0052): what it is called,
+    // says about itself and looks like. Registered next to the provisioning
+    // store because the app-package loader below reads it, but deliberately
+    // NOT part of it: an identity is editable whether or not this agent has
+    // a Teams bot at all.
+    const agentIdentityStore = new AgentIdentityStore(graphPool);
+    serviceRegistry.provide('agentIdentityStore', agentIdentityStore);
     // Migration 0051 — the PERSISTED team↔agent bindings. Registered next to
     // the identity store because both the operator routes and the job runner
     // consume it; without it the pair degrades to the single-column era
@@ -1935,6 +1944,23 @@ async function main(): Promise<void> {
           return entry ? path.dirname(entry.source_path) : undefined;
         },
         getPublicBaseUrl: teamsPublicBaseUrl,
+        // #914 — the agent's authored identity feeds the manifest (name,
+        // descriptions, accent colour, package version) and the icons. Read
+        // per run, never cached: an identity edited between two runs must
+        // reach the package the second one builds.
+        loadIdentity: async (agentId) => {
+          const record = await agentIdentityStore.getByAgentId(agentId);
+          if (!record) return undefined;
+          const icons = await agentIdentityStore.getIcons(agentId);
+          return {
+            displayName: record.displayName,
+            shortDescription: record.shortDescription,
+            longDescription: record.longDescription,
+            accentColor: record.accentColor,
+            revision: record.revision,
+            icons: icons ?? null,
+          };
+        },
       }),
       // #910 — the finishing move: after `installed`, write the identity's
       // `teams_bots` entry into the channel-teams plugin config and reactivate
@@ -3362,6 +3388,14 @@ async function main(): Promise<void> {
         };
         if (installStore === undefined) return teamsDeps;
         return { ...teamsDeps, installs: installStore };
+      },
+      // #914 — the agent identity routes. Registered by the same
+      // graphPool-guarded boot block as the provisioning stack, but resolved
+      // on its own: identity editing does not depend on Teams being wired.
+      getAgentIdentity: () => {
+        const store =
+          serviceRegistry.get<OperatorAgentIdentityStore>('agentIdentityStore');
+        return store ? { store } : undefined;
       },
     }),
   );

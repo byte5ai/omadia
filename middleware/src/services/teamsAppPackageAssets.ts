@@ -72,6 +72,35 @@ export function stableTeamsAppExternalId(agentId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * The agent's authored identity as this module needs it (#914) — a PORT, not
+ * the store type: this module must not learn about `pg`, and the store must
+ * not learn about Teams manifests. `platform/agentIdentityStore.ts` fills it.
+ *
+ * `displayName` is the AUTHORED name or `null`. Null falls back to the
+ * provisioning row's `display_name`, which is where the agent's registry name
+ * already landed when the identity was created — so the fallback chain lives
+ * in one place instead of being resolved again by every caller.
+ */
+export interface TeamsAppPackageIdentity {
+  readonly displayName: string | null;
+  readonly shortDescription: string | null;
+  readonly longDescription: string | null;
+  /** `#RRGGBB` or null to keep the product default. */
+  readonly accentColor: string | null;
+  /** Monotonic; rendered as the manifest version `1.0.<revision>`. */
+  readonly revision: number;
+  /** Uploaded icons. `null` = no avatar; `outline: null` = colour icon only. */
+  readonly icons: {
+    readonly color: Uint8Array;
+    readonly outline: Uint8Array | null;
+  } | null;
+}
+
+export type TeamsAppPackageIdentityLoader = (
+  agentId: string,
+) => Promise<TeamsAppPackageIdentity | undefined>;
+
 export interface TeamsAppPackageAssetOptions {
   /** Package root of the installed channel-teams plugin (the directory
    *  holding `manifest.yaml` and `appPackage/`), or undefined while the
@@ -82,8 +111,17 @@ export interface TeamsAppPackageAssetOptions {
    *  PUBLIC_BASE_URL) — host for validDomains / webApplicationInfo and base
    *  of the plugin's tab pages. */
   readonly getPublicBaseUrl: () => string | undefined;
-  /** Manifest `version` (per-package semver). Default `1.0.0`. */
+  /** Manifest `version` (per-package semver). Default `1.0.0`. Used only for
+   *  agents without an authored identity — an identity supplies its own
+   *  version through its revision, which is what makes a re-publish
+   *  acceptable to Teams. */
   readonly version?: string;
+  /**
+   * #914 — the agent's authored identity. Optional and allowed to answer
+   * `undefined`: an agent that was never given an identity renders exactly
+   * the package it rendered before this option existed.
+   */
+  readonly loadIdentity?: TeamsAppPackageIdentityLoader;
   /** Overrides for developer-facing manifest fields. */
   readonly developer?: {
     readonly name?: string;
@@ -101,25 +139,41 @@ function truncate(value: string, max: number): string {
 function paramsForTemplate(
   template: string,
   identity: TeamsIdentityJobRecord,
+  authored: TeamsAppPackageIdentity | undefined,
   externalId: string,
   baseUrl: URL,
   opts: TeamsAppPackageAssetOptions,
 ): TeamsAppPackageParams {
-  const displayName = identity.displayName;
+  // #914 — the authored identity names the app; `identity.displayName` (the
+  // provisioning row) names the AZURE BOT RESOURCE and stays where it is.
+  // They start out identical; when they diverge, the manifest is the surface
+  // a human reads and the bot resource is an ARM handle nobody sees.
+  const displayName = authored?.displayName ?? identity.displayName;
   const origin = baseUrl.origin;
   const known: Record<string, string | readonly string[]> = {
-    VERSION: opts.version ?? '1.0.0',
+    // A published package can only be REPLACED by a higher version, so an
+    // identity's revision is the version: edit → bump → re-publish accepted.
+    VERSION:
+      authored !== undefined
+        ? `1.0.${authored.revision}`
+        : (opts.version ?? '1.0.0'),
     // Teams app id (manifest `id`) — NOT the bot's Entra app id.
     APP_ID: externalId,
     BOT_ID: identity.appId ?? '',
     NAME_SHORT: truncate(displayName, 30),
     NAME_FULL: truncate(displayName, 100),
-    DESCRIPTION: truncate(`${displayName} — Omadia agent for Microsoft Teams`, 80),
+    DESCRIPTION: truncate(
+      authored?.shortDescription ??
+        `${displayName} — Omadia agent for Microsoft Teams`,
+      80,
+    ),
     DESCRIPTION_FULL: truncate(
-      `${displayName} is an Omadia agent provisioned for this tenant. It answers in team channels, group chats and personal scope through the Omadia middleware.`,
+      authored?.longDescription ??
+        authored?.shortDescription ??
+        `${displayName} is an Omadia agent provisioned for this tenant. It answers in team channels, group chats and personal scope through the Omadia middleware.`,
       4000,
     ),
-    ACCENT_COLOR: '#714B67',
+    ACCENT_COLOR: authored?.accentColor ?? '#714B67',
     DEVELOPER_NAME: opts.developer?.name ?? 'byte5',
     DEVELOPER_WEBSITE_URL: opts.developer?.websiteUrl ?? 'https://omadia.ai',
     DEVELOPER_PRIVACY_URL: opts.developer?.privacyUrl ?? 'https://omadia.ai/privacy',
@@ -199,11 +253,32 @@ export function createTeamsAppPackageAssetLoader(
         `cannot read app-package assets from ${dir} — the installed ${CHANNEL_TEAMS_PLUGIN_ID} package must ship appPackage/{manifest.json.template,color.png,outline.png} (${err instanceof Error ? err.message : String(err)})`,
       );
     }
+    // #914 — the authored identity, if this deployment has one for the agent.
+    // A failure here is NOT swallowed: rendering the fallback package after a
+    // failed read would ship the wrong name and icon under a version number
+    // that claims to be the edited one.
+    const authored = opts.loadIdentity
+      ? await opts.loadIdentity(identity.agentId)
+      : undefined;
+
     const externalId = stableTeamsAppExternalId(identity.agentId);
     return {
       manifestTemplate,
-      params: paramsForTemplate(manifestTemplate, identity, externalId, baseUrl, opts),
-      icons: { color, outline },
+      params: paramsForTemplate(
+        manifestTemplate,
+        identity,
+        authored,
+        externalId,
+        baseUrl,
+        opts,
+      ),
+      icons: {
+        color: authored?.icons?.color ?? color,
+        // The packaged outline stays the fallback: an opaque avatar cannot
+        // produce a silhouette, and a white square in the app bar is worse
+        // than the product default.
+        outline: authored?.icons?.outline ?? outline,
+      },
       externalId,
     };
   };

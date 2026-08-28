@@ -398,6 +398,21 @@ export interface ProvisionTeamsIdentityRequest {
   readonly agentId: string;
   /** Team (group) id the generated app is installed into. */
   readonly teamId: string;
+  /**
+   * #914 — re-render and re-upload the app package for an identity that is
+   * already `installed`. Set by the identity routes after an edit that
+   * changed what the package contains (name, description, accent colour,
+   * avatar): without it, {@link TeamsProvisioningJobRunner} short-circuits at
+   * `installed` and the tenant keeps serving the package built from the old
+   * identity.
+   *
+   * Only meaningful for an installed row — every other state rebuilds anyway.
+   * A republish enqueued while a normal run for the same team is in flight
+   * JOINS that run (see {@link TeamsProvisioningJobRunner.enqueue}); the
+   * identity write that triggered it is already persisted, so the worst case
+   * is one more explicit "re-run provisioning" click, not a lost edit.
+   */
+  readonly republish?: boolean;
 }
 
 export type ProvisioningRunResult =
@@ -799,12 +814,20 @@ export class TeamsProvisioningJobRunner {
         `no teams identity row for agent '${agentId}' — create it before enqueueing provisioning`,
       );
     }
-    if (row.state === 'installed' && (await this.isBound(row, request.teamId))) {
+    // Three conditions, three separate reasons: the chain is complete
+    // (#910), this team's install is already recorded (#919), and the
+    // package is not stale (#914). Any one of them false means there IS
+    // something left to do.
+    if (
+      row.state === 'installed' &&
+      request.republish !== true &&
+      (await this.isBound(row, request.teamId))
+    ) {
       // #910 — a re-run of an already-installed identity is the self-healing
-      // path: identity fields may have changed (a new display name), or an
-      // operator may have removed the entry from the plugin config. The chain
-      // itself has nothing left to do, but the config write is re-asserted so
-      // "re-run provisioning" always ends with the bot actually configured.
+      // path: an operator may have removed the entry from the plugin config.
+      // The chain itself has nothing left to do, but the config write is
+      // re-asserted so "re-run provisioning" always ends with the bot
+      // actually configured.
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
@@ -816,6 +839,38 @@ export class TeamsProvisioningJobRunner {
     if (this.stopped) return { status: 'stopped', agentId };
 
     const provisioner = this.getProvisioner();
+
+    // #914 — republish: the chain is complete, but the PACKAGE is stale
+    // because the agent's identity changed. Steps 3+4 below skip themselves
+    // once `teams_app_id` is set (by design: they are resume logic, and
+    // re-uploading an unchanged package on every re-run would be waste), so
+    // the rebuild gets its own branch rather than a condition threaded
+    // through theirs. The catalog upload is an update here — same
+    // `externalId`, higher manifest version, which is what Teams requires
+    // before it accepts one.
+    if (request.republish === true && row.state === 'installed') {
+      const assets = await this.loadPackageAssets(row);
+      const packageZip = provisioner.buildAppPackage({
+        manifestTemplate: assets.manifestTemplate,
+        params: assets.params,
+        icons: assets.icons,
+      });
+      const uploaded = await provisioner.uploadToCatalog({
+        packageZip,
+        externalId: assets.externalId,
+      });
+      row = await this.store.update(agentId, {
+        teamsAppId: uploaded.value.teamsAppId,
+        teamsAppExternalId: assets.externalId,
+        lastError: null,
+      });
+      // Deliberately NO early return. The chain's own step 5 installs the
+      // refreshed app into the requested team, records the binding (#919)
+      // and re-asserts the plugin config — a republish that returned here
+      // would skip all three, and an install that was never recorded would
+      // stay unrecorded. Every step between here and step 5 is
+      // evidence-guarded and skips itself at this state rank.
+    }
 
     // Step 1 — Entra app registration (idempotent by Graph uniqueName).
     //

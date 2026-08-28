@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 
@@ -29,6 +29,18 @@ import {
   projectTeamsBotConfig,
   projectTeamsBotsConfigSyncStatus,
 } from '../services/teamsBotsConfigSync.js';
+import {
+  AgentAvatarError,
+  deriveAgentAvatar,
+  MAX_AVATAR_BYTES,
+} from '../services/agentAvatarIcons.js';
+import {
+  resolveAgentIdentity,
+  type AgentIdentityAvatarBytes,
+  type AgentIdentityAvatarInput,
+  type AgentIdentityRecord,
+  type AgentIdentityTextInput,
+} from '../platform/agentIdentityStore.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -270,6 +282,9 @@ export interface OperatorTeamsProvisioningRunner {
   enqueue(request: {
     readonly agentId: string;
     readonly teamId: string;
+    /** #914 — re-render and re-upload the package of an already-installed
+     *  identity after an identity edit. */
+    readonly republish?: boolean;
   }): Promise<unknown>;
   isRunning(agentId: string): boolean;
   /** Install target of the run currently in flight, `null` when idle. The
@@ -746,8 +761,15 @@ function startProvisioningRun(
   deps: OperatorTeamsIdentityDeps,
   agent: { readonly id: string; readonly slug: string },
   teamId: string,
+  opts?: { readonly republish?: boolean },
 ): void {
-  void Promise.resolve(deps.runner.enqueue({ agentId: agent.id, teamId }))
+  void Promise.resolve(
+    deps.runner.enqueue({
+      agentId: agent.id,
+      teamId,
+      ...(opts?.republish === true ? { republish: true } : {}),
+    }),
+  )
     .then((result: unknown) => {
       const refused = rejectedRunDetail(result);
       if (refused === null) return;
@@ -785,6 +807,147 @@ function deriveBotSlug(agentSlug: string): string {
   return slug.length > 0 ? slug : 'agent';
 }
 
+// ---------------------------------------------------------------------------
+// Agent identity (#914)
+// ---------------------------------------------------------------------------
+
+/** Structural subset of `AgentIdentityStore` — the router never learns `pg`. */
+export interface OperatorAgentIdentityStore {
+  getByAgentId(agentId: string): Promise<AgentIdentityRecord | undefined>;
+  saveText(
+    agentId: string,
+    input: AgentIdentityTextInput,
+  ): Promise<AgentIdentityRecord>;
+  setAvatar(
+    agentId: string,
+    avatar: AgentIdentityAvatarInput,
+  ): Promise<AgentIdentityRecord>;
+  clearAvatar(agentId: string): Promise<AgentIdentityRecord | undefined>;
+  getAvatar(agentId: string): Promise<AgentIdentityAvatarBytes | undefined>;
+}
+
+export interface OperatorAgentIdentityDeps {
+  readonly store: OperatorAgentIdentityStore;
+}
+
+/** Image types the avatar upload accepts. PNG is what Teams ships; the other
+ *  two are decoded and re-encoded to PNG by the derivation step, so an
+ *  operator does not have to convert a photo by hand first. */
+export const AVATAR_CONTENT_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+] as const;
+
+/**
+ * Length caps mirror the Teams manifest, deliberately: `description.short`
+ * is capped at 80 characters and `description.full` at 4000 there, and a
+ * value that would be silently truncated when the package is built is better
+ * refused while the operator is still looking at the field.
+ */
+const AgentIdentitySchema = z.object({
+  display_name: z.string().max(120).nullish(),
+  short_description: z.string().max(80).nullish(),
+  long_description: z.string().max(4000).nullish(),
+  instructions: z.string().max(20000).nullish(),
+  accent_color: z
+    .string()
+    .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
+    .nullish(),
+});
+
+/** What a write did to the agent's published Teams package. */
+export type AgentIdentityRepublishOutcome =
+  /** A re-publish run was enqueued (identity changed, agent is installed). */
+  | 'queued'
+  /** Nothing changed, so nothing to publish. */
+  | 'not_needed'
+  /** The identity changed but this agent has no installed Teams app. */
+  | 'no_installed_app'
+  /** The identity changed but the provisioner is not installed right now. */
+  | 'provisioner_unavailable';
+
+interface AgentIdentityProjectionAgent {
+  readonly slug: string;
+  readonly name: string;
+  readonly description: string | null;
+}
+
+/**
+ * The wire shape. Carries BOTH the authored values (nullable — what the form
+ * edits) and the resolved ones (what every consumer actually sees), because a
+ * UI that only got the authored values would have to re-implement the
+ * fallback to render a preview, and that is exactly the duplication
+ * `resolveAgentIdentity` exists to prevent.
+ */
+export function projectAgentIdentity(
+  agent: AgentIdentityProjectionAgent,
+  identity: AgentIdentityRecord | undefined,
+): Record<string, unknown> {
+  const resolved = resolveAgentIdentity(identity, {
+    name: agent.name,
+    description: agent.description,
+  });
+  return {
+    slug: agent.slug,
+    identity: {
+      display_name: identity?.displayName ?? null,
+      short_description: identity?.shortDescription ?? null,
+      long_description: identity?.longDescription ?? null,
+      instructions: identity?.instructions ?? null,
+      accent_color: identity?.accentColor ?? null,
+      revision: identity?.revision ?? 1,
+      avatar:
+        identity?.avatar == null
+          ? null
+          : {
+              etag: identity.avatar.etag,
+              // Same-origin path, so the UI never composes one itself.
+              url: `/api/v1/operator/agents/${encodeURIComponent(agent.slug)}/identity/avatar`,
+            },
+      updated_at: identity?.updatedAt.toISOString() ?? null,
+    },
+    resolved: {
+      display_name: resolved.displayName,
+      short_description: resolved.shortDescription,
+      long_description: resolved.longDescription,
+      instructions: resolved.instructions,
+      accent_color: resolved.accentColor,
+      has_avatar: resolved.hasAvatar,
+    },
+  };
+}
+
+/**
+ * Re-publish the agent's Teams app package after an identity edit (#914).
+ *
+ * The package renders the identity, so an edit that does not reach the tenant
+ * leaves Teams showing the OLD name, description and icon indefinitely — a
+ * silent no-op is the failure mode this exists to prevent. Every branch that
+ * cannot publish says WHY in the response instead of pretending it did.
+ *
+ * Only `installed` identities are re-published: those are the ones with a
+ * package in the tenant catalog and a recorded install target. Anything
+ * earlier in the chain builds its package from the current identity when it
+ * gets there.
+ */
+async function republishTeamsPackage(
+  deps: OperatorTeamsIdentityDeps | undefined,
+  agent: { readonly id: string; readonly slug: string },
+  before: number | undefined,
+  after: number | undefined,
+): Promise<AgentIdentityRepublishOutcome> {
+  if (after === undefined || before === after) return 'not_needed';
+  if (!deps) return 'no_installed_app';
+  const row = await deps.store.getByAgentId(agent.id);
+  if (!row || row.state !== 'installed' || !row.teamId) {
+    return 'no_installed_app';
+  }
+  if (!deps.isProvisionerInstalled()) return 'provisioner_unavailable';
+  startProvisioningRun(deps, agent, row.teamId, { republish: true });
+  return 'queued';
+}
+
 export interface OperatorAgentsRouterOptions {
   /** Late-bound lookups so the router survives orchestrator-plugin
    *  re-activation. Each returns undefined when the orchestratorRegistry
@@ -810,6 +973,10 @@ export interface OperatorAgentsRouterOptions {
    *  store; the teams-identity routes 503 while it returns undefined (boot
    *  wiring not registered yet, tests / minimal mounts). */
   readonly getTeamsIdentity?: () => OperatorTeamsIdentityDeps | undefined;
+  /** #914 — the agent identity store (migration 0052). Late-bound like the
+   *  others; the identity routes 503 while it returns undefined (no
+   *  DATABASE_URL, tests / minimal mounts). */
+  readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
 }
 
 export function createOperatorAgentsRouter(
@@ -844,6 +1011,22 @@ export function createOperatorAgentsRouter(
     return raw;
   }
 
+  /** #914 — same late-bound 503 posture as `teamsIdentity`, for the identity
+   *  store. Kept separate: an agent's identity is editable whether or not the
+   *  Teams provisioning stack is wired at all. */
+  function agentIdentity(res: Response): OperatorAgentIdentityDeps | undefined {
+    const deps = options.getAgentIdentity?.();
+    if (!deps) {
+      res.status(503).json({
+        error: 'agent_identity_unavailable',
+        message:
+          'the agent identity store is not wired — it registers once DATABASE_URL is set and migration 0052 has been applied.',
+      });
+      return undefined;
+    }
+    return deps;
+  }
+
   function badRequest(res: Response, err: unknown): void {
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
@@ -856,6 +1039,16 @@ export function createOperatorAgentsRouter(
           path: i.path.join('.'),
           message: i.message,
         })),
+      });
+      return;
+    }
+    // #914 — body-parser's own size refusal. Without this branch an oversized
+    // avatar would be reported as an internal error, which is both wrong and
+    // unactionable: the operator can act on "too large", not on a 500.
+    if ((err as { type?: unknown } | null)?.type === 'entity.too.large') {
+      res.status(413).json({
+        error: 'payload_too_large',
+        limit_bytes: MAX_AVATAR_BYTES,
       });
       return;
     }
@@ -1096,6 +1289,198 @@ export function createOperatorAgentsRouter(
         );
       }
       res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── agent identity (#914) ───────────────────────────────────────────
+  //
+  // What a DEPLOYED agent is called, says about itself and looks like. Its
+  // own endpoints, not fields on `PATCH /:slug`: that handler is the
+  // dashboard's rename/enable surface, while an identity write can trigger a
+  // Teams re-publish, and one payload that sometimes re-publishes is a worse
+  // contract than two that each do one thing.
+  //
+  // NOTHING HERE TOUCHES THE AGENT BUILDER. The Builder authors agent
+  // PLUGINS; this is the identity of the agent that runs them. An agent that
+  // was never near the Builder gets its identity here all the same.
+  router.get('/:slug/identity', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const identity = await deps.store.getByAgentId(agent.id);
+      res.json(projectAgentIdentity(agent, identity));
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/identity', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    try {
+      const body = AgentIdentitySchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const before = await deps.store.getByAgentId(agent.id);
+      const identity = await deps.store.saveText(agent.id, {
+        displayName: body.display_name ?? null,
+        shortDescription: body.short_description ?? null,
+        longDescription: body.long_description ?? null,
+        instructions: body.instructions ?? null,
+        accentColor: body.accent_color ?? null,
+      });
+      // `instructions` is the opening section of this agent's system prompt,
+      // so a saved edit that never reaches the running registry would be a
+      // change the operator can see and the agent never speaks. Same reload
+      // contract as every other write on this router; the diff decides whether
+      // an Orchestrator is actually rebuilt.
+      if (before?.instructions !== identity.instructions) {
+        await live.registry.reload();
+      }
+      const republish = await republishTeamsPackage(
+        options.getTeamsIdentity?.(),
+        agent,
+        before?.revision,
+        identity.revision,
+      );
+      res.json({ ...projectAgentIdentity(agent, identity), republish });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // The avatar is uploaded as a RAW image body, not multipart: one file, no
+  // fields, and `express.raw` on this one route keeps the parser off every
+  // other endpoint. A wrong content type is a 415 rather than a confusing
+  // "body is empty" — `raw` leaves `req.body` untouched for types it does
+  // not claim, so the check below is the only thing standing between a JSON
+  // payload and `sharp`.
+  router.post(
+    '/:slug/identity/avatar',
+    raw({ type: [...AVATAR_CONTENT_TYPES], limit: MAX_AVATAR_BYTES }),
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const deps = agentIdentity(res);
+      if (!deps) return;
+      try {
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        if (!Buffer.isBuffer(req.body)) {
+          res.status(415).json({
+            error: 'unsupported_media_type',
+            accepted: AVATAR_CONTENT_TYPES,
+          });
+          return;
+        }
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const before = await deps.store.getByAgentId(agent.id);
+        // Derivation happens HERE, before the write: a picture sharp cannot
+        // turn into the two icons Teams needs is a 400 the operator can act
+        // on, not a provisioning failure three screens later.
+        const derived = await deriveAgentAvatar(req.body);
+        const identity = await deps.store.setAvatar(agent.id, derived);
+        const republish = await republishTeamsPackage(
+          options.getTeamsIdentity?.(),
+          agent,
+          before?.revision,
+          identity.revision,
+        );
+        res.json({
+          ...projectAgentIdentity(agent, identity),
+          republish,
+          // Honest about the one case where the upload is only half used.
+          outline_derived: derived.outline !== null,
+        });
+      } catch (err) {
+        if (err instanceof AgentAvatarError) {
+          res.status(400).json({ error: 'invalid_avatar', message: err.message });
+          return;
+        }
+        badRequest(res, err);
+      }
+    },
+  );
+
+  router.delete('/:slug/identity/avatar', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const before = await deps.store.getByAgentId(agent.id);
+      const identity = await deps.store.clearAvatar(agent.id);
+      const republish = await republishTeamsPackage(
+        options.getTeamsIdentity?.(),
+        agent,
+        before?.revision,
+        identity?.revision,
+      );
+      res.json({ ...projectAgentIdentity(agent, identity), republish });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // Preview source for the UI. Serves the ORIGINAL upload (the derived icons
+  // are provisioning's business), private-cached against its etag so the
+  // form does not re-download it on every render.
+  router.get('/:slug/identity/avatar', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = agentIdentity(res);
+    if (!deps) return;
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const avatar = await deps.store.getAvatar(agent.id);
+      if (!avatar) {
+        res.status(404).json({ error: 'no_avatar' });
+        return;
+      }
+      const etag = `"${avatar.etag}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+      res.setHeader('ETag', etag);
+      res.end(Buffer.from(avatar.bytes));
     } catch (err) {
       badRequest(res, err);
     }

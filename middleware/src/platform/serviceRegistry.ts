@@ -79,6 +79,10 @@ export type ServiceName =
   // operator teams routes and the provisioning runner.
   | 'agentTeamsInstallStore'
   | 'teamsProvisioningJobRunner'
+  // #914 — the agent identity store (migration 0052). Kernel boot
+  // registration; the operator identity routes and the Teams app-package
+  // loader both resolve it late-bound.
+  | 'agentIdentityStore'
   | (string & {});
 
 /** A registration remembered for its owner so `disposeBySource` can unwind

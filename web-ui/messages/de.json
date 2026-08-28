@@ -1758,6 +1758,10 @@
     "detailAssignedEmpty": "Diesem Orchestrator sind noch keine Plugins zugewiesen. Häng im Editor darunter eins an.",
     "detailToggleAria": "{plugin} aktivieren oder deaktivieren",
     "detailErrors": {
+      "agent_identity_unavailable": "Der Identitäts-Speicher ist nicht verdrahtet — er meldet sich an, sobald DATABASE_URL gesetzt und Migration 0051 angewendet ist.",
+      "invalid_avatar": "Dieses Bild ließ sich nicht als Avatar verwenden — erwartet wird ein PNG, JPEG oder WebP bis 2 MB.",
+      "payload_too_large": "Das Bild ist zu groß — es sind höchstens 2 MB erlaubt.",
+      "unsupported_media_type": "Dieser Dateityp geht nicht — erlaubt sind PNG, JPEG und WebP.",
       "agent_graph_store_unavailable": "Die Orchestrator-Registry ist gerade nicht erreichbar. Versuch es gleich nochmal.",
       "config_validation": "Der Server hat die Plugin-Konfiguration abgelehnt.",
       "invalid_body": "Der Server hat den Request-Payload abgelehnt.",
@@ -2010,10 +2014,37 @@
       },
       "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."
     },
-    "personaHeading": "Persona und Verhalten",
-    "personaHint": "Persona, Tonalität und Verhalten werden im Agent Builder entworfen. Diese Seite weist dem Orchestrator nur Fähigkeiten zu.",
-    "personaOpenBuilder": "Agent Builder öffnen",
-    "personaNoDraftHint": "Es ließ sich kein eindeutiger Builder-Entwurf zu diesem Orchestrator zuordnen — der Link öffnet deshalb die Builder-Übersicht.",
+    "identity": {
+      "heading": "Identität",
+      "hint": "Name, Beschreibung, Verhalten, Farbe und Avatar dieses Agenten. Leere Felder erben, was in der Registry steht. Was hier steht, landet im Teams-App-Paket des Agenten.",
+      "loading": "Identität wird geladen…",
+      "save": "Identität speichern",
+      "saving": "Wird gespeichert…",
+      "unsaved": "Ungespeicherte Änderungen",
+      "avatarAlt": "Avatar von {name}",
+      "avatarNone": "Kein Bild",
+      "avatarUpload": "Bild hochladen",
+      "avatarBusy": "Wird übertragen…",
+      "avatarRemove": "Bild entfernen",
+      "avatarHint": "PNG, JPEG oder WebP bis 2 MB. Daraus entsteht das 192×192-Farbsymbol des Teams-Pakets; ein 32×32-Umrisssymbol nur dann, wenn das Bild transparente Flächen hat — sonst bleibt das Standardsymbol.",
+      "fields": {
+        "displayName": "Anzeigename",
+        "displayNameHint": "So heißt der Agent in Teams. Leer lassen heißt: Name aus der Registry.",
+        "accentColor": "Akzentfarbe",
+        "accentColorHint": "Als #RRGGBB. Färbt das Teams-App-Paket ein.",
+        "shortDescription": "Kurzbeschreibung",
+        "shortDescriptionHint": "Höchstens 80 Zeichen — genau die Grenze, die das Teams-Manifest zieht.",
+        "longDescription": "Ausführliche Beschreibung",
+        "instructions": "Verhalten",
+        "instructionsHint": "Wie dieser Agent auftreten und antworten soll. Ersetzt für diesen Agenten den plattformweiten Standardtext — leer lassen heißt: Standard."
+      },
+      "republish": {
+        "queued": "Teams-Paket wird neu veröffentlicht.",
+        "not_needed": "Nichts verändert — nichts zu veröffentlichen.",
+        "no_installed_app": "Gespeichert. Dieser Agent hat noch keine installierte Teams-App, deshalb wird nichts veröffentlicht.",
+        "provisioner_unavailable": "Gespeichert. Der M365-Connector ist gerade nicht installiert, deshalb konnte das Teams-Paket nicht neu veröffentlicht werden."
+      }
+    },
     "teamsIdentity": {
       "heading": "Teams-Identität",
       "hint": "Dieser Orchestrator bekommt eine eigene Teams-Bot-Identität: Bot-Slug, Anzeigename und optional ein Ziel-Team. Das Provisioning registriert die Entra-App, legt den Bot an, baut das Teams-App-Paket, lädt es hoch und installiert es.",
