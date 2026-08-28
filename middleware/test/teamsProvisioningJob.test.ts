@@ -4,6 +4,9 @@ import { describe, it } from 'node:test';
 import type { TimerSeam } from '../src/plugins/jobScheduler.js';
 import {
   armNotConfiguredDetail,
+  botHandleUnavailableDetail,
+  buildBotHandle,
+  BOT_HANDLE_MAX_LENGTH,
   classifyTeamsProvisioningError,
   configSyncFailedDetail,
   consentMissingDetail,
@@ -254,7 +257,8 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
       'createAppRegistration:omadia-teams-bot-hr-bot',
       // app_id reaches the store here, before the chain moves on (#916).
       'registrationCreatedNotified',
-      'createBot:hr-bot:https://mw.example.com/api/teams/hr-bot/messages',
+      // #921 — ARM gets the QUALIFIED handle; the endpoint keeps the slug.
+      `createBot:${buildBotHandle('hr-bot', 'app-123')}:https://mw.example.com/api/teams/hr-bot/messages`,
       'getCatalogApp:external-abc',
       'buildAppPackage',
       'uploadToCatalog:external-abc',
@@ -273,7 +277,7 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     await runner.enqueue(REQUEST);
     assert.ok(
       provisioner.calls.includes(
-        'createBot:hr-bot:https://mw.example.com/api/teams/hr-bot/messages',
+        `createBot:${buildBotHandle('hr-bot', 'app-123')}:https://mw.example.com/api/teams/hr-bot/messages`,
       ),
       'endpoint must come from the injected builder',
     );
@@ -289,7 +293,11 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
       !provisioner.calls.some((c) => c.startsWith('createAppRegistration')),
       'createAppRegistration must not run again',
     );
-    assert.ok(provisioner.calls.some((c) => c.startsWith('createBot:hr-bot')));
+    assert.ok(
+      provisioner.calls.some((c) =>
+        c.startsWith(`createBot:${buildBotHandle('hr-bot', 'app-old')}`),
+      ),
+    );
   });
 
   it('resumes from bot_created without re-creating the bot', async () => {
@@ -1049,5 +1057,246 @@ describe('TeamsProvisioningJobRunner — app_id is persisted early (#916)', () =
       !provisioner.calls.some((c) => c.startsWith('createAppRegistration')),
       'state app_registered is the evidence that the step finished',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// byte5ai/omadia#921 — the Azure bot handle namespace is GLOBAL
+// ---------------------------------------------------------------------------
+
+describe('buildBotHandle (#921)', () => {
+  const APP_ID = '7034c271-6847-4be4-aea4-8b9e0c86fcad';
+  /** The grammar the connector enforces (`requireBotName`), mirrored so a
+   *  divergence between the composer and the validator fails HERE. */
+  const BOT_HANDLE_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{2,40})[A-Za-z0-9]$/;
+
+  it('qualifies the operator slug with the app id — the fix for the reported failure', () => {
+    // `test-hr` is the slug that actually collided on the byte5 tenant.
+    assert.equal(buildBotHandle('test-hr', APP_ID), 'omadia-test-hr-7034c271');
+  });
+
+  it('produces a handle the connector accepts', () => {
+    assert.match(buildBotHandle('test-hr', APP_ID), BOT_HANDLE_RE);
+  });
+
+  it('never exceeds the 42-char bound, however long the slug', () => {
+    for (const length of [1, 10, 26, 27, 40, 64, 200]) {
+      const handle = buildBotHandle('a'.repeat(length), APP_ID);
+      assert.ok(
+        handle.length <= BOT_HANDLE_MAX_LENGTH,
+        `slug of ${String(length)} produced a ${String(handle.length)}-char handle`,
+      );
+      assert.match(handle, BOT_HANDLE_RE, `slug of ${String(length)} produced ${handle}`);
+    }
+  });
+
+  it('TRUNCATES THE SLUG, never the unique suffix', () => {
+    // The whole point: shortening the unique part would reintroduce the
+    // collision the qualification exists to prevent.
+    const handle = buildBotHandle('a'.repeat(200), APP_ID);
+    assert.equal(handle.length, BOT_HANDLE_MAX_LENGTH);
+    assert.ok(handle.endsWith('-7034c271'), `suffix lost in ${handle}`);
+  });
+
+  it('keeps long distinct slugs apart via the suffix even when both truncate', () => {
+    const long = 'a'.repeat(200);
+    const other = '9999aaaa-6847-4be4-aea4-8b9e0c86fcad';
+    assert.notEqual(buildBotHandle(long, APP_ID), buildBotHandle(long, other));
+  });
+
+  it('folds characters no bot handle may carry into hyphens', () => {
+    assert.equal(
+      buildBotHandle('Sales & Support (EMEA)!!', APP_ID),
+      'omadia-sales-support-emea-7034c271',
+    );
+    for (const slug of ['HR_Bot', 'hr.bot', 'hr bot', 'hr---bot', 'Ümläut']) {
+      assert.match(buildBotHandle(slug, APP_ID), BOT_HANDLE_RE, `slug ${slug}`);
+    }
+  });
+
+  it('never leaves a trailing or leading hyphen from truncation or trimming', () => {
+    // A slug whose 26-char budget lands exactly on a hyphen.
+    assert.match(buildBotHandle(`${'x'.repeat(26)}-tail`, APP_ID), BOT_HANDLE_RE);
+    for (const slug of ['-hr-', '---', '!!!']) {
+      const handle = buildBotHandle(slug, APP_ID);
+      assert.match(handle, BOT_HANDLE_RE, `slug ${slug} produced ${handle}`);
+    }
+  });
+
+  it('degrades to prefix+suffix when the slug normalises away entirely', () => {
+    assert.equal(buildBotHandle('!!!', APP_ID), 'omadia-7034c271');
+  });
+
+  it('is deterministic — a re-run keeps the ARM upsert idempotent', () => {
+    assert.equal(buildBotHandle('test-hr', APP_ID), buildBotHandle('test-hr', APP_ID));
+  });
+
+  it('rejects an app id with no hex characters to qualify with', () => {
+    assert.throws(() => buildBotHandle('hr', '----'), /cannot build a bot handle/);
+  });
+});
+
+describe('TeamsProvisioningJobRunner — global bot handle (#921)', () => {
+  it('passes the QUALIFIED handle to createBot, not the raw slug', async () => {
+    const { runner, provisioner } = makeRunner();
+    await runner.enqueue(REQUEST);
+    const call = provisioner.calls.find((c) => c.startsWith('createBot:'));
+    // Default row: botSlug 'hr-bot', appId from createAppRegistration 'app-123'.
+    assert.equal(
+      call?.split(':')[1],
+      buildBotHandle('hr-bot', 'app-123'),
+      'the raw slug must never reach ARM',
+    );
+    assert.notEqual(call?.split(':')[1], 'hr-bot');
+  });
+
+  it('keeps the messaging endpoint keyed on the SLUG, not the handle', async () => {
+    // The endpoint is the channel-teams route (`/api/teams/<botSlug>/messages`)
+    // — qualifying the ARM handle must not silently re-route inbound traffic.
+    const { runner, provisioner } = makeRunner();
+    await runner.enqueue(REQUEST);
+    const call = provisioner.calls.find((c) => c.startsWith('createBot:')) ?? '';
+    assert.ok(
+      call.endsWith('https://mw.example.com/api/teams/hr-bot/messages'),
+      `endpoint lost the slug: ${call}`,
+    );
+  });
+
+  it('BotHandleUnavailableError fails on attempt ONE — no retry storm', async () => {
+    let attempts = 0;
+    const { runner, store, timers } = makeRunner({
+      behaviour: {
+        createBot: () => {
+          attempts += 1;
+          return Promise.reject(
+            namedError(
+              'BotHandleUnavailableError',
+              "bot_handle_unavailable: Azure bot handle 'omadia-hr-bot-app-123' is already registered to another bot application.",
+              { botName: 'omadia-hr-bot-app-123', status: 400 },
+            ),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(attempts, 1, 'a deterministic verdict must not be retried');
+    assert.deepEqual(timers.delays, [], 'no backoff sleep may be scheduled');
+    assert.equal(result.status, 'failed');
+    assert.equal(result.status === 'failed' && result.reason, 'bot_handle_unavailable');
+    assert.equal(store.row?.state, 'failed');
+    assert.ok(
+      !store.row?.lastError?.includes('gave up after'),
+      'the operator must not be told we tried five times',
+    );
+  });
+
+  it('records an operator sentence explaining the GLOBAL namespace', async () => {
+    const { runner, store } = makeRunner({
+      behaviour: {
+        createBot: () =>
+          Promise.reject(
+            namedError(
+              'BotHandleUnavailableError',
+              'bot_handle_unavailable: taken. Bot handles share ONE global namespace across all Azure customers. omadia qualifies the handle automatically',
+              { botName: 'omadia-hr-bot-app-123', status: 400 },
+            ),
+          ),
+      },
+    });
+    await runner.enqueue(REQUEST);
+    const detail = store.row?.lastError ?? '';
+    assert.ok(detail.startsWith('bot_handle_unavailable:'), detail);
+    assert.match(detail, /global namespace/i);
+    assert.match(detail, /qualifies the handle automatically/i);
+    assert.equal(classifyTeamsProvisioningError(detail).code, 'bot_handle_unavailable');
+  });
+
+  it('an OLDER connector reporting a bare 400 also stops after one attempt', async () => {
+    // Version independence: before the connector learned the typed error, the
+    // same condition arrived as an untyped deterministic 4xx.
+    let attempts = 0;
+    const { runner, store } = makeRunner({
+      behaviour: {
+        createBot: () => {
+          attempts += 1;
+          return Promise.reject(
+            namedError(
+              'ProvisioningRequestError',
+              'arm botServices.put 400 PUT https://management.azure.com/... body={"error":{"code":"InvalidBotData"}}',
+              { resource: 'arm', step: 'botServices.put', status: 400 },
+            ),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(attempts, 1);
+    assert.equal(result.status, 'failed');
+    assert.ok(
+      store.row?.lastError?.includes('deterministic'),
+      String(store.row?.lastError),
+    );
+    assert.ok(!store.row?.lastError?.includes('gave up after 5'));
+  });
+
+  it('still retries a 5xx — the deterministic guard must not swallow transients', async () => {
+    let attempts = 0;
+    const { runner } = makeRunner({
+      behaviour: {
+        createBot: () => {
+          attempts += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'arm botServices.put 503', {
+              resource: 'arm',
+              step: 'botServices.put',
+              status: 503,
+            }),
+          );
+        },
+      },
+    });
+    await runner.enqueue(REQUEST);
+    assert.ok(attempts > 1, `a 503 must still be retried, saw ${String(attempts)} attempt(s)`);
+  });
+
+  it('still retries a 429 — time-dependent, not deterministic', async () => {
+    let attempts = 0;
+    const { runner } = makeRunner({
+      behaviour: {
+        createBot: () => {
+          attempts += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'arm botServices.put 429', {
+              resource: 'arm',
+              step: 'botServices.put',
+              status: 429,
+            }),
+          );
+        },
+      },
+    });
+    await runner.enqueue(REQUEST);
+    assert.ok(attempts > 1, `a 429 must still be retried, saw ${String(attempts)} attempt(s)`);
+  });
+});
+
+describe('botHandleUnavailableDetail (#921)', () => {
+  it('passes a connector sentence through — it already carries the code', () => {
+    const connector = 'bot_handle_unavailable: handle taken, rename the slug';
+    assert.equal(botHandleUnavailableDetail(connector), connector);
+  });
+
+  it('prefixes an older connector sentence so the UI can still switch on it', () => {
+    const detail = botHandleUnavailableDetail('400 InvalidBotData', 'omadia-hr-1a2b3c4d');
+    assert.ok(detail.startsWith('bot_handle_unavailable:'));
+    assert.ok(detail.includes('omadia-hr-1a2b3c4d'));
+    assert.equal(classifyTeamsProvisioningError(detail).code, 'bot_handle_unavailable');
+  });
+
+  it('round-trips through the classifier with the raw sentence preserved', () => {
+    const detail = botHandleUnavailableDetail('bot_handle_unavailable: taken');
+    const classified = classifyTeamsProvisioningError(detail);
+    assert.equal(classified.code, 'bot_handle_unavailable');
+    assert.equal(classified.raw, detail);
   });
 });

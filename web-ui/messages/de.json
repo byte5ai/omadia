@@ -2093,6 +2093,10 @@
           "what": "Die Teams-Identität ist provisioniert und installiert — nur das automatische Schreiben in die Konfiguration des Teams-Channel-Plugins hat nicht geklappt.",
           "reason": "Grund: {reason}",
           "next": "Füge den unten gezeigten Konfigurationsblock im Teams-Channel-Plugin ein und speichere, oder starte das Provisioning erneut, um den automatischen Schreibvorgang zu wiederholen. In Azure muss nichts wiederholt werden."
+        },
+        "bot_handle_unavailable": {
+          "what": "Microsoft hat den Bot-Namen abgelehnt: Er ist bereits für eine andere Bot-Anwendung registriert.",
+          "next": "Azure-Bot-Handles teilen sich einen einzigen globalen Namensraum über alle Azure-Kunden hinweg — wie ein Domainname, nicht wie ein Name innerhalb deines Tenants. omadia qualifiziert den Handle bereits automatisch mit der ID der App-Registrierung, dieser Name ist also auch in qualifizierter Form vergeben. Vergib dem Agenten einen anderen Bot-Slug und starte das Provisioning erneut."
         }
       },
       "teamsBot": {
