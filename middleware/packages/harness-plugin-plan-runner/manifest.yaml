@@ -6,7 +6,11 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "orchestrator.plan-runner"
-  description: "#133 plan-as-data — materialises an explicit per-turn plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns, so the orchestrator can check progress against named sub-goals instead of relying on the model to remember them. Subscribes to the onBeforeTurn hook; gated by a cheap Haiku classifier. On by default (a cheap Haiku gate keeps simple Q&A neutral); set enabled=off to disarm."
+  # OM-50 (#885) — localized so the German Hub reads German. `en` stays the
+  # fallback for search, the English UI and older consumers.
+  description:
+    en: "On multi-step tasks the assistant first lays out an explicit plan and tracks its progress against it instead of improvising. Simple questions are left untouched. Experimental; on by default."
+    de: "Bei mehrstufigen Aufgaben erstellt der Assistent zuerst einen expliziten Plan und verfolgt seinen Fortschritt daran, statt zu improvisieren. Einfache Fragen bleiben unberührt. Experimentell; standardmäßig aktiv."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

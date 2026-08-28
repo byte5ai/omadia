@@ -6,7 +6,11 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "web.search"
-  description: "Live web-search core plugin (Tavily / Brave). Publishes the `webSearch@1` capability and a `web_search` native tool with structured citation objects."
+  # OM-50 (#885) — localized so the German Hub reads German. `en` stays the
+  # fallback for search, the English UI and older consumers.
+  description:
+    en: "Live web search via Tavily or Brave. Lets the assistant look up current information on the web and answer with cited sources."
+    de: "Live-Websuche über Tavily oder Brave. Ermöglicht dem Assistenten, aktuelle Informationen im Web nachzuschlagen und Antworten mit Quellenangaben zu belegen."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

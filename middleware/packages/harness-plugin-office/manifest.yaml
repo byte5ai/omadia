@@ -6,7 +6,11 @@ identity:
   version: "0.1.1"
   kind: "tool"
   domain: "productivity.office"
-  description: "Erzeugt .xlsx/.docx-Dokumente deterministisch aus JSON-Descriptoren, legt sie in Tigris ab und liefert signierte /documents-URLs, die Channels als Datei-Anhang rendern."
+  # OM-50 (#885) — was German-only, which leaked German into the English Hub.
+  # Now bilingual; `en` is the fallback for search, English UI and old consumers.
+  description:
+    en: "Generates Excel (.xlsx) and Word (.docx) documents from the assistant's output and delivers them as downloadable file attachments in your channels."
+    de: "Erzeugt Excel- (.xlsx) und Word-Dokumente (.docx) aus den Ergebnissen des Assistenten und stellt sie als herunterladbare Datei-Anhänge in Ihren Kanälen bereit."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

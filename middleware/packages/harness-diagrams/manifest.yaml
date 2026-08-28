@@ -6,7 +6,11 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "visualization.diagrams"
-  description: "Rendert Mermaid/Graphviz/PlantUML/Vega-Lite-Diagramme über Kroki und liefert signierte PNG-URLs aus Tigris."
+  # OM-50 (#885) — was German-only, which leaked German into the English Hub.
+  # Now bilingual; `en` is the fallback for search, English UI and old consumers.
+  description:
+    en: "Renders diagrams (Mermaid, Graphviz, PlantUML, Vega-Lite) as images that the assistant can include directly in its replies."
+    de: "Rendert Diagramme (Mermaid, Graphviz, PlantUML, Vega-Lite) als Bilder, die der Assistent direkt in seine Antworten einbetten kann."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

@@ -6,7 +6,11 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.embeddings"
-  description: "Stateless embedding-compute plugin (Ollama-compatible /api/embeddings wrapper, concurrency-limited). Provider des Kernel-Service 'embeddingClient' — konsumiert von KG-Ingest, ContextRetriever, FactExtractor, TopicDetector."
+  # OM-50 (#885) — was English-leaning, which leaked English into the German Hub.
+  # Now bilingual; `en` stays the fallback for search, the English UI and older consumers.
+  description:
+    en: "Computes text embeddings via an Ollama-compatible endpoint. Provides the embedding service that knowledge-graph ingest and context retrieval rely on."
+    de: "Berechnet Text-Embeddings über einen Ollama-kompatiblen Endpunkt. Stellt den Embedding-Dienst bereit, auf den Wissensgraph-Aufnahme und Kontextabruf zugreifen."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
