@@ -14,6 +14,7 @@ import { findFreePorts, isPortFree } from './ports';
 import { startEmbeddedDb, stopEmbeddedDb, isEmbeddedDbRunning } from './embeddedDb';
 import type { EmbeddedDb } from './embeddedDb';
 import { stopChild, isConfirmedStopped } from './childLifecycle';
+import type { ChildStopOutcome } from './childLifecycle';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
 import { resolveAugmentedPath } from './pathEnv';
@@ -32,6 +33,19 @@ export interface BootProgress {
   phase: BootPhase;
   message: string;
   detail?: string;
+}
+
+/**
+ * A start() or restart() that is still running.
+ *
+ * `survivors` is filled in by the operation's own cleanup, so a stop() waiting
+ * on it can fold the result into its outcome instead of reporting clean by
+ * omission.
+ */
+interface InFlightOp {
+  readonly kind: 'boot' | 'restart';
+  readonly settled: Promise<void>;
+  readonly survivors: string[];
 }
 
 /**
@@ -68,14 +82,27 @@ export class Supervisor extends EventEmitter {
    */
   private stopInFlight: Promise<StopOutcome> | null = null;
   /**
-   * Cleanup promises for boots that have not finished yet, each resolving with
-   * whatever that boot's own teardown could not kill.
+   * True from the synchronous instant a full shutdown is requested until it has
+   * finished, and the one flag every lifecycle entry point checks.
    *
-   * A superseded boot cleans up inside its own catch, which nobody used to
-   * await. So stop() could resolve `{clean: true}` while a superseded boot was
-   * still SIGTERM-ing its kernel - the same lie this class exists to remove.
+   * `state` cannot carry this. A restart() sets `state = 'stopping'` for its
+   * teardown and then puts it back to 'idle' before booting, so a stop() that
+   * consulted `state` alone would see an idle supervisor mid-restart. Before
+   * this branch, main's `if (this.state === 'stopping') return;` in stop() was
+   * accidentally serializing the two; removing it opened the window where
+   * stop() reported the stack down and the restart then booted a kernel and a
+   * database straight back into the bundle the installer was replacing (#926).
    */
-  private bootsInFlight = new Set<Promise<readonly string[]>>();
+  private stopping = false;
+  /**
+   * Lifecycle operations that have not finished yet - boots AND restarts.
+   *
+   * A superseded operation cleans up inside its own catch, which nobody used to
+   * await. So stop() could resolve `{clean: true}` while one was still
+   * SIGTERM-ing its kernel, or was about to start a database - the same lie
+   * this class exists to remove.
+   */
+  private opsInFlight = new Set<InFlightOp>();
   /**
    * Bumped on every stop/restart. A child's exit handler and the in-flight
    * health-poll loops compare against this so a process we intentionally killed
@@ -108,6 +135,9 @@ export class Supervisor extends EventEmitter {
 
   /** Boot the whole stack. Resolves with the UI URL once the UI is serving. */
   async start(): Promise<string> {
+    if (this.stopping) {
+      throw new Error('Cannot start while stopping.');
+    }
     if (this.state === 'starting' || this.state === 'stopping') {
       throw new Error(`Cannot start while ${this.state}.`);
     }
@@ -116,24 +146,26 @@ export class Supervisor extends EventEmitter {
     }
     this.state = 'starting';
     const gen = ++this.generation;
-
-    // Filled by this attempt's own cleanup with anything it could not kill, so
-    // a concurrent stop() can fold it into its outcome instead of reporting
-    // clean by omission.
-    const ownSurvivors: string[] = [];
-    const attempt = this.bootOnce(gen, ownSurvivors);
-    // Deliberately never rejects: the rejection belongs to our caller, while a
-    // waiting stop() only needs to know when cleanup finished and what is left.
-    const tracked = attempt.then(
-      (): readonly string[] => ownSurvivors,
-      (): readonly string[] => ownSurvivors,
-    );
-    this.bootsInFlight.add(tracked);
+    const { op, finish } = this.registerOp('boot');
     try {
-      return await attempt;
+      return await this.bootOnce(gen, op.survivors);
     } finally {
-      this.bootsInFlight.delete(tracked);
+      // finish() before delete: a stop() waiting on this op reads `survivors`
+      // once `settled` resolves, and the boot's catch has filled it by now.
+      finish();
+      this.opsInFlight.delete(op);
     }
+  }
+
+  /** Publish an operation so a concurrent stop() can wait for it. */
+  private registerOp(kind: InFlightOp['kind']): { op: InFlightOp; finish: () => void } {
+    let finish!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const op: InFlightOp = { kind, settled, survivors: [] };
+    this.opsInFlight.add(op);
+    return { op, finish };
   }
 
   private async bootOnce(gen: number, ownSurvivors: string[]): Promise<string> {
@@ -244,27 +276,36 @@ export class Supervisor extends EventEmitter {
     ownDb: EmbeddedDb | null,
     survivors: string[],
   ): Promise<void> {
-    const [uiOutcome, kernelOutcome] = await Promise.all([
-      stopChild(ownUi, 'web-ui', log),
-      stopChild(ownKernel, 'kernel', log),
-    ]);
-    if (!isConfirmedStopped(uiOutcome)) survivors.push('web-ui');
-    if (!isConfirmedStopped(kernelOutcome)) survivors.push('kernel');
-    if (ownUi !== null && this.ui === ownUi) {
-      this.ui = null;
-      this.uiUrl = null;
-    }
-    if (ownKernel !== null && this.kernel === ownKernel) {
-      this.kernel = null;
-    }
-    // Only ever set when this boot started the database itself and was then
-    // superseded, so there is no live generation depending on it.
-    if (ownDb !== null) {
-      try {
-        if (!(await ownDb.stop())) survivors.push('embedded-postgres');
-      } catch (err) {
-        log.error(`[db] stop failed for a superseded boot: ${String(err)}`);
-        survivors.push('embedded-postgres');
+    try {
+      // allSettled, not all: a kill() that throws (EPERM on a process that is
+      // already gone, for instance) must still be recorded as a survivor rather
+      // than aborting this method and skipping the rest of the teardown.
+      const [uiOutcome, kernelOutcome] = await Promise.allSettled([
+        stopChild(ownUi, 'web-ui', log),
+        stopChild(ownKernel, 'kernel', log),
+      ]);
+      if (!settledAndStopped(uiOutcome, 'web-ui')) survivors.push('web-ui');
+      if (!settledAndStopped(kernelOutcome, 'kernel')) survivors.push('kernel');
+      if (ownUi !== null && this.ui === ownUi) {
+        this.ui = null;
+        this.uiUrl = null;
+      }
+      if (ownKernel !== null && this.kernel === ownKernel) {
+        this.kernel = null;
+      }
+    } finally {
+      // In a finally: if anything above throws unexpectedly, skipping the
+      // database teardown would leave a live Postgres AND record no survivor,
+      // which is exactly the false-clean this class exists to prevent.
+      // Only ever set when this boot started the database itself and was then
+      // superseded, so there is no live generation depending on it.
+      if (ownDb !== null) {
+        try {
+          if (!(await ownDb.stop())) survivors.push('embedded-postgres');
+        } catch (err) {
+          log.error(`[db] stop failed for a superseded boot: ${String(err)}`);
+          survivors.push('embedded-postgres');
+        }
       }
     }
   }
@@ -274,10 +315,21 @@ export class Supervisor extends EventEmitter {
    * outlived it. Callers must invalidate the generation FIRST, otherwise a boot
    * happily waits out its full 90s kernel health timeout before noticing.
    */
-  private async settleInFlightBoots(): Promise<string[]> {
-    if (this.bootsInFlight.size === 0) return [];
-    const settled = await Promise.all([...this.bootsInFlight]);
-    return settled.flatMap((survivors) => [...survivors]);
+  private async settleInFlightOps(self?: InFlightOp): Promise<string[]> {
+    const survivors: string[] = [];
+    // Loop instead of snapshotting once. An operation can register another one
+    // while we are waiting - a restart entering its boot phase does exactly
+    // that - and a single `[...set]` snapshot would never see it. That gap is
+    // how a boot started by a restart escaped a concurrent stop() entirely.
+    for (;;) {
+      const pending = [...this.opsInFlight].filter((op) => op !== self);
+      if (pending.length === 0) return survivors;
+      await Promise.all(pending.map((op) => op.settled));
+      for (const op of pending) {
+        survivors.push(...op.survivors);
+        this.opsInFlight.delete(op);
+      }
+    }
   }
 
   private kernelEnv(port: number): NodeJS.ProcessEnv {
@@ -409,23 +461,39 @@ export class Supervisor extends EventEmitter {
 
   /** Stop kernel + UI but keep the embedded DB running, then boot again. */
   async restart(): Promise<string> {
-    // Both guards matter: `state` catches a concurrent restart (whose teardown
-    // sets the state but not the full-stop promise), `stopInFlight` catches a
-    // full shutdown already on its way down.
-    if (this.state === 'stopping' || this.stopInFlight) {
+    if (this.stopping || this.state === 'stopping') {
       throw new Error('Cannot restart while stopping.');
     }
+    // Published like a boot, so a stop() that lands mid-restart waits for the
+    // whole thing - teardown AND the boot it ends with - instead of only for
+    // the boots it happened to see.
+    const { op, finish } = this.registerOp('restart');
+    try {
+      return await this.restartOnce(op);
+    } finally {
+      finish();
+      this.opsInFlight.delete(op);
+    }
+  }
+
+  private async restartOnce(self: InFlightOp): Promise<string> {
     this.state = 'stopping';
     // Invalidate first, then wait. A boot we superseded stops the database it
     // started itself, so restarting on top of one still in flight could
     // otherwise pull the server out from under the boot we are about to do.
     this.generation++;
-    const survivors = [
-      ...(await this.settleInFlightBoots()),
-      ...(await this.teardownChildren()),
-    ];
-    if (survivors.length > 0) {
-      log.warn(`[boot] restarting with ${[...new Set(survivors)].join(' + ')} still alive`);
+    self.survivors.push(...(await this.settleInFlightOps(self)));
+    self.survivors.push(...(await this.teardownChildren()));
+    if (self.survivors.length > 0) {
+      log.warn(`[boot] restarting with ${self.survivors.join(' + ')} still alive`);
+    }
+    // A full shutdown that began while we were tearing down now owns the stack.
+    // Booting on top of it would put a kernel and a database back inside the
+    // very bundle the installer is about to replace, moments after stop() told
+    // it the stack was down (#926). The restart loses; the shutdown wins.
+    if (this.stopping) {
+      this.state = 'idle';
+      throw new Error('restart superseded by shutdown');
     }
     this.state = 'idle';
     return this.start();
@@ -441,12 +509,17 @@ export class Supervisor extends EventEmitter {
    */
   async stop(): Promise<StopOutcome> {
     if (this.stopInFlight) return this.stopInFlight;
+    // Set synchronously, before anything can yield, because this is the flag
+    // start() and restart() consult. Assigning it only inside runStop() would
+    // leave a window in which a restart could still slip past.
+    this.stopping = true;
     const run = this.runStop();
     this.stopInFlight = run;
     try {
       return await run;
     } finally {
       this.stopInFlight = null;
+      this.stopping = false;
     }
   }
 
@@ -457,7 +530,7 @@ export class Supervisor extends EventEmitter {
     // make them bail out promptly. Waiting first would mean sitting through a
     // full 90s kernel health timeout.
     this.generation++;
-    const survivors = [...(await this.settleInFlightBoots())];
+    const survivors = [...(await this.settleInFlightOps())];
     survivors.push(...(await this.teardownChildren()));
 
     // Reap from module state, not from `this.db`: a start() interrupted before
@@ -474,11 +547,14 @@ export class Supervisor extends EventEmitter {
 
     this.db = null;
     this.state = 'idle';
-    const unique = [...new Set(survivors)];
-    if (unique.length > 0) {
-      log.error(`[boot] shutdown incomplete — still alive: ${unique.join(', ')}`);
+    // Not de-duplicated. Two survivors can legitimately share a label - a
+    // superseded boot's kernel and the live generation's kernel are two
+    // processes - and collapsing them understated what was actually left
+    // running, which is the opposite of this method's job.
+    if (survivors.length > 0) {
+      log.error(`[boot] shutdown incomplete — still alive: ${survivors.join(', ')}`);
     }
-    return { clean: unique.length === 0, survivors: unique };
+    return { clean: survivors.length === 0, survivors };
   }
 
   /** Stop the embedded database, returning a survivor label if it outlived it. */
@@ -490,6 +566,18 @@ export class Supervisor extends EventEmitter {
       return ['embedded-postgres'];
     }
   }
+}
+
+/** A rejected stop attempt counts as "did not stop", never as success. */
+function settledAndStopped(
+  result: PromiseSettledResult<ChildStopOutcome>,
+  label: string,
+): boolean {
+  if (result.status === 'rejected') {
+    log.error(`[${label}] stop attempt threw: ${String(result.reason)}`);
+    return false;
+  }
+  return isConfirmedStopped(result.value);
 }
 
 // Track the live supervisor so the app's quit handler (main.ts) can await a
