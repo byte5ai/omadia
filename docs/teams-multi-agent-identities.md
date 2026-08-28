@@ -248,10 +248,13 @@ Regeln, die das Plugin hart durchsetzt:
   `microsoft_app_password`, App-Typ aus `MICROSOFT_APP_TYPE`, dort Default
   `MultiTenant`). Bestehende Single-Bot-Deployments laufen dadurch unverändert weiter.
 
-> **Wichtig:** Die Übernahme einer frisch provisionierten Identität in `teams_bots[]`
-> ist **nicht automatisch**. Der Kernel schreibt die Identität in seine eigene Tabelle,
-> nicht in die Plugin-Config. UI und Statusendpunkt liefern unter `teams_bot` einen
-> fertig geformten Eintrag, den man 1:1 in dieses Feld einfügt. Siehe Abschnitt 4.4.
+> **Seit #910 ist dieses Feld im Normalfall nichts, was man von Hand pflegt.** Nach
+> einer erfolgreichen Provisionierung schreibt der Kernel den Eintrag selbst hier
+> hinein und lädt das Plugin neu — der Bot ist ohne Neustart und ohne Copy-Paste live.
+> Von Hand befüllt man das Feld nur noch für den Legacy-/Bestandsbot, für Bots, die
+> nicht über die Agent-Factory entstanden sind, oder wenn der automatische Schreibweg
+> nicht greifen konnte. Was der Sync dabei garantiert und wann er aussetzt: Abschnitt
+> 4.5.
 
 ### Schritt 4 (optional) — `teams_agent_apps` für Auto-Invite
 
@@ -335,23 +338,30 @@ Zwei Zustände sind bewusst **keine** Fehler, sondern graue Hinweise:
 Bei terminalem Zustand erscheint **„Provisioning erneut ausführen"**. Der Button
 re-POSTet die **hinterlegte** `team_id`; ist keine hinterlegt, ist er deaktiviert.
 
-**Der `teams_bots`-Block — mit ehrlichem Hinweis.** Sobald App- und Tenant-ID
+**Der `teams_bots`-Block — und ob er noch gebraucht wird.** Sobald App- und Tenant-ID
 existieren, zeigt der Unterabschnitt „Konfiguration für das Teams-Channel-Plugin" den
 fertigen JSON-Block (Schlüssel in der Reihenfolge `botSlug`, `displayName`, `appId`,
-`appType`, `tenantId`, `appPasswordSecretRef`) mit **Kopieren**-Button. Dabei stehen
-drei Sätze, die man ernst nehmen sollte:
+`appType`, `tenantId`, `appPasswordSecretRef`) mit **Kopieren**-Button.
 
-> „Ein manueller Schritt bleibt: Dieser Block muss von Hand in das
-> Teams-Channel-Plugin eingetragen werden."
->
-> „Diese Konfiguration automatisch zu schreiben ist als Folgeschritt geplant und
-> passiert heute nicht."
->
+Die **erste Zeile über dem Block** ist seit #910 die eigentliche Information: Sie sagt,
+ob noch etwas zu tun ist. Sie wird nicht geraten, sondern aus dem Feld `teams_bots_sync`
+des Statusendpunkts gerendert, und das wiederum liest bei jedem Aufruf die **echte**
+Plugin-Config:
+
+| Zustand | Was oben steht | Was zu tun ist |
+|---|---|---|
+| `synced` | „Bereits übernommen — das Provisioning hat diese Konfiguration in `@omadia/channel-teams` geschrieben und das Plugin neu geladen." | Nichts. Der Block bleibt sichtbar, um ihn gegen das Konfigurierte zu vergleichen oder anderswo wiederzuverwenden |
+| `missing` | „Ein manueller Schritt fehlt noch …" | Provisioning erneut ausführen — oder den Block einfügen |
+| `out_of_sync` | „Im Teams-Channel-Plugin steht eine abweichende Konfiguration für diesen Bot." | Von Hand bearbeitet oder ein Schreibvorgang lief nicht zu Ende: ersetzen oder erneut provisionieren |
+| `plugin_not_installed` | „Das Teams-Channel-Plugin ist nicht installiert …" | Plugin installieren und aktivieren; der nächste Lauf schreibt den Eintrag |
+| `unreadable` | „Im Feld `teams_bots` steht ein Wert, der sich nicht als JSON lesen lässt." | **Es wurde nichts überschrieben.** Feld von Hand reparieren |
+| `not_applicable` | „Die Bot-Konfiguration ist noch nicht vollständig …" | Warten, bis die Entra-Registrierung existiert |
+| `unknown` | „…lässt sich gerade nicht feststellen." | Ältere Middleware ohne dieses Feld, oder keine Plugin-Registry gebunden: manuell vergleichen |
+
+Unverändert gilt in jedem Zustand:
+
 > „Der Block enthält nur eine Referenz auf das Bot-Passwort, niemals das Passwort
 > selbst — das Geheimnis bleibt im Vault des M365-Connectors."
-
-Vor der Entra-Registrierung steht dort: „Es gibt noch keine Bot-Konfiguration — sie
-erscheint, sobald die Entra-App-Registrierung existiert."
 
 ### 4.2 Der REST-Weg
 
@@ -450,9 +460,18 @@ GET /api/v1/operator/agents/<agent-slug>/teams-identity
   das channel-teams parst) — direkt kopierbar. Sie ist `null`, solange noch keine
   Entra-App existiert (`app_id`/`tenant_id` fehlen).
 - `last_error_detail` ist derselbe Fehler, nur strukturiert:
-  `{code, raw, scopes?, fields?, retryAfterSeconds?}` mit
-  `code ∈ {consent_missing, arm_not_configured, throttled, unknown}`. Clients rendern
-  aus `code` plus typisierten Argumenten — nie durch Parsen des englischen Satzes.
+  `{code, raw, scopes?, fields?, retryAfterSeconds?, reason?}` mit
+  `code ∈ {consent_missing, arm_not_configured, throttled, config_sync_failed, unknown}`.
+  Clients rendern aus `code` plus typisierten Argumenten — nie durch Parsen des
+  englischen Satzes. `config_sync_failed` ist die einzige **Warnung** in dieser Liste:
+  die Identität ist gültig, nur der automatische `teams_bots`-Schreibvorgang nicht
+  gelaufen; `reason` trägt den technischen Grund.
+- `teams_bots_sync` (additiv, #910) sagt, ob `teams_bot` **gerade jetzt** in der
+  Plugin-Config steht: `{state, plugin_id, config_key}` mit
+  `state ∈ {synced, out_of_sync, missing, plugin_not_installed, unreadable,
+  not_applicable, unknown}`. Der Wert wird bei jedem Aufruf aus der Live-Config
+  abgeleitet, nicht aus einem gespeicherten „wurde gesynct"-Flag — ein Operator kann
+  den Eintrag jederzeit ändern oder löschen.
 - `appPasswordSecretRef` ist eine **Referenz**, kein Secret: `teams_bot_password:<appId>`.
   Das Client-Secret verlässt nie den Vault des Connectors und steht weder in der Tabelle
   noch in einer HTTP-Antwort — die Tabelle `agent_teams_identities` hat bewusst *keine*
@@ -509,9 +528,41 @@ ausrichten, bevor ein Admin zustimmt). `arm_not_configured` ist *nicht* terminal
 ist ein Teilerfolg. Drosselung und „Connector gerade nicht da" werden im Budget
 wiederholt und stürzen nie ab; der erreichte Zustand bleibt stehen.
 
-### 4.5 Die Identität ins Plugin übernehmen
+### 4.5 Die Identität ins Plugin übernehmen (automatisch, seit #910)
 
-Dieser Schritt ist **manuell** und wird heute von nichts automatisiert:
+**Der Normalfall braucht keinen Handgriff.** Erreicht der Provisioning-Lauf den Zustand
+`installed`, schreibt der Kernel den `teams_bot`-Eintrag selbst in das Setup-Feld
+`teams_bots` von `@omadia/channel-teams` und reaktiviert das Plugin. Damit hat die
+Middleware Adapter und Route für den neuen Bot, ohne Neustart und ohne Copy-Paste.
+
+Was der Schreibweg garantiert:
+
+| Garantie | Verhalten |
+|---|---|
+| **Idempotent nach `botSlug`** | Ein erneuter Lauf **ersetzt den eigenen Eintrag an Ort und Stelle**. Nie ein zweiter Eintrag, nie eine Positionsverschiebung — `teams_bots[0]` bleibt derselbe Bot wie vorher |
+| **Fremde Einträge unangetastet** | Alle anderen Einträge werden als Rohobjekte gelesen und **byte-identisch** zurückgeschrieben: keine Umsortierung, keine nachgetragenen Defaults, auch von Hand ergänzte Zusatzschlüssel bleiben. Insbesondere gilt das für den Legacy-/Bestandsbot auf Position 0 |
+| **Re-Run aktualisiert** | Ändert sich ein Identitätsfeld (z. B. der Anzeigename), wird der eigene Eintrag aktualisiert. Ein Lauf gegen eine bereits `installed`-Identität macht nichts anderes als genau diesen Abgleich |
+| **No-op bleibt no-op** | Steht der Eintrag schon exakt so da, wird **weder geschrieben noch reaktiviert** — ein laufendes Channel-Plugin wird nicht grundlos durchgestartet |
+| **Kein Secret** | Geschrieben wird `appPasswordSecretRef` (`teams_bot_password:<appId>`), nie ein Passwort |
+| **Container-Form bleibt** | War der Wert ein JSON-String (Setup-Wizard), bleibt er ein String; war er ein echtes Array (Install-Registry), bleibt er ein Array. Ein leeres Feld wird als JSON-String angelegt |
+
+Wann der Sync **aussetzt** — und was dann passiert:
+
+| Situation | Verhalten |
+|---|---|
+| `@omadia/channel-teams` nicht installiert | Sauberer Skip. Kein Fehler, kein `last_error`. Die UI zeigt „Plugin nicht installiert" und den Block zum Einfügen |
+| Keine Plugin-Registry gebunden | Skip wie oben (Testmounts, Boot vor der Registry) |
+| `teams_bots` enthält unlesbares JSON | **Es wird nichts überschrieben.** Der Lauf bleibt `installed`, `last_error` bekommt `config_sync_failed: [<Grund>]` |
+| Schreiben oder Reaktivierung schlägt fehl | Ebenso: `installed` bleibt stehen, nichts wird zurückgerollt (die Identität ist in Azure bereits gültig), und `last_error` trägt die handlungsfähige Warnung |
+
+`config_sync_failed` ist bewusst kein Provisioning-Fehler, sondern eine **Warnung auf
+einer erfolgreichen Identität**. Die UI rendert sie als „Die Teams-Identität ist
+provisioniert und installiert — nur das automatische Schreiben … hat nicht geklappt",
+plus Grund und dem Hinweis, den Block einzufügen **oder** das Provisioning erneut
+auszuführen. In Azure muss dabei nichts wiederholt werden.
+
+**Der manuelle Weg bleibt** — als Fallback und für Operatoren, die explizit
+konfigurieren wollen:
 
 1. `teams_bot`-Block aus der UI kopieren (Button „Kopieren") oder aus
    `GET …/teams-identity` entnehmen.
@@ -964,7 +1015,8 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 | `403` bleibt trotz erteiltem Consent bestehen | Tokens sind gecacht; neu zugestimmte Rollen erscheinen erst in einem frischen Token | Middleware neu starten (oder Token-Ablauf abwarten) |
 | Lauf bleibt bei `app_registered`, `last_error` beginnt mit `arm_not_configured:` | ARM-Setup-Felder am Connector fehlen → Registration-only-Modus | `azure_subscription_id` / `azure_resource_group` / `azure_region` (+ ggf. SP-Credentials) setzen und erneut POSTen — **oder** den Azure-Bot manuell anlegen. Die App-Registrierung bleibt in jedem Fall erhalten |
 | Bot antwortet nicht; Log zeigt einen unbekannten Bot bzw. HTTP 404 auf `/api/teams/<slug>/messages` | Der Messaging-Endpoint im Azure-Bot zeigt auf einen `botSlug`, den `teams_bots[]` nicht kennt (Tippfehler, Slug umbenannt, Eintrag nie eingepflegt) | Slug in Azure-Bot-Konfiguration und `teams_bots[]` angleichen. Es gibt bewusst **keinen** Fallback auf fremde Credentials |
-| Bot antwortet nicht, obwohl der Slug stimmt | `teams_bots[]` wurde nie befüllt — die Provisionierung synct die Identität nicht in die Plugin-Config | `teams_bot`-Block aus der UI kopieren (oder aus `GET …/teams-identity`) und in `teams_bots` einfügen, Plugin-Config speichern |
+| Bot antwortet nicht, obwohl der Slug stimmt | `teams_bots[]` enthält den Eintrag nicht — der automatische Sync (#910) konnte nicht greifen | `teams_bots_sync.state` im Statusendpunkt lesen bzw. die erste Zeile über dem Block in der UI: `plugin_not_installed` → Plugin installieren; `unreadable` → Feld von Hand reparieren; `missing`/`out_of_sync` → Provisioning erneut ausführen oder den Block einfügen |
+| `last_error` beginnt mit `config_sync_failed:` | Identität ist gültig und installiert, nur der automatische `teams_bots`-Schreibvorgang lief nicht durch | Grund aus der Klammer lesen. Danach Provisioning erneut ausführen (wiederholt nur den Schreibvorgang) oder den Block manuell einfügen. In Azure ist nichts zu wiederholen |
 | `409 bot_slug_taken` beim POST | Der Slug gehört bereits einer **anderen** Agent-Identität (`UNIQUE (bot_slug)`) | Anderen `bot_slug` wählen — zwei Agenten dürfen sich niemals eine Bot-Identität und deren Credential-Namensraum teilen |
 | `409 team_install_conflict` beim POST | Retarget auf ein anderes Team, während die Zeile schon `installed` ist oder ein Lauf auf ein anderes Team fliegt | Auf den laufenden Lauf warten. Bei bereits installierter App: die alte Installation manuell in Teams entfernen — omadia führt genau ein Team pro Agent |
 | „Deinstallieren" ist ausgegraut / `501 teams_uninstall_unsupported` | der installierte M365-Connector ist älter als **0.4.0** und veröffentlicht kein `uninstallFromTeam` | `@omadia/integration-microsoft365` auf ≥ 0.4.0 aktualisieren (Middleware-Neustart nicht nötig — die Capability wird pro Request aufgelöst). Bis dahin: App im Teams-Admin manuell entfernen |
@@ -983,9 +1035,10 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 
 - **Kein Namenswechsel pro Nachricht.** Identität = App-Paket. Wer N sichtbare Agenten
   will, braucht N Teams-Apps und N Bots.
-- **Kein automatischer Sync in die Plugin-Config.** Die Provisionierung schreibt die
-  Identität in den Kernel, nicht in `teams_bots[]` von channel-teams. Der Eintrag muss
-  manuell übernommen werden; die UI sagt das ausdrücklich.
+- ~~**Kein automatischer Sync in die Plugin-Config.**~~ **Erledigt (#910):** Die
+  Provisionierung schreibt den Eintrag nach `installed` selbst in `teams_bots[]` und
+  lädt das Plugin neu. Manuell bleibt es nur, wenn channel-teams nicht installiert ist
+  oder der Schreibvorgang scheitert — die UI sagt beides ausdrücklich. Siehe 4.5.
 - **Ein Team pro Identität.** `agent_teams_identities` speichert genau ein `team_id`
   (Migration `0049`). Multi-Team ist deshalb **strukturell noch nicht möglich** — dafür
   braucht es eine Schema-Änderung (eigene Tabelle für das Installations-Set). Ein
@@ -1033,8 +1086,6 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 
 ### Was in Arbeit ist
 
-- **Automatische Übernahme der Identität in `teams_bots[]`** — von der UI als
-  Folgeschritt angekündigt („passiert heute nicht").
 - **`TurnOrigin`-Producer in den Channel-Plugins.** Die Middleware-Seite der
   Memory-ACL ist gemergt; `omadia-channel-teams` und `omadia-channel-telegram` bauen
   ihren `TurnOrigin` in ihren **eigenen** Repos und können erst nach dem Release des
@@ -1058,6 +1109,7 @@ Tiefe Details zur Scope-Auflösung, zur Turn-Bindung und zu den Tests stehen in
 | Job-Runner + Fehlerpolitik | `middleware/src/services/teamsProvisioningJob.ts` |
 | Capability-Choke-Point + Endpoint-Builder | `middleware/src/platform/teamsProvisionerService.ts` |
 | App-Paket-Assets | `middleware/src/services/teamsAppPackageAssets.ts` |
+| `teams_bots`-Projektion + automatischer Sync (#910) | `middleware/src/services/teamsBotsConfigSync.ts` |
 | Tabelle Teams-Identitäten | `middleware/migrations/0049_agent_teams_identities.sql` |
 | Rollout-Flag Memory-ACL | `middleware/migrations/0050_agent_context_memory_flag.sql` |
 | Schalter (API) | `middleware/src/routes/operatorAgents.ts` → `GET`/`PUT /:slug/context-memory` |

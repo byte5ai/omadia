@@ -14,6 +14,8 @@ import {
 } from '../../../../_lib/agents';
 import {
   formatTeamsBotsConfig,
+  isTeamsBotConfigApplied,
+  teamsBotConfigMessages,
   parseTeamsIdentityEnvelope,
 } from '../../../../_lib/teamsIdentity';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
@@ -418,6 +420,14 @@ function ReadyPanel(props: {
  * `app_registered` step. That is a normal early state, not missing data, so it
  * gets an explanatory line rather than an empty box.
  *
+ * SINCE #910 THE PASTE IS A FALLBACK. Provisioning writes this entry into the
+ * channel-teams config itself, so the copy above the block is not a fixed
+ * "do this by hand" instruction any more: it is derived from the route's
+ * `teams_bots_sync` field (the LIVE state of the plugin config) and either
+ * says the configuration is already applied or names the reason it is not.
+ * The block itself is rendered either way — an operator diffing against what
+ * is configured, or configuring a second deployment, still wants to see it.
+ *
  * `appPasswordSecretRef` is the opaque vault ref `teams_bot_password:<appId>`,
  * never the password. Nothing here fetches or reveals a secret value, and the
  * ref is never logged.
@@ -437,6 +447,15 @@ function TeamsBotConfigBlock(props: {
     () => (teamsBot ? formatTeamsBotsConfig([teamsBot]) : null),
     [teamsBot],
   );
+  // #910 — the copy is DERIVED from the server's live sync state, not
+  // hard-coded here. The first line answers "do I still have to do
+  // something?"; the rest is the instruction set, which stays visible for
+  // every state except `synced`.
+  const messages = useMemo(
+    () => (view ? teamsBotConfigMessages(view) : []),
+    [view],
+  );
+  const applied = view ? isTeamsBotConfigApplied(view.botsSync.state) : false;
 
   const onCopy = useCallback(async (): Promise<void> => {
     if (block === null) return;
@@ -461,12 +480,23 @@ function TeamsBotConfigBlock(props: {
         </p>
       ) : (
         <>
-          <p className="text-xs font-medium text-[color:var(--fg-strong)]">
-            {t('teamsIdentity.teamsBot.manualStep')}
-          </p>
-          <p className="text-xs text-[color:var(--fg-muted)]">
-            {t('teamsIdentity.teamsBot.instructions', { field: 'teams_bots' })}
-          </p>
+          {messages.map((message, index) => (
+            <p
+              key={message.key}
+              data-testid={index === 0 ? 'teams-bot-sync-headline' : undefined}
+              className={
+                index === 0
+                  ? `text-xs font-medium ${
+                      applied
+                        ? 'text-[color:var(--fg-muted)]'
+                        : 'text-[color:var(--fg-strong)]'
+                    }`
+                  : 'text-xs text-[color:var(--fg-muted)]'
+              }
+            >
+              {t(`teamsIdentity.${message.key}`, message.values)}
+            </p>
+          ))}
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" onClick={() => void onCopy()}>
               {copied
@@ -482,12 +512,6 @@ function TeamsBotConfigBlock(props: {
           >
             {block}
           </pre>
-          <p className="text-xs text-[color:var(--fg-muted)]">
-            {t('teamsIdentity.teamsBot.secretRefNote')}
-          </p>
-          <p className="text-xs text-[color:var(--fg-muted)]">
-            {t('teamsIdentity.teamsBot.followUp')}
-          </p>
         </>
       )}
     </div>

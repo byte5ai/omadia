@@ -4,13 +4,17 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import type { TeamsIdentityLastErrorDetailDto } from '../agents';
+import {
+  TEAMS_BOTS_SYNC_STATES,
+  type TeamsIdentityLastErrorDetailDto,
+} from '../agents';
 import {
   ENTRA_ADMIN_CONSENT_DOCS_URL,
   TEAMS_BOT_SECRET_REF_PREFIX,
   TEAMS_PROVISIONING_STATES,
   formatTeamsBotsConfig,
   isTeamsBotSecretRef,
+  isTeamsBotConfigApplied,
   parseTeamsIdentityEnvelope,
   teamsBotConfigMessages,
   teamsIdentityErrorLink,
@@ -90,6 +94,17 @@ const UNKNOWN_DETAIL: TeamsIdentityLastErrorDetailDto = {
   code: 'unknown',
   raw: 'ENOTFOUND graph.microsoft.com',
 };
+/** #910 — the one detail that is a WARNING: the identity is fine, only the
+ *  automatic `teams_bots` write did not land. */
+const CONFIG_SYNC_DETAIL: TeamsIdentityLastErrorDetailDto = {
+  code: 'config_sync_failed',
+  reason: 'teams_bots setup field is not valid JSON',
+  raw: 'config_sync_failed: [teams_bots setup field is not valid JSON] — …',
+};
+const CONFIG_SYNC_DETAIL_NO_REASON: TeamsIdentityLastErrorDetailDto = {
+  code: 'config_sync_failed',
+  raw: 'config_sync_failed: [] — …',
+};
 
 // ---------------------------------------------------------------------------
 // The producer contract — read out of the middleware, not assumed
@@ -130,8 +145,24 @@ describe('the classified sentences are the ones the middleware writes', () => {
   });
 
   it('the secret ref convention is still the opaque teams_bot_password handle', () => {
-    const routes = readMiddleware('src', 'routes', 'operatorAgents.ts');
-    expect(routes).toContain(`return \`${TEAMS_BOT_SECRET_REF_PREFIX}\${record.appId}\``);
+    // #910 moved the projection out of the route and into the service that
+    // also WRITES it, so the paste block and the written entry cannot drift.
+    const sync = readMiddleware('src', 'services', 'teamsBotsConfigSync.ts');
+    expect(sync).toContain(`return \`${TEAMS_BOT_SECRET_REF_PREFIX}\${record.appId}\``);
+  });
+
+  it('teamsProvisioningJob still writes the config_sync_failed prefix (#910)', () => {
+    expect(job).toContain('`config_sync_failed: [');
+  });
+
+  it('the sync-state vocabulary matches the middleware projection (#910)', () => {
+    const sync = readMiddleware('src', 'services', 'teamsBotsConfigSync.ts');
+    const block = /export type TeamsBotsConfigSyncState =([\s\S]*?);/.exec(sync);
+    expect(block).not.toBeNull();
+    const serverStates = [...(block?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    // Order is not a contract here; membership is — an unknown state would
+    // render a bare i18n key on the operator screen.
+    expect([...serverStates].sort()).toEqual([...TEAMS_BOTS_SYNC_STATES].sort());
   });
 });
 
@@ -166,6 +197,11 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
       tenantId: '99999999-8888-7777-6666-555555555555',
       appPasswordSecretRef:
         'teams_bot_password:11111111-2222-3333-4444-555555555555',
+    },
+    teams_bots_sync: {
+      state: 'missing',
+      plugin_id: '@omadia/channel-teams',
+      config_key: 'teams_bots',
     },
     ...overrides,
   };
@@ -278,6 +314,8 @@ const ALL_DETAILS: readonly TeamsIdentityLastErrorDetailDto[] = [
   ARM_DETAIL_NO_FIELDS,
   THROTTLED_DETAIL_WITH_HINT,
   THROTTLED_DETAIL_NO_HINT,
+  CONFIG_SYNC_DETAIL,
+  CONFIG_SYNC_DETAIL_NO_REASON,
   UNKNOWN_DETAIL,
 ];
 
@@ -297,10 +335,23 @@ function everyEmittedKey(): readonly string[] {
     if (link) keys.add(link.labelKey);
   }
 
-  const ready = parseTeamsIdentityEnvelope(envelope());
   const notReady = parseTeamsIdentityEnvelope(envelope({ teams_bot: null }));
-  if (ready) collect(teamsBotConfigMessages(ready));
   if (notReady) collect(teamsBotConfigMessages(notReady));
+  // #910 — one view per sync state, so no state can reach a screen as a bare
+  // key. `unknown` is included deliberately: it is what a middleware that
+  // predates this field produces.
+  for (const state of TEAMS_BOTS_SYNC_STATES) {
+    const view = parseTeamsIdentityEnvelope(
+      envelope({
+        teams_bots_sync: {
+          state,
+          plugin_id: '@omadia/channel-teams',
+          config_key: 'teams_bots',
+        },
+      }),
+    );
+    if (view) collect(teamsBotConfigMessages(view));
+  }
 
   return [...keys].sort();
 }
@@ -369,13 +420,88 @@ describe('i18n coverage', () => {
     });
   });
 
-  it('tells the operator the paste is manual', () => {
-    const view = parseTeamsIdentityEnvelope(envelope())!;
-    expect(teamsBotConfigMessages(view).map((m) => m.key)).toEqual([
-      'teamsBot.manualStep',
-      'teamsBot.instructions',
-      'teamsBot.secretRefNote',
-      'teamsBot.followUp',
+  it('names the reason the automatic teams_bots write did not land (#910)', () => {
+    expect(teamsIdentityErrorMessages(CONFIG_SYNC_DETAIL).map((m) => m.key)).toEqual([
+      'errors.config_sync_failed.what',
+      'errors.config_sync_failed.reason',
+      'errors.config_sync_failed.next',
     ]);
+    expect(teamsIdentityErrorMessages(CONFIG_SYNC_DETAIL)[1]?.values).toEqual({
+      reason: 'teams_bots setup field is not valid JSON',
+    });
+  });
+
+  it('omits the reason line when the server sent none (#910)', () => {
+    expect(
+      teamsIdentityErrorMessages(CONFIG_SYNC_DETAIL_NO_REASON).map((m) => m.key),
+    ).toEqual(['errors.config_sync_failed.what', 'errors.config_sync_failed.next']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #910 — the copy answers "do I still have to paste this?"
+// ---------------------------------------------------------------------------
+
+describe('teamsBotConfigMessages reflects the live sync state', () => {
+  function messagesFor(state: string): readonly string[] {
+    const view = parseTeamsIdentityEnvelope(
+      envelope({
+        teams_bots_sync: {
+          state,
+          plugin_id: '@omadia/channel-teams',
+          config_key: 'teams_bots',
+        },
+      }),
+    );
+    return teamsBotConfigMessages(view!).map((m) => m.key);
+  }
+
+  it('says "already applied" and drops the paste instructions when synced', () => {
+    expect(messagesFor('synced')).toEqual([
+      'teamsBot.applied',
+      'teamsBot.appliedFallback',
+      'teamsBot.secretRefNote',
+    ]);
+    // The block itself is still rendered by the component — only the "you
+    // must do this" framing goes away.
+    expect(isTeamsBotConfigApplied('synced')).toBe(true);
+  });
+
+  it('keeps the paste instructions for every state that is not synced', () => {
+    for (const state of TEAMS_BOTS_SYNC_STATES) {
+      if (state === 'synced') continue;
+      expect(isTeamsBotConfigApplied(state)).toBe(false);
+      expect(messagesFor(state)).toEqual([
+        `teamsBot.notApplied.${state}`,
+        'teamsBot.instructions',
+        'teamsBot.secretRefNote',
+      ]);
+    }
+  });
+
+  it('treats an absent teams_bots_sync as unknown, never as synced', () => {
+    // A middleware that predates #910 omits the field entirely. Claiming
+    // "already applied" there would strand the operator with a silent bot.
+    const view = parseTeamsIdentityEnvelope(envelope({ teams_bots_sync: undefined }))!;
+    expect(view.botsSync.state).toBe('unknown');
+    expect(teamsBotConfigMessages(view)[0]?.key).toBe('teamsBot.notApplied.unknown');
+  });
+
+  it('carries the plugin id and the setup-field name as ICU arguments', () => {
+    const view = parseTeamsIdentityEnvelope(
+      envelope({
+        teams_bots_sync: {
+          state: 'missing',
+          plugin_id: '@omadia/channel-teams',
+          config_key: 'teams_bots',
+        },
+      }),
+    )!;
+    const messages = teamsBotConfigMessages(view);
+    expect(messages[0]?.values).toEqual({
+      field: 'teams_bots',
+      plugin: '@omadia/channel-teams',
+    });
+    expect(messages[1]?.values).toEqual({ field: 'teams_bots' });
   });
 });

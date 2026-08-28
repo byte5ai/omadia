@@ -5,6 +5,7 @@ import type { TimerSeam } from '../src/plugins/jobScheduler.js';
 import {
   armNotConfiguredDetail,
   classifyTeamsProvisioningError,
+  configSyncFailedDetail,
   consentMissingDetail,
   throttledDetail,
   TeamsProvisioningJobRunner,
@@ -13,6 +14,7 @@ import {
   type TeamsIdentityJobRecord,
   type TeamsIdentityJobStore,
   type TeamsIdentityJobUpdate,
+  type TeamsBotsConfigSyncPort,
   type TeamsProvisionerPort,
   type TeamsProvisioningState,
 } from '../src/services/teamsProvisioningJob.js';
@@ -196,6 +198,7 @@ function makeRunner(opts: {
   baseRetryDelayMs?: number;
   maxRetryDelayMs?: number;
   getProvisioner?: () => TeamsProvisionerPort;
+  syncBotConfig?: TeamsBotsConfigSyncPort;
 } = {}): RunnerFixture {
   const store = makeStore(opts.storeOverrides);
   const provisioner = makeProvisioner(opts.behaviour);
@@ -212,6 +215,7 @@ function makeRunner(opts: {
     ...(opts.maxRetryDelayMs !== undefined
       ? { maxRetryDelayMs: opts.maxRetryDelayMs }
       : {}),
+    ...(opts.syncBotConfig ? { syncBotConfig: opts.syncBotConfig } : {}),
     log: () => {},
   });
   return { runner, store, provisioner, timers };
@@ -814,5 +818,113 @@ describe('classifyTeamsProvisioningError', () => {
     ]) {
       assert.deepEqual(classifyTeamsProvisioningError(raw), { code: 'unknown', raw });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #910 — the `teams_bots` config write that ends the run
+//
+// The point of these tests is the FAILURE posture, not the happy path: by the
+// time this port runs, the Entra app, the Azure bot, the catalog entry and the
+// team install all exist in Azure and are this agent's. Failing the run over a
+// config write would report a provisioning failure that did not happen.
+// ---------------------------------------------------------------------------
+
+describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
+  it('syncs the identity after reaching installed', async () => {
+    const seen: TeamsIdentityJobRecord[] = [];
+    const { runner, store } = makeRunner({
+      syncBotConfig: async (identity) => {
+        seen.push(identity);
+        return { status: 'synced' };
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.equal(seen.length, 1);
+    // The record handed over is the row AFTER the terminal write, so the
+    // provisioned app/tenant are on it — a projection built from a pre-install
+    // snapshot would be `null` and silently write nothing.
+    assert.equal(seen[0]?.state, 'installed');
+    assert.ok(seen[0]?.appId);
+    assert.ok(seen[0]?.tenantId);
+    assert.equal(store.row?.lastError, null);
+  });
+
+  it('keeps the run installed and records an ACTIONABLE warning when the write fails', async () => {
+    const { runner, store } = makeRunner({
+      syncBotConfig: async () => {
+        throw new Error('teams_bots setup field is not valid JSON');
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    // Nothing is rolled back and nothing is retried: the identity is real.
+    assert.equal(result.status, 'installed');
+    assert.equal(store.row?.state, 'installed');
+    const lastError = store.row?.lastError ?? '';
+    assert.ok(lastError.startsWith('config_sync_failed:'));
+    const detail = classifyTeamsProvisioningError(lastError);
+    assert.equal(detail.code, 'config_sync_failed');
+    assert.equal(detail.reason, 'teams_bots setup field is not valid JSON');
+  });
+
+  it('re-asserts the config on a re-run of an ALREADY installed identity', async () => {
+    // The chain has nothing left to do, but an operator may have renamed the
+    // agent or deleted the entry from the plugin config — "re-run provisioning"
+    // must still end with the bot configured.
+    const calls: string[] = [];
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        displayName: 'HR Bot (Renamed)',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+      },
+      syncBotConfig: async (identity) => {
+        calls.push(identity.displayName);
+        return { status: 'synced' };
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.deepEqual(calls, ['HR Bot (Renamed)']);
+    // No chain step ran — the early return is still an early return.
+    assert.deepEqual(store.updates, []);
+  });
+
+  it('is a no-op when no sync port is wired (the pre-#910 manual path)', async () => {
+    const { runner, store } = makeRunner();
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.equal(store.row?.lastError, null);
+  });
+
+  it('does not turn a skip or a no-op report into an error', async () => {
+    for (const report of [
+      { status: 'skipped' as const, reason: 'plugin_not_installed' },
+      { status: 'unchanged' as const },
+    ]) {
+      const { runner, store } = makeRunner({ syncBotConfig: async () => report });
+      const result = await runner.enqueue(REQUEST);
+      assert.equal(result.status, 'installed');
+      assert.equal(store.row?.lastError, null);
+    }
+  });
+
+  it('round-trips the config_sync_failed sentence through its own classifier', () => {
+    const detail = classifyTeamsProvisioningError(
+      configSyncFailedDetail('registry write failed [boom]\n  twice'),
+    );
+    assert.equal(detail.code, 'config_sync_failed');
+    // Brackets and newlines are stripped by the producer so the `[...]` group
+    // the classifier reads can never be cut short by the reason itself.
+    assert.equal(detail.reason, 'registry write failed boom twice');
+  });
+
+  it('round-trips an empty reason to an empty reason, not to "[]"', () => {
+    const detail = classifyTeamsProvisioningError(configSyncFailedDetail('   '));
+    assert.equal(detail.code, 'config_sync_failed');
+    assert.equal(detail.reason, '');
   });
 });

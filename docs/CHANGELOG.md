@@ -18,6 +18,38 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — provisioning writes the `teams_bots` entry itself (#910)
+
+2026-08-28 — After a successful Teams identity provisioning run the operator
+UI showed a ready-made `teams_bot` JSON block and asked the operator to paste
+it into the `teams_bots` setup field of `@omadia/channel-teams` by hand. Until
+that paste happened the bot existed in Azure, in the tenant catalog and in the
+team — and still did not answer, because the middleware had neither an adapter
+nor a route for it. That was the only manual step in an otherwise fully
+automatic chain.
+
+The provisioning job runner now writes the entry into the plugin config when
+it reaches `installed` (and re-asserts it on a later re-run, so a changed
+display name or a deleted entry is repaired), then reactivates the plugin so
+the bot is live without a restart. The write is idempotent by `botSlug`: a
+re-run replaces its own entry in place, never appends a second one, and every
+foreign entry — above all `teams_bots[0]`, the legacy scalar-shimmed
+production bot — is read as a raw object and written back byte-identical, with
+hand-added keys intact. A no-op run neither writes nor reloads.
+
+Failure is a warning, not a rollback: the identity is already valid in Azure by
+then, so a failed or impossible write leaves the run `installed` and records
+`config_sync_failed: [reason]` in `last_error`. A `teams_bots` value that
+cannot be read as JSON is never overwritten. A missing channel-teams plugin is
+a clean skip, not an error.
+
+The copy-paste block stays in the operator UI as the fallback and for
+operators who configure explicitly. Its leading line now answers whether it is
+still needed, rendered from the new `teams_bots_sync` field of
+`GET /api/v1/operator/agents/:slug/teams-identity` — derived from the live
+plugin config on every read rather than from a stored "we synced it" flag, so
+a hand edit shows up immediately. Copy in EN + DE.
+
 ### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
 
 2026-08-27 — #882's PATH augmentation checked Homebrew, Volta, asdf, and nvm,

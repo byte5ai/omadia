@@ -2088,18 +2088,31 @@
         "unknown": {
           "what": "Provisioning stopped for a reason omadia cannot classify.",
           "next": "Read the technical detail below, fix the cause, then start provisioning again."
+        },
+        "config_sync_failed": {
+          "what": "The Teams identity is provisioned and installed — only the automatic write into the Teams channel plugin configuration did not go through.",
+          "reason": "Reason: {reason}",
+          "next": "Paste the configuration block shown below into the Teams channel plugin and save, or re-run provisioning to retry the automatic write. Nothing in Azure has to be repeated."
         }
       },
       "teamsBot": {
         "heading": "Teams channel plugin configuration",
         "notReady": "There is no bot configuration yet — it appears once the Entra app registration exists.",
-        "manualStep": "One manual step is left: this block has to be pasted into the Teams channel plugin by hand.",
         "instructions": "Copy the block and paste it into the {field} setup field of the Teams channel plugin, then save.",
         "secretRefNote": "The block carries only a reference to the bot password, never the password itself — the secret stays in the M365 connector's vault.",
-        "followUp": "Writing this configuration automatically is a planned follow-up and does not happen today.",
         "blockLabel": "teams_bots configuration block for {botSlug}",
         "copy": "Copy",
-        "copied": "Copied"
+        "copied": "Copied",
+        "applied": "Already applied — provisioning wrote this configuration into {plugin} and reloaded the plugin. The bot is live; there is nothing left to do here.",
+        "appliedFallback": "The block is shown so you can compare it against what is configured, or reuse it in another deployment.",
+        "notApplied": {
+          "missing": "One manual step is left: this bot is not yet in the Teams channel plugin configuration. Provisioning normally writes it automatically — re-run provisioning to retry, or paste it below.",
+          "out_of_sync": "Heads up: the Teams channel plugin holds a different configuration for this bot. Someone edited it by hand, or an automatic write did not finish. Replace it with the block below, or re-run provisioning.",
+          "plugin_not_installed": "The Teams channel plugin is not installed, so there is nowhere to write this configuration yet. Install and activate it — provisioning writes the entry on the next run, or paste it below.",
+          "unreadable": "The {field} setup field of the Teams channel plugin currently holds a value that cannot be read as JSON. Nothing was overwritten. Fix the field by hand, then paste the block below.",
+          "not_applicable": "The bot configuration is not complete yet — it appears once the Entra app registration exists.",
+          "unknown": "Whether this configuration is already applied cannot be determined right now. Compare it against the Teams channel plugin and paste the block below if it is missing."
+        }
       },
       "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here."
     }
