@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TEAMS_BOTS_SYNC_STATES,
+  TEAMS_IDENTITY_LAST_ERROR_CODES,
   type TeamsIdentityLastErrorDetailDto,
 } from '../agents';
 import {
@@ -153,6 +154,15 @@ describe('the classified sentences are the ones the middleware writes', () => {
 
   it('teamsProvisioningJob still writes the config_sync_failed prefix (#910)', () => {
     expect(job).toContain('`config_sync_failed: [');
+  });
+
+  it('the last_error code vocabulary matches the middleware classifier (#921)', () => {
+    // The UI switches on these codes; a code the server can emit but the
+    // client does not know renders a bare i18n key on the operator screen.
+    const block = /export type TeamsProvisioningErrorCode =([\s\S]*?);/.exec(job);
+    expect(block).not.toBeNull();
+    const serverCodes = [...(block?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect([...serverCodes].sort()).toEqual([...TEAMS_IDENTITY_LAST_ERROR_CODES].sort());
   });
 
   it('the sync-state vocabulary matches the middleware projection (#910)', () => {
@@ -435,6 +445,19 @@ describe('i18n coverage', () => {
     expect(
       teamsIdentityErrorMessages(CONFIG_SYNC_DETAIL_NO_REASON).map((m) => m.key),
     ).toEqual(['errors.config_sync_failed.what', 'errors.config_sync_failed.next']);
+  });
+
+  it('renders the taken-global-handle failure with its own copy (#921)', () => {
+    const detail = {
+      code: 'bot_handle_unavailable',
+      raw: "bot_handle_unavailable: Azure bot handle 'omadia-hr-7034c271' is already registered to another bot application",
+    } as const;
+    expect(teamsIdentityErrorMessages(detail).map((m) => m.key)).toEqual([
+      'errors.bot_handle_unavailable.what',
+      'errors.bot_handle_unavailable.next',
+    ]);
+    // No external step to send the operator to — the fix is renaming the slug.
+    expect(teamsIdentityErrorLink(detail)).toBeNull();
   });
 });
 

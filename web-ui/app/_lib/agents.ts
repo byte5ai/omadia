@@ -455,6 +455,10 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // provisioned and installed, only the automatic `teams_bots` write did not
   // land, so the operator falls back to the copy-paste block.
   'config_sync_failed',
+  // #921 — the Azure bot handle is taken in the GLOBAL Bot Service namespace.
+  // Terminal and deterministic: re-running changes nothing, the operator has
+  // to rename the bot slug.
+  'bot_handle_unavailable',
   'unknown',
 ] as const;
 
