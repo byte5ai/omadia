@@ -334,10 +334,17 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # The tests run under node's strip-only TypeScript mode, so they cover the
-      # Electron-free lifecycle modules (child shutdown, PATH resolution,
-      # snapshot retention, synced-path detection, update-attempt bookkeeping)
-      # without needing a display or an Electron runtime.
+      # The build tsconfig has rootDir: src and emits to dist/, so it cannot
+      # also cover test/. A separate config does, the way middleware/test does,
+      # otherwise a test that type-lies still passes CI.
+      - name: Typecheck (test tree)
+        run: npm run typecheck:test
+
+      # The tests run under node's strip-only TypeScript mode against a stubbed
+      # `electron`, so they cover the lifecycle code (supervisor generation and
+      # single-flight races, child shutdown, PATH resolution, snapshot
+      # retention, synced-path detection, install preflight, update-attempt
+      # bookkeeping) with no display and no Electron runtime.
       - name: Test (node:test)
         run: npm test
 

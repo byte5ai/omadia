@@ -66,7 +66,7 @@ function pgBin(name: string): string {
   return path.join(pgNativeDir(), 'bin', exe(name));
 }
 
-export async function startEmbeddedDb(): Promise<EmbeddedDb> {
+async function startRealEmbeddedDb(): Promise<EmbeddedDb> {
   if (current) return toHandle(current.port);
 
   const dataDir = embeddedDbDir();
@@ -230,7 +230,7 @@ function stopProc(proc: ChildProcess): Promise<boolean> {
  * `if (this.db)` check in Supervisor.stop() then skipped it and Postgres
  * survived the app quit (#927). Reaping from module state closes that window.
  */
-export async function stopEmbeddedDb(): Promise<boolean> {
+async function stopRealEmbeddedDb(): Promise<boolean> {
   if (!current) return true;
   stopping = true;
   try {
@@ -241,7 +241,7 @@ export async function stopEmbeddedDb(): Promise<boolean> {
   }
 }
 
-export function isEmbeddedDbRunning(): boolean {
+function isRealEmbeddedDbRunning(): boolean {
   return current !== null;
 }
 
@@ -266,4 +266,36 @@ async function stableDbPort(): Promise<number> {
   const port = await findFreePort('127.0.0.1');
   fs.writeFileSync(file, String(port), 'utf8');
   return port;
+}
+
+/**
+ * Test seam for the database lifecycle (#932).
+ *
+ * Same pattern as `cliInstallService.__setCliInstallRunner`. The supervisor's
+ * generation races cannot be exercised against a real Postgres, and the defect
+ * they guard against is specifically about *when* this module registers its
+ * server relative to a concurrent stop() -- so a test has to own that timing.
+ */
+export interface EmbeddedDbHooks {
+  start: () => Promise<EmbeddedDb>;
+  stop: () => Promise<boolean>;
+  isRunning: () => boolean;
+}
+
+let hooks: EmbeddedDbHooks | null = null;
+
+export function __setEmbeddedDbHooks(next: EmbeddedDbHooks | null): void {
+  hooks = next;
+}
+
+export function startEmbeddedDb(): Promise<EmbeddedDb> {
+  return hooks === null ? startRealEmbeddedDb() : hooks.start();
+}
+
+export function stopEmbeddedDb(): Promise<boolean> {
+  return hooks === null ? stopRealEmbeddedDb() : hooks.stop();
+}
+
+export function isEmbeddedDbRunning(): boolean {
+  return hooks === null ? isRealEmbeddedDbRunning() : hooks.isRunning();
 }
