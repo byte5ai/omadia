@@ -5,6 +5,7 @@ import path from 'node:path';
 import { embeddedDbDir, snapshotDir } from './paths';
 import { getActiveSupervisor } from './supervisor';
 import { log } from './log';
+import { recordCheckFailed, recordCheckReachedFeed } from './updaterCheckHealth';
 
 let installing = false;
 // This flag is only safe because electron-updater's own checkForUpdates()
@@ -54,16 +55,35 @@ export function initUpdater(): void {
 
   autoUpdater.on('error', (err) => {
     log.error(`[updater] ${String(err)}`);
-    if (!takeManualCheckPending()) return;
+    const manual = takeManualCheckPending();
+    const { consecutiveFailures, shouldNotify } = recordCheckFailed(manual);
+    if (manual) {
+      void showUpdaterDialog({
+        type: 'error',
+        title: 'Update check failed',
+        message: 'omadia could not check for updates.',
+        detail: String(err),
+      });
+      return;
+    }
+    // The silent startup check. Logging and nothing else is what let a dead
+    // update channel look exactly like "already up to date" (#928/OM-69), so
+    // break the silence — once per streak, so it can never become a nag.
+    if (!shouldNotify) return;
     void showUpdaterDialog({
-      type: 'error',
-      title: 'Update check failed',
-      message: 'omadia could not check for updates.',
-      detail: String(err),
+      type: 'warning',
+      title: 'Update check keeps failing',
+      message: `omadia could not check for updates on the last ${consecutiveFailures} starts.`,
+      detail:
+        `You are still running ${app.getVersion()}. omadia will keep trying in the background. ` +
+        'If this persists, download the current version from ' +
+        'https://github.com/byte5ai/omadia/releases.\n\n' +
+        `Last error: ${String(err)}`,
     });
   });
   autoUpdater.on('update-available', (info) => {
     log.info(`[updater] update available: ${info.version}`);
+    recordCheckReachedFeed();
     if (!takeManualCheckPending()) return;
     void showUpdaterDialog({
       type: 'info',
@@ -74,6 +94,7 @@ export function initUpdater(): void {
   });
   autoUpdater.on('update-not-available', (info) => {
     log.info(`[updater] up to date: ${info.version}`);
+    recordCheckReachedFeed();
     if (!takeManualCheckPending()) return;
     void showUpdaterDialog({
       type: 'info',
