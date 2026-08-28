@@ -446,7 +446,14 @@ export class Supervisor extends EventEmitter {
   private async teardownChildren(): Promise<string[]> {
     // Invalidate exit handlers + in-flight health polls before we kill anything.
     this.generation++;
-    const [uiOutcome, kernelOutcome] = await Promise.all([
+    // allSettled, not all. This runs on every real shutdown, and a kill() that
+    // throws (EPERM against a process that is already gone, for instance) used
+    // to reject the whole of stop() instead of reporting a survivor: the
+    // database teardown was then skipped, Postgres was orphaned, `state` stayed
+    // wedged at 'stopping' so the app could not start again in that session,
+    // and the quit handler's second stop() failed identically. reapOwnChildren
+    // already had this treatment; this is the path that actually matters.
+    const [uiOutcome, kernelOutcome] = await Promise.allSettled([
       stopChild(this.ui, 'web-ui', log),
       stopChild(this.kernel, 'kernel', log),
     ]);
@@ -454,8 +461,8 @@ export class Supervisor extends EventEmitter {
     this.kernel = null;
     this.uiUrl = null;
     const survivors: string[] = [];
-    if (!isConfirmedStopped(uiOutcome)) survivors.push('web-ui');
-    if (!isConfirmedStopped(kernelOutcome)) survivors.push('kernel');
+    if (!settledAndStopped(uiOutcome, 'web-ui')) survivors.push('web-ui');
+    if (!settledAndStopped(kernelOutcome, 'kernel')) survivors.push('kernel');
     return survivors;
   }
 
@@ -530,23 +537,31 @@ export class Supervisor extends EventEmitter {
     // make them bail out promptly. Waiting first would mean sitting through a
     // full 90s kernel health timeout.
     this.generation++;
-    const survivors = [...(await this.settleInFlightOps())];
-    survivors.push(...(await this.teardownChildren()));
-
-    // Reap from module state, not from `this.db`: a start() interrupted before
-    // it assigned the handle still left a live Postgres, and the old
-    // `if (this.db)` guard walked straight past it (#927).
-    survivors.push(...(await this.stopDatabase()));
-    // A boot that was inside startEmbeddedDb()'s port lookup when we
-    // invalidated it registers its server only afterwards. It has settled by
-    // now, so a database still registered here is a real leak, not a race.
-    if (isEmbeddedDbRunning()) {
-      log.warn('[db] a database was still registered after shutdown; stopping it again');
+    const survivors: string[] = [];
+    try {
+      survivors.push(...(await this.settleInFlightOps()));
+      survivors.push(...(await this.teardownChildren()));
+    } finally {
+      // In a finally so an unexpected throw above can never skip it. Skipping
+      // the database teardown is how a failed child kill orphaned Postgres
+      // while reporting nothing about it.
+      // Reap from module state, not from `this.db`: a start() interrupted
+      // before it assigned the handle still left a live Postgres, and the old
+      // `if (this.db)` guard walked straight past it (#927).
       survivors.push(...(await this.stopDatabase()));
+      // A boot that was inside startEmbeddedDb()'s port lookup when we
+      // invalidated it registers its server only afterwards. It has settled by
+      // now, so a database still registered here is a real leak, not a race.
+      if (isEmbeddedDbRunning()) {
+        log.warn('[db] a database was still registered after shutdown; stopping it again');
+        survivors.push(...(await this.stopDatabase()));
+      }
+      this.db = null;
+      // Never leave the supervisor wedged in 'stopping'. A caller that saw an
+      // exception can still legitimately try to start again, and the quit
+      // handler's own stop() must not fail for the same reason twice.
+      this.state = 'idle';
     }
-
-    this.db = null;
-    this.state = 'idle';
     // Not de-duplicated. Two survivors can legitimately share a label - a
     // superseded boot's kernel and the live generation's kernel are two
     // processes - and collapsing them understated what was actually left

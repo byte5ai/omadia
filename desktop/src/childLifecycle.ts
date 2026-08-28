@@ -6,7 +6,12 @@
  */
 
 /** How a stop attempt actually ended. */
-export type ChildStopOutcome = 'already-exited' | 'exited' | 'deadline';
+export type ChildStopOutcome =
+  | 'already-exited'
+  | 'exited'
+  | 'deadline'
+  /** Signalling the child threw, so we never even got to wait for it. */
+  | 'kill-failed';
 
 /** The slice of ChildProcess this module needs, so tests can pass a double. */
 export interface StoppableChild {
@@ -46,37 +51,66 @@ export function stopChild(
   }
   return new Promise<ChildStopOutcome>((resolve) => {
     let settled = false;
+    // Declared before anything can call finish(), and kill() is issued last.
+    // A child double that exits synchronously from kill() would otherwise send
+    // finish() into the temporal dead zone of these two consts and reject the
+    // promise with a ReferenceError instead of resolving 'exited'. Real
+    // ChildProcess defers 'exit' through libuv, so this was not reachable in
+    // production - but a stop path that can throw is exactly what this module
+    // exists to rule out.
+    let killTimer: NodeJS.Timeout | undefined;
+    let hardStop: NodeJS.Timeout | undefined;
+
     const finish = (outcome: ChildStopOutcome): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(killTimer);
-      clearTimeout(hardStop);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+      if (hardStop !== undefined) clearTimeout(hardStop);
       resolve(outcome);
     };
 
-    child.once('exit', () => finish('exited'));
-    child.kill('SIGTERM');
+    /**
+     * kill() can throw - EPERM against a process that has already gone, for
+     * instance. Reporting that is fine; letting it escape is not. Thrown from
+     * the executor it rejected the promise and leaked both timers, and thrown
+     * from the escalation timer below it became an uncaught exception that took
+     * the process down. Either way a shutdown that must always report an
+     * outcome instead produced an error, which is the failure mode this module
+     * exists to remove.
+     */
+    const trySignal = (signal: NodeJS.Signals): boolean => {
+      try {
+        child.kill(signal);
+        return true;
+      } catch (err) {
+        logger.warn(`[${label}] ${signal} failed: ${String(err)}`);
+        return false;
+      }
+    };
 
     // Escalate if it ignores SIGTERM (notably on Windows, where SIGTERM is not
     // a real graceful signal).
-    const killTimer = setTimeout(() => {
+    killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
         logger.warn(`[${label}] did not exit on SIGTERM; sending SIGKILL`);
-        child.kill('SIGKILL');
+        if (!trySignal('SIGKILL')) finish('kill-failed');
       }
     }, graceMs);
 
-    const hardStop = setTimeout(() => {
+    hardStop = setTimeout(() => {
       logger.warn(
         `[${label}] still alive ${graceMs * 2}ms after SIGTERM - giving up waiting. ` +
           'It may still hold files inside the app bundle.',
       );
       finish('deadline');
     }, graceMs * 2);
+
+    child.once('exit', () => finish('exited'));
+    if (!trySignal('SIGTERM')) finish('kill-failed');
   });
 }
 
 /** True only when the process is confirmed gone, not merely given up on. */
 export function isConfirmedStopped(outcome: ChildStopOutcome): boolean {
-  return outcome !== 'deadline';
+  return outcome === 'already-exited' || outcome === 'exited';
 }
