@@ -24,6 +24,16 @@
       </aside>
 
       <main class="panel">
+        <!--
+          OM-57 follow-up: a crash recovery reloads this page, which resets the
+          wizard to step 0 and silently discards whatever was already entered.
+          Defensible after a crash — but the user has to be told, not left
+          wondering why their provider and folder choice are gone.
+        -->
+        <p id="recoveredNotice" class="hint hidden" data-i18n="wizard.recovered">
+          omadia recovered from a problem and restarted the setup. Entries from
+          before are gone, so please fill the steps in again.
+        </p>
         <!-- 0: Welcome -->
         <section class="step" data-step="0">
           <h1 data-i18n="welcome.title">Run omadia on your machine</h1>

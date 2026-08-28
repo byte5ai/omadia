@@ -44,11 +44,27 @@ const DE: Dictionary = {
   'boot.superseded.ok': 'OK',
 
   // --- Renderer crash / load failure (OM-57) ------------------------------
-  'shell.loadFailed.reload': 'Die Oberfläche wird neu geladen…',
+  // No auto-reload is promised anywhere here: the shell deliberately does NOT
+  // retry (see `recoverRenderer`), and the first version of this dictionary
+  // told German users to wait for a reload that never came while the English
+  // fallback said nothing of the sort. One live key, both variants saying the
+  // same thing.
   'shell.loadFailed.uiGone':
-    'Die Verbindung zur Oberfläche wurde unterbrochen. omadia versucht, sie neu zu laden.',
-  'shell.loadFailed.unresponsive':
-    'Die Oberfläche antwortet nicht mehr. omadia lädt sie neu.',
+    'Die Verbindung zur Oberfläche wurde unterbrochen. Über das Menüleisten-Symbol kannst du omadia neu starten.',
+  'shell.loadFailed.exhausted.title': 'Oberfläche konnte nicht geladen werden',
+  'shell.loadFailed.exhausted.message':
+    'omadia konnte die Oberfläche nach mehreren Versuchen nicht laden.',
+  'shell.loadFailed.exhausted.detail':
+    'Weitere Versuche werden nicht unternommen, um eine Endlosschleife zu vermeiden.\n\nStarte omadia neu. Bleibt der Fehler, sende bitte die Logdatei an den Support:\n{logFile}',
+  'shell.loadFailed.exhausted.quit': 'Beenden',
+  'shell.loadFailed.exhausted.ok': 'OK',
+
+  // --- Restart refused while the wizard is open (OM-58 follow-up) ----------
+  'shell.restartRefused.title': 'Neustart nicht möglich',
+  'shell.restartRefused.message': 'Die Ersteinrichtung läuft noch.',
+  'shell.restartRefused.detail':
+    'omadia startet die lokalen Dienste nicht neu, solange die Ersteinrichtung offen ist — das würde deine Eingaben verwerfen. Schließe die Einrichtung ab und versuche es danach erneut.',
+  'shell.restartRefused.ok': 'OK',
 
   // --- Recovery key (OM-58) ----------------------------------------------
   'recovery.menuItem': 'Wiederherstellungsschlüssel anzeigen…',

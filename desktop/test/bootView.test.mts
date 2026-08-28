@@ -60,12 +60,27 @@ before(() => {
 });
 
 describe('bootView.phasePercent', () => {
-  it('maps every supervisor BootPhase to a percentage', () => {
-    // The full union from src/supervisor.ts.
-    const phases = ['starting-db', 'starting-kernel', 'waiting-kernel', 'starting-ui', 'ready', 'error'];
-    for (const phase of phases) {
-      const pct = view.phasePercent(phase);
-      assert.ok(pct > 0 && pct <= 100, `${phase} → ${pct}`);
+  it('maps every supervisor BootPhase to its own percentage', () => {
+    // Per-phase equality, not a range. The first draft asserted only
+    // `pct > 0 && pct <= 100`, which the UNKNOWN_PHASE_PERCENT fallback of 10
+    // satisfies — so emptying PHASE_PERCENT entirely left this test green. It
+    // claimed to check the mapping and checked nothing of the sort.
+    const expected: Readonly<Record<string, number>> = {
+      'starting-db': 15,
+      'starting-kernel': 35,
+      'waiting-kernel': 60,
+      'starting-ui': 85,
+      ready: 100,
+      error: 100,
+    };
+    // The full union from src/supervisor.ts BootPhase.
+    for (const [phase, pct] of Object.entries(expected)) {
+      assert.equal(view.phasePercent(phase), pct, `${phase} must map to ${pct}`);
+      assert.notEqual(
+        view.phasePercent(phase),
+        view.UNKNOWN_PHASE_PERCENT,
+        `${phase} must be a real entry, not the unknown-phase fallback`,
+      );
     }
   });
 

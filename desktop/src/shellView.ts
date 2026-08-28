@@ -123,3 +123,20 @@ export function mayCommitNavigation(
 export function commitNavigation(state: ViewState, target: ShellView): ViewState {
   return { showing: target, token: state.token };
 }
+
+/**
+ * Roll back an optimistic navigation that never landed.
+ *
+ * {@link beginNavigation} claims the view before the async load runs, so a
+ * concurrent navigation can see the claim. When the load then REJECTS, that
+ * claim has to be released — the first version of `startWizard` only logged the
+ * rejection, which left `showing` stuck on `'wizard'` forever and made the
+ * arbiter refuse every later `boot-existing` and `restart`. Tray → Restart
+ * became a silent no-op with no way back.
+ *
+ * Keeps the token: the intent did happen and must still invalidate anything
+ * older, even though it failed.
+ */
+export function abandonNavigation(state: ViewState, fallback: ShellView): ViewState {
+  return { showing: fallback, token: state.token };
+}

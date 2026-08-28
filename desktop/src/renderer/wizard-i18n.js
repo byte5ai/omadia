@@ -114,6 +114,9 @@
       'loading.docTitle': 'omadia wird gestartet…',
       // Loading screen (OM-59 / OM-60). The boot.* phase keys above are shared
       // with the wizard; these are the loading screen's own chrome.
+      // Shown when a crash recovery reloaded the wizard (OM-57 follow-up).
+      'wizard.recovered':
+        'omadia hat sich von einem Problem erholt und die Einrichtung neu gestartet. Vorherige Eingaben sind verloren — bitte fülle die Schritte noch einmal aus.',
       'loading.starting': 'Lokale Dienste werden gestartet…',
       'loading.bridgeMissing':
         'Interner Fehler: Die App-Brücke wurde nicht geladen (Tray → Logs öffnen).',

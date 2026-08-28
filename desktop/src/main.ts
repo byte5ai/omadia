@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
@@ -6,16 +6,19 @@ import { registerIpc } from './ipc';
 import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
 import { checkForUpdatesManually, initUpdater, isUpdateInstalling } from './updater';
-import {
-  isSetupComplete,
-  markRecoveryKeyShown,
-  needsRecoveryKeyReminder,
-} from './setupState';
-import { exportRecoveryKey } from './secrets';
+import { isSetupComplete } from './setupState';
 import { log, logFile, onLog } from './log';
 import { classifyBootFailure, describeError } from './bootFailure';
-import { shouldRecoverFromLoadFailure, type LoadFailureEvent } from './loadFailure';
 import {
+  clearRecoveryBudget,
+  initialRecoveryBudget,
+  nextRecoveryAttempt,
+  shouldRecoverFromLoadFailure,
+  type LoadFailureEvent,
+  type RecoveryBudget,
+} from './loadFailure';
+import {
+  abandonNavigation,
   beginNavigation,
   commitNavigation,
   initialViewState,
@@ -25,11 +28,14 @@ import {
   type ShellView,
   type ViewState,
 } from './shellView';
+import { createShellTranslate, type ShellTranslate } from './shellStrings';
 import {
-  createShellTranslate,
-  fillPlaceholders,
-  type ShellTranslate,
-} from './shellStrings';
+  showBootFailure,
+  showRecoveryExhausted,
+  showRestartRefused,
+  showSupersededBoot,
+} from './shellDialogs';
+import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActions';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
@@ -37,6 +43,8 @@ app.setName('omadia');
 
 const LOADING_PAGE = 'loading.html';
 const WIZARD_PAGE = 'wizard.html';
+/** Marks a wizard load as following a crash, so the reset to step 0 is explained. */
+const RECOVERED_HASH = 'recovered';
 
 let win: BrowserWindow | null = null;
 let supervisor: Supervisor | null = null;
@@ -57,6 +65,9 @@ let streamBootLogs = false;
  * `shellView.ts`. See that file for the two rules.
  */
 let viewState: ViewState = initialViewState();
+
+/** Bounded budget for replacing a dead renderer (OM-57). See `loadFailure.ts`. */
+let recoveryBudget: RecoveryBudget = initialRecoveryBudget();
 
 /**
  * `app.getLocale()` is only meaningful after the ready event, so the translator
@@ -126,31 +137,46 @@ function createWindow(): BrowserWindow {
   return w;
 }
 
+/** Which page a recovery would load, and the view it establishes. */
+function recoveryTarget(): { readonly view: ShellView; readonly page: string } {
+  return viewState.showing === 'wizard'
+    ? { view: 'wizard', page: WIZARD_PAGE }
+    : { view: 'boot', page: LOADING_PAGE };
+}
+
 /**
  * Renderer failure handling (OM-57).
  *
  * Without these the window had exactly one behaviour when the web-ui died under
  * a running navigation: it showed `backgroundColor`. A black rectangle, no
  * error, no spinner — the tester could not tell whether it was his credentials,
- * the app, or himself. The filtering rules (why ERR_ABORTED and subframes must
- * be ignored) are in `loadFailure.ts`.
+ * the app, or himself.
+ *
+ * The filtering rules live in `loadFailure.ts`, and so does the reason the
+ * filter alone is not enough: the identity check has to be made against the page
+ * a recovery would ACTUALLY load, and everything it cannot see needs a bounded
+ * budget behind it.
  */
 function installRendererGuards(w: BrowserWindow): void {
   w.webContents.on(
     'did-fail-load',
     (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       const failure: LoadFailureEvent = { errorCode, isMainFrame, validatedURL };
-      if (!shouldRecoverFromLoadFailure(failure, LOADING_PAGE)) return;
+      // Compare against the page we would load, NOT a hardcoded one: recovery
+      // can target the wizard, and hardcoding `loading.html` here let a failing
+      // wizard reload itself forever.
+      if (!shouldRecoverFromLoadFailure(failure, recoveryTarget().page)) return;
       log.error(
         `[main] renderer load failed (${errorCode} ${errorDescription}) for ${validatedURL}`,
       );
-      void recoverRenderer(t('shell.loadFailed.uiGone', 'The connection to the interface was lost.'));
+      void recoverRenderer();
     },
   );
 
   w.webContents.on('render-process-gone', (_event, details) => {
+    // No URL to compare here at all, so the budget is the only guard.
     log.error(`[main] render process gone: ${details.reason} (exitCode ${details.exitCode})`);
-    void recoverRenderer(t('shell.loadFailed.uiGone', 'The connection to the interface was lost.'));
+    void recoverRenderer();
   });
 
   w.webContents.on('unresponsive', () => {
@@ -161,28 +187,64 @@ function installRendererGuards(w: BrowserWindow): void {
     log.warn('[main] renderer unresponsive');
     setTrayStatus(trayActions(), 'error');
   });
+
+  w.webContents.on('responsive', () => {
+    // Without this the tray stayed red forever after a transient hang, which
+    // undercuts the whole reason `unresponsive` does not navigate away.
+    log.info('[main] renderer responsive again');
+    setTrayStatus(trayActions(), viewState.showing === 'app' ? 'running' : 'starting');
+  });
+
+  w.webContents.on('did-finish-load', () => {
+    // Something rendered, so by definition the shell is not looping.
+    recoveryBudget = clearRecoveryBudget();
+  });
 }
 
 /**
- * Put the loading screen back up and say what happened.
+ * Put a working page back up and say what happened.
  *
- * No automatic retry: a reload loop against a genuinely dead stack is worse
- * than a screen that names the problem, and the tray already offers Restart.
+ * No automatic retry of the page that died: a reload loop against a genuinely
+ * dead stack is worse than a screen that names the problem, and the tray already
+ * offers Restart. The budget bounds even the recovery itself, so a fallback page
+ * that cannot load reaches a terminal, explained state instead of spinning.
  */
-async function recoverRenderer(message: string): Promise<void> {
+async function recoverRenderer(): Promise<void> {
   if (!win || win.isDestroyed()) return;
-  const target: ShellView = viewState.showing === 'wizard' ? 'wizard' : 'boot';
-  const token = startNavigation(target, 'recover');
+  const { view, page } = recoveryTarget();
+
+  const attempt = nextRecoveryAttempt(recoveryBudget, page);
+  recoveryBudget = attempt.budget;
+  if (!attempt.allowed) {
+    log.error(`[main] giving up recovering ${page} after ${attempt.budget.attempts - 1} attempts`);
+    setTrayStatus(trayActions(), 'error');
+    await showRecoveryExhausted(t, logFile());
+    return;
+  }
+
+  const token = startNavigation(view, 'recover');
   if (token === null) return;
-  const page = target === 'wizard' ? WIZARD_PAGE : LOADING_PAGE;
   try {
-    await win.loadFile(rendererPath(page));
-    if (!finishNavigation(token, target, 'recover')) return;
-    if (target === 'boot') {
-      sendBootProgress({ phase: 'error', message });
+    // A recovered wizard restarts at step 0 and loses what was entered, so the
+    // page is told to explain that rather than leaving the user guessing.
+    await win.loadFile(
+      rendererPath(page),
+      view === 'wizard' ? { hash: RECOVERED_HASH } : {},
+    );
+    if (!finishNavigation(token, view, 'recover')) return;
+    if (view === 'boot') {
+      sendBootProgress({
+        phase: 'error',
+        message: t(
+          'shell.loadFailed.uiGone',
+          'The connection to the interface was lost. You can restart omadia from the menu-bar icon.',
+        ),
+      });
     }
     setTrayStatus(trayActions(), 'error');
   } catch (err) {
+    // The load itself rejected; release the claim so the arbiter is not frozen.
+    viewState = abandonNavigation(viewState, view);
     log.error(`[main] renderer recovery failed: ${describeError(err)}`);
   }
 }
@@ -197,90 +259,6 @@ function checkForUpdatesAction(): void {
   void checkForUpdatesManually();
 }
 
-/**
- * Show the vault recovery key on demand (OM-58).
- *
- * The wizard offered it exactly once, in a step that could be skipped without
- * the user noticing. This is the second path, always available, and viewing it
- * here is the one moment the shell can honestly record as "the user has seen
- * their key" — which is what stops the reminder.
- */
-async function showRecoveryKeyAction(): Promise<void> {
-  let key: string;
-  try {
-    key = exportRecoveryKey();
-  } catch (err) {
-    log.error(`[main] recovery key unavailable: ${describeError(err)}`);
-    await dialog.showMessageBox({
-      type: 'error',
-      title: t('recovery.unavailableTitle', 'Recovery key unavailable'),
-      message: t('recovery.unavailableTitle', 'Recovery key unavailable'),
-      detail: fillPlaceholders(
-        t(
-          'recovery.unavailableDetail',
-          'The key could not be read: {error}\n\nLog file: {logFile}',
-        ),
-        { error: describeError(err), logFile: logFile() },
-      ),
-    });
-    return;
-  }
-
-  // Recorded before the dialog closes: the key is on screen at this point, and
-  // a user who dismisses with the window manager has still seen it.
-  markRecoveryKeyShown();
-
-  const copyLabel = t('recovery.copy', 'Copy to clipboard');
-  const { response } = await dialog.showMessageBox({
-    type: 'info',
-    title: t('recovery.title', 'Recovery key'),
-    message: t('recovery.message', 'Keep this key somewhere safe.'),
-    detail: fillPlaceholders(
-      t(
-        'recovery.detail',
-        'This key encrypts your secrets vault. You need it if you ever move omadia to another machine. Losing it makes stored secrets unrecoverable.\n\n{key}',
-      ),
-      { key },
-    ),
-    buttons: [copyLabel, t('recovery.close', 'Close')],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (response === 0) clipboard.writeText(key);
-}
-
-/**
- * Ask once whether the user has their recovery key (OM-58).
- *
- * Fires only for a boot-verified install that has never displayed the key
- * through the menu. A user who did read it off the wizard's last step will see
- * this once — an acceptable trade, because the shell genuinely cannot observe
- * that step, and one extra prompt is cheaper than an unrecoverable vault.
- */
-async function maybeRemindRecoveryKey(): Promise<void> {
-  if (!needsRecoveryKeyReminder()) return;
-  const menuItem = t('recovery.menuItem', 'Show recovery key…');
-  const { response } = await dialog.showMessageBox({
-    type: 'warning',
-    title: t('recovery.reminder.title', 'Recovery key not saved yet'),
-    message: t('recovery.reminder.message', 'You have not viewed your recovery key yet.'),
-    detail: fillPlaceholders(
-      t(
-        'recovery.reminder.detail',
-        'omadia runs a local database. Without this key, stored secrets cannot be recovered after a machine change.\n\nYou can find it any time under "Help" → "{menuItem}".',
-      ),
-      { menuItem },
-    ),
-    buttons: [
-      t('recovery.reminder.show', 'Show now'),
-      t('recovery.reminder.later', 'Later'),
-    ],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (response === 0) await showRecoveryKeyAction();
-}
-
 function trayActions(): TrayActions {
   return {
     open: () => {
@@ -292,7 +270,12 @@ function trayActions(): TrayActions {
     restart: async () => {
       if (!supervisor || !win) return;
       const token = startNavigation('boot', 'restart');
-      if (token === null) return;
+      if (token === null) {
+        // The arbiter refused (first-run setup is open). Say so: a menu action
+        // that visibly does nothing is its own small version of this bug class.
+        await showRestartRefused(t);
+        return;
+      }
       await win.loadFile(rendererPath(LOADING_PAGE));
       setTrayStatus(trayActions(), 'starting');
       supervisor.on('progress', forwardProgress);
@@ -303,6 +286,7 @@ function trayActions(): TrayActions {
         if (!finishNavigation(token, 'app', 'restart')) return;
         await win.loadURL(uiUrl);
         setTrayStatus(trayActions(), 'running');
+        await maybeRemindRecoveryKey(t);
       } catch (err) {
         log.error(`[main] restart failed: ${describeError(err)}`);
         setTrayStatus(trayActions(), 'error');
@@ -344,7 +328,7 @@ async function bootExistingInstall(): Promise<void> {
     if (!finishNavigation(token, 'app', 'boot-existing')) return;
     await win.loadURL(uiUrl);
     setTrayStatus(trayActions(), 'running');
-    await maybeRemindRecoveryKey();
+    await maybeRemindRecoveryKey(t);
   } catch (err) {
     streamBootLogs = false;
     await presentBootFailure(err);
@@ -359,10 +343,7 @@ async function bootExistingInstall(): Promise<void> {
  *
  * The old code interpolated the raw rejection into the dialog, so `Error: boot
  * superseded` — a deliberate internal state during an update — was presented as
- * a failure with two buttons that could both do damage. A superseded boot now
- * gets an explanation and a single harmless acknowledgement; only a genuine
- * failure still offers setup or quit, and the developer text moves into a
- * clearly-labelled support section instead of being the headline.
+ * a failure with two buttons that could both do damage. See `bootFailure.ts`.
  */
 async function presentBootFailure(err: unknown): Promise<void> {
   if (!win) return;
@@ -371,42 +352,13 @@ async function presentBootFailure(err: unknown): Promise<void> {
   if (failure.kind === 'superseded') {
     log.info(`[main] boot superseded (expected during an update): ${failure.detail}`);
     setTrayStatus(trayActions(), 'starting');
-    await dialog.showMessageBox(win, {
-      type: 'info',
-      title: t('boot.superseded.title', 'Applying update'),
-      message: t('boot.superseded.message', 'omadia is applying an update.'),
-      detail: t(
-        'boot.superseded.detail',
-        'Please wait until it finishes. The window will refresh by itself.',
-      ),
-      buttons: [t('boot.superseded.ok', 'OK')],
-      defaultId: 0,
-      cancelId: 0,
-    });
+    await showSupersededBoot(win, t);
     return;
   }
 
   log.error(`[main] boot failed: ${failure.detail}`);
   setTrayStatus(trayActions(), 'error');
-  const { response } = await dialog.showMessageBox(win, {
-    type: 'error',
-    title: t('boot.failed.title', 'omadia failed to start'),
-    message: t('boot.failed.message', 'omadia could not start its local services.'),
-    detail: fillPlaceholders(
-      t(
-        'boot.failed.detail',
-        'You can re-run setup or quit.\n\nTechnical details for support:\n{error}\n\nLog file: {logFile}',
-      ),
-      { error: failure.detail, logFile: logFile() },
-    ),
-    buttons: [
-      t('boot.failed.rerunSetup', 'Re-run setup'),
-      t('boot.failed.quit', 'Quit'),
-    ],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (response === 0) {
+  if ((await showBootFailure(win, t, failure.detail, logFile())) === 'rerun-setup') {
     startWizard();
   } else {
     quitting = true;
@@ -426,6 +378,9 @@ function startWizard(): void {
       finishNavigation(token, 'wizard', 'wizard-complete');
     },
     (err: unknown) => {
+      // Release the optimistic claim. Leaving it would freeze the arbiter on
+      // 'wizard' forever, refusing every later boot and restart with no way back.
+      viewState = abandonNavigation(viewState, 'boot');
       log.error(`[main] wizard failed to load: ${describeError(err)}`);
     },
   );
@@ -438,7 +393,7 @@ async function onReady(): Promise<void> {
   // fullscreen item and a DevTools accelerator into customer builds).
   installApplicationMenu({
     checkForUpdates: checkForUpdatesAction,
-    showRecoveryKey: () => void showRecoveryKeyAction(),
+    showRecoveryKey: () => void showRecoveryKeyAction(t),
   });
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);

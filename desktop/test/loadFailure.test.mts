@@ -15,11 +15,16 @@ import { strict as assert } from 'node:assert';
 
 import {
   ERR_ABORTED,
+  MAX_RECOVERY_ATTEMPTS,
+  clearRecoveryBudget,
+  initialRecoveryBudget,
+  nextRecoveryAttempt,
   shouldRecoverFromLoadFailure,
   type LoadFailureEvent,
 } from '../src/loadFailure.ts';
 
 const LOADING_PAGE = 'loading.html';
+const WIZARD_PAGE = 'wizard.html';
 
 function event(over: Partial<LoadFailureEvent> = {}): LoadFailureEvent {
   return {
@@ -55,12 +60,82 @@ describe('shouldRecoverFromLoadFailure', () => {
     assert.equal(shouldRecoverFromLoadFailure(failed, LOADING_PAGE), false);
   });
 
-  it('recovers from a failed wizard load, which is not the fallback', () => {
+  it('recovers from a failed wizard load when the fallback is a different page', () => {
     const failed = event({ validatedURL: 'file:///…/dist/renderer/wizard.html' });
     assert.equal(shouldRecoverFromLoadFailure(failed, LOADING_PAGE), true);
   });
 
+  it('refuses to recover the wizard WITH the wizard — the loop found in review', () => {
+    // The blocker: `recoverRenderer` targets wizard.html whenever the wizard is
+    // showing, but the caller passed a hardcoded `loading.html` as the identity.
+    // So a failing wizard passed every exclusion, was reloaded, failed again,
+    // and looped — silently, because the progress message only fires for the
+    // loading target. An earlier version of this suite ASSERTED that behaviour.
+    const failed = event({ validatedURL: 'file:///…/dist/renderer/wizard.html' });
+    assert.equal(shouldRecoverFromLoadFailure(failed, WIZARD_PAGE), false);
+  });
+
   it('pins ERR_ABORTED to Chromium’s documented -3', () => {
     assert.equal(ERR_ABORTED, -3);
+  });
+});
+
+describe('recovery budget — the guard for everything the filter cannot see', () => {
+  it('starts empty', () => {
+    assert.deepEqual(initialRecoveryBudget(), { attempts: 0, page: null });
+  });
+
+  it(`allows exactly ${MAX_RECOVERY_ATTEMPTS} attempts on one page, then stops`, () => {
+    let budget = initialRecoveryBudget();
+    for (let i = 1; i <= MAX_RECOVERY_ATTEMPTS; i += 1) {
+      const attempt = nextRecoveryAttempt(budget, WIZARD_PAGE);
+      budget = attempt.budget;
+      assert.equal(attempt.allowed, true, `attempt ${i} should be allowed`);
+    }
+    const exhausted = nextRecoveryAttempt(budget, WIZARD_PAGE);
+    assert.equal(exhausted.allowed, false, 'the budget must run out');
+  });
+
+  it('never allows an unbounded run, whatever the ceiling', () => {
+    // The property that actually matters: no infinite loop.
+    let budget = initialRecoveryBudget();
+    let allowedCount = 0;
+    for (let i = 0; i < 500; i += 1) {
+      const attempt = nextRecoveryAttempt(budget, WIZARD_PAGE);
+      budget = attempt.budget;
+      if (attempt.allowed) allowedCount += 1;
+    }
+    assert.equal(allowedCount, MAX_RECOVERY_ATTEMPTS);
+  });
+
+  it('counts per page, so a second distinct failure is not starved', () => {
+    let budget = initialRecoveryBudget();
+    for (let i = 0; i < MAX_RECOVERY_ATTEMPTS; i += 1) {
+      budget = nextRecoveryAttempt(budget, WIZARD_PAGE).budget;
+    }
+    assert.equal(nextRecoveryAttempt(budget, WIZARD_PAGE).allowed, false);
+    // Switching target resets: recovering the wizard twice and then the loading
+    // screen once is three problems, not one runaway loop.
+    const other = nextRecoveryAttempt(budget, LOADING_PAGE);
+    assert.equal(other.allowed, true);
+    assert.equal(other.budget.attempts, 1);
+    assert.equal(other.budget.page, LOADING_PAGE);
+  });
+
+  it('is cleared by any successful load', () => {
+    let budget = initialRecoveryBudget();
+    for (let i = 0; i < MAX_RECOVERY_ATTEMPTS; i += 1) {
+      budget = nextRecoveryAttempt(budget, WIZARD_PAGE).budget;
+    }
+    assert.equal(nextRecoveryAttempt(budget, WIZARD_PAGE).allowed, false);
+    budget = clearRecoveryBudget();
+    assert.equal(nextRecoveryAttempt(budget, WIZARD_PAGE).allowed, true);
+  });
+
+  it('does not mutate the budget it is given', () => {
+    const before = initialRecoveryBudget();
+    const snapshot = { ...before };
+    nextRecoveryAttempt(before, WIZARD_PAGE);
+    assert.deepEqual(before, snapshot);
   });
 });

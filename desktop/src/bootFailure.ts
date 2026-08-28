@@ -15,10 +15,23 @@
  *
  * COUPLING, deliberate and worth knowing: the supervisor communicates this
  * through an Error MESSAGE, so this classifier has to read one. Matching a
- * loose /superseded/ rather than the exact current string is the cheap
- * insurance — it survives a rename to "start superseded" or "boot was
- * superseded" (PR #944 reworks that lifecycle). If the marker is dropped
- * entirely the tests here go red, which is the point.
+ * loose /superseded/ rather than the exact current string is cheap insurance —
+ * it survives a rename to "start superseded" or "boot was superseded".
+ *
+ * That insurance is NOT self-enforcing, and an earlier version of this comment
+ * wrongly claimed it was. The marker is a duplicated literal: `'boot
+ * superseded'` in `supervisor.ts`, {@link SUPERSEDED_MARKER} here, and nothing
+ * in the type system bridging them. Mutating this classifier turns tests red;
+ * mutating the supervisor's message did NOT. Since PR #944 is reworking exactly
+ * that supersession path, a silent regression here would bring back the
+ * destructive Quit / Re-run-setup dialog during updates with a green suite.
+ *
+ * So `test/bootFailure.test.mts` reads the supervisor's own source and runs its
+ * thrown literals through this classifier. That is a source-level tripwire
+ * rather than a type-level one — `supervisor.ts` reaches Electron through
+ * `paths.ts`, so a Node test cannot import it — and it fails if the message is
+ * renamed OR removed. The clean end state is one shared exported constant, or a
+ * typed rejection; both belong to whoever owns the supervisor next.
  */
 
 /** What the shell should do about a rejected boot. */
