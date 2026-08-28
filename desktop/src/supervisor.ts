@@ -10,7 +10,8 @@ import {
   platformDataDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
-import { startEmbeddedDb, EmbeddedDb } from './embeddedDb';
+import { startEmbeddedDb, stopEmbeddedDb, EmbeddedDb } from './embeddedDb';
+import { stopChild, isConfirmedStopped } from './childLifecycle';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
 import { resolveAugmentedPath } from './pathEnv';
@@ -32,6 +33,20 @@ export interface BootProgress {
 }
 
 /**
+ * What a shutdown actually achieved.
+ *
+ * `stop()` used to return `Promise<void>`, so a caller could not tell a real
+ * shutdown from one that gave up waiting. The updater relied on that void
+ * promise to decide it was safe to hand the app bundle to Squirrel (#926).
+ */
+export interface StopOutcome {
+  /** True only when every process this supervisor started is confirmed gone. */
+  readonly clean: boolean;
+  /** Labels of the processes that outlived their shutdown deadline. */
+  readonly survivors: readonly string[];
+}
+
+/**
  * Owns the lifecycle of the local omadia stack: embedded DB → kernel → web-ui.
  * Children are forked from Electron's own binary running in pure-Node mode
  * (ELECTRON_RUN_AS_NODE=1), so we ship no separate Node runtime.
@@ -43,6 +58,13 @@ export class Supervisor extends EventEmitter {
   private uiUrl: string | null = null;
   /** Single-flight guard: only one start/restart/stop runs at a time. */
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
+  /**
+   * The in-flight full shutdown, if any. A second `stop()` awaits THIS instead
+   * of returning immediately: the old early return handed its caller a
+   * fulfilled promise while the first stop was still killing children, which
+   * is how the updater came to believe the stack was down (#927).
+   */
+  private stopInFlight: Promise<StopOutcome> | null = null;
   /**
    * Bumped on every stop/restart. A child's exit handler and the in-flight
    * health-poll loops compare against this so a process we intentionally killed
@@ -83,12 +105,20 @@ export class Supervisor extends EventEmitter {
     }
     this.state = 'starting';
     const gen = ++this.generation;
+    // Children this particular boot spawned. `this.kernel`/`this.ui` can be
+    // reassigned by a newer generation, so a superseded boot must reap what it
+    // created from its own locals, not from the shared fields.
+    let ownKernel: ChildProcess | null = null;
+    let ownUi: ChildProcess | null = null;
 
     try {
       this.progress('starting-db', 'Starting embedded database…');
       if (!this.db) {
         this.db = await startEmbeddedDb();
       }
+      // A stop() that landed while the database was coming up has already run
+      // its teardown; anything we spawn from here on would be an orphan.
+      this.assertLiveGeneration(gen);
 
       const kernelPort = Supervisor.KERNEL_PORT;
       // The kernel port is fixed (the web-ui bakes it at build time), so a clash
@@ -114,14 +144,18 @@ export class Supervisor extends EventEmitter {
       }
       const [uiPort] = await findFreePorts(1);
 
+      this.assertLiveGeneration(gen);
       this.progress('starting-kernel', 'Starting omadia kernel…');
-      this.kernel = this.forkNode(kernelEntry(), kernelCwd(), this.kernelEnv(kernelPort), 'kernel', gen);
+      ownKernel = this.forkNode(kernelEntry(), kernelCwd(), this.kernelEnv(kernelPort), 'kernel', gen);
+      this.kernel = ownKernel;
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
       await this.waitForKernel(kernelPort, gen);
 
+      this.assertLiveGeneration(gen);
       this.progress('starting-ui', 'Starting the admin interface…');
-      this.ui = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
+      ownUi = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
+      this.ui = ownUi;
       this.uiUrl = `http://127.0.0.1:${uiPort}`;
       await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen);
 
@@ -129,14 +163,46 @@ export class Supervisor extends EventEmitter {
       this.progress('ready', 'omadia is ready.');
       return this.uiUrl;
     } catch (err) {
-      // If a concurrent stop()/restart() superseded this boot (it bumped the
-      // generation), it now owns teardown + the state — do NOT double-tear-down
-      // or stomp its state. Only clean up when we're still the live generation.
-      if (gen === this.generation) {
-        await this.teardownChildren();
+      const superseded = gen !== this.generation;
+      // Always reap our OWN children. When we were superseded the concurrent
+      // stop() bumped the generation and tore down whatever existed AT THAT
+      // MOMENT — which, for a boot still between phases, was nothing. Skipping
+      // cleanup here is what left an unowned kernel and Postgres running out of
+      // the app bundle, and ShipIt then waited forever for a bundle it was not
+      // allowed to replace (#927 → #926).
+      await this.reapOwnChildren(ownKernel, ownUi);
+      // The state and the shared fields belong to the live generation only.
+      if (!superseded) {
         this.state = 'idle';
       }
       throw err;
+    }
+  }
+
+  /** Bail out of a boot that a concurrent stop()/restart() has overtaken. */
+  private assertLiveGeneration(gen: number): void {
+    if (gen !== this.generation) throw new Error('boot superseded');
+  }
+
+  /**
+   * Kill the children one specific boot attempt spawned, regardless of which
+   * generation is live, and detach them from the shared fields only if they are
+   * still the ones recorded there.
+   */
+  private async reapOwnChildren(
+    ownKernel: ChildProcess | null,
+    ownUi: ChildProcess | null,
+  ): Promise<void> {
+    await Promise.all([
+      stopChild(ownUi, 'web-ui', log),
+      stopChild(ownKernel, 'kernel', log),
+    ]);
+    if (ownUi !== null && this.ui === ownUi) {
+      this.ui = null;
+      this.uiUrl = null;
+    }
+    if (ownKernel !== null && this.kernel === ownKernel) {
+      this.kernel = null;
     }
   }
 
@@ -250,70 +316,77 @@ export class Supervisor extends EventEmitter {
     throw new Error(`${label} did not become healthy within ${timeoutMs}ms (${lastErr})`);
   }
 
-  /** SIGTERM a child, wait for it to actually exit, escalate to SIGKILL if needed. */
-  private killAndWait(child: ChildProcess | null, label: string, graceMs = 4_000): Promise<void> {
-    if (!child || child.exitCode !== null || child.signalCode !== null) {
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(killTimer);
-        clearTimeout(hardStop);
-        resolve();
-      };
-      child.once('exit', finish);
-      child.kill('SIGTERM');
-      // Escalate if it ignores SIGTERM (notably on Windows, where SIGTERM is not
-      // a real graceful signal).
-      const killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) {
-          log.warn(`[${label}] did not exit on SIGTERM; sending SIGKILL`);
-          child.kill('SIGKILL');
-        }
-      }, graceMs);
-      // Absolute backstop so a never-firing 'exit' can't hang shutdown forever.
-      const hardStop = setTimeout(finish, graceMs * 2);
-    });
-  }
-
-  private async teardownChildren(): Promise<void> {
+  /** Kill kernel + UI, reporting any that outlived their deadline. */
+  private async teardownChildren(): Promise<string[]> {
     // Invalidate exit handlers + in-flight health polls before we kill anything.
     this.generation++;
-    await Promise.all([
-      this.killAndWait(this.ui, 'web-ui'),
-      this.killAndWait(this.kernel, 'kernel'),
+    const [uiOutcome, kernelOutcome] = await Promise.all([
+      stopChild(this.ui, 'web-ui', log),
+      stopChild(this.kernel, 'kernel', log),
     ]);
     this.ui = null;
     this.kernel = null;
     this.uiUrl = null;
+    const survivors: string[] = [];
+    if (!isConfirmedStopped(uiOutcome)) survivors.push('web-ui');
+    if (!isConfirmedStopped(kernelOutcome)) survivors.push('kernel');
+    return survivors;
   }
 
   /** Stop kernel + UI but keep the embedded DB running, then boot again. */
   async restart(): Promise<string> {
-    if (this.state === 'stopping') throw new Error('Cannot restart while stopping.');
+    // Both guards matter: `state` catches a concurrent restart (whose teardown
+    // sets the state but not the full-stop promise), `stopInFlight` catches a
+    // full shutdown already on its way down.
+    if (this.state === 'stopping' || this.stopInFlight) {
+      throw new Error('Cannot restart while stopping.');
+    }
     this.state = 'stopping';
-    await this.teardownChildren();
+    const survivors = await this.teardownChildren();
+    if (survivors.length > 0) {
+      log.warn(`[boot] restarting with ${survivors.join(' + ')} still alive`);
+    }
     this.state = 'idle';
     return this.start();
   }
 
-  /** Full shutdown: children (awaited) then the embedded DB. Call on app quit. */
-  async stop(): Promise<void> {
-    if (this.state === 'stopping') return;
-    this.state = 'stopping';
-    await this.teardownChildren();
-    if (this.db) {
-      try {
-        await this.db.stop();
-      } catch (err) {
-        log.error(`[db] stop failed: ${String(err)}`);
-      }
-      this.db = null;
+  /**
+   * Full shutdown: children (awaited) then the embedded DB. Call on app quit.
+   *
+   * Resolves with what was actually achieved. A second concurrent call awaits
+   * the first one's outcome rather than returning a fulfilled promise while the
+   * first is still working — that early return is what let the updater proceed
+   * to `quitAndInstall()` over a live stack (#927).
+   */
+  async stop(): Promise<StopOutcome> {
+    if (this.stopInFlight) return this.stopInFlight;
+    const run = this.runStop();
+    this.stopInFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.stopInFlight = null;
     }
+  }
+
+  private async runStop(): Promise<StopOutcome> {
+    this.state = 'stopping';
+    const survivors = [...(await this.teardownChildren())];
+    // Reap from module state, not from `this.db`: a start() interrupted before
+    // it assigned the handle still left a live Postgres, and the old
+    // `if (this.db)` guard walked straight past it (#927).
+    try {
+      if (!(await stopEmbeddedDb())) survivors.push('embedded-postgres');
+    } catch (err) {
+      log.error(`[db] stop failed: ${String(err)}`);
+      survivors.push('embedded-postgres');
+    }
+    this.db = null;
     this.state = 'idle';
+    if (survivors.length > 0) {
+      log.error(`[boot] shutdown incomplete — still alive: ${survivors.join(', ')}`);
+    }
+    return { clean: survivors.length === 0, survivors };
   }
 }
 
