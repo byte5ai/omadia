@@ -1018,6 +1018,10 @@
       "npm_failed": {
         "what": "npm ran, but the installation failed.",
         "next": "Check the log details below, then try the installation again."
+      },
+      "spawn_failed": {
+        "what": "npm could not be started — the operating system refused to execute the npm file it found. npm never ran, so nothing was installed.",
+        "next": "The affected file is named in the support details. Check whether it is corrupt or not executable, and reinstall Node and npm if in doubt."
       }
     },
     "package": {

@@ -1018,6 +1018,10 @@
       "npm_failed": {
         "what": "npm wurde ausgeführt, aber die Installation ist fehlgeschlagen.",
         "next": "Prüfe die Log-Details unten und starte die Installation danach erneut."
+      },
+      "spawn_failed": {
+        "what": "npm konnte nicht gestartet werden — das Betriebssystem hat die gefundene npm-Datei nicht ausgeführt. npm ist also nie gelaufen, und es wurde nichts installiert.",
+        "next": "Die betroffene Datei steht in den Support-Details. Prüfe, ob sie beschädigt oder nicht ausführbar ist, und installiere Node und npm im Zweifel neu."
       }
     },
     "package": {
