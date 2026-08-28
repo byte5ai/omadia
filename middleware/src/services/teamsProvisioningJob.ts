@@ -15,11 +15,18 @@
  *
  * Idempotent resume: a run re-enters at the stored state and leans on the
  * provisioner's 'already-existed' signals — completed steps are skipped via
- * the persisted columns (app_id/tenant_id/teams_app_id), and re-executed
- * steps are safe because every remote call is idempotent by a stable key
- * (Graph `uniqueName`, ARM bot handle, catalog `externalId`, team install).
- * A row left in 'failed' resumes the same way: evidence columns decide the
- * entry point, so nothing is re-created.
+ * the persisted columns (app_id/tenant_id/teams_app_id) together with the
+ * state rank, and re-executed steps are safe because every remote call is
+ * idempotent by a stable key (Graph `uniqueName`, ARM bot handle, catalog
+ * `externalId`, team install). A row left in 'failed' resumes the same way:
+ * evidence decides the entry point, so nothing is re-created.
+ *
+ * app_id is persisted the MOMENT the Entra registration exists, before the
+ * client secret and the service principal (byte5ai/omadia#916) — an
+ * interruption then leaves a resumable row instead of an app registration
+ * the runner can never find again. Because such a row carries app_id while
+ * the step is unfinished, step 1 is considered done only when the STATE says
+ * so, never by the presence of app_id alone.
  *
  * Error policy (duck-typed guards — connector errors cross the plugin
  * boundary as plain `Error`s whose class identity is the plugin's, so
@@ -163,6 +170,11 @@ export interface TeamsProvisionerPort {
     readonly tenantMode: TenantMode;
     readonly uniqueName?: string;
     readonly secretDisplayName?: string;
+    /** Early-persistence hook — see the runner's step 1 (byte5ai/omadia#916). */
+    readonly onRegistrationCreated?: (
+      registration: { readonly appId: string; readonly tenantId: string },
+      outcome: IdempotentOutcome,
+    ) => void | Promise<void>;
   }): Promise<Idempotent<ProvisionerAppRegistrationResult>>;
 
   createBot(input: {
@@ -644,22 +656,39 @@ export class TeamsProvisioningJobRunner {
     const provisioner = this.getProvisioner();
 
     // Step 1 — Entra app registration (idempotent by Graph uniqueName).
-    if (!row.appId || !row.tenantId) {
+    //
+    // The step counts as done only when the STATE says so, not when app_id is
+    // merely present: app_id is now persisted the moment Graph confirms the
+    // registration (see onRegistrationCreated below), so a row can carry one
+    // while the client secret was never stored. Re-running is safe — the
+    // connector adopts the existing registration by its uniqueName and
+    // rotates the secret (byte5ai/omadia#916).
+    if (
+      !row.appId ||
+      !row.tenantId ||
+      STATE_RANK[row.state] < STATE_RANK.app_registered
+    ) {
       const result = await provisioner.createAppRegistration({
         displayName: row.displayName,
         tenantMode: this.tenantMode,
         uniqueName: `omadia-teams-bot-${row.botSlug}`,
         secretDisplayName: `omadia-teams-bot-${row.botSlug}`,
+        // The app id is the one durable fact of this step. Write it BEFORE
+        // the secret and the service principal so an interruption leaves a
+        // resumable row rather than an orphaned Entra app the runner cannot
+        // find again — the failure mode of byte5ai/omadia#916. The state
+        // stays where it is: the step is not finished yet.
+        onRegistrationCreated: async (registration) => {
+          await this.store.update(agentId, {
+            appId: registration.appId,
+            tenantId: registration.tenantId,
+          });
+        },
       });
       row = await this.store.update(agentId, {
         state: 'app_registered',
         appId: result.value.appId,
         tenantId: result.value.registration.tenantId,
-        lastError: null,
-      });
-    } else if (STATE_RANK[row.state] < STATE_RANK.app_registered) {
-      row = await this.store.update(agentId, {
-        state: 'app_registered',
         lastError: null,
       });
     }
