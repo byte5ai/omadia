@@ -2062,6 +2062,46 @@
       "rerun": "Re-run provisioning",
       "started": "Provisioning started for {botSlug}.",
       "progressLabel": "Provisioning progress",
+      "timeline": {
+        "heading": "Run activity",
+        "listLabel": "Provisioning run events",
+        "empty": "No events recorded for the current run yet.",
+        "neverStarted": "No provisioning run has been started yet — this fills up once one is running.",
+        "finished": "The run has finished. The log below shows what happened.",
+        "working": "The run is working.",
+        "activeStep": "Current step: {step}",
+        "elapsed": "running for {elapsed}",
+        "attemptOf": "Attempt {attempt} of {max} failed.",
+        "attempt": "Attempt {attempt} failed.",
+        "nextAttempt": "Next attempt {when}.",
+        "detailUnknown": "Note: {detail}",
+        "steps": {
+          "run": "Run",
+          "config_sync": "Teams plugin configuration"
+        },
+        "entry": {
+          "started": "{step} started",
+          "progress": "{step} made progress",
+          "retrying": "{step} is being retried",
+          "succeeded": "{step} done",
+          "failed": "{step} stopped"
+        },
+        "details": {
+          "skipped": "was already done",
+          "awaiting_entra_replication": "waiting for Entra replication — this can take up to a minute",
+          "registration_created": "app registration created, application ID stored",
+          "synced": "entry written into the Teams plugin",
+          "unchanged": "the Teams plugin entry was already correct",
+          "config_sync_failed": "the entry could not be written — the identity stays valid and the block can be pasted by hand",
+          "consent_missing": "admin consent is missing",
+          "arm_not_configured": "Azure setup fields on the M365 connector are missing",
+          "bot_handle_unavailable": "the bot name is already taken globally",
+          "error": "error",
+          "retries_exhausted": "retries exhausted — the progress reached is kept",
+          "team_conflict": "another run is already in flight for this orchestrator",
+          "stopped": "interrupted by a shutdown"
+        }
+      },
       "stateSummary": "State: {state}",
       "running": "A provisioning run is in progress.",
       "idle": "No provisioning run is active right now.",

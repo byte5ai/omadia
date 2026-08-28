@@ -15,9 +15,11 @@ import {
 import {
   formatTeamsBotsConfig,
   isTeamsBotConfigApplied,
+  parseTeamsProvisioningEvents,
   teamsBotConfigMessages,
   parseTeamsIdentityEnvelope,
 } from '../../../../_lib/teamsIdentity';
+import { AgentTeamsProvisioningTimeline } from './AgentTeamsProvisioningTimeline';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   Fact,
@@ -326,6 +328,13 @@ function ReadyPanel(props: {
       ),
     [status.identity.last_error_detail, status.identity.last_error],
   );
+  // #915 — narrowed at the boundary like every other additive field. A
+  // middleware below migration 0053 omits it and the timeline says so, rather
+  // than the panel failing on a shape it did not get.
+  const events = useMemo(
+    () => parseTeamsProvisioningEvents(status.provisioning_events),
+    [status.provisioning_events],
+  );
   // A re-run must resend the install target the server already recorded —
   // it requires `team_id` on every POST.
   const recordedTeamId =
@@ -366,6 +375,16 @@ function ReadyPanel(props: {
       </div>
 
       <StateChain state={status.state} />
+
+      {/* #915 — the chain above says WHERE the run is; this says what it has
+          been doing, which is where the minutes actually go. Placed directly
+          under the chain because the two answer the same question at
+          different resolutions, and above the error block because a run still
+          working is the more likely reading of a panel that is not finished. */}
+      <AgentTeamsProvisioningTimeline
+        events={events}
+        running={status.running}
+      />
 
       {detail && <LastError detail={detail} />}
 

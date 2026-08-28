@@ -650,6 +650,10 @@ export interface TeamsIdentityStatusDto {
   teams_bot: TeamsBotConfigEntryDto | null;
   /** Additive (#910) — see {@link parseTeamsBotsSync}. */
   teams_bots_sync?: unknown;
+  /** Additive (#915) — the current run's step timeline, newest first. Narrowed
+   *  by `parseTeamsProvisioningEvents` in `_lib/teamsIdentity.ts`; a middleware
+   *  predating migration 0053 simply omits the field. */
+  provisioning_events?: unknown;
 }
 
 /** `GET /v1/operator/agents/:slug/teams-identity`. Rejects with a 404

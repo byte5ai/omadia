@@ -2062,6 +2062,46 @@
       "rerun": "Provisioning erneut ausführen",
       "started": "Provisioning für {botSlug} gestartet.",
       "progressLabel": "Provisioning-Fortschritt",
+      "timeline": {
+        "heading": "Ablauf des Laufs",
+        "listLabel": "Ereignisse des Provisioning-Laufs",
+        "empty": "Für den aktuellen Lauf sind noch keine Ereignisse aufgezeichnet.",
+        "neverStarted": "Es wurde noch kein Provisioning-Lauf gestartet — der Ablauf füllt sich, sobald einer läuft.",
+        "finished": "Der Lauf ist beendet. Der Ablauf unten zeigt, was passiert ist.",
+        "working": "Der Lauf arbeitet.",
+        "activeStep": "Aktueller Schritt: {step}",
+        "elapsed": "läuft seit {elapsed}",
+        "attemptOf": "Versuch {attempt} von {max} fehlgeschlagen.",
+        "attempt": "Versuch {attempt} fehlgeschlagen.",
+        "nextAttempt": "Nächster Versuch {when}.",
+        "detailUnknown": "Hinweis: {detail}",
+        "steps": {
+          "run": "Lauf",
+          "config_sync": "Teams-Plugin-Konfiguration"
+        },
+        "entry": {
+          "started": "{step} gestartet",
+          "progress": "{step} kommt voran",
+          "retrying": "{step} wird wiederholt",
+          "succeeded": "{step} erledigt",
+          "failed": "{step} abgebrochen"
+        },
+        "details": {
+          "skipped": "war bereits erledigt",
+          "awaiting_entra_replication": "wartet auf die Entra-Replikation — das kann bis zu einer Minute dauern",
+          "registration_created": "App-Registrierung angelegt, Anwendungs-ID gespeichert",
+          "synced": "Eintrag in das Teams-Plugin geschrieben",
+          "unchanged": "Eintrag im Teams-Plugin war bereits korrekt",
+          "config_sync_failed": "Eintrag konnte nicht geschrieben werden — die Identität bleibt gültig, der Block lässt sich von Hand einfügen",
+          "consent_missing": "Admin-Zustimmung fehlt",
+          "arm_not_configured": "Azure-Setup-Felder am M365-Connector fehlen",
+          "bot_handle_unavailable": "Bot-Name ist global bereits vergeben",
+          "error": "Fehler",
+          "retries_exhausted": "Wiederholungen aufgebraucht — der erreichte Stand bleibt erhalten",
+          "team_conflict": "Für diesen Orchestrator läuft bereits ein anderer Lauf",
+          "stopped": "durch das Herunterfahren unterbrochen"
+        }
+      },
       "stateSummary": "Status: {state}",
       "running": "Ein Provisioning-Lauf ist gerade aktiv.",
       "idle": "Aktuell läuft kein Provisioning.",

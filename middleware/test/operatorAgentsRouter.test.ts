@@ -438,6 +438,33 @@ class FakeTeamsInstallStore {
   }
 }
 
+/** Migration 0053 (#915) — the provisioning progress log, in memory. Bound
+ *  only by the timeline cases below, so every pre-existing test keeps running
+ *  against the pre-0053 response shape it was written for. */
+class FakeTeamsEventStore {
+  rows: Array<{
+    id: string;
+    agentId: string;
+    at: Date;
+    step: string;
+    status: string;
+    attempt: number | null;
+    detail: string | null;
+  }> = [];
+  /** When set, `listRecent` rejects with it — the "table is unreadable"
+   *  fixture. A status response must survive that. */
+  readError: Error | undefined;
+  lastLimit: number | undefined;
+
+  listRecent(agentId: string, limit?: number): Promise<readonly typeof this.rows> {
+    this.lastLimit = limit;
+    if (this.readError) return Promise.reject(this.readError);
+    return Promise.resolve(
+      this.rows.filter((row) => row.agentId === agentId).slice(0, limit ?? 30),
+    );
+  }
+}
+
 /** W1a (#860) — stubbed provisioning job runner. `enqueue` returns a promise
  *  that NEVER settles: if the POST handler awaited the run, its test would
  *  hang into the suite timeout, so a green run proves the async contract. */
@@ -526,6 +553,9 @@ describe('createOperatorAgentsRouter', () => {
   /** Team-name resolver the route backfills from. `undefined` models a
    *  connector below 0.5.0, which has no `getTeam`. */
   let resolveTeamName: ((teamId: string) => Promise<string | null>) | undefined;
+  /** Migration 0053 — `undefined` keeps the pre-0053 response shape every
+   *  existing case pins; the timeline cases bind it per test. */
+  let teamsEvents: FakeTeamsEventStore | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -557,6 +587,7 @@ describe('createOperatorAgentsRouter', () => {
             provisioner as unknown as TeamsProvisionerAccessor | undefined,
           ...(teamsInstalls === undefined ? {} : { installs: teamsInstalls }),
           ...(resolveTeamName === undefined ? {} : { resolveTeamName }),
+          ...(teamsEvents === undefined ? {} : { events: teamsEvents }),
         }),
       }),
     );
@@ -581,6 +612,7 @@ describe('createOperatorAgentsRouter', () => {
     installedPlugins = undefined;
     teamsInstalls = undefined;
     resolveTeamName = undefined;
+    teamsEvents = undefined;
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
@@ -1247,6 +1279,221 @@ describe('createOperatorAgentsRouter', () => {
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }
+  });
+
+  // ── #915: the provisioning timeline on the status endpoint ──────────
+  //
+  // The five persisted chain states say WHERE a run is; these events say what
+  // it has been doing between them, which is where the minutes go. The field
+  // is ADDITIVE — every assertion below also has to leave the rest of the
+  // envelope exactly as the pre-0053 cases above pin it.
+
+  describe('provisioning timeline (#915)', () => {
+    function event(overrides: Record<string, unknown> = {}): {
+      id: string;
+      agentId: string;
+      at: Date;
+      step: string;
+      status: string;
+      attempt: number | null;
+      detail: string | null;
+    } {
+      return {
+        id: '1',
+        agentId: 'agent-id',
+        at: new Date('2026-08-28T10:00:00.000Z'),
+        step: 'app_registered',
+        status: 'started',
+        attempt: null,
+        detail: null,
+        ...overrides,
+      } as ReturnType<typeof event>;
+    }
+
+    it('GET /:slug/teams-identity publishes the run timeline, newest first', async () => {
+      const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+      teamsStore.rows.set(agent.id, {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales',
+        state: 'bot_created',
+        teamId: '19:team-a',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: null,
+        teamsAppExternalId: null,
+        lastError: null,
+      });
+      const events = new FakeTeamsEventStore();
+      // Newest first, as the store returns them (ORDER BY id DESC).
+      events.rows = [
+        event({
+          id: '3',
+          agentId: agent.id,
+          step: 'bot_created',
+          status: 'retrying',
+          attempt: 2,
+          detail: 'retry_in_ms=2000;max_attempts=5',
+        }),
+        event({ id: '2', agentId: agent.id, step: 'bot_created' }),
+        event({ id: '1', agentId: agent.id, status: 'succeeded' }),
+      ];
+      teamsEvents = events;
+
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        state: string;
+        provisioning_events: Array<{
+          id: string;
+          at: string;
+          step: string;
+          status: string;
+          attempt: number | null;
+          detail: string | null;
+        }>;
+        identity: { bot_slug: string };
+      };
+
+      assert.deepEqual(
+        body.provisioning_events.map((e) => `${e.step}/${e.status}`),
+        ['bot_created/retrying', 'bot_created/started', 'app_registered/succeeded'],
+      );
+      // The two numbers the operator copy is built from have to survive the
+      // wire as structured values, not as an English sentence.
+      assert.equal(body.provisioning_events[0]?.attempt, 2);
+      assert.equal(
+        body.provisioning_events[0]?.detail,
+        'retry_in_ms=2000;max_attempts=5',
+      );
+      // `at` is an ISO string, like every other timestamp in this envelope.
+      assert.equal(
+        body.provisioning_events[0]?.at,
+        '2026-08-28T10:00:00.000Z',
+      );
+      // Additive: the pre-0053 payload is untouched.
+      assert.equal(body.state, 'bot_created');
+      assert.equal(body.identity.bot_slug, 'sales');
+      // The endpoint bounds what it publishes — a status poll every 3s per
+      // open panel must not turn into a page of JSON.
+      assert.equal(events.lastLimit, 30);
+    });
+
+    it('reports an empty timeline on a mount without the events store (pre-0053)', async () => {
+      const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+      teamsStore.rows.set(agent.id, {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales',
+        state: 'pending',
+        teamId: null,
+        appId: null,
+        tenantId: null,
+        teamsAppId: null,
+        teamsAppExternalId: null,
+        lastError: null,
+      });
+
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { provisioning_events: unknown[] };
+      assert.deepEqual(body.provisioning_events, []);
+    });
+
+    it('still answers the identity when the timeline cannot be read', async () => {
+      // The timeline is decoration on a response whose real payload is the
+      // identity row. A middleware below migration 0053, an unreadable table,
+      // a query that timed out — none of them are a reason to deny an
+      // operator the state of their agent.
+      const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+      teamsStore.rows.set(agent.id, {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales',
+        state: 'installed',
+        teamId: '19:team-a',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        teamsAppExternalId: 'ext-1',
+        lastError: null,
+      });
+      const events = new FakeTeamsEventStore();
+      events.readError = new Error('relation does not exist');
+      teamsEvents = events;
+
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      assert.equal(res.status, 200, 'a broken timeline must not 500 the status');
+      const body = (await res.json()) as {
+        state: string;
+        provisioning_events: unknown[];
+      };
+      assert.equal(body.state, 'installed');
+      assert.deepEqual(body.provisioning_events, []);
+    });
+
+    it('never reports a terminally failed identity as still running (#915)', async () => {
+      // The route publishes the RUNNER's answer verbatim — the honest-running
+      // fix lives in `TeamsProvisioningJobRunner.isRunning`, and is pinned
+      // there. What this pins is the half the route owns: it must not
+      // manufacture a `true` of its own, and it must not paper over a `true`
+      // either (see the next case).
+      const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+      teamsStore.rows.set(agent.id, {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales',
+        state: 'failed',
+        teamId: '19:team-a',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: null,
+        teamsAppExternalId: null,
+        lastError: 'consent_missing: admin consent required for scopes []',
+      });
+      // Nothing in flight — the runner has settled and released the run.
+      teamsRunner.running.clear();
+
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      const body = (await res.json()) as { state: string; running: boolean };
+      assert.equal(body.state, 'failed');
+      assert.equal(
+        body.running,
+        false,
+        'a terminal verdict must never be presented as work in progress',
+      );
+    });
+
+    it('keeps reporting a genuine re-run of a failed row as running', async () => {
+      // The tempting "fix" for #915 is to suppress `running` whenever the row
+      // is terminal. It is wrong, and this is why: a re-run IS running before
+      // it writes its first state, and since migration 0051 an `installed`
+      // agent can legitimately be provisioning into a second team. Both would
+      // read as idle, and the panel would stop polling a live run.
+      const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+      teamsStore.rows.set(agent.id, {
+        agentId: agent.id,
+        botSlug: 'sales',
+        displayName: 'Sales',
+        state: 'failed',
+        teamId: '19:team-a',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: null,
+        teamsAppExternalId: null,
+        lastError: 'consent_missing: admin consent required for scopes []',
+      });
+      teamsRunner.running.set(agent.id, '19:team-a');
+
+      const res = await fetch(`${baseUrl}/sales/teams-identity`);
+      const body = (await res.json()) as { state: string; running: boolean };
+      assert.equal(body.state, 'failed');
+      assert.equal(
+        body.running,
+        true,
+        'a run the runner actually holds must be reported, terminal row or not',
+      );
+    });
   });
 
   // ── W1a (#860): Teams identity provisioning endpoints ───────────────
