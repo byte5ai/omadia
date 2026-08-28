@@ -431,6 +431,26 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "Azure Trusted Signing configured for account $AZURE_SIGN_ACCOUNT"
 
+      # electron-builder signs every unpacked binary in parallel, and each
+      # parallel `Invoke-TrustedSigning` call independently checks whether its
+      # NuGet dependencies (Microsoft.Trusted.Signing.Client,
+      # Microsoft.Windows.SDK.BuildTools) are installed. On the FIRST run those
+      # aren't cached yet, so N concurrent installs race for the same package
+      # file and lose with "The process cannot access the file because it is
+      # being used by another process" — not an auth or config problem, a
+      # bootstrap race. Signing one throwaway file here, single-threaded,
+      # forces that one-time install to finish before electron-builder's
+      # parallel batch starts, so every later call just hits the warm cache.
+      - name: Pre-warm Azure Trusted Signing tooling (avoid concurrent-install race)
+        if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != '' }}
+        shell: pwsh
+        run: |
+          Install-Module -Name TrustedSigning -RequiredVersion 0.4.1 -Force -Scope CurrentUser -AllowClobber
+          $warmupFile = Join-Path $env:RUNNER_TEMP 'trusted-signing-warmup.exe'
+          Copy-Item -Path "$env:SystemRoot\System32\notepad.exe" -Destination $warmupFile
+          Invoke-TrustedSigning -Endpoint $env:AZURE_SIGN_ENDPOINT -CodeSigningAccountName $env:AZURE_SIGN_ACCOUNT -CertificateProfileName $env:AZURE_SIGN_CERT_PROFILE -Files $warmupFile -FileDigest SHA256
+          Remove-Item -Path $warmupFile -Force
+
       # --- Windows signing: legacy .pfx (pre-2023 certificates only) ---------
       - name: Prepare Windows signing (legacy CSC — pre-2023 certs only)
         if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID == '' && env.WINDOWS_CSC_LINK_BASE64 != '' }}
