@@ -108,6 +108,17 @@
       'js.setupFailed': 'Einrichtung fehlgeschlagen. Prüfe die Logs (Tray → Logs öffnen).',
       'js.pickerFailed':
         'Der Ordner-Dialog ließ sich nicht öffnen: {msg}. Es wird der Standard-Ordner verwendet.',
+      // Document titles — per page, so the loading screen no longer inherits
+      // the wizard's title (see applyWizardLocale below).
+      'wizard.docTitle': 'Willkommen bei omadia',
+      'loading.docTitle': 'omadia wird gestartet…',
+      // Loading screen (OM-59 / OM-60). The boot.* phase keys above are shared
+      // with the wizard; these are the loading screen's own chrome.
+      'loading.starting': 'Lokale Dienste werden gestartet…',
+      'loading.bridgeMissing':
+        'Interner Fehler: Die App-Brücke wurde nicht geladen (Tray → Logs öffnen).',
+      'loading.details.empty': 'Startprotokoll',
+      'loading.details.count': 'Startprotokoll ({count} Zeilen)',
       'js.bridgeMissing':
         'Interner Fehler: Die App-Brücke wurde nicht geladen. Bitte neu installieren oder melden (Tray → Logs öffnen).',
     },
@@ -130,7 +141,6 @@
   window.applyWizardLocale = function () {
     if (!active) return;
     document.documentElement.lang = 'de';
-    document.title = 'Willkommen bei omadia';
     var nodes = document.querySelectorAll('[data-i18n]');
     for (var i = 0; i < nodes.length; i += 1) {
       var key = nodes[i].getAttribute('data-i18n');
