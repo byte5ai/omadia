@@ -22,7 +22,7 @@
  * restarts. `resolveCliBin` in the detector prefers this prefix over PATH.
  */
 import { execFile } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -63,6 +63,30 @@ const LOG_TAIL_CHARS = 2000;
 /** Cap for the searched-PATH line in a no-output failure detail (#925). */
 const MAX_PATH_DETAIL_CHARS = 512;
 
+/**
+ * Spawn errno -> which help path tells the truth (#933, OM-68).
+ *
+ * A spawn failure means the OS never started npm, so there is no failed
+ * install and no log to read. The two buckets are deliberately NOT merged:
+ * `ENOEXEC`/`EACCES`/`EPERM`/`EISDIR` mean a file WAS found and refused
+ * execution, so the operator has to look at that file; `ENOENT` means there
+ * was nothing to execute, which is what `no_output` already says and what its
+ * searched-PATH line already answers. Telling an operator with no npm that
+ * "the npm file found is not executable" is the same class of untrue message
+ * this issue was filed about.
+ */
+const SPAWN_FAILURE_KINDS: Readonly<Record<string, 'unrunnable' | 'not_found'>> = {
+  ENOEXEC: 'unrunnable',
+  EACCES: 'unrunnable',
+  EPERM: 'unrunnable',
+  EISDIR: 'unrunnable',
+  ENOENT: 'not_found',
+};
+
+/** Candidate npm filenames, in the order the OS would try them. */
+const NPM_FILENAMES: readonly string[] =
+  process.platform === 'win32' ? ['npm.cmd', 'npm.exe', 'npm'] : ['npm'];
+
 interface InstallJob {
   readonly cliId: string;
   status: CliInstallState;
@@ -75,10 +99,22 @@ interface InstallJob {
 
 let current: InstallJob | undefined;
 
+interface InstallRunResult {
+  readonly ok: boolean;
+  readonly output: string;
+  /**
+   * The raw child-process failure, when there was one. Present so the caller
+   * can tell "npm ran and exited non-zero" from "the OS never started npm"
+   * (#933) — the errno and syscall live on this object and nowhere else, and
+   * discarding it is why every spawn failure used to read as a failed install.
+   */
+  readonly failure?: unknown;
+}
+
 type InstallRunner = (
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-) => Promise<{ ok: boolean; output: string }>;
+) => Promise<InstallRunResult>;
 
 /** Default runner: `npm <args>` — no shell, bounded time and output. */
 const npmRunner: InstallRunner = (args, env) =>
@@ -88,7 +124,11 @@ const npmRunner: InstallRunner = (args, env) =>
       [...args],
       { timeout: INSTALL_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, windowsHide: true },
       (err, stdout, stderr) => {
-        resolve({ ok: !err, output: `${String(stdout ?? '')}\n${String(stderr ?? '')}` });
+        resolve({
+          ok: !err,
+          output: `${String(stdout ?? '')}\n${String(stderr ?? '')}`,
+          ...(err ? { failure: err } : {}),
+        });
       },
     );
   });
@@ -158,7 +198,7 @@ export async function startCliInstall(
   };
 
   void runner(['install', '-g', '--prefix', dir, `${pkg}@${version ?? 'latest'}`], env)
-    .then(({ ok, output }) => {
+    .then(({ ok, output, failure }) => {
       job.logTail = output.trim().slice(-LOG_TAIL_CHARS);
       job.finishedAt = Date.now();
       if (ok) {
@@ -173,22 +213,40 @@ export async function startCliInstall(
         }
       } else {
         job.status = 'failed';
-        if (job.logTail) {
+        const spawnFailure = asSpawnFailure(failure);
+        if (spawnFailure?.kind === 'unrunnable') {
+          job.code = 'cli_install.spawn_failed';
+          job.error = spawnFailedDetail(spawnFailure, env);
+        } else if (job.logTail) {
           job.code = 'cli_install.npm_failed';
           job.error = 'npm install failed — see the log tail.';
         } else {
+          // A spawn ENOENT also lands here, and correctly so: there is no npm
+          // to name, and the searched PATH is the whole diagnosis.
           job.code = 'cli_install.no_output';
-          job.error =
-            'npm install failed — no output at all; npm was most likely not found.' +
-            `\nSearched PATH: ${searchedPathDetail(env)}`;
+          job.error = noOutputDetail(env);
         }
       }
     })
     .catch((err: unknown) => {
       job.finishedAt = Date.now();
       job.status = 'failed';
-      // A thrown runner error still has a concrete failure message, so keep it
-      // on the generic npm-failed help path rather than the "no output" one.
+      const spawnFailure = asSpawnFailure(err);
+      if (spawnFailure?.kind === 'unrunnable') {
+        // npm never started, so "npm ran, but the installation failed" and
+        // "check the log details below" are both untrue — and there is no log
+        // tail to check either (#933).
+        job.code = 'cli_install.spawn_failed';
+        job.error = spawnFailedDetail(spawnFailure, env);
+        return;
+      }
+      if (spawnFailure?.kind === 'not_found') {
+        job.code = 'cli_install.no_output';
+        job.error = noOutputDetail(env);
+        return;
+      }
+      // Any other thrown runner error still has a concrete failure message, so
+      // keep it on the generic npm-failed help path.
       job.code = 'cli_install.npm_failed';
       job.error = err instanceof Error ? err.message : String(err);
     });
@@ -226,6 +284,81 @@ function searchedPathDetail(env: NodeJS.ProcessEnv): string {
   return searchedPath.length > MAX_PATH_DETAIL_CHARS
     ? `${searchedPath.slice(0, MAX_PATH_DETAIL_CHARS)}… (truncated)`
     : searchedPath;
+}
+
+/** A child process that never started, and which of the two ways it failed. */
+interface SpawnFailure {
+  readonly kind: 'unrunnable' | 'not_found';
+  readonly errno: string;
+  /** The file the OS refused, when it names one. */
+  readonly file?: string;
+}
+
+/**
+ * Recognise a failure to START the child, by shape rather than by message.
+ *
+ * Node puts `code` (the errno) and `syscall` (`spawn` / `spawn npm`) on these
+ * errors. The syscall check is what keeps an `EACCES` from some unrelated fs
+ * call inside a runner from being reported as "npm is not executable"; it is
+ * tolerated when absent, since starting the child is all the runner does.
+ */
+function asSpawnFailure(failure: unknown): SpawnFailure | undefined {
+  if (!(failure instanceof Error)) return undefined;
+  const { code, syscall, path: failedFile } = failure as Error & {
+    code?: unknown;
+    syscall?: unknown;
+    path?: unknown;
+  };
+  if (typeof code !== 'string') return undefined;
+  const kind = SPAWN_FAILURE_KINDS[code];
+  if (!kind) return undefined;
+  if (typeof syscall === 'string' && !syscall.startsWith('spawn')) return undefined;
+  return {
+    kind,
+    errno: code,
+    ...(typeof failedFile === 'string' && failedFile ? { file: failedFile } : {}),
+  };
+}
+
+/**
+ * The npm file the OS would have executed, resolved off the PATH the child was
+ * actually handed. `npmRunner` spawns bare `npm` and lets the OS resolve it, so
+ * on an `ENOEXEC` nothing in the error names the broken file — and naming it is
+ * the only thing that turns this failure into one the operator can act on
+ * (#933; the reporter's own npm-cli.js was a 0-byte file).
+ */
+function resolvedNpmFile(env: NodeJS.ProcessEnv): string | undefined {
+  const searchedPath = env['PATH'];
+  if (!searchedPath) return undefined;
+  for (const dir of searchedPath.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const filename of NPM_FILENAMES) {
+      const candidate = path.join(dir, filename);
+      try {
+        if (existsSync(candidate)) return candidate;
+      } catch {
+        /* an unreadable directory is simply not a match */
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Operator-facing detail for a spawn failure: the errno and the actual file. */
+function spawnFailedDetail(failure: SpawnFailure, env: NodeJS.ProcessEnv): string {
+  const file = failure.file ?? resolvedNpmFile(env);
+  return (
+    `npm could not be started (${failure.errno}) — npm never ran, so nothing was installed.` +
+    `\nnpm file: ${file ?? '(could not be resolved from PATH)'}`
+  );
+}
+
+/** Operator-facing detail for "npm produced nothing at all" (#925). */
+function noOutputDetail(env: NodeJS.ProcessEnv): string {
+  return (
+    'npm install failed — no output at all; npm was most likely not found.' +
+    `\nSearched PATH: ${searchedPathDetail(env)}`
+  );
 }
 
 /** Test seams. */

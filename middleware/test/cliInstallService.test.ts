@@ -7,7 +7,7 @@
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'node:http';
@@ -71,6 +71,18 @@ async function withPath(pathValue: string, body: () => Promise<void>): Promise<v
     if (previousPath === undefined) delete process.env['PATH'];
     else process.env['PATH'] = previousPath;
   }
+}
+
+/**
+ * A Node spawn failure, shaped the way `child_process` actually reports one:
+ * `code` carries the errno and `syscall` names the failed operation (#933).
+ */
+function spawnError(errno: string, extra: Readonly<Record<string, string>> = {}): Error {
+  return Object.assign(new Error(`spawn npm ${errno}`), {
+    code: errno,
+    syscall: 'spawn npm',
+    ...extra,
+  });
 }
 
 describe('cliInstallService', () => {
@@ -188,6 +200,103 @@ describe('cliInstallService', () => {
       assert.ok(longPath.length > 1000, 'fixture PATH must exceed the cap to be a real test');
       assert.ok(searchedLine.length < 600, `searched-PATH line unbounded: ${searchedLine.length}`);
     });
+  });
+
+  it('a spawn failure reports spawn_failed, not npm_failed, and carries no log tail', async () => {
+    // ENOEXEC means the OS never started npm: no install ran and there is no
+    // log to read, so the npm_failed copy ("npm ran" + "check the log details
+    // below") is untrue in both sentences (#933, OM-68).
+    __setCliInstallRunner(async () => {
+      throw spawnError('ENOEXEC', { path: '/opt/broken/bin/npm' });
+    });
+    await startCliInstall('codex', '1.2.3');
+    const done = await waitForTerminal('codex');
+    assert.equal(done.status, 'failed');
+    assert.equal(done.code, 'cli_install.spawn_failed');
+    assert.match(done.error ?? '', /ENOEXEC/);
+    assert.match(done.error ?? '', /npm never ran/);
+    // The offending file must be named — it is the only actionable detail.
+    assert.match(done.error ?? '', /\/opt\/broken\/bin\/npm/);
+    assert.equal(done.logTail, undefined);
+  });
+
+  it('names the npm file resolved off the handed PATH when the error carries none', async () => {
+    // `npmRunner` spawns bare `npm`, so on some platforms the error names no
+    // file. The searched PATH still identifies the one the OS would have run.
+    const binDir = mkdtempSync(path.join(tmpdir(), 'fake-npm-bin-'));
+    const fakeNpm = path.join(binDir, 'npm');
+    writeFileSync(fakeNpm, '');
+    chmodSync(fakeNpm, 0o755);
+    try {
+      await withPath(binDir, async () => {
+        __setCliInstallRunner(async () => {
+          throw spawnError('ENOEXEC');
+        });
+        await startCliInstall('codex', '1.2.3');
+        const done = await waitForTerminal('codex');
+        assert.equal(done.code, 'cli_install.spawn_failed');
+        assert.ok(
+          done.error?.includes(fakeNpm),
+          `spawn detail did not name the resolved npm file: ${done.error ?? '(no error)'}`,
+        );
+      });
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a spawn ENOENT stays on no_output — there is no file to call unrunnable', async () => {
+    // The split is the whole point: telling an operator who has no npm that
+    // "the npm file found is not executable" is the same class of untrue
+    // message this issue was filed about. ENOENT belongs to the PATH story.
+    await withPath('/sentinel/bin', async () => {
+      __setCliInstallRunner(async () => {
+        throw spawnError('ENOENT');
+      });
+      await startCliInstall('codex', '1.2.3');
+      const done = await waitForTerminal('codex');
+      assert.equal(done.code, 'cli_install.no_output');
+      assert.match(done.error ?? '', /Searched PATH: \/sentinel\/bin/);
+    });
+  });
+
+  it('classifies a spawn failure the runner resolves rather than throws', async () => {
+    // The default npmRunner resolves with ok:false and hands the raw error up;
+    // it must classify the same as the throwing shape above.
+    __setCliInstallRunner(async () => ({
+      ok: false,
+      output: '',
+      failure: spawnError('EACCES', { path: '/opt/noexec/npm' }),
+    }));
+    await startCliInstall('codex', '1.2.3');
+    const done = await waitForTerminal('codex');
+    assert.equal(done.code, 'cli_install.spawn_failed');
+    assert.match(done.error ?? '', /EACCES/);
+  });
+
+  it('leaves a non-spawn thrown error on npm_failed', async () => {
+    // Regression guard on the path this change must NOT alter.
+    __setCliInstallRunner(async () => {
+      throw new Error('runner exploded');
+    });
+    await startCliInstall('codex', '1.2.3');
+    const done = await waitForTerminal('codex');
+    assert.equal(done.code, 'cli_install.npm_failed');
+    assert.equal(done.error, 'runner exploded');
+  });
+
+  it('does not call an unrelated fs errno a spawn failure', async () => {
+    // Same errno, different syscall: an EACCES from an `open` inside a runner
+    // is not "npm is not executable", and must not borrow that copy.
+    __setCliInstallRunner(async () => {
+      throw Object.assign(new Error('EACCES: permission denied, open ...'), {
+        code: 'EACCES',
+        syscall: 'open',
+      });
+    });
+    await startCliInstall('codex', '1.2.3');
+    const done = await waitForTerminal('codex');
+    assert.equal(done.code, 'cli_install.npm_failed');
   });
 
   it('reserves the single-flight slot across the idempotency probe (no TOCTOU race)', async () => {
