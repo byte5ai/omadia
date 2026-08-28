@@ -60,6 +60,8 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const LOG_TAIL_CHARS = 2000;
+/** Cap for the searched-PATH line in a no-output failure detail (#925). */
+const MAX_PATH_DETAIL_CHARS = 512;
 
 interface InstallJob {
   readonly cliId: string;
@@ -176,7 +178,9 @@ export async function startCliInstall(
           job.error = 'npm install failed — see the log tail.';
         } else {
           job.code = 'cli_install.no_output';
-          job.error = 'npm install failed — no output at all; npm was most likely not found.';
+          job.error =
+            'npm install failed — no output at all; npm was most likely not found.' +
+            `\nSearched PATH: ${searchedPathDetail(env)}`;
         }
       }
     })
@@ -206,6 +210,22 @@ export function getCliInstallStatus(cliId: string): CliInstallStatus {
     startedAt: current.startedAt,
     ...(current.finishedAt ? { finishedAt: current.finishedAt } : {}),
   };
+}
+
+/**
+ * The PATH the npm child was actually handed, capped. A `no_output` failure is
+ * almost always "npm is not on this PATH", and naming the directories that
+ * were searched turns an opaque failure into a one-look diagnosis instead of a
+ * manual `which npm` on the host (#925). Deliberately the spawn env's value
+ * rather than a later `process.env` read, so it stays truthful in the desktop
+ * app (which hands its children a hand-built PATH) as well as in Docker.
+ */
+function searchedPathDetail(env: NodeJS.ProcessEnv): string {
+  const searchedPath = env['PATH'];
+  if (!searchedPath) return '(unset)';
+  return searchedPath.length > MAX_PATH_DETAIL_CHARS
+    ? `${searchedPath.slice(0, MAX_PATH_DETAIL_CHARS)}… (truncated)`
+    : searchedPath;
 }
 
 /** Test seams. */
