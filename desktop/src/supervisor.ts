@@ -124,6 +124,19 @@ export class Supervisor extends EventEmitter {
    */
   private static readonly KERNEL_PORT = 8769;
 
+  /**
+   * Rounds the settle loop may take before it gives up waiting.
+   *
+   * It cannot spin today: a new operation can only come from start() or
+   * restart(), and both are refused while `stopping`. But that is a
+   * guard-equivalence argument, and those have already been wrong more than
+   * once on this code - while an unbounded loop inside stop() would hang the
+   * quit forever, which is strictly worse than the leak the loop prevents.
+   * Eight is far above any legitimate chain (a restart entering its boot phase
+   * needs two).
+   */
+  private static readonly MAX_SETTLE_ROUNDS = 8;
+
   getUiUrl(): string | null {
     return this.uiUrl;
   }
@@ -321,7 +334,7 @@ export class Supervisor extends EventEmitter {
     // while we are waiting - a restart entering its boot phase does exactly
     // that - and a single `[...set]` snapshot would never see it. That gap is
     // how a boot started by a restart escaped a concurrent stop() entirely.
-    for (;;) {
+    for (let round = 0; round < Supervisor.MAX_SETTLE_ROUNDS; round += 1) {
       const pending = [...this.opsInFlight].filter((op) => op !== self);
       if (pending.length === 0) return survivors;
       await Promise.all(pending.map((op) => op.settled));
@@ -330,6 +343,21 @@ export class Supervisor extends EventEmitter {
         this.opsInFlight.delete(op);
       }
     }
+
+    // Bounded, and loud about it. Giving up quietly and reporting a clean
+    // shutdown would be the same lie in a new place: the caller would hand a
+    // live stack to the installer on the strength of it.
+    const stuck = [...this.opsInFlight].filter((op) => op !== self);
+    if (stuck.length > 0) {
+      log.error(
+        `[boot] gave up waiting for lifecycle work after ${Supervisor.MAX_SETTLE_ROUNDS} ` +
+          `rounds; still in flight: ${stuck.map((op) => op.kind).join(', ')}`,
+      );
+      survivors.push(
+        ...stuck.map((op) => (op.kind === 'boot' ? 'pending-startup' : 'pending-restart')),
+      );
+    }
+    return survivors;
   }
 
   private kernelEnv(port: number): NodeJS.ProcessEnv {

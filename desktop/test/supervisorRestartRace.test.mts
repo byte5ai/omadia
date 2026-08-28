@@ -366,3 +366,51 @@ test('a kill() that throws is reported as a survivor, not raised out of stop()',
   assert.equal(dbRegistered, false, 'Postgres must not be orphaned by a failed child kill');
   assert.equal(peek(sup).state, 'idle', 'the supervisor must not stay wedged in stopping');
 });
+
+test('the settle loop is bounded, and giving up is not reported as clean', async () => {
+  __setEmbeddedDbHooks({
+    start: async () => fakeHandle(async () => true),
+    stop: async () => true,
+    isRunning: () => false,
+  });
+
+  const sup = new Supervisor();
+  const internals = sup as unknown as {
+    opsInFlight: Set<{ kind: string; settled: Promise<void>; survivors: string[] }>;
+  };
+
+  // An operation that registers a successor as it settles, so the loop always
+  // finds more work. start()/restart() cannot do this while `stopping`, which
+  // is exactly why the loop "cannot spin" - but that is a guard-equivalence
+  // argument, and an unbounded loop inside stop() would hang the quit forever.
+  // The chain is finite so that WITHOUT the cap this test fails on the
+  // assertions below rather than by hanging the suite.
+  const CHAIN_LENGTH = 40;
+  let spawned = 0;
+  const addSelfReplicating = (): void => {
+    spawned += 1;
+    let finish!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    internals.opsInFlight.add({ kind: 'boot', settled, survivors: [] });
+    setTimeout(() => {
+      // Successor first, so it is already in the set when this one settles.
+      if (spawned < CHAIN_LENGTH) addSelfReplicating();
+      finish();
+    }, 0);
+  };
+  addSelfReplicating();
+
+  const outcome = await sup.stop();
+
+  assert.equal(outcome.clean, false, 'giving up must never be reported as clean');
+  assert.ok(
+    outcome.survivors.some((survivor) => survivor.startsWith('pending-')),
+    `expected a pending-operation survivor, got [${outcome.survivors.join(', ')}]`,
+  );
+  assert.ok(
+    spawned < CHAIN_LENGTH,
+    `the loop must stop before the chain does; it ran ${spawned} rounds`,
+  );
+});
