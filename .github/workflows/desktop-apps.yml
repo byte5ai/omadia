@@ -430,7 +430,15 @@ jobs:
           {
             printf 'EB_WIN_SIGN=--config.win.azureSignOptions.endpoint=%s' "$AZURE_SIGN_ENDPOINT"
             printf ' --config.win.azureSignOptions.codeSigningAccountName=%s' "$AZURE_SIGN_ACCOUNT"
-            printf ' --config.win.azureSignOptions.certificateProfileName=%s\n' "$AZURE_SIGN_CERT_PROFILE"
+            printf ' --config.win.azureSignOptions.certificateProfileName=%s' "$AZURE_SIGN_CERT_PROFILE"
+            # electron-builder's WindowsSignAzureManager spreads any extra
+            # azureSignOptions keys straight through as `-<Key> <value>` onto
+            # `Invoke-TrustedSigning`. Without a timestamp server the signature
+            # is valid today but dies the moment the signing certificate
+            # expires — the verification gate below rejects an untimestamped
+            # signature for exactly that reason.
+            printf ' --config.win.azureSignOptions.timestampRfc3161=http://timestamp.acs.microsoft.com'
+            printf ' --config.win.azureSignOptions.timestampDigest=SHA256\n'
             echo "WIN_SIGN_EXPECTED=1"
           } >> "$GITHUB_ENV"
           echo "Azure Trusted Signing configured for account $AZURE_SIGN_ACCOUNT"
