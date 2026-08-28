@@ -239,6 +239,13 @@ jobs:
       - name: Publish the draft and flag it latest
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job deliberately has no actions/checkout -- it makes one API
+          # call and a checkout would be pure cost. But `gh` resolves the target
+          # repository from the git remote, so without a repo it fails with
+          # "failed to run git: fatal: not a git repository" AFTER the gate has
+          # already passed, leaving the release stuck as a draft. GH_REPO is how
+          # you tell `gh` the repository without a working tree.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release.outputs.new_tag }}
           MAC_FEED_PUBLISHED: ${{ needs.desktop-apps.outputs.mac_feed_published }}
           DESKTOP_RESULT: ${{ needs.desktop-apps.result }}
