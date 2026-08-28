@@ -103,7 +103,7 @@ function makeProvisioner(): StubProvisioner {
     uploadToCatalog(input) {
       calls.push(`uploadToCatalog:${input.externalId}`);
       return Promise.resolve({
-        outcome: 'updated' as const,
+        outcome: 'already-existed' as const,
         value: { teamsAppId: 'catalog-77' },
       });
     },
@@ -114,7 +114,7 @@ function makeProvisioner(): StubProvisioner {
     installToTeam(input) {
       calls.push(`installToTeam:${input.teamId}:${input.teamsAppId}`);
       return Promise.resolve({
-        outcome: 'existed' as const,
+        outcome: 'already-existed' as const,
         value: { teamId: input.teamId, teamsAppId: input.teamsAppId },
       });
     },
