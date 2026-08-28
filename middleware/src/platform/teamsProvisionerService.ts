@@ -110,6 +110,21 @@ export interface CreateAppRegistrationInput {
   readonly uniqueName?: string;
   /** Portal label for the generated secret. */
   readonly secretDisplayName?: string;
+  /**
+   * Called the moment the registration exists — after Graph confirms the
+   * create (or the adoption), BEFORE the client secret and the service
+   * principal. This is where a caller persists `app_id`, so an interruption
+   * anywhere in the rest of the chain leaves a RESUMABLE row instead of an
+   * app registration nobody knows about (byte5ai/omadia#916).
+   *
+   * Connector >= 0.5.0. An older connector silently ignores the property and
+   * the caller simply learns the app id at the end, as before — no feature
+   * detection needed, but also no early persistence.
+   */
+  readonly onRegistrationCreated?: (
+    registration: AppRegistration,
+    outcome: IdempotentOutcome,
+  ) => void | Promise<void>;
 }
 
 /** What `createAppRegistration` hands back — NO secret value, only the ref. */
