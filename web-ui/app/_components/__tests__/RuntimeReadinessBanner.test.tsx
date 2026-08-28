@@ -12,7 +12,7 @@ import { RuntimeReadinessBanner } from '../RuntimeReadinessBanner';
  * heartbeat sees the runtime come up.
  */
 
-const TITLE_DE = 'LLM-API-Key fehlt';
+const TITLE_DE = 'LLM-Zugang fehlt';
 
 const { mockUsePathname } = vi.hoisted(() => ({
   mockUsePathname: vi.fn(() => '/'),
@@ -55,6 +55,9 @@ describe('<RuntimeReadinessBanner />', () => {
     await flush();
 
     expect(screen.getByText(TITLE_DE)).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /LLM-Zugang öffnen/i }),
+    ).toHaveAttribute('href', '/admin/providers');
     expect(mockFetch).toHaveBeenCalledWith(
       '/bot-api/v1/operator/agents',
       expect.objectContaining({ credentials: 'include' }),

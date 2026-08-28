@@ -50,6 +50,23 @@ still needed, rendered from the new `teams_bots_sync` field of
 plugin config on every read rather than from a stored "we synced it" flag, so
 a hand edit shows up immediately. Copy in EN + DE.
 
+### Fixed — runtime-readiness banner now points to the actual LLM access page (#911)
+
+2026-08-28 — The readiness card shown when the runtime is offline had exactly
+one CTA, but it pointed to `/admin/settings`, a directory of miscellaneous
+plugin configuration with no relation to LLM providers or subscriptions. That
+meant the one card whose whole job is "your runtime is offline, go fix your
+LLM access" sent operators to the wrong page.
+
+The CTA now targets `/admin/providers`, the page that actually exposes the
+API-key and subscription-CLI tabs added around #889. The EN/DE body copy now
+names both supported access paths — adding an API key or connecting an
+existing Claude/Codex subscription — instead of only referring to "your key",
+and the title ("LLM API key missing" → "LLM access missing") no longer frames
+the problem as API-key-specific when the body describes both paths. The
+banner test now pins the CTA href so this exact regression is covered
+under #911.
+
 ### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
 
 2026-08-27 — #882's PATH augmentation checked Homebrew, Volta, asdf, and nvm,
