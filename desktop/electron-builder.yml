@@ -103,6 +103,12 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  # Default artifact name is "${productName} Setup ${version}.${ext}" — the
+  # space breaks Azure Trusted Signing: electron-builder invokes
+  # `Invoke-TrustedSigning -Files <path>` without quoting the path, so
+  # signtool sees the path truncated at the first space and fails with
+  # "File not found". No spaces sidesteps the bug entirely.
+  artifactName: ${productName}-Setup-${version}.${ext}
 
 linux:
   category: Development
