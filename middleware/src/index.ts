@@ -42,12 +42,14 @@ import {
   type OperatorAgentIdentityStore,
   type OperatorTeamsIdentityDeps,
   type OperatorTeamsIdentityStore,
+  type OperatorTeamsEventStore,
   type OperatorTeamsInstallStore,
   type OperatorTeamsProvisioningRunner,
 } from './routes/operatorAgents.js';
 import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { AgentIdentityStore } from './platform/agentIdentityStore.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
+import { TeamsProvisioningEventStore } from './platform/teamsProvisioningEventStore.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
 import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
 import {
@@ -1922,6 +1924,17 @@ async function main(): Promise<void> {
     // (one team per agent, overwritten on re-target).
     const agentTeamsInstallStore = new AgentTeamsInstallStore(graphPool);
     serviceRegistry.provide('agentTeamsInstallStore', agentTeamsInstallStore);
+    // Migration 0053 (#915) — the per-step progress log. Provisioning takes
+    // minutes and used to persist only the five chain-state transitions, so
+    // the operator UI polled every three seconds and had nothing new to say
+    // while the runner sat in an Entra replication poll or an ARM backoff.
+    // Decoration, never authority: the runner swallows every write failure
+    // here and the route reports an empty timeline rather than 500ing.
+    const teamsProvisioningEventStore = new TeamsProvisioningEventStore(graphPool);
+    serviceRegistry.provide(
+      'teamsProvisioningEventStore',
+      teamsProvisioningEventStore,
+    );
     // TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL — the binding contract of
     // config.ts; resolved per call so a config reload wins over boot state.
     const teamsPublicBaseUrl = (): string =>
@@ -1933,6 +1946,9 @@ async function main(): Promise<void> {
       // one. Both are best-effort: neither can fail a run that succeeded.
       installs: agentTeamsInstallStore,
       resolveTeamName,
+      // #915 — where the runner writes what it is doing between two chain
+      // states. Best-effort by contract: a failed note never fails a run.
+      events: teamsProvisioningEventStore,
       getProvisioner: () => requireTeamsProvisioner(serviceRegistry),
       // The accessor module's URL builder, bound to the public base — the
       // runner never composes the messaging endpoint itself.
@@ -3386,8 +3402,18 @@ async function main(): Promise<void> {
           // capability (#900) has to follow it.
           getProvisioner: () => getTeamsProvisioner(serviceRegistry),
         };
-        if (installStore === undefined) return teamsDeps;
-        return { ...teamsDeps, installs: installStore };
+        // Migration 0053 (#915) — same optional posture as 0051: a middleware
+        // whose migrations have not reached 0053 serves a status response
+        // without a timeline instead of 500ing against a missing table.
+        const eventStore = serviceRegistry.get<OperatorTeamsEventStore>(
+          'teamsProvisioningEventStore',
+        );
+        const withEvents: OperatorTeamsIdentityDeps =
+          eventStore === undefined
+            ? teamsDeps
+            : { ...teamsDeps, events: eventStore };
+        if (installStore === undefined) return withEvents;
+        return { ...withEvents, installs: installStore };
       },
       // #914 — the agent identity routes. Registered by the same
       // graphPool-guarded boot block as the provisioning stack, but resolved

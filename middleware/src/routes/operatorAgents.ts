@@ -342,6 +342,12 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly installs?: OperatorTeamsInstallStore;
   /**
+   * The provisioning progress log (`agent_teams_provisioning_events`,
+   * migration 0053, #915). Optional — see
+   * {@link OperatorTeamsEventStore}.
+   */
+  readonly events?: OperatorTeamsEventStore;
+  /**
    * Resolve one team id to its Graph display name (`teamsProvisioner@1`
    * >= 0.5.0), or `null` when the connector cannot answer. Optional and
    * best-effort: a name is decoration on a binding the route already knows,
@@ -349,6 +355,38 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
 }
+
+/**
+ * The subset of `TeamsProvisioningEventStore` this router uses (migration
+ * 0053, byte5ai/omadia#915) — read-only. The runner is the only writer.
+ *
+ * Optional on the deps for the same reason `installs` is: a middleware whose
+ * migrations have not reached 0053 answers the status endpoint without a
+ * timeline rather than 500ing against a table that is not there.
+ */
+export interface OperatorTeamsEventStore {
+  listRecent(
+    agentId: string,
+    limit?: number,
+  ): Promise<readonly OperatorTeamsProvisioningEventRecord[]>;
+}
+
+/** One `agent_teams_provisioning_events` row, camelCase — see
+ *  `platform/teamsProvisioningEventStore.ts`. */
+export interface OperatorTeamsProvisioningEventRecord {
+  readonly id: string;
+  readonly agentId: string;
+  readonly at: Date;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/** How many events the status endpoint publishes. A run emits roughly a
+ *  dozen; thirty covers a full retry storm without turning a status poll
+ *  (every 3s, per open panel) into a page of JSON. */
+export const TEAMS_PROVISIONING_EVENT_LIMIT = 30;
 
 /** The subset of `AgentTeamsInstallStore` this router uses. */
 export interface OperatorTeamsInstallStore {
@@ -393,6 +431,61 @@ export function projectTeamsIdentityErrorDetail(
   record: OperatorTeamsIdentityRecord,
 ): TeamsProvisioningErrorDetail | null {
   return record.lastError ? classifyTeamsProvisioningError(record.lastError) : null;
+}
+
+/** One event as the status endpoint publishes it — snake_case like the rest
+ *  of the payload, `at` as an ISO string. */
+export interface TeamsProvisioningEventProjection {
+  readonly id: string;
+  readonly at: string;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/**
+ * The run's timeline, newest first (#915).
+ *
+ * THIS FUNCTION IS THE ROUTE'S ONE CHOKE POINT for progress-log failures, the
+ * mirror of the runner's `emit`. The timeline is decoration on a response
+ * whose actual payload is the identity row: a middleware that has not reached
+ * migration 0053, a table that is briefly unreadable, a query that times out —
+ * none of those are a reason to deny an operator the state of their agent. So
+ * every one of them degrades to an empty list, loudly in the server log and
+ * silently in the response.
+ *
+ * The empty list is honest, not a lie: it says "no events to show", which is
+ * exactly what a pre-0053 middleware has. What it must never do is claim a
+ * run failed or succeeded, and it cannot — every entry here is written by the
+ * runner or does not exist.
+ */
+async function projectProvisioningEvents(
+  deps: OperatorTeamsIdentityDeps,
+  agentId: string,
+): Promise<readonly TeamsProvisioningEventProjection[]> {
+  const events = deps.events;
+  if (!events) return [];
+  try {
+    const rows = await events.listRecent(
+      agentId,
+      TEAMS_PROVISIONING_EVENT_LIMIT,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      at: row.at.toISOString(),
+      step: row.step,
+      status: row.status,
+      attempt: row.attempt,
+      detail: row.detail,
+    }));
+  } catch (err) {
+    console.warn(
+      `[operator-agents] provisioning timeline for agent '${agentId}' could not be read:`,
+      err,
+    );
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,10 +1965,24 @@ export function createOperatorAgentsRouter(
         },
         row,
       );
+      // #915 — what the run has been DOING. Read after the projections above
+      // so a slow timeline never delays the parts of this response that
+      // matter; failures are absorbed inside projectProvisioningEvents.
+      const provisioningEvents = await projectProvisioningEvents(
+        deps,
+        existing.id,
+      );
       res.json({
         ok: true,
         agent: existing.slug,
         state: row.state,
+        // #915 — `running` means the runner still has WORK in flight, not
+        // "there is still a map entry". The fix lives in the runner
+        // (`TeamsProvisioningJobRunner.isRunning`), deliberately not here:
+        // suppressing it from a terminal `state` would have hidden the two
+        // legitimate cases where both are true at once — an installed agent
+        // being provisioned into a second team (migration 0051), and a re-run
+        // of a failed row before it writes its first state.
         running: deps.runner.isRunning(existing.id),
         provisioner_installed: deps.isProvisionerInstalled(),
         identity: {
@@ -1905,6 +2012,11 @@ export function createOperatorAgentsRouter(
         // channel-teams plugin config. The copy-paste block above STAYS —
         // this tells the operator whether they still need it.
         teams_bots_sync: teamsBotsSync,
+        // Additive (#915): the current run's step timeline, newest first.
+        // The five persisted chain states say WHERE the run is; these say
+        // what it has been doing between them — which is where the minutes
+        // actually go (Entra replication, ARM backoff, catalog upload).
+        provisioning_events: provisioningEvents,
       });
     } catch (err) {
       badRequest(res, err);

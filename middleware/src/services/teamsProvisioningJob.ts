@@ -152,6 +152,115 @@ export interface TeamsInstallJobStore {
 }
 
 // ---------------------------------------------------------------------------
+// Progress log port (migration 0053, byte5ai/omadia#915)
+// ---------------------------------------------------------------------------
+
+/**
+ * The steps the runner reports progress for.
+ *
+ * The five CHAIN steps carry the name of the state they PRODUCE, so the
+ * operator UI can lay events straight onto the progress chain it already
+ * renders instead of learning a second vocabulary. Two steps have no state of
+ * their own:
+ *
+ *   * `run` — the run itself: one `started` when it begins, exactly one
+ *     terminal event when it ends. It is what tells a UI apart "this run died
+ *     in step 1" from "no run ever started", which look identical when the
+ *     only evidence is a `pending` row.
+ *   * `config_sync` — the post-install `teams_bots` write (#910). Its failure
+ *     is a warning on a successful run, never the run's verdict.
+ */
+export const TEAMS_PROVISIONING_STEPS = [
+  'run',
+  'app_registered',
+  'bot_created',
+  'package_built',
+  'catalog_uploaded',
+  'installed',
+  'config_sync',
+] as const;
+
+export type TeamsProvisioningStep = (typeof TEAMS_PROVISIONING_STEPS)[number];
+
+/** The five chain steps, in order — everything a resume can find already
+ *  done. `run` and `config_sync` are excluded because neither is a link of
+ *  the chain and neither can be "already done". */
+export const SKIPPABLE_CHAIN_STEPS = [
+  'app_registered',
+  'bot_created',
+  'package_built',
+  'catalog_uploaded',
+  'installed',
+] as const satisfies readonly TeamsProvisioningStep[];
+
+/** Status vocabulary — mirrors `TEAMS_PROVISIONING_EVENT_STATUSES` in
+ *  `platform/teamsProvisioningEventStore.ts` (the CHECK constraint of
+ *  migration 0053). Structural, like every other port in this module. */
+export type TeamsProvisioningEventStatus =
+  | 'started'
+  | 'progress'
+  | 'retrying'
+  | 'succeeded'
+  | 'failed';
+
+/**
+ * Where the runner writes its progress notes (structural subset of
+ * `TeamsProvisioningEventStore`).
+ *
+ * OPTIONAL BY DESIGN. A mount without Postgres, and every existing test, gets
+ * no sink and behaves exactly as before — the log is decoration on a run, and
+ * a run that needed it would be a run that depends on its own diary.
+ *
+ * MAY REJECT. Every call goes through {@link TeamsProvisioningJobRunner.emit},
+ * which is the ONE place a write failure is swallowed. Nothing else in this
+ * module guards a sink call.
+ */
+export interface TeamsProvisioningEventSink {
+  record(input: {
+    readonly agentId: string;
+    readonly step: string;
+    readonly status: TeamsProvisioningEventStatus;
+    readonly attempt?: number | null;
+    readonly detail?: string | null;
+  }): Promise<unknown>;
+  clearForAgent(agentId: string): Promise<unknown>;
+}
+
+/**
+ * The `detail` of a `retrying` event, as a `key=value;…` token list.
+ *
+ * A retry is the one event whose copy needs numbers the operator can act on —
+ * "attempt 3 of 5, next in 8s" — and migration 0053 has one free-form
+ * `detail` column, not a column per number. So the shape is pinned HERE, next
+ * to its only producer, and mirrored by a total, defensive parser in
+ * `web-ui/app/_lib/teamsIdentity.ts`; an unparsable token there degrades to
+ * "retrying" rather than to a crash.
+ */
+export function retryDetail(delayMs: number, maxAttempts: number): string {
+  return `retry_in_ms=${String(Math.max(0, Math.round(delayMs)))};max_attempts=${String(maxAttempts)}`;
+}
+
+/** `detail` of a step event that had nothing to do — a resume re-entering
+ *  above this step. Emitted rather than skipped so a resumed run shows five
+ *  steps, not two; a gap in the timeline reads as a lost step. */
+export const SKIPPED_DETAIL = 'skipped';
+
+/** `detail` of the `started` event for the Entra app registration.
+ *
+ *  The connector polls Entra for replication inside `createAppRegistration`
+ *  and can sit there for up to a minute. The runner cannot see into that call
+ *  (it is another repo's contract), so instead of inventing progress it says
+ *  up front that this step is the slow one — and then emits a real `progress`
+ *  event from `onRegistrationCreated`, the one boundary the contract already
+ *  exposes: the registration exists, the secret and service principal do not
+ *  yet, and the replication wait is what happens next. */
+export const AWAITING_ENTRA_REPLICATION_DETAIL = 'awaiting_entra_replication';
+
+/** `detail` of that `progress` event — the app registration exists in Graph
+ *  and its id is persisted; what follows is the wait. */
+export const REGISTRATION_CREATED_DETAIL = 'registration_created';
+
+// ---------------------------------------------------------------------------
 // Provisioner port (structural subset of TeamsProvisionerAccessor)
 // ---------------------------------------------------------------------------
 
@@ -503,6 +612,11 @@ export interface TeamsProvisioningJobOptions {
    * no opinion about connector versions.
    */
   readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
+  /**
+   * Progress log (migration 0053, #915). Absent = pre-0053 behaviour: the
+   * run is identical, it simply leaves no timeline behind.
+   */
+  readonly events?: TeamsProvisioningEventSink;
   readonly log?: (msg: string) => void;
 }
 
@@ -535,12 +649,34 @@ export class TeamsProvisioningJobRunner {
   private readonly resolveTeamName:
     | ((teamId: string) => Promise<string | null>)
     | undefined;
+  private readonly events: TeamsProvisioningEventSink | undefined;
   private readonly log: (msg: string) => void;
 
+  /**
+   * Runs this runner holds.
+   *
+   * `settled` is what makes {@link isRunning} honest (byte5ai/omadia#915).
+   * The entry itself is removed in `enqueue`'s `.finally()`, which is one
+   * full turn of the microtask queue AND — on the installed path — a couple
+   * of network round trips after the terminal state was persisted. A status
+   * request landing in that window used to be answered `state: 'failed',
+   * running: true`, i.e. a terminal verdict presented as work in progress.
+   * The flag is set the instant the run has its verdict, before anything
+   * awaits again, so no request can observe the contradiction.
+   */
   private readonly inFlight = new Map<
     string,
-    { readonly teamId: string; readonly run: Promise<ProvisioningRunResult> }
+    {
+      readonly teamId: string;
+      readonly run: Promise<ProvisioningRunResult>;
+      settled: boolean;
+    }
   >();
+  /** Step each in-flight run is currently inside, so a failure classified in
+   *  {@link handleFailure} — which is deliberately step-agnostic — can still
+   *  say WHICH step it is retrying. One run per agent is guaranteed by
+   *  {@link inFlight}, so an agent id is a sufficient key. */
+  private readonly currentStep = new Map<string, TeamsProvisioningStep>();
   private readonly pendingSleeps = new Set<() => void>();
   private stopped = false;
 
@@ -560,6 +696,7 @@ export class TeamsProvisioningJobRunner {
     this.syncBotConfig = opts.syncBotConfig;
     this.installs = opts.installs;
     this.resolveTeamName = opts.resolveTeamName;
+    this.events = opts.events;
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -597,13 +734,37 @@ export class TeamsProvisioningJobRunner {
       })
       .finally(() => {
         this.inFlight.delete(request.agentId);
+        this.currentStep.delete(request.agentId);
       });
-    this.inFlight.set(request.agentId, { teamId: request.teamId, run });
+    this.inFlight.set(request.agentId, {
+      teamId: request.teamId,
+      run,
+      settled: false,
+    });
     return run;
   }
 
+  /**
+   * Is a run for this agent still WORKING? (byte5ai/omadia#915)
+   *
+   * Not "is there a map entry" — an entry outlives the verdict by a microtask
+   * turn on the failure path and by two network calls on the installed one
+   * (the binding write and the `teams_bots` config sync both run after the
+   * terminal state is persisted). Reporting `true` there is what produced the
+   * `state: 'failed', running: true` responses of #915. A run that has
+   * reached its verdict is not running any more, whatever the map still
+   * holds.
+   *
+   * Note what this deliberately does NOT do: suppress `running` because the
+   * ROW says `installed` or `failed`. Since migration 0051 an installed agent
+   * can be legitimately provisioning into a second team, and a re-run of a
+   * failed row is running before it writes its first state. The contradiction
+   * is fixed by making the runner's own answer honest, not by second-guessing
+   * it from the row.
+   */
   isRunning(agentId: string): boolean {
-    return this.inFlight.has(agentId);
+    const entry = this.inFlight.get(agentId);
+    return entry !== undefined && !entry.settled;
   }
 
   /**
@@ -617,9 +778,115 @@ export class TeamsProvisioningJobRunner {
    * reject the promise — which a fire-and-forget caller cannot observe in
    * time to answer the request. Reading the in-flight target lets the route
    * refuse BEFORE it mutates the row.
+   *
+   * Deliberately keyed on map PRESENCE, not on {@link isRunning}: this exists
+   * to predict {@link enqueue}'s refusal, and enqueue refuses while the entry
+   * is there — settled or not. A route that used the softer answer would
+   * accept a re-target enqueue that the runner then rejects behind its back.
    */
   runningTeamId(agentId: string): string | null {
     return this.inFlight.get(agentId)?.teamId ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Progress log (migration 0053, #915)
+  // -------------------------------------------------------------------------
+
+  /**
+   * THE choke point for the progress log — the single place a sink failure is
+   * swallowed.
+   *
+   * Everything about this log is decoration: nothing reads it to decide
+   * anything, resume runs off the identity row, and a run that failed because
+   * its diary entry did not write would be an outage manufactured by an
+   * observability feature. So a rejection is logged and dropped, and no emit
+   * site anywhere else in this class carries a `try`/`catch`.
+   *
+   * Awaited rather than fire-and-forget so the timeline keeps insertion
+   * order: two events racing on the same connection pool could otherwise land
+   * out of sequence, and an out-of-order timeline is worse than none.
+   */
+  private async emit(
+    agentId: string,
+    step: TeamsProvisioningStep,
+    status: TeamsProvisioningEventStatus,
+    extra?: { readonly attempt?: number; readonly detail?: string },
+  ): Promise<void> {
+    if (status === 'started') this.currentStep.set(agentId, step);
+    const sink = this.events;
+    if (!sink) return;
+    try {
+      await sink.record({
+        agentId,
+        step,
+        status,
+        ...(extra?.attempt !== undefined ? { attempt: extra.attempt } : {}),
+        ...(extra?.detail !== undefined ? { detail: extra.detail } : {}),
+      });
+    } catch (err) {
+      this.log(
+        `[teams-provisioning] progress event (${step}/${status}) for ${agentId} was not recorded: ${errorMessage(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Open a fresh timeline for the run that is about to start.
+   *
+   * The log describes ONE run (migration 0053): an operator clicking "run
+   * provisioning again" is asking about the run they just started, not about
+   * the one that failed yesterday, and concatenating the two would show the
+   * same step succeeding and failing with nothing to say which was which.
+   * Same swallow policy as {@link emit} — a clear that fails leaves stale
+   * events, which the store's per-agent cap then bounds.
+   */
+  private async beginEventLog(agentId: string): Promise<void> {
+    const sink = this.events;
+    if (sink) {
+      try {
+        await sink.clearForAgent(agentId);
+      } catch (err) {
+        this.log(
+          `[teams-provisioning] could not clear the previous progress log of ${agentId}: ${errorMessage(err)}`,
+        );
+      }
+    }
+    await this.emit(agentId, 'run', 'started');
+  }
+
+  /**
+   * Close the timeline: mark the step that died (when one did), then write
+   * the run's single terminal event.
+   *
+   * `installed` is the only success. Every other outcome carries a
+   * machine-readable reason — a code the UI localizes, never prose it has to
+   * parse. A `stopped` run gets no step-level failure: a shutdown did not
+   * break the step it interrupted, and saying it did would send an operator
+   * hunting a fault that is not there.
+   */
+  private async endEventLog(result: ProvisioningRunResult): Promise<void> {
+    const agentId = result.agentId;
+    if (result.status === 'installed') {
+      await this.emit(agentId, 'run', 'succeeded');
+      return;
+    }
+    const reason =
+      result.status === 'halted' || result.status === 'failed'
+        ? result.reason
+        : result.status;
+    const step = this.currentStep.get(agentId);
+    if (step !== undefined && step !== 'run' && result.status !== 'stopped') {
+      await this.emit(agentId, step, 'failed', { detail: reason });
+    }
+    await this.emit(agentId, 'run', 'failed', { detail: reason });
+  }
+
+  /** Mark this agent's run as no longer working — see {@link isRunning}.
+   *  Synchronous on purpose: it has to land before the next `await`, or the
+   *  window it closes reopens. */
+  private markSettled(agentId: string): void {
+    const entry = this.inFlight.get(agentId);
+    if (entry) entry.settled = true;
   }
 
   /** Stop accepting work and release every pending retry delay. An
@@ -648,7 +915,28 @@ export class TeamsProvisioningJobRunner {
     };
   }
 
+  /**
+   * One run, start to verdict, with its progress log around it.
+   *
+   * ORDER MATTERS HERE. {@link markSettled} runs BEFORE the terminal event is
+   * written and before anything else awaits: between the terminal state
+   * reaching Postgres inside {@link attemptLoop} and this line there is only
+   * microtask continuation — no timer, no I/O — and Node drains the microtask
+   * queue before it services the next request. That is what makes it
+   * impossible for a status request to observe `failed` + `running: true`
+   * (#915). Writing the event first would reintroduce the window it closes.
+   */
   private async runWithRetries(
+    request: ProvisionTeamsIdentityRequest,
+  ): Promise<ProvisioningRunResult> {
+    await this.beginEventLog(request.agentId);
+    const result = await this.attemptLoop(request);
+    this.markSettled(request.agentId);
+    await this.endEventLog(result);
+    return result;
+  }
+
+  private async attemptLoop(
     request: ProvisionTeamsIdentityRequest,
   ): Promise<ProvisioningRunResult> {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
@@ -673,6 +961,12 @@ export class TeamsProvisioningJobRunner {
     attempt: number,
   ): Promise<ProvisioningRunResult | undefined> {
     const { agentId } = request;
+    // NOTE ON WHERE THE `failed` EVENT IS WRITTEN. Every terminal branch
+    // below persists the verdict and returns; the matching progress event is
+    // emitted by {@link endEventLog}, AFTER {@link markSettled}. Emitting it
+    // here would put a database round trip between the terminal state write
+    // and the settle — exactly the window #915 is about. A `retrying` event
+    // is different and stays here: nothing is terminal at that point.
 
     if (err instanceof TeamsProvisioningJobError) {
       // Precondition failure (e.g. no identity row) — retrying cannot help,
@@ -753,6 +1047,16 @@ export class TeamsProvisioningJobRunner {
     this.log(
       `[teams-provisioning] ${agentId} attempt ${attempt}/${this.maxAttempts} failed (${errorMessage(err)}); retrying in ${delayMs}ms`,
     );
+    // THE event this whole feature exists for (#915): the minutes an operator
+    // stares at an unmoving panel are these delays. Attempt number and wait
+    // are carried as structured arguments, never as a sentence — the UI
+    // renders "attempt 3 of 5, next in 8s" from them. The error MESSAGE is
+    // deliberately not included: it is connector output, so it can carry a
+    // request URL or an identifier, and this column is read by a screen.
+    await this.emit(agentId, this.currentStep.get(agentId) ?? 'run', 'retrying', {
+      attempt,
+      detail: retryDetail(delayMs, this.maxAttempts),
+    });
     await this.sleep(delayMs);
     return undefined;
   }
@@ -761,12 +1065,24 @@ export class TeamsProvisioningJobRunner {
     return Math.min(this.baseRetryDelayMs * 2 ** (attempt - 1), this.maxRetryDelayMs);
   }
 
-  /** Best-effort persistence of a failure detail — a store outage while
-   *  recording must not mask the original failure. */
+  /**
+   * Best-effort persistence of a failure detail — a store outage while
+   * recording must not mask the original failure.
+   *
+   * SETTLES THE RUN BEFORE IT WRITES A TERMINAL STATE (byte5ai/omadia#915).
+   * The order is the whole fix. `state = 'failed'` is committed in Postgres
+   * the moment this write lands, but the runner's own continuation only
+   * resumes a driver round trip later — and a status request served in that
+   * gap read the committed `failed` from the database while `isRunning` still
+   * answered `true`. Marking first makes the pair unobservable: from the
+   * instant the terminal state can be READ, the runner already agrees the run
+   * is over. Marking afterwards would leave exactly the window #915 reports.
+   */
   private async recordError(
     agentId: string,
     patch: TeamsIdentityJobUpdate,
   ): Promise<void> {
+    if (patch.state === 'failed') this.markSettled(agentId);
     try {
       await this.store.update(agentId, patch);
     } catch (err) {
@@ -828,6 +1144,15 @@ export class TeamsProvisioningJobRunner {
       // The chain itself has nothing left to do, but the config write is
       // re-asserted so "re-run provisioning" always ends with the bot
       // actually configured.
+      //
+      // The whole chain is still logged as skipped. An operator who clicks
+      // "run provisioning again" on a healthy identity gets a timeline that
+      // says "all five steps: nothing to do", which answers their question;
+      // a timeline holding only the config write would look like the run
+      // never got started.
+      for (const step of SKIPPABLE_CHAIN_STEPS) {
+        await this.emit(agentId, step, 'succeeded', { detail: SKIPPED_DETAIL });
+      }
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
@@ -885,6 +1210,13 @@ export class TeamsProvisioningJobRunner {
       !row.tenantId ||
       STATE_RANK[row.state] < STATE_RANK.app_registered
     ) {
+      // The slow one. The connector polls Entra for replication inside this
+      // call and can sit there for the best part of a minute; the runner
+      // cannot see into it (another repo's contract), so it says so up front
+      // instead of leaving the panel silent.
+      await this.emit(agentId, 'app_registered', 'started', {
+        detail: AWAITING_ENTRA_REPLICATION_DETAIL,
+      });
       const result = await provisioner.createAppRegistration({
         displayName: row.displayName,
         tenantMode: this.tenantMode,
@@ -900,6 +1232,16 @@ export class TeamsProvisioningJobRunner {
             appId: registration.appId,
             tenantId: registration.tenantId,
           });
+          // The ONE boundary inside this call the connector's contract already
+          // exposes, and therefore the only honest intra-step progress the
+          // runner can report without changing that contract (it lives in
+          // another repo — out of scope here): the registration exists in
+          // Graph, its id is persisted, and the replication wait is what
+          // happens next. The app id itself is deliberately NOT in `detail` —
+          // a tenant identifier has no business in a progress note.
+          await this.emit(agentId, 'app_registered', 'progress', {
+            detail: REGISTRATION_CREATED_DETAIL,
+          });
         },
       });
       row = await this.store.update(agentId, {
@@ -908,6 +1250,13 @@ export class TeamsProvisioningJobRunner {
         tenantId: result.value.registration.tenantId,
         lastError: null,
       });
+      await this.emit(agentId, 'app_registered', 'succeeded');
+    } else {
+      // A resume re-entering above this step. Recorded rather than passed over
+      // in silence: a timeline that starts at step 3 reads as two lost steps.
+      await this.emit(agentId, 'app_registered', 'succeeded', {
+        detail: SKIPPED_DETAIL,
+      });
     }
 
     if (this.stopped) return { status: 'stopped', agentId };
@@ -915,6 +1264,7 @@ export class TeamsProvisioningJobRunner {
     // Step 2 — Azure bot (idempotent by bot handle). The endpoint is built by
     // the accessor module's URL builder, injected — never composed here.
     if (STATE_RANK[row.state] < STATE_RANK.bot_created) {
+      await this.emit(agentId, 'bot_created', 'started');
       const outcome = await provisioner.createBot({
         // Qualified, NOT the raw slug: the handle namespace is global (#921).
         botName: buildBotHandle(row.botSlug, row.appId as string),
@@ -937,12 +1287,16 @@ export class TeamsProvisioningJobRunner {
         };
       }
       row = await this.store.update(agentId, { state: 'bot_created', lastError: null });
+      await this.emit(agentId, 'bot_created', 'succeeded');
+    } else {
+      await this.emit(agentId, 'bot_created', 'succeeded', { detail: SKIPPED_DETAIL });
     }
 
     if (this.stopped) return { status: 'stopped', agentId };
 
     // Steps 3+4 — app package + catalog upload (idempotent by externalId).
     if (STATE_RANK[row.state] < STATE_RANK.catalog_uploaded || !row.teamsAppId) {
+      await this.emit(agentId, 'package_built', 'started');
       const assets = await this.loadPackageAssets(row);
       if (STATE_RANK[row.state] < STATE_RANK.package_built) {
         row = await this.store.update(agentId, {
@@ -951,6 +1305,11 @@ export class TeamsProvisioningJobRunner {
           lastError: null,
         });
       }
+      await this.emit(agentId, 'package_built', 'succeeded');
+      // The catalog leg is its own step for the operator even though the two
+      // share a guard: it is the one that talks to Graph, so it is the one
+      // that can sit there.
+      await this.emit(agentId, 'catalog_uploaded', 'started');
       let teamsAppId = row.teamsAppId;
       if (!teamsAppId) {
         const existing = await provisioner.getCatalogApp({
@@ -976,16 +1335,33 @@ export class TeamsProvisioningJobRunner {
         teamsAppId,
         lastError: null,
       });
+      await this.emit(agentId, 'catalog_uploaded', 'succeeded');
+    } else {
+      await this.emit(agentId, 'package_built', 'succeeded', {
+        detail: SKIPPED_DETAIL,
+      });
+      await this.emit(agentId, 'catalog_uploaded', 'succeeded', {
+        detail: SKIPPED_DETAIL,
+      });
     }
 
     if (this.stopped) return { status: 'stopped', agentId };
 
     // Step 5 — install into the team (idempotent on Graph's side).
+    await this.emit(agentId, 'installed', 'started');
     await provisioner.installToTeam({
       teamId: request.teamId,
       teamsAppId: row.teamsAppId as string,
     });
+    // Same ordering rule as recordError (#915): the chain is finished, so the
+    // run stops calling itself running BEFORE the terminal state becomes
+    // readable. Everything past this line — the binding write, the
+    // `teams_bots` config sync — is bookkeeping on an agent that is already
+    // installed, and the UI reports its outcome through `teams_bots_sync` and
+    // the timeline rather than through `running`.
+    this.markSettled(agentId);
     row = await this.store.update(agentId, { state: 'installed', lastError: null });
+    await this.emit(agentId, 'installed', 'succeeded');
 
     // Step 5b (migration 0051) — PERSIST the binding. Graph has confirmed the
     // install, so this is the moment the pair becomes a fact rather than an
@@ -1073,8 +1449,15 @@ export class TeamsProvisioningJobRunner {
   private async syncTeamsBotsConfig(row: TeamsIdentityJobRecord): Promise<void> {
     const sync = this.syncBotConfig;
     if (!sync) return;
+    await this.emit(row.agentId, 'config_sync', 'started');
     try {
       const report = await sync(row);
+      // `report.status` is one of synced | unchanged | skipped — a closed
+      // vocabulary the UI can localize. `report.reason` is NOT forwarded: it
+      // is free text from the sync path and this column is read by a screen.
+      await this.emit(row.agentId, 'config_sync', 'succeeded', {
+        detail: report.status,
+      });
       this.log(
         `[teams-provisioning] teams_bots config sync for ${row.agentId} (${row.botSlug}): ${report.status}${
           report.reason !== undefined ? ` (${report.reason})` : ''
@@ -1090,6 +1473,14 @@ export class TeamsProvisioningJobRunner {
       }
     } catch (err) {
       const detail = configSyncFailedDetail(errorMessage(err));
+      // A step-level failure on a run whose verdict is `installed` — the
+      // timeline shows it as a warning line, because the terminal `run`
+      // event that follows says `succeeded`. Only the code travels; the
+      // connector's message stays in `last_error`, which the UI already
+      // renders through the classifier.
+      await this.emit(row.agentId, 'config_sync', 'failed', {
+        detail: 'config_sync_failed',
+      });
       this.log(
         `[teams-provisioning] teams_bots config sync for ${row.agentId} (${row.botSlug}) failed: ${errorMessage(err)} — identity stays installed; the operator can paste the block manually`,
       );
