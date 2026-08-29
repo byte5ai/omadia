@@ -2312,6 +2312,78 @@
         "hint": "Provisioning uploads this package to the tenant catalogue itself — no manual upload per agent is needed. The download stays as a fallback: for tenants where programmatic catalogue uploads are not allowed, or when you want to inspect the manifest first. It is rendered fresh on every request, so it matches exactly what provisioning would upload.",
         "download": "Download the Teams app package (.zip)"
       }
+    },
+    "teamsTargets": {
+      "loading": "Loading teams and chats …",
+      "choose": "Please pick one",
+      "teamsLabel": "Pick a team from the list",
+      "chatsLabel": "Pick a chat from the list",
+      "teamsEmpty": "No team is visible in this tenant. Use the field below.",
+      "chatsEmpty": "No chat is visible in this tenant. Use the field below.",
+      "chatType": {
+        "group": "Group chat",
+        "oneOnOne": "One-to-one chat",
+        "meeting": "Meeting chat"
+      },
+      "unavailable": {
+        "teams": {
+          "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
+          "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
+          "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
+          "scope_missing": "The stored sign-in does not yet carry the {scope} permission. Signing in again unlocks the list.",
+          "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
+          "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below."
+        },
+        "chats": {
+          "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
+          "connector_unsupported": "The installed connector cannot list chats. A list appears here after an upgrade; until then type the chat id below.",
+          "sign_in_required": "Chats can only be listed with a tenant sign-in — Graph offers no app-only route for them. Sign in once, or type the chat id below.",
+          "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",
+          "consent_required": "The tenant has not consented to listing chats. Until it does, type the chat id below.",
+          "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below."
+        }
+      }
+    },
+    "teamsReset": {
+      "heading": "Reset provisioning",
+      "open": "Reset …",
+      "cancel": "Cancel",
+      "hint": "Clears up the objects created in Azure so a new attempt can start with the same slug.",
+      "runningHint": "While a provisioning run is in flight the reset is locked — wait for the run to finish.",
+      "confirmHeading": "This is deleted for good:",
+      "consequenceApp": "The Entra app registration and its secret — deleted and purged from the recycle bin, so the name is free again straight away.",
+      "consequenceBot": "This agent's Azure bot service.",
+      "consequenceCatalog": "The entry in the tenant's Teams app catalog; the app disappears from every team and chat with it.",
+      "consequenceInstalls": "Every team and chat install recorded here.",
+      "keepsHint": "Bot slug and display name are kept — a new run starts from the same answers.",
+      "acknowledge": "I understand these Azure objects are deleted and will have to be created again.",
+      "confirm": "Reset for good",
+      "busy": "Resetting …",
+      "resultComplete": "Reset. The agent can be provisioned again now.",
+      "resultIncomplete": "Stopped at “{step}” — everything before it is cleared, the rest is still there. Calling it again picks up from that point.",
+      "stepLine": "{step}: {outcome}",
+      "steps": {
+        "catalog_removed": "Catalog entry",
+        "bot_deleted": "Azure bot",
+        "app_deleted": "App registration",
+        "identity_reset": "Database row"
+      },
+      "outcomes": {
+        "removed": "removed",
+        "already-absent": "was already gone",
+        "skipped": "not present",
+        "blocked": "blocked",
+        "failed": "failed"
+      },
+      "details": {
+        "nothing_to_remove": "There was no entry for it.",
+        "catalog_removal_unsupported": "The installed connector cannot withdraw the catalog entry. Nothing further was deleted because of it: a new run would otherwise adopt the old catalog entry and bind the bot to a deleted app id.",
+        "tenant_sign_in_required": "The catalog entry can only be withdrawn with a tenant sign-in. Sign in and start the reset again — no extra permission is needed for it.",
+        "purge_unsupported": "The installed connector cannot empty the recycle bin. The app registration was therefore deliberately NOT deleted: it would block its own name for 30 days.",
+        "app_absent_unpurgeable": "The app registration is already gone but could no longer be looked up in the recycle bin. It may still hold the name for up to 30 days — pick a different bot slug if in doubt.",
+        "app_provably_gone": "The app registration is gone and is not in the recycle bin either — the name is free again.",
+        "arm_not_configured": "Without ARM configured, no bot service was ever created."
+      }
     }
   },
   "builder": {

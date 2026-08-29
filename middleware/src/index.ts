@@ -51,6 +51,8 @@ import { AgentIdentityStore } from './platform/agentIdentityStore.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningEventStore } from './platform/teamsProvisioningEventStore.js';
 import { TeamsDelegatedTokenStore } from './platform/teamsDelegatedTokenStore.js';
+import type { DelegatedTokenSet } from './platform/teamsDelegatedSignIn.js';
+import type { TeamsResetEventSink } from './services/teamsIdentityReset.js';
 import { TeamsDelegatedSignInService } from './services/teamsDelegatedSignInService.js';
 import { createOperatorTeamsSignInRouter } from './routes/operatorTeamsSignIn.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
@@ -3457,6 +3459,7 @@ async function main(): Promise<void> {
               displayName: record.displayName,
               state: record.state as never,
               appId: record.appId,
+              appObjectId: record.appObjectId ?? null,
               tenantId: record.tenantId,
               teamsAppId: record.teamsAppId,
               teamsAppExternalId: record.teamsAppExternalId,
@@ -3475,10 +3478,27 @@ async function main(): Promise<void> {
         const eventStore = serviceRegistry.get<OperatorTeamsEventStore>(
           'teamsProvisioningEventStore',
         );
-        const withEvents: OperatorTeamsIdentityDeps =
-          eventStore === undefined
-            ? teamsDeps
-            : { ...teamsDeps, events: eventStore };
+        // The teardown writes to the SAME table the runner does, so it lands
+        // on the operator's existing timeline instead of a second screen. The
+        // WRITE side is bound separately from the read side above: this
+        // router has been a pure reader of that log since #915, and the reset
+        // is the one thing it does that an operator watches happen.
+        const eventWriter = serviceRegistry.get<TeamsResetEventSink>(
+          'teamsProvisioningEventStore',
+        );
+        // #924/#949 — withdrawing the app from the tenant catalog is
+        // delegated-only at Microsoft, exactly like uploading it. Resolved
+        // live for the same reason as the provisioner: an admin can sign in
+        // (or out) while the process runs.
+        const delegatedTokens = serviceRegistry.get<{
+          read(): Promise<DelegatedTokenSet | undefined>;
+        }>('teamsDelegatedTokenStore');
+        const withEvents: OperatorTeamsIdentityDeps = {
+          ...teamsDeps,
+          ...(eventStore === undefined ? {} : { events: eventStore }),
+          ...(eventWriter === undefined ? {} : { eventWriter }),
+          ...(delegatedTokens === undefined ? {} : { delegatedTokens }),
+        };
         if (installStore === undefined) return withEvents;
         return { ...withEvents, installs: installStore };
       },

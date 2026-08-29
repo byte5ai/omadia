@@ -23,7 +23,10 @@ import {
   type AgentTeamsDto,
   type InstalledTeamDto,
   type TeamsAssignmentCapabilityKey,
+  getAgentTeamsTargets,
+  type AgentTeamsTargetsDto,
 } from '../../../../_lib/agents';
+import { TeamsTargetPicker } from './TeamsTargetPicker';
 import { ApiError } from '../../../../_lib/api';
 
 /**
@@ -133,6 +136,17 @@ export function AgentTeamsInstalls({
   const [result, setResult] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [teamId, setTeamId] = useState('');
+  /**
+   * What the operator can pick instead of type.
+   *
+   * `null` covers BOTH "not loaded yet" and "the directory endpoint failed",
+   * and deliberately so: the picker is a convenience over a field that still
+   * works, so a failure to enumerate must degrade to the field rather than to
+   * an error the operator has to dismiss. The one thing never done here is
+   * storing an empty list on failure — see `TeamsTargetPicker`.
+   */
+  const [targets, setTargets] = useState<AgentTeamsTargetsDto | null>(null);
+  const [targetsLoading, setTargetsLoading] = useState(true);
   const [confirmUninstall, setConfirmUninstall] =
     useState<InstalledTeamDto | null>(null);
 
@@ -218,6 +232,31 @@ export function AgentTeamsInstalls({
    *
    * The server re-decides regardless; this is guidance, never authority.
    */
+  // Loaded ONCE per agent, not on every poll of the panel: a tenant's teams
+  // and chats do not change while somebody fills in a form, and re-enumerating
+  // on each refresh would spend the connector's Graph throttling budget on a
+  // list nobody is looking at any more.
+  useEffect(() => {
+    let cancelled = false;
+    setTargetsLoading(true);
+    void getAgentTeamsTargets(slug)
+      .then((dto) => {
+        if (!cancelled) setTargets(dto);
+      })
+      .catch(() => {
+        // Swallowed on purpose. The text field below is fully functional
+        // without a directory, and an error banner for a failed convenience
+        // would read as though the install itself were broken.
+        if (!cancelled) setTargets(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTargetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
   const target = classifyTeamsInstallTarget(teamId);
   const targetSubmittable = isSubmittableTarget(target);
 
@@ -437,6 +476,16 @@ export function AgentTeamsInstalls({
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--fg-muted)]">
               {t('installHeading')}
             </div>
+            {/* PICK first, TYPE second — and both write the same state, so the
+                live classification below stays the single verdict. */}
+            <TeamsTargetPicker
+              targets={targets}
+              loading={targetsLoading}
+              disabled={!canInstall || inFlight}
+              value={teamId}
+              onSelect={setTeamId}
+            />
+
             <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
               {t('fieldTarget')}
               <input

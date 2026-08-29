@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
+import { AgentTeamsIdentityReset } from './AgentTeamsIdentityReset';
 import {
   agentTeamsPackageUrl,
   getAgentTeamsIdentity,
@@ -299,6 +300,10 @@ export function AgentTeamsIdentity(
         <ReadyPanel
           status={view.status}
           busy={busy}
+          slug={props.slug}
+          // The teardown rewrites the row it is looking at, so the panel has
+          // to re-read rather than keep rendering the state it tore down.
+          onReloaded={() => void load()}
           // The server has no "as recorded" re-run: `ensureForAgent` refreshes
           // the stored team from the request and the route hands `team_id`
           // straight to the runner, so an empty body is a guaranteed 400. The
@@ -318,6 +323,8 @@ function ReadyPanel(props: {
   readonly busy: boolean;
   readonly onRerun: (teamId: string) => void;
   readonly formatDate: (iso: string) => string;
+  readonly slug: string;
+  readonly onReloaded: () => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const { status } = props;
@@ -385,6 +392,16 @@ function ReadyPanel(props: {
       <AgentTeamsProvisioningTimeline
         events={events}
         running={status.running}
+      />
+
+      {/* The way BACK. Placed under the timeline because that is where an
+          operator is looking when a run has gone wrong, and a cleanup they
+          cannot find is a cleanup they do by hand in the Azure portal. */}
+      <AgentTeamsIdentityReset
+        slug={props.slug}
+        state={status.state}
+        running={status.running}
+        onDone={props.onReloaded}
       />
 
       {detail && <LastError detail={detail} />}

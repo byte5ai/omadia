@@ -61,6 +61,14 @@
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from './serviceRegistry.js';
 import type { TeamsDelegatedProvisionerMethods } from './teamsDelegatedSignIn.js';
+import {
+  CLEANUP_METHOD_NAMES,
+  type TeamsProvisionerCleanupMethods,
+} from './teamsProvisionerCleanup.js';
+import {
+  TARGET_DIRECTORY_METHOD_NAMES,
+  type TeamsTargetDirectoryMethods,
+} from './teamsTargetDirectory.js';
 
 /** Service-registry key (bare, unversioned). */
 export const TEAMS_PROVISIONER_SERVICE_NAME = 'teamsProvisioner';
@@ -363,7 +371,9 @@ export interface UninstallFromTeamResult {
  * {@link supportsTeamUninstall}.
  */
 export interface TeamsProvisionerAccessor
-  extends Partial<TeamsDelegatedProvisionerMethods> {
+  extends Partial<TeamsDelegatedProvisionerMethods>,
+    Partial<TeamsTargetDirectoryMethods>,
+    Partial<TeamsProvisionerCleanupMethods> {
   readonly tenantMode: TenantMode;
   /** `true` when the ARM setup fields are configured (bot creation possible). */
   readonly canCreateBots: boolean;
@@ -507,6 +517,37 @@ export {
   type DeviceCodeStart,
   type TeamsDelegatedProvisionerMethods,
 } from './teamsDelegatedSignIn.js';
+
+/**
+ * The ENUMERATION half — "which teams and chats could this agent be installed
+ * into?". Re-exported through this choke point for the same reason as the
+ * delegated half above: consumers keep ONE import site for
+ * `teamsProvisioner@1`, while the definitions live next to the feature they
+ * belong to.
+ */
+export {
+  supportsChatListing,
+  supportsTeamListing,
+  teamsChatTargetKind,
+  type ListChatsInput,
+  type TeamsChatSummary,
+  type TeamsChatType,
+  type TeamsTargetDirectoryMethods,
+  type TeamsTeamSummary,
+} from './teamsTargetDirectory.js';
+
+/** The TEARDOWN half — the two primitives an undo needs that the mandatory
+ *  surface does not already carry. Same choke-point rule. */
+export {
+  supportsAppRegistrationPurge,
+  supportsCatalogRemoval,
+  type CleanupOutcome,
+  type PurgeDeletedAppRegistrationInput,
+  type PurgeDeletedAppRegistrationResult,
+  type RemoveFromCatalogInput,
+  type RemoveFromCatalogResult,
+  type TeamsProvisionerCleanupMethods,
+} from './teamsProvisionerCleanup.js';
 
 export function supportsTeamUninstall(
   provisioner: TeamsProvisionerAccessor | undefined,
@@ -780,12 +821,21 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
     // `supportsDelegatedCatalogUpload` requires all six: this wrapper's job is
     // to report the raw provider's shape truthfully, and a half-shipped
     // connector must read as half-shipped rather than as absent.
-    ...forwardDelegated(raw),
+    ...forwardOptional(raw, DELEGATED_METHOD_NAMES),
+    // The enumeration half (`listTeams`/`listChats`) and the teardown half
+    // (`purgeDeletedAppRegistration`/`removeFromCatalog`), under the SAME
+    // rule as everything above it. Forwarded through the data-driven helper
+    // rather than as four more hand-written conditional spreads: the rule is
+    // identical for all of them, and a list of names cannot drift out of
+    // sync with an interface the way twelve near-identical blocks can.
+    ...forwardOptional(raw, TARGET_DIRECTORY_METHOD_NAMES),
+    ...forwardOptional(raw, CLEANUP_METHOD_NAMES),
   };
 }
 
 /**
- * Conditional forwarding of the six delegated methods.
+ * Conditional forwarding of an OPTIONAL group of methods — the six delegated
+ * ones, the two enumeration ones, the two teardown ones.
  *
  * Its own function purely to keep {@link guardAccessor} readable; the rule it
  * implements is identical — a method appears on the wrapper if and only if the
@@ -800,17 +850,18 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
  * feature. The guarantee that it never LEAKS lives at the log/response
  * boundaries instead — `redactDelegated` in `teamsDelegatedSignIn.ts`.
  */
-function forwardDelegated(
+function forwardOptional(
   raw: TeamsProvisionerAccessor,
-): Partial<TeamsDelegatedProvisionerMethods> {
+  names: readonly (keyof TeamsProvisionerAccessor)[],
+): Partial<TeamsProvisionerAccessor> {
   const out: Record<string, unknown> = {};
-  for (const name of DELEGATED_METHOD_NAMES) {
+  for (const name of names) {
     const method = raw[name];
     if (typeof method !== 'function') continue;
     out[name] = (...args: unknown[]) =>
       (method as (...a: unknown[]) => unknown).apply(raw, args);
   }
-  return out as Partial<TeamsDelegatedProvisionerMethods>;
+  return out as Partial<TeamsProvisionerAccessor>;
 }
 
 /** The six method names of the delegated half, as data — so the forwarder

@@ -2312,6 +2312,78 @@
         "hint": "Das Provisioning lädt dieses Paket selbst in den Tenant-Katalog — ein manueller Upload pro Agent ist nicht nötig. Der Download bleibt als Rückfallebene: für Tenants, in denen programmatische Katalog-Uploads nicht erlaubt sind, oder wenn du das Manifest vorher ansehen willst. Es wird bei jeder Anfrage neu erzeugt und entspricht damit genau dem, was das Provisioning hochladen würde.",
         "download": "Teams-App-Paket (.zip) herunterladen"
       }
+    },
+    "teamsTargets": {
+      "loading": "Teams und Chats werden geladen …",
+      "choose": "Bitte auswählen",
+      "teamsLabel": "Team aus der Liste wählen",
+      "chatsLabel": "Chat aus der Liste wählen",
+      "teamsEmpty": "In diesem Tenant ist kein Team sichtbar. Nutze das Feld unten.",
+      "chatsEmpty": "In diesem Tenant ist kein Chat sichtbar. Nutze das Feld unten.",
+      "chatType": {
+        "group": "Gruppenchat",
+        "oneOnOne": "1:1-Chat",
+        "meeting": "Besprechungschat"
+      },
+      "unavailable": {
+        "teams": {
+          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Teamliste — trage die ID unten von Hand ein.",
+          "connector_unsupported": "Der installierte Connector kann keine Teams auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die ID unten ein.",
+          "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
+          "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht. Eine erneute Anmeldung schaltet die Liste frei.",
+          "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
+          "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein."
+        },
+        "chats": {
+          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
+          "connector_unsupported": "Der installierte Connector kann keine Chats auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die Chat-ID unten ein.",
+          "sign_in_required": "Chats lassen sich nur mit einer Tenant-Anmeldung auflisten — Graph bietet dafür keinen App-Zugriff an. Melde dich einmal an oder trage die Chat-ID unten ein.",
+          "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",
+          "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
+          "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein."
+        }
+      }
+    },
+    "teamsReset": {
+      "heading": "Provisionierung zurücksetzen",
+      "open": "Zurücksetzen …",
+      "cancel": "Abbrechen",
+      "hint": "Räumt die in Azure angelegten Objekte ab, damit ein neuer Versuch mit demselben Slug starten kann.",
+      "runningHint": "Solange eine Provisionierung läuft, ist das Zurücksetzen gesperrt — warte, bis der Lauf fertig ist.",
+      "confirmHeading": "Das wird unwiderruflich gelöscht:",
+      "consequenceApp": "Die Entra-App-Registrierung samt Geheimnis — gelöscht und aus dem Papierkorb entfernt, damit der Name sofort wieder frei ist.",
+      "consequenceBot": "Der Azure-Bot-Dienst dieses Agenten.",
+      "consequenceCatalog": "Der Eintrag im Teams-App-Katalog des Tenants; die App verschwindet damit aus allen Teams und Chats.",
+      "consequenceInstalls": "Alle hier vermerkten Team- und Chat-Installationen.",
+      "keepsHint": "Bot-Slug und Anzeigename bleiben erhalten — ein neuer Lauf startet direkt mit denselben Angaben.",
+      "acknowledge": "Ich habe verstanden, dass diese Azure-Objekte gelöscht werden und neu angelegt werden müssen.",
+      "confirm": "Endgültig zurücksetzen",
+      "busy": "Wird zurückgesetzt …",
+      "resultComplete": "Zurückgesetzt. Der Agent kann jetzt erneut provisioniert werden.",
+      "resultIncomplete": "Abgebrochen bei „{step}“ — alles davor ist abgeräumt, der Rest steht noch. Ein erneuter Aufruf macht dort weiter.",
+      "stepLine": "{step}: {outcome}",
+      "steps": {
+        "catalog_removed": "Katalogeintrag",
+        "bot_deleted": "Azure-Bot",
+        "app_deleted": "App-Registrierung",
+        "identity_reset": "Datenbankzeile"
+      },
+      "outcomes": {
+        "removed": "entfernt",
+        "already-absent": "war schon weg",
+        "skipped": "nicht vorhanden",
+        "blocked": "blockiert",
+        "failed": "fehlgeschlagen"
+      },
+      "details": {
+        "nothing_to_remove": "Es gab dazu keinen Eintrag.",
+        "catalog_removal_unsupported": "Der installierte Connector kann den Katalogeintrag nicht entfernen. Damit wurde nichts weiter gelöscht: ein neuer Lauf würde sonst den alten Katalogeintrag übernehmen und den Bot an eine gelöschte App-ID binden.",
+        "tenant_sign_in_required": "Der Katalogeintrag lässt sich nur mit einer Tenant-Anmeldung entfernen. Melde dich an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
+        "purge_unsupported": "Der installierte Connector kann den Papierkorb nicht leeren. Die App-Registrierung wurde deshalb absichtlich NICHT gelöscht: sie würde ihren Namen sonst 30 Tage blockieren.",
+        "app_absent_unpurgeable": "Die App-Registrierung ist bereits weg, ließ sich aber nicht mehr im Papierkorb nachschlagen. Sie könnte den Namen noch bis zu 30 Tage belegen — wähle im Zweifel einen anderen Bot-Slug.",
+        "app_provably_gone": "Die App-Registrierung ist weg und liegt auch nicht im Papierkorb — der Name ist wieder frei.",
+        "arm_not_configured": "Ohne ARM-Konfiguration wurde nie ein Bot-Dienst angelegt."
+      }
     }
   },
   "builder": {

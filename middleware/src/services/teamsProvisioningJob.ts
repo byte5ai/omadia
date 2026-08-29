@@ -116,6 +116,16 @@ export interface TeamsIdentityJobRecord {
   readonly displayName: string;
   readonly state: TeamsProvisioningState;
   readonly appId: string | null;
+  /**
+   * The Entra app's directory object id (migration 0055) — what the
+   * teardown's purge needs and `appId` cannot substitute for.
+   *
+   * OPTIONAL on this structural port, like every other additive field here
+   * (`targetKind` before it): a store or a test double that predates the
+   * column still satisfies the type, and absent means the same as `null` —
+   * the teardown re-resolves the id from Graph or from the recycle bin.
+   */
+  readonly appObjectId?: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
@@ -125,6 +135,7 @@ export interface TeamsIdentityJobRecord {
 export interface TeamsIdentityJobUpdate {
   readonly state?: TeamsProvisioningState;
   readonly appId?: string;
+  readonly appObjectId?: string | null;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
   readonly teamsAppExternalId?: string;
@@ -330,7 +341,20 @@ export type TenantMode = 'customer' | 'home';
 
 export interface ProvisionerAppRegistrationResult {
   readonly appId: string;
-  readonly registration: { readonly tenantId: string };
+  readonly registration: {
+    readonly tenantId: string;
+    /**
+     * The DIRECTORY OBJECT id (migration 0055) — a different identifier from
+     * {@link appId} and the only one the recycle-bin purge accepts.
+     *
+     * Optional on the PORT although the connector contract always returns it,
+     * because every existing test double predates it and a required field
+     * would break them all for a value none of them exercises. The runner
+     * persists it when it is there and shrugs when it is not; the teardown
+     * (`services/teamsIdentityReset.ts`) can re-resolve it either way.
+     */
+    readonly objectId?: string;
+  };
 }
 
 export interface ProvisionerRegistrationOnlyOutcome {
@@ -362,7 +386,11 @@ export interface TeamsProvisionerPort {
     readonly secretDisplayName?: string;
     /** Early-persistence hook — see the runner's step 1 (byte5ai/omadia#916). */
     readonly onRegistrationCreated?: (
-      registration: { readonly appId: string; readonly tenantId: string },
+      registration: {
+        readonly appId: string;
+        readonly tenantId: string;
+        readonly objectId?: string;
+      },
       outcome: IdempotentOutcome,
     ) => void | Promise<void>;
   }): Promise<Idempotent<ProvisionerAppRegistrationResult>>;
@@ -723,12 +751,22 @@ export type ProvisioningRunResult =
       readonly detail: string;
     }
   | {
-      /** A run for the SAME agent but a DIFFERENT team is in flight — this
-       *  request was refused outright (nothing enqueued, nothing joined), so
-       *  a caller can never be handed the other team's success. */
+      /**
+       * Refused outright — nothing enqueued, nothing joined, so a caller can
+       * never be handed somebody else's outcome. Two causes:
+       *
+       *   * `'team_conflict'` — a run for the SAME agent but a DIFFERENT team
+       *     is in flight;
+       *   * `'exclusive_lease'` — a non-provisioning operation holds this
+       *     agent (today: a teardown, {@link
+       *     TeamsProvisioningJobRunner.acquireExclusive}). Provisioning into
+       *     an identity whose Azure objects are being deleted underneath it
+       *     would race the two against each other over the same app
+       *     registration.
+       */
       readonly status: 'rejected';
       readonly agentId: string;
-      readonly reason: 'team_conflict';
+      readonly reason: 'team_conflict' | 'exclusive_lease';
       readonly detail: string;
     }
   | { readonly status: 'stopped'; readonly agentId: string };
@@ -862,6 +900,22 @@ export class TeamsProvisioningJobRunner {
    *  say WHICH step it is retrying. One run per agent is guaranteed by
    *  {@link inFlight}, so an agent id is a sufficient key. */
   private readonly currentStep = new Map<string, TeamsProvisioningStep>();
+  /**
+   * Agents held by an operation that is NOT a provisioning run — today only
+   * the teardown (`services/teamsIdentityReset.ts`), reserved through
+   * {@link acquireExclusive}.
+   *
+   * Kept next to {@link inFlight} rather than inside it because the two hold
+   * different things: `inFlight` holds a promise a second caller can JOIN,
+   * and there is nothing joinable about a teardown — a caller who arrives
+   * mid-teardown must be refused, not handed its result. Sharing the map
+   * would have meant giving every entry a nullable `run` and a discriminator
+   * for the sake of one extra state.
+   *
+   * The value is a short label, so a refusal can say WHAT is holding the
+   * agent instead of only that something is.
+   */
+  private readonly leases = new Map<string, string>();
   private readonly pendingSleeps = new Set<() => void>();
   private stopped = false;
 
@@ -894,6 +948,19 @@ export class TeamsProvisioningJobRunner {
    * result (never silently handed the other team's outcome).
    */
   enqueue(request: ProvisionTeamsIdentityRequest): Promise<ProvisioningRunResult> {
+    // Checked BEFORE the in-flight lookup: a leased agent has no in-flight
+    // run to join, and falling through would refuse it with `team_conflict`,
+    // which names the wrong problem and sends the operator looking for a
+    // second team that does not exist.
+    const lease = this.leases.get(request.agentId);
+    if (lease !== undefined) {
+      return Promise.resolve({
+        status: 'rejected',
+        agentId: request.agentId,
+        reason: 'exclusive_lease',
+        detail: `'${lease}' is in progress for this agent — wait for it to finish, then run provisioning again`,
+      });
+    }
     const existing = this.inFlight.get(request.agentId);
     if (existing) {
       if (existing.teamId === request.teamId) return existing.run;
@@ -949,8 +1016,50 @@ export class TeamsProvisioningJobRunner {
    * it from the row.
    */
   isRunning(agentId: string): boolean {
+    // A held lease counts as running, and it has to: the operator screen asks
+    // this to decide whether work is happening on the agent, and a teardown
+    // deleting an app registration is emphatically work. Reporting `false`
+    // would also let the UI offer a second teardown next to the one already
+    // going.
+    if (this.leases.has(agentId)) return true;
     const entry = this.inFlight.get(agentId);
     return entry !== undefined && !entry.settled;
+  }
+
+  /**
+   * Reserve this agent for an operation that is not a provisioning run, and
+   * return the function that gives it back — or `null` when the agent is
+   * already busy.
+   *
+   * THE MUTUAL EXCLUSION IS THE POINT. A teardown deletes the Entra app the
+   * chain is mid-way through building on; running both at once means one of
+   * them is operating on objects the other is removing, and neither can
+   * report a truthful outcome. The lock lives HERE, on the runner, because
+   * the runner is the only thing that already knows what is in flight — a
+   * second lock elsewhere would be a second opinion about the same question.
+   *
+   * The release is a closure rather than a `release(agentId)` method so a
+   * caller cannot release somebody else's lease, and it is idempotent so a
+   * `finally` that runs twice is harmless.
+   */
+  acquireExclusive(agentId: string, label: string): (() => void) | null {
+    // `inFlight.has`, not `isRunning`: a run that has its verdict but is
+    // still writing its bindings and its plugin config is not something a
+    // teardown may start deleting underneath.
+    if (this.inFlight.has(agentId) || this.leases.has(agentId)) return null;
+    this.leases.set(agentId, label);
+    let released = false;
+    return (): void => {
+      if (released) return;
+      released = true;
+      this.leases.delete(agentId);
+    };
+  }
+
+  /** What is holding this agent, or `null` — so a route can name the
+   *  conflict in its refusal instead of saying "busy". */
+  exclusiveLease(agentId: string): string | null {
+    return this.leases.get(agentId) ?? null;
   }
 
   /**
@@ -1479,6 +1588,16 @@ export class TeamsProvisioningJobRunner {
           await this.store.update(agentId, {
             appId: registration.appId,
             tenantId: registration.tenantId,
+            // Written in the SAME statement as the app id, deliberately. The
+            // two are only ever observable together — after a delete the
+            // application is gone from `/applications` and no lookup turns one
+            // into the other any more — so a teardown that has one and not the
+            // other cannot empty the recycle bin, and the agent's `uniqueName`
+            // stays reserved for 30 days (#916). Two writes would have left a
+            // window where exactly that is true.
+            ...(registration.objectId === undefined
+              ? {}
+              : { appObjectId: registration.objectId }),
           });
           // The ONE boundary inside this call the connector's contract already
           // exposes, and therefore the only honest intra-step progress the
@@ -1496,6 +1615,13 @@ export class TeamsProvisioningJobRunner {
         state: 'app_registered',
         appId: result.value.appId,
         tenantId: result.value.registration.tenantId,
+        // Also here, not only in the hook above: the hook is skipped entirely
+        // when the connector ADOPTS an existing registration, which is the
+        // resume path — and a resumed identity needs its object id just as
+        // much as a fresh one.
+        ...(result.value.registration.objectId === undefined
+          ? {}
+          : { appObjectId: result.value.registration.objectId }),
         lastError: null,
       });
       await this.emit(agentId, 'app_registered', 'succeeded');
