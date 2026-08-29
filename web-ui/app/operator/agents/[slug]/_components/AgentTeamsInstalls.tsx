@@ -8,8 +8,14 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
+  classifyTeamsInstallTarget,
+  isSubmittableTarget,
+  TEAMS_TARGET_EXAMPLES,
+} from '../../../../_lib/teamsInstallTarget';
+import {
   getAgentTeams,
   installAgentTeam,
+  parseInstalledTargetKind,
   parseInstalledTeamName,
   parseTeamsAssignmentCapabilities,
   parseTeamsAssignmentErrorCode,
@@ -200,6 +206,21 @@ export function AgentTeamsInstalls({
     [refresh, router, localizeError],
   );
 
+  /**
+   * What the operator has typed, read as an install target on every keystroke.
+   *
+   * THE POINT OF DOING IT HERE. The field test that produced this panel ended
+   * with `404 No team found with Group Id` after five provisioning steps had
+   * already succeeded. Every answer arrived after the fact. Classifying while
+   * they type turns the whole failure into a label under the input — and the
+   * two cases that cannot be submitted (a channel id, a bare 32-hex string)
+   * get told what to do instead of being allowed through.
+   *
+   * The server re-decides regardless; this is guidance, never authority.
+   */
+  const target = classifyTeamsInstallTarget(teamId);
+  const targetSubmittable = isSubmittableTarget(target);
+
   const installed = data?.teams ?? [];
   /**
    * A run that has not reached `installed` publishes NO team (the read model
@@ -317,6 +338,10 @@ export function AgentTeamsInstalls({
                 // it — and when no name was ever resolved the id takes the
                 // lead line rather than being paired with an empty label.
                 const name = parseInstalledTeamName(team);
+                // A chat listed under a heading that says "team" is exactly
+                // the confusion this feature removes — so every entry names
+                // its own kind.
+                const kind = parseInstalledTargetKind(team);
                 return (
                   <div
                     key={team.team_id}
@@ -337,14 +362,24 @@ export function AgentTeamsInstalls({
                           <span className="font-mono text-sm text-[color:var(--fg-strong)]">
                             {team.team_id}
                           </span>
-                          {/* Says why there is no name, so a GUID does not
-                              read as a rendering bug. */}
+                          {/* Says why there is no name, so a bare id does not
+                              read as a rendering bug. The reason differs by
+                              kind: a team COULD have been resolved and was
+                              not, while the connector publishes no name
+                              lookup for chats at all — reporting the team
+                              sentence for a chat would send an operator
+                              chasing a connector bug that does not exist. */}
                           <span className="text-[11px] text-[color:var(--fg-muted)]">
-                            {t('teamNameUnresolved')}
+                            {kind === 'team'
+                              ? t('teamNameUnresolved')
+                              : t('chatNameUnavailable')}
                           </span>
                         </>
                       )}
                     </div>
+                    <span className="rounded border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
+                      {t(`targetKind.${kind}`)}
+                    </span>
                     <span className="text-[11px] text-[color:var(--fg-muted)]">
                       {t('appIdLabel', {
                         appId: team.teams_app_id ?? t('appIdNone'),
@@ -388,7 +423,12 @@ export function AgentTeamsInstalls({
           {data.pending_team_id !== null ? (
             <div className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] text-[color:var(--fg-muted)]">
               {data.running
-                ? t('pendingHint', { teamId: data.pending_team_id })
+                ? t('pendingHintTyped', {
+                    kind: t(
+                      `targetKind.${data.pending_target_kind ?? 'team'}`,
+                    ),
+                    teamId: data.pending_team_id,
+                  })
                 : t('pendingStoppedHint', { teamId: data.pending_team_id })}
             </div>
           ) : null}
@@ -398,21 +438,79 @@ export function AgentTeamsInstalls({
               {t('installHeading')}
             </div>
             <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
-              {t('fieldTeamId')}
+              {t('fieldTarget')}
               <input
                 type="text"
                 value={teamId}
                 disabled={!canInstall || inFlight}
                 onChange={(e) => setTeamId(e.target.value)}
-                aria-label={t('fieldTeamId')}
+                aria-label={t('fieldTarget')}
                 className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-sm text-[color:var(--fg-strong)]"
               />
-              <span>{t('fieldTeamIdHint')}</span>
+              <span>{t('fieldTargetHint')}</span>
+              {/* Shown BEFORE anything is submitted: what a good answer looks
+                  like beats only being told the last one was wrong. */}
+              <span className="font-mono text-[10px] opacity-70">
+                {t('targetExamples', {
+                  team: TEAMS_TARGET_EXAMPLES.team,
+                  groupChat: TEAMS_TARGET_EXAMPLES.groupChat,
+                })}
+              </span>
             </label>
+
+            {/* The verdict. A recognised target is named — "Team" or
+                "Gruppenchat" — so the operator can see the field understood
+                them; the three that cannot be installed each say what to do. */}
+            {targetSubmittable ? (
+              <div className="text-[11px] text-[color:var(--success)]">
+                {t('targetKindLabel', {
+                  kind: t(`targetKind.${target.kind}`),
+                })}
+              </div>
+            ) : null}
+            {target.kind === 'channel' ? (
+              <div role="alert" className="text-[11px] text-[color:var(--danger)]">
+                {t('targetChannel')}
+              </div>
+            ) : null}
+            {target.kind === 'unrecognised' ? (
+              <div role="alert" className="text-[11px] text-[color:var(--danger)]">
+                {t('targetUnrecognised')}
+              </div>
+            ) : null}
+            {/* THE FIELD-TEST CASE. 32 hex digits are both a team id without
+                its dashes and the stem of a group-chat id. Nothing is guessed:
+                the operator is handed the two spellings and picks one, which
+                is the only place the missing context actually exists. */}
+            {target.kind === 'ambiguous' ? (
+              <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] px-3 py-2">
+                <span role="alert" className="text-[11px] text-[color:var(--fg-muted)]">
+                  {t('targetAmbiguous')}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={inFlight}
+                    onClick={() => setTeamId(target.asTeamId)}
+                  >
+                    {t('targetAmbiguousUseTeam')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={inFlight}
+                    onClick={() => setTeamId(target.asGroupChatId)}
+                  >
+                    {t('targetAmbiguousUseChat')}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
-                disabled={!canInstall || inFlight || teamId.trim() === ''}
+                disabled={!canInstall || inFlight || !targetSubmittable}
                 busy={busy === 'install'}
                 busyLabel={t('installBusy')}
                 onClick={() =>
@@ -446,6 +544,13 @@ export function AgentTeamsInstalls({
             ) : null}
             {!data.capabilities.multi_team && installed.length > 0 ? (
               <CapabilityNote {...unsupportedReason(data, 'multi_team')} />
+            ) : null}
+            {/* Only once a CHAT is actually typed: a deployment that installs
+                into teams all day has no reason to be told about a connector
+                version it does not need. */}
+            {!data.capabilities.chat_install &&
+            (target.kind === 'group-chat' || target.kind === 'one-on-one-chat') ? (
+              <CapabilityNote {...unsupportedReason(data, 'chat_install')} />
             ) : null}
           </div>
         </>

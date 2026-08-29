@@ -1995,7 +1995,8 @@
         "install": "Die Installation in ein Team ist in dieser Installation nicht verfügbar.",
         "uninstall": "Das Entfernen der App aus einem Team braucht den Microsoft-365-Connector 0.4.0 oder neuer. Der hier installierte Connector ist älter und veröffentlicht keine Deinstallation — aktualisiere das Plugin, oder lass die App von einem Teams-Admin manuell entfernen.",
         "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
-        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt."
+        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt.",
+        "chat_install": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel."
       },
       "unsupportedTechnical": "Server-Begründung: {detail}",
       "notice": {
@@ -2015,9 +2016,31 @@
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
         "teams_provisioning_running": "Für diesen Orchestrator läuft noch eine Provisionierung. Warte, bis sie fertig ist, und versuche es dann erneut.",
         "teams_uninstall_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App aus einem Team zu entfernen. Aktualisiere ihn auf 0.4.0 oder neuer, oder lass die App von einem Teams-Admin manuell entfernen.",
-        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
+        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}",
+        "teams_target_is_channel": "Das ist die ID eines Kanals. Ein Kanal ist kein Installationsziel — nimm die Gruppen-ID des Teams oder die ID eines Gruppenchats.",
+        "teams_target_ambiguous": "Diese 32 Hex-Zeichen sind mehrdeutig — sie können eine Team-ID ohne Bindestriche oder der Rumpf einer Gruppenchat-ID sein. Gib an, was gemeint ist.",
+        "teams_target_unrecognised": "Diese Eingabe ist kein Teams-Installationsziel.",
+        "teams_chat_install_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App in einen Chat zu installieren. Aktualisiere ihn auf 0.7.0 oder neuer, oder wähle ein Team."
       },
-      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."
+      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben.",
+      "targetHeading": "Ziel wählen",
+      "fieldTarget": "Ziel-ID",
+      "fieldTargetHint": "Ein Team oder ein Chat. Team: die Gruppen-ID aus „Link zum Team abrufen“. Gruppenchat: die vollständige ID in der Form 19:…@thread.v2.",
+      "targetKind": {
+        "team": "Team",
+        "group-chat": "Gruppenchat",
+        "one-on-one-chat": "1:1-Chat"
+      },
+      "targetKindLabel": "Erkannt als: {kind}",
+      "targetExamples": "Beispiele — Team: {team} · Gruppenchat: {groupChat}",
+      "targetChannel": "Das ist die ID eines Kanals, kein Installationsziel. Teams installiert eine App in ein Team oder in einen Chat, nie in einen einzelnen Kanal. Nimm die Gruppen-ID des Teams, zu dem der Kanal gehört, oder die ID eines Gruppenchats (19:…@thread.v2).",
+      "targetAmbiguous": "32 Hex-Zeichen ohne Kontext — das kann die Gruppen-ID eines Teams ohne Bindestriche sein oder der Rumpf einer Gruppenchat-ID. Geraten wird hier nicht: wähle, was gemeint ist.",
+      "targetAmbiguousUseTeam": "Als Team einsetzen",
+      "targetAmbiguousUseChat": "Als Gruppenchat einsetzen",
+      "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
+      "chatInstallUnsupported": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
+      "pendingHintTyped": "Ein Provisionierungslauf zielt auf {kind} {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
+      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID."
     },
     "identity": {
       "heading": "Identität",
@@ -2261,7 +2284,8 @@
           "what": "Microsoft hat den Anmeldevorgang selbst abgelehnt — nicht die Berechtigungen, sondern den Weg dorthin.",
           "reason": "Von Microsoft gemeldet: {reason}",
           "next": "Prüfe, ob die Publisher-App des Microsoft-365-Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert. Ein erneuter Versuch ändert ohne diese Anpassung nichts."
-        }
+        },
+        "rsc_permissions_mismatch": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle. Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
       },
       "teamsBot": {
         "heading": "Konfiguration für das Teams-Channel-Plugin",

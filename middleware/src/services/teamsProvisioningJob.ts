@@ -80,6 +80,10 @@ import type {
   BackgroundJobHandle,
 } from '../platform/backgroundJobRegistry.js';
 import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
+import {
+  isChatTarget,
+  type TeamsTargetKind,
+} from '../platform/teamsInstallTarget.js';
 
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of agent_teams_identities
@@ -160,6 +164,11 @@ export interface TeamsInstallJobStore {
     readonly teamId: string;
     readonly teamsAppId?: string | null;
     readonly teamDisplayName?: string | null;
+    /** Which kind of target the id addresses (migration 0054). Optional on
+     *  the port so a mount predating it still satisfies the structural type;
+     *  the store defaults it to `'team'`, which is what every pre-0054 row
+     *  means. */
+    readonly targetKind?: TeamsTargetKind;
   }): Promise<unknown>;
 }
 
@@ -414,7 +423,48 @@ export interface TeamsProvisionerPort {
     readonly teamId: string;
     readonly teamsAppId: string;
   }): Promise<Idempotent<{ readonly teamId: string; readonly teamsAppId: string }>>;
+
+  /**
+   * The CHAT direction — `POST /chats/{id}/installedApps` (connector >=
+   * 0.7.0). Optional for the same version-skew reason as every other method
+   * added after the oldest supported connector: feature-detect with
+   * `typeof === 'function'`, never call it blind.
+   *
+   * Reached only for a `group-chat` / `one-on-one-chat` target
+   * ({@link ProvisionTeamsIdentityRequest.targetKind}); a `team` target keeps
+   * using {@link installToTeam} unchanged.
+   */
+  installToChat?(input: {
+    readonly chatId: string;
+    readonly teamsAppId: string;
+  }): Promise<Idempotent<{ readonly chatId: string; readonly teamsAppId: string }>>;
 }
+
+/**
+ * The chain reached its install step with a CHAT target, against a connector
+ * that publishes no `installToChat` (< 0.7.0).
+ *
+ * A typed error rather than a crash, and raised by the runner as well as
+ * refused by the route, because the two guard different moments: the route
+ * refuses a NEW request up front (501, nothing enqueued), while a run that
+ * RESUMES an older request can meet a connector that was downgraded since —
+ * and a resumed run must fail with the same actionable sentence rather than a
+ * `TypeError: installToChat is not a function`.
+ */
+export class TeamsChatInstallUnsupportedError extends Error {
+  public readonly code = 'teams_chat_install_unsupported';
+
+  constructor() {
+    super(
+      `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`,
+    );
+    this.name = 'TeamsChatInstallUnsupportedError';
+  }
+}
+
+/** Minimum connector version whose `teamsProvisioner@1` installs into a chat.
+ *  Quoted in the operator-facing reason so the fix is actionable. */
+export const TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION = '0.7.0';
 
 /** App-package inputs for one identity; loading is bound by the wiring unit
  *  (manifest template + icons ship with the channel-teams package). */
@@ -579,8 +629,34 @@ export class TeamsProvisioningJobError extends Error {
 
 export interface ProvisionTeamsIdentityRequest {
   readonly agentId: string;
-  /** Team (group) id the generated app is installed into. */
+  /**
+   * The install TARGET id. Historically a team (group) id — hence the name,
+   * which is kept because it is also the column name and the request field on
+   * the wire — but since the chat targets of `platform/teamsInstallTarget.ts`
+   * it may equally be a chat conversation id (`19:…@thread.v2`,
+   * `19:…@unq.gbl.spaces`). {@link targetKind} says which.
+   */
   readonly teamId: string;
+  /**
+   * WHICH KIND of target {@link teamId} addresses, and therefore which Graph
+   * endpoint installs into it.
+   *
+   * The runner does NOT classify: the string arrives already decided, from
+   * `resolveTeamsInstallTarget` at the route (for a new request) or from the
+   * identity row's persisted `target_kind` (for a resume). Two reasons that
+   * both matter:
+   *
+   *   * a bare 32-hex id is genuinely ambiguous between a team group id and a
+   *     chat stem, and the context that resolves it lives with the operator,
+   *     not in the runner;
+   *   * re-deriving here would make the runner a SECOND classifier, free to
+   *     disagree with the one that validated the request — and the endpoint
+   *     it picked would then differ from the one the operator was told about.
+   *
+   * Defaults to `'team'` when absent, which is what every caller before this
+   * change meant and what every stored row records.
+   */
+  readonly targetKind?: TeamsTargetKind;
   /**
    * #914 — re-render and re-upload the app package for an identity that is
    * already `installed`. Set by the identity routes after an edit that
@@ -633,6 +709,11 @@ export type ProvisioningRunResult =
          *  configured for it, Conditional Access refusing it). Terminal:
          *  retrying the same flow produces the same refusal. */
         | 'device_code_flow_failed'
+        /** Graph refused the install because the app package's
+         *  resource-specific permissions exceed what the installing identity
+         *  may consent to. Terminal: a tenant role grant fixes it, a retry
+         *  does not. */
+        | 'rsc_permissions_mismatch'
         | 'error';
       readonly detail: string;
     }
@@ -1520,16 +1601,65 @@ export class TeamsProvisioningJobRunner {
 
     if (this.stopped) return { status: 'stopped', agentId };
 
-    // Step 5 — install into the team (idempotent on Graph's side).
+    // Step 5 — install into the target (idempotent on Graph's side).
+    //
+    // TWO ENDPOINTS, ONE STEP. A team installs through
+    // `POST /teams/{id}/installedApps`, a chat through
+    // `POST /chats/{id}/installedApps`. They are different Graph resources
+    // with different permissions, so the branch is here rather than inside
+    // the connector: the runner already knows which kind it was asked for and
+    // guessing from the id string is exactly the failure this feature exists
+    // to remove.
+    const targetKind: TeamsTargetKind = request.targetKind ?? 'team';
     await this.emit(agentId, 'installed', 'started');
-    await provisioner.installToTeam({
-      // Graph rejects the unhyphenated form Teams itself hands out (see
-      // platform/teamsTeamId). Normalised here as well as at the route, so a
-      // row stored before the route did it still installs instead of dying at
-      // the last step of an otherwise complete chain.
-      teamId: normalizeTeamsTeamId(request.teamId),
-      teamsAppId: row.teamsAppId as string,
-    });
+    try {
+      if (isChatTarget(targetKind)) {
+        const installToChat = provisioner.installToChat;
+        // Feature detection, never an optional call: an older connector must
+        // fail with the actionable sentence below rather than with a
+        // TypeError, and `installToChat?.(…)` would silently resolve to
+        // `undefined` and let the run mark itself installed without
+        // installing anything.
+        if (typeof installToChat !== 'function') {
+          throw new TeamsChatInstallUnsupportedError();
+        }
+        await installToChat.call(provisioner, {
+          // NOT normalised: a conversation id is not a GUID, and
+          // `normalizeTeamsTeamId` passes it through untouched anyway.
+          // Calling it here would only suggest a reshaping that must never
+          // happen.
+          chatId: request.teamId.trim(),
+          teamsAppId: row.teamsAppId as string,
+        });
+      } else {
+        await provisioner.installToTeam({
+          // Graph rejects the unhyphenated form Teams itself hands out (see
+          // platform/teamsTeamId). Normalised here as well as at the route,
+          // so a row stored before the route did it still installs instead of
+          // dying at the last step of an otherwise complete chain.
+          teamId: normalizeTeamsTeamId(request.teamId),
+          teamsAppId: row.teamsAppId as string,
+        });
+      }
+    } catch (err) {
+      // `400 ResourceSpecificPermissionsMismatch` is NOT a generic bad
+      // request, and reporting it as one sends the operator hunting for a
+      // wrong id that is in fact correct. It means this agent's app package
+      // declares resource-specific permissions the installing identity may not
+      // consent to — a tenant-side role grant. TERMINAL: no retry makes a
+      // missing grant appear.
+      if (isRscPermissionsMismatch(err)) {
+        const detail = rscPermissionsMismatchDetail(targetKind);
+        await this.recordError(agentId, { state: 'failed', lastError: detail });
+        return {
+          status: 'failed',
+          agentId,
+          reason: 'rsc_permissions_mismatch',
+          detail,
+        };
+      }
+      throw err;
+    }
     // Same ordering rule as recordError (#915): the chain is finished, so the
     // run stops calling itself running BEFORE the terminal state becomes
     // readable. Everything past this line — the binding write, the
@@ -1538,14 +1668,18 @@ export class TeamsProvisioningJobRunner {
     // the timeline rather than through `running`.
     this.markSettled(agentId);
     row = await this.store.update(agentId, { state: 'installed', lastError: null });
-    await this.emit(agentId, 'installed', 'succeeded');
+    // `detail` carries the TARGET KIND — a closed, localizable vocabulary
+    // ('team' | 'group-chat' | 'one-on-one-chat'), exactly like the
+    // `config_sync` step's status. Never the id: the timeline is a screen, and
+    // a chat id names the humans in that chat.
+    await this.emit(agentId, 'installed', 'succeeded', { detail: targetKind });
 
     // Step 5b (migration 0051) — PERSIST the binding. Graph has confirmed the
     // install, so this is the moment the pair becomes a fact rather than an
     // intent. Before this table existed the only trace was the identity row's
     // single `team_id`, which the next request overwrote — the reason a
     // binding never survived a re-target.
-    await this.recordInstall(agentId, request.teamId, row.teamsAppId);
+    await this.recordInstall(agentId, request.teamId, row.teamsAppId, targetKind);
 
     // Step 6 (#910) — the finishing move: write the `teams_bots` entry into
     // channel-teams and reload it, so the bot answers without an operator
@@ -1696,11 +1830,17 @@ export class TeamsProvisioningJobRunner {
     agentId: string,
     teamId: string,
     teamsAppId: string | null,
+    targetKind: TeamsTargetKind,
   ): Promise<void> {
     const installs = this.installs;
     if (!installs) return;
     let displayName: string | null = null;
-    if (this.resolveTeamName) {
+    // The name resolver is `teamsProvisioner@1.getTeam`, which answers for a
+    // TEAM only. A chat has no equivalent lookup in the mirrored contract, so
+    // a chat binding stays nameless rather than being handed an id to resolve
+    // that the connector would answer `found: false` for — a wasted Graph call
+    // whose only outcome is a misleading log line.
+    if (this.resolveTeamName && targetKind === 'team') {
       try {
         displayName = await this.resolveTeamName(teamId);
       } catch (err) {
@@ -1710,7 +1850,13 @@ export class TeamsProvisioningJobRunner {
       }
     }
     try {
-      await installs.record({ agentId, teamId, teamsAppId, teamDisplayName: displayName });
+      await installs.record({
+        agentId,
+        teamId,
+        teamsAppId,
+        teamDisplayName: displayName,
+        targetKind,
+      });
     } catch (err) {
       this.log(
         `[teams-provisioning] could not record the install of agent '${agentId}' in team '${teamId}': ${errorMessage(err)}`,
@@ -1790,6 +1936,40 @@ export class TeamsProvisioningJobRunner {
 /** Bracket filler used when the connector named no ARM field. Shared by the
  *  producer and the classifier so the empty case round-trips to `[]`. */
 const ARM_FIELDS_UNSPECIFIED = 'ARM setup fields';
+
+/**
+ * Graph answered `400 ResourceSpecificPermissionsMismatch`.
+ *
+ * NOT a generic bad request, and mis-reading it as one is exactly why this has
+ * its own code. The install call is well-formed and the target id is correct;
+ * what Graph is saying is that the RESOURCE-SPECIFIC permissions declared in
+ * the agent's app package (ours declares seven) exceed what the installing
+ * identity may consent to on the target's behalf. The fix is a tenant-side
+ * role grant, so the sentence names the role instead of sending the operator
+ * back to check an id that was never wrong.
+ */
+export const RSC_PERMISSIONS_MISMATCH_PREFIX = 'rsc_permissions_mismatch:';
+
+/** The two Graph app roles that let an install carry an app's RSC
+ *  permissions — team direction and chat direction. Named in the
+ *  operator-facing sentence so the fix is a copy-paste, not a search. */
+export const RSC_CONSENT_ROLES = {
+  team: 'TeamsAppInstallation.ReadWriteAndConsentForTeam.All',
+  chat: 'TeamsAppInstallation.ReadWriteAndConsentForChat.All',
+} as const;
+
+export function rscPermissionsMismatchDetail(targetKind: TeamsTargetKind): string {
+  const role = targetKind === 'team' ? RSC_CONSENT_ROLES.team : RSC_CONSENT_ROLES.chat;
+  return `${RSC_PERMISSIONS_MISMATCH_PREFIX} Graph refused the install because this agent's Teams app package declares resource-specific permissions the installing identity may not consent to — grant the app role ${role} to the M365 connector's Entra app and admin-consent it, then re-run provisioning. The target id is correct; this is a permission grant, not a wrong id.`;
+}
+
+/** Does this error carry Graph's ResourceSpecificPermissionsMismatch code?
+ *  Duck-typed on the message for the same reason as the connector's other
+ *  error guards: the class identity belongs to the plugin, not to us. */
+export function isRscPermissionsMismatch(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /ResourceSpecificPermissionsMismatch/i.test(`${err.name} ${err.message}`);
+}
 
 export function consentMissingDetail(missingScopes: readonly string[]): string {
   return `consent_missing: admin consent required for scopes [${missingScopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
@@ -1939,6 +2119,9 @@ export function deviceCodeFlowFailedDetail(
 
 export type TeamsProvisioningErrorCode =
   | 'consent_missing'
+  /** Graph refused the install because the app package's RSC permissions
+   *  exceed what the installing identity may consent to. */
+  | 'rsc_permissions_mismatch'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -2030,6 +2213,9 @@ export function classifyTeamsProvisioningError(
   }
   if (sentence.startsWith(BOT_HANDLE_UNAVAILABLE_PREFIX)) {
     return { code: 'bot_handle_unavailable', raw };
+  }
+  if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
+    return { code: 'rsc_permissions_mismatch', raw };
   }
   if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';

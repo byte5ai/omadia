@@ -1317,7 +1317,7 @@ describe('createOperatorAgentsRouter', () => {
         botSlug: 'sales',
         displayName: 'Sales',
         state: 'bot_created',
-        teamId: '19:team-a',
+        teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
         appId: 'app-1',
         tenantId: 'tenant-1',
         teamsAppId: null,
@@ -1411,7 +1411,7 @@ describe('createOperatorAgentsRouter', () => {
         botSlug: 'sales',
         displayName: 'Sales',
         state: 'installed',
-        teamId: '19:team-a',
+        teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
         appId: 'app-1',
         tenantId: 'tenant-1',
         teamsAppId: 'catalog-1',
@@ -1444,7 +1444,7 @@ describe('createOperatorAgentsRouter', () => {
         botSlug: 'sales',
         displayName: 'Sales',
         state: 'failed',
-        teamId: '19:team-a',
+        teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
         appId: 'app-1',
         tenantId: 'tenant-1',
         teamsAppId: null,
@@ -1476,14 +1476,14 @@ describe('createOperatorAgentsRouter', () => {
         botSlug: 'sales',
         displayName: 'Sales',
         state: 'failed',
-        teamId: '19:team-a',
+        teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
         appId: 'app-1',
         tenantId: 'tenant-1',
         teamsAppId: null,
         teamsAppExternalId: null,
         lastError: 'consent_missing: admin consent required for scopes []',
       });
-      teamsRunner.running.set(agent.id, '19:team-a');
+      teamsRunner.running.set(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
 
       const res = await fetch(`${baseUrl}/sales/teams-identity`);
       const body = (await res.json()) as { state: string; running: boolean };
@@ -1503,7 +1503,7 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-abc' }),
+      body: JSON.stringify({ team_id: 'abcabcab-0000-4000-8000-000000000003' }),
     });
     // FakeTeamsRunner.enqueue never settles — reaching these assertions at
     // all proves the handler returned without awaiting the provisioning run.
@@ -1521,7 +1521,11 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(body.state, 'pending');
     assert.equal(body.running, true);
     assert.deepEqual(teamsRunner.enqueueCalls, [
-      { agentId: agent.id, teamId: '19:team-abc' },
+      {
+        agentId: agent.id,
+        teamId: 'abcabcab-0000-4000-8000-000000000003',
+        targetKind: 'team',
+      },
     ]);
     assert.equal(teamsStore.rows.size, 1);
     assert.deepEqual(teamsStore.ensureCalls, [
@@ -1529,7 +1533,8 @@ describe('createOperatorAgentsRouter', () => {
         agentId: agent.id,
         botSlug: 'sales',
         displayName: 'Sales Agent',
-        teamId: '19:team-abc',
+        teamId: 'abcabcab-0000-4000-8000-000000000003',
+        targetKind: 'team',
       },
     ]);
   });
@@ -1542,7 +1547,7 @@ describe('createOperatorAgentsRouter', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          team_id: '19:t',
+          team_id: '11111111-0000-4000-8000-000000000004',
           display_name: 'Sales Bot',
         }),
       },
@@ -1558,13 +1563,13 @@ describe('createOperatorAgentsRouter', () => {
     const first = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t', bot_slug: 'sales-bot' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004', bot_slug: 'sales-bot' }),
     });
     assert.equal(first.status, 202);
     const second = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t', bot_slug: 'other-bot' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004', bot_slug: 'other-bot' }),
     });
     assert.equal(second.status, 202);
     const body = (await second.json()) as { bot_slug: string };
@@ -1578,7 +1583,7 @@ describe('createOperatorAgentsRouter', () => {
     let res = await fetch(`${baseUrl}/ghost/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
     });
     assert.equal(res.status, 404);
 
@@ -1599,7 +1604,7 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
     });
     assert.equal(res.status, 503);
     assert.equal(
@@ -1617,7 +1622,7 @@ describe('createOperatorAgentsRouter', () => {
     let res = await fetch(`${baseUrl}/ghost/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
     });
     assert.equal(res.status, 404);
     // Malformed body → 400, not 503.
@@ -1636,13 +1641,13 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(64) }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004', bot_slug: 'a'.repeat(64) }),
     });
     assert.equal(res.status, 400, 'BOT_SLUG_PATTERN allows at most 63 chars');
     const ok = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t', bot_slug: 'a'.repeat(63) }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004', bot_slug: 'a'.repeat(63) }),
     });
     assert.equal(ok.status, 202);
   });
@@ -1655,7 +1660,7 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t', bot_slug: 'sales-bot' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004', bot_slug: 'sales-bot' }),
     });
     assert.equal(res.status, 409);
     assert.equal(((await res.json()) as { error: string }).error, 'bot_slug_taken');
@@ -1668,7 +1673,7 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:t' }),
+      body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
     });
     assert.equal(res.status, 202);
     const body = (await res.json()) as { running: boolean };
@@ -1696,7 +1701,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -1705,7 +1710,7 @@ describe('createOperatorAgentsRouter', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    teamsRunner.running.set(agent.id, '19:team-a');
+    teamsRunner.running.set(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const res = await fetch(`${baseUrl}/sales/teams-identity`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
@@ -1755,7 +1760,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'pending',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: null,
       tenantId: null,
       teamsAppId: null,
@@ -1787,7 +1792,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -1814,7 +1819,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -1881,7 +1886,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -1912,7 +1917,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'pending',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: null,
       tenantId: null,
       teamsAppId: null,
@@ -1948,7 +1953,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -2003,7 +2008,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'app_registered',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: null,
@@ -2016,7 +2021,7 @@ describe('createOperatorAgentsRouter', () => {
     const body = (await res.json()) as { identity: { team_id: string | null } };
     // POST requires `team_id` and has no fall-back-to-stored path, so without
     // this field the UI's "Re-run provisioning" button could only ever 400.
-    assert.equal(body.identity.team_id, '19:team-a');
+    assert.equal(body.identity.team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
   });
 
   it('POST /:slug/teams-identity refuses to retarget an installed row instead of rewriting team_id', async () => {
@@ -2026,7 +2031,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -2038,16 +2043,16 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; installed_team_id: string };
     assert.equal(body.error, 'team_install_conflict');
-    assert.equal(body.installed_team_id, '19:team-a');
+    assert.equal(body.installed_team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
     // The runner returns early on an 'installed' row, so an accepted retarget
     // would rewrite team_id with NO install ever happening — and the team read
     // model would then publish team-b as installed on that column alone.
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.deepEqual(teamsStore.ensureCalls, []);
     assert.deepEqual(teamsRunner.enqueueCalls, []);
   });
@@ -2059,7 +2064,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'catalog_uploaded',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -2068,23 +2073,23 @@ describe('createOperatorAgentsRouter', () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    teamsRunner.running.set(agent.id, '19:team-a');
+    teamsRunner.running.set(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
 
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
 
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string; pending_team_id: string };
     assert.equal(body.error, 'team_install_conflict');
-    assert.equal(body.pending_team_id, '19:team-a');
+    assert.equal(body.pending_team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
     // The in-flight run installs into team-a (installToTeam uses the teamId
     // captured at enqueue) while the runner refuses the second enqueue with a
     // RESOLVED 'rejected' result the route cannot see. Writing team-b first
     // would leave the row claiming an install that never happened.
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.deepEqual(teamsStore.ensureCalls, []);
     assert.deepEqual(teamsRunner.enqueueCalls, []);
   });
@@ -2096,7 +2101,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'app_registered',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: null,
@@ -2111,13 +2116,13 @@ describe('createOperatorAgentsRouter', () => {
       status: 'rejected',
       agentId: agent.id,
       reason: 'team_conflict',
-      detail: 'a provisioning run targeting team 19:team-a is already in flight',
+      detail: 'a provisioning run targeting team aaaaaaaa-0000-4000-8000-000000000001 is already in flight',
     };
 
     const res = await fetch(`${baseUrl}/sales/teams-identity`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-a' }),
+      body: JSON.stringify({ team_id: 'aaaaaaaa-0000-4000-8000-000000000001' }),
     });
     assert.equal(res.status, 202);
 
@@ -2175,7 +2180,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'failed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: null,
       tenantId: null,
       teamsAppId: null,
@@ -2203,7 +2208,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'app_registered',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: null,
       tenantId: null,
       teamsAppId: null,
@@ -2263,7 +2268,7 @@ describe('createOperatorAgentsRouter', () => {
       const post = await fetch(`${local}/sales/teams-identity`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ team_id: '19:t' }),
+        body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
       });
       assert.equal(post.status, 503);
       assert.equal(
@@ -2298,7 +2303,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -2331,7 +2336,8 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(body.agent, 'sales');
     assert.deepEqual(body.teams, [
       {
-        team_id: '19:team-a',
+        team_id: 'aaaaaaaa-0000-4000-8000-000000000001',
+        target_kind: 'team',
         // No installs store is bound in this suite, so nothing ever resolved
         // a name — the UI shows the bare id rather than inventing one.
         team_display_name: null,
@@ -2364,7 +2370,7 @@ describe('createOperatorAgentsRouter', () => {
 
   it('GET /:slug/teams reports NO install while the chain is still running', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'catalog_uploaded', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'catalog_uploaded', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const res = await fetch(`${baseUrl}/sales/teams`);
     const body = (await res.json()) as {
       teams: unknown[];
@@ -2374,7 +2380,7 @@ describe('createOperatorAgentsRouter', () => {
     // A recorded team_id below 'installed' is the TARGET of a run, not an
     // install — claiming otherwise would invent a Teams state.
     assert.deepEqual(body.teams, []);
-    assert.equal(body.pending_team_id, '19:team-a');
+    assert.equal(body.pending_team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
     // catalog_uploaded already required a consented Graph call.
     assert.equal(body.consent.status, 'granted');
   });
@@ -2384,7 +2390,7 @@ describe('createOperatorAgentsRouter', () => {
     const scopes = ['Application.ReadWrite.All', 'AppCatalog.ReadWrite.All'];
     seedIdentity(agent.id, {
       state: 'failed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       lastError: consentMissingDetail(scopes),
     });
     const res = await fetch(`${baseUrl}/sales/teams`);
@@ -2423,7 +2429,7 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
     assert.equal(res.status, 202);
     const body = (await res.json()) as {
@@ -2434,7 +2440,7 @@ describe('createOperatorAgentsRouter', () => {
       running: boolean;
     };
     assert.equal(body.ok, true);
-    assert.equal(body.team_id, '19:team-b');
+    assert.equal(body.team_id, 'bbbbbbbb-0000-4000-8000-000000000002');
     assert.equal(body.bot_slug, 'sales-bot');
     assert.equal(body.already_installed, false);
     assert.equal(body.running, true);
@@ -2445,24 +2451,29 @@ describe('createOperatorAgentsRouter', () => {
         agentId: agent.id,
         botSlug: 'sales-bot',
         displayName: 'Sales Bot',
-        teamId: '19:team-b',
+        teamId: 'bbbbbbbb-0000-4000-8000-000000000002',
+        targetKind: 'team',
       },
     ]);
-    assert.deepEqual(teamsStore.rows.get(agent.id)?.teamId, '19:team-b');
+    assert.deepEqual(teamsStore.rows.get(agent.id)?.teamId, 'bbbbbbbb-0000-4000-8000-000000000002');
     // Installing goes through the provisioning runner — the router never
     // calls the connector itself.
     assert.deepEqual(teamsRunner.enqueueCalls, [
-      { agentId: agent.id, teamId: '19:team-b' },
+      {
+        agentId: agent.id,
+        teamId: 'bbbbbbbb-0000-4000-8000-000000000002',
+        targetKind: 'team',
+      },
     ]);
   });
 
   it('POST /:slug/teams is idempotent for the team the agent is already installed in', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-a' }),
+      body: JSON.stringify({ team_id: 'aaaaaaaa-0000-4000-8000-000000000001' }),
     });
     assert.equal(res.status, 200);
     const body = (await res.json()) as { already_installed: boolean; running: boolean };
@@ -2482,11 +2493,11 @@ describe('createOperatorAgentsRouter', () => {
   // the store.
   it('POST /:slug/teams → 409 for a SECOND team without an installs store, writing nothing', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
     assert.equal(res.status, 409);
     const body = (await res.json()) as {
@@ -2496,12 +2507,12 @@ describe('createOperatorAgentsRouter', () => {
       message: string;
     };
     assert.equal(body.error, 'team_install_conflict');
-    assert.equal(body.installed_team_id, '19:team-a');
-    assert.equal(body.requested_team_id, '19:team-b');
+    assert.equal(body.installed_team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
+    assert.equal(body.requested_team_id, 'bbbbbbbb-0000-4000-8000-000000000002');
     assert.match(body.message, /agent_teams_installs/);
     // The tracked install must survive a refused re-target: overwriting the
     // single team_id would leave the team-a install with nothing recording it.
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.deepEqual(teamsStore.ensureCalls, []);
     assert.deepEqual(teamsRunner.enqueueCalls, []);
   });
@@ -2533,8 +2544,8 @@ describe('createOperatorAgentsRouter', () => {
   it('GET /:slug/teams lists EVERY persisted binding and reports multi_team', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     seedIdentity(agent.id);
-    seedInstall(agent.id, '19:team-a', { teamDisplayName: 'Marketing' });
-    seedInstall(agent.id, '19:team-b', {
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001', { teamDisplayName: 'Marketing' });
+    seedInstall(agent.id, 'bbbbbbbb-0000-4000-8000-000000000002', {
       installedAt: new Date('2026-08-03T09:00:00.000Z'),
     });
     const res = await fetch(`${baseUrl}/sales/teams`);
@@ -2546,9 +2557,9 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(
       body.teams.map((team) => [team['team_id'], team['team_display_name']]),
       [
-        ['19:team-a', 'Marketing'],
+        ['aaaaaaaa-0000-4000-8000-000000000001', 'Marketing'],
         // Never resolved — the UI shows the id, it does not invent a label.
-        ['19:team-b', null],
+        ['bbbbbbbb-0000-4000-8000-000000000002', null],
       ],
     );
     // Both entries say they came from a recorded install, not a Graph listing.
@@ -2566,7 +2577,7 @@ describe('createOperatorAgentsRouter', () => {
   it('GET /:slug/teams backfills a missing team name and PERSISTS it', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     seedIdentity(agent.id);
-    seedInstall(agent.id, '19:team-a');
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const lookups: string[] = [];
     resolveTeamName = (teamId) => {
       lookups.push(teamId);
@@ -2575,46 +2586,50 @@ describe('createOperatorAgentsRouter', () => {
     const res = await fetch(`${baseUrl}/sales/teams`);
     const body = (await res.json()) as { teams: Array<Record<string, unknown>> };
     assert.equal(body.teams[0]?.['team_display_name'], 'Marketing');
-    assert.deepEqual(lookups, ['19:team-a']);
+    assert.deepEqual(lookups, ['aaaaaaaa-0000-4000-8000-000000000001']);
     // Written through, so the next read needs no lookup — and so the name
     // survives a connector that is later removed or downgraded.
     assert.deepEqual(teamsInstalls?.nameWrites, [
-      { teamId: '19:team-a', displayName: 'Marketing' },
+      { teamId: 'aaaaaaaa-0000-4000-8000-000000000001', displayName: 'Marketing' },
     ]);
   });
 
   it('GET /:slug/teams survives a failing name lookup — ids, never a 500', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     seedIdentity(agent.id);
-    seedInstall(agent.id, '19:team-a');
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     resolveTeamName = () => Promise.reject(new Error('graph down'));
     const res = await fetch(`${baseUrl}/sales/teams`);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { teams: Array<Record<string, unknown>> };
-    assert.equal(body.teams[0]?.['team_id'], '19:team-a');
+    assert.equal(body.teams[0]?.['team_id'], 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(body.teams[0]?.['team_display_name'], null);
   });
 
   it('POST /:slug/teams accepts an ADDITIONAL team once bindings persist', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
-    seedInstall(agent.id, '19:team-a');
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
     assert.equal(res.status, 202);
     const body = (await res.json()) as { team_id: string; already_installed: boolean };
-    assert.equal(body.team_id, '19:team-b');
+    assert.equal(body.team_id, 'bbbbbbbb-0000-4000-8000-000000000002');
     assert.equal(body.already_installed, false);
     // The chain is resumed for the NEW team; the existing binding is untouched.
     assert.deepEqual(teamsRunner.enqueueCalls, [
-      { agentId: agent.id, teamId: '19:team-b' },
+      {
+        agentId: agent.id,
+        teamId: 'bbbbbbbb-0000-4000-8000-000000000002',
+        targetKind: 'team',
+      },
     ]);
     assert.deepEqual(
       teamsInstalls?.rows.map((row) => row.teamId),
-      ['19:team-a'],
+      ['aaaaaaaa-0000-4000-8000-000000000001'],
     );
   });
 
@@ -2622,12 +2637,12 @@ describe('createOperatorAgentsRouter', () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     // The identity's scratch `team_id` points elsewhere on purpose: the answer
     // must come from the bindings table, which is the record of what happened.
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-b' });
-    seedInstall(agent.id, '19:team-a');
+    seedIdentity(agent.id, { state: 'installed', teamId: 'bbbbbbbb-0000-4000-8000-000000000002' });
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const res = await fetch(`${baseUrl}/sales/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-a' }),
+      body: JSON.stringify({ team_id: 'aaaaaaaa-0000-4000-8000-000000000001' }),
     });
     assert.equal(res.status, 200);
     assert.equal(((await res.json()) as { already_installed: boolean }).already_installed, true);
@@ -2636,32 +2651,32 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId drops ONE binding and leaves the rest installed', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
-    seedInstall(agent.id, '19:team-a');
-    seedInstall(agent.id, '19:team-b');
-    const res = await fetch(`${baseUrl}/sales/teams/19%3Ateam-a`, { method: 'DELETE' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
+    seedInstall(agent.id, 'bbbbbbbb-0000-4000-8000-000000000002');
+    const res = await fetch(`${baseUrl}/sales/teams/aaaaaaaa-0000-4000-8000-000000000001`, { method: 'DELETE' });
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       team_id: string;
       state: string;
       remaining_team_ids: string[];
     };
-    assert.equal(body.team_id, '19:team-a');
-    assert.deepEqual(body.remaining_team_ids, ['19:team-b']);
+    assert.equal(body.team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
+    assert.deepEqual(body.remaining_team_ids, ['bbbbbbbb-0000-4000-8000-000000000002']);
     // An agent still installed somewhere is still installed — walking the
     // identity back to catalog_uploaded would report team-b as pending.
     assert.equal(body.state, 'installed');
     assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
     assert.deepEqual(
       teamsInstalls?.rows.map((row) => row.teamId),
-      ['19:team-b'],
+      ['bbbbbbbb-0000-4000-8000-000000000002'],
     );
   });
 
   it('DELETE /:slug/teams/:teamId → 404 for a team this agent is not bound to', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
-    seedInstall(agent.id, '19:team-a');
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
+    seedInstall(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const res = await fetch(`${baseUrl}/sales/teams/19%3Aghost`, { method: 'DELETE' });
     assert.equal(res.status, 404);
     assert.equal(
@@ -2684,7 +2699,7 @@ describe('createOperatorAgentsRouter', () => {
     res = await fetch(`${baseUrl}/ghost/teams`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ team_id: '19:team-b' }),
+      body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
     });
     assert.equal(res.status, 404);
     assert.equal(((await res.json()) as { error: string }).error, 'not_found');
@@ -2693,7 +2708,7 @@ describe('createOperatorAgentsRouter', () => {
       res = await fetch(`${baseUrl}/sales/teams`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ team_id: '19:team-b' }),
+        body: JSON.stringify({ team_id: 'bbbbbbbb-0000-4000-8000-000000000002' }),
       });
       assert.equal(res.status, 503);
       assert.equal(
@@ -2721,10 +2736,10 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId removes the install and clears the row', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const fake = provisioner as FakeTeamsProvisioner;
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(res.status, 200);
     const body = (await res.json()) as {
       ok: boolean;
@@ -2736,14 +2751,14 @@ describe('createOperatorAgentsRouter', () => {
     };
     assert.equal(body.ok, true);
     assert.equal(body.agent, 'sales');
-    assert.equal(body.team_id, '19:team-a');
+    assert.equal(body.team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(body.outcome, 'uninstalled');
     assert.equal(body.already_absent, false);
 
     // Graph got the CATALOG app id, not the installation id — resolving the
     // latter is the connector's job.
     assert.deepEqual(fake.calls, [
-      { teamId: '19:team-a', teamsAppId: 'teams-app-789' },
+      { teamId: 'aaaaaaaa-0000-4000-8000-000000000001', teamsAppId: 'teams-app-789' },
     ]);
     // The row drops back to catalog_uploaded with no team — the app, bot and
     // catalog entry all still exist, only the install is gone.
@@ -2755,11 +2770,11 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId reports the idempotent already-absent outcome', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const fake = provisioner as FakeTeamsProvisioner;
     fake.outcome = 'already-absent';
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(res.status, 200, 'not installed is success, not a failure');
     const body = (await res.json()) as { outcome: string; already_absent: boolean };
     assert.equal(body.outcome, 'already-absent');
@@ -2771,11 +2786,11 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId → 501 when the connector is too old (no uninstallFromTeam)', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     // A connector < 0.4.0: the accessor simply has no such method.
     provisioner = new LegacyTeamsProvisioner();
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(res.status, 501);
     const body = (await res.json()) as {
       error: string;
@@ -2784,13 +2799,13 @@ describe('createOperatorAgentsRouter', () => {
       team_id: string;
     };
     assert.equal(body.error, 'teams_uninstall_unsupported');
-    assert.equal(body.team_id, '19:team-a');
+    assert.equal(body.team_id, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(body.min_connector_version, TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION);
     // The reason names the fix, not just the refusal.
     assert.match(body.message, /upgrade @omadia\/integration-microsoft365/);
     // Above all: the row is untouched. "Forgetting" the install would leave
     // the app live in Teams with nothing recording it.
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
     assert.deepEqual(teamsStore.clearTeamInstalls, []);
   });
@@ -2839,24 +2854,24 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId → 404 for a team the middleware has no install for', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const fake = provisioner as FakeTeamsProvisioner;
 
-    const res = await deleteTeam('sales', '19:team-b');
+    const res = await deleteTeam('sales', 'bbbbbbbb-0000-4000-8000-000000000002');
     assert.equal(res.status, 404);
     const body = (await res.json()) as { error: string };
     assert.equal(body.error, 'team_install_not_found');
     // No Graph call for an install we never recorded.
     assert.deepEqual(fake.calls, []);
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
   });
 
   it('DELETE /:slug/teams/:teamId → 404 while the chain has not reached installed', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'catalog_uploaded', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'catalog_uploaded', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const fake = provisioner as FakeTeamsProvisioner;
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(res.status, 404);
     // A recorded team below 'installed' is a TARGET, not an install — the
     // read model does not list it, so the route must not remove it either.
@@ -2866,11 +2881,11 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId → 409 while a provisioning run is in flight', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
-    teamsRunner.running.set(agent.id, '19:team-a');
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
+    teamsRunner.running.set(agent.id, 'aaaaaaaa-0000-4000-8000-000000000001');
     const fake = provisioner as FakeTeamsProvisioner;
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(res.status, 409);
     const body = (await res.json()) as { error: string };
     assert.equal(body.error, 'teams_provisioning_running');
@@ -2882,35 +2897,35 @@ describe('createOperatorAgentsRouter', () => {
 
   it('DELETE /:slug/teams/:teamId → 503 when the connector is not installed at all', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     provisionerInstalled = false;
     provisioner = undefined;
     try {
-      const res = await deleteTeam('sales', '19:team-a');
+      const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
       assert.equal(res.status, 503);
       const body = (await res.json()) as { error: string };
       assert.equal(body.error, 'teams_provisioner_unavailable');
     } finally {
       provisionerInstalled = true;
     }
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.deepEqual(teamsStore.clearTeamInstalls, []);
   });
 
   it('DELETE /:slug/teams/:teamId keeps the row when the connector call fails', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
-    seedIdentity(agent.id, { state: 'installed', teamId: '19:team-a' });
+    seedIdentity(agent.id, { state: 'installed', teamId: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const fake = provisioner as FakeTeamsProvisioner;
     const consent = new Error('403 from graph');
     consent.name = 'ConsentMissingError';
     fake.error = consent;
 
-    const res = await deleteTeam('sales', '19:team-a');
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.notEqual(res.status, 200);
     // Graph first, row second: a failed removal must not make the middleware
     // forget an install that is still live in Teams.
     assert.deepEqual(teamsStore.clearTeamInstalls, []);
-    assert.equal(teamsStore.rows.get(agent.id)?.teamId, '19:team-a');
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
   });
 
@@ -2920,7 +2935,7 @@ describe('createOperatorAgentsRouter', () => {
       botSlug: 'sales-bot',
       displayName: 'Sales Bot',
       state: 'installed',
-      teamId: '19:team-a',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
       appId: 'app-123',
       tenantId: 'tenant-456',
       teamsAppId: 'teams-app-789',
@@ -2972,7 +2987,7 @@ describe('createOperatorAgentsRouter', () => {
         await fetch(`${local}/sales/teams`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ team_id: '19:t' }),
+          body: JSON.stringify({ team_id: '11111111-0000-4000-8000-000000000004' }),
         }),
         await fetch(`${local}/sales/teams/19:t`, { method: 'DELETE' }),
       ]) {
