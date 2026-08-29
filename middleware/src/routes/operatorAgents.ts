@@ -2145,7 +2145,7 @@ export function createOperatorAgentsRouter(
       try {
         const found = await teamsIdentityRow(req, res, live, deps);
         if (!found) return;
-        const { agent, row } = found;
+        const { row } = found;
         const build = deps.buildAppPackage;
         if (!build) {
           // A capability, not a fault: this mount cannot render a package

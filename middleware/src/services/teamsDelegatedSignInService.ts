@@ -42,7 +42,6 @@ import {
 } from '../platform/teamsDelegatedSignIn.js';
 import type {
   DelegatedSignInPresence,
-  TeamsDelegatedTokenStore,
 } from '../platform/teamsDelegatedTokenStore.js';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +51,7 @@ import type {
 /** Structural subset of the accessor — only the delegated half is needed. */
 export type DelegatedProvisionerPort = Partial<TeamsDelegatedProvisionerMethods>;
 
-/** Structural subset of {@link TeamsDelegatedTokenStore}. */
+/** Structural subset of `TeamsDelegatedTokenStore` (platform/teamsDelegatedTokenStore). */
 export interface DelegatedTokenCustody {
   read(): Promise<DelegatedTokenSet | undefined>;
   write(tokens: DelegatedTokenSet): Promise<void>;
