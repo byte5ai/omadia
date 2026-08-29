@@ -107,6 +107,10 @@ interface StubProvisioner extends TeamsProvisionerPort {
 }
 
 interface StubBehaviour {
+  /** Model a connector < 0.7.0: the key is ABSENT, not undefined — feature
+   *  detection has to see a missing method, and a present-but-undefined
+   *  property would still be a key. */
+  noChatInstall?: boolean;
   createAppRegistration?: () => Promise<void> | void;
   createBot?: 'registration-only' | (() => Promise<void> | void);
   uploadToCatalog?: () => Promise<void> | void;
@@ -169,6 +173,20 @@ function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
         value: { teamId: input.teamId, teamsAppId: input.teamsAppId },
       };
     },
+    ...(behaviour.noChatInstall === true
+      ? {}
+      : {
+          async installToChat(input: {
+            readonly chatId: string;
+            readonly teamsAppId: string;
+          }) {
+            calls.push(`installToChat:${input.chatId}:${input.teamsAppId}`);
+            return {
+              outcome: 'created' as const,
+              value: { chatId: input.chatId, teamsAppId: input.teamsAppId },
+            };
+          },
+        }),
   };
 }
 

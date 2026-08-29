@@ -31,6 +31,8 @@
 
 import type { Pool } from 'pg';
 
+import type { TeamsTargetKind } from './teamsInstallTarget.js';
+
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of migration 0049, verbatim.
 // ---------------------------------------------------------------------------
@@ -68,6 +70,13 @@ export interface AgentTeamsIdentityRecord {
   readonly state: TeamsProvisioningState;
   /** Install target of the last provisioning request — resume evidence. */
   readonly teamId: string | null;
+  /**
+   * WHICH KIND of target {@link teamId} addresses (migration 0054): a team, a
+   * group chat or a 1:1 chat. Resume evidence too — a run that picks up an
+   * interrupted chain must call the Graph endpoint the request asked for, and
+   * a bare 32-hex id cannot be classified back into one afterwards.
+   */
+  readonly targetKind: TeamsTargetKind;
   readonly appId: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
@@ -85,6 +94,9 @@ export interface EnsureAgentTeamsIdentityInput {
    *  ensure updates on an existing row; bot_slug/display_name stay as
    *  created (one identity per agent). */
   readonly teamId?: string;
+  /** Kind of the target above. Defaults to `'team'`, which is what every
+   *  request before migration 0054 meant. */
+  readonly targetKind?: TeamsTargetKind;
 }
 
 export interface AgentTeamsIdentityUpdate {
@@ -92,6 +104,8 @@ export interface AgentTeamsIdentityUpdate {
   /** `null` clears the recorded install target — what an uninstall leaves
    *  behind (byte5ai/omadia#900). The column is nullable (migration 0049). */
   readonly teamId?: string | null;
+  /** Set together with {@link teamId} when a request re-targets the row. */
+  readonly targetKind?: TeamsTargetKind;
   readonly appId?: string;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
@@ -143,7 +157,7 @@ export class AgentTeamsIdentityStateError extends Error {
 // ---------------------------------------------------------------------------
 
 const COLUMNS =
-  'agent_id, bot_slug, display_name, state, team_id, app_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
+  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
 
 interface AgentTeamsIdentityRow {
   agent_id: string;
@@ -151,6 +165,7 @@ interface AgentTeamsIdentityRow {
   display_name: string;
   state: string;
   team_id: string | null;
+  target_kind: TeamsTargetKind;
   app_id: string | null;
   tenant_id: string | null;
   teams_app_id: string | null;
@@ -171,6 +186,7 @@ function mapRow(row: AgentTeamsIdentityRow): AgentTeamsIdentityRecord {
     displayName: row.display_name,
     state: row.state,
     teamId: row.team_id,
+    targetKind: row.target_kind,
     appId: row.app_id,
     tenantId: row.tenant_id,
     teamsAppId: row.teams_app_id,
@@ -216,13 +232,25 @@ export class AgentTeamsIdentityStore {
   ): Promise<AgentTeamsIdentityRecord> {
     try {
       const res = await this.pool.query<AgentTeamsIdentityRow>(
-        `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, team_id)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, team_id, target_kind)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (agent_id) DO UPDATE SET
-           team_id    = COALESCE(EXCLUDED.team_id, agent_teams_identities.team_id),
+           team_id     = COALESCE(EXCLUDED.team_id, agent_teams_identities.team_id),
+           -- Moves WITH the id: a re-target that changed the kind must not
+           -- leave the row claiming the previous endpoint.
+           target_kind = CASE
+             WHEN EXCLUDED.team_id IS NULL THEN agent_teams_identities.target_kind
+             ELSE EXCLUDED.target_kind
+           END,
            updated_at = now()
          RETURNING ${COLUMNS}`,
-        [input.agentId, input.botSlug, input.displayName, input.teamId ?? null],
+        [
+          input.agentId,
+          input.botSlug,
+          input.displayName,
+          input.teamId ?? null,
+          input.targetKind ?? 'team',
+        ],
       );
       const row = res.rows[0];
       if (row === undefined) {
@@ -262,6 +290,7 @@ export class AgentTeamsIdentityStore {
       add('state', patch.state);
     }
     if (patch.teamId !== undefined) add('team_id', patch.teamId);
+    if (patch.targetKind !== undefined) add('target_kind', patch.targetKind);
     if (patch.appId !== undefined) add('app_id', patch.appId);
     if (patch.tenantId !== undefined) add('tenant_id', patch.tenantId);
     if (patch.teamsAppId !== undefined) add('teams_app_id', patch.teamsAppId);
@@ -296,6 +325,7 @@ export class AgentTeamsIdentityStore {
     return this.update(agentId, {
       state: 'catalog_uploaded',
       teamId: null,
+      targetKind: 'team',
       lastError: null,
     });
   }

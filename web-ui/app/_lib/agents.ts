@@ -1,5 +1,6 @@
 import { ApiError } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
+import type { TeamsTargetKind } from './teamsInstallTarget';
 
 /**
  * Typed client for the operator multi-orchestrator REST surface
@@ -476,6 +477,12 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   'delegated_consent_required',
   'delegated_token_expired',
   'device_code_flow_failed',
+  // Graph refused the install because this agent's app package declares
+  // resource-specific permissions the installing identity may not consent to
+  // — a tenant role grant, NOT a wrong target id, and worth its own code
+  // because reporting it as a generic bad request sends the operator back to
+  // re-check an id that was correct all along
+  'rsc_permissions_mismatch',
   'unknown',
 ] as const;
 
@@ -1040,6 +1047,23 @@ export interface InstalledTeamDto {
    * derivation. Neither is a live Graph enumeration.
    */
   evidence: 'identity_row' | 'install_row';
+  /**
+   * WHICH KIND of target `team_id` addresses (middleware migration 0054).
+   * Optional on the wire: a middleware predating it omits the field, and
+   * every row it could have written was a team — so
+   * {@link parseInstalledTargetKind} defaults to `'team'` rather than
+   * rendering an empty label.
+   */
+  target_kind?: TeamsTargetKind | null;
+}
+
+/** The entry's target kind, narrowed at the boundary — see the field's note
+ *  for why an absent value is `'team'` and not an error. */
+export function parseInstalledTargetKind(team: InstalledTeamDto): TeamsTargetKind {
+  const kind = team.target_kind;
+  return kind === 'group-chat' || kind === 'one-on-one-chat' || kind === 'team'
+    ? kind
+    : 'team';
 }
 
 /** The team's name, or `null` — the one place the wire's optional/nullable
@@ -1067,6 +1091,7 @@ export const TEAMS_ASSIGNMENT_CAPABILITY_KEYS = [
   'uninstall',
   'enumerate',
   'multi_team',
+  'chat_install',
 ] as const;
 
 export type TeamsAssignmentCapabilityKey =
@@ -1092,6 +1117,10 @@ export interface AgentTeamsDto {
   /** The recorded install TARGET while the chain has not reached
    *  `installed` — a run in flight (or a stalled one), never an install. */
   pending_team_id: string | null;
+  /** Kind of `pending_team_id`, so the in-flight hint can name what is being
+   *  installed into instead of calling every target a team. Optional for the
+   *  same version-skew reason as `InstalledTeamDto.target_kind`. */
+  pending_target_kind?: TeamsTargetKind | null;
   consent: TeamsConsentDto;
   last_error: string | null;
   capabilities: TeamsAssignmentCapabilitiesDto;
@@ -1105,6 +1134,7 @@ const TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED: TeamsAssignmentCapabilitiesDto = {
   uninstall: false,
   enumerate: false,
   multi_team: false,
+  chat_install: false,
   unsupported_reason: {},
 };
 

@@ -1,7 +1,7 @@
 /**
  * #915 — `agent_teams_provisioning_events` against a real Postgres.
  *
- * The schema is applied from the ACTUAL migration files (0049, then 0053),
+ * The schema is applied from the ACTUAL migration files (0049, 0053, 0054),
  * twice, so this suite doubles as the double-apply proof the migrations
  * README demands and pins the two things the store and the migration have to
  * agree on: the status CHECK constraint, and the foreign key that ties an
@@ -66,6 +66,11 @@ describe(
       for (const file of [
         '0049_agent_teams_identities.sql',
         '0053_agent_teams_provisioning_events.sql',
+        // 0051 + 0054: the event log has no target kind of its own, but 0054
+        // alters BOTH teams tables, so the bindings table has to exist before
+        // it runs.
+        '0051_agent_teams_installs.sql',
+        '0054_agent_teams_target_kind.sql',
       ]) {
         const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
         // Applied TWICE on purpose — the migrations README requires every

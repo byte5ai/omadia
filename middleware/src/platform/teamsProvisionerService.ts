@@ -279,6 +279,46 @@ export interface TeamAppInstallation {
   readonly installationId?: string;
 }
 
+/**
+ * Install into a CHAT rather than a team — `POST /chats/{id}/installedApps`
+ * (connector >= 0.7.0, this change).
+ *
+ * A separate method rather than a `kind` on {@link InstallToTeamRequest}
+ * because they are separate Graph endpoints with separate permissions: the
+ * team direction needs `TeamsAppInstallation.ReadWriteForTeam.All`, this one
+ * needs `TeamsAppInstallation.ReadWriteForChat.All`. Both are Application
+ * permissions — the chat endpoint supports app-only auth, so no delegated
+ * flow is involved here (unlike the catalog upload).
+ *
+ * `chatId` is a Teams conversation id (`19:…@thread.v2` for a group chat,
+ * `19:…@unq.gbl.spaces` for a 1:1). It is NOT a GUID and must never be run
+ * through `normalizeTeamsTeamId` — see `platform/teamsInstallTarget.ts` for
+ * the classification that keeps the two apart.
+ */
+export interface InstallToChatRequest {
+  readonly chatId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`). */
+  readonly teamsAppId: string;
+}
+
+export interface ChatAppInstallation {
+  readonly chatId: string;
+  readonly teamsAppId: string;
+  readonly installationId?: string;
+}
+
+/** Input for the chat uninstall — the same key `installToChat` is idempotent on. */
+export interface UninstallFromChatInput {
+  readonly chatId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`) — NOT the installation id. */
+  readonly teamsAppId: string;
+}
+
+export interface UninstallFromChatResult {
+  readonly outcome: UninstallFromTeamOutcome;
+  readonly value: ChatAppInstallation;
+}
+
 /** Input for the uninstall step — the same key `installToTeam` is idempotent on. */
 export interface UninstallFromTeamInput {
   readonly teamId: string;
@@ -350,6 +390,25 @@ export interface TeamsProvisionerAccessor
   getCatalogApp(input: GetCatalogAppInput): Promise<GetCatalogAppResult>;
 
   installToTeam(input: InstallToTeamRequest): Promise<Idempotent<TeamAppInstallation>>;
+
+  /**
+   * Connector >= 0.7.0 only — ABSENT on older installs. Guard every call with
+   * {@link supportsChatInstall}.
+   *
+   * The counterpart of {@link installToTeam} for the target operators
+   * actually asked for: a GROUP CHAT. Until this arrived, `team_id` was the
+   * only target the stack could express, so an operator who wanted a chat had
+   * no way to say so and found out five provisioning steps later that Graph
+   * had never heard of their id.
+   */
+  installToChat?(input: InstallToChatRequest): Promise<Idempotent<ChatAppInstallation>>;
+
+  /**
+   * Connector >= 0.7.0 only — the counterpart of {@link installToChat}, and
+   * absent on older installs exactly like it. Guard with
+   * {@link supportsChatUninstall}.
+   */
+  uninstallFromChat?(input: UninstallFromChatInput): Promise<UninstallFromChatResult>;
 
   /**
    * Connector >= 0.4.0 only — ABSENT on older installs. Guard every call
@@ -453,6 +512,29 @@ export function supportsTeamUninstall(
   provisioner: TeamsProvisionerAccessor | undefined,
 ): boolean {
   return typeof provisioner?.uninstallFromTeam === 'function';
+}
+
+/**
+ * Does the CURRENTLY INSTALLED connector publish the chat install
+ * (connector >= 0.7.0)? Same shape and same reason as the two guards above.
+ *
+ * Read it against the WRAPPER returned by {@link getTeamsProvisioner}, which
+ * forwards `installToChat` only when the raw provider really has it — an
+ * unconditional passthrough would make this predicate lie about every older
+ * connector.
+ */
+export function supportsChatInstall(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.installToChat === 'function';
+}
+
+/** Does the CURRENTLY INSTALLED connector publish the chat uninstall
+ *  (connector >= 0.7.0)? Same contract as every guard above. */
+export function supportsChatUninstall(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.uninstallFromChat === 'function';
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +723,28 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
     uploadToCatalog: (input) => raw.uploadToCatalog(input),
     getCatalogApp: (input) => raw.getCatalogApp(input),
     installToTeam: (input) => raw.installToTeam(input),
+    // Same conditional-spread contract as the two below, for the same reason:
+    // `supportsChatInstall` must read the WRAPPER and still get the truth
+    // about the connector behind it. A `installToChat: (i) =>
+    // raw.installToChat?.(i)` here would make every connector look
+    // chat-capable and turn an old one's 501 into a silent `undefined`.
+    ...(typeof raw.installToChat === 'function'
+      ? {
+          installToChat: (input: InstallToChatRequest) =>
+            (raw.installToChat as NonNullable<
+              TeamsProvisionerAccessor['installToChat']
+            >).call(raw, input),
+        }
+      : {}),
+    // Same conditional-spread contract, same reason.
+    ...(typeof raw.uninstallFromChat === 'function'
+      ? {
+          uninstallFromChat: (input: UninstallFromChatInput) =>
+            (raw.uninstallFromChat as NonNullable<
+              TeamsProvisionerAccessor['uninstallFromChat']
+            >).call(raw, input),
+        }
+      : {}),
     // Forwarded ONLY when the raw provider has it, so the wrapper's own
     // shape answers `supportsTeamUninstall` truthfully. A `uninstallFromTeam:
     // (input) => raw.uninstallFromTeam?.(input)` here would make every

@@ -14,14 +14,22 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 
+import {
+  isChatTarget,
+  resolveTeamsInstallTarget,
+  TEAMS_TARGET_EXAMPLES,
+  type TeamsTargetKind,
+} from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
   classifyTeamsProvisioningError,
+  TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
   type TeamsProvisioningErrorDetail,
 } from '../services/teamsProvisioningJob.js';
 import {
+  supportsChatInstall,
   supportsTeamUninstall,
   type TeamsProvisionerAccessor,
 } from '../platform/teamsProvisionerService.js';
@@ -198,6 +206,12 @@ const ResolveChannelSchema = z.object({
  *  agent (unique agent_id), later POSTs re-run provisioning on the
  *  existing row. */
 const TeamsIdentityProvisionSchema = z.object({
+  // NOT transformed to a GUID here any more. `team_id` may now name a group
+  // chat or a 1:1 chat as well, and `normalizeTeamsTeamId` only knows how to
+  // spell a TEAM — running it first would hyphenate the 32-hex stem of a chat
+  // id into a team GUID that Graph has never heard of, which is exactly the
+  // field-test failure. `resolveTeamsInstallTarget` decides the kind FIRST and
+  // normalises only what is actually a team.
   team_id: z.string().min(1).max(200),
   bot_slug: z
     .string()
@@ -215,6 +229,7 @@ const TeamsIdentityProvisionSchema = z.object({
  *  installed into `team_id` by resuming the provisioning chain. Creating the
  *  identity itself stays `POST /:slug/teams-identity`. */
 const TeamsInstallSchema = z.object({
+  /** See the note on {@link TeamsIdentityProvisionSchema.team_id}. */
   team_id: z.string().min(1).max(200),
 });
 
@@ -244,6 +259,10 @@ export interface OperatorTeamsIdentityRecord {
    *  for why the team read model can never be plural without a schema
    *  change. */
   readonly teamId: string | null;
+  /** Kind of the target above (migration 0054). OPTIONAL on this structural
+   *  mirror: a store predating the chat targets still satisfies the port and
+   *  its rows mean `'team'`, the only thing they could have meant. */
+  readonly targetKind?: TeamsTargetKind;
   readonly appId: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
@@ -267,6 +286,11 @@ export interface OperatorTeamsIdentityStore {
     readonly botSlug: string;
     readonly displayName: string;
     readonly teamId?: string;
+    /** Which kind of target `teamId` addresses (migration 0054). OPTIONAL on
+     *  this structural mirror on purpose: a store that predates the chat
+     *  targets still satisfies the port, and its rows keep meaning `'team'` —
+     *  which is the only thing they could ever have meant. */
+    readonly targetKind?: TeamsTargetKind;
   }): Promise<OperatorTeamsIdentityRecord>;
   /** Optional: persist an enqueue failure into the row's last_error so the
    *  status endpoint can distinguish 'queueing failed' from 'just created,
@@ -445,6 +469,9 @@ export interface OperatorTeamsInstallStore {
 export interface OperatorTeamsInstallRecord {
   readonly agentId: string;
   readonly teamId: string;
+  /** Optional for the same structural-mirror reason as on the identity
+   *  record; absent means `'team'`. */
+  readonly targetKind?: TeamsTargetKind;
   readonly teamsAppId: string | null;
   readonly teamDisplayName: string | null;
   readonly displayNameSyncedAt?: Date | null;
@@ -562,10 +589,17 @@ async function projectProvisioningEvents(
 // doing, and `capabilities.enumerate` stays false so the UI can say so.
 // ---------------------------------------------------------------------------
 
-/** One team an agent's Teams app is known to be installed in. */
+/** One target an agent's Teams app is known to be installed in. */
 export interface InstalledTeamProjection {
-  /** Teams team (group) id. */
+  /** Teams team (group) id, or a chat conversation id — see `target_kind`. */
   readonly team_id: string;
+  /**
+   * WHICH KIND of target `team_id` addresses (migration 0054). Sent so the
+   * operator UI can label a chat as a chat instead of listing it under a
+   * heading that says team — the whole reason the field test read as a
+   * mystery rather than as a wrong-kind-of-id.
+   */
+  readonly target_kind: TeamsTargetKind;
   /**
    * Graph display name of the team, as last resolved — `null` when it was
    * never resolved (no connector, connector < 0.5.0, or the team is not
@@ -610,6 +644,10 @@ export function projectInstalledTeams(
   return [
     {
       team_id: record.teamId,
+      // The pre-0054 derivation can only ever have described a team: it is
+      // the fallback for a mount with no installs table, and no code path
+      // that wrote those rows could install anywhere else.
+      target_kind: record.targetKind ?? 'team',
       team_display_name: null,
       display_name_synced_at: null,
       teams_app_id: record.teamsAppId,
@@ -643,6 +681,7 @@ export async function readInstalledTeams(
   const named = await resolveMissingTeamNames(deps, agentId, rows);
   return named.map((row) => ({
     team_id: row.teamId,
+    target_kind: row.targetKind ?? 'team',
     team_display_name: row.teamDisplayName,
     display_name_synced_at: row.displayNameSyncedAt ?? null,
     teams_app_id: row.teamsAppId,
@@ -665,7 +704,10 @@ async function resolveMissingTeamNames(
   const installs = deps.installs;
   if (!resolve || !installs) return rows;
   const missing = rows
-    .filter((row) => row.teamDisplayName === null)
+    // `resolveTeamName` is `teamsProvisioner@1.getTeam`, which answers for a
+    // TEAM. Asking it about a chat id spends a Graph call to be told
+    // `found: false` and leaves exactly the nameless row we started with.
+    .filter((row) => row.teamDisplayName === null && (row.targetKind ?? 'team') === 'team')
     .slice(0, MAX_NAME_LOOKUPS_PER_READ);
   if (missing.length === 0) return rows;
 
@@ -707,6 +749,9 @@ export interface TeamsAssignmentCapabilities {
   readonly enumerate: boolean;
   /** Track more than one team per agent — migration 0049 stores one. */
   readonly multi_team: boolean;
+  /** Install into a GROUP CHAT or 1:1 chat — requires a connector that
+   *  publishes `installToChat` (M365 connector >= 0.7.0). */
+  readonly chat_install: boolean;
   /** Why a `false` above is false, keyed by capability. */
   readonly unsupported_reason: Readonly<Record<string, string>>;
 }
@@ -722,6 +767,11 @@ export const TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION = '0.4.0';
 export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
   `the installed teamsProvisioner@1 publishes no uninstallFromTeam method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a team is a manual Teams-admin step.`;
 
+/** Reason text for the chat direction against a connector that predates it —
+ *  a version skew an operator can fix, so the sentence names the version. */
+export const TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`;
+
 const STRUCTURAL_UNSUPPORTED_REASONS: Readonly<Record<string, string>> = {
   enumerate:
     'teamsProvisioner@1 publishes no installation-listing method — the team list is what omadia recorded when it installed (agent_teams_installs), not a live enumeration from Graph.',
@@ -736,9 +786,10 @@ const MULTI_TEAM_UNSUPPORTED_REASON =
 /**
  * The capability block for ONE request.
  *
- * `uninstall` is the only entry that varies at runtime: it mirrors whether
- * the connector installed RIGHT NOW publishes `uninstallFromTeam`
- * (byte5ai/omadia#900). Everything else is a structural property of this
+ * `uninstall` and `chat_install` are the entries that vary at runtime: each
+ * mirrors whether the connector installed RIGHT NOW publishes the method
+ * behind it (`uninstallFromTeam`, byte5ai/omadia#900; `installToChat`, the
+ * chat targets). Everything else is a structural property of this
  * middleware's schema and the capability contract, so it stays constant.
  *
  * A `false` always ships with its reason, and the reason distinguishes the
@@ -748,15 +799,20 @@ const MULTI_TEAM_UNSUPPORTED_REASON =
 export function teamsAssignmentCapabilities(
   canUninstall: boolean,
   canMultiTeam = false,
+  canChatInstall = false,
 ): TeamsAssignmentCapabilities {
   return {
     install: true,
     uninstall: canUninstall,
     enumerate: false,
     multi_team: canMultiTeam,
+    chat_install: canChatInstall,
     unsupported_reason: {
       ...(canUninstall ? {} : { uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON }),
       ...(canMultiTeam ? {} : { multi_team: MULTI_TEAM_UNSUPPORTED_REASON }),
+      ...(canChatInstall
+        ? {}
+        : { chat_install: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON }),
       ...STRUCTURAL_UNSUPPORTED_REASONS,
     },
   };
@@ -894,6 +950,96 @@ function rejectedRunDetail(result: unknown): string | null {
 }
 
 /**
+ * Turn the operator's pasted `team_id` into a decided install target, or
+ * answer the request with a message they can act on.
+ *
+ * THE FAILURE THIS REPLACES. A pasted id that was neither a team nor a
+ * channel used to travel all the way down the provisioning chain and die at
+ * step five against Graph — `400 teamId needs to be a valid GUID`, then
+ * `404 No team found with Group Id`. Five successful steps, an Entra app, an
+ * Azure bot and a catalog upload later, the operator learned only that
+ * something about their id was wrong. Deciding it HERE means the answer
+ * arrives in the same request, before anything is provisioned.
+ *
+ * Returns `null` when it has already answered `res`.
+ */
+function resolveInstallTargetOrRefuse(
+  res: Response,
+  raw: string,
+): { readonly id: string; readonly kind: TeamsTargetKind } | null {
+  const target = resolveTeamsInstallTarget(raw);
+  if (target.ok) return { id: target.id, kind: target.kind };
+
+  if (target.reason === 'channel') {
+    // A channel is refused rather than redirected to its parent team.
+    // Installing into the team would succeed and put the app in EVERY channel
+    // of it — a wider audience than was asked for, produced by a guess.
+    res.status(400).json({
+      error: 'teams_target_is_channel',
+      message:
+        'this is a CHANNEL id (19:…@thread.tacv2), and a channel cannot be an install target: Teams installs an app into a team or into a chat, never into a single channel. Use the id of the team that owns the channel (Teams → team → "Get link to team" → the groupId), or a group chat id (19:…@thread.v2).',
+      target_id: raw.trim(),
+    });
+    return null;
+  }
+
+  if (target.reason === 'ambiguous') {
+    // NOT guessed at. The id is both a team group id without its dashes and
+    // the stem of a group-chat id, and the only party who knows which was
+    // meant is the operator — so the refusal hands back both spellings and
+    // asks them to paste the one they mean. This is the field-test failure,
+    // answered in the first request instead of at step five.
+    res.status(400).json({
+      error: 'teams_target_ambiguous',
+      message: `'${raw.trim()}' is 32 hex digits, which is BOTH a team (group) id without its dashes AND the stem of a group chat id — omadia will not guess. Paste '${target.asTeamId}' for the team, or '${target.asGroupChatId}' for the group chat.`,
+      target_id: raw.trim(),
+      /** The two ways out, ready to paste — the UI offers them as choices. */
+      as_team_id: target.asTeamId,
+      as_group_chat_id: target.asGroupChatId,
+    });
+    return null;
+  }
+
+  res.status(400).json({
+    error: 'teams_target_unrecognised',
+    message: `'${raw.trim()}' is not a Teams install target — expected a team (group) id, a group chat id (19:…@thread.v2) or a 1:1 chat id (19:…@unq.gbl.spaces).`,
+    target_id: raw.trim(),
+    examples: {
+      team: TEAMS_TARGET_EXAMPLES.team,
+      group_chat: TEAMS_TARGET_EXAMPLES.groupChat,
+      one_on_one_chat: TEAMS_TARGET_EXAMPLES.oneOnOneChat,
+    },
+  });
+  return null;
+}
+
+/**
+ * Refuse a CHAT target the installed connector cannot reach (`installToChat`,
+ * connector >= 0.7.0).
+ *
+ * 501 rather than 400: the request is well-formed and will work verbatim once
+ * the plugin is upgraded, so the refusal names the version instead of blaming
+ * the input. Checked before anything is written, so a refused request leaves
+ * no re-targeted row behind.
+ *
+ * Returns `true` when it has answered `res`.
+ */
+function refuseUnsupportedChatTarget(
+  res: Response,
+  deps: OperatorTeamsIdentityDeps,
+  kind: TeamsTargetKind,
+): boolean {
+  if (!isChatTarget(kind)) return false;
+  if (supportsChatInstall(deps.getProvisioner?.())) return false;
+  res.status(501).json({
+    error: 'teams_chat_install_unsupported',
+    message: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON,
+    target_kind: kind,
+  });
+  return true;
+}
+
+/**
  * Start (or resume) the provisioning chain without awaiting the run.
  *
  * Fire-and-forget by design — the chain takes minutes — but NOT fire-and-
@@ -908,12 +1054,16 @@ function startProvisioningRun(
   deps: OperatorTeamsIdentityDeps,
   agent: { readonly id: string; readonly slug: string },
   teamId: string,
-  opts?: { readonly republish?: boolean },
+  opts?: { readonly republish?: boolean; readonly targetKind?: TeamsTargetKind },
 ): void {
   void Promise.resolve(
     deps.runner.enqueue({
       agentId: agent.id,
       teamId,
+      // Omitted rather than defaulted to `'team'` here: the runner owns that
+      // default, and forwarding an explicit value the caller never chose would
+      // hide a caller that forgot to pass one.
+      ...(opts?.targetKind !== undefined ? { targetKind: opts.targetKind } : {}),
       ...(opts?.republish === true ? { republish: true } : {}),
     }),
   )
@@ -1927,10 +2077,16 @@ export function createOperatorAgentsRouter(
       // same single `team_id` column the team read model publishes, so an
       // 'installed' row or an in-flight run toward another team is a 409 —
       // before any write. See refuseConflictingTeamRetarget.
+      // Decide WHAT the pasted id addresses before anything is written or
+      // compared: a channel id and an unusable string are answered here, and
+      // a team id is normalised to the form Graph accepts.
+      const target = resolveInstallTargetOrRefuse(res, body.team_id);
+      if (!target) return;
+      if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       const current = await deps.store.getByAgentId(existing.id);
       if (
         current &&
-        refuseConflictingTeamRetarget(res, deps, existing, current, body.team_id)
+        refuseConflictingTeamRetarget(res, deps, existing, current, target.id)
       ) {
         return;
       }
@@ -1940,7 +2096,8 @@ export function createOperatorAgentsRouter(
           agentId: existing.id,
           botSlug: body.bot_slug ?? deriveBotSlug(existing.slug),
           displayName: body.display_name ?? existing.name,
-          teamId: body.team_id,
+          teamId: target.id,
+          targetKind: target.kind,
         });
       } catch (err) {
         if ((err as { code?: unknown } | null)?.code === 'bot_slug_taken') {
@@ -1953,10 +2110,12 @@ export function createOperatorAgentsRouter(
         }
         throw err;
       }
-      startProvisioningRun(deps, existing, body.team_id);
+      startProvisioningRun(deps, existing, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
         agent: existing.slug,
+        team_id: target.id,
+        target_kind: target.kind,
         bot_slug: row.botSlug,
         state: row.state,
         // Honest signal: true only when the runner actually holds a run for
@@ -2206,12 +2365,17 @@ export function createOperatorAgentsRouter(
         // The recorded install TARGET while the chain has not reached
         // 'installed' — a run in flight (or a stalled one), never an install.
         pending_team_id: row.state === 'installed' ? null : row.teamId,
+        /** Kind of `pending_team_id`, so the in-flight hint can name what it
+         *  is installing into rather than calling every target a team. */
+        pending_target_kind:
+          row.state === 'installed' ? null : (row.targetKind ?? 'team'),
         consent: projectTeamsConsent(row),
         last_error: row.lastError,
         last_error_detail: projectTeamsIdentityErrorDetail(row),
         capabilities: teamsAssignmentCapabilities(
           canUninstallTeams(deps),
           deps.installs !== undefined,
+          supportsChatInstall(deps.getProvisioner?.()),
         ),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
@@ -2242,6 +2406,14 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
+      // Same choke point and the same ORDER as POST /:slug/teams-identity:
+      // an unknown agent (404) and an absent connector (503) are answered
+      // first, because neither depends on what the target id says. Only then
+      // is the id decided — and only then can a chat target be refused for a
+      // connector that is present but too old (501, not 503).
+      const target = resolveInstallTargetOrRefuse(res, body.team_id);
+      if (!target) return;
+      if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       // Already installed HERE? With the bindings table that is a lookup in
       // it; without one, the identity's single `team_id` is the only record
       // and the answer degrades to the pre-0051 comparison.
@@ -2250,12 +2422,13 @@ export function createOperatorAgentsRouter(
         : row.state === 'installed' && row.teamId !== null
           ? [row.teamId]
           : [];
-      if (boundTeams.includes(body.team_id)) {
-        // Idempotent: the app is already installed in exactly this team.
+      if (boundTeams.includes(target.id)) {
+        // Idempotent: the app is already installed in exactly this target.
         res.json({
           ok: true,
           agent: agent.slug,
-          team_id: body.team_id,
+          team_id: target.id,
+          target_kind: target.kind,
           state: row.state,
           already_installed: true,
           // Honest, not assumed: a run may still be settling even though
@@ -2269,7 +2442,7 @@ export function createOperatorAgentsRouter(
       // is no longer refused (with migration 0051 bound) is installing into an
       // ADDITIONAL team: the binding gets its own row instead of overwriting
       // the previous one, which is the whole point of the table.
-      if (refuseConflictingTeamRetarget(res, deps, agent, row, body.team_id)) {
+      if (refuseConflictingTeamRetarget(res, deps, agent, row, target.id)) {
         return;
       }
       // Record the (new) target through the store's own gate, then let the
@@ -2279,13 +2452,15 @@ export function createOperatorAgentsRouter(
         agentId: agent.id,
         botSlug: row.botSlug,
         displayName: row.displayName,
-        teamId: body.team_id,
+        teamId: target.id,
+        targetKind: target.kind,
       });
-      startProvisioningRun(deps, agent, body.team_id);
+      startProvisioningRun(deps, agent, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
         agent: agent.slug,
-        team_id: body.team_id,
+        team_id: target.id,
+        target_kind: target.kind,
         bot_slug: updated.botSlug,
         state: updated.state,
         already_installed: false,
