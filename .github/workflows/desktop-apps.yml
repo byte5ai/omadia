@@ -57,6 +57,32 @@ on:
         description: 'Release tag to build + attach to'
         required: true
         type: string
+      require_release:
+        # auto-release.yml has just cut the release for this tag, so a missing
+        # one there means something went wrong -- not the build-validation case
+        # that the soft "skipping upload" path exists for. Without this, a
+        # release the upload steps cannot find would produce a GREEN run that
+        # attached nothing: the silent-failure shape this repo's own beta
+        # findings keep hitting.
+        description: 'Fail instead of skipping when the tag has no GitHub Release'
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      mac_feed_published:
+        # Gates the release promotion in auto-release.yml (#928). Deliberately
+        # keyed on the FEED, not on this workflow's overall result: `build` runs
+        # fail-fast:false, so a broken Windows leg fails the workflow while the
+        # macOS feed publishes perfectly well. Keying on the workflow result
+        # would withhold the promotion and leave the macOS update channel dead
+        # until the next fully green release -- the exact outcome OM-69 reports.
+        #
+        # True means: the merged feed is attached AND every installer it
+        # references is attached too. The second half is not redundant -- see the
+        # assertion in the mac-update-feed upload step for why a valid feed alone
+        # proves nothing about the assets.
+        description: 'true when latest-mac.yml and the installers it references are attached'
+        value: ${{ jobs.mac-update-feed.outputs.published }}
 
 concurrency:
   group: desktop-apps-${{ github.event.release.tag_name || inputs.tag }}
@@ -99,6 +125,9 @@ jobs:
     timeout-minutes: 60
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # Undefined for the `release` and `workflow_dispatch` triggers, so those
+      # keep the historical soft-skip behaviour; only workflow_call opts in.
+      REQUIRE_RELEASE: ${{ inputs.require_release && 'true' || 'false' }}
       # 'yes' unless a workflow_dispatch explicitly passed notarize=false. The
       # `release` event and workflow_call leave the input undefined, so they
       # always notarize — a release can never accidentally skip it.
@@ -622,6 +651,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: omadia-installers-${{ matrix.os }}
+          # Artifact names are unique per run, not per attempt. Without this, the
+          # documented stuck-draft recovery ("re-run the failed jobs") 409s here,
+          # skips the release upload below, and wedges the draft a second time.
+          overwrite: true
           if-no-files-found: ignore
           path: |
             desktop/release/*.dmg
@@ -657,7 +690,38 @@ jobs:
           fi
           # If TAG has no matching release (e.g. a build-validation dispatch on a
           # branch name), this is a build-only run — skip upload, don't fail.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          # Resolve the release by tag through the LIST endpoint, which includes
+          # drafts for a token with push access (`GET /releases/tags/{tag}` does
+          # not, and since #928 the release is a draft until promoted).
+          #
+          # `--paginate` is not optional: this repo has 237 releases and a single
+          # per_page=100 page reaches back only to v0.78.0, so a rebuild
+          # dispatched for an older tag would find nothing and — on the dispatch
+          # path, where require_release is false — silently skip the upload and
+          # report a green run that attached nothing. `--jq` is applied per page,
+          # so a hit emits one line and misses emit nothing.
+          #
+          # gh's own --jq (gojq) rather than piping to jq: gh is guaranteed on
+          # every runner this matrix uses, jq is not part of that contract, and
+          # this step also runs on windows-latest.
+          #
+          # `gh release upload "$TAG"` below does work against a draft: gh's
+          # FetchRelease looks up a published release by tag and falls back to
+          # finding a draft by its pending tag name. That fallback is the single
+          # assumption the whole draft flow depends on, so it is stated here
+          # rather than left implicit.
+          if ! release_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                 --jq 'map(select(.tag_name == env.TAG)) | .[0].id // empty'); then
+            echo "could not query releases for '$TAG'" >&2
+            exit 1
+          fi
+          if [ -z "$release_id" ]; then
+            if [ "${REQUIRE_RELEASE:-false}" = "true" ]; then
+              echo "::error::no GitHub Release (draft or published) for '$TAG', but this run was" >&2
+              echo "         invoked with require_release — refusing to report success while" >&2
+              echo "         attaching no installers." >&2
+              exit 1
+            fi
             echo "no GitHub Release for '$TAG' — build validated, skipping upload."
             exit 0
           fi
@@ -680,8 +744,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # Consumed by auto-release.yml to decide whether the draft release may be
+      # published + flagged latest (#928).
+      published: ${{ steps.upload-feed.outputs.published }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      REQUIRE_RELEASE: ${{ inputs.require_release && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -717,11 +786,58 @@ jobs:
           cat latest-mac.yml
 
       - name: Upload the merged feed to the release
+        id: upload-feed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          set -euo pipefail
+          # Draft-aware, paginated lookup — see the matching note in the
+          # installer upload step above for both reasons.
+          release_id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq 'map(select(.tag_name == env.TAG)) | .[0].id // empty')
+          if [ -z "$release_id" ]; then
+            if [ "${REQUIRE_RELEASE:-false}" = "true" ]; then
+              echo "::error::no GitHub Release (draft or published) for '$TAG', but this run was" >&2
+              echo "         invoked with require_release — refusing to report a published feed." >&2
+              exit 1
+            fi
             echo "no GitHub Release for '$TAG' — merge validated, skipping upload."
             exit 0
           fi
+          # A valid merged feed does NOT prove the installers it points at are on
+          # the release. The feed is assembled from RUN artifacts (uploaded by an
+          # `if: always()` step that runs BEFORE the release upload), so a mac
+          # leg whose "Upload installers to the release" step failed transiently
+          # still yields a complete, mergeable feed. Publishing on that alone
+          # would flag a release latest whose latest-mac.yml references assets
+          # that were never attached — OM-69's exact user-visible symptom, under
+          # a green run. So assert attachment before claiming the feed is usable.
+          # `state` is `starter` until the upload body finishes; such a record is
+          # listed but 404s on download. Counting it would let the gate go green
+          # on exactly the transient-upload failure it was added to catch.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+            --jq '.[] | select(.state == "uploaded") | .name' > /tmp/release-assets.txt
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const { parseFeed } = await import("./desktop/scripts/merge-mac-update-feed.mjs");
+            const feed = parseFeed(fs.readFileSync("latest-mac.yml", "utf8"), "latest-mac.yml");
+            // electron-builder percent-encodes these; release asset names are raw.
+            const refs = new Set();
+            if (feed.scalars.path) refs.add(decodeURIComponent(feed.scalars.path));
+            for (const f of feed.files) if (f.url) refs.add(decodeURIComponent(f.url));
+            const attached = new Set(
+              fs.readFileSync("/tmp/release-assets.txt", "utf8").split("\n").filter(Boolean),
+            );
+            const missing = [...refs].filter((r) => !attached.has(r));
+            if (missing.length > 0) {
+              console.error("::error::latest-mac.yml references files that are NOT attached to");
+              console.error("         the release, so macOS clients could not download this");
+              console.error("         version: " + missing.join(", "));
+              process.exit(1);
+            }
+            console.log("all " + refs.size + " file(s) referenced by latest-mac.yml are attached");
+          '
           gh release upload "$TAG" latest-mac.yml --clobber
+          # Now it is true that a macOS client can resolve AND download an update
+          # for this tag. auto-release.yml gates the `--latest` promotion on this.
+          echo "published=true" >> "$GITHUB_OUTPUT"

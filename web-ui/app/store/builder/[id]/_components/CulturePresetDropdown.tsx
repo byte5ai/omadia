@@ -1,6 +1,8 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
+
+import { personaMessageId } from '../../../../_lib/personaTypes';
 import { useCallback, useMemo, useState, useTransition } from 'react';
 
 import { Button } from '@/app/_components/ui/Button';
@@ -26,9 +28,7 @@ import type { PersonaConfig } from '../../../../_lib/personaTypes';
 
 /** kebab-case preset id → camelCase i18n segment (e.g. `saas-startup` →
  *  `saasStartup`) under `builder.persona.culture.presets.*`. */
-function presetMessageId(id: string): string {
-  return id.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
-}
+const presetMessageId = personaMessageId;
 
 export interface CulturePresetDropdownProps {
   draftId: string;

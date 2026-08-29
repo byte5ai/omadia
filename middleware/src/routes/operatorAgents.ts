@@ -38,9 +38,21 @@ import {
   resolveAgentIdentity,
   type AgentIdentityAvatarBytes,
   type AgentIdentityAvatarInput,
+  type AgentIdentityComposedPrompt,
   type AgentIdentityRecord,
-  type AgentIdentityTextInput,
+  type AgentIdentitySaveInput,
 } from '../platform/agentIdentityStore.js';
+import {
+  PersonaConfigSchema,
+  QualityConfigSchema,
+  type PersonaConfig,
+  type QualityConfig,
+} from '../plugins/builder/agentSpec.js';
+import {
+  composeAgentIdentityPrompt,
+  inferFamilyFromModel,
+} from '../services/agentIdentityPrompt.js';
+import type { PersonaModelFamily } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -330,6 +342,12 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly installs?: OperatorTeamsInstallStore;
   /**
+   * The provisioning progress log (`agent_teams_provisioning_events`,
+   * migration 0053, #915). Optional — see
+   * {@link OperatorTeamsEventStore}.
+   */
+  readonly events?: OperatorTeamsEventStore;
+  /**
    * Resolve one team id to its Graph display name (`teamsProvisioner@1`
    * >= 0.5.0), or `null` when the connector cannot answer. Optional and
    * best-effort: a name is decoration on a binding the route already knows,
@@ -337,6 +355,38 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
 }
+
+/**
+ * The subset of `TeamsProvisioningEventStore` this router uses (migration
+ * 0053, byte5ai/omadia#915) — read-only. The runner is the only writer.
+ *
+ * Optional on the deps for the same reason `installs` is: a middleware whose
+ * migrations have not reached 0053 answers the status endpoint without a
+ * timeline rather than 500ing against a table that is not there.
+ */
+export interface OperatorTeamsEventStore {
+  listRecent(
+    agentId: string,
+    limit?: number,
+  ): Promise<readonly OperatorTeamsProvisioningEventRecord[]>;
+}
+
+/** One `agent_teams_provisioning_events` row, camelCase — see
+ *  `platform/teamsProvisioningEventStore.ts`. */
+export interface OperatorTeamsProvisioningEventRecord {
+  readonly id: string;
+  readonly agentId: string;
+  readonly at: Date;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/** How many events the status endpoint publishes. A run emits roughly a
+ *  dozen; thirty covers a full retry storm without turning a status poll
+ *  (every 3s, per open panel) into a page of JSON. */
+export const TEAMS_PROVISIONING_EVENT_LIMIT = 30;
 
 /** The subset of `AgentTeamsInstallStore` this router uses. */
 export interface OperatorTeamsInstallStore {
@@ -381,6 +431,61 @@ export function projectTeamsIdentityErrorDetail(
   record: OperatorTeamsIdentityRecord,
 ): TeamsProvisioningErrorDetail | null {
   return record.lastError ? classifyTeamsProvisioningError(record.lastError) : null;
+}
+
+/** One event as the status endpoint publishes it — snake_case like the rest
+ *  of the payload, `at` as an ISO string. */
+export interface TeamsProvisioningEventProjection {
+  readonly id: string;
+  readonly at: string;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/**
+ * The run's timeline, newest first (#915).
+ *
+ * THIS FUNCTION IS THE ROUTE'S ONE CHOKE POINT for progress-log failures, the
+ * mirror of the runner's `emit`. The timeline is decoration on a response
+ * whose actual payload is the identity row: a middleware that has not reached
+ * migration 0053, a table that is briefly unreadable, a query that times out —
+ * none of those are a reason to deny an operator the state of their agent. So
+ * every one of them degrades to an empty list, loudly in the server log and
+ * silently in the response.
+ *
+ * The empty list is honest, not a lie: it says "no events to show", which is
+ * exactly what a pre-0053 middleware has. What it must never do is claim a
+ * run failed or succeeded, and it cannot — every entry here is written by the
+ * runner or does not exist.
+ */
+async function projectProvisioningEvents(
+  deps: OperatorTeamsIdentityDeps,
+  agentId: string,
+): Promise<readonly TeamsProvisioningEventProjection[]> {
+  const events = deps.events;
+  if (!events) return [];
+  try {
+    const rows = await events.listRecent(
+      agentId,
+      TEAMS_PROVISIONING_EVENT_LIMIT,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      at: row.at.toISOString(),
+      step: row.step,
+      status: row.status,
+      attempt: row.attempt,
+      detail: row.detail,
+    }));
+  } catch (err) {
+    console.warn(
+      `[operator-agents] provisioning timeline for agent '${agentId}' could not be read:`,
+      err,
+    );
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -814,10 +919,14 @@ function deriveBotSlug(agentSlug: string): string {
 /** Structural subset of `AgentIdentityStore` — the router never learns `pg`. */
 export interface OperatorAgentIdentityStore {
   getByAgentId(agentId: string): Promise<AgentIdentityRecord | undefined>;
-  saveText(
+  save(
     agentId: string,
-    input: AgentIdentityTextInput,
+    input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord>;
+  recompose(
+    agentId: string,
+    composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined>;
   setAvatar(
     agentId: string,
     avatar: AgentIdentityAvatarInput,
@@ -854,6 +963,13 @@ const AgentIdentitySchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
     .nullish(),
+  // The persona and quality blocks are validated by the SPEC's own schemas,
+  // not by a second definition here. They are the same documents the Agent
+  // Builder writes and `agent.md` frontmatter mirrors; a private copy would
+  // drift the moment an axis or a preset is added, and the compilers this
+  // route calls are written against those schemas.
+  persona: PersonaConfigSchema.nullish(),
+  quality: QualityConfigSchema.nullish(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -896,6 +1012,8 @@ export function projectAgentIdentity(
       long_description: identity?.longDescription ?? null,
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
+      persona: identity?.persona ?? null,
+      quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
       avatar:
         identity?.avatar == null
@@ -907,6 +1025,12 @@ export function projectAgentIdentity(
             },
       updated_at: identity?.updatedAt.toISOString() ?? null,
     },
+    // The compiled prompt is surfaced read-only: it is what the agent
+    // actually speaks with, assembled from four controls that each show only
+    // their own part. An operator tuning axes should be able to read the
+    // result rather than infer it.
+    composed_prompt: identity?.composed.text ?? null,
+    composed_family: identity?.composed.family ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -916,6 +1040,21 @@ export function projectAgentIdentity(
       has_avatar: resolved.hasAvatar,
     },
   };
+}
+
+/**
+ * Which persona family this agent's persona deltas are computed against.
+ *
+ * `model_routing.main` is the operator's per-agent model choice; without one
+ * the agent runs on the platform default, which this router does not know —
+ * and {@link inferFamilyFromModel} answers `sonnet` for an unknown id, the
+ * documented safe middle ground for the delta math.
+ */
+function agentPersonaFamily(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+}): PersonaModelFamily {
+  const main = agent.modelRouting?.['main'];
+  return inferFamilyFromModel(typeof main === 'string' ? main : '');
 }
 
 /**
@@ -1340,28 +1479,71 @@ export function createOperatorAgentsRouter(
         return;
       }
       const before = await deps.store.getByAgentId(agent.id);
-      const identity = await deps.store.saveText(agent.id, {
+      const persona = (body.persona ?? null) as PersonaConfig | null;
+      const quality = (body.quality ?? null) as QualityConfig | null;
+      // Compile HERE, on the write path: the orchestrator package cannot
+      // import the middleware's compilers, so the prompt an agent speaks
+      // with is stored alongside the settings it was built from. The family
+      // comes from the agent's own model routing — persona axes are deltas
+      // against it, so composing against the wrong one would emit the wrong
+      // traits.
+      const family = agentPersonaFamily(agent);
+      const composed = composeAgentIdentityPrompt({
+        instructions: body.instructions ?? null,
+        persona,
+        quality,
+        family,
+      });
+      const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
         longDescription: body.long_description ?? null,
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
+        persona,
+        quality,
+        composed: { text: composed.text, family },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
       // change the operator can see and the agent never speaks. Same reload
       // contract as every other write on this router; the diff decides whether
       // an Orchestrator is actually rebuilt.
-      if (before?.instructions !== identity.instructions) {
+      // Normalised on both sides: a first save has no `before` at all, and
+      // `undefined !== null` would rebuild every Agent whose operator merely
+      // typed a display name — dropping live sessions for a label change.
+      if ((before?.composed.text ?? null) !== (composed.text ?? null)) {
         await live.registry.reload();
       }
+      // A save whose CONTENT did not change returns the stored row
+      // untouched — including a prompt that may have been compiled against a
+      // model family the agent has since moved off. Recompose covers exactly
+      // that case, and deliberately does not bump the revision: nothing the
+      // operator authored changed.
+      const current =
+        identity.composed.text === composed.text &&
+        identity.composed.family === family
+          ? identity
+          : ((await deps.store.recompose(agent.id, {
+              text: composed.text,
+              family,
+            })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),
         agent,
         before?.revision,
-        identity.revision,
+        current.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity), republish });
+      res.json({
+        ...projectAgentIdentity(agent, current),
+        republish,
+        // Boundary presets this build could not resolve. A rule that silently
+        // stopped applying is worse than one that never existed, so the
+        // operator hears about it on the save that dropped it.
+        ...(composed.droppedBoundaryPresets.length > 0
+          ? { dropped_boundary_presets: composed.droppedBoundaryPresets }
+          : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -1783,10 +1965,24 @@ export function createOperatorAgentsRouter(
         },
         row,
       );
+      // #915 — what the run has been DOING. Read after the projections above
+      // so a slow timeline never delays the parts of this response that
+      // matter; failures are absorbed inside projectProvisioningEvents.
+      const provisioningEvents = await projectProvisioningEvents(
+        deps,
+        existing.id,
+      );
       res.json({
         ok: true,
         agent: existing.slug,
         state: row.state,
+        // #915 — `running` means the runner still has WORK in flight, not
+        // "there is still a map entry". The fix lives in the runner
+        // (`TeamsProvisioningJobRunner.isRunning`), deliberately not here:
+        // suppressing it from a terminal `state` would have hidden the two
+        // legitimate cases where both are true at once — an installed agent
+        // being provisioned into a second team (migration 0051), and a re-run
+        // of a failed row before it writes its first state.
         running: deps.runner.isRunning(existing.id),
         provisioner_installed: deps.isProvisionerInstalled(),
         identity: {
@@ -1816,6 +2012,11 @@ export function createOperatorAgentsRouter(
         // channel-teams plugin config. The copy-paste block above STAYS —
         // this tells the operator whether they still need it.
         teams_bots_sync: teamsBotsSync,
+        // Additive (#915): the current run's step timeline, newest first.
+        // The five persisted chain states say WHERE the run is; these say
+        // what it has been doing between them — which is where the minutes
+        // actually go (Entra replication, ARM backoff, catalog upload).
+        provisioning_events: provisioningEvents,
       });
     } catch (err) {
       badRequest(res, err);

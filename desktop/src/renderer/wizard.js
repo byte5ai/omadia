@@ -303,6 +303,13 @@ $('#revealKey').addEventListener('click', async () => {
   }
 });
 
+// main.ts loads this page with `#recovered` after a renderer crash, so the
+// reset to step 0 is explained rather than mysterious (OM-57 follow-up).
+if (window.location.hash === '#recovered') {
+  const notice = document.getElementById('recoveredNotice');
+  if (notice) notice.classList.remove('hidden');
+}
+
 renderProviderMode();
 goto(0);
 // Fail loud, not silent, if the preload bridge is missing.

@@ -1018,6 +1018,10 @@
       "npm_failed": {
         "what": "npm ran, but the installation failed.",
         "next": "Check the log details below, then try the installation again."
+      },
+      "spawn_failed": {
+        "what": "npm could not be started — the operating system refused to execute the npm file it found. npm never ran, so nothing was installed.",
+        "next": "The affected file is named in the support details. Check whether it is corrupt or not executable, and reinstall Node and npm if in doubt."
       }
     },
     "package": {
@@ -2043,6 +2047,62 @@
         "not_needed": "Nothing changed, so there is nothing to publish.",
         "no_installed_app": "Saved. This agent has no installed Teams app yet, so nothing was published.",
         "provisioner_unavailable": "Saved. The M365 connector is not installed right now, so the Teams package could not be republished."
+      },
+      "revision": "Revision {revision}",
+      "tabs": {
+        "profile": "Profile",
+        "character": "Character",
+        "boundaries": "Limits",
+        "prompt": "Prompt"
+      },
+      "prompt": {
+        "hint": "This exact text opens this agent's system prompt — assembled from its behaviour, character axes, limits and anti-flattery guard.",
+        "hintWithFamily": "This exact text opens the system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all.",
+        "stale": "Unsaved changes are not in here yet — save to see them.",
+        "empty": "Nothing set yet. This agent uses the platform-wide default text."
+      },
+      "droppedPresets": "The server does not know these boundary presets: {ids}",
+      "persona": {
+        "template": {
+          "heading": "Archetype",
+          "none": "No archetype picked — every axis sits at neutral.",
+          "active": "Archetype: {name}",
+          "choose": "Pick an archetype",
+          "clear": "Detach"
+        },
+        "culture": {
+          "heading": "Industry calibration",
+          "hint": "Lays an industry profile over the axes. Only the axes the profile sets are overwritten.",
+          "changes": "Moves {count} axes"
+        },
+        "extended": {
+          "toggle": "Fine tuning (4 more axes)"
+        },
+        "notes": {
+          "label": "Own notes",
+          "hint": "Free text carried into the character block verbatim — for everything no slider covers."
+        }
+      },
+      "boundaries": {
+        "presetsHeading": "Limits from the library",
+        "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
+        "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
+        "categories": {
+          "data": "Data",
+          "scope": "Scope",
+          "authority": "Authority",
+          "communication": "Communication"
+        },
+        "customLabel": "Own prohibitions",
+        "customHint": "One rule per line.",
+        "sycophancyLabel": "Anti-flattery guard",
+        "sycophancyHint": "How firmly the agent may disagree instead of telling the user what they want to hear.",
+        "sycophancyLevels": {
+          "off": "Off",
+          "low": "Light",
+          "medium": "Medium",
+          "high": "Strong"
+        }
       }
     },
     "teamsIdentity": {
@@ -2062,6 +2122,46 @@
       "rerun": "Re-run provisioning",
       "started": "Provisioning started for {botSlug}.",
       "progressLabel": "Provisioning progress",
+      "timeline": {
+        "heading": "Run activity",
+        "listLabel": "Provisioning run events",
+        "empty": "No events recorded for the current run yet.",
+        "neverStarted": "No provisioning run has been started yet — this fills up once one is running.",
+        "finished": "The run has finished. The log below shows what happened.",
+        "working": "The run is working.",
+        "activeStep": "Current step: {step}",
+        "elapsed": "running for {elapsed}",
+        "attemptOf": "Attempt {attempt} of {max} failed.",
+        "attempt": "Attempt {attempt} failed.",
+        "nextAttempt": "Next attempt {when}.",
+        "detailUnknown": "Note: {detail}",
+        "steps": {
+          "run": "Run",
+          "config_sync": "Teams plugin configuration"
+        },
+        "entry": {
+          "started": "{step} started",
+          "progress": "{step} made progress",
+          "retrying": "{step} is being retried",
+          "succeeded": "{step} done",
+          "failed": "{step} stopped"
+        },
+        "details": {
+          "skipped": "was already done",
+          "awaiting_entra_replication": "waiting for Entra replication — this can take up to a minute",
+          "registration_created": "app registration created, application ID stored",
+          "synced": "entry written into the Teams plugin",
+          "unchanged": "the Teams plugin entry was already correct",
+          "config_sync_failed": "the entry could not be written — the identity stays valid and the block can be pasted by hand",
+          "consent_missing": "admin consent is missing",
+          "arm_not_configured": "Azure setup fields on the M365 connector are missing",
+          "bot_handle_unavailable": "the bot name is already taken globally",
+          "error": "error",
+          "retries_exhausted": "retries exhausted — the progress reached is kept",
+          "team_conflict": "another run is already in flight for this orchestrator",
+          "stopped": "interrupted by a shutdown"
+        }
+      },
       "stateSummary": "State: {state}",
       "running": "A provisioning run is in progress.",
       "idle": "No provisioning run is active right now.",

@@ -38,7 +38,38 @@ cd ../web-ui   && npm run build      # next.config.ts already sets output:"stand
 cd ../desktop
 npm install
 npm run dev                          # runs against the sibling repo builds
+
+npm test                             # unit + build-script tests
 ```
+
+`npm test` runs plain `node --test` — the TypeScript unit tests under `test/` rely
+on Node's native type stripping, so they need **Node >= 22.18** (the repo's
+`.nvmrc` pins 22.22.3) and no test dependency. Test files live in `test/`, never
+in `src/`: `tsconfig.json` compiles `src/**/*.ts` only, which is what keeps them
+out of `dist/` and out of the shipped bundle.
+
+## The child-process PATH
+
+macOS/Linux GUI apps inherit a launcher-truncated PATH, so `src/pathEnv.ts`
+builds the PATH handed to the forked kernel and web-ui itself. It probes:
+
+- the standard system bins (`/opt/homebrew/{bin,sbin}`, `/usr/local/{bin,sbin}`,
+  `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`) and `/snap/bin` on Linux
+- `~/.volta/bin` and `~/.asdf/shims`
+- `~/.local/bin` plus every `~/.local/<tool>/bin` one level deep — the shape an
+  unpacked Node tarball takes, e.g. `~/.local/node/bin` (#925)
+- one nvm bin dir, from `~/.nvm/alias/default` followed transitively (`lts/*`,
+  `lts/<name>`, and `node` = the newest installed version all resolve)
+
+Two invariants:
+
+- **Appended, never prepended.** The discovered directories go *after* the
+  inherited PATH, so a system install always keeps precedence.
+- **Computed once at import** (`supervisor.ts`). A Node installed while the app
+  is running stays invisible until the app restarts.
+
+Every probe is failure-tolerant by design: a missing, unreadable, or hostile
+`~/.local` or `~/.nvm` is skipped silently, so app boot never depends on it.
 
 ## Package installers
 
@@ -163,6 +194,45 @@ Consequences worth knowing before touching this:
   inside the shipped app on a user's machine.
 - GitHub retires x86_64 runners in **August 2027**. At that point the Intel
   matrix entry has to go, or move to a self-hosted Intel runner.
+
+## Who may navigate the window
+
+The shell has one `BrowserWindow` and several code paths that want to point it
+somewhere: the startup boot, the tray's *Restart*, the first-run wizard's
+completion, and a crash recovery. Originally each one ended in an unconditional
+`loadURL`. That is how a boot finishing while the wizard was open **overwrote**
+the wizard and dropped the user on the sign-in form mid-setup, skipping the
+data-directory step and the recovery-key step (round-3 finding OM-58).
+
+`src/shellView.ts` now arbitrates every navigation. It is a pure, Electron-free
+state machine so the ordering can be tested directly, and it holds two rules:
+
+- **An open wizard is not overwritten.** Only the wizard's own completion, or a
+  crash recovery (the page is already gone), may replace it.
+- **A superseded navigation does not commit.** Every intent takes a monotonic
+  token; a newer intent invalidates older ones, so whichever boot finishes last
+  cannot stomp a view a newer one established.
+
+Consequences worth knowing before you add a navigation:
+
+- Call `mayStartNavigation` **before** claiming the window, and hand the token
+  from `beginNavigation` back to `mayCommitNavigation` when the async work
+  finishes. Skipping the second half reintroduces the original race.
+- `beginNavigation` claims the view optimistically. If your load **rejects**, you
+  must call `abandonNavigation` — otherwise the claim is held forever and the
+  arbiter refuses every later boot and restart.
+- A refused navigation is logged, never dropped silently, and user-visible where
+  the user asked for it (tray → *Restart* during setup explains itself).
+
+Renderer failure handling lives next to it in `src/loadFailure.ts`. Recovering
+needs both a filter and a ceiling: `ERR_ABORTED` fires on the happy path
+(`loading.html` is superseded by the app URL on every boot), subframe failures
+belong to the page, and — the part that bit us — the identity check must be made
+against the page a recovery would **actually** load, not a hardcoded one. Whatever
+the filter cannot see is bounded by `MAX_RECOVERY_ATTEMPTS`, because
+`render-process-gone` carries no URL to compare at all. There is deliberately
+**no automatic retry**: a reload loop against a dead stack is worse than a screen
+that names the problem.
 
 ## Data + uninstall
 

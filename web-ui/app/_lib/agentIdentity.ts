@@ -19,6 +19,8 @@
  */
 
 import { ApiError } from './api';
+import type { QualityConfig } from './builderTypes';
+import type { PersonaConfig } from './personaTypes';
 
 function botApi(path: string): string {
   if (typeof window !== 'undefined') {
@@ -54,6 +56,10 @@ export interface AgentIdentityFieldsDto {
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  /** The 12-axis character block — same shape the Agent Builder writes. */
+  persona: PersonaConfig | null;
+  /** Boundaries + sycophancy — same shape the Agent Builder writes. */
+  quality: QualityConfig | null;
   revision: number;
   avatar: { etag: string; url: string } | null;
   updated_at: string | null;
@@ -73,6 +79,15 @@ export interface AgentIdentityDto {
   slug: string;
   identity: AgentIdentityFieldsDto;
   resolved: AgentIdentityResolvedDto;
+  /**
+   * The system prompt this identity currently compiles to — instructions,
+   * persona traits, boundaries and the sycophancy guard in one text. Read
+   * only: it is derived, and showing it is what turns twelve sliders from a
+   * guess into something an operator can check.
+   */
+  composed_prompt: string | null;
+  /** Model family the persona deltas were compiled against. */
+  composed_family: string | null;
 }
 
 /** What a write did to the agent's published Teams package. */
@@ -106,15 +121,20 @@ export interface AgentIdentityWriteDto extends AgentIdentityDto {
   republish: AgentIdentityRepublishOutcome;
   /** Avatar upload only: whether an outline icon could be derived. */
   outline_derived?: boolean;
+  /** Boundary preset ids the server could not resolve — a rule that stopped
+   *  applying, surfaced instead of dropped. */
+  dropped_boundary_presets?: readonly string[];
 }
 
-/** The five authored fields a PUT replaces wholesale. */
+/** Everything a PUT replaces wholesale. */
 export interface AgentIdentityInput {
   display_name: string | null;
   short_description: string | null;
   long_description: string | null;
   instructions: string | null;
   accent_color: string | null;
+  persona: PersonaConfig | null;
+  quality: QualityConfig | null;
 }
 
 // ---------------------------------------------------------------------------

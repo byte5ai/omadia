@@ -112,3 +112,20 @@ input:focus, select:focus { border-color: var(--accent); }
 .boot-log .l-err { color: var(--err); }
 .boot-log .l-ok { color: var(--ok); }
 #elapsed { opacity: 0.8; }
+
+/* OM-60: the startup log lives behind a disclosure so a business user is not
+   shown `.env` instructions on every start. Styled to read as a quiet control,
+   not a call to action. */
+.boot-details { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.boot-details > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+}
+.boot-details > summary::-webkit-details-marker { display: none; }
+.boot-details > summary::before { content: '▸ '; }
+.boot-details[open] > summary::before { content: '▾ '; }
+.boot-details > summary:hover { color: var(--fg); }
+.boot-details .boot-log { border: 0; border-top: 1px solid var(--border); border-radius: 0; margin: 0; }

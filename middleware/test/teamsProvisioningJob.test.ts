@@ -262,6 +262,21 @@ function makeRunner(opts: {
   return { runner, store, provisioner, timers };
 }
 
+/**
+ * Let an enqueued run get as far as it can — up to the parked accessor call.
+ *
+ * A single `await Promise.resolve()` used to be enough because `enqueue`
+ * reached the first accessor call in one microtask hop. It is not a property
+ * worth pinning: since #915 the run opens its progress log first, so the hop
+ * count is an implementation detail that any future step-boundary work will
+ * change again. Draining to a MACROTASK expresses what these tests actually
+ * mean — "everything that can run without the parked promise, has run" — and
+ * stays true however many awaits the prologue grows.
+ */
+function settleUntilParked(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 function statesWalked(store: MemoryStore): TeamsProvisioningState[] {
   return store.updates
     .map((u) => u.state)
@@ -664,7 +679,7 @@ describe('TeamsProvisioningJobRunner — in-process job semantics', () => {
     });
     // First enqueue parks inside createAppRegistration.
     const first = runner.enqueue(REQUEST);
-    await Promise.resolve();
+    await settleUntilParked();
     assert.equal(runner.isRunning('agent-1'), true);
     const second = runner.enqueue(REQUEST);
     assert.equal(first, second, 'same in-flight promise, no second chain');
@@ -823,7 +838,7 @@ describe('TeamsProvisioningJobRunner — wave-integration hardening', () => {
       behaviour: { createAppRegistration: () => parked },
     });
     const run = runner.enqueue(REQUEST);
-    await Promise.resolve();
+    await settleUntilParked();
     runner.stop();
     release!();
     const result = await run;

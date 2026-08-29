@@ -3,13 +3,13 @@
 import { useTranslations } from 'next-intl';
 import { useId } from 'react';
 
-import { cn } from '../../../../_lib/cn';
+import { cn } from '../../_lib/cn';
 import {
   ALL_PERSONA_AXES,
   PERSONA_AXIS_LABELS,
   PERSONA_AXIS_NEUTRAL,
   type PersonaAxes,
-} from '../../../../_lib/personaTypes';
+} from '../../_lib/personaTypes';
 
 /**
  * Phase 3 / OB-67 Slice 5 — view-only persona radar.
