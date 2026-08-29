@@ -14,6 +14,7 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 
+import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
@@ -198,7 +199,7 @@ const ResolveChannelSchema = z.object({
  *  agent (unique agent_id), later POSTs re-run provisioning on the
  *  existing row. */
 const TeamsIdentityProvisionSchema = z.object({
-  team_id: z.string().min(1).max(200),
+  team_id: z.string().min(1).max(200).transform(normalizeTeamsTeamId),
   bot_slug: z
     .string()
     .regex(
@@ -215,7 +216,7 @@ const TeamsIdentityProvisionSchema = z.object({
  *  installed into `team_id` by resuming the provisioning chain. Creating the
  *  identity itself stays `POST /:slug/teams-identity`. */
 const TeamsInstallSchema = z.object({
-  team_id: z.string().min(1).max(200),
+  team_id: z.string().min(1).max(200).transform(normalizeTeamsTeamId),
 });
 
 // ---------------------------------------------------------------------------

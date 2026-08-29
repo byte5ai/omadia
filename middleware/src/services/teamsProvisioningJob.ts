@@ -79,6 +79,7 @@ import type {
   BackgroundJob,
   BackgroundJobHandle,
 } from '../platform/backgroundJobRegistry.js';
+import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
 
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of agent_teams_identities
@@ -1522,7 +1523,11 @@ export class TeamsProvisioningJobRunner {
     // Step 5 — install into the team (idempotent on Graph's side).
     await this.emit(agentId, 'installed', 'started');
     await provisioner.installToTeam({
-      teamId: request.teamId,
+      // Graph rejects the unhyphenated form Teams itself hands out (see
+      // platform/teamsTeamId). Normalised here as well as at the route, so a
+      // row stored before the route did it still installs instead of dying at
+      // the last step of an otherwise complete chain.
+      teamId: normalizeTeamsTeamId(request.teamId),
       teamsAppId: row.teamsAppId as string,
     });
     // Same ordering rule as recordError (#915): the chain is finished, so the
