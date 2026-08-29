@@ -467,6 +467,15 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // Terminal and deterministic: re-running changes nothing, the operator has
   // to rename the bot slug.
   'bot_handle_unavailable',
+  // #924 — the four delegated codes. FOUR, not one, because each sends the
+  // operator somewhere else: start a tenant sign-in, send an admin to a
+  // consent URL, sign in again, or go look at the publisher app's device-code
+  // configuration. Three of them are PARKED runs, not failures — the chain
+  // keeps everything it built and resumes once the human step is done.
+  'delegated_sign_in_required',
+  'delegated_consent_required',
+  'delegated_token_expired',
+  'device_code_flow_failed',
   'unknown',
 ] as const;
 
@@ -492,6 +501,11 @@ export interface TeamsIdentityLastErrorDetailDto {
    *  (`config_sync_failed`) — a technical sentence, rendered as the ICU
    *  argument of a localized line, never as the copy itself. */
   reason?: string;
+  /** #924 — where an admin grants the delegated scopes
+   *  (`delegated_consent_required`). Validated as absolute https server-side
+   *  before the sentence is written AND again when it is decoded, so the panel
+   *  may render it as a link without a third check. */
+  adminConsentUrl?: string;
   raw: string;
 }
 
@@ -529,11 +543,17 @@ export function parseTeamsIdentityLastErrorDetail(
   const fields = stringList(obj?.['fields']);
   const retry = obj?.['retryAfterSeconds'];
   const reason = obj?.['reason'];
+  const consentUrl = obj?.['adminConsentUrl'];
   const rawText = obj?.['raw'];
   return {
     code,
     ...(scopes ? { scopes } : {}),
     ...(fields ? { fields } : {}),
+    // Re-checked here too: this value becomes an `href`, and a row written by
+    // an older build is untrusted text as far as this boundary is concerned.
+    ...(typeof consentUrl === 'string' && consentUrl.startsWith('https://')
+      ? { adminConsentUrl: consentUrl }
+      : {}),
     ...(typeof retry === 'number' && Number.isFinite(retry)
       ? { retryAfterSeconds: retry }
       : {}),
@@ -710,6 +730,22 @@ export async function provisionAgentTeamsIdentity(
  * `detailErrors.*` / `grants.errors.*` catalogue to grow keys it never
  * renders.
  */
+/**
+ * Browser URL of the Teams app-package download (#924).
+ *
+ * A plain link rather than a fetch-and-blob: the response carries
+ * `Content-Disposition: attachment`, so the browser saves it with the right
+ * filename and streams it without the page holding the bytes in memory.
+ * Same-origin `/bot-api` proxy, so the session cookie rides along.
+ *
+ * A FALLBACK, NOT THE PATH. Provisioning uploads the package itself through
+ * the tenant sign-in; this exists for tenants that forbid programmatic
+ * catalog writes and for admins who want to read the manifest first.
+ */
+export function agentTeamsPackageUrl(slug: string): string {
+  return `/bot-api/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity/package`;
+}
+
 export const TEAMS_IDENTITY_ERROR_CODES = [
   'bot_slug_taken',
   'invalid_body',

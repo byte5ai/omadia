@@ -50,6 +50,9 @@ import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { AgentIdentityStore } from './platform/agentIdentityStore.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningEventStore } from './platform/teamsProvisioningEventStore.js';
+import { TeamsDelegatedTokenStore } from './platform/teamsDelegatedTokenStore.js';
+import { TeamsDelegatedSignInService } from './services/teamsDelegatedSignInService.js';
+import { createOperatorTeamsSignInRouter } from './routes/operatorTeamsSignIn.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
 import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
 import {
@@ -57,6 +60,7 @@ import {
   getTeamsProvisioner,
   requireTeamsProvisioner,
   supportsTeamLookup,
+  TeamsProvisionerUnavailableError,
 } from './platform/teamsProvisionerService.js';
 import {
   CHANNEL_TEAMS_PLUGIN_ID,
@@ -1935,10 +1939,55 @@ async function main(): Promise<void> {
       'teamsProvisioningEventStore',
       teamsProvisioningEventStore,
     );
+    // #924 — custody of the TENANT's delegated Teams token set. Vault-backed
+    // (AES-256-GCM at rest), one record for the whole install, following the
+    // `@omadia/mcp-registry` namespace precedent. The catalog upload is the
+    // one provisioning step Microsoft refuses app-only, so without this an
+    // admin would have to upload a package by hand for every single agent.
+    const teamsDelegatedTokenStore = new TeamsDelegatedTokenStore(secretVault);
+    serviceRegistry.provide('teamsDelegatedTokenStore', teamsDelegatedTokenStore);
+    // The device-code flow itself. Holds the `flowHandle` — which carries the
+    // OAuth `device_code` — in this process only; nothing hands it to a
+    // browser, and the poll endpoint takes no handle at all.
+    const teamsDelegatedSignIn = new TeamsDelegatedSignInService({
+      tokens: teamsDelegatedTokenStore,
+      getProvisioner: () => getTeamsProvisioner(serviceRegistry),
+    });
+    serviceRegistry.provide('teamsDelegatedSignInService', teamsDelegatedSignIn);
     // TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL — the binding contract of
     // config.ts; resolved per call so a config reload wins over boot state.
     const teamsPublicBaseUrl = (): string =>
       config.TEAMS_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
+    // Named rather than inlined into the runner options since #924: the
+    // download endpoint renders a package through the SAME loader the chain
+    // uploads through. Two loaders would be two answers to "what does this
+    // agent's package contain", and the operator would be diffing against a
+    // second implementation's opinion.
+    const loadTeamsPackageAssets = createTeamsAppPackageAssetLoader({
+      getChannelTeamsPackageRoot: () => {
+        const entry = pluginCatalog.get(CHANNEL_TEAMS_PLUGIN_ID);
+        return entry ? path.dirname(entry.source_path) : undefined;
+      },
+      getPublicBaseUrl: teamsPublicBaseUrl,
+      // #914 — the agent's authored identity feeds the manifest (name,
+      // descriptions, accent colour, package version) and the icons. Read
+      // per run, never cached: an identity edited between two runs must
+      // reach the package the second one builds.
+      loadIdentity: async (agentId) => {
+        const record = await agentIdentityStore.getByAgentId(agentId);
+        if (!record) return undefined;
+        const icons = await agentIdentityStore.getIcons(agentId);
+        return {
+          displayName: record.displayName,
+          shortDescription: record.shortDescription,
+          longDescription: record.longDescription,
+          accentColor: record.accentColor,
+          revision: record.revision,
+          icons: icons ?? null,
+        };
+      },
+    });
+    serviceRegistry.provide('teamsAppPackageAssetLoader', loadTeamsPackageAssets);
     const teamsProvisioningRunner = new TeamsProvisioningJobRunner({
       store: agentTeamsIdentityStore,
       // The runner records a binding only AFTER Graph confirmed the install,
@@ -1949,35 +1998,17 @@ async function main(): Promise<void> {
       // #915 — where the runner writes what it is doing between two chain
       // states. Best-effort by contract: a failed note never fails a run.
       events: teamsProvisioningEventStore,
+      // #924 — the tenant sign-in the catalog upload rides on. The runner
+      // feature-detects `uploadToCatalogDelegated` on the connector, so
+      // binding this against an older connector is harmless: it keeps doing
+      // the app-only upload it always did.
+      delegatedTokens: teamsDelegatedTokenStore,
       getProvisioner: () => requireTeamsProvisioner(serviceRegistry),
       // The accessor module's URL builder, bound to the public base — the
       // runner never composes the messaging endpoint itself.
       buildMessagingEndpoint: (botSlug) =>
         buildTeamsBotMessagingEndpoint(teamsPublicBaseUrl(), botSlug),
-      loadPackageAssets: createTeamsAppPackageAssetLoader({
-        getChannelTeamsPackageRoot: () => {
-          const entry = pluginCatalog.get(CHANNEL_TEAMS_PLUGIN_ID);
-          return entry ? path.dirname(entry.source_path) : undefined;
-        },
-        getPublicBaseUrl: teamsPublicBaseUrl,
-        // #914 — the agent's authored identity feeds the manifest (name,
-        // descriptions, accent colour, package version) and the icons. Read
-        // per run, never cached: an identity edited between two runs must
-        // reach the package the second one builds.
-        loadIdentity: async (agentId) => {
-          const record = await agentIdentityStore.getByAgentId(agentId);
-          if (!record) return undefined;
-          const icons = await agentIdentityStore.getIcons(agentId);
-          return {
-            displayName: record.displayName,
-            shortDescription: record.shortDescription,
-            longDescription: record.longDescription,
-            accentColor: record.accentColor,
-            revision: record.revision,
-            icons: icons ?? null,
-          };
-        },
-      }),
+      loadPackageAssets: loadTeamsPackageAssets,
       // #910 — the finishing move: after `installed`, write the identity's
       // `teams_bots` entry into the channel-teams plugin config and reactivate
       // the plugin, so the provisioned bot has an adapter and a route without
@@ -3401,6 +3432,42 @@ async function main(): Promise<void> {
           // upgraded or removed while the process runs, and the team-uninstall
           // capability (#900) has to follow it.
           getProvisioner: () => getTeamsProvisioner(serviceRegistry),
+          // #924 — the download fallback. Rendered PER REQUEST through the
+          // same asset loader and the same connector `buildAppPackage` the
+          // chain uses, so what an operator downloads is byte-for-byte what
+          // provisioning would upload. Resolved live: without a connector
+          // there is nothing to render with, and the route reports that as a
+          // capability rather than failing.
+          buildAppPackage: async (record) => {
+            const provisioner = getTeamsProvisioner(serviceRegistry);
+            if (!provisioner) {
+              throw new TeamsProvisionerUnavailableError();
+            }
+            const loader = serviceRegistry.get<
+              ReturnType<typeof createTeamsAppPackageAssetLoader>
+            >('teamsAppPackageAssetLoader');
+            if (!loader) {
+              throw new Error(
+                'teams app package asset loader is not registered — Postgres-backed agent-factory wiring did not run',
+              );
+            }
+            const assets = await loader({
+              agentId: record.agentId,
+              botSlug: record.botSlug,
+              displayName: record.displayName,
+              state: record.state as never,
+              appId: record.appId,
+              tenantId: record.tenantId,
+              teamsAppId: record.teamsAppId,
+              teamsAppExternalId: record.teamsAppExternalId,
+              lastError: record.lastError,
+            });
+            return provisioner.buildAppPackage({
+              manifestTemplate: assets.manifestTemplate,
+              params: assets.params,
+              icons: assets.icons,
+            });
+          },
         };
         // Migration 0053 (#915) — same optional posture as 0051: a middleware
         // whose migrations have not reached 0053 serves a status response
@@ -3427,6 +3494,25 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated, incl. teams-identity provisioning)',
+  );
+
+  // #924 — the TENANT-wide Teams sign-in. A sibling of /operator/agents, not a
+  // route under it: one admin signs in once for the whole directory and every
+  // agent provisioned afterwards uses that sign-in, so hanging it off an agent
+  // slug would have said the opposite in the URL — and made "sign in before
+  // you create your first agent" unrepresentable.
+  app.use(
+    '/api/v1/operator/teams',
+    requireAuth,
+    createOperatorTeamsSignInRouter({
+      getSignIn: () =>
+        serviceRegistry.get<TeamsDelegatedSignInService>(
+          'teamsDelegatedSignInService',
+        ),
+    }),
+  );
+  console.log(
+    '[middleware] tenant Teams sign-in ready at /api/v1/operator/teams/sign-in (auth-gated, device-code flow held server-side)',
   );
 
   // Phase B+ — operator channels dashboard.

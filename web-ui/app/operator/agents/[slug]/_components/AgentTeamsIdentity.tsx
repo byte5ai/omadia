@@ -5,6 +5,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
+  agentTeamsPackageUrl,
   getAgentTeamsIdentity,
   isTerminalTeamsProvisioningState,
   parseTeamsIdentityErrorCode,
@@ -412,6 +413,8 @@ function ReadyPanel(props: {
         />
       </dl>
 
+      <TeamsAppPackageDownload slug={status.agent} />
+
       <TeamsBotConfigBlock status={status} />
 
       {status.identity.updated_at && (
@@ -421,6 +424,50 @@ function ReadyPanel(props: {
           })}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The Teams app package, as a download (#924).
+ *
+ * A FALLBACK, AND THE COPY SAYS SO. Since the tenant sign-in landed, the
+ * package is uploaded to the catalogue by provisioning itself — no operator
+ * uploads anything per agent any more. This stays for the cases that are
+ * always left over: a tenant whose policy forbids programmatic catalogue
+ * writes, an admin who wants to read the manifest before it goes live, a
+ * support conversation. Presenting it as the normal path would undo the very
+ * change that removed the manual step.
+ *
+ * ALWAYS OFFERED, not only after a failure. The package is a pure render of
+ * the identity, so withholding it from a healthy agent would hand it only to
+ * operators already in trouble and hide it from the ones calmly preparing a
+ * rollout.
+ *
+ * A PLAIN LINK, not a fetch-and-blob: the route answers with
+ * `Content-Disposition: attachment`, so the browser saves it under the right
+ * name and streams it without this page holding the bytes.
+ */
+function TeamsAppPackageDownload(props: {
+  readonly slug: string;
+}): React.ReactElement {
+  const t = useTranslations('operatorAgents');
+  return (
+    <div className="space-y-1">
+      <h3 className="text-sm font-medium">
+        {t('teamsIdentity.package.heading')}
+      </h3>
+      <p className="text-xs text-[color:var(--fg-muted)]">
+        {t('teamsIdentity.package.hint')}
+      </p>
+      <a
+        data-testid="teams-package-download"
+        href={agentTeamsPackageUrl(props.slug)}
+        download
+        className="inline-block text-xs text-[color:var(--accent)] underline"
+      >
+        {t('teamsIdentity.package.download')}
+      </a>
     </div>
   );
 }

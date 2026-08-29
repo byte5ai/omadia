@@ -444,7 +444,8 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "help": "Help"
+    "help": "Help",
+    "teamsSignIn": "Teams sign-in"
   },
   "conductor": {
     "title": "Conductor",
@@ -2159,7 +2160,13 @@
           "error": "error",
           "retries_exhausted": "retries exhausted — the progress reached is kept",
           "team_conflict": "another run is already in flight for this orchestrator",
-          "stopped": "interrupted by a shutdown"
+          "stopped": "interrupted by a shutdown",
+          "delegated_upload": "Catalogue upload via this tenant's Teams sign-in",
+          "delegated_token_refreshed": "Access token renewed automatically",
+          "delegated_sign_in_required": "Waiting for the Teams sign-in",
+          "delegated_consent_required": "Waiting for an admin to consent",
+          "delegated_token_expired": "Sign-in expired",
+          "device_code_flow_failed": "Sign-in flow refused"
         }
       },
       "stateSummary": "State: {state}",
@@ -2230,6 +2237,30 @@
         "bot_handle_unavailable": {
           "what": "Microsoft refused the bot name: it is already registered to another bot application.",
           "next": "Azure bot handles share one global namespace across every Azure customer — like a domain name, not a name inside your tenant. omadia already qualifies the handle automatically with the app registration's id, so this name is taken even in its qualified form. Give the agent a different bot slug and start provisioning again."
+        },
+        "tenantSignInLink": "Go to the Teams sign-in for this tenant",
+        "delegated_sign_in_required": {
+          "what": "The catalogue upload needs a signed-in tenant admin. Microsoft only allows this step on behalf of a person; application permissions are not enough for it.",
+          "scopes": "Required permissions ({count}): {scopes}",
+          "next": "Sign in once under \"Teams sign-in\", then run provisioning again. Every further agent uses that sign-in automatically.",
+          "keepsProgress": "The run did not fail, it is waiting. The Entra app, the Azure bot and the built package are all kept — it continues from exactly this point."
+        },
+        "delegated_consent_required": {
+          "what": "The sign-in is in place, but nobody in the tenant has consented to the required permissions yet.",
+          "scopes": "Missing permissions ({count}): {scopes}",
+          "next": "Have a tenant admin approve on the consent page, then run provisioning again.",
+          "consentLink": "Open the consent page for this tenant",
+          "keepsProgress": "The run did not fail, it is waiting. Nothing was rolled back."
+        },
+        "delegated_token_expired": {
+          "what": "This tenant's stored sign-in is no longer valid and could not be renewed automatically.",
+          "next": "Sign in again under \"Teams sign-in\", then run provisioning once more.",
+          "keepsProgress": "The run did not fail, it is waiting. Everything already created is kept."
+        },
+        "device_code_flow_failed": {
+          "what": "Microsoft refused the sign-in flow itself — not the permissions, but the route to them.",
+          "reason": "Reported by Microsoft: {reason}",
+          "next": "Check that the Microsoft 365 connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them. Retrying changes nothing without that adjustment."
         }
       },
       "teamsBot": {
@@ -2251,7 +2282,12 @@
           "unknown": "Whether this configuration is already applied cannot be determined right now. Compare it against the Teams channel plugin and paste the block below if it is missing."
         }
       },
-      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here."
+      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here.",
+      "package": {
+        "heading": "Download the app package",
+        "hint": "Provisioning uploads this package to the tenant catalogue itself — no manual upload per agent is needed. The download stays as a fallback: for tenants where programmatic catalogue uploads are not allowed, or when you want to inspect the manifest first. It is rendered fresh on every request, so it matches exactly what provisioning would upload.",
+        "download": "Download the Teams app package (.zip)"
+      }
     }
   },
   "builder": {
@@ -5395,5 +5431,58 @@
     "subtitle": "This screen is supplied by the plugin and runs in a sandboxed frame.",
     "frameTitle": "User interface of the plugin {pluginId}",
     "loading": "Loading the plugin interface…"
+  },
+  "operatorTeamsSignIn": {
+    "metaTitle": "Teams sign-in",
+    "heading": "Teams sign-in for this tenant",
+    "why": "Microsoft only allows uploading a Teams app to the tenant catalogue on behalf of a signed-in person — application permissions are explicitly not supported for it. So a tenant admin signs in once, and every agent provisioned afterwards uses that sign-in automatically.",
+    "loading": "Loading sign-in status …",
+    "refresh": "Refresh",
+    "unsupported": "The installed Microsoft 365 connector does not know the delegated sign-in yet. Upgrade it to 0.6.0 or newer — it is already installed.",
+    "technicalReason": "Technical reason:",
+    "start": "Start sign-in",
+    "startBusy": "Starting sign-in",
+    "signOut": "Sign out",
+    "signOutBusy": "Signing out",
+    "signedOut": {
+      "body": "Nobody is signed in for this tenant yet. Until that changes, provisioning gets as far as the catalogue upload and parks there — everything before it is kept and continues once the sign-in exists."
+    },
+    "pending": {
+      "instructions": "Open the sign-in page on any device and enter this code. The person signing in has to be a tenant admin.",
+      "codeLabel": "Sign-in code",
+      "copy": "Copy code",
+      "copied": "Copied",
+      "openVerification": "Open Microsoft's sign-in page",
+      "expiresIn": "The code expires in {seconds} seconds.",
+      "consentHint": "If the sign-in page asks for approval first: approve here, then enter the code.",
+      "consentLink": "Open the consent page",
+      "waiting": "omadia is waiting for the sign-in to finish. This page updates by itself."
+    },
+    "signedIn": {
+      "badge": "Signed in",
+      "as": "Signed in as {who}",
+      "unknownAccount": "unknown account",
+      "since": "Signed in since",
+      "tokenExpires": "Access token expires",
+      "tenant": "Tenant",
+      "scopes": "Permissions",
+      "staleNote": "The access token has expired. This is not a fault — omadia renews it automatically on the next upload, and the sign-in stays valid."
+    },
+    "expired": {
+      "headline": "The sign-in code expired.",
+      "body": "Nothing was created and nothing was changed. Just start the sign-in again."
+    },
+    "declined": {
+      "headline": "The sign-in was not completed.",
+      "body": "Microsoft reports this both when someone cancels and when a policy blocks the attempt — Conditional Access or a device requirement, for instance. The technical reason below says which case this is."
+    },
+    "errors": {
+      "teams_sign_in_unavailable": "The Teams sign-in is not wired up in this deployment.",
+      "teams_provisioner_unavailable": "The Microsoft 365 connector is not installed — install and activate it first.",
+      "delegated_sign_in_unsupported": "The installed Microsoft 365 connector is too old for the delegated sign-in. Upgrade it to 0.6.0 or newer.",
+      "device_code_flow_failed": "Microsoft refused the sign-in flow. Check that the connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them.",
+      "teams_sign_in_failed": "The Teams sign-in failed.",
+      "unknown": "The Teams sign-in request failed: {detail}"
+    }
   }
 }
