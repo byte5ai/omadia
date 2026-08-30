@@ -29,7 +29,9 @@ ALTER TABLE agents
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agents_context_memory_check'
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'agents_context_memory_check'
+       AND conrelid = 'agents'::regclass
   ) THEN
     ALTER TABLE agents
       ADD CONSTRAINT agents_context_memory_check

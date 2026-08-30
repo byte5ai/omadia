@@ -54,6 +54,7 @@ const MIGRATION_FILES = [
   // 0054 without it fails on a relation that does not exist.
   '0051_agent_teams_installs.sql',
   '0054_agent_teams_target_kind.sql',
+  '0055_agent_teams_app_object_id.sql',
 ] as const;
 
 const SCHEMA = `w1a_teams_ident_${String(process.pid)}`;

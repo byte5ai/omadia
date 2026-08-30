@@ -197,4 +197,34 @@ export class AgentTeamsInstallStore {
     );
     return (res.rowCount ?? 0) > 0;
   }
+
+  /**
+   * Drop EVERY binding of one agent, returning how many there were — the
+   * teardown's counterpart to {@link remove}
+   * (`services/teamsIdentityReset.ts`).
+   *
+   * Why a bulk call rather than a loop over {@link listForAgent}: the rows
+   * this table holds are the record of what omadia INSTALLED, and after a
+   * teardown has withdrawn the app from the tenant catalog none of them
+   * describes anything that still exists. Deleting them one id at a time
+   * would leave a half-emptied read model behind if the process died in the
+   * middle, and the operator screen would go on listing installs that Graph
+   * has no memory of.
+   *
+   * `0` is an ordinary answer, not an error: an identity that never reached
+   * the install step has no bindings to drop, and a teardown resumed after an
+   * interruption finds the table already empty. Both are success.
+   *
+   * NOTE the cascade this does NOT rely on. `agent_teams_installs` cascades
+   * from `agent_teams_identities`, but a teardown keeps the identity row
+   * (only its Azure identifiers are cleared), so nothing deletes these rows
+   * for us. They have to be removed explicitly, which is what this is for.
+   */
+  async removeAllForAgent(agentId: string): Promise<number> {
+    const res = await this.pool.query(
+      `DELETE FROM agent_teams_installs WHERE agent_id = $1`,
+      [agentId],
+    );
+    return res.rowCount ?? 0;
+  }
 }

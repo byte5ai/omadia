@@ -1175,6 +1175,180 @@ export function parseTeamsAssignmentCapabilities(
  * row yet; that is the "there is nothing to assign yet" signal, and the panel
  * treats it as an empty state rather than an error.
  */
+/**
+ * Why a target listing is not available. Mirrors
+ * `TeamsTargetListingUnavailable` in
+ * `middleware/src/services/teamsTargetDirectoryService.ts` — a closed set of
+ * machine codes, each with its own sentence in `messages/*.json`.
+ */
+export type TeamsTargetListingUnavailable =
+  | 'connector_unavailable'
+  | 'connector_unsupported'
+  | 'sign_in_required'
+  | 'scope_missing'
+  | 'consent_required'
+  | 'lookup_failed';
+
+/**
+ * A listing that can say "I don't know".
+ *
+ * THE WHOLE POINT OF THE UNION. `available: true, items: []` means the tenant
+ * genuinely has none; `available: false` means we could not look. Rendering
+ * an empty dropdown for the second case tells the operator something false
+ * about their tenant and sends them looking in the wrong place.
+ */
+export type TeamsTargetListingDto<T> =
+  | { available: true; items: readonly T[] }
+  | { available: false; reason: TeamsTargetListingUnavailable };
+
+export interface TeamsTeamOptionDto {
+  id: string;
+  displayName: string;
+}
+
+export interface TeamsChatOptionDto {
+  id: string;
+  topic: string | null;
+  chatType: 'group' | 'oneOnOne' | 'meeting';
+  memberNames?: readonly string[];
+}
+
+export interface AgentTeamsTargetsDto {
+  ok: boolean;
+  agent: string;
+  provisioner_installed: boolean;
+  teams: TeamsTargetListingDto<TeamsTeamOptionDto>;
+  chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+}
+
+/**
+ * Normalise one half of the directory response.
+ *
+ * DEFENSIVE ON PURPOSE, and it degrades toward `available: false` rather than
+ * toward an empty list: an unparsable payload is precisely the case where we
+ * do NOT know what the tenant holds, and the union exists so that state has
+ * somewhere honest to go.
+ */
+function parseTargetListing<T>(
+  value: unknown,
+  parseItem: (raw: unknown) => T | null,
+): TeamsTargetListingDto<T> {
+  if (typeof value !== 'object' || value === null) {
+    return { available: false, reason: 'lookup_failed' };
+  }
+  const record = value as Record<string, unknown>;
+  if (record['available'] !== true) {
+    const reason = record['reason'];
+    return {
+      available: false,
+      reason:
+        typeof reason === 'string'
+          ? (reason as TeamsTargetListingUnavailable)
+          : 'lookup_failed',
+    };
+  }
+  const raw = record['items'];
+  if (!Array.isArray(raw)) return { available: false, reason: 'lookup_failed' };
+  const items: T[] = [];
+  for (const entry of raw) {
+    const parsed = parseItem(entry);
+    if (parsed !== null) items.push(parsed);
+  }
+  return { available: true, items };
+}
+
+function parseTeamOption(raw: unknown): TeamsTeamOptionDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = r['id'];
+  if (typeof id !== 'string' || id === '') return null;
+  const displayName = r['displayName'];
+  return {
+    id,
+    // An id with no name still beats the free-text field this replaces, so a
+    // nameless row is kept and labelled by its id rather than dropped.
+    displayName: typeof displayName === 'string' && displayName !== '' ? displayName : id,
+  };
+}
+
+const CHAT_TYPES: readonly string[] = ['group', 'oneOnOne', 'meeting'];
+
+function parseChatOption(raw: unknown): TeamsChatOptionDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = r['id'];
+  if (typeof id !== 'string' || id === '') return null;
+  const chatType = r['chatType'];
+  const topic = r['topic'];
+  const memberNames = r['memberNames'];
+  return {
+    id,
+    topic: typeof topic === 'string' && topic !== '' ? topic : null,
+    chatType: CHAT_TYPES.includes(chatType as string)
+      ? (chatType as TeamsChatOptionDto['chatType'])
+      : 'group',
+    ...(Array.isArray(memberNames)
+      ? { memberNames: memberNames.filter((n): n is string => typeof n === 'string') }
+      : {}),
+  };
+}
+
+/**
+ * `GET /v1/operator/agents/:slug/teams/targets` — what the operator can pick
+ * instead of type.
+ */
+export async function getAgentTeamsTargets(
+  slug: string,
+): Promise<AgentTeamsTargetsDto> {
+  const dto = await callJson<AgentTeamsTargetsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets`,
+  );
+  return {
+    ...dto,
+    teams: parseTargetListing(dto.teams, parseTeamOption),
+    chats: parseTargetListing(dto.chats, parseChatOption),
+  };
+}
+
+/** One step of a teardown — mirrors `TeamsResetStepReport`. */
+export interface TeamsResetStepDto {
+  step: 'catalog_removed' | 'bot_deleted' | 'app_deleted' | 'identity_reset';
+  outcome: 'removed' | 'already-absent' | 'skipped' | 'blocked' | 'failed';
+  detail?: string;
+}
+
+export interface ResetAgentTeamsIdentityResponse {
+  ok: boolean;
+  agent: string;
+  status: 'reset' | 'incomplete';
+  previous_state?: string;
+  steps: readonly TeamsResetStepDto[];
+  stoppedAt?: TeamsResetStepDto['step'];
+  detail?: string;
+}
+
+/**
+ * `POST /v1/operator/agents/:slug/teams-identity/reset` — DESTRUCTIVE.
+ *
+ * Removes the Entra app registration (delete AND recycle-bin purge), the
+ * Azure bot and the tenant catalog entry, then returns the row to `pending`
+ * keeping `bot_slug` and `display_name`.
+ *
+ * A PARTIAL TEARDOWN RESOLVES, IT DOES NOT REJECT. `status: 'incomplete'`
+ * comes back as a 200 with the per-step report, because "which of the three
+ * are still in Azure" is the answer the operator needs and an exception would
+ * collapse it into "reset failed".
+ */
+export async function resetAgentTeamsIdentity(
+  slug: string,
+): Promise<ResetAgentTeamsIdentityResponse> {
+  const dto = await callJson<ResetAgentTeamsIdentityResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity/reset`,
+    { method: 'POST' },
+  );
+  return { ...dto, steps: Array.isArray(dto.steps) ? dto.steps : [] };
+}
+
 export async function getAgentTeams(slug: string): Promise<AgentTeamsDto> {
   const dto = await callJson<AgentTeamsDto>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
