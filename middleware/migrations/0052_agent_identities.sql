@@ -62,14 +62,18 @@ CREATE TABLE IF NOT EXISTS agent_identities (
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_identities_accent_color_check'
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'agent_identities_accent_color_check'
+       AND conrelid = 'agent_identities'::regclass
   ) THEN
     ALTER TABLE agent_identities
       ADD CONSTRAINT agent_identities_accent_color_check
       CHECK (accent_color IS NULL OR accent_color ~ '^#[0-9A-Fa-f]{6}$');
   END IF;
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_identities_revision_check'
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'agent_identities_revision_check'
+       AND conrelid = 'agent_identities'::regclass
   ) THEN
     ALTER TABLE agent_identities
       ADD CONSTRAINT agent_identities_revision_check
