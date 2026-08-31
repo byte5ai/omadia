@@ -139,22 +139,62 @@ export function checkVisionEmbeddable(
 const CSV_TYPES = new Set(['text/csv']);
 const CSV_EXTS = new Set(['csv']);
 
+/** Spreadsheet MIME types accepted for structured import. `.xlsm` shares the
+ *  parse path; macros are never executed — the parser reads sheet XML, not
+ *  the VBA project. Kept here rather than next to the XLSX parser so that
+ *  format DETECTION stays dependency-light: this module is loaded on every
+ *  turn with an attachment, while the parser pulls in ExcelJS and should
+ *  only load when a spreadsheet actually arrives. */
+const XLSX_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+]);
+const XLSX_EXTS = new Set(['xlsx', 'xlsm']);
+
+/** Formats that route through the structured dataset pipeline. */
+export type TabularFormat = 'csv' | 'xlsx';
+
 /**
- * #430 — true when an attachment should route through the structured
- * `importCsvDataset` path (`datasetImport.ts`) instead of the plain-text
- * extraction below. Checked BEFORE `extractAttachmentText` at both entry
- * points (chat-attachment auto-ingest in `orchestrator.ts`, and the
- * `POST /api/v1/datasets` route) so a CSV is never silently truncated at
- * `MAX_TEXT_CHARS` — it gets a real schema + queryable rows instead.
+ * #430 — which structured-import parser an attachment belongs to, or
+ * `undefined` when it is not a table. Checked BEFORE `extractAttachmentText`
+ * at both entry points (chat-attachment auto-ingest in `orchestrator.ts`,
+ * and the `POST /api/v1/datasets` route) so tabular data is never flattened
+ * into a `MAX_TEXT_CHARS`-truncated text blob — it gets a real schema,
+ * queryable rows, and a mandatory per-cell privacy scan instead.
+ */
+export function detectTabularFormat(
+  contentType: string | undefined,
+  fileName: string | undefined,
+): TabularFormat | undefined {
+  const ct = normalizeContentType(contentType);
+  const ext = extOf(fileName);
+  // Extension wins over contentType for spreadsheets: browsers and chat
+  // clients frequently upload .xlsx as application/octet-stream or
+  // application/zip (it IS a zip), which would otherwise be unrecognized.
+  if (XLSX_TYPES.has(ct) || XLSX_EXTS.has(ext)) return 'xlsx';
+  if (CSV_TYPES.has(ct) || CSV_EXTS.has(ext)) return 'csv';
+  return undefined;
+}
+
+/** True for any attachment the structured dataset pipeline can import. */
+export function isTabularAttachment(
+  contentType: string | undefined,
+  fileName: string | undefined,
+): boolean {
+  return detectTabularFormat(contentType, fileName) !== undefined;
+}
+
+/**
+ * @deprecated Use {@link detectTabularFormat} / {@link isTabularAttachment}.
+ * Retained because the CSV-only predicate is part of the package's public
+ * surface; it now answers only for CSV, so a caller that still uses it keeps
+ * its previous behaviour exactly.
  */
 export function isCsvAttachment(
   contentType: string | undefined,
   fileName: string | undefined,
 ): boolean {
-  return (
-    CSV_TYPES.has(normalizeContentType(contentType)) ||
-    CSV_EXTS.has(extOf(fileName))
-  );
+  return detectTabularFormat(contentType, fileName) === 'csv';
 }
 
 /**

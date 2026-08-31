@@ -127,10 +127,14 @@ import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
+  detectTabularFormat,
   extractAttachmentText,
-  isCsvAttachment,
+  type TabularFormat,
 } from './attachmentExtract.js';
-import { importCsvDataset } from './datasetImport.js';
+import {
+  importTabularDataset,
+  type ImportTabularDatasetResult,
+} from './datasetImportTabular.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -7275,40 +7279,36 @@ export class Orchestrator {
           // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
           // for the resolution + fallback rules (still idempotent, still
           // degrades to the plain-text path below when unresolved).
-          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
-            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
-            if (ownerOmadiaUserId) {
-              const imported = await importCsvDataset({
-                graph: this.knowledgeGraph,
+          // Tabular uploads (CSV, XLSX) route through the structured dataset
+          // pipeline and NEVER fall back to the plain-text path.
+          //
+          // The fallback that used to live here was the bug: when the
+          // KnowledgeGraph was absent, the turn owner unresolved, or the
+          // import merely failed, a spreadsheet's every row was appended to
+          // the prompt as `[attachment-content]` cleartext — the exact
+          // "uploads are not shielded" behaviour this path exists to
+          // prevent. The dataset pipeline privacy-scans every cell before
+          // persisting (`datasetImport.ts`); the text path has no equivalent
+          // per-field step. Degrading from one to the other silently traded
+          // the guarantee away at the moment it mattered most, on files
+          // large or structured enough that a user would never re-read what
+          // the model was handed.
+          //
+          // Refusals are announced to the model instead, so it can tell the
+          // user the file was not ingested rather than inventing an answer
+          // from data it never received.
+          const tabularFormat = detectTabularFormat(contentType, attachmentFileName);
+          if (tabularFormat !== undefined) {
+            textBlocks.push(
+              await this.ingestTabularAttachment({
                 bytes: fetched.bytes,
-                datasetName: attachmentFileName ?? label,
-                sourceFileName: attachmentFileName ?? label,
-                ownerOmadiaUserId,
-                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
-              });
-              if (imported.ok) {
-                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
-                // happens (see datasetImport.ts module doc); only tell the
-                // model "not truncated" when that's actually true this time,
-                // rather than making a blanket claim the PR no longer backs.
-                const { truncatedCellCount, truncatedColumns } = imported.truncation;
-                const truncationNote =
-                  truncatedCellCount > 0
-                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
-                    : 'No cells were truncated on import.';
-                textBlocks.push(
-                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
-                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
-                );
-                continue;
-              }
-              console.warn(
-                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
-              );
-              // Fall through to the plain-text path below so the CSV's raw
-              // text (even if capped) still reaches the model rather than
-              // vanishing silently.
-            }
+                format: tabularFormat,
+                label,
+                fileName: attachmentFileName ?? label,
+                ...(c.storageKey ? { storageKey: c.storageKey } : {}),
+              }),
+            );
+            continue;
           }
           const result = await extractAttachmentText(
             fetched.bytes,
@@ -7341,6 +7341,82 @@ export class Orchestrator {
       );
       return empty;
     }
+  }
+
+  /**
+   * Import one tabular attachment (CSV/XLSX) as queryable dataset(s) and
+   * return the text block describing the outcome to the model.
+   *
+   * Always returns a block, never raw file content: on every failure path
+   * the model is told the file could not be ingested and why. That is the
+   * whole point — a spreadsheet's rows reach the model through
+   * `query_dataset` (privacy-scanned at import, materialized server-side) or
+   * they do not reach it at all.
+   *
+   * A workbook may yield several datasets (one per sheet); all of their ids
+   * are reported so the model can query the right one.
+   */
+  private async ingestTabularAttachment(args: {
+    bytes: Buffer;
+    format: TabularFormat;
+    label: string;
+    fileName: string;
+    storageKey?: string;
+  }): Promise<string> {
+    const { label, format } = args;
+    const refuse = (reason: string): string => {
+      console.warn(
+        `[harness-orchestrator] ingestAttachments: ${format} dataset import unavailable for ${label} — ${reason}`,
+      );
+      return (
+        `\n\n[attachment-not-ingested: ${label}]\n` +
+        `This ${format.toUpperCase()} file could not be imported as a queryable dataset (${reason}). ` +
+        `Its contents were NOT read. Tell the user the file could not be processed — ` +
+        `do not guess at or invent its contents.\n[/attachment-not-ingested]`
+      );
+    };
+
+    if (!this.knowledgeGraph) return refuse('no knowledge graph available');
+    const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+    if (!ownerOmadiaUserId) {
+      return refuse('could not resolve the uploading user');
+    }
+
+    let imported: ImportTabularDatasetResult;
+    try {
+      imported = await importTabularDataset({
+        graph: this.knowledgeGraph,
+        bytes: args.bytes,
+        datasetName: args.fileName,
+        sourceFileName: args.fileName,
+        ownerOmadiaUserId,
+        format,
+        ...(args.storageKey ? { sourceStorageKey: args.storageKey } : {}),
+      });
+    } catch (err) {
+      return refuse(
+        `import error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!imported.ok) return refuse(imported.reason);
+
+    const lines = imported.imported.map((t) => {
+      const { truncatedCellCount, truncatedColumns } = t.truncation;
+      // Only claim "not truncated" when that is actually true for this table
+      // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
+      const truncationNote =
+        truncatedCellCount > 0
+          ? ` ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+          : ' No cells were truncated on import.';
+      const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
+    });
+
+    return (
+      `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n` +
+      `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with a dataset_id above to filter/aggregate this data — ` +
+      `do not ask the user to re-paste it.\n[/dataset-imported]`
+    );
   }
 
   /**
