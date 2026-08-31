@@ -119,6 +119,20 @@ export interface AgentRuntimeConfig {
    */
   readonly identityInstructions?: string;
   /**
+   * #967 — the name this Agent answers to (`agent_identities.display_name`),
+   * already trimmed and non-empty when present.
+   *
+   * A LAYER, NOT A SLOT. Unlike {@link identityInstructions}, this does not
+   * replace the assistant identity — it is appended to whichever identity text
+   * ends up applying. The name is one fact about the Agent; the identity is
+   * everything else it should do, and an operator who only typed a name into
+   * the Teams provisioning form has not asked to discard the platform's
+   * behaviour text along with its name.
+   *
+   * Absent → the identity text is used verbatim, exactly as before.
+   */
+  readonly identityName?: string;
+  /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
    *
@@ -279,6 +293,40 @@ export interface BuiltOrchestrator {
 }
 
 /**
+ * Fold an Agent's own name into the identity text it speaks with (#967).
+ *
+ * THE PROBLEM THIS SOLVES. `assistantIdentity` is the opening section of the
+ * system prompt, and a deployment's platform identity introduces the platform's
+ * assistant by name. A bot provisioned into Teams as `Messias` therefore went
+ * on introducing itself under that platform name: outwardly one bot, inwardly
+ * another, which reads to a user as two different things wearing one avatar.
+ *
+ * APPENDED, NEVER SUBSTITUTED. The identity text is prose an operator wrote;
+ * there is no reliable way to find and replace a name inside it, and trying
+ * would corrupt text that merely mentions the name. Stating the name last is
+ * both safe and unambiguous — the closing instruction is the one that binds.
+ *
+ * ONLY THE NAME. No description, no persona, no tone: those belong to the
+ * operator's identity form, and inventing them here would put words in an
+ * agent's mouth that nobody authored. An Agent that has a name and nothing
+ * else keeps every behaviour it had, and answers to its name.
+ *
+ * A blank or absent name returns the identity byte-for-byte, which is what
+ * keeps the prompt (and its cache key) unchanged for every Agent that never
+ * authored one.
+ */
+export function withAgentName(
+  identity: string | undefined,
+  name: string | undefined,
+): string | undefined {
+  const trimmedName = name?.trim();
+  if (!trimmedName) return identity;
+  const nameLine = `Dein Name ist ${trimmedName}. Stelle dich unter diesem Namen vor und verwende ihn, wenn du von dir sprichst — er gilt auch dann, wenn oben ein anderer Name für dich genannt wird.`;
+  const trimmedIdentity = identity?.trim();
+  return trimmedIdentity ? `${trimmedIdentity}\n\n${nameLine}` : nameLine;
+}
+
+/**
  * Build one Agent's `Orchestrator`, its optional verifier wrapper, and its
  * `chatAgent` bundle. Each call produces a fully independent instance set —
  * no mutable state is shared between two calls.
@@ -426,6 +474,17 @@ export function buildOrchestratorForAgent(
   // opening section of the system prompt.
   const agentAssistantIdentity =
     config.identityInstructions?.trim() || deps.assistantIdentity;
+  // #967 — and then the Agent's own name is layered on top of whichever text
+  // that resolved to. This is the ONLY place the authored display name enters
+  // the system prompt, and it is deliberately the last word: the platform
+  // identity names the platform's assistant, so a bot provisioned as
+  // `Messias` would otherwise keep introducing itself with that name while
+  // Teams shows another. Overriding beats editing — we cannot know where a
+  // name appears inside operator-written prose.
+  const assistantIdentityWithName = withAgentName(
+    agentAssistantIdentity,
+    config.identityName,
+  );
 
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
@@ -510,9 +569,10 @@ export function buildOrchestratorForAgent(
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     // #914 — the Agent's own behaviour text wins over the platform-wide one.
     // Resolved once, here, so the two call sites below cannot disagree about
-    // which identity this Agent speaks with.
-    ...(agentAssistantIdentity
-      ? { assistantIdentity: agentAssistantIdentity }
+    // which identity this Agent speaks with. #967 folds the Agent's name into
+    // that same resolved value for the same reason.
+    ...(assistantIdentityWithName
+      ? { assistantIdentity: assistantIdentityWithName }
       : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
@@ -568,8 +628,8 @@ export function buildOrchestratorForAgent(
         agent: new CliChatAgent({
           dispatch,
           model: config.model.replace(/-cli$/, '') || 'sonnet',
-          ...(agentAssistantIdentity
-            ? { systemPrompt: agentAssistantIdentity }
+          ...(assistantIdentityWithName
+            ? { systemPrompt: assistantIdentityWithName }
             : {}),
         }),
         raw: orchestrator,

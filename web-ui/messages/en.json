@@ -2080,7 +2080,7 @@
       "avatarHint": "PNG, JPEG or WebP up to 2 MB. It becomes the 192×192 colour icon of the Teams package; a 32×32 outline icon follows only if the picture has transparent areas, otherwise the default outline stays.",
       "fields": {
         "displayName": "Display name",
-        "displayNameHint": "What the agent is called in Teams. Leave it empty to use the registry name.",
+        "displayNameHint": "What the agent is called in Teams — and the name it introduces itself with in chat. Leave it empty to use the registry name.",
         "accentColor": "Accent colour",
         "accentColorHint": "As #RRGGBB. Colours the Teams app package.",
         "shortDescription": "Short description",

@@ -2080,7 +2080,7 @@
       "avatarHint": "PNG, JPEG oder WebP bis 2 MB. Daraus entsteht das 192×192-Farbsymbol des Teams-Pakets; ein 32×32-Umrisssymbol nur dann, wenn das Bild transparente Flächen hat — sonst bleibt das Standardsymbol.",
       "fields": {
         "displayName": "Anzeigename",
-        "displayNameHint": "So heißt der Agent in Teams. Leer lassen heißt: Name aus der Registry.",
+        "displayNameHint": "So heißt der Agent in Teams — und so stellt er sich im Chat vor. Leer lassen heißt: Name aus der Registry.",
         "accentColor": "Akzentfarbe",
         "accentColorHint": "Als #RRGGBB. Färbt das Teams-App-Paket ein.",
         "shortDescription": "Kurzbeschreibung",
