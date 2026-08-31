@@ -226,6 +226,21 @@ const TeamsIdentityProvisionSchema = z.object({
   // field-test failure. `resolveTeamsInstallTarget` decides the kind FIRST and
   // normalises only what is actually a team.
   team_id: z.string().min(1).max(200),
+  /**
+   * WHERE `team_id` CAME FROM, when it came from the tenant directory.
+   *
+   * The operator picks a team or a chat out of `GET /:slug/teams-targets`,
+   * which is Graph's own listing — so Graph already said what each entry is.
+   * Re-deriving that from the id's suffix is how a legacy
+   * `19:…@thread.skype` group chat, offered by our own picker, came back as
+   * "not a Teams install target": the pattern list had never heard of the
+   * suffix and the listing's answer had been thrown away.
+   *
+   * Optional, because a hand-typed id has no provenance to declare and must
+   * still be classified. `resolveTeamsInstallTarget` binds the claim to this
+   * exact `team_id` and never lets it override a channel verdict.
+   */
+  target_kind: z.enum(['team', 'group-chat', 'one-on-one-chat']).optional(),
   bot_slug: z
     .string()
     .regex(
@@ -244,6 +259,21 @@ const TeamsIdentityProvisionSchema = z.object({
 const TeamsInstallSchema = z.object({
   /** See the note on {@link TeamsIdentityProvisionSchema.team_id}. */
   team_id: z.string().min(1).max(200),
+  /**
+   * WHERE `team_id` CAME FROM, when it came from the tenant directory.
+   *
+   * The operator picks a team or a chat out of `GET /:slug/teams-targets`,
+   * which is Graph's own listing — so Graph already said what each entry is.
+   * Re-deriving that from the id's suffix is how a legacy
+   * `19:…@thread.skype` group chat, offered by our own picker, came back as
+   * "not a Teams install target": the pattern list had never heard of the
+   * suffix and the listing's answer had been thrown away.
+   *
+   * Optional, because a hand-typed id has no provenance to declare and must
+   * still be classified. `resolveTeamsInstallTarget` binds the claim to this
+   * exact `team_id` and never lets it override a channel verdict.
+   */
+  target_kind: z.enum(['team', 'group-chat', 'one-on-one-chat']).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1075,13 +1105,25 @@ function rejectedRunDetail(result: unknown): string | null {
  * something about their id was wrong. Deciding it HERE means the answer
  * arrives in the same request, before anything is provisioned.
  *
+ * `knownKind` IS THE DIRECTORY'S ANSWER, NOT A HINT. When the body carries
+ * `target_kind`, the operator picked this id out of `GET /:slug/teams-targets`
+ * and Graph had already said what it was. Passing it on is what stops the
+ * middleware from re-guessing what the listing knew — the failure that made a
+ * legacy `19:…@thread.skype` group chat unpickable even though our own picker
+ * had offered it. `resolveTeamsInstallTarget` binds the claim to this exact
+ * string and still refuses a channel, so the guarantee above survives it.
+ *
  * Returns `null` when it has already answered `res`.
  */
 function resolveInstallTargetOrRefuse(
   res: Response,
   raw: string,
+  knownKind?: TeamsTargetKind,
 ): { readonly id: string; readonly kind: TeamsTargetKind } | null {
-  const target = resolveTeamsInstallTarget(raw);
+  const target = resolveTeamsInstallTarget(
+    raw,
+    knownKind === undefined ? undefined : { id: raw.trim(), kind: knownKind },
+  );
   if (target.ok) return { id: target.id, kind: target.kind };
 
   if (target.reason === 'channel') {
@@ -1116,11 +1158,12 @@ function resolveInstallTargetOrRefuse(
 
   res.status(400).json({
     error: 'teams_target_unrecognised',
-    message: `'${raw.trim()}' is not a Teams install target — expected a team (group) id, a group chat id (19:…@thread.v2) or a 1:1 chat id (19:…@unq.gbl.spaces).`,
+    message: `'${raw.trim()}' is not a Teams install target — expected a team (group) id, a group chat id (19:…@thread.v2, or 19:…@thread.skype for one created before the v2 split) or a 1:1 chat id (19:…@unq.gbl.spaces).`,
     target_id: raw.trim(),
     examples: {
       team: TEAMS_TARGET_EXAMPLES.team,
       group_chat: TEAMS_TARGET_EXAMPLES.groupChat,
+      legacy_group_chat: TEAMS_TARGET_EXAMPLES.legacyGroupChat,
       one_on_one_chat: TEAMS_TARGET_EXAMPLES.oneOnOneChat,
     },
   });
@@ -2194,7 +2237,7 @@ export function createOperatorAgentsRouter(
       // Decide WHAT the pasted id addresses before anything is written or
       // compared: a channel id and an unusable string are answered here, and
       // a team id is normalised to the form Graph accepts.
-      const target = resolveInstallTargetOrRefuse(res, body.team_id);
+      const target = resolveInstallTargetOrRefuse(res, body.team_id, body.target_kind);
       if (!target) return;
       if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       const current = await deps.store.getByAgentId(existing.id);
@@ -2820,7 +2863,7 @@ export function createOperatorAgentsRouter(
       // first, because neither depends on what the target id says. Only then
       // is the id decided — and only then can a chat target be refused for a
       // connector that is present but too old (501, not 503).
-      const target = resolveInstallTargetOrRefuse(res, body.team_id);
+      const target = resolveInstallTargetOrRefuse(res, body.team_id, body.target_kind);
       if (!target) return;
       if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       // Already installed HERE? With the bindings table that is a lookup in

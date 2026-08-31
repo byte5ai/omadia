@@ -4,7 +4,12 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { isSubmittableTarget, classifyTeamsInstallTarget } from '@/app/_lib/teamsInstallTarget';
+import {
+  classifyKnownTeamsTarget,
+  isSubmittableTarget,
+  type KnownTeamsTarget,
+  type TeamsTargetKind,
+} from '@/app/_lib/teamsInstallTarget';
 import {
   getAgentTeamsTargets,
   type AgentTeamsTargetsDto,
@@ -45,7 +50,9 @@ export interface AgentTeamsIdentityTargetProps {
   /** The runner is holding a run for this agent. Starting a second one is
    *  refused server-side, so the control says so instead of inviting a 409. */
   readonly running: boolean;
-  readonly onStart: (teamId: string) => void;
+  /** `targetKind` is present only when the id came from the tenant listing;
+   *  it rides along to the POST so the server does not re-guess it. */
+  readonly onStart: (teamId: string, targetKind?: TeamsTargetKind) => void;
 }
 
 export function AgentTeamsIdentityTarget({
@@ -56,6 +63,10 @@ export function AgentTeamsIdentityTarget({
 }: AgentTeamsIdentityTargetProps): React.JSX.Element {
   const t = useTranslations('operatorAgents.teamsIdentity');
   const [teamId, setTeamId] = useState('');
+  // The directory's answer for the id currently in the field, or `undefined`
+  // once the operator has typed. Held next to the value it describes and
+  // replaced wholesale on every change, so the two cannot drift apart.
+  const [known, setKnown] = useState<KnownTeamsTarget | undefined>(undefined);
   const [targets, setTargets] = useState<AgentTeamsTargetsDto | null>(null);
   const [targetsLoading, setTargetsLoading] = useState(true);
 
@@ -84,7 +95,7 @@ export function AgentTeamsIdentityTarget({
     };
   }, [slug]);
 
-  const submittable = isSubmittableTarget(classifyTeamsInstallTarget(teamId));
+  const submittable = isSubmittableTarget(classifyKnownTeamsTarget(teamId, known));
   const locked = busy || running;
 
   return (
@@ -103,8 +114,14 @@ export function AgentTeamsIdentityTarget({
         targets={targets}
         targetsLoading={targetsLoading}
         value={teamId}
-        onChange={setTeamId}
+        onChange={(next, knownKind) => {
+          setTeamId(next);
+          setKnown(
+            knownKind === undefined ? undefined : { id: next, kind: knownKind },
+          );
+        }}
         disabled={locked}
+        known={known}
       />
 
       <div>
@@ -113,7 +130,7 @@ export function AgentTeamsIdentityTarget({
           busy={busy}
           disabled={locked || !submittable}
           busyLabel={t('submitBusy')}
-          onClick={() => onStart(teamId.trim())}
+          onClick={() => onStart(teamId.trim(), known?.kind)}
         >
           {t('submit')}
         </Button>

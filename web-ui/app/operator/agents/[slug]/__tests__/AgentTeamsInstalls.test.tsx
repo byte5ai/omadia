@@ -222,7 +222,15 @@ describe('AgentTeamsInstalls (#866)', () => {
     await user.type(await screen.findByLabelText('Target ID'), '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c');
     await user.click(screen.getByRole('button', { name: 'Install' }));
 
-    await waitFor(() => expect(mockInstall).toHaveBeenCalledWith('odoo', '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c'));
+    // No kind: this id was TYPED, so there is no directory answer to pass on
+    // and the server classifies it the way it always has.
+    await waitFor(() =>
+      expect(mockInstall).toHaveBeenCalledWith(
+        'odoo',
+        '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
+        undefined,
+      ),
+    );
     expect(
       await screen.findByText(
         'Installing into team 2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c — the provisioning run continues in the background.',

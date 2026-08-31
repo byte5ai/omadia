@@ -2025,19 +2025,20 @@
       "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben.",
       "targetHeading": "Ziel wählen",
       "fieldTarget": "Ziel-ID",
-      "fieldTargetHint": "Ein Team oder ein Chat. Team: die Gruppen-ID aus „Link zum Team abrufen“. Gruppenchat: die vollständige ID in der Form 19:…@thread.v2.",
+      "fieldTargetHint": "Ein Team oder ein Chat. Team: die Gruppen-ID aus „Link zum Team abrufen“. Gruppenchat: die vollständige ID in der Form 19:…@thread.v2 — ältere Chats enden auf 19:…@thread.skype und sind genauso gültig.",
       "targetKind": {
         "team": "Team",
         "group-chat": "Gruppenchat",
         "one-on-one-chat": "1:1-Chat"
       },
       "targetKindLabel": "Erkannt als: {kind}",
-      "targetExamples": "Beispiele — Team: {team} · Gruppenchat: {groupChat}",
+      "targetKindFromListLabel": "Aus der Liste: {kind}",
+      "targetExamples": "Beispiele — Team: {team} · Gruppenchat: {groupChat} · älterer Gruppenchat: {legacyGroupChat}",
       "targetChannel": "Das ist die ID eines Kanals, kein Installationsziel. Teams installiert eine App in ein Team oder in einen Chat, nie in einen einzelnen Kanal. Nimm die Gruppen-ID des Teams, zu dem der Kanal gehört, oder die ID eines Gruppenchats (19:…@thread.v2).",
       "targetAmbiguous": "32 Hex-Zeichen ohne Kontext — das kann die Gruppen-ID eines Teams ohne Bindestriche sein oder der Rumpf einer Gruppenchat-ID. Geraten wird hier nicht: wähle, was gemeint ist.",
       "targetAmbiguousUseTeam": "Als Team einsetzen",
       "targetAmbiguousUseChat": "Als Gruppenchat einsetzen",
-      "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
+      "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2, bei älteren Chats 19:…@thread.skype) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
       "chatInstallUnsupported": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
       "pendingHintTyped": "Ein Provisionierungslauf zielt auf {kind} {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
       "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID."

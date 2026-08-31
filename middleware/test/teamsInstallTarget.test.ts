@@ -19,6 +19,7 @@ import { describe, it } from 'node:test';
 
 import {
   classifyTeamsInstallTarget,
+  isChatTarget,
   resolveTeamsInstallTarget,
   TEAMS_TARGET_EXAMPLES,
 } from '../src/platform/teamsInstallTarget.js';
@@ -165,8 +166,110 @@ describe('TEAMS_TARGET_EXAMPLES', () => {
       'group-chat',
     );
     assert.equal(
+      classifyTeamsInstallTarget(TEAMS_TARGET_EXAMPLES.legacyGroupChat).kind,
+      'group-chat',
+    );
+    assert.equal(
       classifyTeamsInstallTarget(TEAMS_TARGET_EXAMPLES.oneOnOneChat).kind,
       'one-on-one-chat',
     );
+  });
+});
+
+describe('the legacy @thread.skype group chat', () => {
+  // REGRESSION. The tenant chat listing behind the target picker returns these
+  // ids with `chatType: 'group'`; the classifier answered 'unrecognised' for
+  // them, so the picker offered a chat the field underneath it refused. The
+  // id below is the one an operator actually picked.
+  const LEGACY = '19:abc8af8ec7fc471785d3b83c4d84b667@thread.skype';
+
+  it('classifies as a group chat, not as unrecognised', () => {
+    const classified = classifyTeamsInstallTarget(LEGACY);
+    assert.equal(classified.kind, 'group-chat');
+    assert.equal(classified.id, LEGACY);
+  });
+
+  it('resolves to a chat install target', () => {
+    const target = resolveTeamsInstallTarget(LEGACY);
+    assert.ok(target.ok);
+    assert.equal(target.kind, 'group-chat');
+    assert.equal(isChatTarget(target.kind), true);
+  });
+
+  it('matches the suffix whatever its casing', () => {
+    assert.equal(
+      classifyTeamsInstallTarget('19:ABC@THREAD.SKYPE').kind,
+      'group-chat',
+    );
+  });
+
+  it('still tells @thread.skype apart from the channel suffix', () => {
+    // The two legacy-looking suffixes are NOT interchangeable: a channel is
+    // refused on sight and that must not have loosened.
+    assert.equal(
+      classifyTeamsInstallTarget('19:abc@thread.tacv2').kind,
+      'channel',
+    );
+  });
+});
+
+describe('resolveTeamsInstallTarget with a directory-known kind', () => {
+  // THE STRUCTURAL HALF. An id out of `listTeams` / `listChats` arrives with
+  // its kind already decided by Graph. Re-deriving it from the suffix is what
+  // made the case above possible, and would make the NEXT id shape Microsoft
+  // mints fail exactly the same way.
+  const UNKNOWN_SHAPE = '19:something@thread.futurev9';
+
+  it('accepts a shape the pattern table cannot read', () => {
+    assert.equal(classifyTeamsInstallTarget(UNKNOWN_SHAPE).kind, 'unrecognised');
+
+    const target = resolveTeamsInstallTarget(UNKNOWN_SHAPE, {
+      id: UNKNOWN_SHAPE,
+      kind: 'group-chat',
+    });
+    assert.ok(target.ok, 'a listed target must not need the heuristic');
+    assert.equal(target.kind, 'group-chat');
+    assert.equal(target.id, UNKNOWN_SHAPE);
+  });
+
+  it('drops the claim once the value no longer matches it', () => {
+    // What "editing the field puts the kind back up for classification" means
+    // in code: the claim is bound to the id it was made about.
+    const edited = resolveTeamsInstallTarget('19:something-else@thread.futurev9', {
+      id: UNKNOWN_SHAPE,
+      kind: 'group-chat',
+    });
+    assert.equal(edited.ok, false);
+    assert.equal(edited.ok === false && edited.reason, 'unrecognised');
+  });
+
+  it('resolves the bare-32-hex ambiguity when the directory named it', () => {
+    const bare = 'abc8af8ec7fc471785d3b83c4d84b667';
+    assert.equal(resolveTeamsInstallTarget(bare).ok, false);
+
+    const named = resolveTeamsInstallTarget(bare, { id: bare, kind: 'team' });
+    assert.ok(named.ok);
+    assert.equal(named.kind, 'team');
+  });
+
+  it('REFUSES a channel even when the caller claims a chat', () => {
+    // The one veto the claim cannot lift: installing "the channel's team"
+    // reaches every channel of that team. The directory never lists channels,
+    // so this claim cannot have come from one.
+    const target = resolveTeamsInstallTarget('19:abc@thread.tacv2', {
+      id: '19:abc@thread.tacv2',
+      kind: 'group-chat',
+    });
+    assert.equal(target.ok, false);
+    assert.equal(target.ok === false && target.reason, 'channel');
+  });
+
+  it('ignores surrounding whitespace the way the classifier does', () => {
+    const target = resolveTeamsInstallTarget(`  ${UNKNOWN_SHAPE}  `, {
+      id: UNKNOWN_SHAPE,
+      kind: 'group-chat',
+    });
+    assert.ok(target.ok);
+    assert.equal(target.id, UNKNOWN_SHAPE);
   });
 });

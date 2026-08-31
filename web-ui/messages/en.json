@@ -2025,19 +2025,20 @@
       "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error.",
       "targetHeading": "Choose a target",
       "fieldTarget": "Target ID",
-      "fieldTargetHint": "A team or a chat. Team: the group id from “Get link to team”. Group chat: the full id in the form 19:…@thread.v2.",
+      "fieldTargetHint": "A team or a chat. Team: the group id from “Get link to team”. Group chat: the full id in the form 19:…@thread.v2 — older chats end in 19:…@thread.skype and are just as valid.",
       "targetKind": {
         "team": "Team",
         "group-chat": "Group chat",
         "one-on-one-chat": "One-to-one chat"
       },
       "targetKindLabel": "Detected as: {kind}",
-      "targetExamples": "Examples — team: {team} · group chat: {groupChat}",
+      "targetKindFromListLabel": "From the list: {kind}",
+      "targetExamples": "Examples — team: {team} · group chat: {groupChat} · older group chat: {legacyGroupChat}",
       "targetChannel": "That is a channel id, not an install target. Teams installs an app into a team or into a chat, never into a single channel. Use the group id of the team the channel belongs to, or a group chat id (19:…@thread.v2).",
       "targetAmbiguous": "32 hex characters with no context — this can be a team group id without its dashes, or the stem of a group chat id. Nothing is guessed here: pick which one you mean.",
       "targetAmbiguousUseTeam": "Use as team",
       "targetAmbiguousUseChat": "Use as group chat",
-      "targetUnrecognised": "This is not a Teams install target. Expected a team group id, a group chat id (19:…@thread.v2) or a one-to-one chat id (19:…@unq.gbl.spaces).",
+      "targetUnrecognised": "This is not a Teams install target. Expected a team group id, a group chat id (19:…@thread.v2, or 19:…@thread.skype for an older chat) or a one-to-one chat id (19:…@unq.gbl.spaces).",
       "chatInstallUnsupported": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
       "pendingHintTyped": "A provisioning run targets {kind} {teamId}. It only counts as installed once the chain reaches the install step.",
       "chatNameUnavailable": "The connector provides no name for chats — the id is shown instead."

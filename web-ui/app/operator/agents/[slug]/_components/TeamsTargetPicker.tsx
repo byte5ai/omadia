@@ -12,6 +12,7 @@ import type {
   TeamsTargetListingDto,
   TeamsTeamOptionDto,
 } from '@/app/_lib/agents';
+import type { TeamsTargetKind } from '@/app/_lib/teamsInstallTarget';
 
 /**
  * Pick an install target instead of typing one.
@@ -29,10 +30,18 @@ import type {
  * input that broke the field test cannot be produced from here at all.
  *
  * IT WRITES INTO THE EXISTING FIELD, IT DOES NOT REPLACE IT. Selecting sets
- * the same `teamId` state the text input owns, so the live type detection
- * below it keeps running and keeps being the thing that decides. One code
- * path, one verdict — and the free-text field stays usable for the cases a
- * list cannot cover.
+ * the same `teamId` state the text input owns, so the free-text field stays
+ * usable for the cases a list cannot cover.
+ *
+ * IT ALSO HANDS OVER THE KIND, AND THAT IS THE IMPORTANT PART. Every row here
+ * came from Graph, which said what it was — `listTeams` returns teams,
+ * `listChats` returns a `chatType` per chat. Emitting only the id threw that
+ * away and left the field to re-derive the kind from the id's suffix, which is
+ * how a legacy `19:…@thread.skype` group chat OFFERED BY THIS COMPONENT was
+ * then rejected under it as "not a Teams install target". A pattern table can
+ * only know the shapes it was written for; the listing knows the truth. So the
+ * kind travels with the id, and the classification below stays what it was
+ * built for — reading strings a human typed.
  *
  * EACH HALF IS SEARCHABLE, not a plain dropdown. The byte5 tenant alone
  * publishes thirty teams, and a chat with no topic renders as a `19:…` stem,
@@ -68,7 +77,8 @@ export interface TeamsTargetPickerProps {
   /** The id currently in the text field, so a picked row can render as the
    *  selected one and a hand-typed id simply shows no selection. */
   readonly value: string;
-  readonly onSelect: (id: string) => void;
+  /** `kind` is the DIRECTORY's answer for this row, not a guess about it. */
+  readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
 }
 
 /** Label for one chat row: its topic, else its members, else its id. Never
@@ -121,6 +131,7 @@ export function TeamsTargetPicker({
         optionsOf={(items: readonly TeamsTeamOptionDto[]) =>
           items.map((team) => ({ id: team.id, label: team.displayName }))
         }
+        kindOf={() => 'team'}
         unavailableText={(reason) =>
           t(`unavailable.teams.${reason}`, { scope: 'Chat.ReadBasic' })
         }
@@ -150,6 +161,15 @@ export function TeamsTargetPicker({
               : {}),
           }))
         }
+        // Graph's own `chatType`, mapped to the kind the install endpoint
+        // branches on. A meeting chat installs through /chats like a group
+        // one, so only the 1:1 case is separated out.
+        kindOf={(id) =>
+          chats.available &&
+          chats.items.find((chat) => chat.id === id)?.chatType === 'oneOnOne'
+            ? 'one-on-one-chat'
+            : 'group-chat'
+        }
         unavailableText={(reason) =>
           t(`unavailable.chats.${reason}`, { scope: 'Chat.ReadBasic' })
         }
@@ -165,8 +185,10 @@ interface TargetSelectProps<T> {
   readonly listing: TeamsTargetListingDto<T>;
   readonly disabled: boolean;
   readonly value: string;
-  readonly onSelect: (id: string) => void;
+  readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
   readonly optionsOf: (items: readonly T[]) => readonly SearchableOption[];
+  /** The kind the listing reported for the row with this id. */
+  readonly kindOf: (id: string) => TeamsTargetKind;
   readonly unavailableText: (reason: string) => string;
   readonly noMatchText: (query: string) => string;
   readonly matchCountText: (count: number) => string;
@@ -192,6 +214,7 @@ function TargetSelect<T>({
   value,
   onSelect,
   optionsOf,
+  kindOf,
   unavailableText,
   noMatchText,
   matchCountText,
@@ -223,7 +246,7 @@ function TargetSelect<T>({
       options={options}
       value={value}
       disabled={disabled}
-      onSelect={onSelect}
+      onSelect={(id) => onSelect(id, kindOf(id))}
       noMatchText={noMatchText}
       matchCountText={matchCountText}
     />

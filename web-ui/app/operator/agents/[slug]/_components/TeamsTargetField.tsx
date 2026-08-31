@@ -4,8 +4,10 @@ import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
-  classifyTeamsInstallTarget,
+  classifyKnownTeamsTarget,
   TEAMS_TARGET_EXAMPLES,
+  type KnownTeamsTarget,
+  type TeamsTargetKind,
 } from '@/app/_lib/teamsInstallTarget';
 import type { AgentTeamsTargetsDto } from '@/app/_lib/agents';
 import { TeamsTargetPicker } from './TeamsTargetPicker';
@@ -31,6 +33,19 @@ import { TeamsTargetPicker } from './TeamsTargetPicker';
  * every POST. What this buys is the five provisioning steps that used to run
  * before Graph answered `404 No team found with Group Id`: the verdict now
  * appears under the field while the operator is still typing.
+ *
+ * A PICKED TARGET IS NOT CLASSIFIED, IT IS REMEMBERED. When the id came from
+ * the picker, Graph already said what it was, so the suffix table is not asked
+ * — it is an approximation of an answer we were handed. That claim is bound to
+ * the exact string it was made about ({@link KnownTeamsTarget}), so the first
+ * keystroke in the field invalidates it and the classification takes over
+ * again. The alternative — a remembered kind outliving the id it described —
+ * would be the same lie as the misclassification, only quieter.
+ *
+ * THE KIND TRAVELS UP, NOT JUST ACROSS. `onChange` carries it to the caller so
+ * it reaches the POST body as `target_kind`. Without that the middleware would
+ * re-derive the kind from the id and land on the same wrong answer one hop
+ * later, which is the failure mode this whole path exists to close.
  */
 
 export interface TeamsTargetFieldProps {
@@ -39,8 +54,13 @@ export interface TeamsTargetFieldProps {
   readonly targets: AgentTeamsTargetsDto | null;
   readonly targetsLoading: boolean;
   readonly value: string;
-  readonly onChange: (value: string) => void;
+  /** `knownKind` is present only while `value` is exactly what the operator
+   *  picked from the list; it is absent for anything typed. */
+  readonly onChange: (value: string, knownKind?: TeamsTargetKind) => void;
   readonly disabled: boolean;
+  /** The claim the caller is holding for `value`, echoed back so the verdict
+   *  and the submit gate agree with what will actually be posted. */
+  readonly known?: KnownTeamsTarget;
 }
 
 export function TeamsTargetField({
@@ -49,9 +69,10 @@ export function TeamsTargetField({
   value,
   onChange,
   disabled,
+  known,
 }: TeamsTargetFieldProps): React.JSX.Element {
   const t = useTranslations('operatorAgents.teamsInstalls');
-  const target = classifyTeamsInstallTarget(value);
+  const target = classifyKnownTeamsTarget(value, known);
 
   return (
     <>
@@ -62,7 +83,7 @@ export function TeamsTargetField({
         loading={targetsLoading}
         disabled={disabled}
         value={value}
-        onSelect={onChange}
+        onSelect={(id, kind) => onChange(id, kind)}
       />
 
       <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
@@ -71,6 +92,8 @@ export function TeamsTargetField({
           type="text"
           value={value}
           disabled={disabled}
+          // No kind: typing is exactly the case the classifier was written
+          // for, and a claim from an earlier pick must not survive an edit.
           onChange={(e) => onChange(e.target.value)}
           aria-label={t('fieldTarget')}
           className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-sm text-[color:var(--fg-strong)]"
@@ -82,18 +105,31 @@ export function TeamsTargetField({
           {t('targetExamples', {
             team: TEAMS_TARGET_EXAMPLES.team,
             groupChat: TEAMS_TARGET_EXAMPLES.groupChat,
+            legacyGroupChat: TEAMS_TARGET_EXAMPLES.legacyGroupChat,
           })}
         </span>
       </label>
 
       {/* The verdict. A recognised target is named — "Team" or
           "Gruppenchat" — so the operator can see the field understood
-          them; the three that cannot be installed each say what to do. */}
+          them; the three that cannot be installed each say what to do.
+
+          AND IT SAYS WHERE THE VERDICT CAME FROM. "Detected as" is a claim
+          about a guess; for a row taken out of the tenant listing there was
+          no guess, so it says "from the list" instead. The distinction is
+          not decoration: it is the same one the code now makes, and a label
+          that blurred it would describe a mechanism we deliberately stopped
+          using. */}
       {target.kind === 'team' ||
       target.kind === 'group-chat' ||
       target.kind === 'one-on-one-chat' ? (
         <div className="text-[11px] text-[color:var(--success)]">
-          {t('targetKindLabel', { kind: t(`targetKind.${target.kind}`) })}
+          {t(
+            known !== undefined && known.id === value.trim()
+              ? 'targetKindFromListLabel'
+              : 'targetKindLabel',
+            { kind: t(`targetKind.${target.kind}`) },
+          )}
         </div>
       ) : null}
       {target.kind === 'channel' ? (

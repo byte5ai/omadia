@@ -37,6 +37,10 @@ export type TeamsTargetClassification =
 
 const CHANNEL_SUFFIX = /@thread\.tacv2$/i;
 const GROUP_CHAT_SUFFIX = /@thread\.v2$/i;
+/** The pre-`v2` spelling of a group chat thread. Teams minted these before the
+ *  split that gave channels `@thread.tacv2` and group chats `@thread.v2`, and
+ *  the tenant chat listing still returns plenty of them. */
+const LEGACY_GROUP_CHAT_SUFFIX = /@thread\.skype$/i;
 const ONE_ON_ONE_SUFFIX = /@unq\.gbl\.spaces$/i;
 const CONVERSATION_PREFIX = /^19:.+/;
 const DASHED_GUID = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
@@ -70,6 +74,7 @@ export function classifyTeamsInstallTarget(value: string): TeamsTargetClassifica
   if (CONVERSATION_PREFIX.test(id)) {
     if (CHANNEL_SUFFIX.test(id)) return { kind: 'channel', id };
     if (GROUP_CHAT_SUFFIX.test(id)) return { kind: 'group-chat', id };
+    if (LEGACY_GROUP_CHAT_SUFFIX.test(id)) return { kind: 'group-chat', id };
     if (ONE_ON_ONE_SUFFIX.test(id)) return { kind: 'one-on-one-chat', id };
     // Teams has more conversation kinds than this handles, and installing
     // into the wrong one has a real audience — so an unknown suffix is
@@ -91,6 +96,52 @@ export function classifyTeamsInstallTarget(value: string): TeamsTargetClassifica
   return { kind: 'unrecognised', id };
 }
 
+/**
+ * A target the TENANT DIRECTORY named, rather than a string the operator typed.
+ *
+ * Mirrors `KnownTeamsInstallTarget` in the middleware, and exists for the same
+ * reason: {@link classifyTeamsInstallTarget} reads strings of unknown
+ * provenance, and an id that came out of the picker is not one of those. Graph
+ * listed it AND said what it was. Feeding that id back through a suffix table
+ * discards the better answer to re-derive a worse one — which is how a legacy
+ * `19:…@thread.skype` group chat, offered by the picker itself, ended up
+ * labelled "not a Teams install target" under the field.
+ *
+ * BOUND TO ITS ID ON PURPOSE. The claim names the exact string it was made
+ * about, so editing the field invalidates it without any caller having to
+ * remember to clear it. The UI can therefore never label a typed id with a
+ * kind that belonged to a picked one.
+ */
+export interface KnownTeamsTarget {
+  readonly id: string;
+  readonly kind: TeamsTargetKind;
+}
+
+/**
+ * The verdict to SHOW for what is currently in the field.
+ *
+ * Identical to {@link classifyTeamsInstallTarget} except when `known` still
+ * describes this exact value — then the directory's answer stands, because it
+ * came from Graph and the pattern table is only ever an approximation of it. A
+ * `'channel'` reading is the one thing it cannot override: the directory never
+ * lists channels, so such a claim cannot have come from one.
+ */
+export function classifyKnownTeamsTarget(
+  value: string,
+  known?: KnownTeamsTarget,
+): TeamsTargetClassification {
+  const classified = classifyTeamsInstallTarget(value);
+  if (
+    known !== undefined &&
+    known.id === value.trim() &&
+    classified.kind !== 'channel' &&
+    classified.kind !== 'empty'
+  ) {
+    return { kind: known.kind, id: known.id };
+  }
+  return classified;
+}
+
 /** Can this input be submitted as-is? `false` for every verdict that needs the
  *  operator to change something first — which is what disables the button. */
 export function isSubmittableTarget(
@@ -108,4 +159,8 @@ export function isSubmittableTarget(
 export const TEAMS_TARGET_EXAMPLES = {
   team: '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
   groupChat: '19:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6@thread.v2',
+  /** The same kind of thing, spelled the way Teams spelled it before the v2
+   *  split. Shown because tenants still hold plenty of them — an operator who
+   *  finds one in their own picker should recognise it in the help text. */
+  legacyGroupChat: '19:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6@thread.skype',
 } as const;

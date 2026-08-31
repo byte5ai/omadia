@@ -21,10 +21,11 @@
  * owns the wider question "what KIND of thing is this, and can we install into
  * it at all".
  *
- * THE FIVE SHAPES, AND WHY THE LAST TWO ARE NOT INSTALL TARGETS
- * ------------------------------------------------------------
+ * THE SHAPES, AND WHY THE LAST TWO ARE NOT INSTALL TARGETS
+ * -------------------------------------------------------
  *   `<guid>`                  team          → POST /teams/{id}/installedApps
  *   `19:…@thread.v2`          group chat    → POST /chats/{id}/installedApps
+ *   `19:…@thread.skype`       group chat    → POST /chats/{id}/installedApps
  *   `19:…@unq.gbl.spaces`     1:1 chat      → POST /chats/{id}/installedApps
  *   `19:…@thread.tacv2`       CHANNEL       → refused, with the fix named
  *   32 bare hex               ambiguous     → see the concession below
@@ -34,6 +35,23 @@
  * channel of it — a wider blast radius than the operator asked for, produced
  * by a guess. So it is named as the mistake it is and the team id is pointed
  * at instead.
+ *
+ * `@thread.skype` IS THE OLD SPELLING OF A GROUP CHAT
+ * --------------------------------------------------
+ * Teams threads minted before the `v2` split all end `@thread.skype`; the
+ * split later gave channels `@thread.tacv2` and group chats `@thread.v2`, and
+ * older conversations kept the original suffix. The tenant chat listing
+ * (`GET /me/chats`, behind the target picker) returns them with
+ * `chatType: 'group'` and a member roster — Graph itself calling them chats —
+ * and this module used to answer `'unrecognised'` for exactly those ids. The
+ * picker offered a chat the field then refused.
+ *
+ * A legacy CHANNEL id wears the same suffix, and no part of the string
+ * separates the two. This reads it as a chat, because the two mistakes do not
+ * cost the same: a channel id sent to `/chats/{id}` buys one refused Graph
+ * call, while refusing the suffix blocks a chat the operator picked from a
+ * list we produced. The `@thread.tacv2` channel refusal above is unaffected —
+ * that shape is unambiguous, which is why it can still be refused on sight.
  *
  * THE ONE CONCESSION: BARE 32-HEX
  * -------------------------------
@@ -95,6 +113,8 @@ export type TeamsTargetClassification =
  */
 const CHANNEL_SUFFIX = /@thread\.tacv2$/i;
 const GROUP_CHAT_SUFFIX = /@thread\.v2$/i;
+/** The pre-`v2` spelling of {@link GROUP_CHAT_SUFFIX} — see the header. */
+const LEGACY_GROUP_CHAT_SUFFIX = /@thread\.skype$/i;
 const ONE_ON_ONE_SUFFIX = /@unq\.gbl\.spaces$/i;
 
 /** Every conversation id Teams hands out starts with the `19:` prefix. */
@@ -116,6 +136,10 @@ const BARE_GUID = /^[0-9a-fA-F]{32}$/;
 export const TEAMS_TARGET_EXAMPLES = {
   team: '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
   groupChat: '19:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6@thread.v2',
+  /** The same thing, spelled the way Teams spelled it before the v2 split —
+   *  listed because tenants still hold plenty of them, not as an alternative
+   *  an operator would ever choose. */
+  legacyGroupChat: '19:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6@thread.skype',
   oneOnOneChat: '19:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d_00000000-0000-0000-0000-000000000000@unq.gbl.spaces',
 } as const;
 
@@ -132,6 +156,7 @@ export function classifyTeamsInstallTarget(value: string): TeamsTargetClassifica
   if (CONVERSATION_PREFIX.test(id)) {
     if (CHANNEL_SUFFIX.test(id)) return { kind: 'channel', id };
     if (GROUP_CHAT_SUFFIX.test(id)) return { kind: 'group-chat', id };
+    if (LEGACY_GROUP_CHAT_SUFFIX.test(id)) return { kind: 'group-chat', id };
     if (ONE_ON_ONE_SUFFIX.test(id)) return { kind: 'one-on-one-chat', id };
     // A `19:` id with a suffix we do not know is NOT quietly treated as a
     // chat: Teams has more conversation kinds than this module handles, and
@@ -158,6 +183,35 @@ export function classifyTeamsInstallTarget(value: string): TeamsTargetClassifica
 
 /** Why {@link resolveTeamsInstallTarget} refused. */
 export type TeamsTargetRejection = 'channel' | 'ambiguous' | 'unrecognised';
+
+/**
+ * A target the TENANT DIRECTORY named, rather than a string a human typed.
+ *
+ * WHY THIS TYPE EXISTS — AND WHY IT IS NOT AN OPTIMISATION.
+ * {@link classifyTeamsInstallTarget} exists to read strings whose provenance
+ * is unknown, which is why it has an `'ambiguous'` verdict at all: guessing
+ * about a hand-typed id is the failure this module was written after.
+ *
+ * An id that came out of `listTeams` / `listChats` is not that kind of string.
+ * Graph produced it AND said what it was — a team, a group chat, a 1:1 chat.
+ * Running it back through a suffix table throws that answer away and re-derives
+ * a worse one, and the `@thread.skype` regression is what that costs: the
+ * picker offered a chat Graph had just classified, and the pattern list, which
+ * had never heard of the suffix, called it unusable. Every id shape Microsoft
+ * adds next breaks us the same way, at the exact moment the operator did
+ * everything right.
+ *
+ * SELF-INVALIDATING BY CONSTRUCTION. The known kind is bound to the exact id
+ * it was known for. {@link resolveTeamsInstallTarget} honours it only while
+ * `id` still equals the value being resolved, so editing the field puts the
+ * kind back up for classification without anyone having to remember to clear
+ * it. A stale claim cannot outlive the string it was a claim about.
+ */
+export interface KnownTeamsInstallTarget {
+  /** The id the directory reported — the claim is void for any other value. */
+  readonly id: string;
+  readonly kind: TeamsTargetKind;
+}
 
 export type ResolvedTeamsInstallTarget =
   | {
@@ -193,9 +247,33 @@ export type ResolvedTeamsInstallTarget =
  *
  * So the refusal carries BOTH readings, and the caller asks the one party who
  * actually knows which was meant.
+ *
+ * `known` SHORT-CIRCUITS THE GUESSING, AND ONLY THE GUESSING. When the caller
+ * can say where the id came from — {@link KnownTeamsInstallTarget}, i.e. the
+ * tenant directory — that answer is better than anything a suffix table can
+ * derive, and it is used. Two limits keep it honest:
+ *
+ *   1. The claim is bound to its id (see the type). Any other value ignores it.
+ *   2. A `'channel'` classification still wins. That is the one shape whose
+ *      misreading has a WIDER audience than the operator asked for, and the
+ *      directory never lists channels — so a claim over a `@thread.tacv2` id
+ *      cannot have come from a listing and is not treated as though it had.
+ *
+ * Everything else the claim may override, because the only thing `kind`
+ * decides downstream is `/teams/{id}` versus `/chats/{id}` — two tenant-scoped
+ * endpoints Graph re-authorises on its own. A wrong kind buys a refused call,
+ * never a wider install.
  */
-export function resolveTeamsInstallTarget(value: string): ResolvedTeamsInstallTarget {
+export function resolveTeamsInstallTarget(
+  value: string,
+  known?: KnownTeamsInstallTarget,
+): ResolvedTeamsInstallTarget {
   const classified = classifyTeamsInstallTarget(value);
+
+  if (known !== undefined && known.id === value.trim() && classified.kind !== 'channel') {
+    return { ok: true, kind: known.kind, id: known.id };
+  }
+
   switch (classified.kind) {
     case 'team':
     case 'group-chat':

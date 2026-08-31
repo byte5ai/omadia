@@ -23,6 +23,7 @@ import {
 } from '../../../../_lib/teamsIdentity';
 import { AgentTeamsProvisioningTimeline } from './AgentTeamsProvisioningTimeline';
 import { AgentTeamsIdentityTarget } from './AgentTeamsIdentityTarget';
+import type { TeamsTargetKind } from '@/app/_lib/teamsInstallTarget';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   Fact,
@@ -313,7 +314,15 @@ export function AgentTeamsIdentity(
           // WITHOUT `bot_slug` / `display_name`: they survive a reset and the
           // server ignores them on an existing row, so resending them could
           // only ever introduce a difference nobody asked for.
-          onStartRun={(targetTeamId) => void provision({ team_id: targetTeamId })}
+          // `targetKind` rides along when the operator picked the target out
+          // of the tenant listing: the server then installs into what Graph
+          // said it was instead of re-deriving it from the id's suffix.
+          onStartRun={(targetTeamId, targetKind) =>
+            void provision({
+              team_id: targetTeamId,
+              ...(targetKind !== undefined ? { target_kind: targetKind } : {}),
+            })
+          }
           formatDate={(iso) => formatTimestamp(iso, format)}
         />
       )}
@@ -324,7 +333,7 @@ export function AgentTeamsIdentity(
 function ReadyPanel(props: {
   readonly status: TeamsIdentityStatusDto;
   readonly busy: boolean;
-  readonly onStartRun: (teamId: string) => void;
+  readonly onStartRun: (teamId: string, targetKind?: TeamsTargetKind) => void;
   readonly formatDate: (iso: string) => string;
   readonly slug: string;
   readonly onReloaded: () => void;
