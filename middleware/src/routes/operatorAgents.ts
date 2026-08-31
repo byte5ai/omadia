@@ -1248,6 +1248,55 @@ function startProvisioningRun(
     });
 }
 
+/**
+ * Carry the provisioned Teams name into the agent's own identity (#967).
+ *
+ * WHY HERE. This is the one moment an operator states what the bot is called.
+ * The name reaches the bot registration and the app package from the
+ * provisioning row; before this call it reached nothing else, so the agent
+ * kept speaking as the platform assistant — outwardly `Messias`, inwardly the
+ * platform's name. Seeding at the START of the chain rather than at its end
+ * means the very first package and the very first turn already agree, and a
+ * chain that fails at step two still leaves the operator's chosen name
+ * visible on the agent page.
+ *
+ * FROM THE STORED ROW, NOT THE REQUEST BODY. `ensureForAgent` is
+ * create-if-absent: a re-POST carrying a different `display_name` does NOT
+ * rename an existing Teams identity. Seeding from the body would therefore
+ * write a name the tenant does not use — re-creating the exact split this
+ * fixes, pointing the other way. The row's `displayName` is what the bot
+ * actually wears.
+ *
+ * NEVER FAILS THE REQUEST. Provisioning is the operator's actual intent; the
+ * name adoption is convergence on top of it. A failure is logged and the
+ * chain proceeds, in the same spirit as the `teams_bots` config sync.
+ */
+async function adoptProvisionedDisplayName(
+  identity: OperatorAgentIdentityDeps | undefined,
+  registry: OrchestratorRegistry,
+  agent: { readonly id: string; readonly slug: string },
+  displayName: string,
+): Promise<void> {
+  // No identity store wired (minimal mount, no DATABASE_URL): nothing to
+  // seed, and provisioning never depended on it.
+  if (!identity) return;
+  try {
+    const before = await identity.store.getByAgentId(agent.id);
+    const after = await identity.store.adoptDisplayName(agent.id, displayName);
+    // The store refuses an authored name, so an unchanged value means either
+    // "already named" or "already named exactly this" — neither is a change
+    // the running Agent needs to hear about. Only a real adoption reloads,
+    // because the name is part of this Agent's system prompt and a stored
+    // name nobody rebuilt for is a name the bot never says.
+    if ((before?.displayName ?? null) === (after?.displayName ?? null)) return;
+    await registry.reload();
+  } catch (err) {
+    console.warn(
+      `[operator-agents] could not adopt the provisioned Teams name for '${agent.slug}' into its identity: ${err instanceof Error ? err.message : String(err)} — provisioning continues; the operator can set the name on the agent's identity page`,
+    );
+  }
+}
+
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
  *  Bounds and charset follow channel-teams' BOT_SLUG_PATTERN (max 63); the
  *  dash-trim runs AFTER the length cut so a truncation can never leave a
@@ -1275,6 +1324,12 @@ export interface OperatorAgentIdentityStore {
   recompose(
     agentId: string,
     composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined>;
+  /** #967 — adopt the provisioned Teams name, ONLY when none is authored.
+   *  The refusal lives in the store's SQL; see `adoptDisplayName`. */
+  adoptDisplayName(
+    agentId: string,
+    displayName: string,
   ): Promise<AgentIdentityRecord | undefined>;
   setAvatar(
     agentId: string,
@@ -1859,9 +1914,21 @@ export function createOperatorAgentsRouter(
       // contract as every other write on this router; the diff decides whether
       // an Orchestrator is actually rebuilt.
       // Normalised on both sides: a first save has no `before` at all, and
-      // `undefined !== null` would rebuild every Agent whose operator merely
-      // typed a display name — dropping live sessions for a label change.
-      if ((before?.composed.text ?? null) !== (composed.text ?? null)) {
+      // `undefined !== null` would rebuild every Agent over a value that did
+      // not actually move.
+      //
+      // #967 — the display name is on this list now. It used to be excluded
+      // as "a label change, not worth dropping sessions", which was true
+      // while the name only reached the Teams manifest. It reaches the system
+      // prompt as well now (`AgentRow.identityName`), so leaving it out would
+      // store a rename the agent never speaks — the same silent no-op this
+      // reload exists to prevent for `instructions`.
+      const nameChanged =
+        (before?.displayName ?? '').trim() !== (body.display_name ?? '').trim();
+      if (
+        (before?.composed.text ?? null) !== (composed.text ?? null) ||
+        nameChanged
+      ) {
         await live.registry.reload();
       }
       // A save whose CONTENT did not change returns the stored row
@@ -2267,6 +2334,14 @@ export function createOperatorAgentsRouter(
         }
         throw err;
       }
+      // #967 — before the run, so the first package and the first turn are
+      // built from an identity that already carries the operator's name.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        existing,
+        row.displayName,
+      );
       startProvisioningRun(deps, existing, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
@@ -2907,6 +2982,17 @@ export function createOperatorAgentsRouter(
         teamId: target.id,
         targetKind: target.kind,
       });
+      // #967 — same adoption as the provisioning POST, and for the agents
+      // that need it most: an identity provisioned BEFORE this existed has no
+      // name of its own, and installing it into a(nother) team is the next
+      // operator action that passes through here. Idempotent and guarded, so
+      // running it on an already-named identity costs one refused UPDATE.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        agent,
+        updated.displayName,
+      );
       startProvisioningRun(deps, agent, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,

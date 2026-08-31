@@ -302,6 +302,68 @@ export class AgentIdentityStore {
    * that changes without a content change is the model family — see
    * {@link recompose}.
    */
+  /**
+   * Give an agent the name it already wears OUTWARD, but only if it has no
+   * name of its own yet (byte5ai/omadia#967).
+   *
+   * Teams provisioning asks the operator for a display name, writes it onto
+   * the bot registration and into the app package, and — before this method —
+   * nowhere else. The bot was then called `Messias` in the tenant while its
+   * identity stayed unauthored, so the prompt fell through to the platform
+   * assistant and the bot introduced itself under the platform's name. One
+   * bot, two names, and the mismatch is the first thing a user sees.
+   *
+   * NEVER OVERWRITES AN AUTHORED NAME. That is the whole point of the method
+   * existing instead of a `save()` from the caller: an operator who wrote a
+   * name (and a persona, and a tone) must not lose it because someone re-ran
+   * provisioning. Losing curated work is strictly worse than the mismatch
+   * this repairs.
+   *
+   * THE GUARD IS THE `WHERE`, NOT A READ. A read-then-write from the route
+   * would leave a window in which a concurrent identity save is clobbered.
+   * `ON CONFLICT … DO UPDATE … WHERE` evaluates the predicate against the
+   * CURRENT row inside the same statement, so the refusal is atomic and the
+   * worst a race can do is decide the order, never lose a write.
+   *
+   * BLANK COUNTS AS UNSET, exactly as {@link resolveAgentIdentity} reads it:
+   * a row whose `display_name` is `''` resolves to the registry name today,
+   * so filling it takes nothing away. A row with an actual name is refused.
+   *
+   * NO REVISION BUMP. The Teams manifest already renders this name — it falls
+   * back to the provisioning row's `display_name`, which is the value being
+   * adopted — so the package is byte-identical and a re-publish would buy
+   * nothing. What DOES change is the system prompt, and that travels through
+   * the registry rebuild, not through the manifest version.
+   *
+   * Returns the row as it now stands: the seeded one, or the authored one
+   * left untouched. `undefined` only when the refusal met no row at all,
+   * which cannot happen (the INSERT would have created it).
+   */
+  async adoptDisplayName(
+    agentId: string,
+    displayName: string,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const name = nonEmpty(displayName);
+    // Nothing to adopt. Seeding a blank would create an empty row whose only
+    // effect is to switch the manifest onto the revision-based version.
+    if (name === null) return this.getByAgentId(agentId);
+    const res = await this.pool.query<AgentIdentityMetaRow>(
+      `INSERT INTO agent_identities (agent_id, display_name)
+       VALUES ($1, $2)
+       ON CONFLICT (agent_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         updated_at   = now()
+       WHERE agent_identities.display_name IS NULL
+          OR btrim(agent_identities.display_name) = ''
+       RETURNING ${META_COLUMNS}`,
+      [agentId, name],
+    );
+    const row = res.rows[0];
+    // No RETURNING row = the WHERE refused the update: this agent already has
+    // an authored name. Report what is actually stored rather than nothing.
+    return row ? mapRow(row) : this.getByAgentId(agentId);
+  }
+
   async save(
     agentId: string,
     input: AgentIdentitySaveInput,
