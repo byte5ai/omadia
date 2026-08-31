@@ -138,7 +138,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     assert.equal(owned.length, 1);
   });
 
-  it('does not import as a dataset (falls through to plain text) when channelIdentity is absent AND userId is absent', async () => {
+  it('refuses the file WITHOUT leaking its rows as plain text when the uploading user cannot be resolved', async () => {
     const requests: LlmRequest[] = [];
     const graph = new InMemoryKnowledgeGraph();
     const orch = new Orchestrator(options(requests, graph));
@@ -147,5 +147,19 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
 
     const stats = await graph.stats();
     assert.equal(stats.byNodeType['PluginEntity'] ?? 0, 0, 'no Dataset node should have been created');
+
+    // The regression this guards: `ingestAttachments` used to fall through to
+    // the plain-text path here, appending every CSV row to the prompt as
+    // `[attachment-content]` cleartext — bypassing the per-cell privacy scan
+    // exactly when the dataset pipeline was unavailable. A tabular upload now
+    // either becomes a scanned dataset or is refused; it is never inlined.
+    const wire = JSON.stringify(requests);
+    assert.equal(wire.includes('Ada'), false, 'CSV row values must not reach the model');
+    assert.equal(wire.includes('Grace'), false, 'CSV row values must not reach the model');
+    assert.equal(
+      wire.includes('attachment-not-ingested'),
+      true,
+      'the model must be told the file was not ingested',
+    );
   });
 });

@@ -5,10 +5,10 @@ import { z } from 'zod';
 
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import { DatasetQueryValidationError } from '@omadia/plugin-api';
-import { importCsvDataset, isCsvAttachment } from '@omadia/orchestrator';
+import { detectTabularFormat, importTabularDataset } from '@omadia/orchestrator';
 
 /**
- * #430 — REST surface for structured dataset ingestion (CSV import).
+ * #430 — REST surface for structured dataset ingestion (CSV + XLSX import).
  *
  * Mounted under `/api/v1/datasets`, ACL pattern mirrors `/api/v1/memory`
  * (`memory.ts`): `req.session.omadia_user_id` is the sole owner/viewer
@@ -17,9 +17,13 @@ import { importCsvDataset, isCsvAttachment } from '@omadia/orchestrator';
  * request, mapped error codes on 4xx.
  *
  * Every uploaded row runs through the SAME privacy-scan pipeline as the
- * chat-attachment auto-ingest path — both call `importCsvDataset` from
+ * chat-attachment auto-ingest path — both call `importTabularDataset` from
  * `@omadia/orchestrator`, so there is exactly one place the scan could be
  * skipped, and this route isn't it.
+ *
+ * An XLSX workbook yields one dataset PER SHEET; the response therefore
+ * carries a `datasets` array. `dataset` is kept alongside it, holding the
+ * first (and for CSV, only) dataset, so existing clients keep working.
  */
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // mirrors TEAMS_ATTACHMENT_MAX_BYTES default
@@ -93,10 +97,11 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
           .json({ code: 'dataset.no_file', message: "multipart field 'file' fehlt." });
         return;
       }
-      if (!isCsvAttachment(file.mimetype, file.originalname)) {
+      const format = detectTabularFormat(file.mimetype, file.originalname);
+      if (!format) {
         res.status(422).json({
           code: 'dataset.unsupported_type',
-          message: 'Nur CSV-Dateien werden aktuell unterstützt (v1 scope, siehe #430).',
+          message: 'Nur CSV- und Excel-Dateien (.xlsx, .xlsm) werden unterstützt.',
         });
         return;
       }
@@ -107,24 +112,42 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
           : file.originalname;
 
       try {
-        const imported = await importCsvDataset({
+        const imported = await importTabularDataset({
           graph: deps.graph,
           bytes: file.buffer,
           datasetName,
           sourceFileName: file.originalname,
           ownerOmadiaUserId: sessionUserId,
+          format,
         });
         if (!imported.ok) {
           res.status(422).json({ code: 'dataset.import_failed', message: imported.reason });
           return;
         }
+        const first = imported.imported[0];
+        if (!first) {
+          res.status(422).json({
+            code: 'dataset.import_failed',
+            message: 'Die Datei enthielt keine importierbaren Datenzeilen.',
+          });
+          return;
+        }
         res.status(201).json({
-          dataset: imported.result,
-          privacyScan: imported.privacyScan,
+          // Back-compat: pre-XLSX clients read `dataset`/`privacyScan`/
+          // `truncation` and only ever got one table. They still do.
+          dataset: first.result,
+          privacyScan: first.privacyScan,
           // #430 fixup — cells over MAX_CELL_CHARS are still cut (protects the
           // scan + storage from one pathological cell), but the cut is no
           // longer silent: callers can see it happened and which columns.
-          truncation: imported.truncation,
+          truncation: first.truncation,
+          // Full result: one entry per sheet for a workbook, one for a CSV.
+          datasets: imported.imported.map((t) => ({
+            dataset: t.result,
+            privacyScan: t.privacyScan,
+            truncation: t.truncation,
+            ...(t.sheetName ? { sheetName: t.sheetName } : {}),
+          })),
         });
       } catch (err) {
         // #430 fixup — an unexpected THROWN error (e.g. a transient Postgres

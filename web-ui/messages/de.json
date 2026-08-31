@@ -203,7 +203,7 @@
         },
         "datasets": {
           "title": "Datensätze",
-          "description": "CSVs als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
+          "description": "CSV- und Excel-Dateien als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
         },
         "bulkPromote": {
           "title": "Bulk-Promotion",
@@ -4980,10 +4980,10 @@
   },
   "adminDatasets": {
     "title": "Wissen · Datensätze",
-    "intro": "Eine CSV als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
-    "uploadHeading": "CSV importieren",
+    "intro": "Eine CSV- oder Excel-Datei als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Eine Excel-Mappe wird dabei pro Tabellenblatt zu einem eigenen Datensatz. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
+    "uploadHeading": "Tabelle importieren",
     "fields": {
-      "file": "CSV-Datei",
+      "file": "CSV- oder Excel-Datei",
       "nameOptional": "Name (optional)"
     },
     "placeholders": {
@@ -5020,9 +5020,9 @@
     "nextPage": "Weiter",
     "errors": {
       "tooLarge": "Die Datei überschreitet das Upload-Limit von {maxMb} MB.",
-      "notCsv": "Bisher werden ausschließlich CSV-Dateien unterstützt.",
-      "noFile": "Es kam keine Datei an — bitte zuerst eine CSV auswählen.",
-      "importFailed": "Die CSV konnte nicht importiert werden. {detail}",
+      "notCsv": "Unterstützt werden CSV- und Excel-Dateien (.xlsx, .xlsm).",
+      "noFile": "Es kam keine Datei an — bitte zuerst eine Tabelle auswählen.",
+      "importFailed": "Die Datei konnte nicht importiert werden. {detail}",
       "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
       "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
       "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"

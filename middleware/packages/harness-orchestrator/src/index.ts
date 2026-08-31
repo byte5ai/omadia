@@ -612,13 +612,34 @@ export {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
-export { isCsvAttachment } from './attachmentExtract.js';
+export {
+  isCsvAttachment,
+  isTabularAttachment,
+  detectTabularFormat,
+} from './attachmentExtract.js';
+export type { TabularFormat } from './attachmentExtract.js';
 export {
   buildDatasetFromCsv,
+  buildDatasetFromTable,
   importCsvDataset,
   parseCsv,
+  MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
 } from './datasetImport.js';
+export {
+  parseXlsx,
+  parseXlsxFirstSheet,
+  cellToString,
+  MAX_SHEETS,
+  MAX_XLSX_BYTES,
+} from './datasetImportXlsx.js';
+export type { XlsxParseResult, XlsxSheetParse } from './datasetImportXlsx.js';
+export { importTabularDataset } from './datasetImportTabular.js';
+export type {
+  ImportTabularDatasetInput,
+  ImportTabularDatasetResult,
+  ImportedTable,
+} from './datasetImportTabular.js';
 export type {
   CsvParseResult,
   ImportCsvDatasetInput,

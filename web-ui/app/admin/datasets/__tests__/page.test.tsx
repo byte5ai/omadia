@@ -279,7 +279,7 @@ describe('<AdminDatasetsPage />', () => {
     await screen.findByText('Q3 orders');
 
     const file = new File(['a,b\n1,2\n'], 'sales.csv', { type: 'text/csv' });
-    await user.upload(screen.getByLabelText('CSV file'), file);
+    await user.upload(screen.getByLabelText('CSV or Excel file'), file);
     await user.click(screen.getByRole('button', { name: 'Import' }));
 
     expect(
@@ -305,7 +305,7 @@ describe('<AdminDatasetsPage />', () => {
     renderWithIntl(<AdminDatasetsPage />);
     await screen.findByText('Q3 orders');
 
-    const input = screen.getByLabelText('CSV file') as HTMLInputElement;
+    const input = screen.getByLabelText('CSV or Excel file') as HTMLInputElement;
     const file = new File(['a,b\n1,2\n'], 'again.csv', { type: 'text/csv' });
 
     await user.upload(input, file);
@@ -333,7 +333,7 @@ describe('<AdminDatasetsPage />', () => {
     await screen.findByText('Q3 orders');
 
     await user.upload(
-      screen.getByLabelText('CSV file'),
+      screen.getByLabelText('CSV or Excel file'),
       new File(['x'], 'big.csv', { type: 'text/csv' }),
     );
     await user.click(screen.getByRole('button', { name: 'Import' }));
@@ -450,13 +450,13 @@ describe('<AdminDatasetsPage />', () => {
     // rejection under test is the SERVER's (`isCsvAttachment` also inspects
     // the mimetype), which is the only one that can be trusted anyway.
     await user.upload(
-      screen.getByLabelText('CSV file'),
+      screen.getByLabelText('CSV or Excel file'),
       new File(['x'], 'notes.csv', { type: 'text/plain' }),
     );
     await user.click(screen.getByRole('button', { name: 'Import' }));
 
     expect(
-      await screen.findByText('Only CSV files are supported so far.'),
+      await screen.findByText('Only CSV and Excel files (.xlsx, .xlsm) are supported.'),
     ).toBeTruthy();
     // The server's own (English-only, untranslated) message is not the headline.
     expect(screen.queryByText(/v1 scope, siehe #430/)).toBeNull();
@@ -471,7 +471,7 @@ describe('<AdminDatasetsPage />', () => {
     await screen.findByText('Q3 orders');
 
     await user.upload(
-      screen.getByLabelText('CSV file'),
+      screen.getByLabelText('CSV or Excel file'),
       new File(['x'], 'huge.csv', { type: 'text/csv' }),
     );
     await user.click(screen.getByRole('button', { name: 'Import' }));
