@@ -396,6 +396,45 @@ export class AgentTeamsIdentityStore {
     });
   }
 
+  /**
+   * Drop the row — the last act of a FULL teardown
+   * (`services/teamsIdentityReset.ts`, scope `'identity'`).
+   *
+   * A DELETION, NOT A RESET, and the difference is the whole point.
+   * {@link resetForRetry} deliberately keeps `bot_slug` and `display_name`
+   * because they are the two answers a human typed and a retry should not
+   * make them retype either. That is exactly wrong when the identity ITSELF
+   * was the mistake: a slug that reads badly, a name nobody agreed to. A
+   * `bot_slug` is `UNIQUE`, so as long as the row exists nothing else may
+   * claim that name — keeping it is what makes "pick a different slug"
+   * impossible. Dropping the row is the only thing that frees it.
+   *
+   * WHAT GOES WITH IT, BY SCHEMA. `agent_teams_installs` (migration 0051) and
+   * `agent_teams_provisioning_events` (0053) both reference `agent_id`
+   * `ON DELETE CASCADE`, and 0051 says in as many words that deleting the
+   * identity is the documented way to unprovision an agent. So the bindings
+   * and the progress timeline go too, which is correct: both are statements
+   * ABOUT an identity that no longer exists.
+   *
+   * WHAT MUST HAVE HAPPENED FIRST. Every Azure object this row points at has
+   * to be provably gone before this is called — `app_id` is the only handle
+   * left for finding a deleted registration in the directory's recycle bin,
+   * so a row dropped too early strands a tombstone that quietly holds the
+   * `uniqueName` for thirty days with nothing left pointing at it. The
+   * teardown enforces that ordering; this method only obeys it.
+   *
+   * Idempotent: deleting a row that is not there reports `false` rather than
+   * raising, so a retried teardown finishes instead of failing on its own
+   * success.
+   */
+  async deleteForAgent(agentId: string): Promise<boolean> {
+    const res = await this.pool.query(
+      `DELETE FROM agent_teams_identities WHERE agent_id = $1`,
+      [agentId],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
   /** Persist an enqueue failure so the status endpoint can show WHY nothing
    *  is running (the POST handler calls this best-effort from its
    *  fire-and-forget catch). State is deliberately untouched. */

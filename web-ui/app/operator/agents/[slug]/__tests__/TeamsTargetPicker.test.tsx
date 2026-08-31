@@ -244,6 +244,25 @@ describe('TeamsTargetPicker — degrading without lying', () => {
     expect(notes[0]).toHaveTextContent(/Chat\.ReadBasic/);
   });
 
+  it('tells an EXPIRED sign-in apart from a missing one', async () => {
+    // THE FIELD-TEST BUG, from the copy's side. An operator whose tenant
+    // sign-in stood, whose account was on screen, and who was told to "sign
+    // in once" — because the middleware reported a spent access token as
+    // `sign_in_required`. The server now refreshes such a token, and reserves
+    // this code for a refresh that FAILED. The sentence has to say the
+    // sign-in expired: the action is the same button, but a person who has
+    // just used it needs to know why the first time stopped counting.
+    render(dto({ chats: { available: false, reason: 'sign_in_expired' } }));
+
+    const notes = await screen.findAllByRole('note');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toHaveTextContent(/expired|abgelaufen/i);
+    // And it must NOT read as "nobody has signed in".
+    expect(notes[0]).not.toHaveTextContent(
+      /fehlt die Tenant-Anmeldung|no tenant sign-in/i,
+    );
+  });
+
   it('distinguishes an empty tenant from an unavailable listing', () => {
     render(dto({ teams: { available: true, items: [] } }));
 

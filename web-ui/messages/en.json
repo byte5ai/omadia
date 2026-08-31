@@ -2336,7 +2336,8 @@
           "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
           "scope_missing": "The stored sign-in does not yet carry the {scope} permission. Signing in again unlocks the list.",
           "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
-          "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below."
+          "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below.",
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below."
         },
         "chats": {
           "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
@@ -2344,7 +2345,8 @@
           "sign_in_required": "Chats can only be listed with a tenant sign-in — Graph offers no app-only route for them. Sign in once, or type the chat id below.",
           "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",
           "consent_required": "The tenant has not consented to listing chats. Until it does, type the chat id below.",
-          "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below."
+          "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below.",
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically — that is not a missing sign-in but one that stopped being valid. Sign in once more, or type the chat id below."
         }
       },
       "filter": "Type to filter …",
@@ -2353,7 +2355,6 @@
     },
     "teamsReset": {
       "heading": "Reset provisioning",
-      "open": "Reset …",
       "cancel": "Cancel",
       "hint": "Clears up the objects created in Azure so a new attempt can start with the same slug.",
       "runningHint": "While a provisioning run is in flight the reset is locked — wait for the run to finish.",
@@ -2364,7 +2365,6 @@
       "consequenceInstalls": "Every team and chat install recorded here.",
       "keepsHint": "Bot slug and display name are kept — a new run starts from the same answers.",
       "acknowledge": "I understand these Azure objects are deleted and will have to be created again.",
-      "confirm": "Reset for good",
       "busy": "Resetting …",
       "resultComplete": "Reset. The agent can be provisioned again now.",
       "resultIncomplete": "Stopped at “{step}” — everything before it is cleared, the rest is still there. Calling it again picks up from that point.",
@@ -2373,7 +2373,8 @@
         "catalog_removed": "Catalog entry",
         "bot_deleted": "Azure bot",
         "app_deleted": "App registration",
-        "identity_reset": "Database row"
+        "identity_reset": "Database row",
+        "identity_deleted": "Identity"
       },
       "outcomes": {
         "removed": "removed",
@@ -2389,8 +2390,21 @@
         "purge_unsupported": "The installed connector cannot empty the recycle bin. The app registration was therefore deliberately NOT deleted: it would block its own name for 30 days.",
         "app_absent_unpurgeable": "The app registration is already gone but could no longer be looked up in the recycle bin. It may still hold the name for up to 30 days — pick a different bot slug if in doubt.",
         "app_provably_gone": "The app registration is gone and is not in the recycle bin either — the name is free again.",
-        "arm_not_configured": "Without ARM configured, no bot service was ever created."
-      }
+        "arm_not_configured": "Without ARM configured, no bot service was ever created.",
+        "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
+        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
+      },
+      "openRun": "Reset the run …",
+      "openIdentity": "Delete the identity …",
+      "confirmHeadingIdentity": "This is deleted for good — the identity itself included:",
+      "consequenceIdentity": "This orchestrator's Teams identity, bot slug and display name included. Both are freely choosable again afterwards.",
+      "dropsHint": "Bot slug and display name are NOT kept. The orchestrator has no Teams identity afterwards, and creating one starts from an empty form again.",
+      "acknowledgeIdentity": "I understand that the identity is removed as well, and that a bot slug and display name have to be chosen again.",
+      "confirmRun": "Reset the run",
+      "confirmIdentity": "Delete the identity for good",
+      "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
+      "slugMismatch": "That is not the bot slug of this identity.",
+      "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
     }
   },
   "builder": {

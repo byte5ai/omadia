@@ -24,9 +24,10 @@ import { AgentTeamsIdentity } from '../_components/AgentTeamsIdentity';
  *   - Raw API bodies never reach the UI (web-ui i18n hard rule).
  */
 
-const { mockGet, mockProvision } = vi.hoisted(() => ({
+const { mockGet, mockProvision, mockResetIdentity } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockProvision: vi.fn(),
+  mockResetIdentity: vi.fn(),
 }));
 
 // Spread the real module so the error-code parser and the last_error narrower
@@ -36,6 +37,10 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../../_lib/agents')>()),
   getAgentTeamsIdentity: mockGet,
   provisionAgentTeamsIdentity: mockProvision,
+  // Stubbed only so the teardown control inside this panel does not reach the
+  // network. Its own behaviour is pinned in `AgentTeamsIdentityReset.test.tsx`;
+  // what THIS file cares about is what the panel does once the row is gone.
+  resetAgentTeamsIdentity: mockResetIdentity,
 }));
 
 function statusDto(
@@ -75,6 +80,14 @@ function apiError(status: number, code: string): ApiError {
 beforeEach(() => {
   mockGet.mockReset();
   mockProvision.mockReset();
+  mockResetIdentity.mockReset();
+  mockResetIdentity.mockResolvedValue({
+    ok: true,
+    agent: 'sales-bot',
+    status: 'reset',
+    scope: 'identity',
+    steps: [{ step: 'identity_deleted', outcome: 'removed' }],
+  });
   mockGet.mockResolvedValue(statusDto());
 });
 
@@ -369,5 +382,52 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     expect(
       screen.queryByRole('button', { name: 'Re-run provisioning' }),
     ).toBeNull();
+  });
+
+  it('offers the ordinary create form again once the identity has been deleted', async () => {
+    // THE WHOLE POINT OF THE FULL RESET, asserted end to end through the
+    // panel rather than trusted to the two halves separately.
+    //
+    // The chain is: the teardown drops the row → the panel re-reads → the
+    // server answers 404 `teams_identity_not_found` → that is this panel's
+    // CREATE signal. Which means the operator does not merely get a "provision
+    // again" button carrying the old slug (what a `'run'` reset leaves them
+    // with), but the empty form, with a bot slug and a display name they can
+    // choose freely. Nothing else in the UI can offer that: every other path
+    // through a `ready` row renders both as read-only facts.
+    mockGet.mockResolvedValueOnce(statusDto({ state: 'failed', running: false }));
+    mockGet.mockRejectedValue(apiError(404, 'teams_identity_not_found'));
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    await screen.findByText('State: failed');
+    // Delete the identity, exactly as the reset panel does it.
+    await userEvent.click(
+      screen.getByRole('button', { name: /Delete the identity …/i }),
+    );
+    await userEvent.click(
+      within(screen.getByTestId('teams-reset-confirm-identity')).getByRole(
+        'checkbox',
+      ),
+    );
+    await userEvent.type(
+      within(screen.getByTestId('teams-reset-confirm-identity')).getByRole(
+        'textbox',
+      ),
+      'sales-bot',
+    );
+    await userEvent.click(
+      screen.getByRole('button', { name: /Delete the identity for good/i }),
+    );
+
+    const slugField = await screen.findByLabelText(/Bot slug/);
+    const nameField = screen.getByLabelText(/Display name/);
+    expect(screen.getByRole('button', { name: 'Start provisioning' })).toBeTruthy();
+
+    // FREELY CHOOSABLE, not merely present: both accept a value that is not
+    // the one the deleted identity carried.
+    await userEvent.type(slugField, 'renamed-bot');
+    await userEvent.type(nameField, 'Renamed Bot');
+    expect(slugField).toHaveValue('renamed-bot');
+    expect(nameField).toHaveValue('Renamed Bot');
   });
 });

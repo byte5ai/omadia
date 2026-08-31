@@ -1181,13 +1181,45 @@ export function parseTeamsAssignmentCapabilities(
  * `middleware/src/services/teamsTargetDirectoryService.ts` — a closed set of
  * machine codes, each with its own sentence in `messages/*.json`.
  */
+export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
+  'connector_unavailable',
+  'connector_unsupported',
+  /** NOBODY is signed in — and since #949 nothing else. */
+  'sign_in_required',
+  /**
+   * Somebody IS signed in, their access token is spent, and renewing it
+   * failed. Kept apart from `sign_in_required` because the two send an
+   * operator to the same button with completely different expectations, and
+   * folding them together is what put "sign in once" in front of an admin
+   * whose account was on screen.
+   */
+  'sign_in_expired',
+  'scope_missing',
+  'consent_required',
+  'lookup_failed',
+] as const;
+
 export type TeamsTargetListingUnavailable =
-  | 'connector_unavailable'
-  | 'connector_unsupported'
-  | 'sign_in_required'
-  | 'scope_missing'
-  | 'consent_required'
-  | 'lookup_failed';
+  (typeof TEAMS_TARGET_LISTING_UNAVAILABLE)[number];
+
+/**
+ * Is this a reason this build has a sentence for?
+ *
+ * A RUNTIME check and not merely a cast, because the middleware ships
+ * independently of this bundle: a server that learns a new reason code before
+ * the UI does would otherwise hand it straight to `t()` and render a missing
+ * translation key at the operator. Degrading to `lookup_failed` is honest —
+ * we could not look, and we cannot say why — and it is exactly how
+ * `sign_in_expired` itself would have surfaced on an older build.
+ */
+export function isTeamsTargetListingUnavailable(
+  value: unknown,
+): value is TeamsTargetListingUnavailable {
+  return (
+    typeof value === 'string' &&
+    (TEAMS_TARGET_LISTING_UNAVAILABLE as readonly string[]).includes(value)
+  );
+}
 
 /**
  * A listing that can say "I don't know".
@@ -1241,10 +1273,9 @@ function parseTargetListing<T>(
     const reason = record['reason'];
     return {
       available: false,
-      reason:
-        typeof reason === 'string'
-          ? (reason as TeamsTargetListingUnavailable)
-          : 'lookup_failed',
+      // Validated, not cast — see `isTeamsTargetListingUnavailable`. A code
+      // this build has no sentence for must not reach `t()`.
+      reason: isTeamsTargetListingUnavailable(reason) ? reason : 'lookup_failed',
     };
   }
   const raw = record['items'];
@@ -1310,9 +1341,27 @@ export async function getAgentTeamsTargets(
   };
 }
 
+/**
+ * HOW FAR BACK a teardown winds the agent — mirrors `TeamsResetScope`.
+ *
+ * `'run'` empties Azure and returns the row to `pending`, keeping the bot
+ * slug and display name so a retry is one button. `'identity'` does the same
+ * Azure teardown and then removes the row, so the agent has no Teams identity
+ * at all and the operator picks a new slug and name from an empty form —
+ * `bot_slug` is `UNIQUE`, so nothing less frees the name.
+ */
+export type TeamsResetScope = 'run' | 'identity';
+
 /** One step of a teardown — mirrors `TeamsResetStepReport`. */
 export interface TeamsResetStepDto {
-  step: 'catalog_removed' | 'bot_deleted' | 'app_deleted' | 'identity_reset';
+  step:
+    | 'catalog_removed'
+    | 'bot_deleted'
+    | 'app_deleted'
+    /** The `'run'` scope's last step: the row is back at `pending`. */
+    | 'identity_reset'
+    /** The `'identity'` scope's last step: the row is gone. */
+    | 'identity_deleted';
   outcome: 'removed' | 'already-absent' | 'skipped' | 'blocked' | 'failed';
   detail?: string;
 }
@@ -1321,6 +1370,9 @@ export interface ResetAgentTeamsIdentityResponse {
   ok: boolean;
   agent: string;
   status: 'reset' | 'incomplete';
+  /** Echoed by the server so the report cannot be read against the wrong
+   *  copy if a poll and a reset ever cross. */
+  scope?: TeamsResetScope;
   previous_state?: string;
   steps: readonly TeamsResetStepDto[];
   stoppedAt?: TeamsResetStepDto['step'];
@@ -1331,8 +1383,14 @@ export interface ResetAgentTeamsIdentityResponse {
  * `POST /v1/operator/agents/:slug/teams-identity/reset` — DESTRUCTIVE.
  *
  * Removes the Entra app registration (delete AND recycle-bin purge), the
- * Azure bot and the tenant catalog entry, then returns the row to `pending`
- * keeping `bot_slug` and `display_name`.
+ * Azure bot and the tenant catalog entry. What happens to the identity row
+ * afterwards is the `scope`'s business — see {@link TeamsResetScope}.
+ *
+ * THE SCOPE IS ALWAYS SENT EXPLICITLY, including the default. The server
+ * treats a missing one as `'run'` for the sake of clients written before
+ * scopes existed, and relying on that here would make the destructive call
+ * and the safe one differ by an omission rather than by a value — the kind of
+ * difference that survives a refactor in the wrong direction.
  *
  * A PARTIAL TEARDOWN RESOLVES, IT DOES NOT REJECT. `status: 'incomplete'`
  * comes back as a 200 with the per-step report, because "which of the three
@@ -1341,10 +1399,15 @@ export interface ResetAgentTeamsIdentityResponse {
  */
 export async function resetAgentTeamsIdentity(
   slug: string,
+  scope: TeamsResetScope = 'run',
 ): Promise<ResetAgentTeamsIdentityResponse> {
   const dto = await callJson<ResetAgentTeamsIdentityResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity/reset`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    },
   );
   return { ...dto, steps: Array.isArray(dto.steps) ? dto.steps : [] };
 }

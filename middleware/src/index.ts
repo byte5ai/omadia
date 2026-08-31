@@ -3490,8 +3490,14 @@ async function main(): Promise<void> {
         // delegated-only at Microsoft, exactly like uploading it. Resolved
         // live for the same reason as the provisioner: an admin can sign in
         // (or out) while the process runs.
+        // WRITE included, and that is what lets both routes refresh a spent
+        // access token instead of telling a signed-in admin to sign in
+        // (#949). `TeamsDelegatedTokenStore` has always had it; the router's
+        // port simply never asked, which is why the target listing had no way
+        // to recover and reported the expiry as a missing sign-in.
         const delegatedTokens = serviceRegistry.get<{
           read(): Promise<DelegatedTokenSet | undefined>;
+          write(tokens: DelegatedTokenSet): Promise<void>;
         }>('teamsDelegatedTokenStore');
         const withEvents: OperatorTeamsIdentityDeps = {
           ...teamsDeps,
