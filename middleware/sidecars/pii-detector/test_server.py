@@ -7,7 +7,9 @@ Stdlib-only; `server` is importable without gliner/onnxruntime installed
 """
 
 import os
+import socket
 import sys
+import threading
 import unittest
 
 # Make `import server` work regardless of the caller's cwd (e.g. running
@@ -188,6 +190,66 @@ class ValidateRequestTests(unittest.TestCase):
     def test_rejects_unknown_keys(self):
         with self.assertRaises(ValueError):
             server.validate_request({"text": "t", "prompt": "smuggled"})
+
+
+class BindStackTests(unittest.TestCase):
+    """The listener must be reachable over IPv6.
+
+    Fly.io's private network between apps is IPv6-only, so an IPv4-only
+    listener is invisible to the middleware even though the container looks
+    perfectly healthy locally (process up, model loaded,
+    `curl 127.0.0.1:8812/health` -> 200). That combination cost real debugging
+    time once; these tests pin the bind behaviour so it cannot regress
+    silently.
+    """
+
+    def setUp(self):
+        self._saved = os.environ.get("PII_DETECTOR_BIND_V4_ONLY")
+        os.environ.pop("PII_DETECTOR_BIND_V4_ONLY", None)
+        # Ephemeral port — never contend with a real sidecar on 8812.
+        self._saved_port = server.PORT
+        server.PORT = 0
+
+    def tearDown(self):
+        server.PORT = self._saved_port
+        os.environ.pop("PII_DETECTOR_BIND_V4_ONLY", None)
+        if self._saved is not None:
+            os.environ["PII_DETECTOR_BIND_V4_ONLY"] = self._saved
+
+    def test_default_bind_is_ipv6_and_accepts_v4_mapped(self):
+        srv, desc = server.build_server()
+        try:
+            self.assertEqual(srv.socket.family, socket.AF_INET6)
+            # IPV6_V6ONLY must be OFF so v4-mapped clients (Docker Compose's
+            # v4 bridge) still connect through the same socket.
+            self.assertEqual(
+                srv.socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+                0,
+            )
+            self.assertIn("IPv4-mapped", desc)
+        finally:
+            srv.server_close()
+
+    def test_ipv6_loopback_actually_connects(self):
+        """The regression itself: [::1] must be reachable, not just 127.0.0.1."""
+        srv, _ = server.build_server()
+        try:
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            port = srv.socket.getsockname()[1]
+            with socket.create_connection(("::1", port), timeout=5) as sock:
+                self.assertIsNotNone(sock)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_env_override_forces_ipv4_only(self):
+        os.environ["PII_DETECTOR_BIND_V4_ONLY"] = "1"
+        srv, desc = server.build_server()
+        try:
+            self.assertEqual(srv.socket.family, socket.AF_INET)
+            self.assertIn("IPv4 only", desc)
+        finally:
+            srv.server_close()
 
 
 if __name__ == "__main__":

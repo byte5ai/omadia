@@ -33,6 +33,7 @@ between requests. The middleware-side contract lands with the
 import json
 import os
 import re
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -296,6 +297,60 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class DualStackServer(ThreadingHTTPServer):
+    """HTTP server reachable over BOTH IPv6 and IPv4.
+
+    Binding `("0.0.0.0", PORT)` — the obvious choice, and what this shim did
+    originally — listens on IPv4 ONLY. That works under Docker Compose (the
+    overlay's bridge network is v4) but is invisible on Fly.io, whose private
+    network between apps is **IPv6-only**: `<app>.flycast` / `<app>.internal`
+    resolve to `fdaa:…` addresses, so the proxy's connection to an
+    IPv4-only listener is refused and the middleware sees `ECONNRESET`.
+
+    The symptom is nasty because the container looks healthy from every angle
+    that does not cross the network: the process runs, the model loads,
+    `curl 127.0.0.1:8812/health` returns 200, and a TCP service check can sit
+    on a stale `passing` for weeks. Only `[::1]:8812` reveals it —
+    "connection refused".
+
+    Binding `::` with `IPV6_V6ONLY` disabled accepts v6 and v4-mapped-v6
+    connections on one socket, so Compose and Fly both work with no
+    per-deployment configuration. `PII_DETECTOR_BIND_V4_ONLY=1` forces the
+    old IPv4-only behaviour for a host with IPv6 disabled entirely.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        # Accept v4-mapped connections too. Linux honours this per-socket;
+        # if the kernel refuses (IPv6 compiled out), fall through and let
+        # the bind fail loudly rather than listening on a narrower stack
+        # than the operator asked for.
+        try:
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except OSError:
+            pass
+        super().server_bind()
+
+
+def build_server():
+    """The listening server, dual-stack unless explicitly forced to IPv4."""
+    if os.environ.get("PII_DETECTOR_BIND_V4_ONLY", "") in ("1", "true", "on"):
+        return ThreadingHTTPServer(("0.0.0.0", PORT), Handler), "0.0.0.0 (IPv4 only)"
+    try:
+        return DualStackServer(("::", PORT), Handler), ":: (IPv6 + IPv4-mapped)"
+    except OSError as err:
+        # No usable IPv6 stack — degrade to IPv4 rather than refusing to
+        # start, but say so, because on Fly this means unreachable.
+        print(
+            f"[pii-detector] IPv6 bind failed ({err}); falling back to IPv4-only. "
+            "On Fly.io the private network is IPv6-only, so this instance will "
+            "NOT be reachable from other apps.",
+            flush=True,
+        )
+        return ThreadingHTTPServer(("0.0.0.0", PORT), Handler), "0.0.0.0 (IPv4 fallback)"
+
+
 if __name__ == "__main__":
     print(
         f"[pii-detector] loading {MODEL_ID}@{MODEL_REVISION[:12]} "
@@ -304,9 +359,10 @@ if __name__ == "__main__":
     )
     _load_started = time.monotonic()
     _STATE["model"], _STATE["backend"] = load_model()
+    _server, _bind_desc = build_server()
     print(
         f"[pii-detector] model ready in {time.monotonic() - _load_started:.1f}s; "
-        f"listening on :{PORT}",
+        f"listening on {_bind_desc} port {PORT}",
         flush=True,
     )
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    _server.serve_forever()
