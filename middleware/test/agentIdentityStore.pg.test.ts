@@ -324,4 +324,90 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
     await pool.query('DELETE FROM agents WHERE id = $1', [agentId]);
     assert.equal(await store.getByAgentId(agentId), undefined);
   });
+
+  // ── #967 — adopting the provisioned Teams name ──────────────────────
+  //
+  // The refusal is an `ON CONFLICT … DO UPDATE … WHERE` predicate, so it can
+  // only be proven against a real Postgres: a read-then-write in the caller
+  // would pass the same assertions while still losing a concurrent save.
+
+  it('adopts a name for an agent that has no identity row at all', async () => {
+    const adopted = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(adopted?.displayName, 'Messias');
+    assert.equal((await store.getByAgentId(agentId))?.displayName, 'Messias');
+    // A fresh row starts at revision 1: the Teams manifest already renders
+    // this exact name (it falls back to the provisioning row), so there is no
+    // package change to publish and nothing to bump for.
+    assert.equal(adopted?.revision, 1);
+  });
+
+  it('REFUSES to overwrite an authored name, and leaves the whole row alone', async () => {
+    // The condition the whole feature hangs on. Someone built this by hand.
+    const curated = await store.save(agentId, {
+      ...EMPTY,
+      displayName: 'Karen',
+      shortDescription: 'Kümmert sich um HR-Anliegen',
+      instructions: 'Antworte knapp und freundlich.',
+      composed: { text: 'Antworte knapp und freundlich.', family: 'sonnet' },
+    });
+
+    const after = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(after?.displayName, 'Karen');
+    assert.equal(after?.shortDescription, 'Kümmert sich um HR-Anliegen');
+    assert.equal(after?.instructions, 'Antworte knapp und freundlich.');
+    assert.equal(after?.composed.text, 'Antworte knapp und freundlich.');
+    // Not even a revision bump or an `updated_at` touch: nothing happened.
+    assert.equal(after?.revision, curated.revision);
+    assert.deepEqual(after?.updatedAt, curated.updatedAt);
+  });
+
+  it('treats a blank authored name as unset and fills it', async () => {
+    // `resolveAgentIdentity` already reads blank as "inherit from the
+    // registry", so adopting takes nothing away — and the rest of the row
+    // must survive untouched.
+    await store.save(agentId, {
+      ...EMPTY,
+      displayName: '   ',
+      instructions: 'Antworte knapp.',
+    });
+
+    const after = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(after?.displayName, 'Messias');
+    assert.equal(after?.instructions, 'Antworte knapp.');
+  });
+
+  it('is idempotent: adopting twice writes once', async () => {
+    const first = await store.adoptDisplayName(agentId, 'Messias');
+    const second = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(second?.displayName, 'Messias');
+    assert.equal(second?.revision, first?.revision);
+    // The second call hit the refusal branch (a name is already authored),
+    // so it must not have moved the timestamp either.
+    assert.deepEqual(second?.updatedAt, first?.updatedAt);
+  });
+
+  it('adopting a blank name creates nothing', async () => {
+    // An empty row whose only effect is switching the manifest onto the
+    // revision-based version number is worse than no row.
+    assert.equal(await store.adoptDisplayName(agentId, '   '), undefined);
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('an adopted name is what the registry joins into the system prompt', async () => {
+    // The column the orchestrator's AGENT_SELECT reads (#967). Pinned here so
+    // the store and that join cannot drift apart silently — a name in a
+    // column nobody reads is the bug this feature exists to fix.
+    await store.adoptDisplayName(agentId, 'Messias');
+    const { rows } = await pool.query<{ identity_display_name: string | null }>(
+      `SELECT i.display_name AS identity_display_name
+         FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id
+        WHERE a.id = $1`,
+      [agentId],
+    );
+    assert.equal(rows[0]?.identity_display_name, 'Messias');
+  });
 });

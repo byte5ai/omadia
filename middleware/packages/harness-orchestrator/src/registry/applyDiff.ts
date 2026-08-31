@@ -254,6 +254,13 @@ export function buildForAgent(
       ...(agent.instructions?.trim()
         ? { identityInstructions: agent.instructions.trim() }
         : {}),
+      // #967 — the agent's authored NAME. Layered onto whichever identity
+      // text applies rather than replacing it, so a bot that was given a name
+      // introduces itself under that name without losing the behaviour the
+      // platform (or its own instructions) already describe.
+      ...(agent.identityName?.trim()
+        ? { identityName: agent.identityName.trim() }
+        : {}),
     },
     deps,
   );
@@ -296,6 +303,13 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // registry would keep serving the Orchestrator built from the old text.
   if ((oldAgent.instructions ?? '') !== (newAgent.instructions ?? '')) {
     reasons.push('identity_instructions');
+  }
+  // #967 — the authored name is part of the system prompt too (it is what the
+  // bot calls itself), so a rename has to reach the running Agent. Without
+  // this reason the operator would rename the bot in Teams and in the UI and
+  // keep hearing the old name in chat until some unrelated edit rebuilt it.
+  if ((oldAgent.identityName ?? '') !== (newAgent.identityName ?? '')) {
+    reasons.push('identity_display_name');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.

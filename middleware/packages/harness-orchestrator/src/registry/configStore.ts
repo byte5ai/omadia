@@ -72,6 +72,22 @@ export interface AgentRow {
    * applies, exactly as before this column existed.
    */
   readonly instructions?: string | null;
+  /**
+   * #967 — the agent's authored NAME (`agent_identities.display_name`), joined
+   * in beside {@link instructions} and read the same way: read-only here,
+   * written through `platform/agentIdentityStore.ts`.
+   *
+   * Distinct from {@link name}, which is the registry label an operator gave
+   * the agent row (`hr`, `Sales Agent`). This one is the name the bot WEARS —
+   * the Teams manifest name, and the name it must introduce itself with. It
+   * is deliberately NOT resolved against `name` here: falling back would put
+   * a registry label into the system prompt of every agent that never
+   * authored an identity, changing prompts that are correct today.
+   *
+   * `null`/absent means "no authored name" — the assistant identity is used
+   * verbatim, exactly as before this column was joined.
+   */
+  readonly identityName?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -246,6 +262,9 @@ interface AgentDbRow {
    *  not join: a write never changes the identity, and a caller that needs it
    *  re-reads. */
   identity_instructions?: string | null;
+  /** #967 — `agent_identities.display_name`, joined in by the same three read
+   *  queries and absent on the same write paths as `identity_instructions`. */
+  identity_display_name?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -296,6 +315,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
     instructions: row.identity_instructions ?? null,
+    identityName: row.identity_display_name ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -347,7 +367,8 @@ function mapPlatformSettings(
  * runs on every dashboard load and every registry rebuild.
  */
 const AGENT_SELECT =
-  'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions ' +
+  'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions, ' +
+  'i.display_name AS identity_display_name ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
 export class ConfigStore {
