@@ -27,6 +27,7 @@ import { describe, it } from 'node:test';
 import {
   resetTeamsIdentity,
   TeamsIdentityResetNotFoundError,
+  TeamsIdentityResetUnsupportedError,
   TEAMS_RESET_DETAILS,
   type TeamsIdentityResetOptions,
   type TeamsResetDeleteBotResult,
@@ -46,15 +47,25 @@ interface MemoryStore {
   row: TeamsResetIdentityRecord | undefined;
   readonly writes: { readonly appObjectId?: string | null }[];
   resetCalls: number;
+  deleteCalls: number;
   getByAgentId(agentId: string): Promise<TeamsResetIdentityRecord | undefined>;
   update(
     agentId: string,
     patch: { readonly appObjectId?: string | null },
   ): Promise<unknown>;
   resetForRetry(agentId: string): Promise<unknown>;
+  deleteForAgent?(agentId: string): Promise<unknown>;
 }
 
-function memoryStore(row: Partial<TeamsResetIdentityRecord>): MemoryStore {
+/**
+ * @param canDelete `false` models a store that predates the full teardown —
+ *   the capability gate the route also enforces, exercised here from the
+ *   service's own side.
+ */
+function memoryStore(
+  row: Partial<TeamsResetIdentityRecord>,
+  opts: { readonly canDelete?: boolean; readonly deleteFails?: boolean } = {},
+): MemoryStore {
   const store: MemoryStore = {
     row: {
       agentId: 'agent-1',
@@ -66,6 +77,7 @@ function memoryStore(row: Partial<TeamsResetIdentityRecord>): MemoryStore {
     },
     writes: [],
     resetCalls: 0,
+    deleteCalls: 0,
     getByAgentId: async () => store.row,
     update: async (_agentId, patch) => {
       store.writes.push(patch);
@@ -76,9 +88,25 @@ function memoryStore(row: Partial<TeamsResetIdentityRecord>): MemoryStore {
     },
     resetForRetry: async () => {
       store.resetCalls += 1;
+      // Deliberately a COUNTER and not a model of the real write. The real
+      // `resetForRetry` NULLs the Azure identifiers, and several tests here
+      // read `row.appObjectId` AFTER a completed teardown to prove the id was
+      // persisted mid-teardown — the property that makes an interrupted purge
+      // resumable at all. Emptying the row here would erase the evidence
+      // those tests exist to inspect. What distinguishes the two scopes in
+      // this double is `resetCalls` versus `deleteCalls` and whether `row`
+      // survives at all, which `deleteForAgent` below does model.
       return undefined;
     },
   };
+  if (opts.canDelete !== false) {
+    store.deleteForAgent = async () => {
+      store.deleteCalls += 1;
+      if (opts.deleteFails) throw new Error('pg is down');
+      store.row = undefined;
+      return undefined;
+    };
+  }
   return store;
 }
 
@@ -632,5 +660,415 @@ describe('teams identity reset — the #916 trap, closed from both sides', () =>
       assert.equal(store.resetCalls, 0, `failOn=${failOn}: the row must be kept`);
       assert.equal(store.row?.appId, APP_ID, `failOn=${failOn}: the app id must be kept`);
     }
+  });
+});
+
+/**
+ * THE FULL RESET — winding an agent back to having no Teams identity at all,
+ * so a new bot slug and display name can be chosen.
+ *
+ * It is the SAME teardown as above with one different last line, and this
+ * suite is written to prove exactly that: the order, the refusals and the
+ * partial report are inherited unchanged, and only the fate of the database
+ * row differs. `bot_slug` is `UNIQUE`, so nothing short of dropping the row
+ * frees the name — which is the entire reason this scope exists.
+ *
+ * THE RULE IT MUST NEVER BREAK. The row may only disappear once every Azure
+ * object it points at is provably gone. `app_id` is the sole input
+ * `findDeletedAppRegistration` accepts, so a row deleted while a registration
+ * may still be sitting in the directory's recycle bin destroys the only route
+ * back to it: the tombstone then holds the `uniqueName` for thirty days with
+ * nothing left able to name it. A reset that leaves an unreachable corpse
+ * behind is strictly worse than the state it was asked to repair.
+ */
+describe('teams identity reset — the full reset', () => {
+  it('tears Azure down in the SAME order, then removes the row', async () => {
+    const store = memoryStore({});
+    const provisioner = stubProvisioner();
+
+    const result = await resetTeamsIdentity(
+      options(store, provisioner),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'reset');
+    assert.equal(result.scope, 'identity');
+    // Byte for byte the order the milder teardown uses. A second teardown
+    // with its own order is exactly what this scope must not become.
+    assert.deepEqual(
+      provisioner.calls.filter((c) => !c.startsWith('getAppRegistration')),
+      [
+        'removeFromCatalog:catalog-1',
+        'deleteBot:omadia-acme-app-1111',
+        'deleteAppRegistration:app-1111',
+        `purge:${OBJECT_ID}`,
+      ],
+    );
+    assert.equal(store.deleteCalls, 1);
+    assert.equal(store.resetCalls, 0, 'the milder reset must not also run');
+    assert.equal(store.row, undefined, 'the identity is gone');
+    assert.equal(
+      outcomeOf(result.steps, 'identity_deleted')?.outcome,
+      'removed',
+    );
+    assert.equal(
+      outcomeOf(result.steps, 'identity_reset'),
+      undefined,
+      'exactly one row step is reported, never both',
+    );
+  });
+
+  it('THE RULE: an abort mid-teardown leaves the row exactly where it was', async () => {
+    // The single most important assertion in this file. Every way the
+    // teardown can stop early, across BOTH scopes: nothing may delete the row
+    // while an Azure object it points at might still exist, because the row
+    // is the only thing that still knows the object's name.
+    for (const failOn of ['catalog', 'bot', 'delete', 'purge'] as const) {
+      const store = memoryStore({});
+      const result = await resetTeamsIdentity(
+        options(store, stubProvisioner({ failOn })),
+        'agent-1',
+        'identity',
+      );
+
+      assert.equal(result.status, 'incomplete', `failOn=${failOn}`);
+      assert.equal(store.deleteCalls, 0, `failOn=${failOn}: the row must survive`);
+      assert.notEqual(store.row, undefined, `failOn=${failOn}: the row must survive`);
+      // And it must survive INTACT — a row stripped of `app_id` is a row that
+      // can no longer find the registration it was keeping a trace of.
+      assert.equal(
+        store.row?.appId,
+        APP_ID,
+        `failOn=${failOn}: the trace back to Azure must be kept`,
+      );
+    }
+  });
+
+  it('refuses to drop the row when the app registration cannot be proven gone', async () => {
+    // The subtle one, and the reason `app_absent_unpurgeable` could not
+    // simply be treated as the success it is reported as.
+    //
+    // The application is out of `/applications` and the connector cannot
+    // search the recycle bin, so nothing can say whether a tombstone is still
+    // holding this agent's `uniqueName`. The milder reset survives that doubt
+    // because it keeps the row. This one would delete the doubt along with
+    // the only pointer that could ever resolve it — so it stops instead, with
+    // every Azure step already done.
+    const store = memoryStore({});
+    const provisioner = stubProvisioner({ live: false, deleted: false, canFind: false });
+
+    const result = await resetTeamsIdentity(
+      options(store, provisioner),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(
+      outcomeOf(result.steps, 'app_deleted')?.detail,
+      TEAMS_RESET_DETAILS.appAbsentUnpurgeable,
+    );
+    assert.equal(outcomeOf(result.steps, 'identity_deleted')?.outcome, 'blocked');
+    assert.equal(
+      outcomeOf(result.steps, 'identity_deleted')?.detail,
+      TEAMS_RESET_DETAILS.appTraceRequired,
+    );
+    assert.equal(store.deleteCalls, 0);
+    assert.equal(store.row?.appId, APP_ID, 'the trace stays addressable');
+    // The catalog and the bot really were removed — this is a refusal to
+    // finish, not a refusal to start.
+    assert.equal(outcomeOf(result.steps, 'catalog_removed')?.outcome, 'removed');
+    assert.equal(outcomeOf(result.steps, 'bot_deleted')?.outcome, 'removed');
+  });
+
+  it('the MILDER reset still completes in that same state', async () => {
+    // The contrast that justifies keeping both. Same Azure uncertainty, and
+    // `'run'` may finish: it keeps the row, so the trace survives and the
+    // operator is merely warned to pick a different slug.
+    const store = memoryStore({});
+
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner({ live: false, deleted: false, canFind: false })),
+      'agent-1',
+      'run',
+    );
+
+    assert.equal(result.status, 'reset');
+    assert.equal(result.scope, 'run');
+    assert.equal(store.resetCalls, 1);
+  });
+
+  it('a store that cannot delete is refused BEFORE anything is torn down', async () => {
+    // Half-performing this is the worst available outcome: Azure emptied, the
+    // row still filled in, and no way for the operator to tell which of the
+    // two they are looking at.
+    const store = memoryStore({}, { canDelete: false });
+    const provisioner = stubProvisioner();
+
+    await assert.rejects(
+      () => resetTeamsIdentity(options(store, provisioner), 'agent-1', 'identity'),
+      TeamsIdentityResetUnsupportedError,
+    );
+    assert.deepEqual(provisioner.calls, [], 'not one Azure call was made');
+    assert.equal(store.resetCalls, 0);
+  });
+
+  it('a failing row deletion keeps every identifier for the retry', async () => {
+    const store = memoryStore({}, { deleteFails: true });
+
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner()),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(result.status === 'incomplete' ? result.stoppedAt : null, 'identity_deleted');
+    assert.equal(outcomeOf(result.steps, 'identity_deleted')?.outcome, 'failed');
+    assert.notEqual(store.row, undefined);
+  });
+
+  it('is idempotent — a second call finishes on already-absent objects', async () => {
+    // Resumption without a cursor: every primitive answers `already-absent`
+    // for something that is not there, and the teardown treats that as
+    // success. Here the first attempt dies on the purge and the second one
+    // completes, all the way through the row.
+    const store = memoryStore({});
+    const first = await resetTeamsIdentity(
+      options(store, stubProvisioner({ failOn: 'purge' })),
+      'agent-1',
+      'identity',
+    );
+    assert.equal(first.status, 'incomplete');
+    assert.equal(store.deleteCalls, 0);
+    // The object id was persisted mid-teardown — that is what makes the
+    // recycle-bin entry addressable at all after the delete.
+    assert.equal(store.row?.appObjectId, OBJECT_ID);
+
+    const second = await resetTeamsIdentity(
+      options(store, stubProvisioner({ live: false, deleted: true })),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(second.status, 'reset');
+    assert.equal(store.deleteCalls, 1);
+    assert.equal(store.row, undefined);
+  });
+
+  it('nothing provisioned yet: four skips and the row still goes', async () => {
+    // The state an operator is in when they typed a slug they regret before
+    // ever starting a run. There is nothing in Azure to remove, and the whole
+    // point is that the slug becomes free again.
+    const store = memoryStore({ appId: null, teamsAppId: null });
+    const provisioner = stubProvisioner();
+
+    const result = await resetTeamsIdentity(
+      options(store, provisioner),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'reset');
+    assert.deepEqual(provisioner.calls, []);
+    assert.equal(store.row, undefined);
+  });
+
+  it('a blocked catalog entry stops a full reset exactly as it stops a mild one', async () => {
+    // The refusal that must survive both scopes. `stableTeamsAppExternalId`
+    // is derived from the AGENT id, so it outlives any reset — an abandoned
+    // catalog entry is adopted by the next run and pairs a new bot with a
+    // deleted app id. Under `'identity'` it would be worse still: the row
+    // that knew about the entry would be gone too.
+    const store = memoryStore({});
+
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner({ canRemoveFromCatalog: false })),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(result.status === 'incomplete' ? result.stoppedAt : null, 'catalog_removed');
+    assert.equal(
+      outcomeOf(result.steps, 'catalog_removed')?.detail,
+      TEAMS_RESET_DETAILS.catalogRemovalUnsupported,
+    );
+    assert.equal(store.deleteCalls, 0);
+  });
+
+  it('a connector that cannot purge still may not delete, under either scope', async () => {
+    const store = memoryStore({}, {});
+    const provisioner = stubProvisioner({ canPurge: false });
+
+    const result = await resetTeamsIdentity(
+      options(store, provisioner),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(
+      outcomeOf(result.steps, 'app_deleted')?.detail,
+      TEAMS_RESET_DETAILS.purgeUnsupported,
+    );
+    assert.ok(
+      !provisioner.calls.some((c) => c.startsWith('deleteAppRegistration')),
+      'deleting without a purge would burn the slug for 30 days',
+    );
+    assert.equal(store.deleteCalls, 0);
+  });
+});
+
+/**
+ * A SPENT TENANT TOKEN IS NOT A MISSING ONE — the teardown's half of the
+ * field-test bug.
+ *
+ * The catalog withdrawal is delegated-only, it runs FIRST, and its failure
+ * stops the whole teardown. So an expired access token used to abort the
+ * entire reset with `catalog_removal_failed: <whatever Graph said>` — over a
+ * condition that needs no human at all. The same refresh the catalogue upload
+ * has performed since #924 fixes it, and it is now literally the same code.
+ */
+describe('teams identity reset — the tenant sign-in', () => {
+  const HOUR = 60 * 60 * 1000;
+  const NOW = new Date('2026-08-31T12:00:00.000Z');
+
+  function tokens(expiresAt: Date, accessToken = 'access-1'): Record<string, unknown> {
+    return {
+      accessToken,
+      refreshToken: 'refresh-1',
+      expiresAt: expiresAt.toISOString(),
+      scopes: ['AppCatalog.ReadWrite.All'],
+      clientId: 'client-1',
+      tenantId: 'tenant-1',
+    };
+  }
+
+  function expiredError(): Error {
+    return Object.assign(new Error('access token expired'), {
+      name: 'DelegatedTokenExpiredError',
+      reason: 'access-token-expired',
+      recoverableByRefresh: true,
+    });
+  }
+
+  it('refreshes a spent token rather than aborting the whole teardown', async () => {
+    const store = memoryStore({});
+    const provisioner = stubProvisioner();
+    const written: unknown[] = [];
+    let stored: unknown = tokens(new Date(NOW.getTime() - HOUR));
+
+    const result = await resetTeamsIdentity(
+      options(store, {
+        ...provisioner,
+        refreshDelegatedToken: async () => tokens(new Date(NOW.getTime() + HOUR), 'access-2'),
+      } as never, {
+        now: () => NOW,
+        delegatedTokens: {
+          read: async () => stored as never,
+          write: async (set: unknown) => {
+            written.push(set);
+            stored = set;
+          },
+        },
+      }),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'reset');
+    assert.equal(outcomeOf(result.steps, 'catalog_removed')?.outcome, 'removed');
+    assert.equal(written.length, 1, 'the rotation was persisted');
+    assert.equal((written[0] as { accessToken: string }).accessToken, 'access-2');
+  });
+
+  it('reports a token whose refresh failed as EXPIRED, not as never signed in', async () => {
+    const store = memoryStore({});
+    const base = stubProvisioner();
+
+    const result = await resetTeamsIdentity(
+      options(store, {
+        ...base,
+        removeFromCatalog: async () => {
+          throw expiredError();
+        },
+        refreshDelegatedToken: async () => {
+          throw new Error('invalid_grant');
+        },
+      } as never, {
+        now: () => NOW,
+        delegatedTokens: {
+          read: async () => tokens(new Date(NOW.getTime() + HOUR)) as never,
+          write: async () => {},
+        },
+      }),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    const catalog = outcomeOf(result.steps, 'catalog_removed');
+    // BLOCKED, not FAILED: nothing broke, a human has to act.
+    assert.equal(catalog?.outcome, 'blocked');
+    assert.equal(catalog?.detail, TEAMS_RESET_DETAILS.tenantSignInExpired);
+    assert.notEqual(
+      catalog?.detail,
+      TEAMS_RESET_DETAILS.tenantSignInRequired,
+      'an expired sign-in is not a missing one',
+    );
+    assert.equal(store.deleteCalls, 0);
+  });
+
+  it('still says a plain sign-in is required when nobody signed in', async () => {
+    const store = memoryStore({});
+
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner(), {
+        delegatedTokens: { read: async () => undefined, write: async () => {} },
+      }),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(result.status, 'incomplete');
+    assert.equal(
+      outcomeOf(result.steps, 'catalog_removed')?.detail,
+      TEAMS_RESET_DETAILS.tenantSignInRequired,
+    );
+  });
+
+  it('never refreshes without somewhere to persist the rotation', async () => {
+    // Same safety rule the listing obeys: spending the refresh token without
+    // recording its replacement signs the tenant out for good.
+    const store = memoryStore({});
+    const base = stubProvisioner();
+    let refreshed = 0;
+
+    const result = await resetTeamsIdentity(
+      options(store, {
+        ...base,
+        removeFromCatalog: async () => {
+          throw expiredError();
+        },
+        refreshDelegatedToken: async () => {
+          refreshed += 1;
+          return tokens(new Date(NOW.getTime() + HOUR)) as never;
+        },
+      } as never, {
+        now: () => NOW,
+        // READ ONLY.
+        delegatedTokens: { read: async () => tokens(new Date(NOW.getTime() + HOUR)) as never },
+      }),
+      'agent-1',
+      'identity',
+    );
+
+    assert.equal(refreshed, 0);
+    assert.equal(
+      outcomeOf(result.steps, 'catalog_removed')?.detail,
+      TEAMS_RESET_DETAILS.tenantSignInExpired,
+    );
   });
 });

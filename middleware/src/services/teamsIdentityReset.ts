@@ -90,7 +90,12 @@
  * slug would stay blocked with no way left to find out why.
  */
 
-import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
+import {
+  isDelegatedSignInRequiredError,
+  isDelegatedTokenExpiredError,
+  type DelegatedTokenSet,
+} from '../platform/teamsDelegatedSignIn.js';
+import { withDelegatedTokenRefresh } from '../platform/teamsDelegatedRefresh.js';
 import {
   correctedObjectIdOf,
   isDeletedObjectIdMismatchError,
@@ -117,9 +122,39 @@ export const TEAMS_RESET_STEPS = [
   'bot_deleted',
   'app_deleted',
   'identity_reset',
+  'identity_deleted',
 ] as const;
 
 export type TeamsResetStep = (typeof TEAMS_RESET_STEPS)[number];
+
+/**
+ * HOW FAR BACK a teardown winds the agent.
+ *
+ * The three Azure steps are IDENTICAL for both — same order, same refusals,
+ * same partial report. Only the last step differs, and only in what it does
+ * to the database row:
+ *
+ *   * `'run'` — the original teardown (byte5ai/omadia#951). Azure is emptied
+ *     and the row returns to `pending`, KEEPING `bot_slug` and
+ *     `display_name`: the two answers a human typed, so a retry is one button
+ *     with the same name.
+ *   * `'identity'` — the row goes too, so the agent is back to having no
+ *     Teams identity at all and the operator picks a new slug and a new
+ *     display name from an empty form. This is what an operator wants when
+ *     the identity itself was the mistake — a slug that reads wrong, a name
+ *     nobody agreed to — rather than when a run merely died in the middle.
+ *
+ * BOTH ARE KEPT rather than one replacing the other, because they answer
+ * genuinely different questions and the wrong one is expensive in both
+ * directions: `'run'` on a bad slug leaves the operator unable to change it,
+ * and `'identity'` on a died-mid-chain run makes them retype two fields they
+ * had already got right. What the UI owes them in exchange is that nobody
+ * can mistake one for the other — see the reset panel, where the destructive
+ * one is confirmed by typing the slug rather than by ticking a box.
+ */
+export const TEAMS_RESET_SCOPES = ['run', 'identity'] as const;
+
+export type TeamsResetScope = (typeof TEAMS_RESET_SCOPES)[number];
 
 /**
  * The run-level step of a teardown — the counterpart of the chain's `'run'`.
@@ -166,6 +201,20 @@ export const TEAMS_RESET_DETAILS = {
   catalogRemovalUnsupported: 'catalog_removal_unsupported',
   /** `DELETE /appCatalogs/teamsApps` is delegated-only: nobody is signed in. */
   tenantSignInRequired: 'tenant_sign_in_required',
+  /**
+   * Somebody IS signed in, the access token is spent, and renewing it failed.
+   *
+   * Its own code rather than a reuse of `tenantSignInRequired` for exactly the
+   * reason the target listing had to learn the hard way: telling an operator
+   * whose account is on screen to "sign in" is a sentence that cannot be
+   * acted on. This one says the sign-in EXPIRED, which is a different fact
+   * and points at a different cause — a revoked session, a password change, a
+   * Conditional Access policy.
+   *
+   * `blocked`, never `failed`: nothing broke and nothing was destroyed, one
+   * person has to sign in again.
+   */
+  tenantSignInExpired: 'tenant_sign_in_expired',
   /** The connector publishes no `purgeDeletedAppRegistration` (< 0.8.0).
    *  DELETING ANYWAY IS REFUSED — see the module doc. */
   purgeUnsupported: 'purge_unsupported',
@@ -187,6 +236,25 @@ export const TEAMS_RESET_DETAILS = {
   appProvablyGone: 'app_provably_gone',
   /** ARM is not configured, so no bot service can ever have been created. */
   armNotConfigured: 'arm_not_configured',
+  /**
+   * A FULL reset refused to drop the row, because the row is the last trace
+   * of an app registration nobody could prove is gone.
+   *
+   * Raised only for `'identity'` scope, and only after
+   * {@link TEAMS_RESET_DETAILS.appAbsentUnpurgeable}: the application is not
+   * in `/applications`, the connector cannot search the recycle bin, and so
+   * nothing can say whether a tombstone is still holding this agent's
+   * `uniqueName`. A `'run'` reset survives that uncertainty because the row
+   * survives it too. Deleting the row would not.
+   *
+   * `app_id` is the ONLY input `findDeletedAppRegistration` takes. Drop the
+   * row and a future connector that CAN search the recycle bin has nothing
+   * left to search for — the tombstone becomes permanently unaddressable and
+   * quietly holds the name for its thirty days. So the Azure work stands, the
+   * row stays, and the operator is told to use the milder reset or upgrade
+   * the connector.
+   */
+  appTraceRequired: 'app_trace_required',
 } as const;
 
 /** Prefixes for the failure details, mirroring the runner's convention of a
@@ -201,9 +269,14 @@ export const TEAMS_RESET_FAILURE_PREFIXES = {
 
 export type TeamsIdentityResetResult =
   | {
-      /** Every step is done and the row is back at `pending`. */
+      /**
+       * Every step is done. The row is back at `pending` (`scope: 'run'`) or
+       * gone entirely (`scope: 'identity'`) — {@link steps} says which, and
+       * so does {@link scope}.
+       */
       readonly status: 'reset';
       readonly agentId: string;
+      readonly scope: TeamsResetScope;
       readonly steps: readonly TeamsResetStepReport[];
     }
   | {
@@ -214,6 +287,7 @@ export type TeamsIdentityResetResult =
        */
       readonly status: 'incomplete';
       readonly agentId: string;
+      readonly scope: TeamsResetScope;
       readonly steps: readonly TeamsResetStepReport[];
       readonly stoppedAt: TeamsResetStep;
       readonly detail: string;
@@ -241,6 +315,15 @@ export interface TeamsResetIdentityStore {
     patch: { readonly appObjectId?: string | null },
   ): Promise<unknown>;
   resetForRetry(agentId: string): Promise<unknown>;
+  /**
+   * Drop the row entirely — the last act of an `'identity'`-scope teardown.
+   *
+   * OPTIONAL so a mount (or a test) that only wired the milder teardown keeps
+   * working unchanged. A full reset asked of a store without it is refused
+   * before a single Azure object is touched, rather than half-performed: see
+   * {@link resetTeamsIdentity}.
+   */
+  deleteForAgent?(agentId: string): Promise<unknown>;
 }
 
 /** The recorded team/chat bindings (migration 0051), when one is wired. */
@@ -261,6 +344,14 @@ export type TeamsResetDeleteBotResult =
  */
 export interface TeamsResetProvisionerPort {
   readonly tenantMode: 'customer' | 'home';
+  /**
+   * Renew a spent delegated access token (connector >= 0.6.0). Optional like
+   * every mirrored member; without it the teardown simply does not refresh
+   * and reports a spent token as blocked, exactly as it did before.
+   */
+  refreshDelegatedToken?(input: {
+    readonly tokens: DelegatedTokenSet;
+  }): Promise<DelegatedTokenSet>;
   getAppRegistration(
     appId: string,
     tenantMode: 'customer' | 'home',
@@ -317,10 +408,24 @@ export interface TeamsIdentityResetOptions {
    */
   readonly buildBotHandle: (botSlug: string, appId: string) => string;
   readonly installs?: TeamsResetInstallStore;
-  /** The tenant sign-in the catalog removal rides on (#924/#949). */
-  readonly delegatedTokens?: { read(): Promise<DelegatedTokenSet | undefined> };
+  /**
+   * The tenant sign-in the catalog removal rides on (#924/#949).
+   *
+   * `write` is optional and its absence is load-bearing — see
+   * `platform/teamsDelegatedRefresh.ts`. Without somewhere to persist a
+   * rotation the teardown must not refresh: spending the refresh token
+   * without recording the replacement signs the whole tenant out, which is a
+   * far worse outcome than the one blocked step it would have avoided.
+   */
+  readonly delegatedTokens?: {
+    read(): Promise<DelegatedTokenSet | undefined>;
+    write?(tokens: DelegatedTokenSet): Promise<void>;
+  };
   /** Progress log. Absent = the teardown runs identically, silently. */
   readonly events?: TeamsResetEventSink;
+  /** Wall clock, injectable — read only to decide whether the delegated
+   *  access token is spent before the catalog removal spends a call on it. */
+  readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
 
@@ -331,6 +436,23 @@ export class TeamsIdentityResetNotFoundError extends Error {
   constructor(agentId: string) {
     super(`no teams identity row for agent '${agentId}'`);
     this.name = 'TeamsIdentityResetNotFoundError';
+  }
+}
+
+/**
+ * A FULL reset was asked of a store that cannot drop a row — the caller (a
+ * route) turns it into 501, like every other unwired capability.
+ *
+ * Raised before the first Azure call on purpose. See {@link resetTeamsIdentity}.
+ */
+export class TeamsIdentityResetUnsupportedError extends Error {
+  public readonly code = 'teams_reset_unsupported';
+
+  constructor(agentId: string) {
+    super(
+      `the identity store cannot delete rows, so agent '${agentId}' cannot be reset to no identity at all`,
+    );
+    this.name = 'TeamsIdentityResetUnsupportedError';
   }
 }
 
@@ -385,10 +507,22 @@ function createEmitter(
 export async function resetTeamsIdentity(
   opts: TeamsIdentityResetOptions,
   agentId: string,
+  scope: TeamsResetScope = 'run',
 ): Promise<TeamsIdentityResetResult> {
   const emit = createEmitter(opts, agentId);
   const row = await opts.store.getByAgentId(agentId);
   if (!row) throw new TeamsIdentityResetNotFoundError(agentId);
+
+  // REFUSED BEFORE ANYTHING IS TOUCHED, not half-performed. A store that
+  // cannot drop a row would otherwise let a full reset delete every Azure
+  // object and then leave the identity behind — the operator would be told
+  // the slug is free, find the form still filled in, and have no way to tell
+  // which of the two they are looking at. Throwing here is a caller error in
+  // the same family as a missing row: the route gates on this and answers
+  // 501, exactly as it already does for `resetForRetry`.
+  if (scope === 'identity' && typeof opts.store.deleteForAgent !== 'function') {
+    throw new TeamsIdentityResetUnsupportedError(agentId);
+  }
 
   // Open a fresh timeline, exactly as a provisioning run does: the log
   // describes ONE operation, and an operator watching a teardown is not
@@ -417,7 +551,7 @@ export async function resetTeamsIdentity(
     detail: string,
   ): Promise<TeamsIdentityResetResult> => {
     await emit(TEAMS_RESET_RUN_STEP, 'failed', stoppedAt);
-    return { status: 'incomplete', agentId, steps, stoppedAt, detail };
+    return { status: 'incomplete', agentId, scope, steps, stoppedAt, detail };
   };
 
   const provisioner = opts.getProvisioner();
@@ -444,23 +578,92 @@ export async function resetTeamsIdentity(
   }
 
   // ── Step 4 — the row and the recorded bindings ──────────────────────────
-  await emit('identity_reset', 'started');
+  //
+  // The ONLY step the two scopes disagree about. Everything above ran
+  // identically, which is the point: a full reset is the same teardown with a
+  // different last line, not a second teardown with its own order to get
+  // wrong.
+  const rowStep: TeamsResetStep =
+    scope === 'identity' ? 'identity_deleted' : 'identity_reset';
+
+  // THE GUARD THAT KEEPS THE ROW ALIVE, and it applies to the destructive
+  // scope only.
+  //
+  // `app_absent_unpurgeable` is reported as a SUCCESS above, and correctly
+  // so — there is genuinely no call left to make. But it is the one success
+  // that means "I could not look", not "it is gone": the application is out
+  // of `/applications` and the connector cannot search the recycle bin, so a
+  // tombstone may still be holding this agent's `uniqueName` for thirty days.
+  //
+  // The row is what would find it again. `app_id` is the only input
+  // `findDeletedAppRegistration` takes, so deleting the row converts a
+  // recoverable uncertainty into a permanent one — a leftover in Azure with
+  // nothing left pointing at it. A `'run'` reset can live with the doubt
+  // because it keeps the row; this one cannot, so it stops with everything
+  // else already cleaned up and says exactly why.
+  if (scope === 'identity' && outcomeOf(steps, 'app_deleted')?.detail ===
+      TEAMS_RESET_DETAILS.appAbsentUnpurgeable) {
+    await emit(rowStep, 'started');
+    await finish({
+      step: rowStep,
+      outcome: 'blocked',
+      detail: TEAMS_RESET_DETAILS.appTraceRequired,
+    });
+    return halt(rowStep, TEAMS_RESET_DETAILS.appTraceRequired);
+  }
+
+  await emit(rowStep, 'started');
   try {
     // Bindings first: they are a read model OF the row, and a row already
     // back at `pending` while its installs still list three teams is a
     // screen that contradicts itself. If this throws, nothing above it is
     // undone and the retry repeats it — `DELETE` of an empty set is a no-op.
+    //
+    // Redundant under `'identity'` — migration 0051's foreign key cascades
+    // them away with the row — and done anyway, because a mount whose
+    // installs store is wired against a different backing table would
+    // otherwise keep them. Deleting an empty set costs one statement.
     if (opts.installs) await opts.installs.removeAllForAgent(agentId);
-    await opts.store.resetForRetry(agentId);
+    if (scope === 'identity') {
+      await (
+        opts.store.deleteForAgent as NonNullable<
+          TeamsResetIdentityStore['deleteForAgent']
+        >
+      ).call(opts.store, agentId);
+    } else {
+      await opts.store.resetForRetry(agentId);
+    }
   } catch (err) {
     const detail = `${TEAMS_RESET_FAILURE_PREFIXES.identity}${errorMessage(err)}`;
-    await finish({ step: 'identity_reset', outcome: 'failed', detail });
-    return halt('identity_reset', detail);
+    await finish({ step: rowStep, outcome: 'failed', detail });
+    return halt(rowStep, detail);
   }
-  await finish({ step: 'identity_reset', outcome: 'removed' });
 
+  if (scope === 'identity') {
+    // THE TIMELINE WENT WITH THE ROW. `agent_teams_provisioning_events`
+    // cascades on `agent_id` (migration 0053), so the log these events would
+    // be written to no longer exists — and writing them would only produce a
+    // swallowed foreign-key violation on every single full reset.
+    //
+    // Nothing is lost that anybody can still reach: after this there is no
+    // identity for a timeline to be about, the operator lands on the empty
+    // create form, and the per-step report in the HTTP response is the record
+    // of what happened.
+    steps.push({ step: rowStep, outcome: 'removed' });
+    return { status: 'reset', agentId, scope, steps };
+  }
+
+  await finish({ step: rowStep, outcome: 'removed' });
   await emit(TEAMS_RESET_RUN_STEP, 'succeeded');
-  return { status: 'reset', agentId, steps };
+  return { status: 'reset', agentId, scope, steps };
+}
+
+/** The report recorded for one step, or `undefined` when it never ran. */
+function outcomeOf(
+  steps: readonly TeamsResetStepReport[],
+  step: TeamsResetStep,
+): TeamsResetStepReport | undefined {
+  return steps.find((entry) => entry.step === step);
 }
 
 // ---------------------------------------------------------------------------
@@ -502,17 +705,54 @@ async function removeCatalogEntry(
       detail: TEAMS_RESET_DETAILS.tenantSignInRequired,
     };
   }
+  const teamsAppId = row.teamsAppId;
+  const remove = provisioner.removeFromCatalog as NonNullable<
+    TeamsResetProvisionerPort['removeFromCatalog']
+  >;
+  const call = (set: DelegatedTokenSet): Promise<{ readonly outcome: string }> =>
+    remove.call(provisioner, { teamsAppId, tokens: set });
+
+  const write = opts.delegatedTokens?.write;
   try {
-    const res = await (
-      provisioner.removeFromCatalog as NonNullable<
-        TeamsResetProvisionerPort['removeFromCatalog']
-      >
-    ).call(provisioner, { teamsAppId: row.teamsAppId, tokens });
+    // A SPENT ACCESS TOKEN IS NOT A REASON TO ABANDON A TEARDOWN. Before this
+    // the expiry surfaced as `catalog_removal_failed: <whatever Graph said>`,
+    // which stopped the whole teardown — catalogue first, and its failure
+    // stops everything — over a condition that needs no human at all.
+    //
+    // The refresh is the SHARED one (`platform/teamsDelegatedRefresh.ts`), for
+    // the same reason the target listing uses it: this is the third caller to
+    // need the arithmetic and the second to have got it wrong on its own.
+    // No `write` port, no refresh — see that module.
+    const res =
+      write === undefined
+        ? await call(tokens)
+        : await withDelegatedTokenRefresh(
+            {
+              provisioner,
+              custody: { write: (set) => write.call(opts.delegatedTokens, set) },
+              ...(opts.now ? { now: opts.now } : {}),
+              ...(opts.log ? { log: opts.log } : {}),
+            },
+            tokens,
+            call,
+          );
     return {
       step,
       outcome: res.outcome === 'already-absent' ? 'already-absent' : 'removed',
     };
   } catch (err) {
+    // `blocked`, not `failed`: an expiry that survived the refresh is a
+    // missing human action, exactly like the missing sign-in above it, and
+    // reporting it as a fault would send an operator looking for a broken
+    // Graph call that never happened. Its own detail, though — "sign in
+    // again because yours expired" is a different sentence from "nobody has
+    // signed in", and the operator is entitled to know which one they are in.
+    if (isDelegatedTokenExpiredError(err)) {
+      return { step, outcome: 'blocked', detail: TEAMS_RESET_DETAILS.tenantSignInExpired };
+    }
+    if (isDelegatedSignInRequiredError(err)) {
+      return { step, outcome: 'blocked', detail: TEAMS_RESET_DETAILS.tenantSignInRequired };
+    }
     return {
       step,
       outcome: 'failed',

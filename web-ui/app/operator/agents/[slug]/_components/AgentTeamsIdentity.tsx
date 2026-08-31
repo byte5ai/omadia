@@ -421,6 +421,7 @@ function ReadyPanel(props: {
           cannot find is a cleanup they do by hand in the Azure portal. */}
       <AgentTeamsIdentityReset
         slug={props.slug}
+        botSlug={status.identity.bot_slug}
         state={status.state}
         running={status.running}
         onDone={props.onReloaded}

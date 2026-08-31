@@ -64,18 +64,18 @@ import {
   type TeamsProvisioningState,
 } from '../platform/agentTeamsIdentityStore.js';
 import {
-  ACCESS_TOKEN_REFRESH_MARGIN_MS,
   adminConsentUrlOf,
   delegatedStepOf,
-  isAccessTokenExpiring,
   isDelegatedConsentRequiredError,
   isDelegatedSignInRequiredError,
   isDelegatedTokenExpiredError,
   isDeviceCodeFlowError,
-  isRecoverableByRefresh,
   requiredScopesOf,
   type DelegatedTokenSet,
 } from '../platform/teamsDelegatedSignIn.js';
+// The refresh arithmetic itself — shared with the target listing so the two
+// can never grow separate opinions about when a token is spent.
+import { withDelegatedTokenRefresh } from '../platform/teamsDelegatedRefresh.js';
 import type { TimerSeam } from '../plugins/jobScheduler.js';
 import type {
   BackgroundJob,
@@ -1899,47 +1899,36 @@ export class TeamsProvisioningJobRunner {
       detail: DELEGATED_UPLOAD_DETAIL,
     });
 
-    // PROACTIVE REFRESH — before the call, not after it has failed.
+    // THE REFRESH, IN BOTH DIRECTIONS — and no longer written here.
     //
-    // The reactive path below still exists and still matters, but it can only
-    // ever run once the upload has already failed: a package re-sent, and a
-    // recovery that depends on the failure being classified exactly as
-    // "expired". If Graph answers with anything else, a run dies for a reason
-    // no human needs to fix. Asking the token whether it is spent costs
-    // nothing and removes that whole class of failure.
+    // This block used to hold the whole thing inline: refresh before the call
+    // when our clock says the token is spent, refresh and retry once when
+    // Microsoft says so, persist every rotation the instant it happens. It
+    // was correct, and it was the ONLY place that was — the target listing
+    // grew the same need and answered it by reporting an expired token as
+    // "nobody is signed in", which is how a signed-in admin ended up being
+    // told to sign in.
     //
-    // A FAILURE HERE IS NOT FATAL, deliberately. If the refresh throws we
-    // carry on with the stored token: our clock may be the thing that is
-    // wrong, and a token we wrongly believed spent may work perfectly. When it
-    // does not, the upload fails exactly as it did before this block existed
-    // and the reactive path takes over — so the worst case of a proactive
-    // refresh is today's behaviour, never worse than it.
-    const refreshDelegated = provisioner.refreshDelegatedToken;
-    let current = tokens;
-    if (
-      typeof refreshDelegated === 'function' &&
-      isAccessTokenExpiring(
-        current.expiresAt,
-        this.now(),
-        ACCESS_TOKEN_REFRESH_MARGIN_MS,
-      )
-    ) {
-      try {
-        current = await refreshDelegated.call(provisioner, { tokens: current });
-        // Persisted IMMEDIATELY, for the same reason the reactive path does:
-        // a rotation the vault has not seen is a refresh token already spent,
-        // and a crash here would sign the tenant out silently.
-        await custody.write(current);
+    // So the arithmetic moved to `platform/teamsDelegatedRefresh.ts` and both
+    // callers now share it, for the same reason `isAccessTokenExpiring` is
+    // shared rather than reimplemented: two sites with their own expiry rules
+    // drift, and the drift is invisible until an operator is standing in
+    // front of the wrong sentence. The policies it enforces are unchanged —
+    // proactive failures are swallowed (our clock may be the wrong one),
+    // reactive failures are not (Microsoft's verdict is not an opinion).
+    const refreshCtx = {
+      provisioner,
+      custody,
+      now: (): Date => this.now(),
+      onRefreshed: async (): Promise<void> => {
         await this.emit(agentId, 'catalog_uploaded', 'progress', {
           detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
         });
-      } catch (err) {
-        current = tokens;
-        this.log(
-          `[teams-provisioning] pre-emptive delegated token refresh for agent '${agentId}' failed, continuing with the stored token: ${errorMessage(err)}`,
-        );
-      }
-    }
+      },
+      log: (msg: string): void => {
+        this.log(`[teams-provisioning] agent '${agentId}': ${msg}`);
+      },
+    };
 
     const attemptUpload = async (set: DelegatedTokenSet): Promise<string> => {
       const result = await delegatedUpload.call(provisioner, {
@@ -1947,6 +1936,10 @@ export class TeamsProvisioningJobRunner {
         externalId,
         tokens: set,
       });
+      // The connector's OWN rotation, which is a third path the shared helper
+      // deliberately knows nothing about: it happens inside the upload, is
+      // reported by the result rather than by an error, and only this call
+      // site can see it. Persisted on the same terms as every other rotation.
       if (result.refreshed) {
         await custody.write(result.tokens);
         await this.emit(agentId, 'catalog_uploaded', 'progress', {
@@ -1956,32 +1949,16 @@ export class TeamsProvisioningJobRunner {
       return result.app.value.teamsAppId;
     };
 
-    try {
-      return { kind: 'uploaded', teamsAppId: await attemptUpload(current) };
-    } catch (err) {
-      // THE FALLBACK, and it stays a fallback rather than becoming dead code.
-      // The check above reads a clock; this reads Microsoft's actual verdict.
-      // It is what still catches a host whose clock is behind, and a token the
-      // server invalidated early — a revoked session, a password change, a
-      // Conditional Access policy — neither of which any expiry arithmetic can
-      // see coming.
-      //
-      // The ONE delegated failure an operator must never be shown: an access
-      // token past its expiry with a refresh token that is still good. It is
-      // recovered right here — refresh, retry once — because surfacing it
-      // would ask a human to fix something no human needs to touch. Anything
-      // else, INCLUDING a refresh that itself fails, travels on to
-      // {@link handleFailure}, which is where the four errors are told apart.
-      if (!isDelegatedTokenExpiredError(err) || !isRecoverableByRefresh(err)) throw err;
-      const refresh = provisioner.refreshDelegatedToken;
-      if (typeof refresh !== 'function') throw err;
-      const rotated = await refresh.call(provisioner, { tokens: current });
-      await custody.write(rotated);
-      await this.emit(agentId, 'catalog_uploaded', 'progress', {
-        detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
-      });
-      return { kind: 'uploaded', teamsAppId: await attemptUpload(rotated) };
-    }
+    // The ONE delegated failure an operator must never be shown: an access
+    // token past its expiry with a refresh token that is still good. It is
+    // recovered in here — refresh, retry once — because surfacing it would
+    // ask a human to fix something no human needs to touch. Anything else,
+    // INCLUDING a refresh that itself failed, travels on to
+    // {@link handleFailure}, which is where the four errors are told apart.
+    return {
+      kind: 'uploaded',
+      teamsAppId: await withDelegatedTokenRefresh(refreshCtx, tokens, attemptUpload),
+    };
   }
 
   /**

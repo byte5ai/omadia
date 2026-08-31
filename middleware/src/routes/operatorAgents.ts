@@ -38,10 +38,13 @@ import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
+  TEAMS_RESET_SCOPES,
   TeamsIdentityResetNotFoundError,
+  TeamsIdentityResetUnsupportedError,
   type TeamsResetEventSink,
-  type TeamsResetIdentityRecord,
+  type TeamsResetIdentityStore,
   type TeamsResetProvisionerPort,
+  type TeamsResetScope,
 } from '../services/teamsIdentityReset.js';
 import {
   projectTeamsBotConfig,
@@ -337,6 +340,17 @@ export interface OperatorTeamsIdentityStore {
    * provisioning run building a bot on an application that is gone.
    */
   resetForRetry?(agentId: string): Promise<OperatorTeamsIdentityRecord>;
+  /**
+   * Drop the row entirely — the last act of a FULL teardown, the one that
+   * winds the agent back to having no Teams identity at all so a new
+   * `bot_slug` and display name can be chosen.
+   *
+   * Optional and gated the same way as the two above: without it the route
+   * answers 501 for `scope: 'identity'` while the milder reset keeps working,
+   * because a half-supported destructive reset is worse than an unavailable
+   * one.
+   */
+  deleteForAgent?(agentId: string): Promise<unknown>;
   /** Persist a single field mid-teardown — today only the freshly resolved
    *  `appObjectId`, which must reach the database BEFORE the delete that
    *  makes it unlookupable. Optional, like every other write above. */
@@ -457,6 +471,17 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly delegatedTokens?: {
     read(): Promise<DelegatedTokenSet | undefined>;
+    /**
+     * WRITE, for rotations only — both consumers refresh a spent access token
+     * rather than reporting it as a missing sign-in, and a rotation the vault
+     * never sees is a refresh token already spent.
+     *
+     * Optional, and its absence is enforced rather than merely tolerated: no
+     * write port means neither route refreshes at all. Signing a tenant out
+     * silently is a far worse outcome than one blocked listing. See
+     * `platform/teamsDelegatedRefresh.ts`.
+     */
+    write?(tokens: DelegatedTokenSet): Promise<void>;
   };
   /**
    * WRITE access to the provisioning progress log, so a teardown lands on the
@@ -2349,17 +2374,32 @@ export function createOperatorAgentsRouter(
    * cannot persist the object id simply forces the teardown down its
    * recycle-bin-search path instead.
    */
+  /**
+   * Read the teardown scope off a request body.
+   *
+   * `undefined` means REFUSE — an unknown value must not fall back to the
+   * default, because the two scopes differ in exactly the way a silent
+   * fallback would hide: the destructive one frees the bot slug and the
+   * milder one keeps it, and an operator who asked to free it and got it kept
+   * finds out only when the create form is still filled in.
+   *
+   * A body-less POST, on the other hand, is not an unknown value — it is
+   * every client written before scopes existed, and it means what it has
+   * always meant.
+   */
+  function parseTeamsResetScope(body: unknown): TeamsResetScope | undefined {
+    const raw = (body as { scope?: unknown } | null | undefined)?.scope;
+    if (raw === undefined || raw === null) return 'run';
+    return (TEAMS_RESET_SCOPES as readonly string[]).includes(raw as string)
+      ? (raw as TeamsResetScope)
+      : undefined;
+  }
+
   function teamsResetStore(
     deps: OperatorTeamsIdentityDeps,
     resetForRetry: (agentId: string) => Promise<OperatorTeamsIdentityRecord>,
-  ): {
-    getByAgentId(agentId: string): Promise<TeamsResetIdentityRecord | undefined>;
-    update(
-      agentId: string,
-      patch: { readonly appObjectId?: string | null },
-    ): Promise<unknown>;
-    resetForRetry(agentId: string): Promise<unknown>;
-  } {
+  ): TeamsResetIdentityStore {
+    const deleteForAgent = deps.store.deleteForAgent;
     return {
       getByAgentId: async (agentId) => {
         const row = await deps.store.getByAgentId(agentId);
@@ -2378,6 +2418,12 @@ export function createOperatorAgentsRouter(
         return update.call(deps.store, agentId, patch);
       },
       resetForRetry: (agentId) => resetForRetry.call(deps.store, agentId),
+      // Forwarded only when the store really has it, so the teardown's own
+      // feature detection (`typeof … === 'function'`) reads the truth rather
+      // than a wrapper that would throw on the line after it was called.
+      ...(typeof deleteForAgent === 'function'
+        ? { deleteForAgent: (agentId: string) => deleteForAgent.call(deps.store, agentId) }
+        : {}),
     };
   }
 
@@ -2531,11 +2577,22 @@ export function createOperatorAgentsRouter(
   /**
    * POST /:slug/teams-identity/reset — undo a provisioning run.
    *
-   * DESTRUCTIVE, AND DELIBERATELY NOT A DELETE OF ANYTHING THE OPERATOR
-   * TYPED. The Entra app registration, the Azure bot and the tenant catalog
-   * entry go; `bot_slug` and `display_name` stay, because they are the two
-   * answers a human gave and the whole point is that the retry is one button
-   * with the same slug.
+   * TWO SCOPES, ONE TEARDOWN. The body's optional `scope` chooses how far
+   * back the agent is wound:
+   *
+   *   * `'run'` (the default, and what a body-less POST has always meant) —
+   *     the Entra app registration, the Azure bot and the tenant catalog
+   *     entry go; `bot_slug` and `display_name` stay, because they are the
+   *     two answers a human gave and the point is that the retry is one
+   *     button with the same slug.
+   *   * `'identity'` — the same Azure teardown, and then the row itself, so
+   *     the agent is back to having no Teams identity and the operator picks
+   *     a fresh slug and display name from an empty form. `bot_slug` is
+   *     `UNIQUE`, so nothing short of dropping the row can free the name.
+   *
+   * DEFAULTING TO `'run'` IS THE SAFE DIRECTION and it is also what keeps
+   * every existing caller correct: a client that does not know about scopes
+   * cannot accidentally ask for the destructive one.
    *
    * WHY THE ORDER AND THE PARTIAL REPORT LIVE IN THE SERVICE, NOT HERE:
    * `services/teamsIdentityReset.ts`. This route owns three things the
@@ -2570,6 +2627,20 @@ export function createOperatorAgentsRouter(
           });
           return;
         }
+        // Read BEFORE the capability gates, so an unknown scope is refused as
+        // the client error it is rather than being silently downgraded to the
+        // milder teardown — a caller that asked to free the slug and got a
+        // row back at `pending` would have no way to tell.
+        const scope = parseTeamsResetScope(req.body);
+        if (scope === undefined) {
+          res.status(400).json({
+            error: 'invalid_body',
+            message: `scope must be one of ${TEAMS_RESET_SCOPES.join(' | ')}`,
+            agent: agent.slug,
+          });
+          return;
+        }
+
         const provisioner = deps.getProvisioner?.();
         const resetForRetry = deps.store.resetForRetry;
         if (provisioner === undefined || typeof resetForRetry !== 'function') {
@@ -2580,6 +2651,20 @@ export function createOperatorAgentsRouter(
           res.status(501).json({
             error: 'teams_reset_unsupported',
             message: TEAMS_RESET_UNSUPPORTED_REASON,
+            agent: agent.slug,
+          });
+          return;
+        }
+        if (scope === 'identity' && typeof deps.store.deleteForAgent !== 'function') {
+          // Refused BEFORE the exclusive lease and before the first Azure
+          // call. A full reset that emptied Azure and then could not drop the
+          // row would leave the operator holding a filled-in form for an
+          // identity whose objects are gone — the state this route exists to
+          // prevent, reached by the route itself.
+          res.status(501).json({
+            error: 'teams_reset_unsupported',
+            message:
+              'this deployment cannot delete Teams identity rows — reset the run instead, or upgrade the middleware that owns the identity store.',
             agent: agent.slug,
           });
           return;
@@ -2629,6 +2714,7 @@ export function createOperatorAgentsRouter(
               ...(deps.eventWriter ? { events: deps.eventWriter } : {}),
             },
             agent.id,
+            scope,
           );
           // `agentId` is dropped rather than spread: every other route on
           // this router identifies an agent by its SLUG, and leaking the
@@ -2650,6 +2736,16 @@ export function createOperatorAgentsRouter(
         if (err instanceof TeamsIdentityResetNotFoundError) {
           res.status(404).json({
             error: 'teams_identity_not_found',
+            message: err.message,
+          });
+          return;
+        }
+        if (err instanceof TeamsIdentityResetUnsupportedError) {
+          // Belt and braces: the gate above already answered this, and the
+          // service raises it too so that a future caller wiring the teardown
+          // directly cannot half-perform a full reset either.
+          res.status(501).json({
+            error: 'teams_reset_unsupported',
             message: err.message,
           });
           return;

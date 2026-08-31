@@ -25,6 +25,27 @@
  * They are therefore probed separately and reported separately: a missing
  * chat scope must not be able to hide the team list, which is the half that
  * always works.
+ *
+ * A SPENT ACCESS TOKEN IS NOT A MISSING SIGN-IN
+ * ---------------------------------------------
+ * This listing used to report an expired access token as `sign_in_required`,
+ * which put an operator who was demonstrably signed in — account on screen,
+ * tenant sign-in green — in front of the sentence "sign in once". It was
+ * wrong twice over: the sign-in existed, and the expiry needed no human at
+ * all, only the refresh the catalogue upload had been doing since #924.
+ *
+ * So the listing now performs that refresh itself, through the SHARED
+ * arithmetic in `platform/teamsDelegatedRefresh.ts` rather than a second copy
+ * of it — the drift between two hand-rolled refresh paths is exactly the trap
+ * that had already been sprung once between `describe()` and the runner.
+ *
+ * The refresh is not only a repair, it is what makes the REAL diagnosis
+ * reachable. The connector validates a token before it considers what the
+ * token is allowed to do, so while the access token was spent, the expiry was
+ * the only error it ever threw and {@link classifyListingFailure}'s scope
+ * branch could not be reached however correctly it was ordered. With a live
+ * token the connector gets far enough to notice a missing `Chat.ReadBasic`,
+ * and the operator is finally told the thing that is actually true.
  */
 
 import {
@@ -33,6 +54,10 @@ import {
   isDelegatedTokenExpiredError,
   type DelegatedTokenSet,
 } from '../platform/teamsDelegatedSignIn.js';
+import {
+  withDelegatedTokenRefresh,
+  type DelegatedRefreshProvisioner,
+} from '../platform/teamsDelegatedRefresh.js';
 import {
   isDelegatedScopeRequiredError,
   supportsChatListing,
@@ -53,19 +78,36 @@ export type TeamsTargetListingUnavailable =
   | 'connector_unavailable'
   /** The installed connector publishes no such method (older version). */
   | 'connector_unsupported'
-  /** A tenant admin has to sign in before Graph will answer (#924/#949). */
+  /**
+   * NOBODY IS SIGNED IN. That is the whole meaning of this code, and it is
+   * now the only one — see `sign_in_expired` below for what used to be folded
+   * in here and for why that was the field-test bug (#924/#949).
+   */
   | 'sign_in_required'
   /**
-   * Somebody IS signed in, but with a credential issued before this listing's
+   * Somebody IS signed in, the access token is spent, and renewing it failed.
+   *
+   * The admin does have to sign in again, so the ACTION is the same as
+   * `sign_in_required` — and that is precisely why the two must stay apart.
+   * "You never signed in" and "your sign-in stopped working" send a person to
+   * the same button with completely different expectations, and only one of
+   * them is worth investigating (a revoked session, a password change, a
+   * Conditional Access policy). Folding them together is what produced a
+   * screen telling a signed-in admin to sign in, with no hint that anything
+   * had expired.
+   *
+   * Reaching this code at all means the refresh was TRIED and failed: a spent
+   * access token whose refresh works never surfaces to a human.
+   */
+  | 'sign_in_expired'
+  /**
+   * Somebody IS signed in, with a credential issued before this listing's
    * scope existed (`Chat.ReadBasic`, connector 0.8.0).
    *
-   * Kept apart from `sign_in_required` because the two look identical to the
-   * code and completely different to the person: this one means "you are
-   * signed in, it still is not enough, sign in once more" — and, crucially,
-   * that a refresh will never fix it, because a refresh token only renews the
-   * scopes it was issued for. Folding it into `sign_in_required` would put an
-   * operator who is demonstrably signed in in front of a message telling them
-   * to sign in, with no explanation of why the first time did not count.
+   * Kept apart from both codes above because a refresh will never fix it — a
+   * refresh token only renews the scopes it was issued for — so this is the
+   * one case where signing in again is genuinely the only way forward, and
+   * the copy can say why the first sign-in did not count.
    */
   | 'scope_missing'
   /** Signed in, but the tenant never granted the permission at all. */
@@ -85,9 +127,9 @@ export interface TeamsTargetDirectory {
   readonly chats: TeamsTargetListing<TeamsChatSummary>;
 }
 
-/** The provisioner surface this service uses — structural, both methods
+/** The provisioner surface this service uses — structural, every method
  *  optional, so feature detection reads the object the call would go to. */
-export interface TeamsTargetDirectoryProvisioner {
+export interface TeamsTargetDirectoryProvisioner extends DelegatedRefreshProvisioner {
   listTeams?(): Promise<readonly TeamsTeamSummary[]>;
   listChats?(input?: ListChatsInput): Promise<readonly TeamsChatSummary[]>;
 }
@@ -95,19 +137,42 @@ export interface TeamsTargetDirectoryProvisioner {
 export interface TeamsTargetDirectoryOptions {
   /** `undefined` when the connector plugin is not installed/active. */
   readonly getProvisioner: () => TeamsTargetDirectoryProvisioner | undefined;
-  /** The tenant sign-in, when one is wired. Absent is not an error — it only
-   *  means `listChats` is called without tokens and the connector decides. */
-  readonly delegatedTokens?: { read(): Promise<DelegatedTokenSet | undefined> };
+  /**
+   * The tenant sign-in, when one is wired. Absent is not an error — it only
+   * means `listChats` is called without tokens and the connector decides.
+   *
+   * `write` is OPTIONAL and its absence is load-bearing: without somewhere to
+   * persist a rotation this listing must not refresh at all. A refresh spends
+   * the refresh token the instant Microsoft answers, so rotating without
+   * recording the result would trade a recoverable expiry for a silent,
+   * permanent sign-out of the entire tenant. One bad sentence is the cheaper
+   * failure. See `platform/teamsDelegatedRefresh.ts`.
+   */
+  readonly delegatedTokens?: {
+    read(): Promise<DelegatedTokenSet | undefined>;
+    write?(tokens: DelegatedTokenSet): Promise<void>;
+  };
+  /** Wall clock, injectable — the proactive refresh reads it, and that
+   *  decision has to be testable without waiting an hour. */
+  readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
 
 /**
  * Classify a thrown enumeration failure.
  *
- * The three delegated guards come first because they are the only ones that
- * name a HUMAN ACTION: "sign in", "grant consent". Reporting either of those
- * as `lookup_failed` would put an operator in front of a retry button for a
+ * The delegated guards come first because they are the only ones that name a
+ * HUMAN ACTION: "sign in", "grant consent". Reporting any of those as
+ * `lookup_failed` would put an operator in front of a retry button for a
  * condition no retry can fix.
+ *
+ * ON THE ORDER, AND ON WHAT THE ORDER CANNOT DO. It is written most-specific
+ * first, and that is right — but ordering alone never made `scope_missing`
+ * reachable for the operator who reported this. Only ONE error is ever
+ * thrown, and while the access token was spent that error was always the
+ * expiry: the connector will not scope-check a credential it cannot
+ * authenticate. What made the scope answer reachable is the refresh in
+ * {@link listChatsSafely}, not this list.
  */
 function classifyListingFailure(err: unknown): TeamsTargetListingUnavailable {
   // FIRST, and deliberately: the connector raises this one WITHOUT calling
@@ -116,7 +181,10 @@ function classifyListingFailure(err: unknown): TeamsTargetListingUnavailable {
   // the wrong shape" rather than "there is no sign-in".
   if (isDelegatedScopeRequiredError(err)) return 'scope_missing';
   if (isDelegatedSignInRequiredError(err)) return 'sign_in_required';
-  if (isDelegatedTokenExpiredError(err)) return 'sign_in_required';
+  // NOT `sign_in_required`. Getting here means a refresh was attempted and
+  // did not work — the whole recoverable case is handled upstream and never
+  // reaches a human.
+  if (isDelegatedTokenExpiredError(err)) return 'sign_in_expired';
   if (isDelegatedConsentRequiredError(err)) return 'consent_required';
   return 'lookup_failed';
 }
@@ -188,12 +256,33 @@ async function listChatsSafely(
   } catch (err) {
     opts.log?.(`[teams-targets] delegated token read failed: ${errorMessage(err)}`);
   }
+
+  const listChats = provisioner.listChats as NonNullable<
+    TeamsTargetDirectoryProvisioner['listChats']
+  >;
+  const call = (set: DelegatedTokenSet | undefined): Promise<readonly TeamsChatSummary[]> =>
+    listChats.call(provisioner, set === undefined ? undefined : { tokens: set });
+
+  const write = opts.delegatedTokens?.write;
   try {
-    const items = await (
-      provisioner.listChats as NonNullable<
-        TeamsTargetDirectoryProvisioner['listChats']
-      >
-    ).call(provisioner, tokens === undefined ? undefined : { tokens });
+    // NO WRITE, NO REFRESH — and no refresh method, nothing to call. Either
+    // way the listing behaves exactly as it did before #949: it spends the
+    // token it was given and reports whatever comes back.
+    const items =
+      tokens === undefined || write === undefined
+        ? await call(tokens)
+        : await withDelegatedTokenRefresh(
+            {
+              provisioner,
+              custody: { write: (set) => write.call(opts.delegatedTokens, set) },
+              ...(opts.now ? { now: opts.now } : {}),
+              ...(opts.log ? { log: opts.log } : {}),
+            },
+            tokens,
+            // The ARGUMENT, never the captured `tokens` — a retry that
+            // replayed the spent set would fail identically forever.
+            (set) => call(set),
+          );
     return { available: true, items };
   } catch (err) {
     opts.log?.(`[teams-targets] listChats failed: ${errorMessage(err)}`);

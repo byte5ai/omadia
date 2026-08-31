@@ -2336,7 +2336,8 @@
           "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht. Eine erneute Anmeldung schaltet die Liste frei.",
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
-          "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein."
+          "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein.",
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein."
         },
         "chats": {
           "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
@@ -2344,7 +2345,8 @@
           "sign_in_required": "Chats lassen sich nur mit einer Tenant-Anmeldung auflisten — Graph bietet dafür keinen App-Zugriff an. Melde dich einmal an oder trage die Chat-ID unten ein.",
           "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
-          "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein."
+          "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein.",
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern — das ist keine fehlende Anmeldung, sondern eine, die nicht mehr gilt. Melde dich einmal neu an oder trage die Chat-ID unten ein."
         }
       },
       "filter": "Tippen zum Filtern …",
@@ -2353,7 +2355,6 @@
     },
     "teamsReset": {
       "heading": "Provisionierung zurücksetzen",
-      "open": "Zurücksetzen …",
       "cancel": "Abbrechen",
       "hint": "Räumt die in Azure angelegten Objekte ab, damit ein neuer Versuch mit demselben Slug starten kann.",
       "runningHint": "Solange eine Provisionierung läuft, ist das Zurücksetzen gesperrt — warte, bis der Lauf fertig ist.",
@@ -2364,7 +2365,6 @@
       "consequenceInstalls": "Alle hier vermerkten Team- und Chat-Installationen.",
       "keepsHint": "Bot-Slug und Anzeigename bleiben erhalten — ein neuer Lauf startet direkt mit denselben Angaben.",
       "acknowledge": "Ich habe verstanden, dass diese Azure-Objekte gelöscht werden und neu angelegt werden müssen.",
-      "confirm": "Endgültig zurücksetzen",
       "busy": "Wird zurückgesetzt …",
       "resultComplete": "Zurückgesetzt. Der Agent kann jetzt erneut provisioniert werden.",
       "resultIncomplete": "Abgebrochen bei „{step}“ — alles davor ist abgeräumt, der Rest steht noch. Ein erneuter Aufruf macht dort weiter.",
@@ -2373,7 +2373,8 @@
         "catalog_removed": "Katalogeintrag",
         "bot_deleted": "Azure-Bot",
         "app_deleted": "App-Registrierung",
-        "identity_reset": "Datenbankzeile"
+        "identity_reset": "Datenbankzeile",
+        "identity_deleted": "Identität"
       },
       "outcomes": {
         "removed": "entfernt",
@@ -2389,8 +2390,21 @@
         "purge_unsupported": "Der installierte Connector kann den Papierkorb nicht leeren. Die App-Registrierung wurde deshalb absichtlich NICHT gelöscht: sie würde ihren Namen sonst 30 Tage blockieren.",
         "app_absent_unpurgeable": "Die App-Registrierung ist bereits weg, ließ sich aber nicht mehr im Papierkorb nachschlagen. Sie könnte den Namen noch bis zu 30 Tage belegen — wähle im Zweifel einen anderen Bot-Slug.",
         "app_provably_gone": "Die App-Registrierung ist weg und liegt auch nicht im Papierkorb — der Name ist wieder frei.",
-        "arm_not_configured": "Ohne ARM-Konfiguration wurde nie ein Bot-Dienst angelegt."
-      }
+        "arm_not_configured": "Ohne ARM-Konfiguration wurde nie ein Bot-Dienst angelegt.",
+        "tenant_sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
+        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann."
+      },
+      "openRun": "Lauf zurücksetzen …",
+      "openIdentity": "Identität löschen …",
+      "confirmHeadingIdentity": "Das wird unwiderruflich gelöscht — inklusive der Identität selbst:",
+      "consequenceIdentity": "Die Teams-Identität dieses Orchestrators samt Bot-Slug und Anzeigename. Beides ist danach wieder frei wählbar.",
+      "dropsHint": "Bot-Slug und Anzeigename werden NICHT behalten. Der Orchestrator hat danach keine Teams-Identität mehr, und das Anlegen beginnt wieder mit einem leeren Formular.",
+      "acknowledgeIdentity": "Ich habe verstanden, dass zusätzlich die Identität entfernt wird und Bot-Slug und Anzeigename neu vergeben werden müssen.",
+      "confirmRun": "Lauf zurücksetzen",
+      "confirmIdentity": "Identität endgültig löschen",
+      "slugConfirmLabel": "Tippe zur Bestätigung den Bot-Slug „{slug}“ ein:",
+      "slugMismatch": "Der eingegebene Bot-Slug stimmt nicht überein.",
+      "resultCompleteIdentity": "Identität gelöscht. Der Orchestrator kann jetzt mit einem neuen Bot-Slug und Anzeigenamen angelegt werden."
     }
   },
   "builder": {
