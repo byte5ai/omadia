@@ -2306,11 +2306,15 @@
           "unknown": "Ob diese Konfiguration bereits übernommen wurde, lässt sich gerade nicht feststellen. Vergleiche sie mit dem Teams-Channel-Plugin und füge den Block unten ein, falls er fehlt."
         }
       },
-      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten.",
       "package": {
         "heading": "App-Paket herunterladen",
         "hint": "Das Provisioning lädt dieses Paket selbst in den Tenant-Katalog — ein manueller Upload pro Agent ist nicht nötig. Der Download bleibt als Rückfallebene: für Tenants, in denen programmatische Katalog-Uploads nicht erlaubt sind, oder wenn du das Manifest vorher ansehen willst. Es wird bei jeder Anfrage neu erzeugt und entspricht damit genau dem, was das Provisioning hochladen würde.",
         "download": "Teams-App-Paket (.zip) herunterladen"
+      },
+      "retarget": {
+        "heading": "Ziel wählen und Provisioning starten",
+        "hint": "Für diese Identität ist kein Ziel hinterlegt — nach einem Zurücksetzen ist das der Normalfall. Bot-Slug und Anzeigename bleiben erhalten; es fehlt nur das Team oder der Chat, in das die App installiert werden soll.",
+        "runningHint": "Für diesen Agenten läuft bereits ein Durchlauf. Warte, bis er beendet ist — einen zweiten lehnt der Server ab."
       }
     },
     "teamsTargets": {
@@ -2342,7 +2346,10 @@
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
           "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein."
         }
-      }
+      },
+      "filter": "Tippen zum Filtern …",
+      "noMatch": "Kein Eintrag passt zu „{query}“. Für eine ID, die hier nicht auftaucht, nutze das Feld darunter.",
+      "matchCount": "{count, plural, =0 {Keine Treffer} one {Ein Treffer} other {# Treffer}}"
     },
     "teamsReset": {
       "heading": "Provisionierung zurücksetzen",
@@ -5559,10 +5566,13 @@
       "as": "Angemeldet als {who}",
       "unknownAccount": "unbekanntes Konto",
       "since": "Angemeldet seit",
-      "tokenExpires": "Zugriffstoken läuft ab",
+      "tokenExpires": "Aktuelles Zugriffstoken gültig bis",
       "tenant": "Tenant",
       "scopes": "Berechtigungen",
-      "staleNote": "Das Zugriffstoken ist abgelaufen. Das ist kein Fehler — omadia erneuert es beim nächsten Upload automatisch, die Anmeldung bleibt bestehen."
+      "staleNote": "Das aktuelle Zugriffstoken ist abgelaufen — kein Fehler und kein Handlungsbedarf. omadia erneuert es vor dem nächsten Zugriff, die Anmeldung bleibt bestehen.",
+      "selfRenewing": "Die Anmeldung bleibt bestehen und erneuert sich selbst. Erneut anmelden musst du dich erst, wenn hier steht, dass die Anmeldung fehlt.",
+      "technicalHeading": "Technische Details",
+      "tokenExpiresHint": "Die Laufzeit des Zugriffstokens gibt Microsoft vor (rund 60 bis 90 Minuten), sie lässt sich nicht einstellen. Über die Anmeldung sagt sie nichts aus: omadia besorgt sich vor jedem Zugriff ein frisches Token."
     },
     "expired": {
       "headline": "Der Anmeldecode ist abgelaufen.",

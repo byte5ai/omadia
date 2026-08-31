@@ -40,10 +40,16 @@ import {
  *   admin whose sign-in page demands consent first and who has not been given
  *   that URL is simply stuck.
  *
- *   SIGNED IN — who, since when, until when, and sign out. `accessTokenStale`
- *   is rendered as a neutral note: the refresh token outlives the access token
- *   and the next upload refreshes silently, so showing it in red would send an
- *   operator to fix something that fixes itself.
+ *   SIGNED IN — who, since when, and sign out, led by the sentence that
+ *   actually answers the operator's question: the sign-in persists and renews
+ *   itself. The access token's expiry is NOT among the facts. It used to be,
+ *   and it taught operators the opposite of the truth — "signed in since
+ *   08:06 / access token expires 09:06" reads as a one-hour session. Microsoft
+ *   fixes that lifetime at roughly 60–90 minutes with no way to configure it,
+ *   while the refresh token behind it lasts weeks to months; so the number is
+ *   a technical detail behind a disclosure, next to the sentence that says so.
+ *   `accessTokenStale` lives there too, as a neutral note: an expired access
+ *   token is a non-event the runner clears before its next call.
  *
  * `declined` IS NEVER RENDERED AS "THE ADMIN CANCELLED". Microsoft returns it
  * for Conditional Access blocks and device-compliance failures just as readily.
@@ -335,20 +341,27 @@ export function TeamsTenantSignIn(): React.ReactElement {
               </Button>
             </div>
           </div>
+          {/* THE HEADLINE, and the reason it is one. An access-token expiry
+              rendered as a fact beside "signed in since" reads as a countdown
+              on the SIGN-IN, and operators drew exactly that conclusion:
+              "the sign-in only lasts an hour". It does not. Microsoft fixes
+              the access token's lifetime at roughly 60–90 minutes and it is
+              not configurable (the token-lifetime policy that once governed it
+              was withdrawn for access tokens); the refresh token behind it
+              lasts weeks to months and the runner renews silently. So the
+              first thing said here is the durable truth, and the number that
+              caused the misreading moves behind a disclosure. */}
+          <p
+            data-testid="teams-sign-in-self-renewing"
+            className="text-sm text-[color:var(--fg-muted)]"
+          >
+            {t('signedIn.selfRenewing')}
+          </p>
           <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
             {signIn.signedInAt && (
               <Fact
                 label={t('signedIn.since')}
                 value={format.dateTime(new Date(signIn.signedInAt), {
-                  dateStyle: 'medium',
-                  timeStyle: 'short',
-                })}
-              />
-            )}
-            {signIn.expiresAt && (
-              <Fact
-                label={t('signedIn.tokenExpires')}
-                value={format.dateTime(new Date(signIn.expiresAt), {
                   dateStyle: 'medium',
                   timeStyle: 'short',
                 })}
@@ -364,17 +377,38 @@ export function TeamsTenantSignIn(): React.ReactElement {
               />
             )}
           </dl>
-          {/* Deliberately NOT an alert: the refresh token outlives the access
-              token, so this fixes itself on the next upload. */}
-          {signIn.accessTokenStale && (
-            <p
-              role="status"
-              data-testid="teams-token-stale"
-              className="text-xs text-[color:var(--fg-muted)]"
-            >
-              {t('signedIn.staleNote')}
-            </p>
-          )}
+          {/* Second rank, on purpose. Everything in here is true and
+              occasionally useful in a support conversation; none of it is
+              something an operator has to act on. */}
+          <details className="text-xs text-[color:var(--fg-muted)]">
+            <summary className="cursor-pointer">
+              {t('signedIn.technicalHeading')}
+            </summary>
+            <div className="mt-2 space-y-1">
+              {signIn.expiresAt && (
+                <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                  <Fact
+                    label={t('signedIn.tokenExpires')}
+                    value={format.dateTime(new Date(signIn.expiresAt), {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                    })}
+                  />
+                </dl>
+              )}
+              <p>{t('signedIn.tokenExpiresHint')}</p>
+              {/* Deliberately NOT an alert, and deliberately in here: a
+                  refresh token outlives the access token, so an expired
+                  access token is a non-event the runner clears on its own.
+                  Rendering it where an operator scans for problems would
+                  send them to fix something that fixes itself. */}
+              {signIn.accessTokenStale && (
+                <p role="status" data-testid="teams-token-stale">
+                  {t('signedIn.staleNote')}
+                </p>
+              )}
+            </div>
+          </details>
         </div>
       )}
 

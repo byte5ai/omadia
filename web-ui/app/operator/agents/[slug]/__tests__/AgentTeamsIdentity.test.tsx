@@ -341,7 +341,13 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     );
   });
 
-  it('does not offer a re-run that could only 400 — no recorded target, no button', async () => {
+  it('replaces the re-run with a target chooser when nothing is recorded', async () => {
+    // This used to render a DISABLED re-run button plus a sentence explaining
+    // why it could not work, which is how the reset dead end got shipped: a
+    // reset nulls `team_id`, so the panel's only two ways to start a run both
+    // vanished and the agent could only be deleted. A control that can never
+    // fire is not the right answer to "no target" — asking for one is.
+    // Fully covered in `AgentTeamsIdentity.restart.test.tsx`.
     mockGet.mockResolvedValue(
       statusDto({
         state: 'failed',
@@ -351,13 +357,10 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     );
     renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
 
-    const button = await screen.findByRole('button', {
-      name: 'Re-run provisioning',
-    });
-    expect(button).toHaveProperty('disabled', true);
+    expect(await screen.findByTestId('teams-identity-target')).toBeTruthy();
     expect(
-      screen.getByText(/No target team is recorded for this identity/),
-    ).toBeTruthy();
+      screen.queryByRole('button', { name: 'Re-run provisioning' }),
+    ).toBeNull();
   });
 
   it('hides the re-run button while a run is still in flight', async () => {
