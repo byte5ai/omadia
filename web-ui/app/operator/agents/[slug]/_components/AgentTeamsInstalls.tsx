@@ -10,7 +10,6 @@ import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
   classifyTeamsInstallTarget,
   isSubmittableTarget,
-  TEAMS_TARGET_EXAMPLES,
 } from '../../../../_lib/teamsInstallTarget';
 import {
   getAgentTeams,
@@ -26,7 +25,7 @@ import {
   getAgentTeamsTargets,
   type AgentTeamsTargetsDto,
 } from '../../../../_lib/agents';
-import { TeamsTargetPicker } from './TeamsTargetPicker';
+import { TeamsTargetField } from './TeamsTargetField';
 import { ApiError } from '../../../../_lib/api';
 
 /**
@@ -476,86 +475,16 @@ export function AgentTeamsInstalls({
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--fg-muted)]">
               {t('installHeading')}
             </div>
-            {/* PICK first, TYPE second — and both write the same state, so the
-                live classification below stays the single verdict. */}
-            <TeamsTargetPicker
+            {/* Pick or type, plus the live verdict — shared verbatim with the
+                Teams identity panel, which asks the same question when a
+                target-less identity needs one before a run can start. */}
+            <TeamsTargetField
               targets={targets}
-              loading={targetsLoading}
-              disabled={!canInstall || inFlight}
+              targetsLoading={targetsLoading}
               value={teamId}
-              onSelect={setTeamId}
+              onChange={setTeamId}
+              disabled={!canInstall || inFlight}
             />
-
-            <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
-              {t('fieldTarget')}
-              <input
-                type="text"
-                value={teamId}
-                disabled={!canInstall || inFlight}
-                onChange={(e) => setTeamId(e.target.value)}
-                aria-label={t('fieldTarget')}
-                className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-sm text-[color:var(--fg-strong)]"
-              />
-              <span>{t('fieldTargetHint')}</span>
-              {/* Shown BEFORE anything is submitted: what a good answer looks
-                  like beats only being told the last one was wrong. */}
-              <span className="font-mono text-[10px] opacity-70">
-                {t('targetExamples', {
-                  team: TEAMS_TARGET_EXAMPLES.team,
-                  groupChat: TEAMS_TARGET_EXAMPLES.groupChat,
-                })}
-              </span>
-            </label>
-
-            {/* The verdict. A recognised target is named — "Team" or
-                "Gruppenchat" — so the operator can see the field understood
-                them; the three that cannot be installed each say what to do. */}
-            {targetSubmittable ? (
-              <div className="text-[11px] text-[color:var(--success)]">
-                {t('targetKindLabel', {
-                  kind: t(`targetKind.${target.kind}`),
-                })}
-              </div>
-            ) : null}
-            {target.kind === 'channel' ? (
-              <div role="alert" className="text-[11px] text-[color:var(--danger)]">
-                {t('targetChannel')}
-              </div>
-            ) : null}
-            {target.kind === 'unrecognised' ? (
-              <div role="alert" className="text-[11px] text-[color:var(--danger)]">
-                {t('targetUnrecognised')}
-              </div>
-            ) : null}
-            {/* THE FIELD-TEST CASE. 32 hex digits are both a team id without
-                its dashes and the stem of a group-chat id. Nothing is guessed:
-                the operator is handed the two spellings and picks one, which
-                is the only place the missing context actually exists. */}
-            {target.kind === 'ambiguous' ? (
-              <div className="flex flex-col gap-1.5 rounded-md border border-[color:var(--border)] px-3 py-2">
-                <span role="alert" className="text-[11px] text-[color:var(--fg-muted)]">
-                  {t('targetAmbiguous')}
-                </span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={inFlight}
-                    onClick={() => setTeamId(target.asTeamId)}
-                  >
-                    {t('targetAmbiguousUseTeam')}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={inFlight}
-                    onClick={() => setTeamId(target.asGroupChatId)}
-                  >
-                    {t('targetAmbiguousUseChat')}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"

@@ -220,15 +220,36 @@ describe('TeamsTenantSignIn — terminal verdicts', () => {
 });
 
 describe('TeamsTenantSignIn — signed in', () => {
-  it('shows who, since when, and until when', async () => {
+  it('shows who and since when, and leads with the durable truth', async () => {
     mockStatus.mockResolvedValue(signedOut({ signIn: signedIn() }));
     renderWithIntl(<TeamsTenantSignIn />, { locale: 'de' });
 
     const panel = await screen.findByTestId('teams-signed-in');
     expect(panel.textContent).toMatch(/Ada Admin/);
     expect(panel.textContent).toMatch(/Angemeldet seit/);
-    expect(panel.textContent).toMatch(/Zugriffstoken läuft ab/);
     expect(screen.getByRole('button', { name: /Abmelden/i })).toBeTruthy();
+
+    // THE HEADLINE, and the reason it is one: the panel used to put the
+    // access token's expiry beside "signed in since", and operators read the
+    // pair as a one-hour session. It is not — Microsoft fixes that lifetime
+    // and the refresh token behind it lasts weeks.
+    const headline = await screen.findByTestId('teams-sign-in-self-renewing');
+    expect(headline.textContent).toMatch(/erneuert sich selbst/i);
+  });
+
+  it('keeps the access-token expiry as a technical detail, not a countdown', async () => {
+    mockStatus.mockResolvedValue(signedOut({ signIn: signedIn() }));
+    renderWithIntl(<TeamsTenantSignIn />, { locale: 'de' });
+
+    const panel = await screen.findByTestId('teams-signed-in');
+    // Still available — it is genuinely useful in a support conversation.
+    expect(panel.textContent).toMatch(/Aktuelles Zugriffstoken gültig bis/);
+    // But behind a disclosure, and next to the sentence that says the number
+    // means nothing for the sign-in.
+    const details = panel.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details?.textContent).toMatch(/Aktuelles Zugriffstoken gültig bis/);
+    expect(details?.textContent).toMatch(/gibt Microsoft vor/);
   });
 
   it('a stale access token is a neutral note, never an alert', async () => {

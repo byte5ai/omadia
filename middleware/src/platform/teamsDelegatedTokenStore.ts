@@ -36,6 +36,7 @@
  */
 
 import {
+  isAccessTokenExpiring,
   summarizeTokenSet,
   type DelegatedTokenSet,
   type DelegatedTokenSummary,
@@ -242,8 +243,11 @@ export class TeamsDelegatedTokenStore {
     const envelope = await this.readEnvelope();
     if (envelope === undefined) return SIGNED_OUT;
     const summary = summarizeTokenSet(envelope.tokens);
-    const expiry = Date.parse(summary.expiresAt);
-    const stale = Number.isFinite(expiry) && expiry <= this.now().getTime();
+    // Margin 0: this is the plain "has it expired" question. The job runner
+    // asks the SAME predicate with a refresh margin — sharing the rule is what
+    // keeps "stale" on screen and "refresh before use" in the runner from
+    // becoming two different definitions of expiry.
+    const stale = isAccessTokenExpiring(summary.expiresAt, this.now());
     return {
       signedIn: true,
       signedInAt: envelope.signedInAt,

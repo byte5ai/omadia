@@ -64,8 +64,10 @@ import {
   type TeamsProvisioningState,
 } from '../platform/agentTeamsIdentityStore.js';
 import {
+  ACCESS_TOKEN_REFRESH_MARGIN_MS,
   adminConsentUrlOf,
   delegatedStepOf,
+  isAccessTokenExpiring,
   isDelegatedConsentRequiredError,
   isDelegatedSignInRequiredError,
   isDelegatedTokenExpiredError,
@@ -839,6 +841,15 @@ export interface TeamsProvisioningJobOptions {
    * upload, i.e. exactly the pre-0.6.0 behaviour.
    */
   readonly delegatedTokens?: TeamsDelegatedTokenPort;
+  /**
+   * Wall clock, injectable. Used only to decide whether a delegated access
+   * token is close enough to its expiry to be refreshed BEFORE the call that
+   * would otherwise discover it the hard way — a decision that has to be
+   * testable without waiting an hour. Named `now` to match
+   * `platform/teamsDelegatedTokenStore.ts`, which seams the clock the same
+   * way for the same question.
+   */
+  readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
 
@@ -873,6 +884,7 @@ export class TeamsProvisioningJobRunner {
     | undefined;
   private readonly events: TeamsProvisioningEventSink | undefined;
   private readonly delegatedTokens: TeamsDelegatedTokenPort | undefined;
+  private readonly now: () => Date;
   private readonly log: (msg: string) => void;
 
   /**
@@ -937,6 +949,7 @@ export class TeamsProvisioningJobRunner {
     this.resolveTeamName = opts.resolveTeamName;
     this.events = opts.events;
     this.delegatedTokens = opts.delegatedTokens;
+    this.now = opts.now ?? ((): Date => new Date());
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -1886,6 +1899,48 @@ export class TeamsProvisioningJobRunner {
       detail: DELEGATED_UPLOAD_DETAIL,
     });
 
+    // PROACTIVE REFRESH — before the call, not after it has failed.
+    //
+    // The reactive path below still exists and still matters, but it can only
+    // ever run once the upload has already failed: a package re-sent, and a
+    // recovery that depends on the failure being classified exactly as
+    // "expired". If Graph answers with anything else, a run dies for a reason
+    // no human needs to fix. Asking the token whether it is spent costs
+    // nothing and removes that whole class of failure.
+    //
+    // A FAILURE HERE IS NOT FATAL, deliberately. If the refresh throws we
+    // carry on with the stored token: our clock may be the thing that is
+    // wrong, and a token we wrongly believed spent may work perfectly. When it
+    // does not, the upload fails exactly as it did before this block existed
+    // and the reactive path takes over — so the worst case of a proactive
+    // refresh is today's behaviour, never worse than it.
+    const refreshDelegated = provisioner.refreshDelegatedToken;
+    let current = tokens;
+    if (
+      typeof refreshDelegated === 'function' &&
+      isAccessTokenExpiring(
+        current.expiresAt,
+        this.now(),
+        ACCESS_TOKEN_REFRESH_MARGIN_MS,
+      )
+    ) {
+      try {
+        current = await refreshDelegated.call(provisioner, { tokens: current });
+        // Persisted IMMEDIATELY, for the same reason the reactive path does:
+        // a rotation the vault has not seen is a refresh token already spent,
+        // and a crash here would sign the tenant out silently.
+        await custody.write(current);
+        await this.emit(agentId, 'catalog_uploaded', 'progress', {
+          detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
+        });
+      } catch (err) {
+        current = tokens;
+        this.log(
+          `[teams-provisioning] pre-emptive delegated token refresh for agent '${agentId}' failed, continuing with the stored token: ${errorMessage(err)}`,
+        );
+      }
+    }
+
     const attemptUpload = async (set: DelegatedTokenSet): Promise<string> => {
       const result = await delegatedUpload.call(provisioner, {
         packageZip,
@@ -1902,8 +1957,15 @@ export class TeamsProvisioningJobRunner {
     };
 
     try {
-      return { kind: 'uploaded', teamsAppId: await attemptUpload(tokens) };
+      return { kind: 'uploaded', teamsAppId: await attemptUpload(current) };
     } catch (err) {
+      // THE FALLBACK, and it stays a fallback rather than becoming dead code.
+      // The check above reads a clock; this reads Microsoft's actual verdict.
+      // It is what still catches a host whose clock is behind, and a token the
+      // server invalidated early — a revoked session, a password change, a
+      // Conditional Access policy — neither of which any expiry arithmetic can
+      // see coming.
+      //
       // The ONE delegated failure an operator must never be shown: an access
       // token past its expiry with a refresh token that is still good. It is
       // recovered right here — refresh, retry once — because surfacing it
@@ -1913,7 +1975,7 @@ export class TeamsProvisioningJobRunner {
       if (!isDelegatedTokenExpiredError(err) || !isRecoverableByRefresh(err)) throw err;
       const refresh = provisioner.refreshDelegatedToken;
       if (typeof refresh !== 'function') throw err;
-      const rotated = await refresh.call(provisioner, { tokens });
+      const rotated = await refresh.call(provisioner, { tokens: current });
       await custody.write(rotated);
       await this.emit(agentId, 'catalog_uploaded', 'progress', {
         detail: DELEGATED_TOKEN_REFRESHED_DETAIL,

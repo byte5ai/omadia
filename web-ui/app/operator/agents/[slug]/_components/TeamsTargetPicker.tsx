@@ -2,6 +2,10 @@
 
 import { useTranslations } from 'next-intl';
 
+import {
+  SearchableSelect,
+  type SearchableOption,
+} from '@/app/_components/ui/SearchableSelect';
 import type {
   AgentTeamsTargetsDto,
   TeamsChatOptionDto,
@@ -29,6 +33,15 @@ import type {
  * below it keeps running and keeps being the thing that decides. One code
  * path, one verdict — and the free-text field stays usable for the cases a
  * list cannot cover.
+ *
+ * EACH HALF IS SEARCHABLE, not a plain dropdown. The byte5 tenant alone
+ * publishes thirty teams, and a chat with no topic renders as a `19:…` stem,
+ * so an alphabetical list is a wall an operator scrolls rather than reads.
+ * {@link SearchableSelect} carries the keyboard and screen-reader contract a
+ * `<select>` used to provide for free; what is decided HERE is what the query
+ * is allowed to match. It matches what a human SEES — a team's name, a chat's
+ * topic — plus the member names that identify a topicless chat and the id
+ * itself, so a pasted id lights up its own row instead of looking unknown.
  *
  * ─────────────────────────────────────────────────────────────────────────
  * DEGRADATION IS THE INTERESTING HALF
@@ -98,11 +111,13 @@ export function TeamsTargetPicker({
       <TargetSelect
         label={t('teamsLabel')}
         emptyLabel={t('teamsEmpty')}
-        placeholder={t('choose')}
+        placeholder={t('filter')}
         listing={teams}
         disabled={disabled}
         value={value}
         onSelect={onSelect}
+        noMatchText={(query) => t('noMatch', { query })}
+        matchCountText={(count) => t('matchCount', { count })}
         optionsOf={(items: readonly TeamsTeamOptionDto[]) =>
           items.map((team) => ({ id: team.id, label: team.displayName }))
         }
@@ -113,17 +128,26 @@ export function TeamsTargetPicker({
       <TargetSelect
         label={t('chatsLabel')}
         emptyLabel={t('chatsEmpty')}
-        placeholder={t('choose')}
+        placeholder={t('filter')}
         listing={chats}
         disabled={disabled}
         value={value}
         onSelect={onSelect}
+        noMatchText={(query) => t('noMatch', { query })}
+        matchCountText={(count) => t('matchCount', { count })}
         optionsOf={(items: readonly TeamsChatOptionDto[]) =>
           items.map((chat) => ({
             id: chat.id,
             label: `${chatLabel(chat, (names) => names.join(', '))} · ${t(
               `chatType.${chat.chatType}`,
             )}`,
+            // Searchable but not repeated in the row: for a chat with no
+            // topic the members ARE the name, and the label already falls
+            // back to them — for one that HAS a topic they are still how an
+            // operator looks for it.
+            ...(chat.memberNames !== undefined && chat.memberNames.length > 0
+              ? { keywords: chat.memberNames }
+              : {}),
           }))
         }
         unavailableText={(reason) =>
@@ -142,21 +166,22 @@ interface TargetSelectProps<T> {
   readonly disabled: boolean;
   readonly value: string;
   readonly onSelect: (id: string) => void;
-  readonly optionsOf: (items: readonly T[]) => readonly {
-    id: string;
-    label: string;
-  }[];
+  readonly optionsOf: (items: readonly T[]) => readonly SearchableOption[];
   readonly unavailableText: (reason: string) => string;
+  readonly noMatchText: (query: string) => string;
+  readonly matchCountText: (count: number) => string;
 }
 
 /**
  * One half of the picker.
  *
- * THREE STATES, KEPT APART ON PURPOSE: a usable list, a tenant that genuinely
+ * FOUR STATES, KEPT APART ON PURPOSE: a usable list, a tenant that genuinely
  * has none (`available` with no items — an explicit sentence, still no empty
- * dropdown), and a listing that could not be produced (one sentence naming
- * the reason). Collapsing the last two is the bug this whole shape exists to
- * prevent.
+ * dropdown), a listing that could not be produced (one sentence naming the
+ * reason), and — inside {@link SearchableSelect} — a query that matched none
+ * of a list that does exist. Collapsing any two of them is the bug this whole
+ * shape exists to prevent: "I have nothing", "I could not look" and "nothing
+ * you typed matches" are three different instructions to the operator.
  */
 function TargetSelect<T>({
   label,
@@ -168,6 +193,8 @@ function TargetSelect<T>({
   onSelect,
   optionsOf,
   unavailableText,
+  noMatchText,
+  matchCountText,
 }: TargetSelectProps<T>): React.JSX.Element {
   if (!listing.available) {
     return (
@@ -186,30 +213,19 @@ function TargetSelect<T>({
       <p className="text-[11px] text-[color:var(--fg-muted)]">{emptyLabel}</p>
     );
   }
-  // `value` is the text field's content, which may be a hand-typed id that is
-  // in neither list. Falling back to '' then shows the placeholder rather than
-  // silently pinning the first option — the select must never claim a choice
-  // the operator did not make.
-  const selected = options.some((option) => option.id === value) ? value : '';
+  // `value` is passed through untouched, hand-typed ids included: the control
+  // marks a matching row as selected and otherwise marks none. It must never
+  // claim a choice the operator did not make.
   return (
-    <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
-      {label}
-      <select
-        value={selected}
-        disabled={disabled}
-        aria-label={label}
-        onChange={(e) => {
-          if (e.target.value !== '') onSelect(e.target.value);
-        }}
-        className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm text-[color:var(--fg-strong)]"
-      >
-        <option value="">{placeholder}</option>
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <SearchableSelect
+      label={label}
+      placeholder={placeholder}
+      options={options}
+      value={value}
+      disabled={disabled}
+      onSelect={onSelect}
+      noMatchText={noMatchText}
+      matchCountText={matchCountText}
+    />
   );
 }

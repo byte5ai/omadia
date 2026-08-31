@@ -386,3 +386,69 @@ export function summarizeTokenSet(tokens: DelegatedTokenSet): DelegatedTokenSumm
     ...(tokens.account ? { account: tokens.account } : {}),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Expiry, and the margin in front of it
+// ---------------------------------------------------------------------------
+
+/**
+ * How long BEFORE an access token's stated expiry it should be treated as
+ * spent — five minutes.
+ *
+ * WHY A MARGIN AT ALL. Without one, the only way to discover an expired token
+ * is to spend a Graph call finding out — and that call is a catalogue upload,
+ * a multi-megabyte package that then has to be sent again. Worse, the recovery
+ * hinges on the failure coming back as a recognisable
+ * `DelegatedTokenExpiredError`; if Graph answers with something else, or a
+ * connector classifies it differently, the run fails for a reason no human
+ * needs to fix.
+ *
+ * WHY FIVE MINUTES, rather than thirty seconds or an hour. Three terms bound
+ * it:
+ *
+ *   - THE CALL IT PROTECTS. A catalogue upload takes seconds to tens of
+ *     seconds, and a token that was valid when the request left must still be
+ *     valid when Graph validates it. Under about a minute leaves that
+ *     unguarded.
+ *   - CLOCK SKEW against Microsoft. `expiresAt` comes from a token issued on
+ *     Microsoft's clock and is compared against ours. An NTP-synced host is
+ *     within seconds; a drifted container can be a couple of minutes out in
+ *     either direction. Five minutes covers the drift worth covering — a host
+ *     further out than that has a problem no margin fixes.
+ *   - THE COST OF BEING EARLY. The token lives roughly 60 minutes, so this
+ *     refreshes early only in the last ~8% of its life: one extra token
+ *     request, occasionally. An hour-wide margin would refresh on essentially
+ *     every run and turn a silent optimisation into constant rotation of the
+ *     refresh token.
+ *
+ * It is also the window MSAL uses for its own proactive refresh, so this
+ * middleware ages a token on the same schedule as the library the connector
+ * refreshes it with, rather than holding a second opinion.
+ */
+export const ACCESS_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * Is this access token past its expiry — or close enough that it should be
+ * refreshed before being used?
+ *
+ * A margin of `0` is the plain question "has it expired", which is what the
+ * operator-facing `accessTokenStale` projection asks. The job runner asks the
+ * same question with {@link ACCESS_TOKEN_REFRESH_MARGIN_MS}. One rule, two
+ * margins — so "stale" on screen and "refresh now" in the runner can never
+ * drift into two different definitions of expiry.
+ *
+ * An UNPARSEABLE `expiresAt` answers `false`. The honest reading of "I cannot
+ * tell when this expires" is not "it has expired": treating it as spent would
+ * refresh on every single call, and the reactive path still catches a token
+ * that really is dead. Wrong in this direction costs one recoverable retry;
+ * wrong in the other costs a refresh per run, forever.
+ */
+export function isAccessTokenExpiring(
+  expiresAt: string,
+  now: Date,
+  marginMs = 0,
+): boolean {
+  const expiry = Date.parse(expiresAt);
+  if (!Number.isFinite(expiry)) return false;
+  return expiry - marginMs <= now.getTime();
+}

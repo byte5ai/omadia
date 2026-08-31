@@ -22,6 +22,7 @@ import {
   parseTeamsIdentityEnvelope,
 } from '../../../../_lib/teamsIdentity';
 import { AgentTeamsProvisioningTimeline } from './AgentTeamsProvisioningTimeline';
+import { AgentTeamsIdentityTarget } from './AgentTeamsIdentityTarget';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   Fact,
@@ -306,11 +307,13 @@ export function AgentTeamsIdentity(
           onReloaded={() => void load()}
           // The server has no "as recorded" re-run: `ensureForAgent` refreshes
           // the stored team from the request and the route hands `team_id`
-          // straight to the runner, so an empty body is a guaranteed 400. The
-          // recorded target comes back on the status projection and is
-          // resent verbatim; without one the affordance is disabled instead
-          // of offered and rejected.
-          onRerun={(recordedTeamId) => void provision({ team_id: recordedTeamId })}
+          // straight to the runner, so an empty body is a guaranteed 400.
+          // Every run therefore names its target — the recorded one when there
+          // is one, otherwise the one the operator just picked. Deliberately
+          // WITHOUT `bot_slug` / `display_name`: they survive a reset and the
+          // server ignores them on an existing row, so resending them could
+          // only ever introduce a difference nobody asked for.
+          onStartRun={(targetTeamId) => void provision({ team_id: targetTeamId })}
           formatDate={(iso) => formatTimestamp(iso, format)}
         />
       )}
@@ -321,7 +324,7 @@ export function AgentTeamsIdentity(
 function ReadyPanel(props: {
   readonly status: TeamsIdentityStatusDto;
   readonly busy: boolean;
-  readonly onRerun: (teamId: string) => void;
+  readonly onStartRun: (teamId: string) => void;
   readonly formatDate: (iso: string) => string;
   readonly slug: string;
   readonly onReloaded: () => void;
@@ -345,6 +348,14 @@ function ReadyPanel(props: {
   );
   // A re-run must resend the install target the server already recorded —
   // it requires `team_id` on every POST.
+  //
+  // `null` here is the whole of the restart bug: a reset nulls the column, and
+  // with no target there is nothing to resend, so the re-run affordance is not
+  // merely disabled — it is the wrong affordance. What that state needs is a
+  // way to NAME a target, which is {@link AgentTeamsIdentityTarget} below.
+  // Keyed on "there is no target", never on "this row was reset": nothing in
+  // this projection can see a reset, and a row can reach the same shape by
+  // other routes.
   const recordedTeamId =
     status.identity.team_id !== null && status.identity.team_id !== ''
       ? status.identity.team_id
@@ -359,30 +370,41 @@ function ReadyPanel(props: {
             ? t('teamsIdentity.running')
             : t('teamsIdentity.idle')}
         </span>
-        {isTerminalTeamsProvisioningState(status.state) && (
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {recordedTeamId === null && (
-              <span className="text-[11px] text-[color:var(--fg-muted)]">
-                {t('teamsIdentity.rerunNeedsTeam')}
-              </span>
-            )}
-            <Button
-              size="sm"
-              variant="secondary"
-              busy={props.busy}
-              disabled={recordedTeamId === null}
-              busyLabel={t('teamsIdentity.submitBusy')}
-              onClick={() => {
-                if (recordedTeamId !== null) props.onRerun(recordedTeamId);
-              }}
-            >
-              {t('teamsIdentity.rerun')}
-            </Button>
-          </div>
-        )}
+        {/* Only with a recorded target: without one this button could never
+            do anything, and the target form below is the affordance that
+            state actually needs. */}
+        {isTerminalTeamsProvisioningState(status.state) &&
+          recordedTeamId !== null && (
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                busy={props.busy}
+                busyLabel={t('teamsIdentity.submitBusy')}
+                onClick={() => props.onStartRun(recordedTeamId)}
+              >
+                {t('teamsIdentity.rerun')}
+              </Button>
+            </div>
+          )}
       </div>
 
       <StateChain state={status.state} />
+
+      {/* THE WAY BACK IN. An identity with no target cannot start a run at
+          all — not from the create form (which renders only when no row
+          exists) and not from "provision again" (which has nothing to
+          resend). Placed directly under the chain because it is the operator's
+          next move, and the chain is where they just read that nothing is
+          happening. */}
+      {recordedTeamId === null && (
+        <AgentTeamsIdentityTarget
+          slug={props.slug}
+          busy={props.busy}
+          running={status.running}
+          onStart={props.onStartRun}
+        />
+      )}
 
       {/* #915 — the chain above says WHERE the run is; this says what it has
           been doing, which is where the minutes actually go. Placed directly

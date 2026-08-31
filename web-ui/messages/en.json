@@ -2306,11 +2306,15 @@
           "unknown": "Whether this configuration is already applied cannot be determined right now. Compare it against the Teams channel plugin and paste the block below if it is missing."
         }
       },
-      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here.",
       "package": {
         "heading": "Download the app package",
         "hint": "Provisioning uploads this package to the tenant catalogue itself — no manual upload per agent is needed. The download stays as a fallback: for tenants where programmatic catalogue uploads are not allowed, or when you want to inspect the manifest first. It is rendered fresh on every request, so it matches exactly what provisioning would upload.",
         "download": "Download the Teams app package (.zip)"
+      },
+      "retarget": {
+        "heading": "Pick a target and start provisioning",
+        "hint": "No target is recorded for this identity — after a reset that is the normal state. The bot slug and the display name are kept; all that is missing is the team or chat the app should be installed into.",
+        "runningHint": "A run is already under way for this agent. Wait for it to finish — the server refuses a second one."
       }
     },
     "teamsTargets": {
@@ -2342,7 +2346,10 @@
           "consent_required": "The tenant has not consented to listing chats. Until it does, type the chat id below.",
           "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below."
         }
-      }
+      },
+      "filter": "Type to filter …",
+      "noMatch": "Nothing matches “{query}”. For an id that does not appear here, use the field below.",
+      "matchCount": "{count, plural, =0 {No matches} one {One match} other {# matches}}"
     },
     "teamsReset": {
       "heading": "Reset provisioning",
@@ -5559,10 +5566,13 @@
       "as": "Signed in as {who}",
       "unknownAccount": "unknown account",
       "since": "Signed in since",
-      "tokenExpires": "Access token expires",
+      "tokenExpires": "Current access token valid until",
       "tenant": "Tenant",
       "scopes": "Permissions",
-      "staleNote": "The access token has expired. This is not a fault — omadia renews it automatically on the next upload, and the sign-in stays valid."
+      "staleNote": "The current access token has expired — not a fault, and nothing to act on. omadia renews it before the next use and the sign-in stays valid.",
+      "selfRenewing": "The sign-in stays valid and renews itself. You only have to sign in again when this panel says the sign-in is missing.",
+      "technicalHeading": "Technical details",
+      "tokenExpiresHint": "Microsoft sets the access token lifetime (roughly 60 to 90 minutes) and it cannot be configured. It says nothing about the sign-in: omadia fetches a fresh token before each use."
     },
     "expired": {
       "headline": "The sign-in code expired.",

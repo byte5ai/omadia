@@ -206,6 +206,9 @@ function makeRunner(input: {
   readonly provisioner: TeamsProvisionerPort;
   readonly custody?: FakeCustody;
   readonly store?: FakeStore;
+  /** Seamed so "is this token nearly spent?" is testable without waiting an
+   *  hour. Absent = the real clock, i.e. production behaviour. */
+  readonly now?: () => Date;
 }): RunnerParts {
   const store = input.store ?? new FakeStore();
   const events = new RecordingEvents();
@@ -220,6 +223,7 @@ function makeRunner(input: {
     timers: immediateTimers(),
     maxAttempts: 2,
     baseRetryDelayMs: 0,
+    ...(input.now ? { now: input.now } : {}),
     log: () => undefined,
   });
   return {
@@ -590,5 +594,180 @@ describe('#924 a refreshable expiry never reaches the operator', () => {
       classifyTeamsProvisioningError(parts.store.row.lastError ?? '').code,
       'delegated_token_expired',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refreshing BEFORE the call, not after it failed
+// ---------------------------------------------------------------------------
+
+/**
+ * The reactive path works, but it can only run once an upload has already
+ * failed: a package re-sent, and a recovery that hinges on the failure being
+ * classified exactly as "expired". If Graph answers with anything else — or a
+ * connector labels it differently — a run dies for a reason no human needs to
+ * fix. Reading the clock before the call removes that whole class of failure.
+ *
+ * What is pinned here is the SHAPE of the guarantee, not the margin's value:
+ * a token well inside its life is left alone, one inside the margin is
+ * refreshed first, a rotation is persisted immediately, the reactive path
+ * survives as the fallback it is — and a failing pre-emptive refresh is never
+ * worse than not having tried.
+ */
+describe('#924 the runner refreshes before it spends a token', () => {
+  const NOW = new Date('2026-08-28T12:00:00.000Z');
+  const at = (ms: number): string => new Date(NOW.getTime() + ms).toISOString();
+
+  function delegatedSeeing(
+    seen: DelegatedTokenSet[],
+  ): NonNullable<TeamsProvisionerPort['uploadToCatalogDelegated']> {
+    return (input: { tokens: DelegatedTokenSet }) => {
+      seen.push(input.tokens);
+      return Promise.resolve({
+        app: { value: { teamsAppId: 'teams-app-delegated' } },
+        tokens: input.tokens,
+        refreshed: false,
+      });
+    };
+  }
+
+  it('leaves a token that is comfortably alive alone', async () => {
+    const refreshes: number[] = [];
+    const parts = makeRunner({
+      now: () => NOW,
+      custody: new FakeCustody(tokens({ expiresAt: at(30 * 60_000) })),
+      provisioner: provisioner({
+        delegated: delegatedSeeing([]),
+        refresh: () => {
+          refreshes.push(1);
+          return Promise.resolve(tokens());
+        },
+      }),
+    });
+    const result = await parts.run();
+
+    assert.equal(result.status, 'installed');
+    // Half an hour of life left. Refreshing here would spend a rotation of the
+    // refresh token on every single run, which is the cost that decides the
+    // margin's size.
+    assert.deepEqual(refreshes, []);
+    assert.equal(parts.custody.writes.length, 0);
+  });
+
+  it('refreshes a token inside the margin and uploads with the NEW one', async () => {
+    const seen: DelegatedTokenSet[] = [];
+    const rotated = tokens({ accessToken: 'at-fresh', expiresAt: at(60 * 60_000) });
+    const parts = makeRunner({
+      now: () => NOW,
+      // Two minutes left: not expired, so nothing would have failed — and
+      // that is exactly the window the reactive path cannot see.
+      custody: new FakeCustody(tokens({ expiresAt: at(2 * 60_000) })),
+      provisioner: provisioner({
+        delegated: delegatedSeeing(seen),
+        refresh: () => Promise.resolve(rotated),
+      }),
+    });
+    const result = await parts.run();
+
+    assert.equal(result.status, 'installed');
+    // The upload must ride on the refreshed set, or the refresh was pointless.
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.accessToken, 'at-fresh');
+    // Persisted BEFORE the upload: a rotation the vault never saw is a refresh
+    // token already spent, and a crash here would sign the tenant out silently.
+    assert.equal(parts.custody.writes.length, 1);
+    assert.equal(parts.custody.writes[0]?.accessToken, 'at-fresh');
+    assert.ok(
+      parts.events.written.some((e) => e.detail === DELEGATED_TOKEN_REFRESHED_DETAIL),
+    );
+  });
+
+  it('refreshes a token that is already past its expiry', async () => {
+    const seen: DelegatedTokenSet[] = [];
+    const parts = makeRunner({
+      now: () => NOW,
+      custody: new FakeCustody(tokens({ expiresAt: at(-60_000) })),
+      provisioner: provisioner({
+        delegated: delegatedSeeing(seen),
+        refresh: () => Promise.resolve(tokens({ accessToken: 'at-fresh' })),
+      }),
+    });
+
+    assert.equal((await parts.run()).status, 'installed');
+    assert.equal(seen[0]?.accessToken, 'at-fresh');
+  });
+
+  it('carries on with the stored token when the pre-emptive refresh fails', async () => {
+    const seen: DelegatedTokenSet[] = [];
+    const parts = makeRunner({
+      now: () => NOW,
+      custody: new FakeCustody(tokens({ expiresAt: at(-60_000) })),
+      provisioner: provisioner({
+        delegated: delegatedSeeing(seen),
+        refresh: () => Promise.reject(new Error('token endpoint unreachable')),
+      }),
+    });
+    const result = await parts.run();
+
+    // OUR clock may be the thing that is wrong. A token we wrongly believed
+    // spent can work perfectly — and when it does not, the reactive path
+    // below takes over. The worst case of trying is today's behaviour.
+    assert.equal(result.status, 'installed');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.accessToken, 'at');
+    assert.equal(parts.custody.writes.length, 0);
+  });
+
+  it('keeps the REACTIVE path for a token the server killed early', async () => {
+    // Valid by the clock, dead at Microsoft — a revoked session, a password
+    // change, a Conditional Access policy. No expiry arithmetic sees this
+    // coming, which is why the fallback is not dead code.
+    const seen: DelegatedTokenSet[] = [];
+    let firstCall = true;
+    const parts = makeRunner({
+      now: () => NOW,
+      custody: new FakeCustody(tokens({ expiresAt: at(45 * 60_000) })),
+      provisioner: provisioner({
+        delegated: (input) => {
+          if (firstCall) {
+            firstCall = false;
+            return Promise.reject(
+              connectorError('DelegatedTokenExpiredError', {
+                reason: 'access-token-expired',
+                recoverableByRefresh: true,
+              }),
+            );
+          }
+          seen.push(input.tokens);
+          return Promise.resolve({
+            app: { value: { teamsAppId: 'teams-app-delegated' } },
+            tokens: input.tokens,
+            refreshed: false,
+          });
+        },
+        refresh: () => Promise.resolve(tokens({ accessToken: 'at-recovered' })),
+      }),
+    });
+    const result = await parts.run();
+
+    assert.equal(result.status, 'installed');
+    assert.equal(seen[0]?.accessToken, 'at-recovered');
+    assert.equal(parts.custody.writes.length, 1);
+    assert.equal(parts.custody.writes[0]?.accessToken, 'at-recovered');
+  });
+
+  it('does not try to refresh against a connector that cannot', async () => {
+    // Pre-0.6.0: no `refreshDelegatedToken`. Feature-detected, never called
+    // blind — an expired token there still needs a human, as it always did.
+    const seen: DelegatedTokenSet[] = [];
+    const parts = makeRunner({
+      now: () => NOW,
+      custody: new FakeCustody(tokens({ expiresAt: at(-60_000) })),
+      provisioner: provisioner({ delegated: delegatedSeeing(seen) }),
+    });
+
+    assert.equal((await parts.run()).status, 'installed');
+    assert.equal(seen[0]?.accessToken, 'at');
+    assert.equal(parts.custody.writes.length, 0);
   });
 });

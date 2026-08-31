@@ -58,21 +58,35 @@ function render(
   return { onSelect };
 }
 
+/** The list is a combobox popup now: it exists once the field has focus. */
+async function openTeams(): Promise<HTMLElement> {
+  const field = screen.getByRole('combobox', { name: /Team/i });
+  await userEvent.click(field);
+  return field;
+}
+
+async function openChats(): Promise<HTMLElement> {
+  const field = screen.getByRole('combobox', { name: /Chat/i });
+  await userEvent.click(field);
+  return field;
+}
+
 describe('TeamsTargetPicker — offering a choice', () => {
-  it('lists teams and chats with their names', () => {
+  it('lists teams and chats with their names', async () => {
     render(dto());
 
+    await openTeams();
     expect(screen.getByRole('option', { name: 'Acme Team' })).toBeInTheDocument();
+
+    await openChats();
     expect(screen.getByRole('option', { name: /Support/ })).toBeInTheDocument();
   });
 
   it('hands the picked id up verbatim', async () => {
     const { onSelect } = render(dto());
 
-    await userEvent.selectOptions(
-      screen.getByRole('combobox', { name: /Team/i }),
-      TEAM.id,
-    );
+    await openTeams();
+    await userEvent.click(screen.getByRole('option', { name: 'Acme Team' }));
 
     // Verbatim matters: the id goes into the same field the operator could
     // have typed into, and the live classification decides what it is. A
@@ -80,16 +94,20 @@ describe('TeamsTargetPicker — offering a choice', () => {
     expect(onSelect).toHaveBeenCalledWith(TEAM.id);
   });
 
-  it('shows no selection for an id that was typed rather than picked', () => {
+  it('shows no selection for an id that was typed rather than picked', async () => {
     render(dto(), vi.fn(), { value: 'something-hand-typed' });
 
-    // Never pin the first option: the select must not claim a choice the
+    // Never pin the first option: the control must not claim a choice the
     // operator did not make.
-    const select = screen.getByRole('combobox', { name: /Team/i });
-    expect((select as HTMLSelectElement).value).toBe('');
+    const field = await openTeams();
+    expect((field as HTMLInputElement).value).toBe('');
+    expect(screen.getByRole('option', { name: 'Acme Team' })).toHaveAttribute(
+      'aria-selected',
+      'false',
+    );
   });
 
-  it('labels a nameless chat by its members rather than dropping it', () => {
+  it('labels a nameless chat by its members rather than dropping it', async () => {
     render(
       dto({
         chats: {
@@ -99,7 +117,99 @@ describe('TeamsTargetPicker — offering a choice', () => {
       }),
     );
 
+    await openChats();
     expect(screen.getByRole('option', { name: /Ada, Grace/ })).toBeInTheDocument();
+  });
+});
+
+/**
+ * SEARCH. Thirty teams in one tenant is an alphabetical wall, and a chat with
+ * no topic is a `19:…` stem — the part an operator cannot read is exactly the
+ * part they have to scroll past. What is pinned here is WHAT the query is
+ * allowed to match (the things a human sees, plus the id) and that a miss is
+ * an answer rather than an empty list.
+ */
+describe('TeamsTargetPicker — finding one among many', () => {
+  const MANY = Array.from({ length: 30 }, (_, i) => ({
+    id: `2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f${String(i).padStart(2, '0')}`,
+    displayName: `Team ${String(i).padStart(2, '0')}`,
+  }));
+
+  it('narrows a long list to what was typed', async () => {
+    render(dto({ teams: { available: true, items: MANY } }));
+
+    const field = await openTeams();
+    expect(screen.getAllByRole('option')).toHaveLength(30);
+
+    await userEvent.type(field, 'Team 17');
+    const remaining = screen.getAllByRole('option');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toHaveTextContent('Team 17');
+  });
+
+  it('finds a chat by a member name the row does not show', async () => {
+    // The topic wins the label, so "Grace" is nowhere on screen — and is
+    // still how somebody looks for that chat.
+    render(
+      dto({
+        chats: {
+          available: true,
+          items: [{ ...CHAT, topic: 'Support', memberNames: ['Ada', 'Grace'] }],
+        },
+      }),
+    );
+
+    const field = await openChats();
+    await userEvent.type(field, 'grace');
+
+    expect(screen.getByRole('option', { name: /Support/ })).toBeInTheDocument();
+  });
+
+  it('matches a pasted id, so it does not look unknown', async () => {
+    render(dto());
+
+    const field = await openTeams();
+    await userEvent.type(field, TEAM.id);
+
+    expect(screen.getByRole('option', { name: 'Acme Team' })).toBeInTheDocument();
+  });
+
+  it('answers a miss with a sentence instead of an empty list', async () => {
+    render(dto());
+
+    const field = await openTeams();
+    await userEvent.type(field, 'zzzz');
+
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    // "Nothing matched" and "this tenant has no teams" are different
+    // statements and must not share a rendering.
+    expect(await screen.findByRole('status')).toHaveTextContent(/zzzz/);
+  });
+
+  it('is operable from the keyboard alone', async () => {
+    const { onSelect } = render(dto({ teams: { available: true, items: MANY } }));
+
+    const field = screen.getByRole('combobox', { name: /Team/i });
+    await userEvent.click(field);
+    await userEvent.type(field, 'Team 03');
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+
+    expect(onSelect).toHaveBeenCalledWith(MANY[3]?.id);
+  });
+
+  it('closes on Escape, then clears the query on a second Escape', async () => {
+    render(dto());
+
+    const field = await openTeams();
+    await userEvent.type(field, 'Acme');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect((field as HTMLInputElement).value).toBe('Acme');
+
+    await userEvent.keyboard('{Escape}');
+    expect((field as HTMLInputElement).value).toBe('');
   });
 });
 
@@ -125,6 +235,7 @@ describe('TeamsTargetPicker — degrading without lying', () => {
       dto({ chats: { available: false, reason: 'scope_missing' } }),
     );
 
+    await openTeams();
     expect(screen.getByRole('option', { name: 'Acme Team' })).toBeInTheDocument();
     const notes = await screen.findAllByRole('note');
     expect(notes).toHaveLength(1);
