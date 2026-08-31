@@ -37,10 +37,13 @@ const stepSections = () => Array.from(document.querySelectorAll('.step[data-step
 function bridgeOk() {
   if (bridge) return true;
   const el = $('#testResult') || document.body;
-  el.textContent = wt(
-    'js.bridgeMissing',
-    'Internal error: the app bridge did not load. Please reinstall or report this (tray → Open Logs).',
-  );
+  el.textContent =
+    wt(
+      'js.bridgeMissing',
+      'Internal error: the app bridge did not load. Please reinstall or report this.',
+    ) +
+    ' ' +
+    window.omadiaLogHint(wt);
   if (el.className !== undefined) el.className = 'test-result err';
   return false;
 }
@@ -205,7 +208,9 @@ async function provision() {
 
   if (!res.ok) {
     const err = $('#provisionError');
-    err.textContent = res.error || wt('js.setupFailed', 'Setup failed. Check the logs (tray → Open Logs).');
+    err.textContent =
+      res.error ||
+      wt('js.setupFailed', 'Setup failed. Check the logs.') + ' ' + window.omadiaLogHint(wt);
     err.classList.remove('hidden');
     appendBootLog('ERROR', res.error || 'Setup failed.');
     // Allow another attempt.

@@ -1,7 +1,8 @@
 import { Tray, Menu, nativeImage, shell, app } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { logFile } from './log';
+import { log, logFile } from './log';
+import { assetPath } from './assetPath';
 
 /**
  * System tray icon + menu. Lets omadia keep running in the background (the local
@@ -46,10 +47,12 @@ function rebuildMenu(actions: TrayActions, status: string): void {
 }
 
 function loadTrayIcon(): Electron.NativeImage {
-  // Prefer a bundled template icon; fall back to an empty image so a missing asset
-  // never crashes startup (the tray still works, just without artwork).
+  // The bundled template icon (shipped to dist/assets by scripts/copy-assets.mjs).
+  // If it is ever missing we still fall back to an empty image so a packaging slip
+  // never crashes startup — but we log it, because an empty tray icon is invisible
+  // (OM-63) and a silent fallback is exactly how that shipped unnoticed before.
   const candidates = [
-    path.join(app.getAppPath(), 'dist', 'assets', 'trayTemplate.png'),
+    assetPath('trayTemplate.png'),
     path.join(app.getAppPath(), 'assets', 'trayTemplate.png'),
   ];
   for (const p of candidates) {
@@ -59,6 +62,7 @@ function loadTrayIcon(): Electron.NativeImage {
       return img;
     }
   }
+  log.warn(`tray icon asset not found (looked in: ${candidates.join(', ')}); the menu-bar icon will be invisible`);
   return nativeImage.createEmpty();
 }
 

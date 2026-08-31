@@ -118,6 +118,23 @@ hours after it shipped. The mirror is caught up, the stale section is named
 honestly, and the header now says the refresh is manual and how to tell in one
 command whether the file is behind.
 
+**The app shipped Electron's default icon, and the tray icon was invisible
+(#888, OM-53/OM-63).** `electron-builder.yml` carried no `icon:` entry and
+`buildResources/` held no image, so the packaged DMG and "About omadia" fell
+back to Electron's atom — for a signed DMG sent to customers, an unbranded icon
+is also a "is this really what I downloaded?" trust signal. Worse, `tray.ts`
+loaded `trayTemplate.png` from a path no build step ever produced and fell back
+to `nativeImage.createEmpty()`, so the only documented route to the logs was a
+menu-bar control that was present, clickable and drew nothing. Both are now
+built from one master logo (`buildResources/icon-source.png`): a committed 1024²
+PNG that electron-builder turns into the `.icns`/`.ico`, and a monochrome macOS
+template glyph — the coloured mark rendered black with the light "5" knocked out
+to transparent so it reads in negative space, not as a blob — staged into the
+bundle by a new `copy-assets` build step so the tray actually renders. The
+empty-image fallback stays as a last resort but now logs a warning instead of
+failing silently, and the PNGs regenerate deterministically from the master via
+`npm run gen-icons`.
+
 Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
 would have required a build that still started.
