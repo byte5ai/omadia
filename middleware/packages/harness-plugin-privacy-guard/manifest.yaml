@@ -6,7 +6,11 @@ identity:
   version: "0.5.0"
   kind: "tool"
   domain: "privacy.redact"
-  description: "Privacy Shield v4 core plugin. Publishes the `privacy.redact@1` capability — a Data-Plane Boundary that interns raw tool results server-side and hands the LLM only an identity-free Digest. Identity-/order-critical work runs through a server-side Verb API; the final answer is materialized from ground truth. Emits a PII-free PrivacyReceipt the channel renderers (Teams Adaptive-Card, Web inline disclosure) consume to surface what was protected on each turn."
+  # OM-50 (#885) — localized so the German Hub reads German. `en` stays the
+  # fallback for search, the English UI and older consumers.
+  description:
+    en: "Keeps personal and sensitive data out of the language model. Raw values stay on the server, the model only sees anonymized placeholders, and every answer records what was protected — shown inline in Teams and the web channel."
+    de: "Hält personenbezogene und sensible Daten vom Sprachmodell fern. Rohwerte bleiben auf dem Server, das Modell sieht nur anonymisierte Platzhalter, und jede Antwort weist aus, was geschützt wurde — direkt sichtbar in Teams und im Web-Kanal."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

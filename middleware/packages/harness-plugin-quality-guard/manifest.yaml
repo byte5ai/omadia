@@ -6,7 +6,11 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "quality.response-guard"
-  description: "Response-quality core plugin. Publishes the `responseGuard@1` capability with sycophancy-levels (off/low/medium/high) and a boundary-preset library that splices guardrails into the system prompt ahead of body prose."
+  # OM-50 (#885) — localized so the German Hub reads German. `en` stays the
+  # fallback for search, the English UI and older consumers.
+  description:
+    en: "Adds guardrails to the assistant's replies: adjustable anti-flattery levels (off/low/medium/high) and reusable rule presets that shape tone and keep answers within set boundaries."
+    de: "Ergänzt die Antworten des Assistenten um Leitplanken: einstellbare Stufen gegen Gefälligkeitsantworten (aus/niedrig/mittel/hoch) und wiederverwendbare Regel-Vorlagen, die Tonfall und Grenzen der Antworten festlegen."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
