@@ -940,7 +940,9 @@ export interface ResolveChannelResponse {
     name: string;
     privacy_profile: PrivacyProfile;
   } | null;
-  via: 'binding' | 'fallback' | 'none';
+  /** `identity` — the key IS an agent's provisioned bot, which outranks
+   *  every binding. See the orchestrator's ChannelResolver. */
+  via: 'identity' | 'binding' | 'fallback' | 'none';
   message?: string;
 }
 

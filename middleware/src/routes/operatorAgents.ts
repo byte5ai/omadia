@@ -3426,13 +3426,23 @@ export function createOperatorAgentsRouter(
         return;
       }
       const settings = await live.store.getPlatformSettings();
-      const via =
-        match.agent.id === settings.fallbackAgentId &&
-        !match.bindings.some(
-          (b) =>
-            b.channelType === body.channel_type &&
-            b.channelKey === body.channel_key,
-        )
+      // Order mirrors the resolver: a provisioned identity is checked first,
+      // so reporting it first is what keeps this tester an honest preview.
+      // Without this branch a provisioned bot whose agent also happens to be
+      // the platform fallback would be reported as "fallback" — the exact
+      // wrong explanation for the exact case operators come here to check.
+      const identity = live.registry.identityForChannel(
+        body.channel_type,
+        body.channel_key,
+      );
+      const via = identity
+        ? 'identity'
+        : match.agent.id === settings.fallbackAgentId &&
+            !match.bindings.some(
+              (b) =>
+                b.channelType === body.channel_type &&
+                b.channelKey === body.channel_key,
+            )
           ? 'fallback'
           : 'binding';
       res.json({

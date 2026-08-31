@@ -24,6 +24,7 @@ import {
   type AgentPluginRow,
   type AgentRow,
   type ChannelBindingRow,
+  type ChannelIdentityRow,
   type ConfigSnapshot,
   type ConfigStore,
   type PlatformSettingsRow,
@@ -171,6 +172,13 @@ export class OrchestratorRegistry {
     updatedAt: new Date(0),
   };
   private snapshot: ConfigSnapshot | undefined;
+  /**
+   * Provisioned channel identities from the last snapshot. Flat, not indexed
+   * per agent: the lookup is always key → agent and the list is one row per
+   * provisioned bot (single digits in practice), so a scan costs less than
+   * keeping a second map in sync across four diff actions.
+   */
+  private channelIdentities: readonly ChannelIdentityRow[] = [];
 
   constructor(
     private readonly store: ConfigStore,
@@ -217,6 +225,13 @@ export class OrchestratorRegistry {
     validateSnapshot(safe, this.options.pluginLookup);
     const plan = diffSnapshots(this.snapshot, safe);
     if (plan.actions.length === 0 && !plan.platformChanged) {
+      // Identities are NOT part of the diff: an agent whose bot finished
+      // provisioning has the same row, plugins and bindings it had a minute
+      // ago, so the plan is empty and the fast path returns here. Adopting
+      // them on this branch too is what makes a bot start routing to its own
+      // agent on the next reconcile instead of only after some unrelated
+      // config edit forces a rebuild.
+      this.channelIdentities = safe.channelIdentities ?? [];
       this.snapshot = safe;
       return plan;
     }
@@ -300,6 +315,7 @@ export class OrchestratorRegistry {
         fallbackAgentId: snap.platformSettings.fallbackAgentId,
       });
     }
+    this.channelIdentities = snap.channelIdentities ?? [];
     this.snapshot = snap;
   }
 
@@ -444,6 +460,8 @@ export class OrchestratorRegistry {
     channelType: string,
     channelKey: string,
   ): ActiveAgent | undefined {
+    const identity = this.identityForChannel(channelType, channelKey);
+    if (identity) return identity;
     for (const entry of this.active.values()) {
       for (const binding of entry.bindings) {
         if (
@@ -458,6 +476,37 @@ export class OrchestratorRegistry {
     if (!fallbackId) return undefined;
     for (const entry of this.active.values()) {
       if (entry.agent.id === fallbackId) return entry;
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve a key that IS an agent's provisioned identity — its own Teams
+   * bot, not a channel someone bound to it.
+   *
+   * Checked BEFORE `channel_bindings` and reported as exclusive, because a
+   * provisioned bot is the one routing input that cannot be ambiguous.
+   * Several bots share one group chat, so a binding on that conversation
+   * names a chat, not a bot; if it were allowed to win, every bot in the chat
+   * would answer as the same agent — which is precisely the failure this
+   * exists to prevent. A stale `channel_bindings` row pointing the bot key
+   * somewhere else loses for the same reason.
+   *
+   * Returns `undefined` when the identity names an agent the registry does
+   * not hold (deleted, disabled, or failed to build). Routing then continues
+   * down the normal path — bindings, then the platform fallback — so an
+   * orphaned identity row degrades instead of dead-ending the bot.
+   */
+  identityForChannel(
+    channelType: string,
+    channelKey: string,
+  ): ActiveAgent | undefined {
+    const match = this.channelIdentities.find(
+      (i) => i.channelType === channelType && i.channelKey === channelKey,
+    );
+    if (!match) return undefined;
+    for (const entry of this.active.values()) {
+      if (entry.agent.id === match.agentId) return entry;
     }
     return undefined;
   }

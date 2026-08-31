@@ -107,6 +107,37 @@ export interface ChannelBindingRow {
   readonly createdAt: Date;
 }
 
+/**
+ * A channel key that IS an agent's own provisioned identity — not an
+ * operator's routing preference.
+ *
+ * WHY THIS IS NOT A `channel_bindings` ROW
+ * ----------------------------------------
+ * `channel_bindings` is the operator's table: one flat (type, key) namespace
+ * they fill in by hand or that the auto-bind sweep fills in for an observed
+ * conversation. An identity is a different kind of fact. Provisioning an
+ * agent's own Microsoft Teams bot registers an Entra app, an Azure bot and an
+ * app package that exist SOLELY to be that agent's face — the mapping is
+ * already persisted (`agent_teams_identities.app_id`) and it is not a
+ * preference anyone may override.
+ *
+ * Copying it into `channel_bindings` would create a second copy of a mapping
+ * that already exists, and the two would drift the first time an identity is
+ * reset, re-provisioned or hand-edited. So routing READS the identity table
+ * instead: one source of truth, no backfill, and deleting the identity
+ * un-routes the bot for free.
+ *
+ * Exclusivity is the other half. Several provisioned bots share one group
+ * chat, so a binding on that CONVERSATION cannot say which bot a turn is for;
+ * only the bot key can. An identity therefore outranks every binding — see
+ * `OrchestratorRegistry.identityForChannel`.
+ */
+export interface ChannelIdentityRow {
+  readonly channelType: string;
+  readonly channelKey: string;
+  readonly agentId: string;
+}
+
 export interface PlatformSettingsRow {
   readonly fallbackAgentId: string | null;
   readonly updatedAt: Date;
@@ -636,6 +667,52 @@ export class ConfigStore {
     );
   }
 
+  // ── channel identities (provisioned bots) ─────────────────────────────
+  /**
+   * Every provisioned Microsoft Teams bot as a routing key.
+   *
+   * `agent_teams_identities` already holds the only mapping that matters —
+   * `app_id` (the bot's Entra application id) against the agent it was
+   * provisioned for. The Bot-Framework identity the middleware sees on an
+   * inbound activity is `activity.recipient.id`, i.e. `28:<appId>`
+   * lowercased; the Teams plugin builds the same string with its
+   * `teamsBotKey()` helper and exact string equality is what routes, so the
+   * projection is done here in SQL rather than anywhere a second spelling
+   * could creep in.
+   *
+   * Rows without an `app_id` are provisioning runs that have not reached the
+   * app-registration step — there is no bot to route to yet, so they are
+   * skipped rather than projected to a `28:null` key.
+   *
+   * MISSING TABLE IS NOT AN ERROR. This package is embeddable without the
+   * platform's migration series (`agent_teams_identities` arrives in
+   * middleware/migrations/0049). "No identity table" means "no provisioned
+   * bots", which is exactly the pre-existing behaviour — so an
+   * undefined_table degrades to an empty list instead of taking the whole
+   * snapshot load, and with it the registry boot, down with it.
+   */
+  async listChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
+    try {
+      const { rows } = await this.pool.query<{
+        agent_id: string;
+        channel_key: string;
+      }>(
+        `SELECT agent_id, '28:' || lower(app_id) AS channel_key
+           FROM agent_teams_identities
+          WHERE app_id IS NOT NULL AND app_id <> ''
+          ORDER BY channel_key`,
+      );
+      return rows.map((r) => ({
+        channelType: 'teams',
+        channelKey: r.channel_key,
+        agentId: r.agent_id,
+      }));
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+
   // ── multi_orchestrator_settings ─────────────────────────────────────────────────
   async getPlatformSettings(): Promise<PlatformSettingsRow> {
     const { rows } = await this.pool.query<PlatformSettingsDbRow>(
@@ -682,6 +759,7 @@ export class ConfigStore {
       agents,
       plugins,
       bindings,
+      identities,
       settings,
       subAgents,
       toolGrants,
@@ -694,6 +772,7 @@ export class ConfigStore {
       this.listAgents(),
       this.listAllAgentPlugins(),
       this.listChannelBindings(),
+      this.listChannelIdentities(),
       this.getPlatformSettings(),
       graph.listAllSubAgents(),
       graph.listAllToolGrants(),
@@ -707,6 +786,7 @@ export class ConfigStore {
       agents,
       agentPlugins: plugins,
       channelBindings: bindings,
+      channelIdentities: identities,
       platformSettings: settings,
       subAgents,
       toolGrants,
@@ -723,6 +803,14 @@ export interface ConfigSnapshot {
   readonly agents: readonly AgentRow[];
   readonly agentPlugins: readonly AgentPluginRow[];
   readonly channelBindings: readonly ChannelBindingRow[];
+  /**
+   * Provisioned channel identities (see {@link ChannelIdentityRow}). Optional
+   * so snapshot literals written before this existed — tests, fixtures, an
+   * embedding host — stay valid and keep their pre-existing routing; a
+   * deployment with no provisioned bots is indistinguishable from one that
+   * never had the field.
+   */
+  readonly channelIdentities?: readonly ChannelIdentityRow[];
   readonly platformSettings: PlatformSettingsRow;
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
@@ -735,6 +823,15 @@ export interface ConfigSnapshot {
   readonly mcpServers?: readonly McpServerRow[];
   /** Epic #459 W4 — operator bindings of skill capability contracts. */
   readonly skillToolBindings?: readonly SkillToolBindingRow[];
+}
+
+/** Postgres `undefined_table` (42P01) — the relation does not exist. */
+function isUndefinedTable(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { code?: string }).code === '42P01'
+  );
 }
 
 function isUniqueViolation(err: unknown, constraint?: string): boolean {
