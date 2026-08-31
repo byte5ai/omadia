@@ -11,6 +11,7 @@ import { createRequireAuth } from '../../src/auth/requireAuth.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { CIMD_METADATA_PATH } from '../../src/services/mcpCimd.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
+import { teamsBotMessagingPath } from '../../src/platform/teamsMessagingPath.js';
 
 /**
  * Epic #470 C12 — `STATIC_PUBLIC_PATHS` is a CLOSED set of CORE-owned entries.
@@ -66,6 +67,18 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   {
     path: '/api/messages',
     why: 'Bot Framework webhook — the adapter validates the Bot-issued JWT in the handler',
+  },
+  {
+    // Built from the shared builder, for the reason stated above this array:
+    // this path exists in exactly one place (platform/teamsMessagingPath.ts),
+    // which is what keeps the provisioned URL and the exemption in step.
+    path: teamsBotMessagingPath('hr-bot'),
+    why:
+      'the SAME Bot Framework webhook by its slug-addressed spellings ' +
+      '(/api/teams/messages and /api/teams/<botSlug>/messages, channel-teams ' +
+      '0.20.0) — one exemption, one adapter, two URL shapes. Reachability and ' +
+      'the fact that it does NOT open the /api/teams namespace are pinned in ' +
+      'teamsMessagingPublicPath.test.ts',
   },
   {
     path: '/api/v1/operator/mcp-oauth/callback',
