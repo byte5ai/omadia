@@ -8,8 +8,9 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
-  classifyTeamsInstallTarget,
+  classifyKnownTeamsTarget,
   isSubmittableTarget,
+  type KnownTeamsTarget,
 } from '../../../../_lib/teamsInstallTarget';
 import {
   getAgentTeams,
@@ -135,6 +136,9 @@ export function AgentTeamsInstalls({
   const [result, setResult] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [teamId, setTeamId] = useState('');
+  // What the tenant listing said `teamId` is, while `teamId` is still exactly
+  // what was picked. Cleared by any edit — see `TeamsTargetField`.
+  const [known, setKnown] = useState<KnownTeamsTarget | undefined>(undefined);
   /**
    * What the operator can pick instead of type.
    *
@@ -256,7 +260,7 @@ export function AgentTeamsInstalls({
     };
   }, [slug]);
 
-  const target = classifyTeamsInstallTarget(teamId);
+  const target = classifyKnownTeamsTarget(teamId, known);
   const targetSubmittable = isSubmittableTarget(target);
 
   const installed = data?.teams ?? [];
@@ -482,8 +486,16 @@ export function AgentTeamsInstalls({
               targets={targets}
               targetsLoading={targetsLoading}
               value={teamId}
-              onChange={setTeamId}
+              onChange={(next, knownKind) => {
+                setTeamId(next);
+                setKnown(
+                  knownKind === undefined
+                    ? undefined
+                    : { id: next, kind: knownKind },
+                );
+              }}
               disabled={!canInstall || inFlight}
+              known={known}
             />
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -493,8 +505,13 @@ export function AgentTeamsInstalls({
                 busyLabel={t('installBusy')}
                 onClick={() =>
                   void run('install', async () => {
-                    const res = await installAgentTeam(slug, teamId.trim());
+                    const res = await installAgentTeam(
+                      slug,
+                      teamId.trim(),
+                      known?.kind,
+                    );
                     setTeamId('');
+                    setKnown(undefined);
                     return res.already_installed
                       ? t('alreadyInstalled', { teamId: res.team_id })
                       : t('installStarted', { teamId: res.team_id });

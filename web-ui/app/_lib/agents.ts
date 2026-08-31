@@ -705,6 +705,17 @@ export interface ProvisionTeamsIdentityInput {
   bot_slug?: string;
   display_name?: string;
   team_id: string;
+  /**
+   * WHAT THE DIRECTORY SAID this target is, when it came from the picker
+   * rather than the text field.
+   *
+   * Optional and absent for anything typed. Sent so the middleware does not
+   * re-derive the kind from the id's suffix: a shape the pattern table has
+   * never seen — a legacy `19:…@thread.skype` group chat today, whatever
+   * Microsoft mints next — is refused there even though Graph had just listed
+   * it as an install target.
+   */
+  target_kind?: TeamsTargetKind;
 }
 
 export interface ProvisionTeamsIdentityResponse {
@@ -1444,10 +1455,18 @@ export interface InstallAgentTeamResponse {
 export async function installAgentTeam(
   slug: string,
   teamId: string,
+  /** See `ProvisionTeamsIdentityInput.target_kind`. */
+  targetKind?: TeamsTargetKind,
 ): Promise<InstallAgentTeamResponse> {
   return callJson<InstallAgentTeamResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
-    { method: 'POST', body: JSON.stringify({ team_id: teamId }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        team_id: teamId,
+        ...(targetKind !== undefined ? { target_kind: targetKind } : {}),
+      }),
+    },
   );
 }
 

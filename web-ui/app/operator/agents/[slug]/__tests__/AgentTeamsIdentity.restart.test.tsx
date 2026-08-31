@@ -137,9 +137,39 @@ describe('AgentTeamsIdentity — an identity with no install target', () => {
     await user.click(await screen.findByRole('option', { name: 'Acme Team' }));
     await user.click(screen.getByRole('button', { name: 'Start provisioning' }));
 
+    // The KIND rides along, and that is the point of picking from the list.
+    // The directory already said this row is a team; sending only the id would
+    // leave the middleware to re-derive that from the id's shape, which is the
+    // guess that made a legacy `19:…@thread.skype` group chat unusable.
     await waitFor(() =>
-      expect(mockProvision).toHaveBeenCalledWith('sales-bot', { team_id: TEAM_ID }),
+      expect(mockProvision).toHaveBeenCalledWith('sales-bot', {
+        team_id: TEAM_ID,
+        target_kind: 'team',
+      }),
     );
+  });
+
+  it('forgets the picked kind once the field is edited by hand', async () => {
+    // THE OTHER HALF OF THE CONTRACT. A remembered kind that outlives the id
+    // it described would be the same lie as the misclassification it replaced
+    // — the panel would label, and POST, a type belonging to a target the
+    // operator has since typed over. So picking then typing must send no kind
+    // at all and fall back to classifying what is actually in the field.
+    const user = userEvent.setup();
+    renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
+
+    await user.click(await screen.findByRole('combobox', { name: /Team/i }));
+    await user.click(await screen.findByRole('option', { name: 'Acme Team' }));
+
+    const field = await screen.findByLabelText('Target ID');
+    await user.clear(field);
+    await user.type(field, '19:typed1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c@thread.v2');
+    await user.click(screen.getByRole('button', { name: 'Start provisioning' }));
+
+    await waitFor(() => expect(mockProvision).toHaveBeenCalledTimes(1));
+    expect(mockProvision).toHaveBeenCalledWith('sales-bot', {
+      team_id: '19:typed1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c@thread.v2',
+    });
   });
 
   it('refuses to start on an input that is not an install target', async () => {

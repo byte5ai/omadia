@@ -19,8 +19,11 @@ import { TeamsTargetPicker } from '../_components/TeamsTargetPicker';
  *  - the two halves degrade independently — a chat scope nobody consented to
  *    must not be able to hide the team list, which is the half that works
  *    everywhere;
- *  - a picked id is handed up VERBATIM, so the live classification below the
- *    picker stays the single verdict on what the target is.
+ *  - a picked id is handed up VERBATIM, together with the KIND the listing
+ *    reported for it. The id alone was not enough: the field below re-derived
+ *    the kind from the suffix and refused a legacy `19:…@thread.skype` group
+ *    chat this very component had just offered. Graph names each row, so the
+ *    name travels with the row instead of being guessed again downstream.
  */
 
 const TEAM = { id: '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c', displayName: 'Acme Team' };
@@ -91,7 +94,7 @@ describe('TeamsTargetPicker — offering a choice', () => {
     // Verbatim matters: the id goes into the same field the operator could
     // have typed into, and the live classification decides what it is. A
     // picker that reshaped it would become a second, disagreeing classifier.
-    expect(onSelect).toHaveBeenCalledWith(TEAM.id);
+    expect(onSelect).toHaveBeenCalledWith(TEAM.id, 'team');
   });
 
   it('shows no selection for an id that was typed rather than picked', async () => {
@@ -194,7 +197,7 @@ describe('TeamsTargetPicker — finding one among many', () => {
     await userEvent.type(field, 'Team 03');
     await userEvent.keyboard('{ArrowDown}{Enter}');
 
-    expect(onSelect).toHaveBeenCalledWith(MANY[3]?.id);
+    expect(onSelect).toHaveBeenCalledWith(MANY[3]?.id, 'team');
   });
 
   it('closes on Escape, then clears the query on a second Escape', async () => {
@@ -296,5 +299,54 @@ describe('TeamsTargetPicker — degrading without lying', () => {
     for (const select of screen.getAllByRole('combobox')) {
       expect(select).toBeDisabled();
     }
+  });
+});
+
+describe('the kind travels with the picked id', () => {
+  // THE REGRESSION, AT ITS SOURCE. This row is a chat Graph listed as a group
+  // chat; its suffix is one the classifier downstream had never seen. Emitting
+  // the kind is what keeps the two from disagreeing about the same row.
+  const LEGACY_CHAT = {
+    id: '19:abc8af8ec7fc471785d3b83c4d84b667@thread.skype',
+    topic: 'Legacy group',
+    chatType: 'group' as const,
+  };
+  const SOLO_CHAT = {
+    id: '19:aaa_bbb@unq.gbl.spaces',
+    topic: 'Direct',
+    chatType: 'oneOnOne' as const,
+  };
+  const MEETING_CHAT = {
+    id: '19:meeting_abc@thread.v2',
+    topic: 'Standup',
+    chatType: 'meeting' as const,
+  };
+
+  async function pick(
+    chat: { id: string; topic: string; chatType: 'group' | 'oneOnOne' | 'meeting' },
+  ): Promise<ReturnType<typeof vi.fn>> {
+    const { onSelect } = render(
+      dto({ chats: { available: true, items: [chat] } }),
+    );
+    await openChats();
+    await userEvent.click(
+      screen.getByRole('option', { name: new RegExp(chat.topic) }),
+    );
+    return onSelect;
+  }
+
+  it("reports Graph's chatType for a group chat, whatever its suffix", async () => {
+    const onSelect = await pick(LEGACY_CHAT);
+    expect(onSelect).toHaveBeenCalledWith(LEGACY_CHAT.id, 'group-chat');
+  });
+
+  it('reports a 1:1 chat as its own kind', async () => {
+    const onSelect = await pick(SOLO_CHAT);
+    expect(onSelect).toHaveBeenCalledWith(SOLO_CHAT.id, 'one-on-one-chat');
+  });
+
+  it('installs a meeting chat through the chat endpoint, like a group one', async () => {
+    const onSelect = await pick(MEETING_CHAT);
+    expect(onSelect).toHaveBeenCalledWith(MEETING_CHAT.id, 'group-chat');
   });
 });
