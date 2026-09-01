@@ -100,6 +100,19 @@ export class McpRegistryError extends Error {
  *  exactly the case the local-filter fallback exists to rescue. */
 const UNREACHABLE_CODES = new Set(['timeout', 'transport_failed', 'blocked_host']);
 
+/** Substring match over name and description, the fallback ranking whenever a
+ *  registry's own search is unavailable or ignored. */
+function localFilter(
+  entries: readonly McpCatalogEntry[],
+  needle: string,
+): readonly McpCatalogEntry[] {
+  return entries.filter(
+    (e) =>
+      e.name.toLowerCase().includes(needle) ||
+      (e.description ?? '').toLowerCase().includes(needle),
+  );
+}
+
 /** An aborted fetch is our own deadline firing, not a network error — it gets
  *  its own code so the operator is told "too slow", not "unreachable". */
 function isAbort(err: unknown): boolean {
@@ -510,17 +523,34 @@ export class McpRegistryClient {
    */
   private readonly unreachableUntil = new Map<string, number>();
 
-  private throwIfRecentlyUnreachable(registryId: string): void {
+  /** The error a suppressed re-dial would raise, or `null` when the host may
+   *  be tried again. Returning it rather than throwing lets callers that hold
+   *  a usable cached catalog answer from it instead of failing. */
+  private recentlyUnreachable(registryId: string): McpRegistryError | null {
     const until = this.unreachableUntil.get(registryId);
-    if (until === undefined) return;
+    if (until === undefined) return null;
     if (Date.now() >= until) {
       this.unreachableUntil.delete(registryId);
-      return;
+      return null;
     }
-    throw new McpRegistryError(
+    return new McpRegistryError(
       'transport_failed',
       'registry did not answer on the previous attempt; not retried yet',
     );
+  }
+
+  /** The cached catalog for a registry if it is still inside the success TTL,
+   *  else `null`. Deliberately bypasses the unreachable gate — reading a cache
+   *  we already hold touches no network. */
+  private freshlyCached(registryId: string): readonly McpCatalogEntry[] | null {
+    const slot = this.cache.get(registryId);
+    if (!slot || Date.now() - slot.fetchedAtMs >= CACHE_TTL_MS) return null;
+    return slot.entries;
+  }
+
+  private throwIfRecentlyUnreachable(registryId: string): void {
+    const suppressed = this.recentlyUnreachable(registryId);
+    if (suppressed) throw suppressed;
   }
 
   private noteUnreachable(registryId: string, err: unknown): void {
@@ -550,43 +580,73 @@ export class McpRegistryClient {
   /**
    * Search the registry. A non-empty query is passed to the registry's
    * SERVER-SIDE search (Smithery `?q=`, official/generic `?search=`) so the
-   * whole catalog is reachable, not just the first browsed page. The result is
-   * additionally substring-filtered locally as a safety net (a registry that
-   * ignores the param still returns something sensible). An empty query serves
-   * the cached full-first-page browse.
+   * whole catalog is reachable, not just the first browsed page. An empty
+   * query serves the cached full-first-page browse.
    *
    * Failure handling matters for latency, not just correctness: a registry
    * whose host black-holes packets (registry.modelcontextprotocol.io did
-   * exactly that) costs one full timeout per attempt. Retrying the *same dead
-   * host* through the local-filter fallback doubled that into a ~60s spinner
-   * with no feedback. So a transport-level failure is rethrown immediately and
-   * only a protocol-level one (the registry answered, but not usefully — it
-   * may simply ignore the search param) falls through to the local filter.
+   * exactly that) costs one full timeout per attempt, and retrying the same
+   * dead host doubled that into a ~60s spinner.
+   *
+   * `scope` tells the caller what it actually got, because the two are not
+   * interchangeable and the operator must not mistake one for the other:
+   *   'registry' — the registry's own search ranked the whole catalog.
+   *   'cached-page' — its search was unavailable, so this is a substring
+   *                   filter over the browse page we already held. Correct as
+   *                   far as it goes, but only covers that page.
    */
-  async search(registry: McpRegistryConfig, q: string): Promise<readonly McpCatalogEntry[]> {
+  async search(
+    registry: McpRegistryConfig,
+    q: string,
+  ): Promise<{ entries: readonly McpCatalogEntry[]; scope: 'registry' | 'cached-page' }> {
     const needle = q.trim().toLowerCase();
-    if (needle === '') return this.catalog(registry);
+    if (needle === '') return { entries: await this.catalog(registry), scope: 'registry' };
     // official (?search=) and smithery (?q=) honor the query server-side — trust
     // their relevance ranking and return as-is.
     if (registry.kind === 'official' || registry.kind === 'smithery') {
-      this.throwIfRecentlyUnreachable(registry.id);
+      // Already known unreachable: serve a cached browse page if we have one
+      // rather than reporting nothing, and only fail when we have nothing.
+      const suppressed = this.recentlyUnreachable(registry.id);
+      if (suppressed) {
+        const cached = this.freshlyCached(registry.id);
+        if (cached) return { entries: localFilter(cached, needle), scope: 'cached-page' };
+        throw suppressed;
+      }
       try {
-        return await this.fetchCatalog(registry, q.trim());
+        return { entries: await this.fetchCatalog(registry, q.trim()), scope: 'registry' };
       } catch (err) {
         if (err instanceof McpRegistryError && UNREACHABLE_CODES.has(err.code)) {
           this.noteUnreachable(registry.id, err);
+          // The endpoint that failed is the SEARCH endpoint, which is not
+          // necessarily the whole host: registry.modelcontextprotocol.io
+          // serves /v0/servers in under a second while ?search= hangs to the
+          // full timeout. When the browse page is already cached, filtering it
+          // costs no network and gives the operator real results instead of an
+          // error card — strictly better than surfacing the failure.
+          const cached = this.freshlyCached(registry.id);
+          if (cached) {
+            this.log(
+              `[mcpRegistry] "${registry.name}": server-side search failed (${err.code}); ` +
+                `filtering the cached browse page instead`,
+            );
+            return { entries: localFilter(cached, needle), scope: 'cached-page' };
+          }
           throw err;
         }
         /* the registry answered but not usefully — fall through to local filter */
+        return {
+          entries: localFilter(await this.catalog(registry), needle),
+          // Reached only because the server-side search failed. Whatever comes
+          // back is a filter over one page, so it carries the same caveat as
+          // the cached-page path — labelling it 'registry' would overstate it.
+          scope: 'cached-page',
+        };
       }
     }
-    // A generic registry may ignore the param, so substring-filter its page.
-    const entries = await this.catalog(registry);
-    return entries.filter(
-      (e) =>
-        e.name.toLowerCase().includes(needle) ||
-        (e.description ?? '').toLowerCase().includes(needle),
-    );
+    // A `generic` registry is expected to be a plain document rather than a
+    // search API, so filtering what it serves IS the whole registry, not a
+    // degraded substitute for something better.
+    return { entries: localFilter(await this.catalog(registry), needle), scope: 'registry' };
   }
 
   /** Resolve one entry by its catalog id — the from-registry import path.

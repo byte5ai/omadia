@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP marketplace search now answers from the cached catalog when only the registry's search is broken
+
+2026-09-01 — Follow-up to the entry below, found by watching the deployed fix
+against the live registry. Failing fast was correct but not sufficient:
+`registry.modelcontextprotocol.io` serves `/v0/servers` in under a second (66
+servers) while `?search=` hangs to the full timeout. So browse worked, search
+showed an error card, and the operator still got no results — the reported
+symptom, just faster and better explained.
+
+`search()` now falls back to substring-filtering the browse page it already
+holds in cache whenever the server-side search fails at the transport level.
+That costs no network, and it is the difference between an error card and
+actual hits. When nothing is cached it still fails fast as before.
+
+Because a filter over one page is *not* the registry's ranking of its whole
+catalog, `search()` now returns a `scope` (`registry` | `cached-page`) that the
+route forwards and the UI renders as a `nur geladene Seite` badge beside the
+result count. Without it, "1 Treffer" would read as "the registry has one", and
+an operator would conclude a server is missing when it merely sits past the
+cached page. The `timeout` failure card also stopped claiming the host is
+"offline or blocked" — that is wrong when browsing works — and now points at
+clearing the search box to list the catalog instead.
+
 ### Fixed — MCP marketplace search hung instead of failing, and told you nothing
 
 2026-09-01 — The Marketplace tab's search sat in "Katalog durchsuchen…"

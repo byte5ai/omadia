@@ -4237,7 +4237,10 @@
       "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus blockiert. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
       "removeRegistryBody": "Registry „{name}“ entfernen? Bereits importierte Server bleiben bestehen.",
       "unlicensedShort": "ohne Lizenz",
-      "refresh": "Aktualisieren"
+      "refresh": "Aktualisieren",
+      "scopeCachedPage": "nur geladene Seite",
+      "scopeCachedPageWhy": "Die Suche dieser Registry hat nicht geantwortet. Diese Treffer sind deshalb ein Textabgleich über die bereits geladene Katalogseite — Server weiter hinten im Katalog sind nicht erfasst. Mit „Aktualisieren“ die Registry-Suche erneut versuchen.",
+      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen."
     },
     "grants": {
       "grantHeading": "Tools einem Orchestrator zuweisen",
