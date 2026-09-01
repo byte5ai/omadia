@@ -69,8 +69,9 @@ describe('McpRegistryClient', () => {
   it('searches name and description case-insensitively', async () => {
     const client = new McpRegistryClient({ fetchImpl: fetchOk(OFFICIAL_DOC), log: () => {} });
     const hits = await client.search(REGISTRY, 'BILLING');
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0]?.id, 'io.github.acme/billing');
+    assert.equal(hits.entries.length, 1);
+    assert.equal(hits.entries[0]?.id, 'io.github.acme/billing');
+    assert.equal(hits.scope, 'registry');
   });
 
   it('resolve throws catalog_entry_not_found for unknown ids', async () => {
@@ -436,6 +437,80 @@ describe('McpRegistryClient', () => {
       client.invalidate(official.id);
       await assert.rejects(client.search(official, 'strava'));
       assert.equal(calls.n, 2);
+    });
+  });
+
+  // Live finding after deploying the fast-fail: registry.modelcontextprotocol.io
+  // serves /v0/servers in under a second (66 servers) while ?search= hangs to
+  // the full timeout. Failing fast was right, but reporting an error while
+  // holding a perfectly good browse page in cache was not — the operator asked
+  // for hits and we had hits.
+  describe('falls back to the cached browse page when only search is broken', () => {
+    /** Browse answers; the search URL never does. */
+    function browseOkSearchDead(counter: { search: number }): typeof fetch {
+      return (async (input: unknown) => {
+        if (String(input).includes('search=')) {
+          counter.search += 1;
+          throw new TypeError('fetch failed');
+        }
+        return new Response(JSON.stringify(OFFICIAL_DOC), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+    }
+
+    it('filters the cached catalog instead of surfacing the search failure', async () => {
+      const calls = { search: 0 };
+      const client = new McpRegistryClient({
+        fetchImpl: browseOkSearchDead(calls),
+        log: () => {},
+      });
+      const official = { ...REGISTRY, id: 'search-dead', kind: 'official' as const };
+
+      // The UI's auto-load browses first, which fills the cache.
+      const browsed = await client.search(official, '');
+      assert.equal(browsed.scope, 'registry');
+      assert.equal(browsed.entries.length, 3);
+
+      const hits = await client.search(official, 'billing');
+      assert.equal(calls.search, 1, 'the server-side search is still attempted once');
+      assert.equal(hits.scope, 'cached-page', 'provenance is reported, not hidden');
+      assert.equal(hits.entries.length, 1);
+      assert.equal(hits.entries[0]?.id, 'io.github.acme/billing');
+    });
+
+    it('keeps serving the cached page while the host stays suppressed', async () => {
+      const calls = { search: 0 };
+      const client = new McpRegistryClient({
+        fetchImpl: browseOkSearchDead(calls),
+        log: () => {},
+      });
+      const official = { ...REGISTRY, id: 'search-dead-2', kind: 'official' as const };
+      await client.search(official, '');
+
+      await client.search(official, 'billing');
+      const again = await client.search(official, 'notes');
+      // The negative cache suppresses the re-dial, and the cached page still
+      // answers — so a second query is instant AND useful.
+      assert.equal(calls.search, 1);
+      assert.equal(again.scope, 'cached-page');
+      assert.equal(again.entries[0]?.id, 'io.github.acme/local-notes');
+    });
+
+    it('still fails when there is no cached page to fall back to', async () => {
+      const calls = { n: 0 };
+      const dead: typeof fetch = (async () => {
+        calls.n += 1;
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: dead, log: () => {} });
+      const official = { ...REGISTRY, id: 'nothing-cached', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'billing'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'transport_failed',
+      );
+      assert.equal(calls.n, 1);
     });
   });
 });

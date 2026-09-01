@@ -45,6 +45,7 @@ import {
   type McpConfigField,
   type McpCallLogEntry,
   type McpCatalogEntry,
+  type McpCatalogScope,
   type McpGrantMatrixRow,
   type McpOrchestrator,
   type McpPluginCandidate,
@@ -1081,6 +1082,9 @@ function MarketplacePane(): React.ReactElement {
   /** The query the currently displayed `entries` were fetched for — so the
    *  result header never claims a count for a query the user has since edited. */
   const [appliedQuery, setAppliedQuery] = useState('');
+  /** Provenance of the displayed hits — a 'cached-page' result is a substring
+   *  filter over the browse page, not the registry's ranking of its catalog. */
+  const [scope, setScope] = useState<McpCatalogScope>('registry');
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<CatalogFailure | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1123,14 +1127,13 @@ function MarketplacePane(): React.ReactElement {
       setFailure(null);
       setConnected(null);
       try {
-        const found = (
-          await searchMcpCatalog(registryId, q, {
-            ...(opts?.refresh === true ? { refresh: true } : {}),
-            ...(opts?.signal ? { signal: opts.signal } : {}),
-          })
-        ).entries;
+        const found = await searchMcpCatalog(registryId, q, {
+          ...(opts?.refresh === true ? { refresh: true } : {}),
+          ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
         if (seq.current !== mine) return;
-        setEntries(found);
+        setEntries(found.entries);
+        setScope(found.scope ?? 'registry');
         setAppliedQuery(q);
       } catch (err) {
         // An abort is this component superseding its own request, not a
@@ -1363,7 +1366,9 @@ function MarketplacePane(): React.ReactElement {
           <div className="text-xs text-[color:var(--fg-muted)]">
             {failure.kind === 'generic'
               ? failure.detail
-              : t('marketplace.errorUnreachableHint')}
+              : failure.kind === 'timeout'
+                ? t('marketplace.errorTimeoutHint')
+                : t('marketplace.errorUnreachableHint')}
           </div>
           <div>
             <Button
@@ -1418,6 +1423,18 @@ function MarketplacePane(): React.ReactElement {
               >
                 {t('marketplace.refresh')}
               </Button>
+              {/* Say so when these hits are a filter over the browse page
+                  rather than the registry's own search: otherwise "1 Treffer"
+                  reads as "the registry has one", and the operator concludes a
+                  server is missing when it is merely past the cached page. */}
+              {scope === 'cached-page' && appliedQuery !== '' ? (
+                <span
+                  title={t('marketplace.scopeCachedPageWhy')}
+                  className="whitespace-nowrap rounded border border-[color:var(--warning)]/50 px-1.5 py-0.5 text-[10px] text-[color:var(--warning)]"
+                >
+                  {t('marketplace.scopeCachedPage')}
+                </span>
+              ) : null}
             </span>
             <span className="sm:text-right">{t('marketplace.hintShort')}</span>
           </div>

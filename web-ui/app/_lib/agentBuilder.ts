@@ -966,6 +966,11 @@ export interface McpRegistryInfo {
   hasToken: boolean;
 }
 
+/** Where a search result actually came from. `cached-page` means the registry's
+ *  own search was unavailable and the middleware substring-filtered the browse
+ *  page it already held — correct, but limited to that page. */
+export type McpCatalogScope = 'registry' | 'cached-page';
+
 export interface McpCatalogEntry {
   id: string;
   name: string;
@@ -1011,7 +1016,7 @@ export async function searchMcpCatalog(
   registryId: string,
   q: string,
   opts?: { refresh?: boolean; signal?: AbortSignal },
-): Promise<{ entries: McpCatalogEntry[] }> {
+): Promise<{ entries: McpCatalogEntry[]; scope?: McpCatalogScope }> {
   const params = new URLSearchParams();
   if (q) params.set('q', q);
   if (opts?.refresh === true) params.set('refresh', '1');

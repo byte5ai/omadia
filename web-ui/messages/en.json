@@ -4237,7 +4237,10 @@
       "errorUnreachableHint": "The registry host is down or blocked from this installation. Pick another registry above, or try again in a moment.",
       "removeRegistryBody": "Remove the registry \"{name}\"? Servers already imported from it stay.",
       "unlicensedShort": "unlicensed",
-      "refresh": "Refresh"
+      "refresh": "Refresh",
+      "scopeCachedPage": "cached page only",
+      "scopeCachedPageWhy": "This registry’s own search did not answer, so these hits are a text match over the catalog page already loaded — servers further into the catalog are not covered. Use Refresh to try the registry’s search again.",
+      "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again."
     },
     "grants": {
       "grantHeading": "Grant tools to an orchestrator",
