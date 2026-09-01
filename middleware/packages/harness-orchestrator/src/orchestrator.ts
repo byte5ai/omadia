@@ -1431,6 +1431,14 @@ a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit 
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
 
+b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
+
+   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
+
+   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
+
+   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
+
 c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
    1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
@@ -7391,8 +7399,21 @@ export class Orchestrator {
             attachmentFileName,
           );
           if (!result.ok) continue;
+          // #976 — the honest counterpart to `[dataset-imported]`'s privacy
+          // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
+          // structured equivalent), so say so rather than letting the model
+          // invent either a reassurance or an alarm. Whether the prompt-mask
+          // layer additionally redacted spans here depends on the operator's
+          // `mask_user_prompt` setting, which this code cannot observe — so
+          // it claims nothing about it.
           textBlocks.push(
-            `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
+            `\n\n[attachment-content: ${label}]\n${result.text}\n` +
+              `PRIVACY STATUS OF THIS FILE (state only this, never speculate): this is ` +
+              `extracted document text placed directly into the prompt. It did NOT go ` +
+              `through the dataset store's per-field PII scan — that path exists only for ` +
+              `tabular files (CSV/XLSX). Say this plainly if asked; do not claim a ` +
+              `protection that is not listed here, and do not claim the file was withheld.` +
+              `\n[/attachment-content]`,
           );
         } catch (err) {
           console.warn(
@@ -7475,6 +7496,8 @@ export class Orchestrator {
     }
     if (!imported.ok) return refuse(imported.reason);
 
+    let scannedCells = 0;
+    let maskedCells = 0;
     const lines = imported.imported.map((t) => {
       const { truncatedCellCount, truncatedColumns } = t.truncation;
       // Only claim "not truncated" when that is actually true for this table
@@ -7484,11 +7507,39 @@ export class Orchestrator {
           ? ` ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
           : ' No cells were truncated on import.';
       const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
+      scannedCells += t.privacyScan.scannedCells;
+      maskedCells += t.privacyScan.maskedCells;
       return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
     });
 
+    // Observability: a successful import used to log nothing at all, so the
+    // only way to confirm one had happened was to infer it from a later
+    // `query_dataset` call's column names. Say it plainly instead.
+    console.log(
+      `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
+        `datasets=${String(imported.imported.length)} ` +
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
+    );
+
+    // #976 — state the privacy FACTS for this file in the prompt.
+    //
+    // Without them the model is left to guess what happened to an upload,
+    // and it guesses badly: it told a user "der Privacy Shield greift bei
+    // Datei-Uploads nicht — der Inhalt liegt im Klartext vor" about a file
+    // that had in fact been imported with 16 of 23 fields masked. A wrong
+    // reassurance is bad; a wrong ALARM is worse, because the user acts on
+    // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
+    // the fact — so ship the fact.
+    const privacyFact =
+      `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
+      `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
+      `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
+      `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
+      `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
+      `boundary as any other tool result.`;
+
     return (
-      `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n` +
+      `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +
       `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with a dataset_id above to filter/aggregate this data — ` +
       `do not ask the user to re-paste it.\n[/dataset-imported]`
     );

@@ -46,7 +46,25 @@ export interface C1HttpDetectorOptions {
   readonly threshold?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 1500;
+/**
+ * Hard cap per detect() call.
+ *
+ * 1500 ms was calibrated against a short chat message and silently starved
+ * every realistic turn: GLiNER inference is chunked and scales with text
+ * length, so measured against the live sidecar a 46-character sentence takes
+ * 69-133 ms while a 3.4 KB prompt (one modest attachment) takes 3.7-3.8 s.
+ * Everything above the cap logged `promptMaskDegraded` and fell back to
+ * C0 — meaning person names, the whole reason the C1 tier exists, went
+ * unmasked on exactly the turns that carried the most of them. It went
+ * unnoticed because the sidecar was unreachable anyway until #973/#974.
+ *
+ * 15 s covers the `MAX_TEXT_CHARS` (20 KB) ceiling with headroom at the
+ * measured ~1.1 ms/char. It is a fail-CLOSED bound, not a latency budget:
+ * exceeding it degrades to C0 rather than blocking, so a generous value
+ * costs a slow turn in the worst case and buys correct masking in the
+ * normal one. Override with `PRIVACY_C1_TIMEOUT_MS`.
+ */
+export const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LABELS: readonly string[] = ['person', 'address'];
 const DEFAULT_THRESHOLD = 0.5;
 
@@ -62,10 +80,28 @@ interface SidecarSpan {
   readonly score: number;
 }
 
+/** `PRIVACY_C1_TIMEOUT_MS` override. Ignores anything not a positive finite
+ *  number so a typo cannot silently produce a 0 ms (always-degrade) cap. */
+export function resolveTimeoutFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const raw = env['PRIVACY_C1_TIMEOUT_MS']?.trim();
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(
+      `[privacy-guard v4] ignoring invalid PRIVACY_C1_TIMEOUT_MS=${raw}; ` +
+        `using ${String(DEFAULT_TIMEOUT_MS)}ms`,
+    );
+    return undefined;
+  }
+  return parsed;
+}
+
 export function createC1HttpDetector(
   opts: C1HttpDetectorOptions,
 ): PromptPiiDetector {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? resolveTimeoutFromEnv() ?? DEFAULT_TIMEOUT_MS;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
   const labels = opts.labels ?? DEFAULT_LABELS;
   const threshold = opts.threshold ?? DEFAULT_THRESHOLD;
