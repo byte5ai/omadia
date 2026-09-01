@@ -261,6 +261,15 @@ export function buildForAgent(
       ...(agent.identityName?.trim()
         ? { identityName: agent.identityName.trim() }
         : {}),
+      // #967 follow-up — the agent's authored Steckbrief. Layered on like the
+      // name (never replacing the behaviour text), so an operator who filled in
+      // what the agent IS gets a bot that can actually say it.
+      ...(agent.identityShortDescription?.trim()
+        ? { identityShortDescription: agent.identityShortDescription.trim() }
+        : {}),
+      ...(agent.identityLongDescription?.trim()
+        ? { identityLongDescription: agent.identityLongDescription.trim() }
+        : {}),
     },
     deps,
   );
@@ -310,6 +319,22 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // keep hearing the old name in chat until some unrelated edit rebuilt it.
   if ((oldAgent.identityName ?? '') !== (newAgent.identityName ?? '')) {
     reasons.push('identity_display_name');
+  }
+  // #967 follow-up — the Steckbrief is part of the system prompt too, so the
+  // same rule applies as for the name: an edit the operator saved and the UI
+  // confirmed must reach the running Agent, or the agent page and the bot go on
+  // disagreeing until some unrelated change happens to rebuild it.
+  if (
+    (oldAgent.identityShortDescription ?? '') !==
+    (newAgent.identityShortDescription ?? '')
+  ) {
+    reasons.push('identity_short_description');
+  }
+  if (
+    (oldAgent.identityLongDescription ?? '') !==
+    (newAgent.identityLongDescription ?? '')
+  ) {
+    reasons.push('identity_long_description');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.

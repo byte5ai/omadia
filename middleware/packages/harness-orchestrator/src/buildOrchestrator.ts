@@ -133,6 +133,20 @@ export interface AgentRuntimeConfig {
    */
   readonly identityName?: string;
   /**
+   * #967 follow-up — this Agent's authored SELF-DESCRIPTION
+   * (`agent_identities.short_description` / `.long_description`, the operator's
+   * "Steckbrief" tab), already trimmed and non-empty when present.
+   *
+   * LAYERS, LIKE THE NAME, NOT SLOTS. They say what the Agent IS; they never
+   * replace what it was told to DO. See `withAgentIdentity` for the full
+   * precedence and for why the accent colour and avatar are excluded.
+   *
+   * Absent → nothing is added and the prompt is byte-identical, which is what
+   * keeps every Agent that predates the Steckbrief exactly where it was.
+   */
+  readonly identityShortDescription?: string;
+  readonly identityLongDescription?: string;
+  /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
    *
@@ -327,6 +341,123 @@ export function withAgentName(
 }
 
 /**
+ * Fold an Agent's authored SELF-DESCRIPTION into the identity text (#967
+ * follow-up) — the operator's "Steckbrief" tab: short and long description.
+ *
+ * THE PROBLEM THIS SOLVES. These two fields described the agent everywhere a
+ * human looked — the Teams store listing, the app package, the operator UI —
+ * and nowhere the agent could read. An operator who wrote "HR-Assistentin für
+ * Urlaub und Zeiterfassung" got a bot that rendered that sentence in a catalog
+ * and could not say it when asked what it does. The identity tabs are a promise
+ * that what you type is what the agent becomes; this is the half of that
+ * promise that was missing.
+ *
+ * APPENDED, NEVER SUBSTITUTED — same rule as {@link withAgentName}, and for a
+ * stronger reason here. `instructions` (via `composed_prompt`) REPLACES the
+ * platform identity outright, which is deliberate and stays (#914): it is the
+ * operator saying "this agent behaves like THIS instead". A description is not
+ * that. It says what the agent is, not how it works, so it can only ever be an
+ * addition — folding it into the replacing slot would let a one-line Steckbrief
+ * silently delete a deployment's whole configured behaviour.
+ *
+ * VERBATIM, UNDER A LABEL. The text is the operator's own; nothing is
+ * paraphrased, summarised or expanded. The labels exist because raw prose
+ * pasted after a system prompt reads as an instruction rather than as a fact
+ * about the agent — the label is framing, not content, and an unauthored field
+ * contributes no label and no line. Nothing is invented for an empty field.
+ *
+ * BOTH, WHEN BOTH ARE THERE. Short and long are not two drafts of one text —
+ * the Teams manifest caps them at 80 and 4000 characters precisely because they
+ * answer different questions ("what is this?" vs "what can it do?"). An agent
+ * asked either question should be able to answer it, so neither is dropped in
+ * favour of the other. Identical values are the operator's own repetition and
+ * are left alone rather than silently de-duplicated.
+ */
+export function withAgentSelfDescription(
+  identity: string | undefined,
+  descriptions: {
+    readonly shortDescription?: string | undefined;
+    readonly longDescription?: string | undefined;
+  },
+): string | undefined {
+  const short = descriptions.shortDescription?.trim();
+  const long = descriptions.longDescription?.trim();
+  const lines: string[] = [];
+  if (short) lines.push(`Kurzbeschreibung deiner Rolle: ${short}`);
+  if (long) lines.push(`Ausführliche Beschreibung deiner Rolle: ${long}`);
+  if (lines.length === 0) return identity;
+  const block = lines.join('\n\n');
+  const trimmedIdentity = identity?.trim();
+  return trimmedIdentity ? `${trimmedIdentity}\n\n${block}` : block;
+}
+
+/**
+ * The whole per-Agent identity layer, composed in ONE place so the precedence
+ * is stated once and cannot drift between callers (#914 / #967).
+ *
+ * THE ORDER IS THE CONTRACT:
+ *
+ *  1. BASE — the platform-wide `assistantIdentity`, REPLACED outright by the
+ *     Agent's own `identityInstructions` when it authored any. That value is
+ *     already `COALESCE(composed_prompt, instructions)`, so the Charakter
+ *     (persona axes) and Grenzen (boundary presets + sycophancy guard) tabs are
+ *     compiled into it upstream by `composeAgentIdentityPrompt` — they are NOT
+ *     unused columns, and nothing here needs to re-derive them. Replacing is
+ *     deliberate and unchanged: it is the operator saying "behave like this
+ *     instead of like the platform default".
+ *
+ *  2. APPENDED — the Steckbrief (short, then long description). Facts about the
+ *     agent, layered ON TOP of whichever text step 1 produced, because a
+ *     description must never be able to delete configured behaviour.
+ *
+ *  3. APPENDED LAST — the name. Last word deliberately: an operator's prose (or
+ *     the platform identity) may mention some other name, and the closing
+ *     instruction is the one that binds. This is why the name goes AFTER the
+ *     descriptions and not directly after the identity text — a long
+ *     description that names a predecessor bot must still lose to the name the
+ *     agent actually wears.
+ *
+ * CONFLICT RULE, in one sentence: later text wins over earlier text, and
+ * nothing appended can remove what step 1 established.
+ *
+ * DELIBERATELY EXCLUDED. `accent_color` and the avatar are rendering decisions
+ * — they exist so a human can tell two bots apart at a glance in Teams. A model
+ * cannot act on either, and describing them in a prompt ("deine Akzentfarbe ist
+ * #3B82F6") would spend tokens on a fact that can only produce noise, or worse,
+ * invite the agent to talk about its own styling. They stay presentation-only
+ * on purpose, not by oversight.
+ *
+ * An Agent that authored nothing gets the platform identity back byte for byte,
+ * which is what keeps every pre-#914 deployment (and its prompt-cache key)
+ * exactly where it was.
+ */
+export function withAgentIdentity(
+  baseIdentity: string | undefined,
+  authored: {
+    readonly identityInstructions?: string | undefined;
+    readonly identityName?: string | undefined;
+    readonly identityShortDescription?: string | undefined;
+    readonly identityLongDescription?: string | undefined;
+  },
+): string | undefined {
+  // Step 1 — replace. A blank authored value is not an identity, so it falls
+  // through rather than silencing the opening section of the system prompt.
+  const base = authored.identityInstructions?.trim() || baseIdentity;
+  // Steps 2 and 3 — append, descriptions before the name.
+  return withAgentName(
+    withAgentSelfDescription(base, {
+      ...(authored.identityShortDescription !== undefined
+        ? { shortDescription: authored.identityShortDescription }
+        : {}),
+      ...(authored.identityLongDescription !== undefined
+        ? { longDescription: authored.identityLongDescription }
+        : {}),
+    }),
+    authored.identityName,
+  );
+}
+
+/**
  * Build one Agent's `Orchestrator`, its optional verifier wrapper, and its
  * `chatAgent` bundle. Each call produces a fully independent instance set —
  * no mutable state is shared between two calls.
@@ -469,22 +600,25 @@ export function buildOrchestratorForAgent(
       console.warn(`[security-audit] ${JSON.stringify(event)}`);
     };
 
-  // #914 — per-Agent identity beats the platform default. A blank authored
-  // value is not an identity, so it falls through rather than silencing the
-  // opening section of the system prompt.
-  const agentAssistantIdentity =
-    config.identityInstructions?.trim() || deps.assistantIdentity;
-  // #967 — and then the Agent's own name is layered on top of whichever text
-  // that resolved to. This is the ONLY place the authored display name enters
-  // the system prompt, and it is deliberately the last word: the platform
-  // identity names the platform's assistant, so a bot provisioned as
-  // `Messias` would otherwise keep introducing itself with that name while
-  // Teams shows another. Overriding beats editing — we cannot know where a
-  // name appears inside operator-written prose.
-  const assistantIdentityWithName = withAgentName(
-    agentAssistantIdentity,
-    config.identityName,
-  );
+  // #914 / #967 — this Agent's authored identity, layered over the platform
+  // default. `withAgentIdentity` owns the whole precedence (replace, then
+  // append the Steckbrief, then append the name last); see its doc comment for
+  // why each field sits where it does and why the accent colour and avatar are
+  // deliberately not in it.
+  const assistantIdentityWithName = withAgentIdentity(deps.assistantIdentity, {
+    ...(config.identityInstructions !== undefined
+      ? { identityInstructions: config.identityInstructions }
+      : {}),
+    ...(config.identityName !== undefined
+      ? { identityName: config.identityName }
+      : {}),
+    ...(config.identityShortDescription !== undefined
+      ? { identityShortDescription: config.identityShortDescription }
+      : {}),
+    ...(config.identityLongDescription !== undefined
+      ? { identityLongDescription: config.identityLongDescription }
+      : {}),
+  });
 
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
@@ -573,6 +707,16 @@ export function buildOrchestratorForAgent(
     // that same resolved value for the same reason.
     ...(assistantIdentityWithName
       ? { assistantIdentity: assistantIdentityWithName }
+      : {}),
+    // #967 — the SAME authored name, handed over separately as well. The
+    // prompt is not the only place an Agent states who it is: the Art. 50
+    // marking names the assistant too and is resolved behind the model, where
+    // the prompt is deliberately out of reach. Without this it had only the
+    // platform-wide `ai_disclosure_assistant_name` — one string for every
+    // Agent — so each provisioned bot signed its answers with whichever single
+    // name the operator had typed there.
+    ...(config.identityName?.trim()
+      ? { identityName: config.identityName.trim() }
       : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
