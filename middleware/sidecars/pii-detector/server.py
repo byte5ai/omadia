@@ -333,6 +333,55 @@ class DualStackServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+# --- Startup self-test -------------------------------------------------
+#
+# A sentence whose person span any working build of this model scores far
+# above threshold. Deliberately synthetic — never a real person from the
+# tenant data this sidecar sees.
+SELFTEST_SENTENCE = "Anna Schmidt wohnt in Berlin."
+SELFTEST_EXPECT = "Anna Schmidt"
+SELFTEST_MIN_SCORE = float(os.environ.get("SELFTEST_MIN_SCORE", "0.6"))
+
+
+def run_selftest(model):
+    """Prove the loaded model actually predicts, before we serve traffic.
+
+    This exists because of a real, silent production failure: the
+    u8s8-quantized ONNX export (`onnx/model_quantized.onnx`) computes
+    correctly on some CPUs and produces NOISE on others. On the AMD EPYC
+    backing our Fly machines — `avx2` and `fma` present, but no
+    `avx512_vnni` / `avx_vnni` — INT8 matmul saturates, and the model
+    returns near-uniform ~0.15 scores that decay with token position instead
+    of predictions. Nothing raises. `/health` answers 200. Every span falls
+    under threshold, so `/detect` returns `{"spans": []}` for every input
+    and the middleware masks nothing while believing C1 is live.
+
+    A load that "succeeds" is therefore not evidence the detector works.
+    This check is the evidence. Failing closed at startup turns a silent
+    non-masking sidecar into an obvious broken deploy.
+
+    Returns `(ok, detail)`; `detail` never contains request text, only the
+    synthetic sentence's outcome.
+    """
+    try:
+        ents = model.predict_entities(
+            SELFTEST_SENTENCE, ["person", "address"], threshold=0.01
+        )
+    except Exception as err:  # noqa: BLE001 — any failure is a failed selftest
+        return False, f"inference raised {type(err).__name__}"
+    best = None
+    for e in ents:
+        if e.get("label") == "person" and e.get("text") == SELFTEST_EXPECT:
+            if best is None or e["score"] > best:
+                best = e["score"]
+    if best is None:
+        top = max((e["score"] for e in ents), default=0.0)
+        return False, f"expected person span not found; best score {top:.3f}"
+    if best < SELFTEST_MIN_SCORE:
+        return False, f"person span scored {best:.3f} < {SELFTEST_MIN_SCORE}"
+    return True, f"person span scored {best:.3f}"
+
+
 def build_server():
     """The listening server, dual-stack unless explicitly forced to IPv4."""
     if os.environ.get("PII_DETECTOR_BIND_V4_ONLY", "") in ("1", "true", "on"):
@@ -359,6 +408,18 @@ if __name__ == "__main__":
     )
     _load_started = time.monotonic()
     _STATE["model"], _STATE["backend"] = load_model()
+    _selftest_ok, _selftest_detail = run_selftest(_STATE["model"])
+    if not _selftest_ok:
+        print(
+            f"[pii-detector] SELFTEST FAILED ({_selftest_detail}). The model "
+            "loaded but does not detect a known entity — it is producing "
+            "noise, not predictions. Refusing to serve rather than silently "
+            "masking nothing. See the SELFTEST_SENTENCE comment for the "
+            "known cause (u8s8-quantized ONNX on a CPU without VNNI).",
+            flush=True,
+        )
+        raise SystemExit(3)
+    print(f"[pii-detector] selftest ok ({_selftest_detail})", flush=True)
     _server, _bind_desc = build_server()
     print(
         f"[pii-detector] model ready in {time.monotonic() - _load_started:.1f}s; "
