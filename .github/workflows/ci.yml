@@ -170,6 +170,18 @@ jobs:
       - name: Test — updater sidecar (node --test)
         run: npm run test:updater
 
+      # PII-detector sidecar (#361). Python, therefore outside every glob
+      # above — until now it was tested nowhere, which is how a shipped
+      # IPv4-only bind and a CPU-dependent broken model export both reached
+      # production unnoticed. The suite is stdlib-only and imports `server`
+      # WITHOUT gliner/onnxruntime (the model import is deferred into
+      # `load_model`), so it needs no install step and no model download:
+      # chunking, span merging, request validation, the dual-stack bind, and
+      # the startup selftest's rejection logic all run in milliseconds.
+      - name: Test — PII-detector sidecar (python unittest)
+        working-directory: middleware
+        run: python3 -m unittest sidecars/pii-detector/test_server.py -v
+
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
       # green with zero Postgres coverage. Fail loudly here instead if the
