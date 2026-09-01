@@ -1925,9 +1925,20 @@ export function createOperatorAgentsRouter(
       // reload exists to prevent for `instructions`.
       const nameChanged =
         (before?.displayName ?? '').trim() !== (body.display_name ?? '').trim();
+      // #967 follow-up — and the Steckbrief for exactly the same reason the
+      // name joined this list: both descriptions are part of the system prompt
+      // now (`AgentRow.identityShortDescription` / `…Long…`), so an edit that
+      // does not reload is an edit the agent never speaks. They used to be
+      // manifest-only, which is why they were not here before.
+      const descriptionChanged =
+        (before?.shortDescription ?? '').trim() !==
+          (body.short_description ?? '').trim() ||
+        (before?.longDescription ?? '').trim() !==
+          (body.long_description ?? '').trim();
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
-        nameChanged
+        nameChanged ||
+        descriptionChanged
       ) {
         await live.registry.reload();
       }

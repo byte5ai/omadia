@@ -689,6 +689,24 @@ export interface OrchestratorOptions {
    */
   assistantIdentity?: string;
   /**
+   * #967 — this Agent's own authored name (`agent_identities.display_name`),
+   * already folded into {@link assistantIdentity} by `withAgentName`.
+   *
+   * Supplied SEPARATELY as well because the system prompt is not the only
+   * surface that states a name: the AI-Act Art. 50 marking names the assistant
+   * too, and it is deliberately resolved behind the model (see
+   * `resolveTurnDisclosure`) where the prompt is out of reach by design. Without
+   * this field that line has only the platform-wide
+   * `ai_disclosure_assistant_name` to go on — ONE operator-typed string for the
+   * whole deployment, which in a multi-agent deployment is right for at most
+   * one Agent and signs every other Agent's answers with a stranger's name.
+   *
+   * An override, not a replacement: absent (or blank) falls through to the
+   * operator's configured name, so a single-Agent deployment that set one is
+   * completely unaffected.
+   */
+  identityName?: string;
+  /**
    * Wave 8 — skills attached to this Agent as direct-answer persona
    * candidates. When non-empty, each turn runs a Haiku classifier
    * ({@link routeTurnPersona}) that picks at most one candidate whose `body`
@@ -1901,6 +1919,9 @@ export class Orchestrator {
   /** Operator persona — first line(s) of the system prompt. See
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
+  /** #967 — this Agent's own authored name. See
+   *  `OrchestratorOptions.identityName`. */
+  private readonly identityName: string | undefined;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -2016,6 +2037,7 @@ export class Orchestrator {
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
+    this.identityName = options.identityName?.trim() || undefined;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -3049,7 +3071,9 @@ export class Orchestrator {
       result,
       result.aiDisclosure
         ? {
-            ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+            ...(input.sessionScope
+              ? { scope: this.disclosureFoldScope(input.sessionScope) }
+              : {}),
             seen: this.disclosureSeen,
           }
         : undefined,
@@ -3098,12 +3122,50 @@ export class Orchestrator {
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
     };
+    // #967 — THIS Agent's authored name outranks the platform-wide
+    // `ai_disclosure_assistant_name`. The setup field is one string for the
+    // whole deployment, so with several provisioned bots alive it can be
+    // correct for at most one of them and makes every other bot sign its
+    // answers as that one. Same precedence the system prompt already uses
+    // (`config.identityInstructions || deps.assistantIdentity`), applied to
+    // the one other surface that states a name.
+    //
+    // Reading the Agent's OWN name here does not reopen the AC2 hole the
+    // doc-comment above guards: `identityName` is a single operator-authored
+    // name from `agent_identities`, not the prompt, so a branded persona still
+    // cannot reach in and suppress or reword the marking.
+    const assistantName = this.identityName ?? setup?.assistantName;
     return resolveAiDisclosure({
       policy,
       ...(setup?.locale ? { locale: setup.locale } : {}),
-      ...(setup?.assistantName ? { assistantName: setup.assistantName } : {}),
+      ...(assistantName ? { assistantName } : {}),
       ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
     });
+  }
+
+  /**
+   * #644 / #967 — the first-turn fold-dedup key for a conversation.
+   *
+   * Agent-QUALIFIED, because the store behind it is process-wide (one
+   * `InMemoryDisclosureSeenStore` in the shared `OrchestratorDeps`, deliberately
+   * so a rebuild does not re-mark an ongoing conversation) while a conversation
+   * scope is NOT exclusive to one Agent. Several provisioned bots share one
+   * Teams group chat — the deployment `identityForChannel` exists to serve — so
+   * on the raw scope the first bot to answer consumed the marking slot for
+   * every other bot in the room, and their answers went out unmarked.
+   *
+   * Same `<agentSlug>::<scope>` convention, and the same reasoning, as
+   * `graphScopeFor`, which agent-qualifies the KG scope built from this
+   * identical `sessionScope`; this was the one remaining consumer of it that
+   * still keyed on the raw value.
+   *
+   * A key change re-marks each live conversation once after the upgrade. That
+   * is the direction #644 asks for on any doubt ("an undeterminable scope folds
+   * rather than omits") — one repeated marking is a non-event, a missing one is
+   * the compliance gap.
+   */
+  private disclosureFoldScope(sessionScope: string | undefined): string | undefined {
+    return sessionScope === undefined ? undefined : `${this.agentId}::${sessionScope}`;
   }
 
   /**
@@ -3124,7 +3186,9 @@ export class Orchestrator {
     if (!aiDisclosure) return done;
     const { text } = applyAiDisclosure(done.answer, {
       disclosure: aiDisclosure,
-      ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
       seen: this.disclosureSeen,
     });
     return { ...done, answer: text, aiDisclosure };

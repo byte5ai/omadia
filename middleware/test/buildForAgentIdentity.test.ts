@@ -240,3 +240,159 @@ test('an unchanged name does not rebuild anything', () => {
 
   assert.deepEqual(plan.actions, []);
 });
+
+// ---------------------------------------------------------------------------
+// #967 follow-up — the authored SELF-DESCRIPTION (Steckbrief) reaching the prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * `short_description` / `long_description` are what an operator writes to say
+ * what the agent IS. They reached the Teams app package, the store listing and
+ * the operator UI — and no prompt. An operator who filled in "HR-Assistentin
+ * für Urlaub und Zeiterfassung" got a catalog entry that said so and a bot that
+ * could not answer the question.
+ *
+ * These cases pin the LAYERING, which is the part that is easy to get wrong: a
+ * description must never be able to delete configured behaviour, and the name
+ * must still get the last word over it.
+ */
+
+test('an authored short description is layered onto the identity', () => {
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({ identityShortDescription: 'HR-Assistentin für byte5.' }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+
+  assert.match(identity, /You are the platform assistant\./);
+  assert.match(identity, /Kurzbeschreibung deiner Rolle: HR-Assistentin für byte5\./);
+});
+
+test('an authored long description is layered on too, and both can coexist', () => {
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({
+          identityShortDescription: 'HR-Assistentin.',
+          identityLongDescription: 'Beantwortet Fragen zu Urlaub und Zeiterfassung.',
+        }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+
+  // Neither is dropped in favour of the other: the Teams manifest caps them at
+  // 80 and 4000 characters precisely because they answer different questions.
+  assert.match(identity, /Kurzbeschreibung deiner Rolle: HR-Assistentin\./);
+  assert.match(
+    identity,
+    /Ausführliche Beschreibung deiner Rolle: Beantwortet Fragen zu Urlaub und Zeiterfassung\./,
+  );
+  assert.ok(
+    identity.indexOf('Kurzbeschreibung') < identity.indexOf('Ausführliche Beschreibung'),
+    'short before long — the summary reads first',
+  );
+});
+
+test('a description NEVER replaces the authored behaviour text', () => {
+  // The failure this guards: folding the Steckbrief into the same slot as
+  // `instructions` would let a one-line description silently delete a whole
+  // deployment's configured behaviour.
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({
+          instructions: 'You are the sales agent. Be brief.',
+          identityShortDescription: 'Vertriebsassistent.',
+        }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+
+  assert.match(identity, /You are the sales agent\. Be brief\./);
+  assert.match(identity, /Kurzbeschreibung deiner Rolle: Vertriebsassistent\./);
+});
+
+test('the name still gets the LAST word, after the descriptions', () => {
+  // A long description may well name a predecessor bot. The name the agent
+  // actually wears has to outrank it, and appending last is the only safe way
+  // to override a name buried in operator prose.
+  const identity = String(
+    identityOf(
+      buildForAgent(
+        agentRow({
+          identityName: 'Messias',
+          identityLongDescription: 'Löst Karen als HR-Assistenz ab.',
+        }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+  );
+
+  assert.ok(
+    identity.indexOf('Dein Name ist Messias') >
+      identity.indexOf('Ausführliche Beschreibung deiner Rolle'),
+    'the name line must come after the descriptions it overrides',
+  );
+});
+
+test('blank descriptions add nothing — the prompt stays byte-for-byte', () => {
+  // The no-change guarantee: every agent that predates the Steckbrief reaching
+  // the prompt must compile to the exact same text, down to the cache key.
+  assert.equal(
+    identityOf(
+      buildForAgent(
+        agentRow({ identityShortDescription: '   ', identityLongDescription: null }),
+        deps(),
+        RUNTIME,
+      ),
+    ),
+    PLATFORM_IDENTITY,
+    'whitespace is not a description',
+  );
+});
+
+test('editing a description rebuilds the agent', () => {
+  // Without this the operator edits the Steckbrief, sees it saved, and the bot
+  // keeps describing itself the old way until some unrelated change rebuilds
+  // it — the same silent no-op `identity_instructions` guards against.
+  const plan = diffSnapshots(
+    snapshot(agentRow({ identityShortDescription: 'Alt.' })),
+    snapshot(agentRow({ identityShortDescription: 'Neu.' })),
+  );
+
+  assert.equal(plan.actions.length, 1);
+  const action = plan.actions[0];
+  assert.equal(action?.kind, 'rebuild');
+  assert.match((action as { reason: string }).reason, /identity_short_description/);
+});
+
+test('editing the long description rebuilds the agent', () => {
+  const plan = diffSnapshots(
+    snapshot(agentRow({ identityLongDescription: 'Alt.' })),
+    snapshot(agentRow({ identityLongDescription: 'Neu.' })),
+  );
+
+  assert.equal(plan.actions.length, 1);
+  assert.match(
+    (plan.actions[0] as { reason: string }).reason,
+    /identity_long_description/,
+  );
+});
+
+test('unchanged descriptions do not rebuild anything', () => {
+  const plan = diffSnapshots(
+    snapshot(agentRow({ identityShortDescription: 'Gleich.' })),
+    snapshot(agentRow({ identityShortDescription: 'Gleich.' })),
+  );
+
+  assert.deepEqual(plan.actions, []);
+});
