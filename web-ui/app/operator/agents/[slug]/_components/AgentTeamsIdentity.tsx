@@ -11,7 +11,9 @@ import {
   isTerminalTeamsProvisioningState,
   parseTeamsIdentityErrorCode,
   parseTeamsIdentityLastErrorDetail,
+  getAgentTeamsTargets,
   provisionAgentTeamsIdentity,
+  type AgentTeamsTargetsDto,
   type TeamsIdentityStatusDto,
 } from '../../../../_lib/agents';
 import {
@@ -23,7 +25,13 @@ import {
 } from '../../../../_lib/teamsIdentity';
 import { AgentTeamsProvisioningTimeline } from './AgentTeamsProvisioningTimeline';
 import { AgentTeamsIdentityTarget } from './AgentTeamsIdentityTarget';
-import type { TeamsTargetKind } from '@/app/_lib/teamsInstallTarget';
+import { TeamsTargetField } from './TeamsTargetField';
+import {
+  classifyKnownTeamsTarget,
+  isSubmittableTarget,
+  type KnownTeamsTarget,
+  type TeamsTargetKind,
+} from '@/app/_lib/teamsInstallTarget';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   Fact,
@@ -113,6 +121,12 @@ export function AgentTeamsIdentity(
   const [botSlug, setBotSlug] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [teamId, setTeamId] = useState('');
+  // The directory's own answer for the id in the field, held next to the value
+  // it describes and dropped the moment that value changes — same contract as
+  // `AgentTeamsIdentityTarget`, because it is the same question.
+  const [known, setKnown] = useState<KnownTeamsTarget | undefined>(undefined);
+  const [targets, setTargets] = useState<AgentTeamsTargetsDto | null>(null);
+  const [targetsLoading, setTargetsLoading] = useState(true);
   const aliveRef = useRef(true);
 
   useEffect(() => {
@@ -121,6 +135,48 @@ export function AgentTeamsIdentity(
       aliveRef.current = false;
     };
   }, []);
+
+  // The tenant's teams and chats, for the CREATE form.
+  //
+  // This panel had the picker everywhere except the one screen where an
+  // operator has nothing yet: the first provisioning asked for a raw
+  // "ZIEL-TEAM-ID" and left them to find a GUID in the Teams client. The
+  // directory is the same one `AgentTeamsIdentityTarget` and
+  // `AgentTeamsInstalls` already load, so this is a missing wire, not a new
+  // capability.
+  //
+  // ONLY WHILE THE CREATE FORM IS ON SCREEN. Enumerating a tenant costs the
+  // connector real Graph calls — hundreds of chats across paged requests — and
+  // a panel showing an identity that already HAS a target has nothing to pick.
+  // That rule predates this change (`AgentTeamsIdentityTarget` mounts only
+  // when it is needed) and is pinned by its own test; loading unconditionally
+  // here would have spent the budget on every visit to every provisioned
+  // agent.
+  //
+  // Fetched once per agent, not per poll: a tenant's teams do not change while
+  // somebody fills in a form, and this panel re-polls every few seconds.
+  const needsTargetDirectory = view.kind === 'absent';
+  useEffect(() => {
+    if (!needsTargetDirectory) return;
+    let cancelled = false;
+    setTargetsLoading(true);
+    void getAgentTeamsTargets(props.slug)
+      .then((dto) => {
+        if (!cancelled) setTargets(dto);
+      })
+      .catch(() => {
+        // Swallowed like the other callers: the text field still works, and an
+        // error banner for a failed convenience would read as though
+        // provisioning itself were broken.
+        if (!cancelled) setTargets(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTargetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.slug, needsTargetDirectory]);
 
   const localizeError = useCallback(
     (err: unknown): string => {
@@ -194,7 +250,14 @@ export function AgentTeamsIdentity(
   // `team_id` is required by the server (TeamsIdentityProvisionSchema), so it
   // is required here too: omitting it produced a guaranteed 400 `invalid_body`
   // and the primary acceptance path never reached 202.
-  const teamIdReady = teamId.trim().length > 0;
+  //
+  // The gate is now the SAME classification the retarget form uses, not a
+  // non-empty check. A channel id (`19:…@thread.tacv2`) is not an install
+  // target, and letting it through here spent five provisioning steps before
+  // Graph answered `404 No team found with Group Id` — the failure the shared
+  // field exists to catch while the operator is still looking at it.
+  const createTarget = classifyKnownTeamsTarget(teamId, known);
+  const teamIdReady = isSubmittableTarget(createTarget);
 
   function submitCreate(event: React.FormEvent): void {
     event.preventDefault();
@@ -203,6 +266,13 @@ export function AgentTeamsIdentity(
       ...(botSlug.trim() ? { bot_slug: botSlug.trim() } : {}),
       ...(displayName.trim() ? { display_name: displayName.trim() } : {}),
       team_id: teamId.trim(),
+      // The kind the DIRECTORY reported, when the id was picked rather than
+      // typed. Without it the middleware re-derives the kind from the id
+      // string and lands on the same wrong answer one hop later — which is
+      // precisely why `target_kind` travels with the id everywhere else.
+      ...(known !== undefined && known.id === teamId
+        ? { target_kind: known.kind }
+        : {}),
     });
   }
 
@@ -277,13 +347,27 @@ export function AgentTeamsIdentity(
             value={displayName}
             onChange={setDisplayName}
           />
-          <TextField
-            label={t('teamsIdentity.fieldTeamId')}
-            hint={t('teamsIdentity.fieldTeamIdHint')}
-            value={teamId}
-            onChange={setTeamId}
-            required
-          />
+          {/* The target is PICKED here, not typed from memory. Same control
+              and same verdict as the retarget form below, so an operator is
+              never told "19:… is a channel id, not an install target" on one
+              screen and allowed to submit it on the other. */}
+          <div className="sm:col-span-3">
+            <TeamsTargetField
+              targets={targets}
+              targetsLoading={targetsLoading}
+              value={teamId}
+              onChange={(next, knownKind) => {
+                setTeamId(next);
+                setKnown(
+                  knownKind === undefined
+                    ? undefined
+                    : { id: next, kind: knownKind },
+                );
+              }}
+              disabled={busy}
+              known={known}
+            />
+          </div>
           <div className="sm:col-span-3">
             <Button
               type="submit"
