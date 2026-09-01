@@ -151,6 +151,33 @@ export class ConductorRunExecutor {
   }
 
   /**
+   * The run's trigger, in the shape effects consume.
+   *
+   * Tolerant on purpose: a run that cannot be read back yields an EMPTY meta,
+   * which effects treat as "not channel-triggered" — the same answer a manual
+   * run gives. That is the safe direction here because the origin rule refuses
+   * on a channel trigger it cannot attribute; an unreadable run must not be
+   * turned into a channel trigger by accident.
+   */
+  private async triggerMetaFor(
+    runId: string,
+  ): Promise<{ triggerKind?: TriggerKind; triggerEventId?: string }> {
+    const run = await this.runStore.get(runId);
+    if (!run) return {};
+    const source = run.triggerSource;
+    const eventId =
+      typeof source === 'object' && source !== null && !Array.isArray(source)
+        ? (source as Record<string, unknown>)['eventId']
+        : undefined;
+    return {
+      ...(run.triggerKind ? { triggerKind: run.triggerKind } : {}),
+      ...(typeof eventId === 'string' && eventId !== ''
+        ? { triggerEventId: eventId }
+        : {}),
+    };
+  }
+
+  /**
    * Drive a run forward from `startStepId`. Human steps open an await and park. Every step/park
    * write is fenced on `lease` (the driver's claimed_by token): if a resume worker has taken the
    * run over (because this drive stalled past staleMs), the next write throws RunLeaseLostError and
@@ -166,6 +193,15 @@ export class ConductorRunExecutor {
     let context: JsonObject = { ...startContext };
     let currentStepId: string | null = startStepId;
     let seq = (await this.runStore.stepsForRun(runId)).length;
+    // How this run began, read ONCE here rather than threaded through the five
+    // `driveFrom` callers — three of them are resume paths that already hold
+    // the run, and a sixth parameter on a private method is a worse seam than
+    // one read per drive (an agent step costs an LLM turn; this costs a row).
+    //
+    // Effects need it to tell a run started by a message to a bot from one a
+    // human or a schedule started: only the first has an addressed identity
+    // whose permissions the work must stay inside.
+    const triggerMeta = await this.triggerMetaFor(runId);
 
     try {
       while (currentStepId && seq < MAX_STEPS) {
@@ -264,8 +300,8 @@ export class ConductorRunExecutor {
         let exec;
         try {
           exec = step.kind === 'agent'
-            ? await this.effects.runAgentStep(step, context, { runId })
-            : await this.effects.runActionStep(step, context, { runId });
+            ? await this.effects.runAgentStep(step, context, { runId, ...triggerMeta })
+            : await this.effects.runActionStep(step, context, { runId, ...triggerMeta });
         } catch (err) {
           this.log(`[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
           await this.runStore.recordStepAndAdvance({

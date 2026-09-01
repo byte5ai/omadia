@@ -99,6 +99,26 @@ export class RealStepEffects implements StepEffects {
     const registry = this.deps.getRegistry();
     if (!registry) throw new Error('orchestrator registry is unavailable (no graphPool / registry not built)');
 
+    // WORK STARTED BY A MESSAGE TO A BOT RUNS AS THAT BOT'S AGENT. FULL STOP.
+    //
+    // A person addresses one bot in a group chat. If a workflow triggered by
+    // that message runs as a DIFFERENT agent, the answer carries that agent's
+    // permissions while wearing the addressed bot's name — and nobody in the
+    // chat can see the substitution. Observed in production: a message to an
+    // agent with no plugin grants at all produced live HR data, because the
+    // workflow behind it was configured to run as the platform fallback, which
+    // is granted every installed plugin.
+    //
+    // This is deliberately NOT a warning and NOT a capability intersection.
+    // Both leave the outcome depending on how somebody configured a graph, and
+    // the rule has to hold regardless of configuration: the addressed bot's
+    // agent runs, or nothing runs.
+    //
+    // Scoped to CHANNEL triggers. A manual, scheduled or webhook run has no
+    // addressed bot, no impersonation risk, and keeps behaving exactly as
+    // before — which is why the rule keys on the trigger, not on the step.
+    assertChannelOriginAllows(step, context, meta, registry, this.deps.log);
+
     const entry = registry.get(slug);
     if (!entry) {
       throw new Error(`Agent '${slug}' is not active in the orchestrator registry`);
@@ -167,5 +187,84 @@ export function extractFencedJson(text: string, maxBytes = 16_384): JsonValue | 
     return JSON.parse(last) as JsonValue;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Channel events whose payload identifies the bot a person addressed.
+ *
+ * A prefix list rather than a wildcard: a channel that does NOT carry an
+ * addressed bot must not be silently treated as if it did, because the rule
+ * below would then refuse every run it starts. Adding a channel here is a
+ * deliberate statement that its events name their bot.
+ */
+const CHANNEL_EVENT_PREFIXES: readonly string[] = ['teams.'];
+
+/** The addressed bot's routing key, as the channel put it in the payload. */
+function addressedBotKey(context: JsonObject): string | undefined {
+  const raw = context['botId'];
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
+}
+
+/**
+ * Refuse an agent step whose run began with a message to a DIFFERENT bot.
+ *
+ * Three outcomes, and the middle one is the point:
+ *
+ *  - not a channel trigger → allowed, unchanged (manual, schedule, webhook).
+ *  - channel trigger, bot unknown → REFUSED. A channel run whose origin cannot
+ *    be established is exactly the case that must not be guessed: the plugin
+ *    builds that omit the bot id are the ones that produced the impersonation,
+ *    so treating "unknown" as "fine" would keep the hole open for precisely
+ *    the deployments that have it.
+ *  - channel trigger, bot known → the step must BE that bot's agent.
+ */
+function assertChannelOriginAllows(
+  step: Step,
+  context: JsonObject,
+  meta: StepMeta,
+  registry: OrchestratorRegistry,
+  log?: (msg: string) => void,
+): void {
+  const eventId = meta.triggerEventId;
+  const isChannelTrigger =
+    (meta.triggerKind === 'event' || meta.triggerKind === 'webhook') &&
+    eventId !== undefined &&
+    CHANNEL_EVENT_PREFIXES.some((p) => eventId.startsWith(p));
+  if (!isChannelTrigger) return;
+
+  const botKey = addressedBotKey(context);
+  if (botKey === undefined) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — run started by '${String(eventId)}' ` +
+        `but the payload names no addressed bot, so its permissions cannot be established`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run: the channel event '${String(eventId)}' does not identify ` +
+        `the bot it was addressed to, so the step's permissions cannot be bound to it`,
+    );
+  }
+
+  const owner = registry.identityForChannel('teams', botKey);
+  if (!owner) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' resolves to no active agent`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run: the addressed bot '${botKey}' resolves to no active Agent`,
+    );
+  }
+
+  if (owner.agent.slug !== step.agentId) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' belongs to Agent ` +
+        `'${owner.agent.slug}' but the step is configured to run as '${String(step.agentId)}'`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run as '${String(step.agentId)}': the message was addressed to ` +
+        `Agent '${owner.agent.slug}'. Work started by a message to a bot runs with that bot's ` +
+        `permissions only — configure this step for '${owner.agent.slug}', or trigger the workflow ` +
+        `another way.`,
+    );
   }
 }
