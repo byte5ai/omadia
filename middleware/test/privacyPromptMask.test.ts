@@ -658,6 +658,74 @@ describe('PrivacyGuardService.maskUserPrompt', () => {
       assert.equal(calls, 1, 'a dead sidecar must be attempted once per turn');
     });
 
+    /**
+     * #980 — the case #979 got wrong, and the reason its measured effect was
+     * zero. A turn's dozen mask passes carry DIFFERENT text (the message,
+     * each prior turn, ingested attachment, recalled context, …), so keying
+     * the "already failed" memo by text meant every distinct text paid a
+     * fresh 15 s timeout: ~3 minutes to reach the C0 answer the first
+     * attempt already had. The latch is per TURN, because a down sidecar is
+     * down for every text.
+     */
+    it('does not retry a dead sidecar for DIFFERENT text in the same turn', async () => {
+      let calls = 0;
+      const failing: PromptPiiDetector = {
+        id: 'c1-dead',
+        detect: async () => {
+          calls += 1;
+          throw new Error('sidecar timed out after 15000ms');
+        },
+      };
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: failing,
+      });
+      // Distinct texts, exactly as the real mask passes produce.
+      for (const text of [
+        'Anna Schmidt schreibt aus Berlin.',
+        'Bob Miller ruft aus London an.',
+        'Carla Rossi mailt aus Rom.',
+        'Dieter Fuchs faxt aus Wien.',
+      ]) {
+        const r = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't-dead-multi', text });
+        assert.equal(r.outcome, 'masked');
+        if (r.outcome !== 'masked') return;
+        assert.equal(r.degraded, true);
+      }
+      assert.equal(
+        calls,
+        1,
+        'the degrade latch is per turn, not per text — otherwise each text pays a full timeout',
+      );
+    });
+
+    it('gives a recovered sidecar a fresh attempt on the next turn', async () => {
+      let calls = 0;
+      let broken = true;
+      const flaky: PromptPiiDetector = {
+        id: 'c1-flaky',
+        detect: async () => {
+          calls += 1;
+          if (broken) throw new Error('down');
+          return [];
+        },
+      };
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: flaky,
+      });
+      await svc.maskUserPrompt!(req('t-1'));
+      await svc.maskUserPrompt!(req('t-1')); // latched, no second call
+      assert.equal(calls, 1);
+      await svc.finalizeTurn('t-1');
+      broken = false;
+      const r = await svc.maskUserPrompt!(req('t-2'));
+      assert.equal(calls, 2, 'a new turn must try again');
+      assert.equal(r.outcome, 'masked');
+      if (r.outcome !== 'masked') return;
+      assert.equal(r.degraded, false, 'a recovered sidecar must stop reporting degraded');
+    });
+
     it('does not reuse one turn cache for another turn', async () => {
       const c1 = countingC1();
       const svc = createPrivacyGuardService({
