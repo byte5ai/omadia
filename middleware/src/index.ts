@@ -2694,10 +2694,28 @@ async function main(): Promise<void> {
 
       let attached = 0;
       for (const entry of registryForHydrate.list()) {
-        for (const t of scopeDomainToolsToPlugins(
+        // WHAT THIS AGENT ACTUALLY ENDED UP WITH, by name and by owner.
+        //
+        // The count alone was not enough to answer the question that matters
+        // — "why can this agent reach that connector?" — because it cannot
+        // distinguish a tool that was granted from one that passed the filter
+        // for lack of an owner id (`agentId === undefined` is waved through by
+        // design, as a core helper). An agent with no grants reaching a
+        // plugin's tool is indistinguishable from correct behaviour in a
+        // number.
+        const scoped = scopeDomainToolsToPlugins(
           currentDomainTools(),
           entry.plugins,
-        )) {
+        );
+        console.log(
+          `[middleware] registry: tool surface for "${entry.agent.slug}": ` +
+            (scoped.length === 0
+              ? '(none)'
+              : scoped
+                  .map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`)
+                  .join(', ')),
+        );
+        for (const t of scoped) {
           if (!entry.built.orchestrator.hasDomainTool(t.name)) {
             entry.built.orchestrator.registerDomainTool(t);
             attached += 1;
@@ -2744,8 +2762,14 @@ async function main(): Promise<void> {
           }
         }
         const subTools = hydrateSubAgentTools(slug, built);
+        // Same by-name surface as the initial hydrate above — a rebuild is
+        // exactly when a tool can appear that the operator did not grant, so
+        // the rebuild path must be as readable as the boot path.
         console.log(
-          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped)`,
+          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped): ` +
+            (tools.length === 0
+              ? '(none)'
+              : tools.map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`).join(', ')),
         );
       });
 
