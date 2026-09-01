@@ -163,6 +163,30 @@ export interface AgentRuntimeConfig {
    * behaves exactly as it does today until an operator flips this.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /**
+   * The plugin ids this Agent is actually granted (`agent_plugins`, enabled
+   * only) — the authorisation set, enforced at DISPATCH time.
+   *
+   * WHY AT DISPATCH AND NOT ONLY AT REGISTRATION. The per-Agent tool surface
+   * is assembled by withholding un-granted tools when an orchestrator is
+   * hydrated (`scopeDomainToolsToPlugins`). That is one place, reached by
+   * several paths — boot hydrate, post-boot install reconcile, rebuild,
+   * sub-agent hydration — and any path that forgets to scope turns a
+   * registration bug into a PERMISSION bug: the tool is simply there, and the
+   * model will use it. An agent granted nothing answered with the HR
+   * integration that way.
+   *
+   * So the grant is re-checked where the tool is actually invoked. A tool that
+   * should never have been registered on this instance still cannot run.
+   * Registration decides what the model is OFFERED; this decides what it may
+   * ACTUALLY DO, and only the second one is a security boundary.
+   *
+   * ABSENT MEANS UNGATED, deliberately: the legacy single-Agent boot path has
+   * no per-Agent grant set and is the whole deployment's orchestrator. Adding
+   * an empty array there would disable every tool it has. Only the registry,
+   * which knows each Agent's rows, passes this.
+   */
+  readonly grantedPluginIds?: readonly string[];
 }
 
 /**
@@ -646,6 +670,9 @@ export function buildOrchestratorForAgent(
       ? { maxTurnSeconds: config.maxTurnSeconds }
       : {}),
     domainTools: [],
+    ...(config.grantedPluginIds
+      ? { grantedPluginIds: config.grantedPluginIds }
+      : {}),
     nativeToolRegistry: deps.nativeToolRegistry,
     memoryToolHandler,
     memoryBinder,

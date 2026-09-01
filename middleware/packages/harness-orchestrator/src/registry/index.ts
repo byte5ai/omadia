@@ -327,13 +327,16 @@ export class OrchestratorRegistry {
   ): void {
     switch (action.kind) {
       case 'add': {
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
@@ -375,13 +378,16 @@ export class OrchestratorRegistry {
       }
       case 'rebuild': {
         const before = this.active.get(action.agent.slug);
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
@@ -509,6 +515,37 @@ export class OrchestratorRegistry {
       if (entry.agent.id === match.agentId) return entry;
     }
     return undefined;
+  }
+
+  /**
+   * Is this key a provisioned bot's own identity — WHATEVER state that bot's
+   * agent is in?
+   *
+   * The counterpart of {@link identityForChannel}, and the difference is the
+   * whole point: that method answers "which live agent owns this bot", so it
+   * returns `undefined` both when the key belongs to nobody AND when it
+   * belongs to an agent the registry cannot currently serve (deleted,
+   * disabled, failed to build). Those two cases must not be treated alike.
+   *
+   * A key that belongs to nobody is an unknown channel, and falling back is
+   * the right answer. A key that IS a provisioned bot whose agent is missing
+   * is a bot with an owner, and answering it from the platform fallback means
+   * replying with SOMEBODY ELSE'S PERMISSIONS — the fallback agent is
+   * typically granted every installed plugin, so that is a privilege
+   * escalation dressed up as resilience. The caller uses this to refuse
+   * instead.
+   *
+   * Returns the owning agent id (useful for the log line) rather than a
+   * boolean, so an operator reading the refusal can see which agent is
+   * missing without a second lookup.
+   */
+  identityOwnerFor(
+    channelType: string,
+    channelKey: string,
+  ): string | undefined {
+    return this.channelIdentities.find(
+      (i) => i.channelType === channelType && i.channelKey === channelKey,
+    )?.agentId;
   }
 
   /** The currently-held snapshot. Useful for diffing in US5. */

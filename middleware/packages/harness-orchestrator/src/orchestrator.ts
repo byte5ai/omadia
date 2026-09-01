@@ -366,6 +366,15 @@ export interface OrchestratorOptions {
   /** One delegation tool per Managed Agent domain (accounting, hr, …). */
   domainTools: DomainTool[];
   /**
+   * The plugin ids this Agent is granted. Present ⇒ a domain tool owned by a
+   * plugin NOT in this set is refused at dispatch, whatever put it on this
+   * instance. Absent ⇒ ungated (the legacy single-Agent orchestrator, which
+   * legitimately holds the whole deployment's tools).
+   * See `AgentRuntimeConfig.grantedPluginIds` for why this is re-checked here
+   * rather than trusted from registration.
+   */
+  grantedPluginIds?: readonly string[];
+  /**
    * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
    * directed specialist's verbatim answer with no orchestrator generation;
    * `'guarded'` additionally lets the orchestrator append an attributed,
@@ -1850,6 +1859,8 @@ export class Orchestrator {
   /** W5 — per-chat-context binder; overrides `memoryToolHandler` per turn. */
   private readonly memoryBinder: MemoryBinder | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
+  /** `undefined` = ungated. A Set for O(1) checks on the dispatch path. */
+  private readonly grantedPluginIds: ReadonlySet<string> | undefined;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
@@ -1972,6 +1983,9 @@ export class Orchestrator {
     this.memoryToolHandler = options.memoryToolHandler;
     this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.grantedPluginIds = options.grantedPluginIds
+      ? new Set(options.grantedPluginIds)
+      : undefined;
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
     this.directLineSticky = options.directLineSticky ?? false;
@@ -6955,6 +6969,21 @@ export class Orchestrator {
       if (!this.isToolAvailable(domainTool.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
       }
+      // THE AUTHORISATION GATE. Registration decides what this Agent is
+      // OFFERED; this decides what it may actually DO, and only the second is
+      // a security boundary. A tool that reached this instance without a grant
+      // — a hydrate path that forgot to scope, a hot-install reconcile, a
+      // rebuild racing a config change — stops here instead of running.
+      //
+      // Refused by NAME without naming the owning plugin: an agent that was
+      // never granted a capability has no business learning which plugin holds
+      // it from an error string.
+      if (!this.isPluginGranted(domainTool.agentId)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted domain tool "${name}" — refused`,
+        );
+        return `Error: tool \`${name}\` is not available to this agent.`;
+      }
       // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
       // above: the turn-bound stack when one is bound, the build-time
       // agent-scoped one otherwise) for the lifetime of the delegation, so a
@@ -7126,6 +7155,20 @@ export class Orchestrator {
   }
 
   /** Probe used by DynamicAgentRuntime for pre-flight collision messages. */
+  /**
+   * Is the plugin that owns a tool granted to THIS Agent?
+   *
+   * `undefined` owner ⇒ the tool belongs to no agent-plugin (a kernel/native
+   * capability), which the grant model does not govern — those are allowed, as
+   * they always were. No grant set at all ⇒ ungated, for the legacy
+   * single-Agent orchestrator.
+   */
+  private isPluginGranted(pluginId: string | undefined): boolean {
+    if (this.grantedPluginIds === undefined) return true;
+    if (pluginId === undefined) return true;
+    return this.grantedPluginIds.has(pluginId);
+  }
+
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
   }

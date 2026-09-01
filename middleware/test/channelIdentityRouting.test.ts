@@ -203,9 +203,19 @@ test('an identity only claims its own channel type', async () => {
   assert.equal(wrongType.agent?.agent.slug, 'fallback');
 });
 
-test('an identity pointing at a disabled/absent agent degrades to the old path', async () => {
-  // The agent row is gone (deleted) but the identity row survived. Routing
-  // must not dead-end: fall through to bindings, then the platform fallback.
+test('a provisioned bot whose agent is gone is REFUSED, never served by the fallback', async () => {
+  // INVERTED DELIBERATELY. This test used to assert the opposite — "degrades
+  // to the old path", i.e. bindings and then the platform fallback — on the
+  // reasoning that a bot must not dead-end. That reasoning was wrong about
+  // what the fallback IS: it is typically the agent granted every installed
+  // plugin. So the old behaviour let a bot whose own agent holds nothing
+  // answer, under its own name, with HR, accounting and every other
+  // integration in the deployment. Nobody in the chat can see that
+  // substitution; they addressed one bot and got another one's permissions.
+  //
+  // Going quiet is visible and fixable. Answering beyond its rights is
+  // neither, so a key that belongs to a provisioned bot is refused when that
+  // bot's agent cannot serve it.
   const resolver = await resolverFor(
     snapshot({
       channelIdentities: [
@@ -215,8 +225,55 @@ test('an identity pointing at a disabled/absent agent degrades to the old path',
   );
 
   const hr = resolver.resolve('teams', HR_BOT_KEY);
-  assert.equal(hr.decision, 'fallback');
-  assert.equal(hr.agent?.agent.slug, 'fallback');
+  assert.equal(hr.decision, 'reject');
+  assert.equal(hr.agent, undefined);
+  assert.equal(hr.chatAgent, undefined);
+});
+
+test('the refusal names the agent that is missing', async () => {
+  // An operator reading the log must not have to look up which agent went
+  // away — the refusal is otherwise indistinguishable from an unknown key.
+  const lines: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const registry = new OrchestratorRegistry(
+    fakeStore(
+      snapshot({
+        channelIdentities: [
+          { channelType: 'teams', channelKey: HR_BOT_KEY, agentId: 'ghost' },
+        ],
+      }),
+    ),
+    deps(),
+    { defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 } },
+  );
+  await registry.start();
+  const resolver = new ChannelResolver({
+    registry,
+    log: (msg, fields) => lines.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  resolver.resolve('teams', HR_BOT_KEY);
+
+  const refusal = lines.at(-1);
+  assert.equal(refusal?.fields?.['decision'], 'reject');
+  assert.equal(refusal?.fields?.['match'], 'identity-unavailable');
+  assert.equal(refusal?.fields?.['agentId'], 'ghost');
+});
+
+test('an unknown key still falls back — only OWNED keys are refused', async () => {
+  // The guard must not turn into "nothing falls back any more". A key that
+  // belongs to no provisioned bot has no owner whose permissions could be
+  // exceeded, so the platform fallback stays exactly as it was.
+  const resolver = await resolverFor(
+    snapshot({
+      channelIdentities: [
+        { channelType: 'teams', channelKey: HR_BOT_KEY, agentId: 'ghost' },
+      ],
+    }),
+  );
+
+  const unknown = resolver.resolve('teams', GROUP_CHAT);
+  assert.equal(unknown.decision, 'fallback');
+  assert.equal(unknown.agent?.agent.slug, 'fallback');
 });
 
 test('a deployment without provisioned identities behaves exactly as before', async () => {
