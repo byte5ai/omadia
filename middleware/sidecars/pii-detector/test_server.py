@@ -252,5 +252,66 @@ class BindStackTests(unittest.TestCase):
             srv.server_close()
 
 
+class SelfTestTests(unittest.TestCase):
+    """`run_selftest` must reject a model that loads but predicts noise.
+
+    The production failure it guards: a u8s8-quantized ONNX export on a CPU
+    without VNNI returns near-uniform ~0.15 scores instead of predictions.
+    Nothing raises, /health answers 200, and every span falls under
+    threshold — so the sidecar masks nothing while looking healthy.
+    """
+
+    class FakeModel:
+        def __init__(self, ents):
+            self._ents = ents
+
+        def predict_entities(self, text, labels, threshold=0.0):
+            return [e for e in self._ents if e["score"] >= threshold]
+
+    class RaisingModel:
+        def predict_entities(self, *a, **k):
+            raise RuntimeError("session failed")
+
+    def test_accepts_a_model_that_finds_the_known_person(self):
+        m = self.FakeModel(
+            [{"start": 0, "end": 12, "text": "Anna Schmidt", "label": "person", "score": 0.99}]
+        )
+        ok, detail = server.run_selftest(m)
+        self.assertTrue(ok)
+        self.assertIn("0.99", detail)
+
+    def test_rejects_the_noise_signature(self):
+        # Exactly what the broken quantized model returned in production:
+        # every token scored ~0.15, decaying with position.
+        noise = [
+            {"start": 0, "end": 4, "text": "Anna", "label": "person", "score": 0.191},
+            {"start": 5, "end": 12, "text": "Schmidt", "label": "person", "score": 0.174},
+            {"start": 13, "end": 18, "text": "wohnt", "label": "person", "score": 0.159},
+            {"start": 19, "end": 21, "text": "in", "label": "person", "score": 0.150},
+        ]
+        ok, detail = server.run_selftest(self.FakeModel(noise))
+        self.assertFalse(ok)
+        self.assertIn("not found", detail)
+
+    def test_rejects_a_correct_span_scored_below_the_floor(self):
+        m = self.FakeModel(
+            [{"start": 0, "end": 12, "text": "Anna Schmidt", "label": "person", "score": 0.2}]
+        )
+        ok, detail = server.run_selftest(m)
+        self.assertFalse(ok)
+        self.assertIn("<", detail)
+
+    def test_rejects_a_model_whose_inference_raises(self):
+        ok, detail = server.run_selftest(self.RaisingModel())
+        self.assertFalse(ok)
+        self.assertIn("RuntimeError", detail)
+
+    def test_detail_never_leaks_request_text(self):
+        # Only the synthetic sentence may ever appear in the audit line.
+        ok, detail = server.run_selftest(self.FakeModel([]))
+        self.assertFalse(ok)
+        self.assertNotIn("@", detail)
+
+
 if __name__ == "__main__":
     unittest.main()
