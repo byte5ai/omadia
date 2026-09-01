@@ -1105,6 +1105,7 @@ export const TEAMS_ASSIGNMENT_CAPABILITY_KEYS = [
   'enumerate',
   'multi_team',
   'chat_install',
+  'chat_uninstall',
 ] as const;
 
 export type TeamsAssignmentCapabilityKey =
@@ -1148,6 +1149,7 @@ const TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED: TeamsAssignmentCapabilitiesDto = {
   enumerate: false,
   multi_team: false,
   chat_install: false,
+  chat_uninstall: false,
   unsupported_reason: {},
 };
 
@@ -1371,6 +1373,10 @@ export interface TeamsResetStepDto {
     | 'catalog_removed'
     | 'bot_deleted'
     | 'app_deleted'
+    /** The channel-teams `teams_bots` entry the chain wrote automatically
+     *  (#910) — removed so a "full reset" does not leave the plugin
+     *  configured with a bot whose registration has just been purged. */
+    | 'config_unsynced'
     /** The `'run'` scope's last step: the row is back at `pending`. */
     | 'identity_reset'
     /** The `'identity'` scope's last step: the row is gone. */

@@ -270,6 +270,19 @@ export function buildForAgent(
       ...(agent.identityLongDescription?.trim()
         ? { identityLongDescription: agent.identityLongDescription.trim() }
         : {}),
+      // W5 memory-ACL — the agent's own rollout mode. Omitted here until now,
+      // which made `agents.context_memory` a switch with nothing behind it:
+      // the column was written, read back into `AgentRow`, echoed by the API
+      // and rendered in the UI, and then dropped on the floor at exactly the
+      // point where it would have changed behaviour. Every registry-built
+      // agent ran the `'off'` default no matter what its row said.
+      //
+      // Spread conditionally like every other optional above, so an agent on
+      // a DB predating migration 0050 (no column → `undefined`) still yields a
+      // byte-identical config object.
+      ...(agent.contextMemory !== undefined
+        ? { contextMemory: agent.contextMemory }
+        : {}),
     },
     deps,
   );
@@ -335,6 +348,16 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
     (newAgent.identityLongDescription ?? '')
   ) {
     reasons.push('identity_long_description');
+  }
+  // W5 memory-ACL — the mode decides which memory stack every turn of this
+  // Agent gets, so it is as runtime-relevant as the model. The rebuild is the
+  // second half of the fix above: forwarding the value only helps agents built
+  // AFTER the flip, and an operator who switches a live agent to `enforce`
+  // would otherwise keep the un-partitioned stack until something unrelated
+  // happened to rebuild it — i.e. a memory-isolation switch that reports
+  // success and does not isolate.
+  if ((oldAgent.contextMemory ?? 'off') !== (newAgent.contextMemory ?? 'off')) {
+    reasons.push('context_memory');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.
