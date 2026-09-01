@@ -4206,7 +4206,6 @@
     "marketplace": {
       "registry": "Registry",
       "search": "Search",
-      "browse": "Browse catalog",
       "hint": "Pick a registry and browse its catalog. Connected servers arrive disabled: run Discover, review the verdicts, then enable.",
       "noResults": "No catalog entries match.",
       "connect": "Connect",
@@ -4221,7 +4220,24 @@
       "removeRegistry": "Remove registry",
       "registryName": "Name",
       "registryUrl": "URL",
-      "registryToken": "Bearer token (optional)"
+      "registryToken": "Bearer token (optional)",
+      "searchPlaceholder": "Search the catalog — e.g. postgres, github, slack",
+      "clearSearch": "Clear",
+      "searching": "Searching…",
+      "manageRegistries": "Manage registries",
+      "retry": "Try again",
+      "resultCount": "{count, plural, one {# server} other {# servers}} in {name}",
+      "resultCountFor": "{count, plural, one {# match} other {# matches}} for \"{query}\" in {name}",
+      "hintShort": "Imports arrive disabled — run Discover first.",
+      "noResultsFor": "Nothing in this catalog matches \"{query}\".",
+      "noResultsHint": "Try a shorter term, or switch to another registry above.",
+      "errorTimeout": "The registry \"{name}\" did not answer in time.",
+      "errorUnreachable": "The registry \"{name}\" could not be reached.",
+      "errorGeneric": "The catalog of \"{name}\" could not be read.",
+      "errorUnreachableHint": "The registry host is down or blocked from this installation. Pick another registry above, or try again in a moment.",
+      "removeRegistryBody": "Remove the registry \"{name}\"? Servers already imported from it stay.",
+      "unlicensedShort": "unlicensed",
+      "refresh": "Refresh"
     },
     "grants": {
       "grantHeading": "Grant tools to an orchestrator",

@@ -75,6 +75,10 @@ function packageEnvSchema(pkg: unknown): McpConfigField[] {
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_CATALOG_BYTES = 5 * 1024 * 1024;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/** How long a host that refused to answer is skipped instead of re-dialled.
+ *  Short on purpose: long enough to stop an auto-loading UI from stacking
+ *  timeouts, short enough that a registry coming back is noticed quickly. */
+const UNREACHABLE_TTL_MS = 60 * 1000;
 
 export class McpRegistryError extends Error {
   constructor(
@@ -84,6 +88,22 @@ export class McpRegistryError extends Error {
     super(message);
     this.name = 'McpRegistryError';
   }
+}
+
+/** Transport-level failures: the registry host never produced an HTTP answer.
+ *  Retrying the same host inside one operator action only multiplies the wait,
+ *  so these short-circuit instead of falling through to a second round-trip.
+ *
+ *  Deliberately excludes `fetch_failed` and every protocol-level code
+ *  (`http_error`, `bad_catalog_shape`): those mean the registry answered, and
+ *  an answering registry may simply be ignoring the search param — which is
+ *  exactly the case the local-filter fallback exists to rescue. */
+const UNREACHABLE_CODES = new Set(['timeout', 'transport_failed', 'blocked_host']);
+
+/** An aborted fetch is our own deadline firing, not a network error — it gets
+ *  its own code so the operator is told "too slow", not "unreachable". */
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
 interface CacheSlot {
@@ -477,13 +497,52 @@ export class McpRegistryClient {
     this.log = deps?.log ?? ((m) => console.log(m));
   }
 
+  /**
+   * Short-lived memory of "this host just refused to answer".
+   *
+   * Successes were already cached; failures were not, so a black-holing
+   * registry charged the full timeout to every single caller. That was
+   * tolerable while browsing was behind an explicit button and is not now
+   * that the UI loads the catalog on its own — without this, re-entering the
+   * Marketplace tab or clicking between registry pills stacks 15s requests.
+   * The window is deliberately much shorter than the success TTL so a
+   * recovering registry is picked up quickly, and `invalidate()` clears it.
+   */
+  private readonly unreachableUntil = new Map<string, number>();
+
+  private throwIfRecentlyUnreachable(registryId: string): void {
+    const until = this.unreachableUntil.get(registryId);
+    if (until === undefined) return;
+    if (Date.now() >= until) {
+      this.unreachableUntil.delete(registryId);
+      return;
+    }
+    throw new McpRegistryError(
+      'transport_failed',
+      'registry did not answer on the previous attempt; not retried yet',
+    );
+  }
+
+  private noteUnreachable(registryId: string, err: unknown): void {
+    if (err instanceof McpRegistryError && UNREACHABLE_CODES.has(err.code)) {
+      this.unreachableUntil.set(registryId, Date.now() + UNREACHABLE_TTL_MS);
+    }
+  }
+
   /** Fetch (or serve from the 5-minute cache) a registry's full catalog. */
   async catalog(registry: McpRegistryConfig): Promise<readonly McpCatalogEntry[]> {
     const cached = this.cache.get(registry.id);
     if (cached && Date.now() - cached.fetchedAtMs < CACHE_TTL_MS) {
       return cached.entries;
     }
-    const entries = await this.fetchCatalog(registry);
+    this.throwIfRecentlyUnreachable(registry.id);
+    let entries: readonly McpCatalogEntry[];
+    try {
+      entries = await this.fetchCatalog(registry);
+    } catch (err) {
+      this.noteUnreachable(registry.id, err);
+      throw err;
+    }
     this.cache.set(registry.id, { fetchedAtMs: Date.now(), entries });
     return entries;
   }
@@ -495,6 +554,14 @@ export class McpRegistryClient {
    * additionally substring-filtered locally as a safety net (a registry that
    * ignores the param still returns something sensible). An empty query serves
    * the cached full-first-page browse.
+   *
+   * Failure handling matters for latency, not just correctness: a registry
+   * whose host black-holes packets (registry.modelcontextprotocol.io did
+   * exactly that) costs one full timeout per attempt. Retrying the *same dead
+   * host* through the local-filter fallback doubled that into a ~60s spinner
+   * with no feedback. So a transport-level failure is rethrown immediately and
+   * only a protocol-level one (the registry answered, but not usefully — it
+   * may simply ignore the search param) falls through to the local filter.
    */
   async search(registry: McpRegistryConfig, q: string): Promise<readonly McpCatalogEntry[]> {
     const needle = q.trim().toLowerCase();
@@ -502,10 +569,15 @@ export class McpRegistryClient {
     // official (?search=) and smithery (?q=) honor the query server-side — trust
     // their relevance ranking and return as-is.
     if (registry.kind === 'official' || registry.kind === 'smithery') {
+      this.throwIfRecentlyUnreachable(registry.id);
       try {
         return await this.fetchCatalog(registry, q.trim());
-      } catch {
-        /* fall through to the local-filter fallback below */
+      } catch (err) {
+        if (err instanceof McpRegistryError && UNREACHABLE_CODES.has(err.code)) {
+          this.noteUnreachable(registry.id, err);
+          throw err;
+        }
+        /* the registry answered but not usefully — fall through to local filter */
       }
     }
     // A generic registry may ignore the param, so substring-filter its page.
@@ -616,8 +688,16 @@ export class McpRegistryClient {
 
   /** Test seam / operator action: drop the cache for one or all registries. */
   invalidate(registryId?: string): void {
-    if (registryId) this.cache.delete(registryId);
-    else this.cache.clear();
+    if (registryId) {
+      this.cache.delete(registryId);
+      // Also forget the "recently unreachable" note, so an operator who
+      // explicitly asks to retry actually reaches the host instead of being
+      // served the suppressed-retry error for the rest of the window.
+      this.unreachableUntil.delete(registryId);
+    } else {
+      this.cache.clear();
+      this.unreachableUntil.clear();
+    }
   }
 
   private async fetchCatalog(
@@ -640,7 +720,14 @@ export class McpRegistryClient {
           ]
         : [
             `${base}/v0/servers?limit=100${q ? `&search=${encodeURIComponent(q)}` : ''}`,
-            base,
+            // The bare base URL is a `generic` affordance (a plain
+            // { servers: [...] } document). `official` is not operator-set —
+            // migration 0013 assigns it to exactly
+            // registry.modelcontextprotocol.io, whose base URL is a landing
+            // page, never a catalog. Probing it there only buys a second full
+            // timeout when the host is down, and no operator-added registry
+            // can reach this branch (those default to `generic`).
+            ...(registry.kind === 'official' ? [] : [base]),
           ];
     const normalize = registry.kind === 'smithery' ? normalizeSmitheryEntry : normalizeEntry;
     let lastError: McpRegistryError | null = null;
@@ -672,10 +759,13 @@ export class McpRegistryClient {
         );
         return entries;
       } catch (err) {
+        // fetchJson already classified transport vs. protocol; anything else
+        // reaching here (a parse/shape failure) is the registry answering
+        // badly, which is explicitly NOT a transport code.
         lastError =
           err instanceof McpRegistryError
             ? err
-            : new McpRegistryError('fetch_failed', String(err));
+            : new McpRegistryError('bad_catalog_shape', String(err));
       }
     }
     throw lastError ?? new McpRegistryError('fetch_failed', 'no catalog endpoint reachable');
@@ -686,18 +776,34 @@ export class McpRegistryClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const res = await this.fetchImpl(url, {
-        headers: {
-          accept: 'application/json',
-          ...(registry.authKind === 'bearer' && registry.token
-            ? { authorization: `Bearer ${registry.token}` }
-            : {}),
-        },
-        signal: controller.signal,
-        // A redirect could bounce the (token-carrying) request to a host the
-        // operator never configured — refuse instead of following (codex fold).
-        redirect: 'error',
-      });
+      // Only the call itself is classified as transport-level. Everything
+      // after it (status, body read, JSON parse) means the registry DID
+      // answer, and those failures must stay on non-transport codes — the
+      // fast-fail in search() keys off transport codes, and mislabelling a
+      // 200-with-HTML as unreachable would both skip the local-filter
+      // fallback and tell the operator their host is down when it is not.
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, {
+          headers: {
+            accept: 'application/json',
+            ...(registry.authKind === 'bearer' && registry.token
+              ? { authorization: `Bearer ${registry.token}` }
+              : {}),
+          },
+          signal: controller.signal,
+          // A redirect could bounce the (token-carrying) request to a host the
+          // operator never configured — refuse instead of following (codex fold).
+          redirect: 'error',
+        });
+      } catch (err) {
+        throw isAbort(err)
+          ? new McpRegistryError(
+              'timeout',
+              `${url} did not answer within ${String(this.timeoutMs)}ms`,
+            )
+          : new McpRegistryError('transport_failed', `${url} could not be reached: ${String(err)}`);
+      }
       if (!res.ok) {
         throw new McpRegistryError('http_error', `${url} answered ${String(res.status)}`);
       }

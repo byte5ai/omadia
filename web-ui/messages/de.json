@@ -4206,7 +4206,6 @@
     "marketplace": {
       "registry": "Registry",
       "search": "Suche",
-      "browse": "Katalog durchsuchen",
       "hint": "Registry wählen und Katalog durchsuchen. Verbundene Server starten deaktiviert: erst Discover ausführen, Verdicts prüfen, dann aktivieren.",
       "noResults": "Keine passenden Katalog-Einträge.",
       "connect": "Verbinden",
@@ -4221,7 +4220,24 @@
       "removeRegistry": "Registry entfernen",
       "registryName": "Name",
       "registryUrl": "URL",
-      "registryToken": "Bearer-Token (optional)"
+      "registryToken": "Bearer-Token (optional)",
+      "searchPlaceholder": "Katalog durchsuchen — z. B. postgres, github, slack",
+      "clearSearch": "Leeren",
+      "searching": "Suche läuft…",
+      "manageRegistries": "Registries verwalten",
+      "retry": "Erneut versuchen",
+      "resultCount": "{count, plural, one {# Server} other {# Server}} in {name}",
+      "resultCountFor": "{count, plural, one {# Treffer} other {# Treffer}} für „{query}“ in {name}",
+      "hintShort": "Importe starten deaktiviert — erst Discover ausführen.",
+      "noResultsFor": "Kein Katalog-Eintrag passt zu „{query}“.",
+      "noResultsHint": "Kürzeren Begriff probieren oder oben eine andere Registry wählen.",
+      "errorTimeout": "Die Registry „{name}“ hat nicht rechtzeitig geantwortet.",
+      "errorUnreachable": "Die Registry „{name}“ ist nicht erreichbar.",
+      "errorGeneric": "Der Katalog von „{name}“ konnte nicht gelesen werden.",
+      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus blockiert. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
+      "removeRegistryBody": "Registry „{name}“ entfernen? Bereits importierte Server bleiben bestehen.",
+      "unlicensedShort": "ohne Lizenz",
+      "refresh": "Aktualisieren"
     },
     "grants": {
       "grantHeading": "Tools einem Orchestrator zuweisen",
