@@ -575,9 +575,24 @@ export async function maskPrompt(
   }
   const spans = dedupSpans(text, detected);
   if (spans.length === 0) {
+    // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
+    //
+    // The turn's map already holds every real value masked by earlier calls,
+    // and this text may well repeat one of them — a follow-up question naming
+    // the same person, an attachment tail, a retry after the C1 detector
+    // degraded. Returning the raw text here handed that value straight to the
+    // wire, and the service's post-mask assertion (which checks the WHOLE
+    // turn's map) then had to block the turn: correctly, because the value
+    // really was about to leak, but the operator sees only "prompt masking
+    // failed" on a message that looks harmless.
+    //
+    // So the known-value sweep runs even with zero fresh spans. It is the same
+    // sweep as below and it can only ADD masking — it substitutes values this
+    // turn already decided are PII, and never touches anything else.
+    const carried = existingMap ?? { forward: new Map(), reverse: new Map() };
     return {
-      maskedText: text,
-      map: existingMap ?? { forward: new Map(), reverse: new Map() },
+      maskedText: sweepKnownValues(text, carried),
+      map: carried,
       spans,
     };
   }
@@ -595,16 +610,30 @@ export async function maskPrompt(
     if (surrogate === undefined) continue;
     masked = masked.slice(0, span.start) + surrogate + masked.slice(span.end);
   }
-  // Belt and braces: a detected value may occur AGAIN at a position no
-  // detector flagged (e.g. an email repeated mid-sentence in a shape the
-  // regex misses after boundary extension). Sweep every known real value —
-  // including ones from earlier calls this turn via `existingMap` — longest
-  // first, so the service's post-mask `findIdentityLeaks` assertion is a
-  // true invariant, not a coin flip.
+  return { maskedText: sweepKnownValues(masked, map), map, spans };
+}
+
+/**
+ * Replace every real value the turn's map knows about, longest first.
+ *
+ * Belt and braces for the span pass: a detected value may occur AGAIN at a
+ * position no detector flagged (an email repeated mid-sentence in a shape the
+ * regex misses after boundary extension), and a value masked EARLIER in the
+ * turn may reappear in a later text this pass's detectors say nothing about.
+ * Both are the same operation, so both run through this one function — that is
+ * what makes the service's post-mask `findIdentityLeaks` assertion a true
+ * invariant rather than a coin flip.
+ *
+ * Longest first, because a shorter known value may be a substring of a longer
+ * one's surrogate; doing the long ones first leaves the short sweep to clean up
+ * whatever it re-introduced, never the other way round.
+ */
+function sweepKnownValues(text: string, map: PseudonymMap): string {
+  let masked = text;
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
     if (masked.includes(real)) masked = masked.split(real).join(surrogate);
   }
-  return { maskedText: masked, map, spans };
+  return masked;
 }
