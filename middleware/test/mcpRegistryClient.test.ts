@@ -338,4 +338,104 @@ describe('McpRegistryClient', () => {
       assert.equal(entry?.transportDeprecated, false);
     });
   });
+
+  // ── dead-host search latency ────────────────────────────────────────────
+  // registry.modelcontextprotocol.io started black-holing packets, and the
+  // marketplace search reacted by spending FOUR full timeouts on it: two
+  // candidate URLs for the server-side search, then two more for the
+  // local-filter fallback. At the 15s default that is a ~60s spinner with no
+  // feedback, which reads as "search is broken" rather than "registry is down".
+  describe('unreachable registry fails fast', () => {
+    /** A host that never answers: every attempt rejects at the transport level. */
+    function deadHost(counter: { n: number }): typeof fetch {
+      return (async () => {
+        counter.n += 1;
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch;
+    }
+
+    it('does not retry a dead official registry through the local-filter fallback', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      const official = { ...REGISTRY, id: 'dead-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'transport_failed',
+      );
+      // One attempt: the /v0/servers search URL. The bare base URL is not a
+      // catalog endpoint for a typed `official` registry, and the local-filter
+      // fallback must not re-run against the same dead host.
+      assert.equal(calls.n, 1);
+    });
+
+    it('keeps the base-URL candidate for a generic registry', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      await assert.rejects(client.catalog({ ...REGISTRY, id: 'dead-generic' }));
+      // /v0/servers then the plain document at the base URL — the `generic`
+      // shape genuinely lives at one of the two, so both are still probed.
+      assert.equal(calls.n, 2);
+    });
+
+    it('reports an expired deadline as `timeout`, not a transport failure', async () => {
+      const stalls: typeof fetch = (async (_input: unknown, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        })) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: stalls, log: () => {}, timeoutMs: 20 });
+      const official = { ...REGISTRY, id: 'slow-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'timeout',
+      );
+    });
+
+    // The fast-fail must key off TRANSPORT failure only. A registry that
+    // answers 200 with a non-JSON body is answering — the local-filter
+    // fallback is exactly the rescue path for it, and labelling it
+    // "unreachable" would both skip that path and misinform the operator.
+    it('still falls back to the local filter when the registry answers badly', async () => {
+      let calls = 0;
+      const answersHtml: typeof fetch = (async () => {
+        calls += 1;
+        return new Response('<!doctype html><html>nope</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        });
+      }) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: answersHtml, log: () => {} });
+      const official = { ...REGISTRY, id: 'html-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'bad_catalog_shape',
+      );
+      // Two attempts: the server-side search, then the local-filter fallback's
+      // catalog() — NOT short-circuited after the first, because the host
+      // answered.
+      assert.equal(calls, 2);
+    });
+
+    it('does not re-dial a host that just refused, until an explicit refresh', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      const official = { ...REGISTRY, id: 'sticky-dead', kind: 'official' as const };
+
+      await assert.rejects(client.search(official, 'strava'));
+      assert.equal(calls.n, 1);
+
+      // An auto-loading UI re-entering the tab must not pay the timeout again.
+      await assert.rejects(client.search(official, 'strava'));
+      await assert.rejects(client.catalog(official));
+      assert.equal(calls.n, 1);
+
+      // The operator explicitly asking to retry does reach the host again.
+      client.invalidate(official.id);
+      await assert.rejects(client.search(official, 'strava'));
+      assert.equal(calls.n, 2);
+    });
+  });
 });

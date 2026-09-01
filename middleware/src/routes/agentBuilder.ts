@@ -2192,6 +2192,11 @@ export function createAgentBuilderRouter(
         return;
       }
       const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
+      // `refresh=1` is the operator explicitly asking to re-dial: it drops both
+      // the 5-minute success cache and the short "recently unreachable" note,
+      // so Retry and Refresh in the UI actually hit the registry instead of
+      // being answered from either cache.
+      if (req.query['refresh'] === '1') mcpRegistryClient.invalidate(registry.id);
       const entries = await mcpRegistryClient.search(await toRegistryConfig(registry), q);
       res.json({ entries });
     } catch (err) {

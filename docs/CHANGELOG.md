@@ -36,6 +36,50 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP marketplace search hung instead of failing, and told you nothing
+
+2026-09-01 — The Marketplace tab's search sat in "Katalog durchsuchen…"
+indefinitely and produced neither results nor an error. The trigger was
+external: `registry.modelcontextprotocol.io` — the registry seeded as `official`
+in migration `0010` — is black-holing packets (DNS resolves to 34.61.200.254,
+TCP times out). What made it read as a broken feature rather than a dead host
+was our own code spending **four** 15-second timeouts on it per search:
+`fetchCatalog` probed two candidate URLs, and when the server-side search threw,
+`search()` fell through to a local-filter fallback that re-ran the whole thing
+against the same dead host. Roughly 60 seconds of spinner, then a bare error
+string.
+
+Three changes in `middleware/src/services/mcpRegistryClient.ts`:
+
+- **Transport failures short-circuit.** `search()` rethrows a transport-level
+  error instead of retrying the same unreachable host through the local-filter
+  fallback. The distinction is load-bearing, so the classification was tightened
+  at the same time: only the `fetchImpl` call itself yields `transport_failed` /
+  `timeout`; status, body-read and `JSON.parse` failures stay on `http_error` /
+  `bad_catalog_shape` and still take the fallback — a registry answering 200
+  with HTML is answering, and may simply be ignoring the search param.
+- **The bare base-URL candidate is dropped for `kind = 'official'`.** Migration
+  `0013` assigns that kind to exactly `registry.modelcontextprotocol.io`, whose
+  base URL is a landing page, never a catalog. Operator-added registries default
+  to `generic` and keep the candidate.
+- **A 60-second negative cache.** Successes were cached, failures were not, so
+  each caller paid the full timeout. That was survivable while browsing sat
+  behind an explicit button; it is not now that the UI loads the catalog on its
+  own. `GET /mcp-registries/:id/catalog?refresh=1` drops both caches, so the
+  UI's Retry and Refresh still reach the host.
+
+The pane itself (`web-ui/app/admin/mcp/page.tsx`) was reworked in the same pass:
+the catalog loads on registry select instead of waiting for a button, search
+runs debounced as you type with in-flight requests aborted, registries are pills
+rather than a select, and failures render a typed card naming the registry and
+what to do about it. Results moved to a card grid with a result count and an
+explicit Refresh; registry removal moved out of the search row into a folded
+management panel behind a confirm dialog.
+
+**Note for operators:** this makes the outage legible and fast — it does not
+bring the official registry back. Use `smithery` (seeded, keyless to browse)
+until `registry.modelcontextprotocol.io` answers again.
+
 ### Fixed — omadia beta test round 3: the desktop shell (OM-50 to OM-69, #938)
 
 2026-08-28 — Silvio Lange (TE Printline GmbH) reached the application for the
