@@ -88,6 +88,23 @@ export interface AgentRow {
    * verbatim, exactly as before this column was joined.
    */
   readonly identityName?: string | null;
+  /**
+   * #967 follow-up — the agent's authored SELF-DESCRIPTION
+   * (`agent_identities.short_description` / `.long_description`, the operator's
+   * "Steckbrief" tab), joined in beside {@link identityName} and read the same
+   * way: read-only here, written through `platform/agentIdentityStore.ts`.
+   *
+   * These reached the Teams app package and nothing else, so an operator who
+   * filled in what the agent IS got a store listing that said one thing and a
+   * bot that could not say it. They describe the agent rather than instruct it,
+   * which is why they are LAYERED onto the identity text rather than replacing
+   * it — see `withAgentSelfDescription`.
+   *
+   * `null`/absent means "not authored": nothing is added, and the prompt is
+   * byte-identical to one built before these were joined.
+   */
+  readonly identityShortDescription?: string | null;
+  readonly identityLongDescription?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -296,6 +313,11 @@ interface AgentDbRow {
   /** #967 — `agent_identities.display_name`, joined in by the same three read
    *  queries and absent on the same write paths as `identity_instructions`. */
   identity_display_name?: string | null;
+  /** #967 follow-up — `agent_identities.short_description` / `.long_description`,
+   *  joined in by the same three read queries and absent on the same write
+   *  paths as `identity_instructions`. */
+  identity_short_description?: string | null;
+  identity_long_description?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -347,6 +369,8 @@ function mapAgent(row: AgentDbRow): AgentRow {
     contextMemory: parseContextMemoryMode(row.context_memory),
     instructions: row.identity_instructions ?? null,
     identityName: row.identity_display_name ?? null,
+    identityShortDescription: row.identity_short_description ?? null,
+    identityLongDescription: row.identity_long_description ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -394,12 +418,21 @@ function mapPlatformSettings(
  * compilers live in the middleware, which this package cannot import; that
  * is why the composition is stored rather than done here.
  *
+ * The two description columns (#967 follow-up) ride along because they are the
+ * other half of what the operator authored about this agent: `composed_prompt`
+ * says how it behaves, they say what it IS. Joining them here rather than in a
+ * per-Agent second query keeps the cost of a rebuild at one round trip.
+ *
  * Only text is joined. The identity's avatar columns are BYTEA and this query
- * runs on every dashboard load and every registry rebuild.
+ * runs on every dashboard load and every registry rebuild — and `accent_color`
+ * is left out for the same reason it never reaches a prompt: it is a rendering
+ * decision, not something an agent can act on.
  */
 const AGENT_SELECT =
   'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions, ' +
-  'i.display_name AS identity_display_name ' +
+  'i.display_name AS identity_display_name, ' +
+  'i.short_description AS identity_short_description, ' +
+  'i.long_description AS identity_long_description ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
 export class ConfigStore {
