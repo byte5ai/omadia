@@ -353,7 +353,7 @@ describe('createC1HttpDetector × createPrivacyGuardService', () => {
 
 describe('C1 detect timeout budget', () => {
   /**
-   * #975 — the 1500 ms default starved every realistic turn. Measured
+   * #976 — the 1500 ms default starved every realistic turn. Measured
    * against the live sidecar: a 46-char sentence takes 69-133 ms, a 3.4 KB
    * prompt (one modest attachment) takes 3.7-3.8 s. Everything over the cap
    * logged `promptMaskDegraded` and fell back to C0, so person names went

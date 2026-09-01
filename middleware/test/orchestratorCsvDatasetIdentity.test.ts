@@ -139,7 +139,7 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
   });
 
   /**
-   * #975 — the model must be TOLD what happened to an upload, not left to
+   * #976 — the model must be TOLD what happened to an upload, not left to
    * guess. Asked whether a file was protected, it told a user "der Privacy
    * Shield greift bei Datei-Uploads nicht — der Inhalt liegt im Klartext
    * vor" about a file that had in fact been imported with most fields

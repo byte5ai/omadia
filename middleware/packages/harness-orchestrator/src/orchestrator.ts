@@ -7388,7 +7388,7 @@ export class Orchestrator {
             attachmentFileName,
           );
           if (!result.ok) continue;
-          // #975 — the honest counterpart to `[dataset-imported]`'s privacy
+          // #976 — the honest counterpart to `[dataset-imported]`'s privacy
           // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
           // structured equivalent), so say so rather than letting the model
           // invent either a reassurance or an alarm. Whether the prompt-mask
@@ -7510,7 +7510,7 @@ export class Orchestrator {
         `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
     );
 
-    // #975 — state the privacy FACTS for this file in the prompt.
+    // #976 — state the privacy FACTS for this file in the prompt.
     //
     // Without them the model is left to guess what happened to an upload,
     // and it guesses badly: it told a user "der Privacy Shield greift bei
