@@ -22,6 +22,7 @@ export const app = {
     return dir;
   },
   getName: () => 'omadia',
+  getAppPath: () => root,
   on: () => app,
   quit: () => {},
 };

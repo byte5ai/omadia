@@ -24,10 +24,10 @@ function refreshSummary() {
 if (!window.omadia) {
   // Preload bridge failed — say so instead of showing a frozen progress bar.
   if (msgEl) {
-    msgEl.textContent = wt(
-      'loading.bridgeMissing',
-      'Internal error: the app bridge did not load (tray → Open Logs).',
-    );
+    msgEl.textContent =
+      wt('loading.bridgeMissing', 'Internal error: the app bridge did not load.') +
+      ' ' +
+      window.omadiaLogHint(wt);
   }
 } else {
   refreshSummary();

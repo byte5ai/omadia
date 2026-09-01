@@ -48,6 +48,9 @@ asar: true
 afterPack: buildResources/afterPack.js
 
 mac:
+  # Branded app icon (OM-53). One 1024² PNG source — electron-builder derives the
+  # .icns. Regenerate from buildResources/icon-source.png via `npm run gen-icons`.
+  icon: buildResources/icon.png
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
@@ -92,6 +95,8 @@ dmg:
       path: /Applications
 
 win:
+  # electron-builder derives the .ico from the shared PNG (OM-53).
+  icon: buildResources/icon.png
   target:
     - target: nsis
       arch: [x64]
@@ -105,6 +110,7 @@ nsis:
   createStartMenuShortcut: true
 
 linux:
+  icon: buildResources/icon.png
   category: Development
   target:
     - target: AppImage      # portable, the true "one-click, no package manager" path

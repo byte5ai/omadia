@@ -105,7 +105,7 @@
       'js.unverifiedHint':
         'Dieser Schlüssel wurde noch nicht geprüft. Klicke auf „Schlüssel testen" — oder noch einmal auf „Weiter", um ihn ungeprüft einzurichten.',
       'js.setupCrashed': 'Die Einrichtung ist unerwartet abgebrochen.',
-      'js.setupFailed': 'Einrichtung fehlgeschlagen. Prüfe die Logs (Tray → Logs öffnen).',
+      'js.setupFailed': 'Einrichtung fehlgeschlagen. Prüfe die Logs.',
       'js.pickerFailed':
         'Der Ordner-Dialog ließ sich nicht öffnen: {msg}. Es wird der Standard-Ordner verwendet.',
       // Document titles — per page, so the loading screen no longer inherits
@@ -119,17 +119,47 @@
         'omadia hat sich von einem Problem erholt und die Einrichtung neu gestartet. Vorherige Eingaben sind verloren — bitte fülle die Schritte noch einmal aus.',
       'loading.starting': 'Lokale Dienste werden gestartet…',
       'loading.bridgeMissing':
-        'Interner Fehler: Die App-Brücke wurde nicht geladen (Tray → Logs öffnen).',
+        'Interner Fehler: Die App-Brücke wurde nicht geladen.',
       'loading.details.empty': 'Startprotokoll',
       'loading.details.count': 'Startprotokoll ({count} Zeilen)',
       'js.bridgeMissing':
-        'Interner Fehler: Die App-Brücke wurde nicht geladen. Bitte neu installieren oder melden (Tray → Logs öffnen).',
+        'Interner Fehler: Die App-Brücke wurde nicht geladen. Bitte neu installieren oder melden.',
+      // Log-file pointer appended to the error strings above (OM-63). Prefer the
+      // real path — it works when the menu-bar icon is invisible; the tray line
+      // is only the fallback for when the path was not passed to the page.
+      'logHint.path': 'Protokolldatei:',
+      'logHint.tray': 'Menüleisten-Symbol öffnen → „Logs öffnen".',
     },
   };
 
   var active = null;
   var lang = (navigator.language || '').toLowerCase();
   if (lang.indexOf('de') === 0) active = DICTS.de;
+
+  /**
+   * The desktop log-file path, passed by the main process as a `log` query
+   * parameter on every renderer load (main.ts `loadRenderer`). Available even
+   * when the preload bridge failed, because a URL survives what IPC cannot
+   * (OM-63). Returns '' when absent — e.g. a page opened outside that flow.
+   */
+  window.omadiaLogPath = function () {
+    try {
+      return new URLSearchParams(window.location.search).get('log') || '';
+    } catch (_e) {
+      return '';
+    }
+  };
+
+  /**
+   * A one-line "here is the log" pointer to append to an error message. Names
+   * the real file when the path is known (works with an invisible tray icon);
+   * falls back to the tray hint only when it is not. `wt` is `window.wizardT`.
+   */
+  window.omadiaLogHint = function (wt) {
+    var p = window.omadiaLogPath();
+    if (p) return wt('logHint.path', 'Log file:') + ' ' + p;
+    return wt('logHint.tray', 'Open the menu-bar icon → Open Logs.');
+  };
 
   /** JS-string lookup: translated text when active, else the given default. */
   window.wizardT = function (key, fallback) {
