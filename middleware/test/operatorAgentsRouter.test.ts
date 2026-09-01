@@ -63,6 +63,7 @@ import {
   type OperatorTeamsInstallRecord,
 } from '../src/routes/operatorAgents.js';
 import type { TeamsProvisionerAccessor } from '../src/platform/teamsProvisionerService.js';
+import type { TeamsTargetKind } from '../src/platform/teamsInstallTarget.js';
 import {
   armNotConfiguredDetail,
   consentMissingDetail,
@@ -299,6 +300,10 @@ interface TeamsIdentityMem {
   tenantId: string | null;
   teamsAppId: string | null;
   teamsAppExternalId: string | null;
+  /** Migration 0054 — what `teamId` actually addresses. Optional, exactly
+   *  like the router's port, so a row seeded without it still reads as the
+   *  historical `'team'`. */
+  targetKind?: TeamsTargetKind;
   lastError: string | null;
   /** Optional exactly like the router's port — a row seeded without
    *  timestamps must stay assignable to `OperatorTeamsIdentityRecord`. */
@@ -390,6 +395,32 @@ class FakeTeamsProvisioner {
     readonly value: { readonly teamId: string; readonly teamsAppId: string };
   }> {
     this.calls.push({ ...input });
+    if (this.error) return Promise.reject(this.error);
+    return Promise.resolve({ outcome: this.outcome, value: { ...input } });
+  }
+}
+
+/**
+ * A connector that can remove a CHAT install too — `uninstallFromChat`, a
+ * different Graph endpoint from `uninstallFromTeam` (`/chats/{id}` versus
+ * `/teams/{id}`).
+ *
+ * A SUBCLASS rather than a flag on the base, so the base keeps modelling the
+ * connector that installs into chats but cannot remove from them — the exact
+ * skew the route has to feature-detect, and the state in which handing a chat
+ * id to `uninstallFromTeam` produced a 400 from Graph.
+ */
+class FakeTeamsChatProvisioner extends FakeTeamsProvisioner {
+  chatCalls: Array<{ chatId: string; teamsAppId: string }> = [];
+
+  uninstallFromChat(input: {
+    readonly chatId: string;
+    readonly teamsAppId: string;
+  }): Promise<{
+    readonly outcome: 'uninstalled' | 'already-absent';
+    readonly value: { readonly chatId: string; readonly teamsAppId: string };
+  }> {
+    this.chatCalls.push({ ...input });
     if (this.error) return Promise.reject(this.error);
     return Promise.resolve({ outcome: this.outcome, value: { ...input } });
   }
@@ -2808,6 +2839,126 @@ describe('createOperatorAgentsRouter', () => {
     assert.equal(teamsStore.rows.get(agent.id)?.teamId, 'aaaaaaaa-0000-4000-8000-000000000001');
     assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
     assert.deepEqual(teamsStore.clearTeamInstalls, []);
+  });
+
+  // ── DELETE for a CHAT install ───────────────────────────────────────
+  // The route used to hand every recorded id to `uninstallFromTeam`, so a
+  // chat install was addressed as `/teams/19:…@thread.v2/installedApps` —
+  // a shape Graph rejects. Group chats are a primary use case, which made
+  // this "installed and unremovable".
+
+  const CHAT_ID = '19:aaaaaaaabbbbccccddddeeeeffff0000@thread.v2';
+
+  it('DELETE /:slug/teams/:teamId uses uninstallFromChat for a chat install', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: CHAT_ID,
+      targetKind: 'group-chat',
+    });
+    const fake = new FakeTeamsChatProvisioner();
+    provisioner = fake;
+
+    const res = await deleteTeam('sales', CHAT_ID);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      team_id: string;
+      target_kind: string;
+      outcome: string;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.team_id, CHAT_ID);
+    // The response names the direction that ran — a team removal and a chat
+    // removal are different calls and must not read the same.
+    assert.equal(body.target_kind, 'group-chat');
+    assert.equal(body.outcome, 'uninstalled');
+
+    // THE POINT: the chat endpoint, keyed `chatId`, and the team endpoint
+    // never touched.
+    assert.deepEqual(fake.chatCalls, [
+      { chatId: CHAT_ID, teamsAppId: 'teams-app-789' },
+    ]);
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, [agent.id]);
+  });
+
+  it('DELETE /:slug/teams/:teamId still uses uninstallFromTeam for a team install', async () => {
+    // The other half of the branch: a connector that CAN do both must not
+    // start routing team removals through the chat endpoint.
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      targetKind: 'team',
+    });
+    const fake = new FakeTeamsChatProvisioner();
+    provisioner = fake;
+
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { target_kind: string };
+    assert.equal(body.target_kind, 'team');
+    assert.deepEqual(fake.chatCalls, []);
+    assert.deepEqual(fake.calls, [
+      { teamId: 'aaaaaaaa-0000-4000-8000-000000000001', teamsAppId: 'teams-app-789' },
+    ]);
+  });
+
+  it('DELETE /:slug/teams/:teamId → 501 for a chat when the connector has no uninstallFromChat', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: CHAT_ID,
+      targetKind: 'group-chat',
+    });
+    // The seeded FakeTeamsProvisioner publishes only the TEAM method.
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', CHAT_ID);
+    assert.equal(res.status, 501);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      target_kind: string;
+    };
+    assert.equal(body.error, 'teams_chat_uninstall_unsupported');
+    assert.equal(body.target_kind, 'group-chat');
+    assert.match(body.message, /uninstallFromChat/);
+    // Refused, never approximated: handing the chat id to the team endpoint
+    // is exactly the bug, so nothing may have been called and the row stands.
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, CHAT_ID);
+    assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
+  });
+
+  it('GET /:slug/teams reports chat_uninstall separately from uninstall', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+
+    // Team-only connector: one direction true, the other false with a reason.
+    const teamOnly = (await (await fetch(`${baseUrl}/sales/teams`)).json()) as {
+      capabilities: Record<string, unknown> & {
+        unsupported_reason: Record<string, string>;
+      };
+    };
+    assert.equal(teamOnly.capabilities['uninstall'], true);
+    assert.equal(teamOnly.capabilities['chat_uninstall'], false);
+    assert.match(
+      teamOnly.capabilities.unsupported_reason['chat_uninstall'] ?? '',
+      /uninstallFromChat/,
+    );
+
+    provisioner = new FakeTeamsChatProvisioner();
+    const both = (await (await fetch(`${baseUrl}/sales/teams`)).json()) as {
+      capabilities: Record<string, unknown> & {
+        unsupported_reason: Record<string, string>;
+      };
+    };
+    assert.equal(both.capabilities['chat_uninstall'], true);
+    assert.equal(both.capabilities.unsupported_reason['chat_uninstall'], undefined);
+    assert.equal(agent.slug, 'sales');
   });
 
   it('GET /:slug/teams reports uninstall: false against a connector that is too old', async () => {

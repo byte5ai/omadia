@@ -31,8 +31,10 @@ import {
 } from '../services/teamsProvisioningJob.js';
 import {
   supportsChatInstall,
+  supportsChatUninstall,
   supportsTeamUninstall,
   type TeamsProvisionerAccessor,
+  type UninstallFromTeamOutcome,
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
@@ -49,6 +51,7 @@ import {
 import {
   projectTeamsBotConfig,
   projectTeamsBotsConfigSyncStatus,
+  type TeamsBotsConfigSyncOutcome,
 } from '../services/teamsBotsConfigSync.js';
 import {
   AgentAvatarError,
@@ -525,6 +528,18 @@ export interface OperatorTeamsIdentityDeps {
    * access to a log it does not own.
    */
   readonly eventWriter?: TeamsResetEventSink;
+  /**
+   * Remove this bot's `teams_bots` entry from the channel-teams plugin config
+   * — the teardown half of the automatic write the provisioning chain does
+   * (#910).
+   *
+   * Optional like every other capability here: a mount that never wired the
+   * automatic write has no entry the teardown put there, and the reset simply
+   * reports that step as skipped.
+   */
+  readonly unsyncBotConfig?: (
+    botSlug: string,
+  ) => Promise<TeamsBotsConfigSyncOutcome>;
 }
 
 /**
@@ -885,6 +900,17 @@ export interface TeamsAssignmentCapabilities {
   /** Install into a GROUP CHAT or 1:1 chat — requires a connector that
    *  publishes `installToChat` (M365 connector >= 0.7.0). */
   readonly chat_install: boolean;
+  /**
+   * Remove a CHAT install — requires `uninstallFromChat`, a different
+   * connector method from the one `uninstall` reports.
+   *
+   * SEPARATE FLAG, not a widening of `uninstall`, because the two directions
+   * arrived in different connector versions and a single boolean can only
+   * lie about one of them: reporting the team verdict for a chat row lights
+   * up a control that answers 501, and reporting the chat verdict for a team
+   * row greys out a removal that works.
+   */
+  readonly chat_uninstall: boolean;
   /** Why a `false` above is false, keyed by capability. */
   readonly unsupported_reason: Readonly<Record<string, string>>;
 }
@@ -904,6 +930,13 @@ export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
  *  a version skew an operator can fix, so the sentence names the version. */
 export const TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON =
   `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`;
+
+/** Reason text for the chat REMOVAL direction. Same version as the chat
+ *  install — `installToChat` and `uninstallFromChat` shipped together — but
+ *  its own sentence, because an operator reading it is looking at an install
+ *  they cannot remove, not one they cannot create. */
+export const TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no uninstallFromChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a chat is a manual Teams step.`;
 
 /** Minimum connector that can tear a provisioning run down without making
  *  things worse — see `platform/teamsProvisionerCleanup.ts` on the purge. */
@@ -944,6 +977,7 @@ export function teamsAssignmentCapabilities(
   canUninstall: boolean,
   canMultiTeam = false,
   canChatInstall = false,
+  canChatUninstall = false,
 ): TeamsAssignmentCapabilities {
   return {
     install: true,
@@ -951,12 +985,16 @@ export function teamsAssignmentCapabilities(
     enumerate: false,
     multi_team: canMultiTeam,
     chat_install: canChatInstall,
+    chat_uninstall: canChatUninstall,
     unsupported_reason: {
       ...(canUninstall ? {} : { uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON }),
       ...(canMultiTeam ? {} : { multi_team: MULTI_TEAM_UNSUPPORTED_REASON }),
       ...(canChatInstall
         ? {}
         : { chat_install: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON }),
+      ...(canChatUninstall
+        ? {}
+        : { chat_uninstall: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON }),
       ...STRUCTURAL_UNSUPPORTED_REASONS,
     },
   };
@@ -2489,6 +2527,19 @@ export function createOperatorAgentsRouter(
     );
   }
 
+  /**
+   * The same question for a CHAT install, against the other connector method.
+   *
+   * The store half is identical — a removal that cannot be recorded is not a
+   * removal — so only the provisioner half differs.
+   */
+  function canUninstallChats(deps: OperatorTeamsIdentityDeps): boolean {
+    return (
+      typeof deps.store.clearTeamInstall === 'function' &&
+      supportsChatUninstall(deps.getProvisioner?.())
+    );
+  }
+
   /** Resolve agent + identity row for the team routes, answering the shared
    *  404s. `undefined` means a response was already sent. */
   /**
@@ -2841,6 +2892,9 @@ export function createOperatorAgentsRouter(
                 ? { delegatedTokens: deps.delegatedTokens }
                 : {}),
               ...(deps.eventWriter ? { events: deps.eventWriter } : {}),
+              ...(deps.unsyncBotConfig
+                ? { unsyncBotConfig: deps.unsyncBotConfig }
+                : {}),
             },
             agent.id,
             scope,
@@ -2914,6 +2968,7 @@ export function createOperatorAgentsRouter(
           canUninstallTeams(deps),
           deps.installs !== undefined,
           supportsChatInstall(deps.getProvisioner?.()),
+          canUninstallChats(deps),
         ),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
@@ -3058,7 +3113,17 @@ export function createOperatorAgentsRouter(
       }
       const provisioner = deps.getProvisioner?.();
       const clearTeamInstall = deps.store.clearTeamInstall;
-      if (!supportsTeamUninstall(provisioner) || typeof clearTeamInstall !== 'function') {
+      const canTeam = supportsTeamUninstall(provisioner);
+      // The chat direction is a DIFFERENT connector method, and until now this
+      // route ignored it: a chat install was torn down by handing its
+      // `19:…@thread.v2` conversation id to `uninstallFromTeam`, which
+      // addresses `/teams/{id}/installedApps`. Graph answers that with a 400
+      // and the operator is left with an install no button can remove.
+      const canChat = supportsChatUninstall(provisioner);
+      // Neither direction available (or nowhere to record the removal) is the
+      // historical 501, unchanged — a connector that predates BOTH methods
+      // gets exactly the answer and the reason it got before.
+      if ((!canTeam && !canChat) || typeof clearTeamInstall !== 'function') {
         res.status(501).json({
           error: 'teams_uninstall_unsupported',
           message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
@@ -3129,23 +3194,57 @@ export function createOperatorAgentsRouter(
         return;
       }
 
-      const uninstall = provisioner?.uninstallFromTeam;
-      if (uninstall === undefined) {
-        // Unreachable after supportsTeamUninstall; narrows for the compiler
-        // without a non-null assertion.
-        res.status(501).json({
-          error: 'teams_uninstall_unsupported',
-          message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
-          min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
-          agent: agent.slug,
-          team_id: teamId,
+      // WHAT THIS INSTALL ACTUALLY IS, from what was recorded when it was
+      // made — the binding first, the identity row as the pre-0051 fallback,
+      // `'team'` last for a row written before migration 0054 knew about
+      // kinds. Never re-derived from the id: `resolveInstallTarget` reads
+      // strings a human typed, and this id was not typed by a human, it was
+      // stored by the run that installed it.
+      const installedKind: TeamsTargetKind =
+        binding?.targetKind ?? row.targetKind ?? 'team';
+      const removingChat = isChatTarget(installedKind);
+
+      // Both branches answer the same `{ outcome }` shape, so everything
+      // below this point — the binding drop, the state walk-back, the
+      // response — stays one code path for both kinds. The per-kind guards
+      // live inside the branches so the compiler narrows the method itself
+      // rather than trusting the boolean that was computed above.
+      let result: { readonly outcome: UninstallFromTeamOutcome };
+      if (removingChat) {
+        const uninstall = provisioner?.uninstallFromChat;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_chat_uninstall_unsupported',
+            message: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          chatId: installedTeamId,
+          teamsAppId: installedAppId,
         });
-        return;
+      } else {
+        const uninstall = provisioner?.uninstallFromTeam;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_uninstall_unsupported',
+            message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          teamId: installedTeamId,
+          teamsAppId: installedAppId,
+        });
       }
-      const result = await uninstall.call(provisioner, {
-        teamId: installedTeamId,
-        teamsAppId: installedAppId,
-      });
 
       // Drop THIS binding. The identity is only walked back to
       // `catalog_uploaded` when nothing is left bound: an agent still
@@ -3167,6 +3266,9 @@ export function createOperatorAgentsRouter(
         ok: true,
         agent: agent.slug,
         team_id: installedTeamId,
+        /** Which direction actually ran — a team removal and a chat removal
+         *  are different Graph calls and the response should not blur them. */
+        target_kind: installedKind,
         // 'already-absent' is the connector's idempotent success: the app was
         // not in the team. The binding is dropped either way — that is the
         // point of an idempotent remove.

@@ -2018,7 +2018,8 @@
         "uninstall": "Das Entfernen der App aus einem Team braucht den Microsoft-365-Connector 0.4.0 oder neuer. Der hier installierte Connector ist älter und veröffentlicht keine Deinstallation — aktualisiere das Plugin, oder lass die App von einem Teams-Admin manuell entfernen.",
         "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
         "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt.",
-        "chat_install": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel."
+        "chat_install": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
+        "chat_uninstall": "Das Entfernen der App aus einem Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder lass die App im Chat manuell entfernen."
       },
       "unsupportedTechnical": "Server-Begründung: {detail}",
       "notice": {
@@ -2308,7 +2309,10 @@
           "reason": "Von Microsoft gemeldet: {reason}",
           "next": "Prüfe, ob die Publisher-App des Microsoft-365-Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert. Ein erneuter Versuch ändert ohne diese Anpassung nichts."
         },
-        "rsc_permissions_mismatch": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle. Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
+        "rsc_permissions_mismatch": {
+          "what": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle.",
+          "next": "Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
+        }
       },
       "teamsBot": {
         "heading": "Konfiguration für das Teams-Channel-Plugin",
@@ -2357,7 +2361,7 @@
           "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Teamliste — trage die ID unten von Hand ein.",
           "connector_unsupported": "Der installierte Connector kann keine Teams auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die ID unten ein.",
           "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
-          "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht. Eine erneute Anmeldung schaltet die Liste frei.",
+          "scope_missing": "Die gespeicherte Anmeldung kennt eine Berechtigung nicht, die für die Teamliste nötig ist. Eine erneute Anmeldung schaltet die Liste frei.",
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
           "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein.",
           "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein."
@@ -2396,6 +2400,7 @@
         "catalog_removed": "Katalogeintrag",
         "bot_deleted": "Azure-Bot",
         "app_deleted": "App-Registrierung",
+        "config_unsynced": "Teams-Bot-Eintrag",
         "identity_reset": "Datenbankzeile",
         "identity_deleted": "Identität"
       },
@@ -2414,6 +2419,8 @@
         "app_absent_unpurgeable": "Die App-Registrierung ist bereits weg, ließ sich aber nicht mehr im Papierkorb nachschlagen. Sie könnte den Namen noch bis zu 30 Tage belegen — wähle im Zweifel einen anderen Bot-Slug.",
         "app_provably_gone": "Die App-Registrierung ist weg und liegt auch nicht im Papierkorb — der Name ist wieder frei.",
         "arm_not_configured": "Ohne ARM-Konfiguration wurde nie ein Bot-Dienst angelegt.",
+        "config_unsync_unavailable": "Diese Installation schreibt den teams_bots-Eintrag nicht automatisch — es gab also auch keinen, den das Zurücksetzen entfernen müsste.",
+        "config_plugin_not_installed": "Der Teams-Channel ist nicht installiert, es gibt also keine Konfiguration aufzuräumen.",
         "tenant_sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
         "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann."
       },

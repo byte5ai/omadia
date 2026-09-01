@@ -123,6 +123,7 @@ export type {
   AgentStatus,
   ChannelBindingInput,
   ChannelBindingRow,
+  ChannelIdentityRow,
   ConfigSnapshot,
   PlatformSettingsRow,
   PrivacyProfile,

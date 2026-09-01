@@ -10,9 +10,11 @@ import {
   TEAMS_BOTS_CONFIG_KEY,
   TeamsBotsConfigSyncError,
   defaultTeamsBotSecretRef,
+  dropTeamsBotConfig,
   projectTeamsBotConfig,
   projectTeamsBotsConfigSyncStatus,
   readTeamsBotsConfig,
+  removeTeamsBotEntry,
   serializeTeamsBotsConfig,
   syncTeamsBotConfig,
   teamsBotConfigEntry,
@@ -488,5 +490,147 @@ describe('projectTeamsBotsConfigSyncStatus', () => {
     );
     assert.equal(status.plugin_id, CHANNEL_TEAMS_PLUGIN_ID);
     assert.equal(status.config_key, 'teams_bots');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The teardown half — taking back out what the chain wrote
+// ---------------------------------------------------------------------------
+
+/**
+ * A reset that leaves the entry behind is not a reset. The registration it
+ * names has just been deleted AND purged, so what stays behind is a bot that
+ * fails authentication on every inbound activity — and the next run appends a
+ * second entry under the same slug beside it.
+ *
+ * The properties that matter are the mirror image of the sync's: remove
+ * exactly one entry, disturb nothing else, and never fail for "already gone".
+ */
+
+/** The entry the chain would have written for {@link IDENTITY}. */
+const hrEntry = (): Record<string, unknown> => {
+  const projection = projectTeamsBotConfig(IDENTITY);
+  assert.ok(projection, 'fixture must project');
+  return teamsBotConfigEntry(projection) as Record<string, unknown>;
+};
+
+function docWith(
+  entries: readonly Record<string, unknown>[],
+): ReturnType<typeof readTeamsBotsConfig> {
+  return readTeamsBotsConfig(
+    serializeTeamsBotsConfig({ entries: [...entries], form: 'string' }),
+  );
+}
+
+describe('removeTeamsBotEntry', () => {
+  it('drops the named slug and carries every other entry over untouched', () => {
+    const doc = docWith([LEGACY_ENTRY, hrEntry(), FOREIGN_ENTRY]);
+    const { document, changed } = removeTeamsBotEntry(doc, 'hr-bot');
+    assert.equal(changed, true);
+    assert.deepEqual(
+      document.entries.map((e) => (e as Record<string, unknown>)['botSlug']),
+      ['default', 'sales-bot'],
+    );
+    // Entry 0 is the legacy scalar-shimmed bot answering live traffic, and
+    // the foreign entry is somebody's hand-tuned row. Byte-equal, not merely
+    // still present.
+    assert.deepEqual(document.entries[0], LEGACY_ENTRY);
+    assert.deepEqual(document.entries[1], FOREIGN_ENTRY);
+  });
+
+  it('reports unchanged, and returns the SAME document, when nothing matched', () => {
+    const doc = docWith([LEGACY_ENTRY]);
+    const { document, changed } = removeTeamsBotEntry(doc, 'hr-bot');
+    assert.equal(changed, false);
+    assert.equal(document, doc);
+  });
+
+  it('matches on the SLUG, not on the app id', () => {
+    // The teardown runs AFTER the registration is purged, so the entry that
+    // most needs removing is precisely the one whose app id no longer
+    // resolves. Matching on the id would leave exactly that one behind.
+    const doc = docWith([{ ...hrEntry(), appId: 'app-already-purged' }]);
+    const { document, changed } = removeTeamsBotEntry(doc, 'hr-bot');
+    assert.equal(changed, true);
+    assert.deepEqual(document.entries, []);
+  });
+});
+
+describe('dropTeamsBotConfig', () => {
+  it('writes the shortened list and reactivates the plugin', async () => {
+    const registry = registryWith({
+      [TEAMS_BOTS_CONFIG_KEY]: serializeTeamsBotsConfig({
+        entries: [LEGACY_ENTRY, hrEntry()],
+        form: 'string',
+      }),
+    });
+    const reactivated: string[] = [];
+    const outcome = await dropTeamsBotConfig(
+      {
+        getInstalledRegistry: () => registry,
+        reactivate: async (id: string) => {
+          reactivated.push(id);
+        },
+      },
+      'hr-bot',
+    );
+    assert.deepEqual(outcome, { status: 'synced', botSlug: 'hr-bot' });
+    assert.deepEqual(
+      storedEntries(registry).map((e) => e['botSlug']),
+      ['default'],
+    );
+    assert.deepEqual(reactivated, [CHANNEL_TEAMS_PLUGIN_ID]);
+  });
+
+  it('does not bounce a live plugin when there was nothing to remove', async () => {
+    const registry = registryWith({
+      [TEAMS_BOTS_CONFIG_KEY]: serializeTeamsBotsConfig({
+        entries: [LEGACY_ENTRY],
+        form: 'string',
+      }),
+    });
+    const reactivated: string[] = [];
+    const outcome = await dropTeamsBotConfig(
+      {
+        getInstalledRegistry: () => registry,
+        reactivate: async (id: string) => {
+          reactivated.push(id);
+        },
+      },
+      'hr-bot',
+    );
+    assert.deepEqual(outcome, { status: 'unchanged', botSlug: 'hr-bot' });
+    assert.deepEqual(reactivated, []);
+    assert.deepEqual(storedEntries(registry), [LEGACY_ENTRY]);
+  });
+
+  it('skips, never throws, when the registry or the plugin is absent', async () => {
+    assert.deepEqual(
+      await dropTeamsBotConfig({ getInstalledRegistry: () => undefined }, 'hr-bot'),
+      { status: 'skipped', reason: 'registry_unavailable' },
+    );
+    assert.deepEqual(
+      await dropTeamsBotConfig(
+        { getInstalledRegistry: () => new InMemoryInstalledRegistry() },
+        'hr-bot',
+      ),
+      { status: 'skipped', reason: 'plugin_not_installed' },
+    );
+  });
+
+  it('refuses to clobber a stored value it cannot read', async () => {
+    // Same posture as the sync: an unparsable value may be an operator's
+    // hand-written list, and rewriting it would destroy work this module has
+    // no way to reconstruct.
+    await assert.rejects(
+      dropTeamsBotConfig(
+        {
+          getInstalledRegistry: () =>
+            registryWith({ [TEAMS_BOTS_CONFIG_KEY]: '{ not json' }),
+        },
+        'hr-bot',
+      ),
+      TeamsBotsConfigSyncError,
+    );
   });
 });

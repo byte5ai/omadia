@@ -2018,7 +2018,8 @@
         "uninstall": "Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.",
         "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
         "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.",
-        "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target."
+        "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
+        "chat_uninstall": "Removing the app from a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or remove the app inside the chat manually."
       },
       "unsupportedTechnical": "Server reason: {detail}",
       "notice": {
@@ -2308,7 +2309,10 @@
           "reason": "Reported by Microsoft: {reason}",
           "next": "Check that the Microsoft 365 connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them. Retrying changes nothing without that adjustment."
         },
-        "rsc_permissions_mismatch": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing. Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        "rsc_permissions_mismatch": {
+          "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
+          "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        }
       },
       "teamsBot": {
         "heading": "Teams channel plugin configuration",
@@ -2357,7 +2361,7 @@
           "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
           "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
           "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
-          "scope_missing": "The stored sign-in does not yet carry the {scope} permission. Signing in again unlocks the list.",
+          "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
           "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
           "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below.",
           "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below."
@@ -2396,6 +2400,7 @@
         "catalog_removed": "Catalog entry",
         "bot_deleted": "Azure bot",
         "app_deleted": "App registration",
+        "config_unsynced": "Teams bot entry",
         "identity_reset": "Database row",
         "identity_deleted": "Identity"
       },
@@ -2414,6 +2419,8 @@
         "app_absent_unpurgeable": "The app registration is already gone but could no longer be looked up in the recycle bin. It may still hold the name for up to 30 days — pick a different bot slug if in doubt.",
         "app_provably_gone": "The app registration is gone and is not in the recycle bin either — the name is free again.",
         "arm_not_configured": "Without ARM configured, no bot service was ever created.",
+        "config_unsync_unavailable": "This deployment does not write the teams_bots entry automatically, so there was none for the reset to remove.",
+        "config_plugin_not_installed": "The Teams channel is not installed, so there is no configuration to clean up.",
         "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
         "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
       },

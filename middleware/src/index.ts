@@ -56,7 +56,10 @@ import type { TeamsResetEventSink } from './services/teamsIdentityReset.js';
 import { TeamsDelegatedSignInService } from './services/teamsDelegatedSignInService.js';
 import { createOperatorTeamsSignInRouter } from './routes/operatorTeamsSignIn.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
-import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
+import {
+  dropTeamsBotConfig,
+  syncTeamsBotConfig,
+} from './services/teamsBotsConfigSync.js';
 import {
   buildTeamsBotMessagingEndpoint,
   getTeamsProvisioner,
@@ -3504,6 +3507,20 @@ async function main(): Promise<void> {
           ...(eventStore === undefined ? {} : { events: eventStore }),
           ...(eventWriter === undefined ? {} : { eventWriter }),
           ...(delegatedTokens === undefined ? {} : { delegatedTokens }),
+          // The teardown half of #910. Same registry, same reactivation
+          // funnel and the same serialized write queue as the chain's
+          // `syncBotConfig` above — a reset and a run that finish at the same
+          // moment must not read-modify-write the same config value in
+          // parallel, and they cannot, because both go through the module's
+          // single queue.
+          unsyncBotConfig: (botSlug: string) =>
+            dropTeamsBotConfig(
+              {
+                getInstalledRegistry: () => installedRegistry,
+                reactivate: reactivateAgent,
+              },
+              botSlug,
+            ),
         };
         if (installStore === undefined) return withEvents;
         return { ...withEvents, installs: installStore };

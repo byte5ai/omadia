@@ -2216,7 +2216,18 @@ export class Orchestrator {
     if (!stateStore) return;
 
     const sessionScope = input.sessionScope ?? '';
-    const agentId = 'orchestrator';
+    // THIS Agent, not the literal `'orchestrator'` this used to be. The state
+    // store keys cooldowns and open-emission follow-ups on `(agentId,
+    // nudgeId)`, so a shared constant made every Agent in the process share
+    // one nudge budget: agent A emitting a nudge put it on cooldown for agent
+    // B, and B's follow-up matched A's open emission. Single-agent
+    // deployments are unaffected — `this.agentId` defaults to `'default'` and
+    // there is only ever one of them.
+    //
+    // Existing rows keyed `'orchestrator'` are simply no longer read, which
+    // resets cooldowns once. That is the cheap direction of the error: a nudge
+    // fires again, rather than being suppressed by a key nobody owns.
+    const agentId = this.agentId;
     // OB-77 — append THIS iteration's entries onto the turn-cumulative
     // trace BEFORE running the pipeline so the multi-domain trigger sees
     // every tool the agent has used so far in this turn (sub-agents

@@ -132,9 +132,14 @@ export function TeamsTargetPicker({
           items.map((team) => ({ id: team.id, label: team.displayName }))
         }
         kindOf={() => 'team'}
-        unavailableText={(reason) =>
-          t(`unavailable.teams.${reason}`, { scope: 'Chat.ReadBasic' })
-        }
+        // NO SCOPE ARGUMENT HERE, and that is the fix rather than an omission:
+        // team enumeration is app-only, so the one sentence that names a scope
+        // (`scope_missing`) can never be about `Chat.ReadBasic` on this half.
+        // Passing it anyway printed the chat permission under the team list
+        // and sent an operator to grant something unrelated. The teams copy
+        // now names no scope at all, because the DTO does not carry which one
+        // was missing and inventing a second guess would repeat the mistake.
+        unavailableText={(reason) => t(`unavailable.teams.${reason}`)}
       />
       <TargetSelect
         label={t('chatsLabel')}
