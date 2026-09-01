@@ -24,6 +24,8 @@ import type { PromptPiiSpan } from '@omadia/plugin-api';
 import {
   C1_DETECTOR_ID,
   createC1HttpDetector,
+  DEFAULT_TIMEOUT_MS as DEFAULT_C1_TIMEOUT_MS,
+  resolveTimeoutFromEnv,
 } from '@omadia/plugin-privacy-guard/dist/c1Detector.js';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
@@ -346,5 +348,61 @@ describe('createC1HttpDetector × createPrivacyGuardService', () => {
       `We should pay ${surrogate} more.`,
     );
     assert.equal(restored, 'We should pay Anna Schmidt more.');
+  });
+});
+
+describe('C1 detect timeout budget', () => {
+  /**
+   * #975 — the 1500 ms default starved every realistic turn. Measured
+   * against the live sidecar: a 46-char sentence takes 69-133 ms, a 3.4 KB
+   * prompt (one modest attachment) takes 3.7-3.8 s. Everything over the cap
+   * logged `promptMaskDegraded` and fell back to C0, so person names went
+   * unmasked on exactly the turns carrying the most of them.
+   */
+  it('defaults well above the measured cost of a realistic prompt', () => {
+    // A 3.4 KB prompt measured 3.8 s; the default must clear it with room.
+    assert.ok(
+      DEFAULT_C1_TIMEOUT_MS >= 10_000,
+      `default ${String(DEFAULT_C1_TIMEOUT_MS)}ms is too tight for a multi-KB prompt`,
+    );
+  });
+
+  it('honours a valid PRIVACY_C1_TIMEOUT_MS override', () => {
+    assert.equal(resolveTimeoutFromEnv({ PRIVACY_C1_TIMEOUT_MS: '2500' }), 2500);
+  });
+
+  it('ignores an unset or blank override', () => {
+    assert.equal(resolveTimeoutFromEnv({}), undefined);
+    assert.equal(resolveTimeoutFromEnv({ PRIVACY_C1_TIMEOUT_MS: '   ' }), undefined);
+  });
+
+  it('ignores a malformed override rather than degrading every turn', () => {
+    // A 0 or negative cap would make detect() abort instantly, i.e. silently
+    // turn C1 off for the whole install. Fall back to the default instead.
+    for (const bad of ['0', '-1', 'abc', 'NaN', 'Infinity']) {
+      assert.equal(
+        resolveTimeoutFromEnv({ PRIVACY_C1_TIMEOUT_MS: bad }),
+        undefined,
+        `expected ${bad} to be rejected`,
+      );
+    }
+  });
+
+  it('actually applies the configured timeout to a hanging sidecar', async () => {
+    const detector = createC1HttpDetector({
+      resolveUrl: () => 'http://sidecar.invalid:8812',
+      timeoutMs: 40,
+      fetchFn: (async (_url: string, init?: { signal?: AbortSignal }) =>
+        await new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new Error('aborted')),
+          );
+          // never settles on its own
+        })) as unknown as typeof fetch,
+    });
+    await assert.rejects(
+      () => detector.detect('Anna Schmidt wohnt in Berlin.'),
+      /timed out after 40ms/,
+    );
   });
 });
