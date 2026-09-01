@@ -165,6 +165,10 @@ export function buildForAgent(
    *  resolves from `GraphIndex.personaSkillsByAgent`; per-agent, so passed
    *  separately from the shared `runtime`/`deps`). */
   personaSkills?: readonly OrchestratorPersonaSkill[],
+  /** The plugin ids this agent is granted (enabled `agent_plugins` rows).
+   *  Passed separately for the same reason as `personaSkills`: it is per-agent
+   *  and the caller is the one holding the snapshot. Omitted ⇒ ungated. */
+  grantedPluginIds?: readonly string[],
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -283,6 +287,11 @@ export function buildForAgent(
       ...(agent.contextMemory !== undefined
         ? { contextMemory: agent.contextMemory }
         : {}),
+      // The authorisation set. An agent with rows but none enabled yields an
+      // EMPTY array, which is meaningful (grant nothing) and must not collapse
+      // to `undefined` (grant everything) — hence the explicit presence check
+      // on the argument rather than on its length.
+      ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
     },
     deps,
   );

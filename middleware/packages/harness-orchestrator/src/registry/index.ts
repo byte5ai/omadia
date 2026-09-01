@@ -327,13 +327,16 @@ export class OrchestratorRegistry {
   ): void {
     switch (action.kind) {
       case 'add': {
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
@@ -375,13 +378,16 @@ export class OrchestratorRegistry {
       }
       case 'rebuild': {
         const before = this.active.get(action.agent.slug);
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
