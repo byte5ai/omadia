@@ -575,6 +575,116 @@ describe('PrivacyGuardService.maskUserPrompt', () => {
     if (result.outcome !== 'masked') return;
     assert.equal(result.degraded, false);
   });
+
+  /**
+   * #977 — a turn calls maskUserPrompt roughly a dozen times over
+   * overlapping text (message, priorTurns, ingested attachment, recalled
+   * context, fact-extraction/routing/excerpt passes). Each call used to hit
+   * the sidecar again for text it had already classified: measured, one
+   * 2.6 KB turn spent ~20 s at ~2.3 s per identical call.
+   */
+  describe('per-turn C1 result cache', () => {
+    function countingC1(): { detector: PromptPiiDetector; calls: () => number } {
+      let calls = 0;
+      return {
+        detector: {
+          id: 'c1-counting',
+          detect: async () => {
+            calls += 1;
+            return [];
+          },
+        },
+        calls: () => calls,
+      };
+    }
+
+    it('calls the sidecar once for repeated identical text in one turn', async () => {
+      const c1 = countingC1();
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: c1.detector,
+      });
+      for (let i = 0; i < 5; i += 1) {
+        await svc.maskUserPrompt!(req('t-cache'));
+      }
+      assert.equal(c1.calls(), 1, 'identical text must hit the sidecar once');
+    });
+
+    it('still calls the sidecar for DIFFERENT text in the same turn', async () => {
+      const c1 = countingC1();
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: c1.detector,
+      });
+      await svc.maskUserPrompt!({
+        sessionId: 's',
+        turnId: 't-diff',
+        text: 'Anna Schmidt schreibt.',
+      });
+      await svc.maskUserPrompt!({
+        sessionId: 's',
+        turnId: 't-diff',
+        text: 'Bob Miller ruft an.',
+      });
+      assert.equal(c1.calls(), 2);
+    });
+
+    /**
+     * The important half. C1's timeout is 15 s; without caching failures, an
+     * unreachable sidecar makes one turn burn a dozen consecutive timeouts —
+     * three minutes of wall clock to reach the same C0 fallback the first
+     * attempt already reached.
+     */
+    it('retries a failed sidecar at most once per turn', async () => {
+      let calls = 0;
+      const failing: PromptPiiDetector = {
+        id: 'c1-dead',
+        detect: async () => {
+          calls += 1;
+          throw new Error('sidecar timed out after 15000ms');
+        },
+      };
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: failing,
+      });
+      for (let i = 0; i < 6; i += 1) {
+        const r = await svc.maskUserPrompt!(req('t-dead'));
+        assert.equal(r.outcome, 'masked');
+        if (r.outcome !== 'masked') return;
+        // Every call still reports the degrade honestly.
+        assert.equal(r.degraded, true, `call ${String(i)} must stay degraded`);
+      }
+      assert.equal(calls, 1, 'a dead sidecar must be attempted once per turn');
+    });
+
+    it('does not reuse one turn cache for another turn', async () => {
+      const c1 = countingC1();
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: c1.detector,
+      });
+      await svc.maskUserPrompt!(req('t-a'));
+      await svc.maskUserPrompt!(req('t-b'));
+      assert.equal(c1.calls(), 2, 'cache must be scoped per turn');
+    });
+
+    it('drops cached spans at finalizeTurn (they carry real PII)', async () => {
+      const c1 = countingC1();
+      const svc = createPrivacyGuardService({
+        readConfig: () => 'on',
+        c1Detector: c1.detector,
+      });
+      await svc.maskUserPrompt!(req('t-fin'));
+      await svc.finalizeTurn('t-fin');
+      await svc.maskUserPrompt!(req('t-fin'));
+      assert.equal(
+        c1.calls(),
+        2,
+        'after finalizeTurn the cache must be gone, not silently reused',
+      );
+    });
+  });
 });
 
 describe('PrivacyTurnHandle prompt-mask delegation', () => {

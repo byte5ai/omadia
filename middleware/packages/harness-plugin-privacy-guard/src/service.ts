@@ -32,6 +32,7 @@ import type {
   PrivacyV4ToolSpec,
   PromptMaskedSpanInfo,
   PromptPiiDetector,
+  PromptPiiSpan,
 } from '@omadia/plugin-api';
 
 import { createDatasetStore } from './v4/datasetStore.js';
@@ -253,6 +254,50 @@ export function createPrivacyGuardService(deps?: {
   // ingested attachment tail) so surrogates stay stable; inverted over the
   // final answer by `restorePromptPseudonyms`; dropped by `finalizeTurn`.
   const promptMaskMaps = new Map<string, PseudonymMap>();
+
+  // #977 — per-turn C1 result cache, keyed by the exact text.
+  //
+  // A single turn calls `maskUserPrompt` roughly a dozen times over
+  // overlapping text: the user message, live chat history, ingested
+  // attachment text, recalled prior context, plus the fact-extraction,
+  // routing and excerpt passes. Each call used to hit the sidecar again for
+  // text it had already classified. Measured on the live instance, one
+  // 2.6 KB turn spent ~20 s that way at ~2.3 s per identical call.
+  //
+  // Two reasons this is safe to memoize: the detector is deterministic for
+  // a given (text, labels, threshold), and the labels/threshold are fixed
+  // per detector instance — so the text alone is a complete key.
+  //
+  // FAILURES are cached too, and that is the more important half. C1's
+  // timeout is 15 s (deliberately generous, see c1Detector.ts); without
+  // this, an unreachable sidecar would make a turn burn twelve consecutive
+  // 15 s timeouts — three minutes of wall clock to produce exactly the C0
+  // fallback it reached after the first one. Fail once, degrade once.
+  //
+  // Scoped PER TURN and dropped by `finalizeTurn`, like `promptMaskMaps`:
+  // cached spans carry real PII values, so they must not outlive the turn
+  // that produced them or be reachable from another user's turn.
+  type C1CacheEntry =
+    | { ok: true; spans: readonly PromptPiiSpan[] }
+    | { ok: false };
+  const c1Cache = new Map<string, Map<string, C1CacheEntry>>();
+  const c1CacheGet = (
+    turnId: string,
+    text: string,
+  ): C1CacheEntry | undefined => c1Cache.get(turnId)?.get(text);
+  const c1CacheSet = (
+    turnId: string,
+    text: string,
+    entry: C1CacheEntry,
+  ): void => {
+    let perTurn = c1Cache.get(turnId);
+    if (perTurn === undefined) {
+      perTurn = new Map<string, C1CacheEntry>();
+      c1Cache.set(turnId, perTurn);
+    }
+    perTurn.set(text, entry);
+  };
+
   // #760 — per-service fingerprint cache for the operator deny-list detector.
   const resolveCustomDetector = makeCustomDetectorResolver();
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
@@ -536,15 +581,29 @@ export function createPrivacyGuardService(deps?: {
         // baseline down with it (tier-1 degrade, audited); its spans are
         // memoized into a pass-through detector for the mask pass.
         const c1 = deps.c1Detector;
-        try {
-          const c1Spans = await c1.detect(request.text);
-          detectors.push({ id: c1.id, detect: async () => c1Spans });
-        } catch (err) {
-          degraded = true;
-          console.warn(
-            `[privacy-guard v4] promptMaskDegraded turn=${request.turnId} ` +
-              `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+        const cached = c1CacheGet(request.turnId, request.text);
+        if (cached !== undefined) {
+          if (cached.ok) {
+            detectors.push({ id: c1.id, detect: async () => cached.spans });
+          } else {
+            // A failure earlier in THIS turn. Do not retry: with a dead
+            // sidecar each attempt burns the full timeout, and a turn makes
+            // roughly a dozen mask calls.
+            degraded = true;
+          }
+        } else {
+          try {
+            const c1Spans = await c1.detect(request.text);
+            c1CacheSet(request.turnId, request.text, { ok: true, spans: c1Spans });
+            detectors.push({ id: c1.id, detect: async () => c1Spans });
+          } catch (err) {
+            degraded = true;
+            c1CacheSet(request.turnId, request.text, { ok: false });
+            console.warn(
+              `[privacy-guard v4] promptMaskDegraded turn=${request.turnId} ` +
+                `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
       }
       try {
@@ -659,6 +718,9 @@ export function createPrivacyGuardService(deps?: {
       // #361 — drop the prompt-surrogate map. `restorePromptPseudonyms`
       // must have run over the final answer before this point.
       promptMaskMaps.delete(turnId);
+      // #977 — cached C1 spans carry real PII values; drop them with the
+      // rest of the turn's server-side state.
+      c1Cache.delete(turnId);
       const accum = receipts.get(turnId);
       receipts.delete(turnId);
       const piiValues = turnPiiValues.get(turnId);
