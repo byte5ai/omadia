@@ -346,6 +346,66 @@ describe('maskPrompt', () => {
     }
     assert.equal(resolvePseudonyms(result.maskedText, result.map), text);
   });
+
+  /**
+   * A LATER CALL IN THE SAME TURN THAT DETECTS NOTHING MUST STILL MASK.
+   *
+   * Observed in production: a Teams turn was refused with "prompt masking
+   * failed (residual PII span survived substitution)" on a message that named
+   * nobody. The name had been masked by an EARLIER call in the same turn, and
+   * this call's detectors found nothing in their own text — so `maskPrompt`
+   * returned early, skipped the known-value sweep, and handed the raw text
+   * back. The service then asserted against the whole turn's map, found the
+   * value, and blocked. The guard was right; the masker had simply not tried.
+   *
+   * Detecting nothing in THIS text is not the same as having nothing to mask,
+   * because the map is turn-scoped. Both directions are pinned: the value gets
+   * substituted, and the post-mask invariant the service relies on holds.
+   */
+  it('applies the turn map even when this pass detects no new spans', async () => {
+    const blind: PromptPiiDetector = { id: 'c1-blind', detect: async () => [] };
+    const seeing: PromptPiiDetector = {
+      id: 'c1-seeing',
+      detect: async (text: string) => {
+        const at = text.indexOf('Marcel Wege');
+        return at === -1
+          ? []
+          : [{ start: at, end: at + 'Marcel Wege'.length, type: 'person', confidence: 0.9 }];
+      },
+    };
+
+    const first = await maskPrompt('Es geht um Marcel Wege!', [seeing]);
+    assert.equal(findIdentityLeaks(first.maskedText, ['Marcel Wege']).length, 0);
+
+    const followUp = 'Und wieviel Urlaub hat Marcel Wege noch?';
+    const second = await maskPrompt(followUp, [blind], first.map);
+
+    assert.equal(second.spans.length, 0, 'this pass genuinely detects nothing');
+    assert.equal(
+      findIdentityLeaks(second.maskedText, [...second.map.forward.keys()]).length,
+      0,
+      'the value masked earlier in the turn must not survive into the wire text',
+    );
+    // The same surrogate as the first call — a turn-stable mapping is the
+    // whole point of threading the map through.
+    assert.equal(
+      second.maskedText,
+      followUp.replace('Marcel Wege', first.map.forward.get('Marcel Wege') ?? '?'),
+    );
+    // And it is reversible, so the operator still reads the real name back.
+    assert.equal(resolvePseudonyms(second.maskedText, second.map), followUp);
+  });
+
+  it('is a no-op when there is no map and nothing to detect', async () => {
+    // The other half: without an existing map the early return must still hand
+    // back byte-identical text, or every clean message would pay for this.
+    const blind: PromptPiiDetector = { id: 'c1-blind', detect: async () => [] };
+    const text = 'Zeig mir alle genehmigten Urlaube dieses Jahr.';
+    const result = await maskPrompt(text, [blind]);
+    assert.equal(result.maskedText, text);
+    assert.equal(result.spans.length, 0);
+    assert.equal(result.map.forward.size, 0);
+  });
 });
 
 describe('C0 locale patterns (#482 — es/fr/nl miss classes)', () => {
