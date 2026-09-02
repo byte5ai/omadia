@@ -39,11 +39,23 @@ import type {
  *  - `remove`  — Agent disappeared (row deleted OR status flipped to
  *                disabled). Drop the existing `BuiltOrchestrator`.
  *  - `rebuild` — Agent kept its slug but a runtime-relevant field changed
- *                (privacy_profile, runtime config). Tear down + rebuild.
- *  - `update`  — Agent kept its slug AND its runtime config; only the
- *                plugin / binding lists changed. Refresh registry metadata
- *                without touching the `Orchestrator` instance — sessions
- *                in-flight on the old plugin set keep working (US6).
+ *                (privacy_profile, runtime config, PLUGIN GRANTS). Tear down
+ *                + rebuild.
+ *  - `update`  — Agent kept its slug, its runtime config AND its plugin
+ *                grants; only the channel bindings changed. Refresh registry
+ *                metadata without touching the `Orchestrator` instance.
+ *
+ * Why plugin grants rebuild rather than update: the granted plugin set is
+ * baked into the `Orchestrator` at build time twice over — once as the
+ * `grantedPluginIds` the dispatch gate checks, and once as the domain tools
+ * the kernel hydrates through `onAgentBuilt`, which only an `add`/`rebuild`
+ * fires. An `update` refreshed the registry's metadata and left both stale,
+ * so the operator's grant took effect on the NEXT PROCESS START and not
+ * before. The original design read `update` as the cheap path that let
+ * in-flight sessions finish on the old plugin set (US6); with an enforcing
+ * dispatch gate that same sentence describes a revocation that does not
+ * revoke. Capability changes are rare and operator-driven — correctness
+ * beats the saved rebuild.
  *
  * The function does NOT touch the registry itself; it returns a typed plan
  * the caller (OrchestratorRegistry) executes. This keeps `applyDiff` pure
@@ -111,9 +123,17 @@ export function diffSnapshots(
     if (!isEnabled) continue;
 
     // Both old and new are enabled. Decide rebuild vs metadata-only update.
+    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
+    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
+
     const reasons = [
       ...runtimeChangeReasons(oldAgent!, newAgent),
       ...graphChangeReasons(oldAgent!.id, newAgent.id, oldSnap, newSnap),
+      // The enabled plugin set IS this agent's authorisation. It reaches the
+      // running orchestrator only through a build, so a grant change that
+      // produced a metadata-only `update` was persisted, reported as saved
+      // and never armed — in both directions.
+      ...(equalPlugins(oldPlugins, newPlugins) ? [] : ['plugin_grants']),
     ];
     if (reasons.length > 0) {
       actions.push({
@@ -124,15 +144,10 @@ export function diffSnapshots(
       continue;
     }
 
-    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
-    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
     const oldBindings = oldBindingsByAgent.get(oldAgent!.id) ?? [];
     const newBindings = newBindingsByAgent.get(newAgent.id) ?? [];
 
-    if (
-      !equalPlugins(oldPlugins, newPlugins) ||
-      !equalBindings(oldBindings, newBindings)
-    ) {
+    if (!equalBindings(oldBindings, newBindings)) {
       actions.push({ kind: 'update', agent: newAgent });
     }
   }
