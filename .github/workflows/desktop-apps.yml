@@ -477,17 +477,43 @@ jobs:
 
       # The .app is notarized + stapled by electron-builder above; the DMG needs
       # its own ticket so `stapler validate` passes on the disk image itself.
+      # Retried, because this step talks to Apple over the network for minutes at
+      # a time and a dropped connection here is expensive out of all proportion
+      # to its cause: the job fails, `mac-update-feed` fails with it, and
+      # `promote-release` never runs — so the release stays a DRAFT forever and
+      # nobody is told. Seven releases (v0.142.2 … v0.147.12) were stranded that
+      # way; the one we traced died on NSURLErrorDomain -1009, "The Internet
+      # connection appears to be offline", on the runner.
+      #
+      # Both commands are safe to repeat: `notarytool submit` creates a new
+      # submission (Apple accepts a re-submitted, already-notarized DMG) and
+      # `stapler staple` is idempotent. A retry can only cost time, against a
+      # failure mode that costs a release.
       - name: Notarize + staple the DMGs
         if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
         working-directory: desktop
         run: |
-          for dmg in release/*.dmg; do
-            xcrun notarytool submit "$dmg" \
+          notarize_one() {
+            xcrun notarytool submit "$1" \
               --key "$RUNNER_TEMP/asc-key.p8" \
               --key-id "$APPLE_ASC_KEY_ID" \
               --issuer "$APPLE_ASC_ISSUER_ID" \
-              --wait
-            xcrun stapler staple "$dmg"
+              --wait \
+            && xcrun stapler staple "$1"
+          }
+          for dmg in release/*.dmg; do
+            for attempt in 1 2 3; do
+              if notarize_one "$dmg"; then
+                echo "OK notarized + stapled $dmg (attempt $attempt)"
+                break
+              fi
+              if [ "$attempt" = 3 ]; then
+                echo "FAIL: notarization of $dmg did not succeed in 3 attempts" >&2
+                exit 1
+              fi
+              echo "notarization of $dmg failed on attempt $attempt - retrying" >&2
+              sleep 60
+            done
           done
 
       - name: Verify macOS signatures (acceptance gate)

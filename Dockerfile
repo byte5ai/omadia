@@ -35,6 +35,15 @@ COPY middleware/scripts/check-node-version.mjs ./scripts/check-node-version.mjs
 # Skipping scripts lets the bundled prebuild be used. The two packages that
 # genuinely need their install script are rebuilt explicitly afterwards; both
 # fetch prebuilt binaries, so no compiler is required either.
+# npm's registry fetches are retried harder than the default (2 attempts, short
+# backoff) because a dropped connection here fails the whole image build: the
+# web-ui edge image died on `npm error code ECONNRESET` mid-`npm ci` while the
+# very same commit built fine in the other pipeline minutes later. Retrying in
+# npm is strictly cheaper than re-running a Docker job by hand, and it applies
+# to `npm rebuild` / `npm install` in this stage too.
+ENV NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 RUN NPM_CPU=$(case "${TARGETARCH:-amd64}" in arm64) echo arm64;; *) echo x64;; esac) \
  && npm ci --ignore-scripts --no-audit --no-fund \
  && npm rebuild argon2 esbuild \
@@ -105,6 +114,10 @@ COPY middleware/scripts/check-node-version.mjs ./scripts/check-node-version.mjs
 # See the builder stage for why `--ignore-scripts` + an explicit rebuild is
 # required here (better-sqlite3 v13 + `npm ci` ignoring `gypfile: false`).
 # esbuild is dev-only, so this stage rebuilds argon2 alone.
+# Same registry-retry hardening as the builder stage above — see the note there.
+ENV NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 RUN NPM_CPU=$(case "${TARGETARCH:-amd64}" in arm64) echo arm64;; *) echo x64;; esac) \
  && npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm rebuild argon2 \
