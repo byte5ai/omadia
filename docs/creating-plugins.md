@@ -244,7 +244,8 @@ for await (const ev of core.handleTurnStream(turn)) { /* ev: ChatStreamEvent */ 
 **Inbound → Turn.** `IncomingTurn = { channelId, conversationId, userRef:{ kind,
 id, displayName? }, text, attachments?, metadata?, rawEvent? }`. `userRef.kind`
 ist ein geschlossener Union — WhatsApp = `'whatsapp-phone'`, Telegram =
-`'telegram-chat'`, Teams = `'teams-aad'`, Slack/Discord/`custom`. `isNoReply()`
+`'telegram-chat'`, Teams = `'teams-aad'`, iMessage = `'imessage-handle'`,
+Slack/Discord/`custom`. `isNoReply()`
 filtert die `NO_REPLY`-Sentinel; `SemanticAnswer` rendert der Channel native.
 
 **Manifest-Besonderheiten (channel).** Keine `capabilities`/`playbook`/`skills`.

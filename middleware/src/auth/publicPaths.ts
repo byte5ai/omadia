@@ -39,6 +39,17 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Bot Framework webhook for channel-teams: the adapter validates the
   // Bot-issued JWT inside the handler; Teams never sends a session cookie.
   /^\/api\/messages(?:\/|$|\?)/,
+  // Sendblue iMessage relay for channel-imessage (#410). Same shape as the
+  // Teams webhook above: Sendblue POSTs with no session cookie and the plugin
+  // authenticates each delivery itself (timing-safe shared secret in the
+  // `:token` path segment, header fallback). `/a/:token` and
+  // `/answers/:token[/reply]` are the answer-link routes — opened from an
+  // iMessage bubble in a plain browser where no operator session exists; the
+  // single-use, TTL-bound capability token in the URL IS the authorization and
+  // GET is side-effect free by contract. Narrow to the three public route
+  // families only — the plugin's admin UI lives under `/api/imessage-channel/`
+  // and stays behind this gate like every other admin surface.
+  /^\/api\/imessage\/(?:webhook|a|answers)(?:\/|$|\?)/,
   // Epic #459 W9 — generic MCP-server OAuth callback (bugfix). Same shape as
   // the spec-005 kernel OAuth broker callback above: the provider (Notion,
   // etc.) redirects the operator's browser back here after consent, and the

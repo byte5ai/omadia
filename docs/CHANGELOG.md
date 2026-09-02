@@ -18,6 +18,29 @@ entry. See `CONTRIBUTING.md` § Releases & changelog.
 
 ## [Unreleased]
 
+### Added — session-gate exemption for the iMessage channel's public routes (#410)
+
+2026-08-28 — `@omadia/channel-imessage` receives Sendblue webhooks at
+`POST /api/imessage/webhook/:token` and serves answer links for choice cards at
+`GET /api/imessage/a/:token`, `GET /api/imessage/answers/:token` and
+`POST /api/imessage/answers/:token/reply`. All of them are reached without an
+operator session — by Sendblue, or by a recipient tapping a link in an iMessage
+bubble — so the blanket `/api` `requireAuth` mount 401'd every one of them
+before the plugin's own check (timing-safe shared secret, single-use
+capability token) ever ran. `src/auth/publicPaths.ts` now exempts exactly
+those three route families (`/api/imessage/{webhook,a,answers}`), with the
+matching owner row in `staticPublicPathsClosedSet.test.ts`; the plugin's admin
+UI under `/api/imessage-channel/` stays behind the gate.
+
+Why a static exemption and not a `permissions.public_paths` grant: the C4/H1
+grant path is only claimed by `toolPluginRuntime` and only dispatches to
+`ctx.routes.register` prefixes — a `kind: channel` plugin mounting through
+`core.registerRouter` cannot use it today, which is the same reason
+`/api/messages` (Teams) and `/api/public/v1/chat` (channel-api) are static.
+Extending grants to channel plugins would let this entry go again.
+
+Also: `ChannelUserKind` gains `'imessage-handle'` in `@omadia/channel-sdk`.
+
 ### Added — provisioning writes the `teams_bots` entry itself (#910)
 
 2026-08-28 — After a successful Teams identity provisioning run the operator

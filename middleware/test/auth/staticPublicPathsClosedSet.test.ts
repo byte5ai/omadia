@@ -68,6 +68,10 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
     why: 'Bot Framework webhook — the adapter validates the Bot-issued JWT in the handler',
   },
   {
+    path: '/api/imessage/webhook/token',
+    why: 'Sendblue iMessage webhook + answer links (#410) — the plugin verifies its shared secret / capability token in the handler',
+  },
+  {
     path: '/api/v1/operator/mcp-oauth/callback',
     why: 'epic #459 W9 MCP-server OAuth callback — same signed-state shape',
   },
