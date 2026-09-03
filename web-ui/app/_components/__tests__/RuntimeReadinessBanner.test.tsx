@@ -96,6 +96,51 @@ describe('<RuntimeReadinessBanner />', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  // OM-75 (#1000) — two causes, two texts. The tester had a working
+  // subscription login and was still told to "add a key or subscription".
+  it('names the missing assignment when the 503 says cause=no_assignment', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'no_assignment',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText('Orchestrator nicht zugeordnet')).toBeInTheDocument();
+    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    expect(screen.getByText(/keinem Provider mit Zugang zugeordnet/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /Zuordnung öffnen/i }),
+    ).toHaveAttribute('href', '/admin/providers');
+    expect(screen.getByTestId('runtime-readiness-card').dataset['cause']).toBe(
+      'no_assignment',
+    );
+  });
+
+  it('keeps the access copy for cause=no_llm_access and for a 503 without a cause', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'no_llm_access',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText(TITLE_DE)).toBeInTheDocument();
+    expect(screen.queryByText('Orchestrator nicht zugeordnet')).not.toBeInTheDocument();
+  });
+
+  // OM-72 (#1002) / OM-75 — the body must not promise "sofort verfügbar" nor
+  // point at a middleware restart the UI does not offer.
+  it('does not promise instant availability or a restart control', async () => {
+    respondWith(503, { error: 'multi_orchestrator_unavailable' });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.textContent).not.toMatch(/sofort verfügbar/);
+    expect(card.textContent).not.toMatch(/Neustart der Middleware/);
+  });
+
   it('clears itself once a heartbeat sees the runtime come up', async () => {
     respondWith(503, { error: 'multi_orchestrator_unavailable' });
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });

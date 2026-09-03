@@ -11,6 +11,7 @@ import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
 import { registerOpenAiResponsesAdapter } from '@omadia/llm-adapter-openai-responses';
 import {
   defaultLlmAdapters,
+  listModels,
   LlmProviderCatalog,
   readProviderApiKey,
   readProviderOAuthTokens,
@@ -168,7 +169,11 @@ import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvi
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
-import { resolvePluginLlmReadiness } from './platform/pluginLlmReadiness.js';
+import {
+  resolvePluginLlmReadiness,
+  resolveRuntimeReadinessCause,
+  type RuntimeReadinessCause,
+} from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
@@ -3405,6 +3410,17 @@ async function main(): Promise<void> {
     '[middleware] memory-backend endpoint ready at /api/v1/admin/memory/backend',
   );
 
+  // OM-75 / OM-78 (#1000, #1001) — the readiness verdict the operator-agents
+  // 503 carries. Hoisted out of the mount so the wiring-pin tests' lazy
+  // `createOperatorAgentsRouter\(\{…\}\)` match still spans every option.
+  const resolveOperatorRuntimeReadinessCause = (): Promise<RuntimeReadinessCause> =>
+    resolveRuntimeReadinessCause({
+      providerIds: [...new Set(listModels().map((m) => m.provider))],
+      orchestratorConfig: installedRegistry.get('@omadia/orchestrator')?.config,
+      vault: secretVault,
+      llmProviderCatalog,
+    });
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -3557,6 +3573,11 @@ async function main(): Promise<void> {
           serviceRegistry.get<OperatorAgentIdentityStore>('agentIdentityStore');
         return store ? { store } : undefined;
       },
+      // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
+      // is down, so the readiness banner can tell "no access at all" from
+      // "access exists, orchestrator not assigned to it". Same credential
+      // verdicts the providers admin renders; no network probe.
+      getReadinessCause: resolveOperatorRuntimeReadinessCause,
     }),
   );
   console.log(

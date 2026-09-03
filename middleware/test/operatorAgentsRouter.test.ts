@@ -3233,6 +3233,68 @@ describe('createOperatorAgentsRouter', () => {
         `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
       );
       assert.equal(res.status, 503);
+      // Without a cause resolver the payload is exactly what it always was.
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'multi_orchestrator_unavailable');
+      assert.equal('cause' in body, false);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  // OM-75 / OM-78 (#1000, #1001) — the readiness banner reads `cause` off this
+  // 503 to tell "no access at all" from "access exists, orchestrator not
+  // assigned to it". A failing resolver must degrade, never hang or 500.
+  it('503 carries the readiness cause when a resolver is wired', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => undefined,
+        getRegistry: () => undefined,
+        getChatSessionStore: () => undefined,
+        getReadinessCause: async () => 'no_assignment',
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      const addr = s.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
+      );
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'multi_orchestrator_unavailable');
+      assert.equal(body['cause'], 'no_assignment');
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('503 degrades the cause to unknown when the resolver rejects', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => undefined,
+        getRegistry: () => undefined,
+        getChatSessionStore: () => undefined,
+        getReadinessCause: async () => {
+          throw new Error('vault exploded');
+        },
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      const addr = s.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
+      );
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['cause'], 'unknown');
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }

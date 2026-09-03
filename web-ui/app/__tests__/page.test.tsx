@@ -21,12 +21,14 @@ const {
   mockListOperatorAgents,
   mockMcp,
   mockGetCliBackends,
+  mockGetEmbeddingStatus,
 } = vi.hoisted(() => ({
   mockGetProviders: vi.fn(),
   mockListStorePlugins: vi.fn(),
   mockListOperatorAgents: vi.fn(),
   mockMcp: vi.fn(),
   mockGetCliBackends: vi.fn(),
+  mockGetEmbeddingStatus: vi.fn(),
 }));
 
 vi.mock('next-intl/server', () => ({
@@ -49,6 +51,7 @@ vi.mock('../_lib/api', () => ({
   getProviders: mockGetProviders,
   listStorePlugins: mockListStorePlugins,
   getCliBackends: mockGetCliBackends,
+  getEmbeddingProviderStatus: mockGetEmbeddingStatus,
 }));
 
 vi.mock('../_lib/agents', () => ({
@@ -64,14 +67,23 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   DashboardOnboarding: ({
     llmVerified,
     cliLoggedIn,
+    runtimeUp,
+    assignedProviderKind,
+    embeddingsOff,
   }: {
     llmVerified: boolean;
     cliLoggedIn: boolean;
+    runtimeUp: boolean;
+    assignedProviderKind: 'cli' | 'api' | null;
+    embeddingsOff: boolean;
   }): React.ReactElement => (
     <div
       data-testid="onboarding"
       data-llm-verified={String(llmVerified)}
       data-cli-logged-in={String(cliLoggedIn)}
+      data-runtime-up={String(runtimeUp)}
+      data-assigned-kind={String(assignedProviderKind)}
+      data-embeddings-off={String(embeddingsOff)}
     />
   ),
 }));
@@ -123,6 +135,12 @@ describe('dashboard — LLM health derivation', () => {
     mockListOperatorAgents.mockResolvedValue({ agents: [] });
     mockMcp.mockResolvedValue({});
     mockGetCliBackends.mockResolvedValue({ backends: [], generatedAt: Date.now() });
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+    });
   });
 
   it('a verified provider reads OK and names the active provider', async () => {
@@ -226,5 +244,109 @@ describe('dashboard — LLM health derivation', () => {
     });
     render(await DashboardPage());
     expect(screen.getByTestId('onboarding').dataset['cliLoggedIn']).toBe('true');
+  });
+
+  // OM-78 (#1001) — the runtime signal handed to onboarding is the operator
+  // route's answer, the same probe the readiness banner uses. A 503 there
+  // means "not up", whatever the provider list says.
+  it('OM-78: runtimeUp follows /operator/agents, not the provider list', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse([provider({ status: 'verified', connected: true })]),
+    );
+    mockListOperatorAgents.mockRejectedValue(
+      Object.assign(new Error('503'), { status: 503 }),
+    );
+    render(await DashboardPage());
+    const onboarding = screen.getByTestId('onboarding').dataset;
+    expect(onboarding['llmVerified']).toBe('true');
+    expect(onboarding['runtimeUp']).toBe('false');
+  });
+
+  it('OM-78: runtimeUp is true once the operator route answers', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
+  });
+
+  // OM-74 (#999) — the done-copy follows what the orchestrator is ASSIGNED to.
+  it('OM-74: a claude-cli assignment is reported as kind=cli', async () => {
+    mockGetProviders.mockResolvedValue({
+      ...providersResponse([
+        provider({ id: 'claude-cli', label: 'Claude (subscription CLI)', toolLess: true }),
+        provider(),
+      ]),
+      assignments: [
+        {
+          pluginId: '@omadia/orchestrator',
+          label: 'Orchestrator',
+          installed: true,
+          provider: 'claude-cli',
+          model: 'claude-cli:opus-cli',
+          modelKey: 'orchestrator_model',
+        },
+      ],
+    });
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['assignedKind']).toBe('cli');
+  });
+
+  it('OM-74: an anthropic assignment is reported as kind=api', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['assignedKind']).toBe('api');
+  });
+});
+
+// OM-84 (#1003) — memory, semantic search and dedup hang off embeddingClient@1.
+// A default install has none, and no surface said so.
+describe('dashboard — embeddings health card', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    mockListOperatorAgents.mockResolvedValue({ agents: [] });
+    mockMcp.mockResolvedValue({});
+    mockGetCliBackends.mockResolvedValue({ backends: [], generatedAt: Date.now() });
+  });
+
+  async function renderEmbeddingsCard(): Promise<string> {
+    render(await DashboardPage());
+    const title = screen.getByText('health.embeddings.title');
+    const card = title.closest('li');
+    if (!card) throw new Error('embeddings health card not found');
+    return card.textContent ?? '';
+  }
+
+  it('reads OK and names the model when the capability is published', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+    });
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.ok');
+    expect(text).toContain('health.embeddings.active:{"model":"ollama:nomic-embed-text"}');
+    expect(screen.getByTestId('onboarding').dataset['embeddingsOff']).toBe('false');
+  });
+
+  it('reads WARN and says so when no embedding provider is published (the round-4 default install)', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: false,
+      activeProviderId: null,
+      activeModel: null,
+      installedProviderIds: [],
+    });
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.warn');
+    expect(text).toContain('health.embeddings.none');
+    expect(screen.getByTestId('onboarding').dataset['embeddingsOff']).toBe('true');
+  });
+
+  it('does not claim "off" when the status route is unreachable', async () => {
+    mockGetEmbeddingStatus.mockRejectedValue(new Error('boom'));
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.embeddings.unknown');
+    expect(screen.getByTestId('onboarding').dataset['embeddingsOff']).toBe('false');
   });
 });

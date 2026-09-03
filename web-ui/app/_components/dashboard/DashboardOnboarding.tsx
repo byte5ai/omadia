@@ -216,6 +216,28 @@ export interface DashboardOnboardingProps {
    * "Schritt 1: LLM verbinden". Counts as satisfying step 1.
    */
   cliLoggedIn: boolean;
+  /**
+   * OM-78 (#1001) — the agent runtime actually answers (`/operator/agents`
+   * came back instead of 503 `multi_orchestrator_unavailable`).
+   *
+   * This is what step 1 ticks on now. `llmVerified` / `cliLoggedIn` say that
+   * an ACCESS exists; they do not say the orchestrator can use it. In the
+   * round-4 beta test the dashboard read "LLM verbunden · 3 von 3 erledigt"
+   * while the readiness card two centimetres below said "LLM-Zugang fehlt",
+   * because the orchestrator was still assigned to a provider without a key.
+   * One page, two verdicts. The card and this step now read the same signal.
+   */
+  runtimeUp: boolean;
+  /**
+   * OM-74 (#999) — what the orchestrator is actually assigned to, so the
+   * done-copy names the right thing. `'cli'` for a keyless subscription CLI
+   * provider, `'api'` for a key-based provider, `null` when unknown.
+   */
+  assignedProviderKind: 'cli' | 'api' | null;
+  /** OM-84 (#1003) — `embeddingClient@1` is NOT published: process memory,
+   *  semantic search and dedup are off. Surfaced as a note under the steps
+   *  because nothing in setup mentioned embeddings at all. */
+  embeddingsOff: boolean;
   /** At least one plugin is installed — satisfies step 3. */
   hasInstalledPlugin: boolean;
 }
@@ -231,6 +253,9 @@ export function DashboardOnboarding({
   plugins,
   llmVerified,
   cliLoggedIn,
+  runtimeUp,
+  assignedProviderKind,
+  embeddingsOff,
   hasInstalledPlugin,
 }: DashboardOnboardingProps): React.ReactElement | null {
   const t = useTranslations('dashboard.onboarding');
@@ -276,12 +301,21 @@ export function DashboardOnboarding({
   // Step 1 is LLM access — the actual blocker the card never mentioned.
   // A fixed-length tuple, not a bare array: the three steps are a closed set,
   // and `noUncheckedIndexedAccess` would otherwise make every read optional.
+  //
+  // OM-78 (#1001) — step 1 ticks on the RUNTIME, not on a stored access. An
+  // access that the orchestrator is not assigned to used to tick this step
+  // while every operator route 503ed; the counter reached "3 von 3" for a
+  // system that could not run a single agent.
   const steps: readonly [OnboardingStep, OnboardingStep, OnboardingStep] = [
-    { id: 'llmAccess', done: llmVerified || cliLoggedIn },
+    { id: 'llmAccess', done: runtimeUp },
     { id: 'businessCase', done: selectedCase !== null },
     { id: 'install', done: hasInstalledPlugin },
   ];
   const llmDone = steps[0].done;
+  // An access exists but the runtime is down: the missing piece is almost
+  // always the orchestrator's provider assignment (OM-79), so the step says
+  // that instead of offering to connect an access the operator already has.
+  const accessWithoutRuntime = !llmDone && (llmVerified || cliLoggedIn);
   // #886 — step 3's RESULT copy. Counted here with the same OM-27 predicate the
   // dashboard health tile uses, over the same `plugins` array `page.tsx` derives
   // `hasInstalledPlugin` from — so the badge and the sentence underneath it read
@@ -339,11 +373,32 @@ export function DashboardOnboarding({
         title={t('llmStep.title')}
       >
         {llmDone ? (
+          // OM-74 (#999) — the copy follows the orchestrator's ASSIGNMENT, not
+          // the mere presence of a CLI login. "Its key was verified" was shown
+          // to a subscription user who never stored a key.
           <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
-            {cliLoggedIn && !llmVerified
+            {assignedProviderKind === 'cli'
               ? t('llmStep.doneViaCli')
               : t('llmStep.doneViaProvider')}
           </p>
+        ) : accessWithoutRuntime ? (
+          <>
+            <p
+              data-testid="onboarding-step-1-assign-hint"
+              className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]"
+            >
+              {t('llmStep.accessWithoutRuntime')}
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Link
+                href="/admin/providers"
+                className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
+              >
+                {t('llmStep.assignOrchestrator')}
+                <ArrowRight className="size-3.5" aria-hidden />
+              </Link>
+            </div>
+          </>
         ) : (
           <>
             <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
@@ -426,6 +481,27 @@ export function DashboardOnboarding({
           />
         )}
       </StepShell>
+
+      {/* OM-84 (#1003) — a default install runs with embeddings OFF: process
+          memory, semantic search and dedup are all disabled, and nothing in
+          setup says so. The tester found out when an agent failed mid-answer.
+          Not a fourth step (there is no keyless embedding path yet), but the
+          card must not read as "done" without naming the limitation. */}
+      {embeddingsOff ? (
+        <p
+          data-testid="onboarding-embeddings-note"
+          className="mt-6 max-w-2xl border-l-2 border-[color:var(--accent)] pl-4 text-[13px] leading-relaxed text-[color:var(--fg-muted)]"
+        >
+          {t('embeddingsNote')}{' '}
+          <Link
+            href="/admin/embedding-provider"
+            className="inline-flex items-center gap-1 font-semibold text-[color:var(--accent)] hover:underline"
+          >
+            {t('embeddingsCta')}
+            <ArrowRight className="size-3.5" aria-hidden />
+          </Link>
+        </p>
+      ) : null}
     </section>
   );
 }
