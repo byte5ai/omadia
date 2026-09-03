@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.embeddings"
-  description: "Embedding-Adapter für OpenAI-kompatible Server (POST /v1/embeddings — OpenAI, Azure via Gateway, vLLM, LM Studio, LiteLLM). Alternative zum Ollama-Adapter @omadia/embeddings; beide liefern die Capability 'embeddingClient@1', es darf immer nur einer aktiv sein."
+  description:
+    en: "Connects omadia to an OpenAI compatible embedding server, so semantic search and memory can run on OpenAI, Azure, vLLM, LM Studio or LiteLLM. Use it instead of the Ollama based Embeddings plugin, only one of the two can be active."
+    de: "Verbindet omadia mit einem OpenAI-kompatiblen Embedding-Server, damit semantische Suche und Gedächtnis über OpenAI, Azure, vLLM, LM Studio oder LiteLLM laufen. Nutze es alternativ zum Ollama-basierten Embeddings-Plugin, aktiv sein darf immer nur eines von beiden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

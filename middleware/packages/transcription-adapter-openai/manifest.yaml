@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.transcription"
-  description: "Speech-to-Text-Adapter für die OpenAI-Transkriptionsmodelle (#584). Liefert die Capability 'transcription@1' mit gpt-transcribe (Batch, POST /v1/audio/transcriptions) und gpt-live-transcribe (Realtime-WebSocket, experimentell hinter TRANSCRIPTION_REALTIME_EXPERIMENTAL). Es darf immer nur ein transcription@1-Provider aktiv sein."
+  description:
+    en: "Turns speech into text with OpenAI's transcription models, either from a recording or live while someone is speaking. Only one transcription provider can be active."
+    de: "Wandelt Sprache in Text um, mit den Transkriptionsmodellen von OpenAI, entweder aus einer Aufnahme oder live während des Sprechens. Aktiv sein darf immer nur ein Transkriptions-Anbieter."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
