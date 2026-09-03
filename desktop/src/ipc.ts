@@ -27,6 +27,8 @@ export interface IpcDeps {
   boot: (forward: (p: BootProgress) => void) => Promise<string>;
   /** Called once the UI is serving so main can swap the wizard for the app window. */
   onReady: (uiUrl: string) => void;
+  /** OM-71: the web UI reports that its first real screen is standing. */
+  onUiReady: () => void;
 }
 
 /**
@@ -91,6 +93,8 @@ async function chooseDataDirWithSyncWarning(
 }
 
 export function registerIpc(deps: IpcDeps): void {
+  ipcMain.on(CH.uiReady, () => deps.onUiReady());
+
   ipcMain.handle(CH.getState, (): AppState => ({
     setupComplete: isSetupComplete(),
     encryptionAvailable: isEncryptionAvailable(),

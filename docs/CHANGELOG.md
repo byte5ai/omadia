@@ -56,6 +56,26 @@ the OS name any more: self-hosters advertise as `<instance>-<machine>.local`
 responders on one device can no longer collide. The variable is documented in
 `middleware/.env.example`.
 
+### Fixed — Shell dialogs are attached to the window, and the recovery-key reminder waits for the page
+
+2026-09-03 — Beta round 4, OM-71 (#1005). Five of the seven native dialogs,
+among them all three about the vault recovery key, were shown without a parent
+window. On macOS that is an application-modal, free-floating dialog: the
+reminder on start was half covered by a system dialog and unreadable, and the
+one dialog that shows the key decrypting the local database could get lost
+behind other windows. Every dialog now goes through one helper that attaches
+it to the main window (a destroyed window falls back to the old behaviour
+rather than throwing over the key).
+
+The reminder also fired the moment `loadURL` resolved, over a page that still
+read "Lade Login…" — `loadURL` resolves on the document, not on a screen. The
+web UI now tells the shell when its first real screen is standing
+(`omadia:uiReady` via the preload bridge; `/login` and `/setup` report once
+their provider fetch has settled, every other page on hydration), and both the
+boot and the restart path wait for that ping before speaking. A 15-second
+fallback keeps the reminder for an older or crashed renderer: it exists to
+prevent silent data loss, so late beats never.
+
 ### Fixed — MCP marketplace search now answers from the cached catalog when only the registry's search is broken
 
 2026-09-01 — Follow-up to the entry below, found by watching the deployed fix
