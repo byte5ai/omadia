@@ -52,14 +52,16 @@ gate was half-applied and unverified.
   `harness-orchestrator/src/cliSpawnGate.ts`, and both sites build their argv
   from it.
 - **#1014** — the deny list was hand-collected and missed 40 real tool names,
-  among them `Tmux` (a terminal) and `JavaScript` (a code runner), plus every
-  `self_hosted_runner_*`. It is now taken from the installed binary's own
-  inventory, lists aliases next to canonical names (`KillShell`/`KillBash`,
-  `BashOutput`/`BashOutputTool`), and a drift guard fails when an installed CLI
-  declares a built-in the list does not name. Added `--restricted`, an empty
-  `cwd` (the CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it,
-  but `--bare` never reads OAuth), and an env **allowlist** replacing a scrub
-  list that passed `NODE_OPTIONS` through.
+  `Tmux` (a terminal) among them, plus every `self_hosted_runner_*`. It is now
+  a superset of the installed binary's own inventory and names all ten declared
+  aliases beside their canonical names, including `RunWorkflow` (alias of
+  `Workflow`, metadata declares `enablesCodeExecution`) and the MCP-resource
+  short forms, which a review caught still open. The drift guard mines the
+  binary and subtracts the deny list; its first version did the reverse and so
+  could not detect a deletion at all. Added `--restricted`, an empty `cwd` (the
+  CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it, but `--bare`
+  never reads OAuth), and an env **allowlist**, platform-branched for Windows,
+  replacing a scrub list that passed `NODE_OPTIONS` through.
 - **#1015** — the loopback MCP server dispatched any tool name it was sent, a
   wider set than it advertises; it now refuses an unadvertised name. Teardown
   killed the child *after* awaiting `server.stop()`, which waits for live

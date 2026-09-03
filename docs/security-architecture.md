@@ -104,16 +104,38 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 
 ### Why the deny list is generated, not written (#1014)
 
-The first version was hand-collected and missed 40 real tool names, including
-`Tmux` (a terminal) and `JavaScript` (a code runner beside `REPL`) — the exact
-class the gate exists to remove — plus every `self_hosted_runner_*`, of which
-`spawn_local` starts local sessions. It also listed `KillShell` and
-`BashOutput`, which are **aliases** in 2.1.259, not canonical names, so those
-entries may have matched nothing. `CLI_BUILTIN_TOOL_DENYLIST` is now taken from
-the installed binary's own inventory and lists aliases alongside canonical
-names. `cliSpawnGate.test.ts` carries a drift guard that reads the installed
-binary and fails when it declares a built-in the list does not name, so a CLI
-upgrade cannot quietly widen the surface.
+The first version was hand-collected and missed 40 real tool names, `Tmux`
+among them — a terminal, the exact class the gate exists to remove — plus
+every `self_hosted_runner_*`, of which `spawn_local` starts local sessions. It
+also listed `KillShell` and `BashOutput`, which are **aliases** in 2.1.259, not
+canonical names, so those entries may have matched nothing.
+`CLI_BUILTIN_TOOL_DENYLIST` is now a superset of the installed binary's own
+inventory (2.1.259 ships 78 built-ins plus 105 `mcp__…` names in one array)
+and lists all ten declared aliases alongside their canonical names.
+
+Two of those aliases were missed until a review caught them: `RunWorkflow`
+(alias of `Workflow`, and its metadata declares `enablesCodeExecution`, so it
+was an open code-execution path) and the three MCP-resource short forms
+`ListMcpResources` / `ReadMcpResource` / `ReadMcpResourceDir`.
+
+**The drift guard mines the binary and subtracts the deny list, not the other
+way round.** Its first version could not detect drift at all: it built its
+candidate set out of `CLI_BUILTIN_TOOL_DENYLIST` plus extras that were already
+in the deny list, then filtered for names not in the deny list, which is empty
+by construction. A reviewer replayed it with `Read` removed, with `WebFetch`
+removed and with 40 further names removed, and it stayed green every time — 55
+of 100 entries were deletable with nothing going red. The guard now parses the
+inventory array and the tool-metadata `aliases:[…]` arrays out of the binary,
+subtracts the constant, and fails on any remainder. It also asserts that the
+mining found something, so "nothing drifted" can no longer be confused with
+"nothing was parsed". Verified by planting omissions: removing `Read`,
+`WebFetch`, `Tmux`, `ReadMcpResource` or `RunWorkflow` each turns the suite
+red, and restoring them turns it green.
+
+Not every entry is a 2.1.259 tool. The list is deliberately a superset so an
+upgrade cannot open a hole between releases; `JavaScript` is one such entry and
+is **not** a tool in 2.1.259 — the only `"JavaScript"` strings in the binary
+are bundled highlight.js language metadata.
 
 ### The gate is verified behaviourally, not just by argv shape (#1017)
 
@@ -717,8 +739,11 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       from `cliSpawnGate.ts` — a new spawn site must use it too, not copy the
       flags.
 - [ ] A new CLI version has been run against the deny-list drift guard
-      (`cliSpawnGate.test.ts`), and ideally the live probe
-      (`OMADIA_CLI_LIVE_PROBE=1`), before the version is rolled out (§3a).
+      (`cliSpawnGate.test.ts`) **on a machine where that version is installed**,
+      and ideally the live probe (`OMADIA_CLI_LIVE_PROBE=1`), before the
+      version is rolled out (§3a). The guard skips when no binary is present,
+      so ticking this on a machine without the new CLI proves nothing — check
+      the test reported the version you are rolling out.
 - [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —

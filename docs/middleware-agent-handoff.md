@@ -1854,6 +1854,17 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 
 ## 10. Konfiguration
 
+### Test-Schalter (nicht von der Middleware gelesen)
+
+Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
+AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_EXPECT_LOOPBACK=1` | Die Loopback-MCP-Tests **scheitern** statt sich selbst zu überspringen, wenn die Sandbox keinen 127.0.0.1-Listener erlaubt. Ohne das meldet ein Runner ohne Listener die ganze Datei grün, ohne etwas zu prüfen (#1017). CI setzt es. |
+| `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
+| `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
