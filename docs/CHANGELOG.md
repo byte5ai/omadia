@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the web-ui build no longer needs the Google Fonts CDN (#1019)
+
+2026-09-03 — a build-time font download took out a release. On `7a0d4675` the
+macOS x64 desktop build failed with `Turbopack build failed with 4 errors` and,
+four times, `next/font: error: Failed to fetch <family> from Google Fonts`. The
+cascade behaved exactly as the round-3 release fail-safe intends and is worth
+reading as a success: no x64 artifact, so `desktop-apps / mac-update-feed`
+failed with `FAIL: missing artifacts/omadia-installers-macos-latest/latest-mac.yml`,
+so `promote-release` failed, so the release stayed a draft and the previous
+version kept the `latest` flag. Nobody shipped a half-built release. But the
+release did not ship at all, and the cause was a font CDN being briefly
+unreachable from a CI runner.
+
+`next/font/google` self-hosts the faces it serves, which is why the running app
+never asked a CDN for a font. It downloads them at build time, though, so every
+build needed `fonts.googleapis.com`. The four faces now live in the repo at
+`web-ui/app/_fonts/` and load through `next/font/local`.
+
+- The vendored woff2 files are **byte-identical** to what `next/font/google`
+  downloaded before, verified by SHA-256 against the previous build's output, so
+  nothing about the rendered type changes. The weight ranges, `display: swap`,
+  the latin `unicode-range` and the preload split (Geist eager, prose/mono/
+  wordmark deferred) are carried over unchanged, and so are the CSS variable
+  names `_lib/theme.css` composes into `--font-sans` / `--font-serif` /
+  `--font-mono`.
+- 116 KB total for all four families, latin subset only, which is what
+  `layout.tsx` already asked for.
+- All four are SIL Open Font License 1.1; the license text ships next to each
+  file and `app/_fonts/LICENSES.md` records the provenance and update procedure.
+- Two guards so it cannot regress: an ESLint `no-restricted-imports` rule that
+  rejects `next/font/google` outright, and `app/_fonts/fonts.test.ts`, which
+  fails if the import returns, if a referenced woff2 is missing or is not really
+  a woff2, if a CSS variable is renamed, or if a license file is dropped.
+- Verified by building with all outbound HTTP forced through a dead proxy
+  (`HTTPS_PROXY=http://127.0.0.1:1`). The build succeeds, which is the whole
+  point.
+
 ### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
 
 2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
