@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the plugin store speaks German (OM-50, #885)
+
+2026-09-03 — reported by Silvio Lange (TE Printline) in beta rounds 1, 2, 3 and
+again in round 4, and it was never the plumbing. `identity.description` has
+accepted a `{ en, de }` language map since #602, `adaptManifestV1` passes it
+along as `description_localized`, and both store render sites already resolve it
+with `pickLocalized`. What was missing was the content: not one of the 22
+bundled manifests declared a `de:` description, so a German business user
+choosing what to install read developer English.
+
+Worse, and previously unnoticed: eleven of those manifests held German text in
+the bare string, which the loader reads as **English**. An English-speaking
+operator was shown German, and the `en` slot had no English text at all to fall
+back to. The template in `docs/creating-plugins.md` was the source of that
+habit, since it literally read `description: "<Beschreibung DE>"`.
+
+All 22 bundled manifests now carry both languages, rewritten for a business
+reader rather than translated literally, following the project copy rules (no
+em dashes, no AI vocabulary, no capability names a customer has never heard of).
+`middleware/test/manifestDescriptionLocalized.test.ts` guards it: a new plugin
+without a German description fails the suite instead of the next beta report,
+and the test also pins the English resolution, the plain-string fallback and the
+German-only fallback.
+
 ### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
 
 2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
