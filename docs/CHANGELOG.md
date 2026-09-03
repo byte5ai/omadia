@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a foreign tool call is now loud instead of invisible (#1008, #1017)
+
+2026-09-03 — post-merge review of #1009. The subscription-CLI agent marks a
+`tool_use` event `foreign` when the call did not go through omadia's loopback
+MCP server, i.e. when one of the CLI's own built-ins ran despite the OM-81
+spawn gate. The flag was written and never read: no log, no counter, and the
+matching `tool_result` was unmarked, so in the chat trace such a call looked
+exactly like an omadia tool call. The tripwire for "a built-in slipped
+through" was inert, which matters because the deny list behind it is still
+being widened.
+
+- The chat route now records every foreign call in `foreignToolMetrics`
+  (per tool name and per agent slug, same shape as `brokerMetrics`) and logs
+  it at error level. Unlike the broker's denial streaks this alerts on every
+  occurrence: the expected count is zero, so there is no benign steady state
+  to suppress.
+- The matching `tool_result` is stamped `foreign` too, correlated by
+  `tool_use` id, so the pair can no longer disagree.
+- The chat trace renders a foreign call with a translated label and a
+  `role="alert"` explanation saying omadia's permission rules did not apply.
+  The warning is carried by text, not by colour alone.
+- Receipts were left alone deliberately: `turnReceiptStore` is written by the
+  orchestrator at turn end, and the CLI path is a separate `ChatAgent` that
+  writes no receipt at all, so there is no per-turn record to stamp. Worth
+  revisiting if the CLI path ever gains one.
+
 ### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
 
 2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
