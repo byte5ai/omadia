@@ -17,6 +17,7 @@ import {
   getCliBackends,
   startCliLogin,
   submitCliLoginCode,
+  getCliLoginStatus,
   cancelCliLogin,
   cliLogout,
   type CliBackendsResponse,
@@ -205,7 +206,15 @@ type LoginPhase =
   | { phase: 'starting' }
   | { phase: 'awaiting'; sessionId: string; url: string }
   | { phase: 'submitting'; sessionId: string; url: string }
+  // OM-73 — the newer CLI finishes through a browser callback with no code to
+  // paste; we show the link and poll the login status until it resolves.
+  | { phase: 'polling'; url: string }
   | { phase: 'error'; message: string; sessionId?: string; url?: string };
+
+/** Poll cap for the browser-callback login (OM-73): 40 tries × 3s = 2 min,
+ *  matching the backend session lifetime. */
+const LOGIN_POLL_TRIES = 40;
+const LOGIN_POLL_INTERVAL_MS = 3000;
 
 function CliRow({
   b,
@@ -232,12 +241,54 @@ function CliRow({
         ? t('status.installedNotLoggedIn')
         : t('status.installedUnknown');
 
+  /** OM-73 — poll the login status until it resolves (browser-callback flow). */
+  const pollUntilResolved = useCallback(
+    async (url: string): Promise<void> => {
+      for (let i = 0; i < LOGIN_POLL_TRIES; i++) {
+        await new Promise((r) => setTimeout(r, LOGIN_POLL_INTERVAL_MS));
+        let snap;
+        try {
+          snap = await getCliLoginStatus(b.id);
+        } catch {
+          continue; // transient; keep polling
+        }
+        if (snap.status === 'authorized') {
+          setLogin({ phase: 'idle' });
+          setCode('');
+          onChanged();
+          return;
+        }
+        if (snap.status === 'error' || snap.status === 'expired' || snap.status === 'invalid') {
+          setLogin({ phase: 'error', message: snap.error ?? t('connect.failed'), url });
+          return;
+        }
+      }
+      setLogin({ phase: 'error', message: t('connect.stillPending'), url });
+    },
+    [b.id, onChanged, t],
+  );
+
   const onConnect = async (): Promise<void> => {
     setLogin({ phase: 'starting' });
     setCode('');
     try {
-      const { sessionId, verificationUrl } = await startCliLogin(b.id);
-      setLogin({ phase: 'awaiting', sessionId, url: verificationUrl });
+      const start = await startCliLogin(b.id);
+      // The login may already be complete (a cached/instant browser callback).
+      if (start.status === 'authorized') {
+        setLogin({ phase: 'idle' });
+        onChanged();
+        return;
+      }
+      // `codeEntry === false` ⇒ the newer CLI finishes via a browser callback
+      // and prints no code (OM-73). Show the link and poll instead of asking
+      // for a code that will never appear. `undefined` ⇒ old middleware ⇒ old
+      // paste-code flow.
+      if (start.codeEntry === false) {
+        setLogin({ phase: 'polling', url: start.verificationUrl });
+        void pollUntilResolved(start.verificationUrl);
+        return;
+      }
+      setLogin({ phase: 'awaiting', sessionId: start.sessionId, url: start.verificationUrl });
     } catch (err) {
       setLogin({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -368,6 +419,34 @@ function CliRow({
 
           {login.phase === 'starting' && (
             <p className="text-sm text-[color:var(--fg-muted)]">{t('connect.starting')}</p>
+          )}
+
+          {/* OM-73 — browser-callback flow: open the link, then we wait. No code. */}
+          {login.phase === 'polling' && (
+            <div>
+              <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+                {t('connect.heading')}
+              </div>
+              <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm text-[color:var(--fg-muted)]">
+                <li>
+                  {t('connect.openHint')}{' '}
+                  <a
+                    href={login.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-[color:var(--accent)] underline"
+                  >
+                    {t('connect.openLink')}
+                  </a>
+                </li>
+                <li>{t('connect.callbackWait')}</li>
+              </ol>
+              <div className="mt-3">
+                <Button variant="ghost" size="sm" onClick={onCancel}>
+                  {t('connect.cancel')}
+                </Button>
+              </div>
+            </div>
           )}
 
           {(login.phase === 'awaiting' || login.phase === 'submitting' || (login.phase === 'error' && login.url)) && (

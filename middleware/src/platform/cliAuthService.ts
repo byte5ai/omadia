@@ -2,18 +2,24 @@
  * In-app CLI login flow (#309, Phase B) — drives `claude auth login` from the
  * Web UI so a self-hoster never needs a terminal.
  *
- * The flow is two-leg, matching how the official CLI authenticates inside a
- * container (verified empirically against claude v2.1.187):
+ * Two CLI generations, one flow (OM-73, #995):
  *
  *   1. Spawn `claude auth login --claudeai`. The CLI prints an OAuth URL
- *      ("… visit: https://claude.com/cai/oauth/authorize?…") and then waits at
- *      a "Paste code here" prompt reading stdin. We capture the URL and hand it
- *      to the browser (leg OUT).
- *   2. The operator authenticates in their own browser and gets a login code.
- *      The UI posts it back; we write it to the login process's stdin (leg IN).
- *      A wrong code returns "Invalid code" and the process stays alive to retry;
- *      a correct code writes credentials to CLAUDE_CONFIG_DIR (the persisted
- *      volume) and the session becomes authorized.
+ *      ("… visit: https://claude.com/cai/oauth/authorize?…"). We capture it and
+ *      hand it to the browser (leg OUT).
+ *   2a. OLDER CLIs (verified against v2.1.187) then wait at a "Paste code here"
+ *       stdin prompt. The operator authenticates in the browser, gets a code,
+ *       the UI posts it back and we write it to stdin (leg IN). A wrong code
+ *       returns "Invalid code" and the process stays alive to retry.
+ *   2b. NEWER CLIs (v2.1.246+) finish the login through a localhost callback in
+ *       the operator's browser and print NO code. The process exits 0 on its
+ *       own. There is nothing to paste — so `startCliLogin` reports
+ *       `codeEntry: false` and the UI polls `getActiveLogin` until the exit
+ *       handler flips the session to `authorized`.
+ *
+ * Either way, once a login succeeds the `authorized` hook fires (OM-79, #994):
+ * the subscription is connected but no orchestrator points at it yet, and the
+ * hook is where the platform re-assigns the credential-less plugins to the CLI.
  *
  * Hard rules:
  *  - **Subscription path only.** `--claudeai` (never `--console`) and the env is
@@ -52,9 +58,48 @@ const URL_WAIT_MS = 12_000;
 const SESSION_LIFETIME_MS = 5 * 60_000;
 const CODE_RESULT_WAIT_MS = 15_000;
 const STATUS_POLL_INTERVAL_MS = 1500;
+/** After the URL is captured, how long to watch for a "paste code" prompt
+ *  before concluding this CLI finishes via a browser callback (no code). */
+const CODE_PROMPT_PROBE_MS = 2500;
 
 let counter = 0;
 let active: LoginSession | undefined;
+
+/**
+ * Fired once, after a login is confirmed `authorized`. Set by the middleware
+ * bootstrap (OM-79): a fresh subscription login leaves every LLM plugin still
+ * pointing at a keyless `anthropic` provider, so this is where they get
+ * re-assigned to the CLI. Failure inside the hook must never turn a successful
+ * login into an error — the caller wraps it and logs.
+ */
+type LoginAuthorizedHook = (cliId: string) => void | Promise<void>;
+let authorizedHook: LoginAuthorizedHook | undefined;
+
+/** Register the post-login hook. Passing `undefined` clears it (tests). */
+export function setCliLoginAuthorizedHook(hook: LoginAuthorizedHook | undefined): void {
+  authorizedHook = hook;
+}
+
+function fireAuthorizedHook(cliId: string): void {
+  const hook = authorizedHook;
+  if (!hook) return;
+  // Detached: a slow or throwing hook must not block or fail the login result.
+  void (async () => {
+    try {
+      await hook(cliId);
+    } catch (err) {
+      console.warn(
+        `[cliAuth] post-login hook failed for ${cliId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
+}
+
+/** Detect whether the CLI is waiting at a stdin code prompt (older flow). */
+function looksLikeCodePrompt(buf: string): boolean {
+  return /paste|enter the code|authorization code|code here/i.test(buf);
+}
 
 /** Only Claude is wired for v1 (the only confirmed subscription-billed CLI). */
 function assertSupported(cliId: string): void {
@@ -95,6 +140,13 @@ function append(session: LoginSession, chunk: string): void {
 export interface StartLoginResult {
   readonly sessionId: string;
   readonly verificationUrl: string;
+  /** OM-73 — whether this CLI expects a pasted code (older flow). `false`
+   *  means it finishes via a browser callback and the UI should poll the
+   *  login status instead of showing a code field. */
+  readonly codeEntry: boolean;
+  /** The login already completed before the UI could react (very fast browser
+   *  callback). The UI can go straight to "connected". */
+  readonly status: CliLoginStatus;
 }
 
 /**
@@ -150,22 +202,99 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
     session.error = err.message;
     if (active === session) disposeActive();
   });
-  child.on('exit', () => {
-    // If the process exits before authorization, mark it terminal and drop the
-    // stale session so getActiveLogin reports the truth. A successful submit has
-    // already flipped status to 'authorized' and disposed before this fires.
-    if (session.status === 'pending') session.status = 'error';
+  child.on('exit', (code) => {
+    // OM-73 — the newer CLI (v2.1.246+) finishes the login through a localhost
+    // browser callback and exits ON ITS OWN, with no code ever pasted. The old
+    // handler marked any still-`pending` session `error`, so a SUCCESSFUL login
+    // was recorded as a failure and the session dropped. Read the exit code:
+    //   * exit 0 while pending → the CLI completed; confirm via detection and
+    //     mark `authorized` (fires the post-login hook, OM-79).
+    //   * non-zero → a real failure; keep the last output for the operator.
+    // A successful submit (older flow) already flipped to `authorized` and
+    // disposed before this fires, so it is untouched.
+    if (session.status === 'pending') {
+      if (code === 0) {
+        void confirmAuthorizedAfterExit(session);
+        return;
+      }
+      session.status = 'error';
+      const tail = session.buffer.trim().split('\n').slice(-2).join(' ');
+      session.error = tail
+        ? `The login process ended without signing in: ${tail}`
+        : 'The login process ended without signing in. Start again.';
+    }
     if (active === session && session.status !== 'authorized') disposeActive();
   });
 
   const url = await waitFor(() => extractUrl(session.buffer), URL_WAIT_MS);
   if (!url) {
+    // The process may have completed a cached/instant login and exited 0 before
+    // ever printing a URL — that is a success, not a start failure.
+    if (session.status === 'authorized') {
+      return {
+        sessionId: session.id,
+        verificationUrl: '',
+        codeEntry: false,
+        status: 'authorized',
+      };
+    }
     const detail = session.buffer.trim().split('\n').slice(-2).join(' ') || 'no output';
     disposeActive();
     throw new Error(`Could not start the login flow (${detail}).`);
   }
   session.verificationUrl = url;
-  return { sessionId: session.id, verificationUrl: url };
+
+  // Decide which leg follows: a stdin code prompt (older CLI) or a browser
+  // callback (newer CLI). Watch briefly for the prompt; if the process finishes
+  // or a prompt never appears, this is the callback flow (codeEntry=false).
+  const promptDeadline = Date.now() + CODE_PROMPT_PROBE_MS;
+  let codeEntry = false;
+  while (Date.now() < promptDeadline) {
+    if (session.status !== 'pending') break; // exited (authorized or error)
+    if (looksLikeCodePrompt(session.buffer)) {
+      codeEntry = true;
+      break;
+    }
+    await delay(200);
+  }
+  return {
+    sessionId: session.id,
+    verificationUrl: url,
+    codeEntry,
+    status: session.status,
+  };
+}
+
+/**
+ * The login process exited 0 while still `pending` (newer browser-callback
+ * flow). Confirm the credential actually landed before declaring success, then
+ * flip to `authorized` and fire the post-login hook.
+ */
+async function confirmAuthorizedAfterExit(session: LoginSession): Promise<void> {
+  try {
+    const snap = await detectCliBackends({ force: true });
+    const backend = snap.backends.find((b) => b.id === session.cliId);
+    if (backend?.loggedIn === 'yes') {
+      session.status = 'authorized';
+      if (backend.account) session.account = backend.account;
+      session.child = undefined; // process already exited
+      __resetCliBackendCache();
+      fireAuthorizedHook(session.cliId);
+      // Keep the session active (not disposed) so a UI polling getActiveLogin
+      // sees `authorized`. The lifetime timer reaps it; the next login replaces
+      // it. The child is already gone, so there is nothing to kill.
+      return;
+    }
+    // Exited 0 but detection cannot confirm a login — do not claim success.
+    session.status = 'error';
+    session.error =
+      'The login process ended, but no active subscription session was found. Start again.';
+  } catch (err) {
+    session.status = 'error';
+    session.error = err instanceof Error ? err.message : String(err);
+  }
+  // Error path: drop the dead session so getActiveLogin reports the truth.
+  if (active === session) disposeActive();
 }
 
 /**
@@ -211,6 +340,8 @@ export async function submitCliCode(
         const account = session.account;
         disposeActive();
         __resetCliBackendCache();
+        // OM-79 — connect the orchestrator to the freshly logged-in CLI.
+        fireAuthorizedHook(session.cliId);
         return account ? { status: 'authorized', account } : { status: 'authorized' };
       }
       if (/invalid code/i.test(attemptOut)) {
@@ -229,12 +360,20 @@ export async function submitCliCode(
   }
 }
 
-export function getActiveLogin(): { sessionId: string; status: CliLoginStatus; verificationUrl?: string } | undefined {
+export function getActiveLogin(): {
+  sessionId: string;
+  status: CliLoginStatus;
+  verificationUrl?: string;
+  account?: string;
+  error?: string;
+} | undefined {
   if (!active) return undefined;
   return {
     sessionId: active.id,
     status: active.status,
     ...(active.verificationUrl ? { verificationUrl: active.verificationUrl } : {}),
+    ...(active.account ? { account: active.account } : {}),
+    ...(active.error ? { error: active.error } : {}),
   };
 }
 

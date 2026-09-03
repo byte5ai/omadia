@@ -18,18 +18,27 @@ import type { CliBackendStatus } from '../../../../_lib/api';
  * the wire and had zero render sites.
  */
 
-const { mockGetCliBackends, mockStartCliInstall, mockGetCliInstallStatus } = vi.hoisted(() => ({
+const {
+  mockGetCliBackends,
+  mockStartCliInstall,
+  mockGetCliInstallStatus,
+  mockStartCliLogin,
+  mockGetCliLoginStatus,
+} = vi.hoisted(() => ({
   mockGetCliBackends: vi.fn(),
   mockStartCliInstall: vi.fn(),
   mockGetCliInstallStatus: vi.fn(),
+  mockStartCliLogin: vi.fn(),
+  mockGetCliLoginStatus: vi.fn(),
 }));
 
 const CLI_TOOLS_DIR = '/var/lib/omadia/cli-tools';
 
 vi.mock('../../../../_lib/api', () => ({
   getCliBackends: mockGetCliBackends,
-  startCliLogin: vi.fn(),
+  startCliLogin: mockStartCliLogin,
   submitCliLoginCode: vi.fn(),
+  getCliLoginStatus: mockGetCliLoginStatus,
   cancelCliLogin: vi.fn(),
   cliLogout: vi.fn(),
   startCliInstall: mockStartCliInstall,
@@ -262,4 +271,53 @@ describe('<SubscriptionClisPanel />', () => {
       expect(screen.getByText(/^Abrechnung: Abo$/)).toBeTruthy();
     });
   });
+
+  /**
+   * OM-73 (#995) — the newer Claude CLI (v2.1.246+) finishes the login through
+   * a browser callback and prints NO code. The old UI still showed a "paste the
+   * code" field that never got a code, and the backend recorded the successful
+   * login as an error. With `codeEntry: false` the panel must NOT show a code
+   * field; it shows the callback-wait copy and polls the login status.
+   */
+  it('OM-73: a browser-callback login shows no code field and polls to success', async () => {
+    mockGetCliBackends
+      .mockResolvedValueOnce({
+        backends: [backend({ installed: true, loggedIn: 'no' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      })
+      // After the login resolves, onChanged re-loads and the CLI is logged in.
+      .mockResolvedValue({
+        backends: [backend({ installed: true, loggedIn: 'yes', account: 'me@firm.de' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      });
+    mockStartCliLogin.mockResolvedValue({
+      sessionId: 'login-1',
+      verificationUrl: 'https://claude.com/oauth/authorize?x=1',
+      codeEntry: false,
+      status: 'pending',
+    });
+    mockGetCliLoginStatus.mockResolvedValue({ status: 'authorized', account: 'me@firm.de' });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    const connect = await screen.findByRole('button', { name: /Abo verbinden/i });
+    fireEvent.click(connect);
+
+    // The callback-wait copy appears; the code entry field never does.
+    await screen.findByText(/schließt die Anmeldung selbst ab/i);
+    expect(screen.queryByPlaceholderText(/Login-Code einfügen/i)).toBeNull();
+    expect(mockStartCliLogin).toHaveBeenCalledWith('claude');
+
+    // Polling reaches `authorized` and the panel re-loads the backends.
+    await waitFor(
+      () => {
+        expect(mockGetCliLoginStatus).toHaveBeenCalledWith('claude');
+      },
+      { timeout: 6000 },
+    );
+  }, 10000);
 });

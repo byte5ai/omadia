@@ -36,6 +36,31 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
+
+2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
+carries a user from login to a working agent instead of stopping silently.
+
+- **OM-79** — after a successful `claude auth login`, the platform now points
+  every credential-less LLM plugin at the `claude-cli` provider automatically
+  (`autoAssignSubscriptionCli`, wired via a post-login hook in
+  `cliAuthService.setCliLoginAuthorizedHook`). Previously `llm_provider` stayed
+  on `anthropic`, the orchestrator asked the vault for a key it did not have,
+  and every operator surface answered 503 with no hint. A working API key is
+  never overridden. The assignment rules moved to `platform/providerAssignment.ts`
+  so the route and the hand-off share one implementation.
+- **OM-73** — `cliAuthService` now reads the login process's exit code. Claude
+  CLI v2.1.246+ finishes via a browser callback and exits 0 with no pasted code;
+  the old exit handler recorded that success as an error. `startCliLogin` reports
+  `codeEntry` so the UI shows the code field only for the older paste-code flow,
+  and a new `GET …/login/status` lets the UI poll the callback flow.
+- **OM-76 / OM-77** — `POST /api/chat` now returns `no_agents_active` (distinct
+  from `agent_unavailable`) when no orchestrator is active at all; the chat UI
+  shows a translated message linking to LLM access instead of a raw "HTTP 503"
+  and a "re-bind to default" that would 503 again.
+- **OM-80** — `LLM access` (`/admin/providers`) is now the first entry of the
+  ADMIN nav cluster.
+
 ### Fixed — The subscription-CLI agent can no longer run shell commands on the user's machine
 
 2026-09-03 — Beta test round 4, OM-81 (#991). On the subscription path the

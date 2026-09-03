@@ -138,6 +138,21 @@ describe('<Nav /> cluster dropdown', () => {
     expect(menuVisible()).toBe(false);
   });
 
+  // OM-80 (#998) — LLM access holds the orchestrator↔provider assignment
+  // without which no agent runs, yet it had no menu entry. It must be the first
+  // child of the ADMIN cluster.
+  it('admin cluster lists LLM access first, linking to /admin/providers', () => {
+    renderWithIntl(<Nav />);
+    const button = openerFor('admin');
+    fireEvent.mouseEnter(wrapperOf(button));
+
+    const link = screen.getByRole('menuitem', { name: /llm access/i });
+    expect(link.getAttribute('href')).toBe('/admin/providers');
+
+    const items = screen.getAllByRole('menuitem');
+    expect(items[0]).toBe(link);
+  });
+
   it('opens on keyboard focus and on Enter (no pointer involved)', () => {
     renderWithIntl(<Nav />);
     const button = openerFor('admin');

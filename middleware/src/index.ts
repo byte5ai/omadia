@@ -168,6 +168,8 @@ import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
+import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
+import { autoAssignSubscriptionCli } from './platform/providerAssignment.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import {
   memoizeRuntimeReadinessCause,
@@ -3112,6 +3114,14 @@ async function main(): Promise<void> {
       agentResolver,
       resolveChatAgent,
       getDefaultSlug,
+      // OM-76 — "no orchestrator at all" vs "this one is gone". With a registry
+      // it is the live agent count; on a no-DB boot the legacy default bundle
+      // is the only agent there can be.
+      hasActiveAgents: () => {
+        const reg = getRegistry();
+        if (reg) return reg.size() > 0;
+        return getChatAgentBundle() !== undefined;
+      },
       getChatSessionStore,
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
@@ -4930,6 +4940,20 @@ async function main(): Promise<void> {
   // Read-only host-capability probe; never triggers a login or consumes quota.
   app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
+  // OM-79 (#994) — the hand-off the subscription path was missing. A successful
+  // in-app login used to end with "signed in" while the orchestrator kept
+  // asking the vault for an Anthropic key and never published chatAgent@1.
+  // Point every credential-less LLM plugin at the CLI provider right here, so
+  // the login IS the setup; the assignment section stays for overrides.
+  setCliLoginAuthorizedHook(async () => {
+    await autoAssignSubscriptionCli({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+      llmProviderCatalog,
+      log: (msg) => console.log(msg),
+    });
+  });
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys
