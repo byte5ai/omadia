@@ -53,6 +53,12 @@ export interface ToolEvent {
     label: string;
     tone: 'cyan' | 'navy' | 'magenta' | 'warning';
   };
+  /** OM-81 / #1008 — the subscription-CLI agent made this call OUTSIDE
+   *  omadia's loopback MCP server, i.e. it was one of the CLI's own built-in
+   *  tools. Those are removed at spawn time, so this should never be set; the
+   *  trace marks it so a call that slips through cannot pass for an omadia
+   *  tool. Carried on the matching `tool_result` too. */
+  foreign?: true;
 }
 
 /**

@@ -1421,6 +1421,8 @@
     },
     "inputLabel": "Eingabe",
     "outputLabel": "Ausgabe",
+    "foreignToolBadge": "Fremdes Werkzeug",
+    "foreignToolExplain": "Dieser Aufruf lief nicht über omadia. Die Abo-CLI hat ein eigenes eingebautes Werkzeug benutzt, omadias Rechteprüfung hat dafür also nicht gegriffen. Bitte melde das deinem Betreiber.",
     "persona": {
       "title": "Persona",
       "matched": "Antwortet als {name}",
