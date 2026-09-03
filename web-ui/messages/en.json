@@ -1421,6 +1421,8 @@
     },
     "inputLabel": "input",
     "outputLabel": "output",
+    "foreignToolBadge": "foreign tool",
+    "foreignToolExplain": "This call did not run through omadia. The subscription CLI used one of its own built-in tools, so omadia's permission rules did not apply to it. Please report this to your operator.",
     "persona": {
       "title": "Persona",
       "matched": "Answering as {name}",

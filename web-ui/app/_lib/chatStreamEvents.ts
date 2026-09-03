@@ -58,6 +58,9 @@ export type ChatStreamEvent =
       input: unknown;
       /** Server-resolved agent metadata; absent for helper tools. */
       agent?: ToolEvent['agent'];
+      /** OM-81 / #1008 — call did not go through omadia's loopback MCP
+       *  server, i.e. a CLI built-in slipped past the spawn gate. */
+      foreign?: true;
     }
   | {
       type: 'tool_result';
@@ -65,6 +68,9 @@ export type ChatStreamEvent =
       output: string;
       durationMs: number;
       isError?: boolean;
+      /** Stamped by the chat route when the matching `tool_use` was
+       *  foreign, so the pair is marked consistently (#1008). */
+      foreign?: true;
     }
   | {
       type: 'nudge';
@@ -251,6 +257,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         startedAt: Date.now(),
         subEvents: [],
         ...(event.agent ? { agent: event.agent } : {}),
+        ...(event.foreign ? { foreign: event.foreign } : {}),
       };
       return { ...m, tools: [...(m.tools ?? []), tool] };
     }
@@ -314,6 +321,10 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
               durationMs: event.durationMs,
               isError: event.isError ?? false,
               liveElapsedMs: undefined,
+              // #1008 — a reconnect can deliver the result without the
+              // preceding tool_use, so trust the stamped result too instead
+              // of relying on the entry already carrying the flag.
+              ...(event.foreign ? { foreign: event.foreign } : {}),
             }
           : t,
       );
