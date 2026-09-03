@@ -1437,6 +1437,32 @@ conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
 Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
 `test/conversationSendService.test.ts`.
 
+### Runtime-Readiness-Cause + Embedding-Status (Beta-Runde 4, #1000 / #1003)
+
+Zwei kleine API-Ergänzungen, damit Dashboard und Readiness-Banner dieselbe
+Wahrheit lesen (OM-74/75/78/84):
+
+- **`cause` auf dem `multi_orchestrator_unavailable`-503 von
+  `GET /api/v1/operator/agents`.** Werte: `no_llm_access` (kein Key, kein
+  OAuth, kein CLI-Login bei irgendeinem Provider), `no_assignment` (ein Zugang
+  existiert, aber der Provider, dem der Orchestrator per `llm_provider`
+  zugeordnet ist, hat keinen), `unknown` (Zugang und Zuordnung passen; Runtime
+  aus anderem Grund down, z. B. DATABASE_URL, Boot). Berechnung in
+  `src/platform/pluginLlmReadiness.ts` (`computeRuntimeReadinessCause` pur,
+  `resolveRuntimeReadinessCause` mit denselben Credential-Verdicts wie die
+  Providers-Admin, ohne Netz-Probe; `memoizeRuntimeReadinessCause` teilt ein
+  Verdict 8 s zwischen parallelen Aufrufern). Router-Dep `getReadinessCause`
+  in `routes/operatorAgents.ts` ist optional; ohne sie bleibt das 503-Payload
+  unverändert, ein Reject degradiert zu `unknown`. Wiring-Pin in
+  `test/operatorAgentsRouter.test.ts`.
+- **`GET /api/v1/admin/embedding-provider/status`** (auth wie der Rest des
+  Routers): `{ capabilityPublished, activeProviderId, activeModel,
+  installedProviderIds }` aus der Registry allein. Das bestehende `GET /`
+  zählt den Korpus pro Vektorspalte und ist für eine Karte, die bei jedem
+  Dashboard-Load rendert, zu teuer. Konsument: `web-ui/app/page.tsx`
+  (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
+  `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert

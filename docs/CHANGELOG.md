@@ -36,6 +36,60 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — dashboard and readiness banner read one runtime truth (#999, #1000, #1001, #1002, #1003)
+
+2026-09-03 — omadia beta test round 4 (TE Printline, OM-72/74/75/78/84). The
+dashboard said "LLM verbunden · 3 von 3 erledigt" while the readiness card two
+centimetres below said "LLM-Zugang fehlt". Both were right from their own
+viewpoint: the onboarding tick checked whether an access was *stored*, the card
+probed whether the orchestrator runtime *answered*. The tester had a working
+subscription login; the orchestrator was still assigned to `anthropic`, for
+which no key existed, so nothing ran — and the only text on screen told him to
+add the key or subscription he already had, and promised chat "sofort".
+
+**Onboarding step 1 follows the live runtime (#1001, OM-78).** Step 1 now ticks
+on the same probe the banner uses (`/operator/agents` answering instead of
+503ing), not on a stored key or CLI login. The counter can no longer reach
+"3 von 3" for a system that cannot run an agent. When an access exists but the
+runtime is down, the step names the missing orchestrator assignment and links
+straight to it instead of offering to connect an access again.
+
+**The CLI wording follows the assignment (#999, OM-74).** "Ein LLM-Anbieter ist
+verbunden und sein Schlüssel wurde geprüft" was shown to a subscription user who
+never stored a key. The done-copy now reads off what the orchestrator is
+actually assigned to: a keyless subscription CLI gets the CLI sentence, a
+key-based provider the key sentence.
+
+**The readiness banner names the cause (#1000, OM-75).** The operator-agents 503
+carries a new `cause` field — `no_llm_access` (no key, no OAuth, no CLI login
+anywhere), `no_assignment` (an access exists, the orchestrator points elsewhere)
+or `unknown` — computed from the same credential verdicts the providers page
+renders, without a network probe. The banner renders a distinct title, body and
+CTA for `no_assignment` ("Orchestrator nicht zugeordnet" → "Zuordnung öffnen")
+and for `unknown` ("Agent-Runtime antwortet nicht"), which by construction
+means access and assignment are set — e.g. a stored but rejected key — so the
+no-access sentence would be false there. A 503 without a cause (older
+middleware) keeps the no-access copy. The verdict is memoised for 8 s so a
+dashboard load with several probing widgets runs one credential lookup.
+
+**No more promises about a control that does not exist (#1002, OM-72).** The
+banner body no longer says chat is available "sofort" nor that routines need
+"einen Neustart der Middleware" — the web UI has no restart control, and the
+only one (Tray → Restart) sits behind an icon that is still missing (#888).
+
+**Embeddings are no longer silently off (#1003, OM-84).** A default install runs
+without an embedding provider, which disables process memory, semantic search
+and dedup; nothing in setup said so and the tester learned it from an agent
+failing mid-answer. New `GET /api/v1/admin/embedding-provider/status` answers
+from the registry alone (the existing `GET /` counts the corpus and is too
+heavy for a card rendered on every dashboard load). The dashboard gets a
+"Gedächtnis / Embeddings" health card linking to the embedding-provider setting,
+and the onboarding card names the limitation while no provider is published.
+
+API additions: `cause` on the `multi_orchestrator_unavailable` 503 of
+`/api/v1/operator/agents`; `GET /api/v1/admin/embedding-provider/status`
+(`capabilityPublished`, `activeProviderId`, `activeModel`, `installedProviderIds`).
+
 ### Fixed — The desktop app no longer renames the user's Mac on every start
 
 2026-09-03 — Beta round 4, OM-70 (#1004). Since v0.142 the Mac of the tester

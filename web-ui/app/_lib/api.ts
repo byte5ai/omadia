@@ -4295,6 +4295,23 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
 }
 
 /**
+ * OM-84 (#1003) — the cheap readiness summary behind the dashboard's
+ * "memory / embeddings" health card. Unlike `getEmbeddingProvider` it does not
+ * count the stored corpus, so it is safe to call on every dashboard load.
+ */
+export interface EmbeddingProviderStatus {
+  /** `embeddingClient@1` is published — memory, semantic search and dedup work. */
+  capabilityPublished: boolean;
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  installedProviderIds: string[];
+}
+
+export async function getEmbeddingProviderStatus(): Promise<EmbeddingProviderStatus> {
+  return getJson<EmbeddingProviderStatus>('/v1/admin/embedding-provider/status');
+}
+
+/**
  * Switch the active embedding provider, live.
  *
  * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid

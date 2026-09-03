@@ -37,6 +37,7 @@ import {
   type UninstallFromTeamOutcome,
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
+import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
@@ -1558,6 +1559,12 @@ export interface OperatorAgentsRouterOptions {
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
   readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
+  /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
+   *  banner probes `GET /` and reads `cause` off the 503 so it can name the
+   *  actual remedy (add access vs. assign the orchestrator). Optional: tests
+   *  and minimal mounts omit it and the 503 carries no `cause`. Must not
+   *  throw; a rejection degrades to `unknown`. */
+  readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
 }
 
 export function createOperatorAgentsRouter(
@@ -1576,11 +1583,23 @@ export function createOperatorAgentsRouter(
   }
 
   function unavailable(res: Response): void {
-    res.status(503).json({
+    const body = {
       error: 'multi_orchestrator_unavailable',
       message:
         'orchestratorRegistry@1 is not published — DATABASE_URL must be set and the orchestrator plugin must be active.',
-    });
+    };
+    const readinessCause = options.getReadinessCause;
+    if (readinessCause === undefined) {
+      res.status(503).json(body);
+      return;
+    }
+    // The cause is a decoration on an error that is being sent regardless, so
+    // a failing lookup must never turn the 503 into a hung request or a 500.
+    void readinessCause()
+      .catch((): RuntimeReadinessCause => 'unknown')
+      .then((cause) => {
+        res.status(503).json({ ...body, cause });
+      });
   }
 
   function slugParam(req: Request, res: Response): string | undefined {

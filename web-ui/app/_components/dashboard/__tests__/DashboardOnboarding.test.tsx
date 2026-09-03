@@ -54,16 +54,33 @@ function renderCard(
     plugins: Plugin[] | null;
     llmVerified: boolean;
     cliLoggedIn: boolean;
+    runtimeUp: boolean;
+    assignedProviderKind: 'cli' | 'oauth' | 'api' | null;
+    assignedProviderStatus: 'no_key' | 'unverified' | 'verified' | 'invalid' | null;
+    assignedProviderLabel: string | null;
+    embeddingsOff: boolean;
     hasInstalledPlugin: boolean;
   }> = {},
 ) {
+  // OM-78 (#1001) — a stored access implies the runtime is up in the default
+  // fixture, so the pre-existing step-model tests keep describing the happy
+  // path. The OM-78 tests below set `runtimeUp` explicitly. Likewise the
+  // default assignment mirrors the access flags: CLI login → CLI assignment,
+  // verified key → verified API assignment.
+  const runtimeUp =
+    over.runtimeUp ?? Boolean(over.llmVerified || over.cliLoggedIn);
   return renderWithIntl(
     <DashboardOnboarding
       plugins={[]}
       llmVerified={false}
       cliLoggedIn={false}
+      assignedProviderKind={over.cliLoggedIn ? 'cli' : 'api'}
+      assignedProviderStatus={over.llmVerified ? 'verified' : 'no_key'}
+      assignedProviderLabel="Anthropic"
+      embeddingsOff={false}
       hasInstalledPlugin={false}
       {...over}
+      runtimeUp={runtimeUp}
     />,
     { locale: 'de' },
   );
@@ -134,6 +151,144 @@ describe('<DashboardOnboarding /> — OM-01/12 step model', () => {
   it('shows overall progress', () => {
     renderCard({ llmVerified: true, hasInstalledPlugin: true });
     expect(screen.getByText(/2 von 3 erledigt/)).toBeTruthy();
+  });
+});
+
+/**
+ * Round 4 (OM-74 / OM-78 / OM-84) — the card said "LLM verbunden · 3 von 3
+ * erledigt" while the readiness banner on the same page said "LLM-Zugang
+ * fehlt". Step 1 now ticks on the runtime, the done-copy follows the
+ * orchestrator's assignment, and a missing embedding provider is named.
+ */
+describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetOnboardingStores();
+  });
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('OM-78: step 1 stays OPEN while the runtime is down, even with a verified key', () => {
+    renderCard({ llmVerified: true, runtimeUp: false });
+
+    const step1 = screen.getByTestId('onboarding-step-1');
+    expect(step1.dataset['done']).toBe('false');
+    expect(screen.queryByTestId('onboarding-step-1-check')).toBeNull();
+    // The counter cannot claim progress the runtime does not have.
+    expect(screen.getByText(/0 von 3 erledigt/)).toBeTruthy();
+  });
+
+  it('OM-78 / #994: a stored access without a runtime points at the assignment, not at connecting again', () => {
+    renderCard({ cliLoggedIn: true, runtimeUp: false });
+
+    expect(screen.getByTestId('onboarding-step-1-assign-hint')).toBeTruthy();
+    expect(screen.getByText(/Zuordnung des Orchestrators/)).toBeTruthy();
+    const step1 = screen.getByTestId('onboarding-step-1');
+    const links = Array.from(step1.querySelectorAll('a'));
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute('href')).toBe('/admin/providers');
+    expect(screen.getByText(/Orchestrator zuordnen/)).toBeTruthy();
+    // The "connect an access" CTAs are gone: the operator already has one.
+    expect(screen.queryByText(/API-Schlüssel hinterlegen/)).toBeNull();
+  });
+
+  it('OM-78: the counter never reaches 3 von 3 while the runtime is down', () => {
+    renderCard({
+      llmVerified: true,
+      cliLoggedIn: true,
+      hasInstalledPlugin: true,
+      runtimeUp: false,
+    });
+    expect(screen.queryByText(/3 von 3 erledigt/)).toBeNull();
+    expect(screen.getByText(/1 von 3 erledigt/)).toBeTruthy();
+  });
+
+  it('OM-74: the done-copy follows the ASSIGNMENT — a CLI-backed orchestrator is not "its key was verified"', () => {
+    renderCard({
+      cliLoggedIn: true,
+      llmVerified: true,
+      runtimeUp: true,
+      assignedProviderKind: 'cli',
+    });
+    expect(screen.getByText(/Abo-CLI angemeldet/)).toBeTruthy();
+    expect(screen.queryByText(/Schlüssel wurde geprüft/)).toBeNull();
+  });
+
+  it('OM-74: a VERIFIED API-key assignment keeps the key copy even when a CLI is also logged in', () => {
+    renderCard({
+      cliLoggedIn: true,
+      llmVerified: true,
+      runtimeUp: true,
+      assignedProviderKind: 'api',
+      assignedProviderStatus: 'verified',
+    });
+    expect(screen.getByText(/Schlüssel wurde geprüft/)).toBeTruthy();
+    expect(screen.queryByText(/Abo-CLI angemeldet/)).toBeNull();
+  });
+
+  it('OM-74: an UNVERIFIED key that the runtime happens to run on is not called "geprüft"', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'api',
+      assignedProviderStatus: 'unverified',
+      assignedProviderLabel: 'Anthropic',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Agent-Runtime läuft über Anthropic/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+  });
+
+  it('OM-74: a rejected (invalid) key is not called "geprüft" either', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'api',
+      assignedProviderStatus: 'invalid',
+      assignedProviderLabel: 'OpenAI',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/läuft über OpenAI/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+  });
+
+  it('OM-74: an OAuth subscription assignment gets its own neutral sentence', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'oauth',
+      assignedProviderStatus: 'verified',
+      assignedProviderLabel: 'ChatGPT',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Abo ist verbunden/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+    expect(copy.textContent).not.toMatch(/Abo-CLI/);
+  });
+
+  it('OM-74: an unknown assignment (providers call failed) falls back to the label-less sentence', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: null,
+      assignedProviderStatus: null,
+      assignedProviderLabel: null,
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Die Agent-Runtime läuft\./);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+  });
+
+  it('OM-84: names the missing embedding provider and links to its setting', () => {
+    renderCard({ llmVerified: true, embeddingsOff: true });
+
+    const note = screen.getByTestId('onboarding-embeddings-note');
+    expect(note.textContent).toMatch(/Gedächtnis eingeschränkt/);
+    expect(note.querySelector('a')?.getAttribute('href')).toBe(
+      '/admin/embedding-provider',
+    );
+  });
+
+  it('OM-84: stays silent about embeddings when a provider is published', () => {
+    renderCard({ llmVerified: true, embeddingsOff: false });
+    expect(screen.queryByTestId('onboarding-embeddings-note')).toBeNull();
   });
 
   it('the selected business case survives a remount', () => {

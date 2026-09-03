@@ -262,3 +262,120 @@ export async function resolvePluginLlmReadiness(
         : undefined;
   return await resolveProviderVerification(provider, { ...deps, cliSnapshot });
 }
+
+/**
+ * OM-75 / OM-78 (#1000, #1001) — WHY the agent runtime is down, for the
+ * `multi_orchestrator_unavailable` 503 the readiness banner probes.
+ *
+ * The banner used to render one fixed text ("no key or subscription yet") for
+ * every 503. In the round-4 beta test that text was wrong at the moment it
+ * mattered: the tester HAD a working subscription login, and what was missing
+ * was the orchestrator's provider assignment (`llm_provider` still on the
+ * default `anthropic`, for which no key exists). Two different remedies, one
+ * message. This verdict tells them apart:
+ *
+ *   - `no_llm_access`  → no provider has any credential (key, OAuth, CLI login)
+ *   - `no_assignment`  → some provider has access, but the one the orchestrator
+ *                        is assigned to does not
+ *   - `unknown`        → access and assignment line up; the runtime is down
+ *                        for another reason (DATABASE_URL, boot, crash)
+ */
+export type RuntimeReadinessCause = 'no_llm_access' | 'no_assignment' | 'unknown';
+
+export interface RuntimeReadinessCauseInputs {
+  /** Credential verdict per provider id, as `resolveProviderVerification`
+   *  reports it. Any status other than `no_key` counts as "has access". */
+  readonly providerStatuses: ReadonlyMap<string, ProviderVerification['status']>;
+  /** The provider the orchestrator is assigned to (`llm_provider`, defaulted). */
+  readonly assignedProvider: string;
+}
+
+/** Pure verdict. Kept separate from the I/O so it can be tested exhaustively. */
+export function computeRuntimeReadinessCause(
+  inputs: RuntimeReadinessCauseInputs,
+): RuntimeReadinessCause {
+  const hasAccess = (status: ProviderVerification['status'] | undefined): boolean =>
+    status !== undefined && status !== 'no_key';
+  const anyAccess = [...inputs.providerStatuses.values()].some(hasAccess);
+  if (!anyAccess) return 'no_llm_access';
+  if (!hasAccess(inputs.providerStatuses.get(inputs.assignedProvider))) {
+    return 'no_assignment';
+  }
+  return 'unknown';
+}
+
+export interface RuntimeReadinessCauseDeps extends PluginLlmReadinessDeps {
+  /** Every provider id the credential lookup should consider. The providers
+   *  admin derives this from `listModels()`; passing it in keeps this module
+   *  free of the model registry. */
+  readonly providerIds: readonly string[];
+  /** The orchestrator plugin's installed config (`llm_provider` is read from
+   *  it). `undefined` when the plugin is not installed. */
+  readonly orchestratorConfig: Record<string, unknown> | undefined;
+}
+
+/**
+ * I/O wrapper around `computeRuntimeReadinessCause`: resolves every provider's
+ * verdict WITHOUT touching the network (cached probes, durable records, one
+ * CLI detection), reads the orchestrator's assignment, and never throws — a
+ * failure inside the lookup degrades to `unknown`, because this only decorates
+ * an error response that is being sent anyway.
+ */
+export async function resolveRuntimeReadinessCause(
+  deps: RuntimeReadinessCauseDeps,
+): Promise<RuntimeReadinessCause> {
+  try {
+    const cliSnapshot =
+      'cliSnapshot' in deps
+        ? deps.cliSnapshot
+        : await (deps.detectCli ?? detectCliSnapshot)();
+    const entries = await Promise.all(
+      deps.providerIds.map(async (id) => {
+        const verdict = await resolveProviderVerification(id as ProviderId, {
+          ...deps,
+          cliSnapshot,
+        });
+        return [id, verdict.status] as const;
+      }),
+    );
+    const assignedProvider =
+      readStringConfig(deps.orchestratorConfig ?? {}, 'llm_provider') ??
+      DEFAULT_PROVIDER;
+    return computeRuntimeReadinessCause({
+      providerStatuses: new Map(entries),
+      assignedProvider,
+    });
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** How long one readiness verdict is shared between callers. A dashboard load
+ *  fires several widgets that all probe `/operator/agents` within the same
+ *  second; the verdict cannot change faster than an operator can click. */
+export const READINESS_CAUSE_MEMO_MS = 8_000;
+
+/**
+ * Share one in-flight / recent verdict across a burst of 503s. The resolver's
+ * result is cached for `ttlMs` from the moment it was REQUESTED, so concurrent
+ * callers join the same promise instead of each spawning a CLI detection. A
+ * rejected resolver is not cached: the next caller retries.
+ */
+export function memoizeRuntimeReadinessCause(
+  resolver: () => Promise<RuntimeReadinessCause>,
+  ttlMs: number = READINESS_CAUSE_MEMO_MS,
+  now: () => number = Date.now,
+): () => Promise<RuntimeReadinessCause> {
+  let memo: { readonly at: number; readonly value: Promise<RuntimeReadinessCause> } | undefined;
+  return () => {
+    const t = now();
+    if (memo !== undefined && t - memo.at < ttlMs) return memo.value;
+    const value = resolver();
+    const entry = { at: t, value };
+    memo = entry;
+    value.catch(() => {
+      if (memo === entry) memo = undefined;
+    });
+    return value;
+  };
+}

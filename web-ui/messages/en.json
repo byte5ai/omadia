@@ -28,6 +28,12 @@
         "available": "{count, plural, one {# orchestrator available} other {# orchestrators available}}",
         "none": "No orchestrator configured"
       },
+      "embeddings": {
+        "title": "Memory / embeddings",
+        "active": "Active: {model}",
+        "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
+        "unknown": "Status unavailable"
+      },
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
@@ -113,8 +119,15 @@
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
         "doneViaProvider": "An LLM provider is connected and its key has been verified.",
-        "doneViaCli": "You are logged into a subscription CLI — that is enough to run orchestrators."
+        "doneViaCli": "You are logged into a subscription CLI and the orchestrator runs on it.",
+        "doneViaOauth": "A subscription is connected and the agent runtime runs on it.",
+        "doneViaRuntime": "The agent runtime runs on {label}.",
+        "doneViaRuntimeNoLabel": "The agent runtime is running.",
+        "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
+        "assignOrchestrator": "Assign the orchestrator"
       },
+      "embeddingsNote": "Memory is limited: no embedding provider is configured. Process memory, semantic search and duplicate detection stay off until one is set up.",
+      "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
       "applied": "Installed",
@@ -1321,8 +1334,13 @@
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
-    "body": "The agent runtime is offline — usually because no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "body": "The agent runtime is offline: no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings, then assign the orchestrator to that access. This card disappears once the runtime is up.",
+    "titleNoAssignment": "Orchestrator not assigned",
+    "bodyNoAssignment": "An LLM access exists, but the orchestrator is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the orchestrator, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
+    "titleUnknown": "Agent runtime not responding",
+    "bodyUnknown": "Access and assignment are set, but the agent runtime still does not respond. Check the stored access under LLM access.",
     "cta": "Open LLM access",
+    "ctaNoAssignment": "Open assignment",
     "dismiss": "Later"
   },
   "agentDetailsModal": {

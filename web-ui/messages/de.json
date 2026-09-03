@@ -28,6 +28,12 @@
         "available": "{count, plural, one {# Orchestrator verfügbar} other {# Orchestratoren verfügbar}}",
         "none": "Kein Orchestrator konfiguriert"
       },
+      "embeddings": {
+        "title": "Gedächtnis / Embeddings",
+        "active": "Aktiv: {model}",
+        "none": "Kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung sind aus.",
+        "unknown": "Status nicht abrufbar"
+      },
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
@@ -113,8 +119,15 @@
         "title": "LLM verbinden",
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
         "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
-        "doneViaCli": "Du bist in einer Abo-CLI angemeldet — das reicht, um Orchestratoren zu betreiben."
+        "doneViaCli": "Du bist in einer Abo-CLI angemeldet und der Orchestrator läuft darüber.",
+        "doneViaOauth": "Ein Abo ist verbunden und die Agent-Runtime läuft darüber.",
+        "doneViaRuntime": "Die Agent-Runtime läuft über {label}.",
+        "doneViaRuntimeNoLabel": "Die Agent-Runtime läuft.",
+        "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
+        "assignOrchestrator": "Orchestrator zuordnen"
       },
+      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer eingerichtet ist.",
+      "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
       "applied": "Installiert",
@@ -1321,8 +1334,13 @@
   },
   "runtimeReadiness": {
     "title": "LLM-Zugang fehlt",
-    "body": "Die Agent-Runtime ist offline — meistens, weil noch kein LLM-API-Key oder Abo hinterlegt ist. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang; Chat, Agenten, Channels und Skills sind danach sofort verfügbar. Routinen brauchen zusätzlich einen Neustart der Middleware.",
+    "body": "Die Agent-Runtime ist offline: Es ist noch kein LLM-API-Key und kein Abo hinterlegt. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang und ordne den Orchestrator diesem Zugang zu. Diese Karte verschwindet, sobald die Runtime läuft.",
+    "titleNoAssignment": "Orchestrator nicht zugeordnet",
+    "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator, bei einem Abo „Claude (subscription CLI)“. Die Runtime startet danach ohne Neustart.",
+    "titleUnknown": "Agent-Runtime antwortet nicht",
+    "bodyUnknown": "Zugang und Zuordnung sind gesetzt, die Agent-Runtime antwortet trotzdem nicht. Prüfe den hinterlegten Zugang unter LLM-Zugang.",
     "cta": "LLM-Zugang öffnen",
+    "ctaNoAssignment": "Zuordnung öffnen",
     "dismiss": "Später"
   },
   "agentDetailsModal": {

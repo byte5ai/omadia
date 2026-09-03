@@ -424,6 +424,25 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     };
   }
 
+  /**
+   * OM-84 (#1003) — the cheap readiness summary for the dashboard health strip.
+   *
+   * `GET /` counts the stored corpus per vector column, which is right for the
+   * switch page and wrong for a card that renders on every dashboard load. This
+   * route answers the one question the card asks (is `embeddingClient@1`
+   * published, and by whom) from the registry alone. No pool, no counts.
+   */
+  router.get('/status', (_req: Request, res: Response) => {
+    const providerIds = installedProviderIds(deps);
+    const activeId = activeProviderId(deps, providerIds);
+    res.json({
+      capabilityPublished: deps.getEmbeddingClient() !== undefined,
+      activeProviderId: activeId,
+      activeModel: readActiveMetadata(deps),
+      installedProviderIds: providerIds,
+    });
+  });
+
   router.get('/', async (_req: Request, res: Response) => {
     // Express 4 does not forward async-handler rejections to error middleware:
     // an uncaught pool failure would hang the request. Catch → 500.

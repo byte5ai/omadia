@@ -11,7 +11,13 @@ import {
   Store,
 } from 'lucide-react';
 
-import { getCliBackends, getProviders, listStorePlugins } from './_lib/api';
+import {
+  ApiError,
+  getCliBackends,
+  getEmbeddingProviderStatus,
+  getProviders,
+  listStorePlugins,
+} from './_lib/api';
 import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
 import { cn } from './_lib/cn';
@@ -41,7 +47,7 @@ type Tone = 'ok' | 'warn' | 'down' | 'neutral';
 export default async function DashboardPage(): Promise<React.ReactElement> {
   const t = await getTranslations('dashboard');
 
-  const [provP, plugP, agentP, mcpP, cliP] = await Promise.allSettled([
+  const [provP, plugP, agentP, mcpP, cliP, embP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
     listOperatorAgents(),
@@ -50,10 +56,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     // besides a probed provider key, and onboarding ignored it entirely: a user
     // logged into the Claude CLI was still told "Schritt 1: LLM verbinden".
     getCliBackends(),
+    // OM-84 (#1003) — is `embeddingClient@1` published? The cheap status
+    // route, not the corpus-counting page snapshot.
+    getEmbeddingProviderStatus(),
   ]);
 
   // 401 anywhere → re-login (redirect throws and escapes before render).
-  for (const r of [provP, plugP, agentP, mcpP, cliP]) {
+  for (const r of [provP, plugP, agentP, mcpP, cliP, embP]) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
 
@@ -61,10 +70,18 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const plugins = plugP.status === 'fulfilled' ? plugP.value : null;
   const agents = agentP.status === 'fulfilled' ? agentP.value : null;
   const mcp = mcpP.status === 'fulfilled' ? mcpP.value : null;
+  const embeddings = embP.status === 'fulfilled' ? embP.value : null;
   const cliLoggedIn =
     cliP.status === 'fulfilled'
       ? cliP.value.backends.some((b) => b.loggedIn === 'yes')
       : false;
+  // OM-78 (#1001) — the ONE readiness signal this page and the
+  // RuntimeReadinessBanner share: `/operator/agents` answered, or failed with
+  // anything OTHER than its structured 503. Only the 503 means "runtime down";
+  // a transient 500 or a network blip must not un-tick step 1.
+  const runtimeUp =
+    agentP.status === 'fulfilled' ||
+    !(agentP.reason instanceof ApiError && agentP.reason.status === 503);
 
   // Middleware is "connected" if any call came back at all — a transport
   // failure rejects every call with the same network error.
@@ -90,6 +107,26 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     )?.label ??
     verified[0]?.label ??
     null;
+  // OM-74 (#999) — what KIND of provider the orchestrator is assigned to, and
+  // whether its credential was actually proved. A keyless subscription CLI
+  // (`toolLess`, or the built-in `claude-cli` id) and an OAuth subscription
+  // (`oauthConnect`) have no key to describe as "verified"; a key-based
+  // provider earns that sentence only with `status === 'verified'`.
+  const assignedProvider = providers?.providers.find(
+    (p) => p.id === activeAssignment?.provider,
+  );
+  const assignedProviderKind: 'cli' | 'oauth' | 'api' | null =
+    assignedProvider === undefined
+      ? null
+      : assignedProvider.toolLess === true || assignedProvider.id === 'claude-cli'
+        ? 'cli'
+        : assignedProvider.oauthConnect === true
+          ? 'oauth'
+          : 'api';
+  const assignedProviderStatus = assignedProvider?.status ?? null;
+  const assignedProviderLabel = assignedProvider?.label ?? null;
+  // OM-84 (#1003) — only claim "off" when the status route actually said so.
+  const embeddingsOff = embeddings !== null && !embeddings.capabilityPublished;
   // A rejected key is the most actionable signal, so it wins the detail line.
   const llmDetail = ((): string => {
     if (rejected.length > 0) return t('health.llm.invalid');
@@ -148,6 +185,36 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           ? t('health.orchestrators.available', { count: orchestratorCount })
           : t('health.orchestrators.none'),
       href: '/operator/agents',
+      manage: t('health.manage'),
+    },
+    {
+      // OM-84 (#1003) — memory, semantic search and dedup all hang off
+      // `embeddingClient@1`. A default install has none, and until now no
+      // surface said so: the tester learned it from an agent failing mid-answer.
+      title: t('health.embeddings.title'),
+      tone: !middlewareOk
+        ? 'down'
+        : embeddings === null
+          ? 'neutral'
+          : embeddings.capabilityPublished
+            ? 'ok'
+            : 'warn',
+      status:
+        embeddings !== null && embeddings.capabilityPublished
+          ? t('health.ok')
+          : t('health.warn'),
+      detail:
+        embeddings === null
+          ? t('health.embeddings.unknown')
+          : embeddings.capabilityPublished
+            ? t('health.embeddings.active', {
+                model:
+                  embeddings.activeModel?.modelId ??
+                  embeddings.activeProviderId ??
+                  '',
+              })
+            : t('health.embeddings.none'),
+      href: '/admin/embedding-provider',
       manage: t('health.manage'),
     },
     {
@@ -242,6 +309,11 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           plugins={plugins?.items ?? null}
           llmVerified={verified.length > 0}
           cliLoggedIn={cliLoggedIn}
+          runtimeUp={runtimeUp}
+          assignedProviderKind={assignedProviderKind}
+          assignedProviderStatus={assignedProviderStatus}
+          assignedProviderLabel={assignedProviderLabel}
+          embeddingsOff={embeddingsOff}
           hasInstalledPlugin={installedCount > 0}
         />
 
