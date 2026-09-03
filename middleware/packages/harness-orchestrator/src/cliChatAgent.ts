@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -17,6 +18,11 @@ import type {
 } from './toolDispatchService.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
+import {
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
 
 const DEFAULT_CLI_BINARY = 'claude';
 const DEFAULT_MODEL = 'sonnet';
@@ -34,96 +40,20 @@ const EMPTY_USAGE: CliUsage = {
   numTurns: 0,
 };
 
-export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
-  // Direct API keys / tokens — would switch the CLI off the subscription.
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  // Routing/header overrides — could redirect to a metered gateway/proxy.
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_CUSTOM_HEADERS',
-  // Alternate-backend switches — would bill Bedrock/Vertex, not the sub.
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'CLOUD_ML_REGION',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'AWS_DEFAULT_REGION',
-];
-
 /**
- * OM-81 (#991) — the CLI's built-in tool set, denied by name at spawn time.
- *
- * `--allowedTools mcp__omadia__*` only pre-approves omadia's loopback tools; it
- * never restricted the CLI's own Bash/Edit/Write/Read/WebFetch. A beta tester
- * asked the omadia chat to run `whoami && hostname` and the CLI did, with the
- * user's OS permissions and none of omadia's gates (plugin grants, audience
- * floor, privacy guard, `sandbox_execute_enabled`) involved. `--tools ""`
- * removes the built-in set; this list is the belt to that braces for a CLI
- * that ignores `--tools`, and the contract a test can assert against.
+ * The spawn gate now lives in `cliSpawnGate.ts` so both CLI spawn sites share
+ * one definition (#1007). Re-exported here because `@omadia/orchestrator`
+ * consumers and the platform's `scrubbedEnv()` already import these names
+ * from this module.
  */
-export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
-  'Agent',
-  'Task',
-  'Bash',
-  'BashOutput',
-  'KillShell',
-  'PowerShell',
-  'REPL',
-  'Edit',
-  'MultiEdit',
-  'Write',
-  'Read',
-  'Glob',
-  'Grep',
-  'LS',
-  'NotebookEdit',
-  'NotebookRead',
-  'WebFetch',
-  'WebSearch',
-  'Skill',
-  'SlashCommand',
-  'ToolSearch',
-  'Workflow',
-  'TodoWrite',
-  'TaskCreate',
-  'TaskGet',
-  'TaskList',
-  'TaskUpdate',
-  'TaskOutput',
-  'TaskStop',
-  'ScheduleWakeup',
-  'CronCreate',
-  'CronDelete',
-  'CronList',
-  'ListAgents',
-  'SendMessage',
-  'PushNotification',
-  'RemoteTrigger',
-  'ReportFindings',
-  'EnterPlanMode',
-  'ExitPlanMode',
-  'EnterWorktree',
-  'ExitWorktree',
-  'LSP',
-  'Monitor',
-  'Artifact',
-  'AskUserQuestion',
-  'ListMcpResourcesTool',
-  'ReadMcpResourceTool',
-  'ReadMcpResourceDirTool',
-];
-
-/** Prefix of every tool omadia serves to the CLI over the loopback MCP server. */
-export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  CLI_ENV_SCRUB_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
 
 /**
  * OM-83 (#992) — the runtime context every CLI-backed turn carries in its
@@ -491,7 +421,21 @@ export interface CliChatAgentDeps {
     readonly dispatch: ToolDispatchService;
     readonly bearer: string;
     readonly tools: readonly DispatchableToolSpec[];
+    readonly runInTurnContext?: <T>(fn: () => T) => T;
+    readonly assertTurnOwner?: () => void;
   }) => LoopbackMcpServer;
+  /**
+   * #1016 — an optional guard that throws when the async context restored
+   * around a loopback dispatch does not belong to this turn.
+   *
+   * The factory is called at `chat()`/`chatStream()` entry, so the guard it
+   * returns can close over who the turn actually belongs to and compare that
+   * against whatever the restored context reports at dispatch time. Left
+   * unset, the context is restored but not cross-checked: see the note in
+   * `loopbackMcpServer.ts` on why the default cannot live in this package.
+   */
+  readonly turnOwnerGuard?: (input: ChatTurnInput) => () => void;
+
   readonly cliBinary?: string;
   readonly model?: string;
   readonly systemPrompt?: string;
@@ -500,6 +444,15 @@ export interface CliChatAgentDeps {
   readonly spawnTimeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly maxConcurrentTurns?: number;
+}
+
+/**
+ * The caller's async context, captured at the public entry point of a turn,
+ * plus the optional owner guard built for that same turn (#1016).
+ */
+interface CapturedTurnContext {
+  readonly runInTurnContext: <T>(fn: () => T) => T;
+  readonly assertTurnOwner?: () => void;
 }
 
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
@@ -512,8 +465,24 @@ export class CliChatAgent implements ChatAgent {
     );
   }
 
+  /**
+   * #1016 — capture the caller's async context HERE, at the public entry, not
+   * inside `runLifecycle`.
+   *
+   * `runLifecycle` is an async generator: its body does not run when the
+   * generator is created, it runs when someone calls the first `.next()`. A
+   * snapshot taken in the body therefore freezes whatever context is ambient
+   * at first iteration, which is not necessarily the context `chat()` was
+   * called in. Taking it here binds the snapshot to the actual caller.
+   */
+  private captureTurnContext(input: ChatTurnInput): CapturedTurnContext {
+    const runInTurnContext = AsyncLocalStorage.snapshot();
+    const guard = this.deps.turnOwnerGuard?.(input);
+    return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
+  }
+
   public async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
       const step = await lifecycle.next();
@@ -533,11 +502,26 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  public async *chatStream(
+  /**
+   * Deliberately NOT an async generator (#1016). An `async *` method's body
+   * runs on the first `.next()`, so capturing the async context inside it
+   * would snapshot whoever iterates rather than whoever called. This plain
+   * method captures synchronously at call time and hands the result to the
+   * generator below.
+   */
+  public chatStream(
     input: ChatTurnInput,
+    observer?: ChatStreamObserver,
+  ): AsyncGenerator<ChatStreamEvent> {
+    return this.streamTurn(input, this.captureTurnContext(input), observer);
+  }
+
+  private async *streamTurn(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
     _observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
 
     try {
@@ -594,6 +578,7 @@ export class CliChatAgent implements ChatAgent {
 
   private async *runLifecycle(
     input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
   ): AsyncGenerator<ChatStreamEvent, StreamJsonParser | undefined> {
     const parser = new StreamJsonParser();
     const tools = this.deps.dispatch.listDispatchableToolSpecs();
@@ -604,6 +589,8 @@ export class CliChatAgent implements ChatAgent {
         readonly dispatch: ToolDispatchService;
         readonly bearer: string;
         readonly tools: readonly DispatchableToolSpec[];
+        readonly runInTurnContext?: <T>(fn: () => T) => T;
+        readonly assertTurnOwner?: () => void;
       }) => new LoopbackMcpServer(serverDeps));
 
     let server: LoopbackMcpServer | undefined;
@@ -685,6 +672,12 @@ export class CliChatAgent implements ChatAgent {
         dispatch: this.deps.dispatch,
         bearer,
         tools,
+        // #1016 — the context captured at the public entry, not whatever is
+        // ambient here in the generator body.
+        runInTurnContext: turnContext.runInTurnContext,
+        ...(turnContext.assertTurnOwner
+          ? { assertTurnOwner: turnContext.assertTurnOwner }
+          : {}),
       });
       handle = await server.start();
 
@@ -698,38 +691,14 @@ export class CliChatAgent implements ChatAgent {
         'stream-json',
         '--include-partial-messages',
         '--verbose',
-        '--strict-mcp-config',
-        '--mcp-config',
-        configPath,
-        // OM-81 (#991) — the permission boundary. `--allowedTools` is only a
-        // pre-approval of omadia's loopback tools; on its own it left the
-        // CLI's Bash/Edit/Write/Read/WebFetch reachable with the user's OS
-        // rights and none of omadia's gates in the way. Four flags close it:
-        //   --tools ""            remove the built-in tool set (MCP tools stay)
-        //   --disallowedTools ... deny the built-ins by name as well, for a CLI
-        //                         that ignores `--tools`
-        //   --permission-mode dontAsk  deny anything not pre-approved instead of
-        //                         prompting a UI nobody is watching
-        //   --setting-sources ""  load no user/project/local settings.json.
-        //                         Without it the CLI picks up the host user's
-        //                         ~/.claude settings, including `hooks`, which
-        //                         run shell commands on the machine whenever a
-        //                         tool fires, and personal allow rules. `--tools`
-        //                         closes the built-ins; this closes the side
-        //                         channel. Credentials are unaffected: they are
-        //                         read from CLAUDE_CONFIG_DIR, not from settings,
-        //                         and the MCP server still comes from
-        //                         --mcp-config under --strict-mcp-config.
-        '--tools',
-        '',
-        '--disallowedTools',
-        ...CLI_BUILTIN_TOOL_DENYLIST,
-        '--permission-mode',
-        'dontAsk',
-        '--setting-sources',
-        '',
-        '--allowedTools',
-        `${OMADIA_MCP_TOOL_PREFIX}*`,
+        // OM-81 (#991, #1007, #1014) — the permission boundary, defined once in
+        // `cliSpawnGate.ts` and shared with the completion adapter so a spawn
+        // site cannot carry half of it. See that module for what each flag is
+        // for and for what these flags do NOT close.
+        ...buildCliToolGateArgv({
+          mcpConfigPath: configPath,
+          allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*`,
+        }),
         '--model',
         this.deps.model ?? DEFAULT_MODEL,
         // OM-83 (#992) — replace, do not append. With `--append-system-prompt`
@@ -745,6 +714,13 @@ export class CliChatAgent implements ChatAgent {
         argv,
         {
           env: this.buildEnv(),
+          // #1014 — the CLI hardcodes CLAUDE.md / AGENTS.md discovery and only
+          // `--bare` skips it (and `--bare` never reads OAuth, so it would
+          // break the subscription login). Without a cwd the child inherited
+          // the middleware process's directory, so any CLAUDE.md at or above
+          // it was injected into a turn that also carries end-user text. The
+          // temp dir holds nothing but the mcp-config we just wrote.
+          cwd: tempDir,
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       ) as ChildProcessWithoutNullStreams;
@@ -860,14 +836,13 @@ export class CliChatAgent implements ChatAgent {
         this.turnSemaphore.release();
       }
 
-      if (server !== undefined) {
-        try {
-          await server.stop();
-        } catch {
-          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
-        }
-      }
-
+      // #1015 — kill the child BEFORE stopping the loopback server, not after.
+      // `stop()` waits for live connections to end; on the timeout/abort path
+      // the child is still running and may hold a keep-alive socket to that
+      // server, so awaiting `stop()` first could block indefinitely and the
+      // SIGTERM/SIGKILL escalation below would never run. The turn then hung
+      // holding its semaphore permit while a bearer-gated server stayed
+      // listening past its intended window.
       if (child !== undefined) {
         // Bind to a non-undefined local so the SIGKILL closure below keeps the
         // narrowed type — TS cannot prove the outer `let child` is still defined
@@ -897,6 +872,14 @@ export class CliChatAgent implements ChatAgent {
         }
       }
 
+      if (server !== undefined) {
+        try {
+          await server.stop();
+        } catch {
+          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
+        }
+      }
+
       if (tempDir !== undefined) {
         await rm(tempDir, { recursive: true, force: true });
       }
@@ -904,14 +887,12 @@ export class CliChatAgent implements ChatAgent {
   }
 
   private buildEnv(): NodeJS.ProcessEnv {
-    const env = this.deps.buildEnv?.() ?? { ...process.env };
-
-    // Subscription-authenticated CLI runs must not inherit API-key or proxy overrides from the
-    // host process, otherwise tests become flaky and production can silently switch auth modes.
-    for (const key of CLI_ENV_SCRUB_KEYS) {
-      delete env[key];
-    }
-
-    return env;
+    // #1014 — allowlist, not scrub list. The scrub list removed credentials and
+    // billing switches but passed everything else through, including
+    // `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and
+    // the `CLAUDE_CODE_*` feature switches. The policy applies to an injected
+    // `buildEnv` too, so a test cannot prove a laxer environment than
+    // production runs with.
+    return buildGatedCliEnv(this.deps.buildEnv?.() ?? process.env);
   }
 }

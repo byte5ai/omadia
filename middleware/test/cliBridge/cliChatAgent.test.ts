@@ -133,8 +133,10 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
   function makeAgent(opts: { readonly systemPrompt?: string } = {}): {
     readonly agent: CliChatAgent;
     readonly argv: () => readonly string[];
+    readonly spawnOptions: () => { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv };
   } {
     let captured: readonly string[] = [];
+    let capturedOptions: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv } = {};
     const agent = new CliChatAgent({
       dispatch: {
         listDispatchableToolSpecs: () => [],
@@ -149,8 +151,21 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
           stop: async () => {},
         }) as never,
       ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
-      spawnFn: ((_bin: string, argv: readonly string[]) => {
+      buildEnv: () => ({
+        PATH: '/usr/bin',
+        HOME: '/Users/tester',
+        CLAUDE_CONFIG_DIR: '/Users/tester/.claude',
+        // #1014 — must not survive into the child.
+        NODE_OPTIONS: '--require /tmp/evil.js',
+        ANTHROPIC_API_KEY: 'sk-ant-test-key',
+      }),
+      spawnFn: ((
+        _bin: string,
+        argv: readonly string[],
+        options: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv },
+      ) => {
         captured = argv;
+        capturedOptions = options;
         const stdout = new PassThrough();
         const stderr = new PassThrough();
         const stdin = new PassThrough();
@@ -172,7 +187,7 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         return child;
       }) as unknown as CliChatAgentDeps['spawnFn'],
     });
-    return { agent, argv: () => captured };
+    return { agent, argv: () => captured, spawnOptions: () => capturedOptions };
   }
 
   function valueAfter(argv: readonly string[], flag: string): string | undefined {
@@ -185,17 +200,30 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     await agent.chat({ userMessage: 'run whoami' });
     const a = argv();
 
-    // `--tools ""` removes every built-in tool; only MCP tools remain.
+    // `--tools ""` removes every built-in tool; only MCP tools remain. The
+    // CLI's own help documents `""` as "disable all tools".
     assert.equal(valueAfter(a, '--tools'), '');
-    // Belt and braces: an explicit deny list for the built-ins, so an older
-    // CLI that ignores `--tools ""` still refuses them.
+    // Belt and braces: an explicit deny list for the built-ins, so a CLI that
+    // reads `--tools` differently still refuses them.
+    //
+    // #1017 — this used to size its inspection window with
+    // `CLI_BUILTIN_TOOL_DENYLIST.length` and then check the constant against
+    // itself, so deleting entries kept it green. Now the argv slice must equal
+    // the constant exactly, and `cliSpawnGate.test.ts` guards the constant's
+    // own contents against deletion and against CLI drift.
     const denyIdx = a.indexOf('--disallowedTools');
     assert.notEqual(denyIdx, -1, 'argv must carry --disallowedTools');
-    const denied = new Set(a.slice(denyIdx + 1, denyIdx + 1 + CLI_BUILTIN_TOOL_DENYLIST.length));
-    for (const tool of ['Bash', 'Edit', 'Write', 'Read', 'WebFetch', 'WebSearch', 'Agent']) {
-      assert.ok(CLI_BUILTIN_TOOL_DENYLIST.includes(tool), `denylist names ${tool}`);
-      assert.ok(denied.has(tool), `argv denies ${tool}`);
+    const denied: string[] = [];
+    for (let i = denyIdx + 1; i < a.length; i += 1) {
+      const token = a[i];
+      if (token === undefined || token.startsWith('--')) break;
+      denied.push(token);
     }
+    assert.deepEqual(denied, [...CLI_BUILTIN_TOOL_DENYLIST]);
+    // `--restricted` on top: it removes the code-running built-ins and
+    // WebFetch and ignores user/project/local settings, and unlike `--bare` it
+    // leaves the subscription's OAuth credentials readable.
+    assert.ok(a.includes('--restricted'), 'argv must carry --restricted');
     // Anything not pre-approved is denied instead of prompting a UI nobody sees.
     assert.equal(valueAfter(a, '--permission-mode'), 'dontAsk');
     // No user/project/local settings.json: the host user's `hooks` and
@@ -203,6 +231,35 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     assert.equal(valueAfter(a, '--setting-sources'), '');
     // The omadia loopback tools stay pre-approved.
     assert.equal(valueAfter(a, '--allowedTools'), 'mcp__omadia__*');
+  });
+
+  it('spawns in an empty working directory, not the middleware cwd', async () => {
+    // #1014 — the CLI hardcodes CLAUDE.md / AGENTS.md discovery and only
+    // `--bare` skips it, but `--bare` never reads OAuth and would break the
+    // subscription login. Without a cwd the child inherited the middleware
+    // process's directory, so any CLAUDE.md at or above it joined a prompt
+    // that also carries end-user text.
+    const { agent, spawnOptions } = makeAgent();
+    await agent.chat({ userMessage: 'hi' });
+
+    const cwd = spawnOptions().cwd;
+    assert.ok(cwd, 'spawn must set a cwd');
+    assert.match(cwd, /omadia-cli-/, 'cwd must be the per-turn temp dir');
+    assert.notEqual(cwd, process.cwd());
+  });
+
+  it('hands the child an allowlisted environment', async () => {
+    const { agent, spawnOptions } = makeAgent();
+    await agent.chat({ userMessage: 'hi' });
+
+    const env = spawnOptions().env ?? {};
+    // Kept: the CLI cannot run or find its subscription credentials without these.
+    assert.equal(env.PATH, '/usr/bin');
+    assert.equal(env.CLAUDE_CONFIG_DIR, '/Users/tester/.claude');
+    // #1014 — dropped. `NODE_OPTIONS` can `--require` arbitrary code into the
+    // child, and an API key would switch the run off the subscription.
+    assert.equal(env.NODE_OPTIONS, undefined);
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
   });
 
   it('replaces the CLI system prompt instead of appending to it', async () => {

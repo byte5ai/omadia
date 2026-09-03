@@ -36,6 +36,48 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
+
+2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
+the subscription-CLI process boundary on the chat path; the review found the
+gate was half-applied and unverified.
+
+- **#1007** — `platform/claudeCliAdapter.ts`, the second spawn site, ran with
+  the CLI's full default tool set, the operator's `settings.json` (including
+  `hooks`, which execute shell commands whenever a tool fires) and the
+  operator's MCP servers. Its prompts are assembled from end-user chat text and
+  uploaded documents, and the read-only built-ins never prompt for permission,
+  so injected text could read host files and return them inside a summary
+  omadia persists. The gate now lives in one module,
+  `harness-orchestrator/src/cliSpawnGate.ts`, and both sites build their argv
+  from it.
+- **#1014** — the deny list was hand-collected and missed 40 real tool names,
+  among them `Tmux` (a terminal) and `JavaScript` (a code runner), plus every
+  `self_hosted_runner_*`. It is now taken from the installed binary's own
+  inventory, lists aliases next to canonical names (`KillShell`/`KillBash`,
+  `BashOutput`/`BashOutputTool`), and a drift guard fails when an installed CLI
+  declares a built-in the list does not name. Added `--restricted`, an empty
+  `cwd` (the CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it,
+  but `--bare` never reads OAuth), and an env **allowlist** replacing a scrub
+  list that passed `NODE_OPTIONS` through.
+- **#1015** — the loopback MCP server dispatched any tool name it was sent, a
+  wider set than it advertises; it now refuses an unadvertised name. Teardown
+  killed the child *after* awaiting `server.stop()`, which waits for live
+  connections, so an abort path could hang a turn holding its semaphore permit;
+  the kill now comes first and `stop()` is bounded.
+- **#1016** — the turn's async context is captured at `chat()`/`chatStream()`
+  entry instead of inside the async generator's body, which runs at first
+  iteration and could belong to whoever iterated. Added an `assertTurnOwner`
+  hook so a stale `enterWith` chain fails closed instead of acting as the
+  previous principal. Wiring that guard to the app's routine context is the
+  open half.
+- **#1017** — the gate is now verified behaviourally, not only by argv shape:
+  a live probe spawns the real binary with the production argv and asks it to
+  run a shell command. Measured on 2.1.259 — production gate: no tools;
+  pre-#991 argv: `Bash`. The deny-list test no longer checks the constant
+  against itself, and the loopback tests fail instead of silently skipping
+  where a sandbox blocks listeners (`OMADIA_EXPECT_LOOPBACK=1` in CI).
+
 ### Fixed — a foreign tool call is now loud instead of invisible (#1008, #1017)
 
 2026-09-03 — post-merge review of #1009. The subscription-CLI agent marks a
