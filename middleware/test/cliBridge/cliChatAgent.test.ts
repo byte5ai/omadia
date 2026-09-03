@@ -248,6 +248,132 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     assert.notEqual(cwd, process.cwd());
   });
 
+  /**
+   * #1015 — the child must be killed BEFORE `server.stop()` is awaited.
+   *
+   * `stop()` waits for live connections, and the child holds a keep-alive
+   * socket to the loopback server, so awaiting it first could block until the
+   * bound expires while the kill escalation never ran. Nothing pinned the
+   * order: moving `stop()` back above the kill block kept the whole suite
+   * green, because `stop()`'s own 2s bound hides the stall.
+   *
+   * Driven through the STREAM ABORT path, which is the only one that reaches
+   * the `finally` with the child still alive and unkilled. The timeout path
+   * looks equivalent but is not: `failRuntime` kills the child itself before
+   * the `finally` runs, so an ordering test built on it passes even with
+   * `stop()` moved back above the kill. That is how the first version of this
+   * test fooled itself.
+   */
+  it('kills the child before it awaits the loopback server stop', async () => {
+    const order: string[] = [];
+
+    const agent = new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'bearer' }),
+          stop: async () => {
+            order.push('stop');
+          },
+        }) as never,
+      buildEnv: () => ({ PATH: '/usr/bin' }),
+      spawnFn: (() => {
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const child = Object.assign(new PassThrough(), {
+          stdin,
+          stdout,
+          stderr,
+          exitCode: null as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: () => {
+            order.push('kill');
+            // Only now does the process go away, as a real one would; the
+            // teardown's close-race depends on it.
+            child.exitCode = 143;
+            child.emit('close', null, 'SIGTERM');
+            return true;
+          },
+        });
+        stdin.on('finish', () => {
+          // One event so the first `.next()` resolves, then silence: the turn
+          // can only end by being abandoned.
+          stdout.write(
+            JSON.stringify({
+              type: 'stream_event',
+              event: {
+                type: 'content_block_delta',
+                delta: { type: 'text_delta', text: 'thinking' },
+              },
+            }) + '\n',
+          );
+        });
+        return child;
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+
+    const stream = agent.chatStream({ userMessage: 'hi' });
+    const first = await stream.next();
+    assert.equal(first.done, false);
+    assert.deepEqual(first.value, { type: 'text_delta', text: 'thinking' });
+
+    // Abandon the turn: this is what an aborted HTTP request does.
+    await stream.return(undefined);
+
+    assert.deepEqual(
+      order,
+      ['kill', 'stop'],
+      `teardown ran in the wrong order: ${order.join(' -> ')}`,
+    );
+  });
+
+  /**
+   * #1016 — `chatStream` must NOT be an `async *` method.
+   *
+   * An `async *` body does not run until the first `.next()`, so the async
+   * context it captured belonged to whoever iterated rather than to whoever
+   * called. The fix was to make `chatStream` a plain method that captures
+   * synchronously and returns a generator. This pins the behaviour rather than
+   * the syntax: the guard factory has to have been called by the time
+   * `chatStream()` returns, without anything iterating the result.
+   */
+  it('captures the turn context when chatStream is called, not when it is iterated', () => {
+    let guardBuilt = 0;
+    const agent = new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      turnOwnerGuard: () => {
+        guardBuilt += 1;
+        return () => {};
+      },
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'bearer' }),
+          stop: async () => {},
+        }) as never,
+      spawnFn: (() => {
+        throw new Error('chatStream() must not spawn before it is iterated');
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+
+    const stream = agent.chatStream({ userMessage: 'hi' });
+    assert.equal(guardBuilt, 1, 'the context must be captured at call time');
+
+    // Belt: an `async *` method is an AsyncGeneratorFunction, a plain method
+    // returning a generator is not.
+    assert.notEqual(
+      Object.getPrototypeOf(agent).chatStream.constructor.name,
+      'AsyncGeneratorFunction',
+      'chatStream must not be an async generator method',
+    );
+
+    void stream.return(undefined);
+  });
+
   it('hands the child an allowlisted environment', async () => {
     const { agent, spawnOptions } = makeAgent();
     await agent.chat({ userMessage: 'hi' });
