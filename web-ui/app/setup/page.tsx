@@ -11,6 +11,7 @@ import {
   getAuthProviders,
   postAuthSetup,
 } from '../_lib/api';
+import { signalDesktopUiReady } from '../_lib/desktopShell';
 
 type State =
   | { kind: 'loading' }
@@ -73,6 +74,11 @@ function SetupPageInner(): React.ReactElement {
   const [displayName, setDisplayName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // OM-71 — see /login: the desktop shell waits for the first real screen.
+  useEffect(() => {
+    if (state.kind !== 'loading') signalDesktopUiReady();
+  }, [state.kind]);
 
   useEffect(() => {
     let cancelled = false;

@@ -11,6 +11,7 @@ import {
   platformDataDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
+import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
 import { startEmbeddedDb, stopEmbeddedDb, isEmbeddedDbRunning } from './embeddedDb';
 import type { EmbeddedDb } from './embeddedDb';
 import { stopChild, isConfirmedStopped } from './childLifecycle';
@@ -391,6 +392,9 @@ export class Supervisor extends EventEmitter {
       PLATFORM_DATA_DIR: platformDataDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      // Desktop-only overrides of kernel defaults that assume a LAN self-host
+      // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
+      ...desktopKernelEnvDefaults(process.env),
       ...allProviderKeys(),
     };
     // v1 wires only persistence + LLM. Embeddings (in-process), diagrams (hosted),

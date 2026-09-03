@@ -12,6 +12,7 @@ import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
+import { DesktopUiReady } from './_components/DesktopUiReady';
 import { StreamRunner } from './_components/StreamRunner';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
@@ -155,6 +156,7 @@ export default async function RootLayout({
               <StreamRunner />
               <SessionWatcher />
               <RuntimeReadinessBanner />
+              <DesktopUiReady />
             </StreamStoreProvider>
           </ChatSessionsProvider>
         </NextIntlClientProvider>
