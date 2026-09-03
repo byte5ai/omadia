@@ -458,6 +458,7 @@ export {
   buildCliToolGateArgv,
   buildCompletionCliArgv,
   buildGatedCliEnv,
+  cliEnvAllowlistFor,
 } from './cliSpawnGate.js';
 export type { CliToolGateOptions, CompletionCliArgvOptions } from './cliSpawnGate.js';
 export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';

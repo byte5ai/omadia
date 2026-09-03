@@ -63,21 +63,29 @@
 /**
  * The CLI's built-in tool inventory, denied by name at spawn time.
  *
- * Mined from the installed binary's own tool-name inventory (2.1.259) rather
+ * Mined from the installed binary's own inventory (2.1.259 keeps it as one
+ * minified array, 183 entries: 105 `mcp__…` names and 78 built-ins) rather
  * than hand-collected, because the hand-collected version missed 40 names,
- * including two of the exact class the gate exists to remove: `Tmux` (a
- * terminal) and `JavaScript` (a code runner beside `REPL`).
+ * `Tmux` among them — a terminal, exactly the class this gate exists to
+ * remove. This list is a deliberate SUPERSET of that inventory: it also names
+ * tools from neighbouring CLI versions, so an upgrade cannot open a hole
+ * between releases. `JavaScript` is one of those extras and is not a tool in
+ * 2.1.259; the only `"JavaScript"` strings in the binary belong to bundled
+ * highlight.js language metadata.
  *
- * Aliases are listed alongside their canonical names on purpose. `KillShell`
- * and `BashOutput` are ALIASES in 2.1.259 — the binary declares
- * `aliases:["KillShell","KillBash"]` and
- * `aliases:["AgentOutputTool","BashOutputTool","AgentOutput","BashOutput"]` —
- * so denying only the alias may match nothing depending on how the CLI
- * resolves names. Deny both spellings and the question stops mattering.
+ * Aliases are listed alongside their canonical names on purpose, because
+ * denying only one spelling may match nothing depending on how the CLI
+ * resolves names. 2.1.259 declares exactly ten, all covered here:
+ * `KillShell`/`KillBash`, `AgentOutputTool`/`BashOutputTool`/`AgentOutput`/
+ * `BashOutput`, `ListMcpResources`, `ReadMcpResource`, `ReadMcpResourceDir`,
+ * and `RunWorkflow` — that last one is the alias of `Workflow` and its
+ * metadata declares `enablesCodeExecution`.
  *
- * `cliSpawnGate.driftGuard.test.ts` fails when the installed binary carries a
- * built-in name this list does not, so a CLI upgrade cannot quietly widen the
- * surface again.
+ * The drift guard in `test/cliBridge/cliSpawnGate.test.ts` mines the installed
+ * binary's inventory AND its alias arrays, then subtracts this list; anything
+ * left over fails. It works in that direction on purpose: its first version
+ * built its candidate set out of this constant and so could not detect a
+ * deletion at all.
  */
 export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   // Shell and code execution — the OM-81 finding itself.
@@ -88,6 +96,8 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'KillBash',
   'PowerShell',
   'REPL',
+  // Not a tool in 2.1.259 (highlight.js metadata is the only match); kept as
+  // superset cover in case a future version ships a JS runner by this name.
   'JavaScript',
   'Tmux',
   'Cd',
@@ -124,6 +134,8 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'SlashCommand',
   'ToolSearch',
   'Workflow',
+  // Alias of `Workflow`, and its metadata declares `enablesCodeExecution`.
+  'RunWorkflow',
   'propose_skills',
   'RefreshMcpTools',
   'SuggestPluginInstall',
@@ -176,10 +188,14 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'AskUserQuestion',
   'TodoWrite',
   'LSP',
-  // MCP resource readers (the tools, not the servers).
+  // MCP resource readers (the tools, not the servers). Each canonical `…Tool`
+  // name has a short-form alias in 2.1.259; both spellings are denied.
   'ListMcpResourcesTool',
+  'ListMcpResources',
   'ReadMcpResourceTool',
+  'ReadMcpResource',
   'ReadMcpResourceDirTool',
+  'ReadMcpResourceDir',
   // Self-hosted runner control: `spawn_local` starts local sessions.
   'self_hosted_runner_get_pool',
   'self_hosted_runner_list_runners',
@@ -198,7 +214,37 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
 export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
 
 /**
- * Environment variables a spawned CLI may keep.
+ * Windows-only environment variables a spawned CLI may keep.
+ *
+ * The first version of this allowlist was POSIX-only, which was a regression
+ * against the scrub list it replaced (that one passed everything through).
+ * Windows is a shipped target: `desktop/electron-builder.yml` builds an NSIS
+ * x64 installer and `platform/cliInstallService.ts` has explicit `win32`
+ * handling. `HOME` and `TMPDIR` do not exist there, so the child would have
+ * got no home directory and `os.tmpdir()` would have fallen through to a
+ * `C:\temp` that need not exist — and a missing `SystemRoot` alone is enough
+ * to break a spawned Node process.
+ */
+const WINDOWS_ENV_KEYS: readonly string[] = [
+  'SystemRoot',
+  'windir',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'TEMP',
+  'TMP',
+  'PATHEXT',
+  'COMSPEC',
+  'SystemDrive',
+  'ProgramData',
+  'ProgramFiles',
+  'USERNAME',
+];
+
+/**
+ * Environment variables a spawned CLI may keep, on any platform.
  *
  * An allowlist, not a scrub list (#1014). The scrub list it replaces removed
  * credentials and billing switches but passed everything else through,
@@ -214,6 +260,9 @@ export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
  *   HTTP_PROXY, …         a corporate install has no egress without them
  *   NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, SSL_CERT_DIR   corporate TLS interception
  *   USER, LOGNAME         some helpers read the current user name
+ *
+ * See {@link WINDOWS_ENV_KEYS} for what is added on `win32`, and
+ * {@link cliEnvAllowlistFor} for the platform branch.
  */
 export const CLI_ENV_ALLOWLIST_KEYS: readonly string[] = [
   'PATH',
@@ -236,6 +285,19 @@ export const CLI_ENV_ALLOWLIST_KEYS: readonly string[] = [
   'USER',
   'LOGNAME',
 ];
+
+/**
+ * The allowlist that applies on a given platform: the shared keys, plus the
+ * Windows ones on `win32`.
+ *
+ * Exported so a test can assert both platforms without stubbing
+ * `process.platform`.
+ */
+export function cliEnvAllowlistFor(platform: NodeJS.Platform): readonly string[] {
+  return platform === 'win32'
+    ? [...CLI_ENV_ALLOWLIST_KEYS, ...WINDOWS_ENV_KEYS]
+    : CLI_ENV_ALLOWLIST_KEYS;
+}
 
 /**
  * Environment variables that must never reach a spawned CLI, kept as a second
@@ -361,10 +423,13 @@ export function buildCompletionCliArgv(options: CompletionCliArgvOptions): strin
  * test pass their own; the policy applies either way, so a test cannot
  * accidentally prove a laxer environment than production uses.
  */
-export function buildGatedCliEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildGatedCliEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
 
-  for (const key of CLI_ENV_ALLOWLIST_KEYS) {
+  for (const key of cliEnvAllowlistFor(platform)) {
     const value = base[key];
     if (typeof value === 'string') {
       env[key] = value;
