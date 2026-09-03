@@ -49,7 +49,6 @@ import type {
 
 import { buildCompletionCliArgv, buildGatedCliEnv } from '@omadia/orchestrator';
 
-import { scrubbedEnv } from './cliBackendDetector.js';
 
 const CLI_BIN = 'claude';
 const COMPLETE_TIMEOUT_MS = 120_000;
@@ -215,7 +214,10 @@ function spawnClaude(
 
   return new Promise<LlmResponse>((resolve, reject) => {
     const child = spawn(CLI_BIN, args, {
-      env: buildGatedCliEnv(scrubbedEnv()),
+      // `scrubbedEnv()` used to wrap this. It is a no-op behind the allowlist:
+      // every key it deletes is absent from the allowlist anyway, and a test
+      // asserts the allowlist and the scrub list never overlap.
+      env: buildGatedCliEnv(),
       cwd: workDir,
       windowsHide: true,
     });
