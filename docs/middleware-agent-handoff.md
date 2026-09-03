@@ -154,7 +154,12 @@ Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
 degradiert auf die bestehende "Specialist … is no longer available."-Notiz
 statt den internen Dispatch-Fehler zu zeigen). Die parallele
 `ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
-unabhängig nach, da sie ohne Orchestrator-Instanz läuft.
+unabhängig nach, da sie ohne Orchestrator-Instanz läuft. Auf dieser Bridge gibt
+es zusätzlich ein Gate auf der Spawn-Seite: `CliChatAgent` startet die CLI mit
+`--tools ""`, `--disallowedTools`, `--permission-mode dontAsk`,
+`--setting-sources ""` und `--system-prompt`, damit die eingebauten CLI-Tools
+(Bash, Edit, Write, …) und die `~/.claude`-Hooks des Host-Users nie erreichbar
+sind (#991/#992; Details in `docs/security-architecture.md` § 3a).
 
 Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
 Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem

@@ -36,6 +36,51 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — The subscription-CLI agent can no longer run shell commands on the user's machine
+
+2026-09-03 — Beta test round 4, OM-81 (#991). On the subscription path the
+agent loop runs inside the external `claude` CLI, and a tester asked the omadia
+chat to run `whoami && hostname`. The CLI did, with the user's OS rights, no
+confirmation, and none of omadia's gates (plugin grants, audience floor, privacy
+guard, `sandbox_execute_enabled`) involved. omadia had registered no shell tool;
+the call came from the CLI's own built-in `Bash`. `--allowedTools mcp__omadia__*`
+only pre-approves omadia's loopback tools, it never removed the built-ins.
+
+The spawn argv now closes the boundary four ways: `--tools ""` removes the
+CLI's built-in tool set (MCP tools stay), `--disallowedTools` carries a named,
+test-asserted deny list (`CLI_BUILTIN_TOOL_DENYLIST`) as a fallback for a CLI
+that ignores `--tools`, `--permission-mode dontAsk` denies anything not
+pre-approved instead of prompting a UI nobody sees, and `--setting-sources ""`
+keeps the operator's personal allow rules out of the session. Any tool call in
+the trace whose name is not `mcp__omadia__*` is marked `foreign`, so a CLI-native
+call can never read like an omadia call.
+
+### Fixed — On the subscription path the agent introduces itself as omadia, not as Claude Code
+
+2026-09-03 — OM-83 (#992). omadia's instructions were passed to the CLI with
+`--append-system-prompt`, so Claude Code's own prompt stayed the primary
+identity. The model told a user sitting in the omadia chat that it was "running
+in a CLI session in the middleware repo", advised them to "ask the same thing in
+an omadia chat", and offered to schedule the task in a different system. The
+prompt is now replaced via `--system-prompt`: the agent's persona comes first,
+followed by a fixed runtime note naming omadia and the only toolset the model
+actually has (the `mcp__omadia__*` MCP tools). A neutral default applies when no
+persona is configured, so the CLI's self-description never leaks through.
+
+### Fixed — omadia's own tools keep the user context when called through the loopback MCP server
+
+2026-09-03 — OM-82 (#993). Asked from the omadia chat to create a routine, the
+CLI-backed agent got `Error: cannot create routine outside a channel turn (no
+user context)` although the request came from a channel. On the subscription
+path a tool call reaches the middleware as an HTTP request from the external
+`claude` process, in a fresh async context, so every per-turn
+`AsyncLocalStorage` (`routineTurnContext`, `privacyHandle`, `toolIdempotency`,
+…) was undefined inside `dispatch()`. The loopback server now snapshots the
+async context it is constructed in (inside the turn) and runs every
+`tools/call` within it, so context-bound tools see the same tenant and user the
+in-process path sees. The `manage_routine` error for a genuinely missing
+context now reads as a runtime wiring fault instead of blaming the caller.
+
 ### Fixed — dashboard and readiness banner read one runtime truth (#999, #1000, #1001, #1002, #1003)
 
 2026-09-03 — omadia beta test round 4 (TE Printline, OM-72/74/75/78/84). The

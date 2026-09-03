@@ -55,6 +55,57 @@ tool (`createGraphLookupTool(scope)`), not the raw graph client. The scope:
 - Survives prompt-injection attempts that ask the sub-agent to "use a
   different user id" — the tool simply does not accept an override.
 
+## 3a. Subscription-CLI process boundary (#991, #992, #993)
+
+On the subscription path (`claude-cli` provider, Shape 3) the agent loop does
+not run in the middleware. `CliChatAgent` spawns the official `claude` CLI as a
+child process and hands it omadia's tools over a per-turn loopback MCP server
+(`mcp__omadia__*`). Everything omadia enforces in-process — plugin grants,
+audience floor, privacy guard, `sandbox_execute_enabled` — sits in front of
+*omadia's* tools. The CLI's own built-in tools (Bash, Edit, Write, Read,
+WebFetch, WebSearch, Agent, …) sit behind them, run with the user's OS rights,
+and are one prompt injection away from any mail, document or web page the agent
+reads. Beta test round 4 demonstrated exactly that: the agent ran
+`whoami && hostname` on the tester's Mac on request, with no gate involved.
+
+`--allowedTools mcp__omadia__*` alone was insufficient because it is a
+**pre-approval** list, not a restriction: it only says which tools may run
+without prompting. It never removed the built-ins, and `--strict-mcp-config`
+limits MCP servers only.
+
+The gate is the spawn argv in
+`middleware/packages/harness-orchestrator/src/cliChatAgent.ts`, asserted by
+`test/cliBridge/cliChatAgent.test.ts`:
+
+| Flag | What it closes |
+|---|---|
+| `--tools ""` | Removes the CLI's built-in tool set; only MCP tools remain. Primary lever. |
+| `--disallowedTools <CLI_BUILTIN_TOOL_DENYLIST>` | Names every built-in explicitly; the fallback for a CLI that ignores `--tools`. The list is an exported constant so the test asserts the contract, not the intent. |
+| `--permission-mode dontAsk` | Anything not pre-approved is denied outright. There is no human at a permission prompt in an omadia chat. |
+| `--setting-sources ""` | Loads no user/project/local `settings.json`. Otherwise the host user's `~/.claude` settings apply, including `hooks` (shell commands that run on every tool call) and personal allow rules. Credentials are unaffected: the CLI reads them from `CLAUDE_CONFIG_DIR`, not from settings. |
+| `--strict-mcp-config --mcp-config <0600 file>` | Only omadia's loopback server; no MCP servers from the user's own config. |
+| `--allowedTools mcp__omadia__*` | Pre-approves omadia's tools so the turn does not stall on a prompt. |
+| `--system-prompt <omadia prompt>` | Replaces the CLI's default prompt. With `--append-system-prompt` the model kept Claude Code's identity, treated the CLI toolbox as its own and told users in the omadia chat to "go to omadia" (#992). `composeCliSystemPrompt()` always states the runtime and the only toolset the model has. |
+
+Two further pieces make the boundary observable and keep omadia's own tools
+working across it:
+
+- **Foreign tool marking.** `StreamJsonParser` sets `foreign: true` on every
+  `tool_use` event whose name is not `mcp__omadia__*`. The built-ins are
+  removed at spawn time; if one ever surfaces anyway it can never read like an
+  omadia tool in the trace.
+- **Turn context across the process hop (#993).** A tool call on this path
+  arrives as an HTTP request from the external process, in a fresh async
+  context, so `AsyncLocalStorage` values the channel set around `chat()`
+  (today `routineTurnContext`) were undefined inside `dispatch()` and
+  `manage_routine` reported "no user context" to a user who was in a channel.
+  `LoopbackMcpServer` takes `AsyncLocalStorage.snapshot()` when it is
+  constructed — inside the turn, in `CliChatAgent.runLifecycle` — and runs
+  every `tools/call` inside that snapshot. The snapshot carries whatever stores
+  are active at construction, so a future store needs no change here; a
+  `CliChatAgent`-level test guards against hoisting server creation out of the
+  turn.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -582,6 +633,9 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] A change to the `CliChatAgent` spawn argv keeps the deny gate
+      (`--tools ""`, `--disallowedTools`, `--permission-mode dontAsk`,
+      `--setting-sources ""`, `--system-prompt`) and its test (§3a).
 - [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
