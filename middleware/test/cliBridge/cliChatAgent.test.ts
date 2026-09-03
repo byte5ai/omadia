@@ -133,8 +133,10 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
   function makeAgent(opts: { readonly systemPrompt?: string } = {}): {
     readonly agent: CliChatAgent;
     readonly argv: () => readonly string[];
+    readonly spawnOptions: () => { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv };
   } {
     let captured: readonly string[] = [];
+    let capturedOptions: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv } = {};
     const agent = new CliChatAgent({
       dispatch: {
         listDispatchableToolSpecs: () => [],
@@ -149,8 +151,21 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
           stop: async () => {},
         }) as never,
       ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
-      spawnFn: ((_bin: string, argv: readonly string[]) => {
+      buildEnv: () => ({
+        PATH: '/usr/bin',
+        HOME: '/Users/tester',
+        CLAUDE_CONFIG_DIR: '/Users/tester/.claude',
+        // #1014 — must not survive into the child.
+        NODE_OPTIONS: '--require /tmp/evil.js',
+        ANTHROPIC_API_KEY: 'sk-ant-test-key',
+      }),
+      spawnFn: ((
+        _bin: string,
+        argv: readonly string[],
+        options: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv },
+      ) => {
         captured = argv;
+        capturedOptions = options;
         const stdout = new PassThrough();
         const stderr = new PassThrough();
         const stdin = new PassThrough();
@@ -172,7 +187,7 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         return child;
       }) as unknown as CliChatAgentDeps['spawnFn'],
     });
-    return { agent, argv: () => captured };
+    return { agent, argv: () => captured, spawnOptions: () => capturedOptions };
   }
 
   function valueAfter(argv: readonly string[], flag: string): string | undefined {
@@ -185,17 +200,30 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     await agent.chat({ userMessage: 'run whoami' });
     const a = argv();
 
-    // `--tools ""` removes every built-in tool; only MCP tools remain.
+    // `--tools ""` removes every built-in tool; only MCP tools remain. The
+    // CLI's own help documents `""` as "disable all tools".
     assert.equal(valueAfter(a, '--tools'), '');
-    // Belt and braces: an explicit deny list for the built-ins, so an older
-    // CLI that ignores `--tools ""` still refuses them.
+    // Belt and braces: an explicit deny list for the built-ins, so a CLI that
+    // reads `--tools` differently still refuses them.
+    //
+    // #1017 — this used to size its inspection window with
+    // `CLI_BUILTIN_TOOL_DENYLIST.length` and then check the constant against
+    // itself, so deleting entries kept it green. Now the argv slice must equal
+    // the constant exactly, and `cliSpawnGate.test.ts` guards the constant's
+    // own contents against deletion and against CLI drift.
     const denyIdx = a.indexOf('--disallowedTools');
     assert.notEqual(denyIdx, -1, 'argv must carry --disallowedTools');
-    const denied = new Set(a.slice(denyIdx + 1, denyIdx + 1 + CLI_BUILTIN_TOOL_DENYLIST.length));
-    for (const tool of ['Bash', 'Edit', 'Write', 'Read', 'WebFetch', 'WebSearch', 'Agent']) {
-      assert.ok(CLI_BUILTIN_TOOL_DENYLIST.includes(tool), `denylist names ${tool}`);
-      assert.ok(denied.has(tool), `argv denies ${tool}`);
+    const denied: string[] = [];
+    for (let i = denyIdx + 1; i < a.length; i += 1) {
+      const token = a[i];
+      if (token === undefined || token.startsWith('--')) break;
+      denied.push(token);
     }
+    assert.deepEqual(denied, [...CLI_BUILTIN_TOOL_DENYLIST]);
+    // `--restricted` on top: it removes the code-running built-ins and
+    // WebFetch and ignores user/project/local settings, and unlike `--bare` it
+    // leaves the subscription's OAuth credentials readable.
+    assert.ok(a.includes('--restricted'), 'argv must carry --restricted');
     // Anything not pre-approved is denied instead of prompting a UI nobody sees.
     assert.equal(valueAfter(a, '--permission-mode'), 'dontAsk');
     // No user/project/local settings.json: the host user's `hooks` and
@@ -203,6 +231,161 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     assert.equal(valueAfter(a, '--setting-sources'), '');
     // The omadia loopback tools stay pre-approved.
     assert.equal(valueAfter(a, '--allowedTools'), 'mcp__omadia__*');
+  });
+
+  it('spawns in an empty working directory, not the middleware cwd', async () => {
+    // #1014 — the CLI hardcodes CLAUDE.md / AGENTS.md discovery and only
+    // `--bare` skips it, but `--bare` never reads OAuth and would break the
+    // subscription login. Without a cwd the child inherited the middleware
+    // process's directory, so any CLAUDE.md at or above it joined a prompt
+    // that also carries end-user text.
+    const { agent, spawnOptions } = makeAgent();
+    await agent.chat({ userMessage: 'hi' });
+
+    const cwd = spawnOptions().cwd;
+    assert.ok(cwd, 'spawn must set a cwd');
+    assert.match(cwd, /omadia-cli-/, 'cwd must be the per-turn temp dir');
+    assert.notEqual(cwd, process.cwd());
+  });
+
+  /**
+   * #1015 — the child must be killed BEFORE `server.stop()` is awaited.
+   *
+   * `stop()` waits for live connections, and the child holds a keep-alive
+   * socket to the loopback server, so awaiting it first could block until the
+   * bound expires while the kill escalation never ran. Nothing pinned the
+   * order: moving `stop()` back above the kill block kept the whole suite
+   * green, because `stop()`'s own 2s bound hides the stall.
+   *
+   * Driven through the STREAM ABORT path, which is the only one that reaches
+   * the `finally` with the child still alive and unkilled. The timeout path
+   * looks equivalent but is not: `failRuntime` kills the child itself before
+   * the `finally` runs, so an ordering test built on it passes even with
+   * `stop()` moved back above the kill. That is how the first version of this
+   * test fooled itself.
+   */
+  it('kills the child before it awaits the loopback server stop', async () => {
+    const order: string[] = [];
+
+    const agent = new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'bearer' }),
+          stop: async () => {
+            order.push('stop');
+          },
+        }) as never,
+      buildEnv: () => ({ PATH: '/usr/bin' }),
+      spawnFn: (() => {
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const child = Object.assign(new PassThrough(), {
+          stdin,
+          stdout,
+          stderr,
+          exitCode: null as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: () => {
+            order.push('kill');
+            // Only now does the process go away, as a real one would; the
+            // teardown's close-race depends on it.
+            child.exitCode = 143;
+            child.emit('close', null, 'SIGTERM');
+            return true;
+          },
+        });
+        stdin.on('finish', () => {
+          // One event so the first `.next()` resolves, then silence: the turn
+          // can only end by being abandoned.
+          stdout.write(
+            JSON.stringify({
+              type: 'stream_event',
+              event: {
+                type: 'content_block_delta',
+                delta: { type: 'text_delta', text: 'thinking' },
+              },
+            }) + '\n',
+          );
+        });
+        return child;
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+
+    const stream = agent.chatStream({ userMessage: 'hi' });
+    const first = await stream.next();
+    assert.equal(first.done, false);
+    assert.deepEqual(first.value, { type: 'text_delta', text: 'thinking' });
+
+    // Abandon the turn: this is what an aborted HTTP request does.
+    await stream.return(undefined);
+
+    assert.deepEqual(
+      order,
+      ['kill', 'stop'],
+      `teardown ran in the wrong order: ${order.join(' -> ')}`,
+    );
+  });
+
+  /**
+   * #1016 — `chatStream` must NOT be an `async *` method.
+   *
+   * An `async *` body does not run until the first `.next()`, so the async
+   * context it captured belonged to whoever iterated rather than to whoever
+   * called. The fix was to make `chatStream` a plain method that captures
+   * synchronously and returns a generator. This pins the behaviour rather than
+   * the syntax: the guard factory has to have been called by the time
+   * `chatStream()` returns, without anything iterating the result.
+   */
+  it('captures the turn context when chatStream is called, not when it is iterated', () => {
+    let guardBuilt = 0;
+    const agent = new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      turnOwnerGuard: () => {
+        guardBuilt += 1;
+        return () => {};
+      },
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'bearer' }),
+          stop: async () => {},
+        }) as never,
+      spawnFn: (() => {
+        throw new Error('chatStream() must not spawn before it is iterated');
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+
+    const stream = agent.chatStream({ userMessage: 'hi' });
+    assert.equal(guardBuilt, 1, 'the context must be captured at call time');
+
+    // Belt: an `async *` method is an AsyncGeneratorFunction, a plain method
+    // returning a generator is not.
+    assert.notEqual(
+      Object.getPrototypeOf(agent).chatStream.constructor.name,
+      'AsyncGeneratorFunction',
+      'chatStream must not be an async generator method',
+    );
+
+    void stream.return(undefined);
+  });
+
+  it('hands the child an allowlisted environment', async () => {
+    const { agent, spawnOptions } = makeAgent();
+    await agent.chat({ userMessage: 'hi' });
+
+    const env = spawnOptions().env ?? {};
+    // Kept: the CLI cannot run or find its subscription credentials without these.
+    assert.equal(env.PATH, '/usr/bin');
+    assert.equal(env.CLAUDE_CONFIG_DIR, '/Users/tester/.claude');
+    // #1014 — dropped. `NODE_OPTIONS` can `--require` arbitrary code into the
+    // child, and an API key would switch the run off the subscription.
+    assert.equal(env.NODE_OPTIONS, undefined);
+    assert.equal(env.ANTHROPIC_API_KEY, undefined);
   });
 
   it('replaces the CLI system prompt instead of appending to it', async () => {

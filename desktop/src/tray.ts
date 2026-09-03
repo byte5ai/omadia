@@ -1,7 +1,6 @@
 import { Tray, Menu, nativeImage, shell, app } from 'electron';
-import fs from 'node:fs';
-import path from 'node:path';
-import { logFile } from './log';
+import { log, logFile } from './log';
+import { resolveTrayIconPath, trayIconCandidates } from './icons';
 
 /**
  * System tray icon + menu. Lets omadia keep running in the background (the local
@@ -46,20 +45,26 @@ function rebuildMenu(actions: TrayActions, status: string): void {
 }
 
 function loadTrayIcon(): Electron.NativeImage {
-  // Prefer a bundled template icon; fall back to an empty image so a missing asset
-  // never crashes startup (the tray still works, just without artwork).
-  const candidates = [
-    path.join(app.getAppPath(), 'dist', 'assets', 'trayTemplate.png'),
-    path.join(app.getAppPath(), 'assets', 'trayTemplate.png'),
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      const img = nativeImage.createFromPath(p);
-      img.setTemplateImage(true);
-      return img;
-    }
+  const appPath = app.getAppPath();
+  const found = resolveTrayIconPath(appPath);
+  if (found === null) {
+    // Still fall back to an empty image — a missing asset must not stop the app
+    // from starting — but say so. An empty tray image is invisible in the menu
+    // bar, which makes every action behind the tray (Restart, Logs, Quit)
+    // unreachable, and #1002 points users at Tray → Restart. Three beta rounds
+    // shipped this silently (OM-53/OM-63); it will not go quiet again.
+    log.warn(
+      '[tray] no tray icon found, the menu bar entry will be invisible. Looked in: ' +
+        trayIconCandidates(appPath).join(', ') +
+        '. Run `npm run icons` in desktop/ to regenerate the assets.',
+    );
+    return nativeImage.createEmpty();
   }
-  return nativeImage.createEmpty();
+  const img = nativeImage.createFromPath(found);
+  // macOS tints a template image for the light and the dark menu bar. Harmless
+  // elsewhere: Windows and Linux ignore the flag.
+  img.setTemplateImage(true);
+  return img;
 }
 
 export function destroyTray(): void {

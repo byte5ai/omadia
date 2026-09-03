@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "orchestrator.plan-runner"
-  description: "#133 plan-as-data — materialises an explicit per-turn plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns, so the orchestrator can check progress against named sub-goals instead of relying on the model to remember them. Subscribes to the onBeforeTurn hook; gated by a cheap Haiku classifier. On by default (a cheap Haiku gate keeps simple Q&A neutral); set enabled=off to disarm."
+  description:
+    en: "Writes down a plan for a task with several steps and tracks progress against those named steps, instead of trusting the model to remember them. A cheap check keeps it out of the way on simple questions."
+    de: "Schreibt für eine Aufgabe mit mehreren Schritten einen Plan auf und verfolgt den Fortschritt anhand dieser benannten Schritte, statt sich darauf zu verlassen, dass das Modell sie behält. Eine günstige Vorprüfung hält es bei einfachen Fragen heraus."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

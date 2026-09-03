@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "channel"
   domain: "omadia.ui"
-  description: "Omadia UI Tier-1 server-side channel. Declares the canvas surface — capabilities [text, canvas] and dispatch_service canvasChatAgent — so a turn routes to the omadia-ui-orchestrator (#168/#171). Mounts a pre-connect discovery endpoint (GET /omadia-ui/info) advertising the omadia-canvas-protocol + ops-catalog versions and capabilities, plus the bidirectional canvas WebSocket (/omadia-ui/canvas) over PR-11's CoreApi.registerWebSocket: server-initiated handshake (offer→select→ack), IncomingTurn forming per client turn, and 1:1 surface_* fan-out of the orchestrator stream. The WebSocket is feature-detected — degrades to discovery-only when no WS registry is wired into the CoreApi."
+  description:
+    en: "Connects the omadia canvas interface to the chat. It tells a client what the server supports and holds a live connection open, so a view already updates while the answer is still being written."
+    de: "Verbindet die omadia-Canvas-Oberfläche mit dem Chat. Es teilt einem Client mit, was der Server unterstützt, und hält eine laufende Verbindung offen, damit sich eine Ansicht schon aktualisiert, während die Antwort noch entsteht."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

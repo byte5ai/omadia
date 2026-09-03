@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "omadia.ui"
-  description: "Omadia UI Tier-2 orchestrator. Publishes canvasChatAgent@1 — the service a canvas channel dispatches to via channel.dispatch_service (PR-6). For canvas turns (input.canvasSessionId) it runs the Haiku composition step: a validator-gated skeleton surface_snapshot is emitted BEFORE the delegated main turn (skeleton-first, ~500ms target), the main turn carries a [canvas-context] block with the skeleton's dataRequirements (so Tier-3 sub-agents return _pendingStructuredPayloads matching exactly the promised containerIds + fieldKeys), and the base stream is wrapped in surface synthesis (_pendingCanvasTree → surface_snapshot; _pendingStructuredPayload → deterministic surface_patch onto the skeleton). Non-canvas turns pass through byte-for-byte. Deferred to later slices: per-canvasSession mutex + state persistence (9b-3), DataRef HMAC, boot-computed canvas-output allow-set (interim: canvas_output_tools config, deny-by-default). CCM is intentionally NOT a hard requires (it has no provider on main) — it will be late-resolved with an in-memory fallback when the continuity feature lands."
+  description:
+    en: "Builds the interactive views behind the canvas interface. It shows a layout within about half a second and fills it with real data as the answer arrives. Ordinary chat turns pass through unchanged."
+    de: "Baut die interaktiven Ansichten hinter der Canvas-Oberfläche. Es zeigt innerhalb einer halben Sekunde ein Gerüst und füllt es mit echten Daten, sobald die Antwort eintrifft. Normale Chat-Züge bleiben unverändert."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

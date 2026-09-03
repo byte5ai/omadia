@@ -34,6 +34,7 @@ import {
 import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActions';
 import { createUiReadyGate } from './uiReadyGate';
 import { showAppPage } from './appPageBoot';
+import { resolveAppIconPath } from './icons';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
@@ -76,6 +77,10 @@ function rendererPath(file: string): string {
 }
 
 function createWindow(): BrowserWindow {
+  // Windows and Linux read the window/taskbar icon from the running process;
+  // macOS takes it from the signed bundle, so passing it there is a no-op
+  // (#888). `undefined` keeps Electron's own default when the asset is absent.
+  const icon = resolveAppIconPath(app.getAppPath()) ?? undefined;
   const w = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -83,6 +88,7 @@ function createWindow(): BrowserWindow {
     minHeight: 620,
     show: false,
     title: 'omadia',
+    ...(icon === undefined ? {} : { icon }),
     backgroundColor: '#0b0d12',
     webPreferences: {
       preload: path.join(app.getAppPath(), 'dist', 'preload.js'),

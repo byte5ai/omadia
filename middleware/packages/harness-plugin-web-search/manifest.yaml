@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "web.search"
-  description: "Live web-search core plugin (Tavily / Brave). Publishes the `webSearch@1` capability and a `web_search` native tool with structured citation objects."
+  description:
+    en: "Lets agents search the live web through Tavily or Brave and returns the results with their sources."
+    de: "Lässt Agenten das Web in Echtzeit über Tavily oder Brave durchsuchen und liefert die Ergebnisse mit Quellenangabe."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

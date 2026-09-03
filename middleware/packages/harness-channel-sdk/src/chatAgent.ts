@@ -692,7 +692,19 @@ export type ChatStreamEvent =
        */
       foreign?: true;
     }
-  | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
+  | {
+      type: 'tool_result';
+      id: string;
+      output: string;
+      durationMs: number;
+      isError?: boolean;
+      /**
+       * OM-81 — stamped by the chat route when the matching `tool_use` carried
+       * `foreign`, so the pair can never disagree in the trace (a mid-turn
+       * reconnect can deliver a result whose call the client never saw).
+       */
+      foreign?: true;
+    }
   /**
    * OB-77 (Palaia Phase 8) — fired AFTER the nudge pipeline has run on
    * the iteration's tool_results. Channel renderers collect these per

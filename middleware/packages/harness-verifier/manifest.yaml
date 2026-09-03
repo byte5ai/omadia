@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.verifier"
-  description: "Tool-Set: Answer-Verifier-Pipeline (TriggerRouter → ClaimExtractor → DeterministicChecker → EvidenceJudge → CorrectionPrompt) plus VerifierStore (Postgres-Persistenz für Verdicts + Contradictions auf graphPool), GraphEvidenceFetcher, FailureReplayDetector und die GraphLookupTool-Factory für die accounting/hr Sub-Agents. Konsumiert die Kernel-Capabilities `knowledgeGraph` (hard requires; Lookups + Trace-Cross-Check) und optional `graphPool` (VerifierStore-Schreibpfad, nur mit Neon-KG verfügbar) sowie `odoo.client` (DeterministicChecker-Re-Query). Published `verifier@1` als Bundle-Capability `{ pipeline, store?, mode, maxRetries }` — kernel-side late-resolved und mit dem konkreten Orchestrator zur `VerifierService` zusammengewickelt (das wraps-Orchestrator-bit bleibt kernel-side, weil Orchestrator-Konstruktion nach `activateAllInstalled` läuft)."
+  description:
+    en: "Checks an answer before it reaches the user. It takes the claims apart, compares them against the knowledge graph and the source systems, and asks for a correction when something does not hold. The verdicts are kept, so contradictions become visible."
+    de: "Prüft eine Antwort, bevor sie beim Nutzer ankommt. Es zerlegt die Aussagen, gleicht sie mit dem Wissensgraphen und den Quellsystemen ab und fordert eine Korrektur an, wenn etwas nicht stimmt. Die Urteile werden gespeichert, sodass Widersprüche sichtbar werden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

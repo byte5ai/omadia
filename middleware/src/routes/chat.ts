@@ -12,6 +12,7 @@ import type {
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
+import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -156,6 +157,21 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
  * with a plain fetch+ReadableStream on the browser side, and survives any
  * reverse proxy that handles chunked responses correctly.
  */
+/**
+ * #1008 — is this `tool_use` event flagged foreign?
+ *
+ * Read structurally rather than off the `ChatStreamEvent` union on purpose.
+ * The flag is set by `cliChatAgent` and declared on the channel-sdk event
+ * type, but this route resolves that type through the built package: a tree
+ * whose `dist/` predates the declaration would fail to compile against a
+ * direct `event.foreign`, which is a build-order accident, not a contract
+ * change. The wire contract is "the property is present and true", and that
+ * is exactly what this asks.
+ */
+function isForeignToolUse(event: object): boolean {
+  return (event as { foreign?: unknown }).foreign === true;
+}
+
 function writeEvent(res: Response, event: unknown): void {
   res.write(`${JSON.stringify(event)}\n`);
 }
@@ -395,6 +411,15 @@ export function createChatRouter(
     let toolCallsThisIter = 0;
     let phase: 'thinking' | 'streaming' | 'tool_running' | 'idle' = 'idle';
     let tokensStreamedThisIter = 0;
+    /**
+     * #1008 — tool_use ids the CLI agent flagged `foreign`, so the matching
+     * `tool_result` can be stamped too. Without this the pair is
+     * inconsistent: the call is marked and its result looks like any other,
+     * which is exactly the ambiguity OM-81 set out to remove. Bounded by the
+     * tool calls of ONE turn, and the whole handler scope dies with the
+     * response, so there is nothing to evict.
+     */
+    const foreignToolUseIds = new Set<string>();
     const safeWrite = (event: unknown): void => {
       if (!clientGone) writeEvent(res, event);
     };
@@ -522,6 +547,14 @@ export function createChatRouter(
           toolCallsThisIter += 1;
           phase = 'tool_running';
           lastActivityAt = Date.now();
+          // #1017 item 4 — the `foreign` flag was dead: set by the CLI agent,
+          // read by nobody. A foreign call means one of the CLI's own
+          // built-ins ran despite the spawn gate, so it gets an error-level
+          // log and a counter, not just a field on the wire.
+          if (isForeignToolUse(event)) {
+            foreignToolUseIds.add(event.id);
+            recordForeignToolCall(event.name, effectiveSlug);
+          }
           if (agentResolver) {
             const agent = agentResolver(event.name);
             if (agent) {
@@ -531,6 +564,10 @@ export function createChatRouter(
           }
         } else if (event.type === 'tool_result') {
           lastActivityAt = Date.now();
+          if (foreignToolUseIds.has(event.id)) {
+            safeWrite({ ...event, foreign: true });
+            continue;
+          }
         } else if (event.type === 'text_delta') {
           lastActivityAt = Date.now();
         }
