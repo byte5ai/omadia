@@ -3646,6 +3646,7 @@
       "failed": "Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
       "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
       "callbackWait": "Bestätige den Zugriff im Browser. Diese CLI schließt die Anmeldung selbst ab, kein Code zum Einfügen — diese Seite aktualisiert sich, sobald es fertig ist.",
+      "callbackTimedOut": "Die Anmeldung wurde nicht rechtzeitig abgeschlossen. Starte erneut, bestätige den Zugriff im Browser und lass diese Seite offen.",
       "manualSummary": "Lieber das Terminal?",
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",

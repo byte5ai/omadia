@@ -51,6 +51,10 @@ interface LoginSession {
   buffer: string;
   readonly createdAt: number;
   lifetimeTimer?: NodeJS.Timeout;
+  /** OM-79 — the post-login hook fires at most once per session, on the
+   *  pending → authorized transition, whichever path (exit handler or code
+   *  submit) gets there first. */
+  hookFired: boolean;
 }
 
 const MAX_BUFFER = 64 * 1024;
@@ -71,14 +75,17 @@ interface CliAuthDeps {
   readonly spawn: typeof spawn;
   readonly detectCliBackends: typeof detectCliBackends;
   readonly resolveCliBin: typeof resolveCliBin;
-  /** How long to watch for a "paste code" prompt after the URL appears. */
+  /** Upper bound on watching for a flow signature after the URL appears. */
   readonly codePromptProbeMs: number;
+  /** Cadence of the detection poll inside `submitCliCode`. */
+  readonly statusPollIntervalMs: number;
 }
 const DEFAULT_DEPS: CliAuthDeps = {
   spawn,
   detectCliBackends,
   resolveCliBin,
   codePromptProbeMs: CODE_PROMPT_PROBE_MS,
+  statusPollIntervalMs: STATUS_POLL_INTERVAL_MS,
 };
 let io: CliAuthDeps = DEFAULT_DEPS;
 
@@ -121,9 +128,46 @@ function fireAuthorizedHook(cliId: string): void {
   })();
 }
 
-/** Detect whether the CLI is waiting at a stdin code prompt (older flow). */
-function looksLikeCodePrompt(buf: string): boolean {
-  return /paste|enter the code|authorization code|code here/i.test(buf);
+/**
+ * Flow signatures in the CLI's opening output. Pinned against the strings the
+ * claude 2.1.259 bundle actually prints (see test fixtures):
+ *
+ *   Opening browser to sign in…
+ *   Waiting for browser authorization…
+ *   If the browser didn't open, visit: <url>
+ *   Paste code here if prompted >
+ *
+ * The newer CLI prints the callback lines AND a "Paste code here if prompted"
+ * fallback together, so the paste prompt alone proves nothing. A code entry is
+ * required only when a paste prompt appears WITHOUT any browser-callback line.
+ */
+const CALLBACK_SIGNATURE = /waiting for browser authorization|opening browser|if the browser didn.t open/i;
+const PASTE_SIGNATURE = /paste code here|enter the code|authorization code/i;
+
+function hasCallbackSignature(buf: string): boolean {
+  return CALLBACK_SIGNATURE.test(buf);
+}
+function hasPasteSignature(buf: string): boolean {
+  return PASTE_SIGNATURE.test(buf);
+}
+
+/**
+ * The one place a session becomes `authorized`. Returns `true` only on the
+ * actual pending → authorized transition; a second caller (the exit handler and
+ * `submitCliCode` can race, see OM-73) gets `false` and must not fire the hook
+ * again. `__resetCliBackendCache` runs on the transition so the next detection
+ * reads the fresh credential.
+ */
+function markAuthorized(session: LoginSession, account: string | undefined): boolean {
+  if (session.status !== 'pending') return false;
+  session.status = 'authorized';
+  if (account) session.account = account;
+  __resetCliBackendCache();
+  if (!session.hookFired) {
+    session.hookFired = true;
+    fireAuthorizedHook(session.cliId);
+  }
+  return true;
 }
 
 /** Only Claude is wired for v1 (the only confirmed subscription-billed CLI). */
@@ -205,6 +249,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
     status: 'pending',
     buffer: '',
     createdAt: Date.now(),
+    hookFired: false,
   };
   active = session;
 
@@ -235,8 +280,10 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
     //   * exit 0 while pending → the CLI completed; confirm via detection and
     //     mark `authorized` (fires the post-login hook, OM-79).
     //   * non-zero → a real failure; keep the last output for the operator.
-    // A successful submit (older flow) already flipped to `authorized` and
-    // disposed before this fires, so it is untouched.
+    // No ordering guarantee with `submitCliCode` (older flow): both may observe
+    // `pending` and both call `markAuthorized`, which only transitions once and
+    // fires the hook once. A session already `authorized`/`invalid`/`error`
+    // is left as it is.
     if (session.status === 'pending') {
       if (code === 0) {
         void confirmAuthorizedAfterExit(session);
@@ -275,18 +322,18 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   session.verificationUrl = url;
 
   // Decide which leg follows: a stdin code prompt (older CLI) or a browser
-  // callback (newer CLI). Watch briefly for the prompt; if the process finishes
-  // or a prompt never appears, this is the callback flow (codeEntry=false).
+  // callback (newer CLI). Resolve as soon as EITHER signature shows up so the
+  // start response is never held for the full probe window; the window only
+  // caps a CLI that prints the URL and nothing else. A callback line wins over
+  // a paste prompt (the 2.1.259 bundle prints both; the code is optional then).
   const promptDeadline = Date.now() + io.codePromptProbeMs;
-  let codeEntry = false;
   while (Date.now() < promptDeadline) {
     if (session.status !== 'pending') break; // exited (authorized or error)
-    if (looksLikeCodePrompt(session.buffer)) {
-      codeEntry = true;
-      break;
-    }
-    await delay(200);
+    if (hasCallbackSignature(session.buffer) || hasPasteSignature(session.buffer)) break;
+    await delay(100);
   }
+  const codeEntry =
+    hasPasteSignature(session.buffer) && !hasCallbackSignature(session.buffer);
   return {
     sessionId: session.id,
     verificationUrl: url,
@@ -303,13 +350,13 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
 async function confirmAuthorizedAfterExit(session: LoginSession): Promise<void> {
   try {
     const snap = await io.detectCliBackends({ force: true });
+    // Detection is async; `submitCliCode` may have settled the session while we
+    // waited. Only a still-pending session is ours to transition.
+    if (session.status !== 'pending') return;
     const backend = snap.backends.find((b) => b.id === session.cliId);
     if (backend?.loggedIn === 'yes') {
-      session.status = 'authorized';
-      if (backend.account) session.account = backend.account;
+      markAuthorized(session, backend.account);
       session.child = undefined; // process already exited
-      __resetCliBackendCache();
-      fireAuthorizedHook(session.cliId);
       // Keep the session active (not disposed) so a UI polling getActiveLogin
       // sees `authorized`. The lifetime timer reaps it; the next login replaces
       // it. The child is already gone, so there is nothing to kill.
@@ -359,27 +406,38 @@ export async function submitCliCode(
     child.stdin.write(`${trimmed}\n`);
     const deadline = Date.now() + CODE_RESULT_WAIT_MS;
     while (Date.now() < deadline) {
-      await delay(STATUS_POLL_INTERVAL_MS);
+      await delay(io.statusPollIntervalMs);
 
-      // Authoritative success check FIRST — a confirmed login must win over any
+      // The exit handler may have confirmed the login while we slept (the CLI
+      // exits 0 after a correct code). It already fired the hook; just report.
+      if (session.status === 'authorized') {
+        const account = session.account;
+        disposeActive();
+        return account ? { status: 'authorized', account } : { status: 'authorized' };
+      }
+      if (session.status === 'error') {
+        return { status: 'error', error: session.error ?? 'The login process ended before sign-in completed. Start again.' };
+      }
+
+      // Authoritative success check — a confirmed login must win over any
       // lagging "invalid code" text (e.g. from a previous attempt).
       const snap = await io.detectCliBackends({ force: true });
       const backend = snap.backends.find((b) => b.id === session.cliId);
       if (backend?.loggedIn === 'yes') {
-        session.status = 'authorized';
-        if (backend.account) session.account = backend.account;
+        // OM-79 — `markAuthorized` fires the hook exactly once, even if the
+        // exit handler transitioned the session while detection was in flight.
+        markAuthorized(session, backend.account);
         const account = session.account;
         disposeActive();
-        __resetCliBackendCache();
-        // OM-79 — connect the orchestrator to the freshly logged-in CLI.
-        fireAuthorizedHook(session.cliId);
         return account ? { status: 'authorized', account } : { status: 'authorized' };
       }
       if (/invalid code/i.test(attemptOut)) {
         session.status = 'invalid';
         return { status: 'invalid', error: 'Invalid code. Copy the full code and try again.' };
       }
-      if (child.exitCode !== null) {
+      // exit 0 while still pending is being confirmed by the exit handler —
+      // keep waiting for it to settle. Only a non-zero exit is a failure here.
+      if (child.exitCode !== null && child.exitCode !== 0) {
         session.status = 'error';
         return { status: 'error', error: 'The login process ended before sign-in completed. Start again.' };
       }

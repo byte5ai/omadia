@@ -3646,6 +3646,7 @@
       "failed": "Sign-in failed. Try again.",
       "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
       "callbackWait": "Approve access in the browser. This CLI finishes the sign-in on its own, no code to paste — this page updates when it is done.",
+      "callbackTimedOut": "The sign-in did not complete in time. Start again, approve access in the browser, and keep this page open.",
       "manualSummary": "Prefer the terminal?",
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",

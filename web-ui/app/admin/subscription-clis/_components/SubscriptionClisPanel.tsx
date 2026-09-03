@@ -211,9 +211,10 @@ type LoginPhase =
   | { phase: 'polling'; url: string }
   | { phase: 'error'; message: string; sessionId?: string; url?: string };
 
-/** Poll cap for the browser-callback login (OM-73): 40 tries × 3s = 2 min,
- *  matching the backend session lifetime. */
-const LOGIN_POLL_TRIES = 40;
+/** Poll budget for the login status (OM-73): 100 tries × 3s = 5 min, matching
+ *  the backend's SESSION_LIFETIME_MS (cliAuthService.ts) so the UI never gives
+ *  up before the server does. */
+const LOGIN_POLL_TRIES = 100;
 const LOGIN_POLL_INTERVAL_MS = 3000;
 
 function CliRow({
@@ -230,6 +231,17 @@ function CliRow({
   const [login, setLogin] = useState<LoginPhase>({ phase: 'idle' });
   const [code, setCode] = useState('');
   const [busyLogout, setBusyLogout] = useState(false);
+  /**
+   * OM-73 — cancellation token for the status poll. Every new login start,
+   * cancel, resolved submit and unmount bumps it; a running loop compares its
+   * own token per tick and stops when it no longer matches, so no stale loop
+   * ever writes into a row that moved on.
+   */
+  const pollToken = useRef(0);
+  const stopPolling = useCallback((): void => {
+    pollToken.current += 1;
+  }, []);
+  useEffect(() => stopPolling, [stopPolling]);
 
   const statusLine = !b.installed
     ? t('status.notInstalled')
@@ -241,34 +253,54 @@ function CliRow({
         ? t('status.installedNotLoggedIn')
         : t('status.installedUnknown');
 
-  /** OM-73 — poll the login status until it resolves (browser-callback flow). */
+  /**
+   * OM-73 — poll the login status until it resolves. Runs for BOTH flows: the
+   * browser-callback flow has nothing else to wait on, and in the paste-code
+   * flow the 2.1.259 CLI may still finish via the callback before the operator
+   * pastes anything — so the row resolves regardless of the `codeEntry` guess.
+   */
   const pollUntilResolved = useCallback(
     async (url: string): Promise<void> => {
+      const token = ++pollToken.current;
+      const alive = (): boolean => pollToken.current === token;
       for (let i = 0; i < LOGIN_POLL_TRIES; i++) {
         await new Promise((r) => setTimeout(r, LOGIN_POLL_INTERVAL_MS));
+        if (!alive()) return;
         let snap;
         try {
           snap = await getCliLoginStatus(b.id);
         } catch {
           continue; // transient; keep polling
         }
+        if (!alive()) return;
         if (snap.status === 'authorized') {
+          stopPolling();
           setLogin({ phase: 'idle' });
           setCode('');
           onChanged();
           return;
         }
         if (snap.status === 'error' || snap.status === 'expired' || snap.status === 'invalid') {
+          stopPolling();
           setLogin({ phase: 'error', message: snap.error ?? t('connect.failed'), url });
           return;
         }
+        // `idle` is terminal too: the server no longer has our session (reaped
+        // or replaced), so nothing we wait for can still arrive.
+        if (snap.status === 'idle') {
+          stopPolling();
+          setLogin({ phase: 'error', message: t('connect.callbackTimedOut'), url });
+          return;
+        }
       }
-      setLogin({ phase: 'error', message: t('connect.stillPending'), url });
+      if (!alive()) return;
+      setLogin({ phase: 'error', message: t('connect.callbackTimedOut'), url });
     },
-    [b.id, onChanged, t],
+    [b.id, onChanged, stopPolling, t],
   );
 
   const onConnect = async (): Promise<void> => {
+    stopPolling(); // a fresh start supersedes any loop from a previous attempt
     setLogin({ phase: 'starting' });
     setCode('');
     try {
@@ -289,6 +321,9 @@ function CliRow({
         return;
       }
       setLogin({ phase: 'awaiting', sessionId: start.sessionId, url: start.verificationUrl });
+      // Poll here as well — the heuristic may be wrong, or the CLI may finish
+      // through the browser callback while the code field is still showing.
+      void pollUntilResolved(start.verificationUrl);
     } catch (err) {
       setLogin({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -297,8 +332,13 @@ function CliRow({
   const onSubmitCode = async (sessionId: string, url: string): Promise<void> => {
     if (!code.trim()) return;
     setLogin({ phase: 'submitting', sessionId, url });
+    const tokenAtSubmit = pollToken.current;
     try {
       const res = await submitCliLoginCode(b.id, sessionId, code.trim());
+      // The status poll may have resolved the row while the submit was in
+      // flight (callback finished first). Its outcome wins; drop ours.
+      if (pollToken.current !== tokenAtSubmit) return;
+      stopPolling();
       if (res.status === 'authorized') {
         setLogin({ phase: 'idle' });
         setCode('');
@@ -327,6 +367,7 @@ function CliRow({
   };
 
   const onCancel = (): void => {
+    stopPolling();
     void cancelCliLogin(b.id);
     setLogin({ phase: 'idle' });
     setCode('');

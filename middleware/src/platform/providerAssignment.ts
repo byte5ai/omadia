@@ -159,8 +159,10 @@ export async function applyProviderAssignment(
 // publishes `chatAgent@1`. Every operator surface then answers 503.
 //
 // The hand-off flips that assignment automatically, but only where there is
-// nothing to lose: the plugin's current provider has NO credential at all.
-// A working API key or OAuth grant is never overridden — the operator chose it.
+// nothing to lose: the plugin still sits on the platform DEFAULT provider
+// (`llm_provider` unset or `anthropic`) AND that provider has no credential.
+// Anything the operator chose explicitly — another vendor, an OAuth provider, a
+// keyless local server — is never overridden, credential or not.
 // ---------------------------------------------------------------------------
 
 /** The keyless provider the in-app login connects. */
@@ -224,6 +226,16 @@ export async function autoAssignSubscriptionCli(
     const current = (readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER) as ProviderId;
     if (current === SUBSCRIPTION_CLI_PROVIDER) {
       skipped.push({ pluginId: desc.id, reason: 'already_cli' });
+      continue;
+    }
+    // Only the platform DEFAULT is ever overridden. `llm_provider` unset means
+    // the operator never chose anything, and the default `anthropic` without a
+    // key is exactly the fresh-install state OM-79 describes. An EXPLICIT choice
+    // (`openai`, an OAuth provider, a keyless local server, …) is the operator's
+    // decision — even when it currently lacks a credential — and is left alone;
+    // the subscription tab's explainer tells them where to re-point it.
+    if (readStringConfig(cfg, 'llm_provider') !== undefined && current !== DEFAULT_PROVIDER) {
+      skipped.push({ pluginId: desc.id, reason: `explicit_provider:${current}` });
       continue;
     }
     const verification = await resolveProviderVerification(current, {

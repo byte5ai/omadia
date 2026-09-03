@@ -277,16 +277,20 @@ describe('<SubscriptionClisPanel />', () => {
    * a browser callback and prints NO code. The old UI still showed a "paste the
    * code" field that never got a code, and the backend recorded the successful
    * login as an error. With `codeEntry: false` the panel must NOT show a code
-   * field; it shows the callback-wait copy and polls the login status.
+   * field; it shows the callback-wait copy and polls the login status until the
+   * row is connected.
+   *
+   * Real timers on purpose (see the install-poll test above): the status poll
+   * runs on a 3s cadence and vitest's fake timers deadlock against waitFor.
    */
-  it('OM-73: a browser-callback login shows no code field and polls to success', async () => {
+  it('OM-73: a browser-callback login shows no code field and reaches connected via polling', async () => {
     mockGetCliBackends
       .mockResolvedValueOnce({
         backends: [backend({ installed: true, loggedIn: 'no' })],
         cliToolsDir: CLI_TOOLS_DIR,
         generatedAt: Date.now(),
       })
-      // After the login resolves, onChanged re-loads and the CLI is logged in.
+      // After the poll reports `authorized`, onChanged re-loads: now logged in.
       .mockResolvedValue({
         backends: [backend({ installed: true, loggedIn: 'yes', account: 'me@firm.de' })],
         cliToolsDir: CLI_TOOLS_DIR,
@@ -312,12 +316,45 @@ describe('<SubscriptionClisPanel />', () => {
     expect(screen.queryByPlaceholderText(/Login-Code einfügen/i)).toBeNull();
     expect(mockStartCliLogin).toHaveBeenCalledWith('claude');
 
-    // Polling reaches `authorized` and the panel re-loads the backends.
+    // One poll tick later the row is CONNECTED — no code was ever pasted.
     await waitFor(
       () => {
         expect(mockGetCliLoginStatus).toHaveBeenCalledWith('claude');
+        expect(screen.getByText(/Angemeldet als me@firm\.de/)).toBeTruthy();
       },
       { timeout: 6000 },
     );
+    expect(screen.queryByText(/schließt die Anmeldung selbst ab/i)).toBeNull();
+  }, 10000);
+
+  it('OM-73: cancelling the callback login stops the status poll', async () => {
+    mockGetCliBackends.mockResolvedValue({
+      backends: [backend({ installed: true, loggedIn: 'no' })],
+      cliToolsDir: CLI_TOOLS_DIR,
+      generatedAt: Date.now(),
+    });
+    mockStartCliLogin.mockResolvedValue({
+      sessionId: 'login-2',
+      verificationUrl: 'https://claude.com/oauth/authorize?x=2',
+      codeEntry: false,
+      status: 'pending',
+    });
+    mockGetCliLoginStatus.mockResolvedValue({ status: 'pending' });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Abo verbinden/i }));
+    await screen.findByText(/schließt die Anmeldung selbst ab/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Abbrechen$/ }));
+    // Back to the idle row immediately …
+    expect(await screen.findByRole('button', { name: /Abo verbinden/i })).toBeTruthy();
+
+    // … and the loop must not fire a single status request after the cancel,
+    // not even the tick that was already scheduled.
+    await new Promise((r) => setTimeout(r, 3500));
+    expect(mockGetCliLoginStatus).not.toHaveBeenCalled();
   }, 10000);
 });

@@ -985,6 +985,42 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 
 ---
 
+### Subscription-CLI-Login + Provider-Hand-off (`/api/v1/admin/cli-backends`, OM-73/OM-79)
+
+`src/routes/adminCliBackends.ts` treibt `claude auth login` aus der Web-UI
+(`src/platform/cliAuthService.ts`). Auth: required.
+
+| Route | Zweck |
+|---|---|
+| `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
+| `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
+| `POST /:id/logout` | `claude auth logout` + Cache-Bust |
+
+**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
+`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
+den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
+`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
+authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
+und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
+mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
+0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
+pollt `login/status` in beiden Fällen.
+
+**Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
+feuert genau einmal pro Session auf dem Übergang pending → authorized
+(`markAuthorized`, egal ob Exit-Handler oder Code-Submit zuerst kommt).
+`src/index.ts` hängt dort `autoAssignSubscriptionCli` aus
+`src/platform/providerAssignment.ts` ein: jedes installierte LLM-Plugin, das
+noch auf dem Plattform-Default (`llm_provider` unset oder `anthropic`) ohne
+Credential steht, wird auf `claude-cli` umgestellt und reaktiviert. Eine
+explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben.
+`applyProviderAssignment` ist dieselbe Funktion, die `POST /admin/providers/assignment`
+benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
+Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
