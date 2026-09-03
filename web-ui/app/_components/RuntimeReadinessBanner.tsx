@@ -131,11 +131,23 @@ function ReadinessCard({
   onDismiss: () => void;
 }): React.ReactElement {
   const t = useTranslations('runtimeReadiness');
-  // `unknown` (access + assignment line up, runtime down for another reason)
-  // still gets the access copy: it is the only place in the UI that links to
-  // the provider page, and the operator needs to end up there either way.
+  // `unknown` means access AND assignment are set (that is how the middleware
+  // derives it), so the no-access sentence would be a measured falsehood —
+  // e.g. a stored-but-invalid key. It gets its own copy; the CTA still leads
+  // to the provider page because that is where the access is checked.
   const noAssignment = cause === 'no_assignment';
+  const unknown = cause === 'unknown';
   const Icon = noAssignment ? Cpu : KeyRound;
+  const title = noAssignment
+    ? t('titleNoAssignment')
+    : unknown
+      ? t('titleUnknown')
+      : t('title');
+  const body = noAssignment
+    ? t('bodyNoAssignment')
+    : unknown
+      ? t('bodyUnknown')
+      : t('body');
 
   return (
     <motion.div
@@ -150,10 +162,10 @@ function ReadinessCard({
     >
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-[color:var(--accent)]">
         <Icon className="size-3.5" aria-hidden />
-        {noAssignment ? t('titleNoAssignment') : t('title')}
+        {title}
       </div>
       <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--ink)]">
-        {noAssignment ? t('bodyNoAssignment') : t('body')}
+        {body}
       </p>
       <div className="mt-4 flex items-center gap-2">
         <Link

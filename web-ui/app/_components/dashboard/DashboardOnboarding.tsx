@@ -24,8 +24,11 @@ import {
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
+import type { ProviderCredentialStatus } from '../../_lib/api';
 import type { Plugin } from '../../_lib/storeTypes';
 import { isInstalled } from '../../_lib/pluginCounts';
+import { LlmStepBody, type AssignedProviderKind } from './LlmStep';
+import { StepShell } from './StepShell';
 import {
   BUSINESS_CASES,
   PLUGIN_CATEGORIES,
@@ -230,10 +233,16 @@ export interface DashboardOnboardingProps {
   runtimeUp: boolean;
   /**
    * OM-74 (#999) — what the orchestrator is actually assigned to, so the
-   * done-copy names the right thing. `'cli'` for a keyless subscription CLI
-   * provider, `'api'` for a key-based provider, `null` when unknown.
+   * done-copy names the right thing. `'cli'` for a keyless subscription CLI,
+   * `'oauth'` for an OAuth subscription, `'api'` for a key-based provider,
+   * `null` when unknown (providers call failed). See `LlmStep.tsx`.
    */
-  assignedProviderKind: 'cli' | 'api' | null;
+  assignedProviderKind: AssignedProviderKind;
+  /** The assigned provider's credential verdict. "Its key was verified" is
+   *  rendered only for `'verified'`. `null` when unknown. */
+  assignedProviderStatus: ProviderCredentialStatus | null;
+  /** The assigned provider's display label for the neutral fallback copy. */
+  assignedProviderLabel: string | null;
   /** OM-84 (#1003) — `embeddingClient@1` is NOT published: process memory,
    *  semantic search and dedup are off. Surfaced as a note under the steps
    *  because nothing in setup mentioned embeddings at all. */
@@ -255,6 +264,8 @@ export function DashboardOnboarding({
   cliLoggedIn,
   runtimeUp,
   assignedProviderKind,
+  assignedProviderStatus,
+  assignedProviderLabel,
   embeddingsOff,
   hasInstalledPlugin,
 }: DashboardOnboardingProps): React.ReactElement | null {
@@ -313,7 +324,7 @@ export function DashboardOnboarding({
   ];
   const llmDone = steps[0].done;
   // An access exists but the runtime is down: the missing piece is almost
-  // always the orchestrator's provider assignment (OM-79), so the step says
+  // always the orchestrator's provider assignment (#994), so the step says
   // that instead of offering to connect an access the operator already has.
   const accessWithoutRuntime = !llmDone && (llmVerified || cliLoggedIn);
   // #886 — step 3's RESULT copy. Counted here with the same OM-27 predicate the
@@ -372,58 +383,15 @@ export function DashboardOnboarding({
         icon={Cpu}
         title={t('llmStep.title')}
       >
-        {llmDone ? (
-          // OM-74 (#999) — the copy follows the orchestrator's ASSIGNMENT, not
-          // the mere presence of a CLI login. "Its key was verified" was shown
-          // to a subscription user who never stored a key.
-          <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
-            {assignedProviderKind === 'cli'
-              ? t('llmStep.doneViaCli')
-              : t('llmStep.doneViaProvider')}
-          </p>
-        ) : accessWithoutRuntime ? (
-          <>
-            <p
-              data-testid="onboarding-step-1-assign-hint"
-              className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]"
-            >
-              {t('llmStep.accessWithoutRuntime')}
-            </p>
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Link
-                href="/admin/providers"
-                className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
-              >
-                {t('llmStep.assignOrchestrator')}
-                <ArrowRight className="size-3.5" aria-hidden />
-              </Link>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
-              {t('llmStep.description')}
-            </p>
-            {/* Step 1 offers both supported LLM access paths directly so the
-                CTA matches the promise in the copy above. */}
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Link
-                href="/admin/providers"
-                className="inline-flex items-center gap-2 rounded-full bg-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-on-dark)] shadow-[var(--shadow-cta)] transition-colors hover:bg-[color:var(--accent-hover)]"
-              >
-                {t('llmStep.connectApiKey')}
-                <ArrowRight className="size-3.5" aria-hidden />
-              </Link>
-              <Link
-                href="/admin/providers?tab=subscriptions"
-                className="inline-flex items-center gap-2 rounded-full border border-[color:var(--accent)] px-4 py-2 text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--accent)] transition-colors hover:bg-[color:var(--accent-subtle)]"
-              >
-                {t('llmStep.connectSubscription')}
-                <ArrowRight className="size-3.5" aria-hidden />
-              </Link>
-            </div>
-          </>
-        )}
+        {/* Body lives in `LlmStep.tsx` (three states: done / access without
+            runtime / nothing yet) so this file stays under the size limit. */}
+        <LlmStepBody
+          done={llmDone}
+          accessWithoutRuntime={accessWithoutRuntime}
+          assignedProviderKind={assignedProviderKind}
+          assignedProviderStatus={assignedProviderStatus}
+          assignedProviderLabel={assignedProviderLabel}
+        />
       </StepShell>
 
       {/* Step 2 — business case. */}
@@ -503,72 +471,6 @@ export function DashboardOnboarding({
         </p>
       ) : null}
     </section>
-  );
-}
-
-/**
- * OM-01/12 — the shared frame for a step: number, "n of total", a checkmark
- * when done, and the step's own content.
- *
- * The old card had three bare `t('step', {n})` labels inside a ternary, so the
- * user saw a number with nothing to compare it to and no indication that
- * anything had been achieved. `n of total` and the checked state are the whole
- * point of this component.
- */
-function StepShell({
-  n,
-  total,
-  done,
-  icon: Icon,
-  title,
-  children,
-}: {
-  n: number;
-  total: number;
-  done: boolean;
-  icon: LucideIcon;
-  title: string;
-  children: React.ReactNode;
-}): React.ReactElement {
-  const t = useTranslations('dashboard.onboarding');
-  return (
-    <div
-      data-testid={`onboarding-step-${n}`}
-      data-done={done ? 'true' : 'false'}
-      className={`mt-6 rounded-lg border p-5 ${
-        done
-          ? 'border-[color:var(--border)] bg-[color:var(--card)]/40'
-          : 'border-[color:var(--accent)]/50 bg-[color:var(--accent-subtle)]'
-      }`}
-    >
-      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em]">
-        {done ? (
-          <Check
-            className="size-3.5 text-[color:var(--success)]"
-            aria-hidden
-            data-testid={`onboarding-step-${n}-check`}
-          />
-        ) : (
-          <Icon className="size-3.5 text-[color:var(--accent)]" aria-hidden />
-        )}
-        <span
-          className={
-            done
-              ? 'text-[color:var(--fg-subtle)]'
-              : 'text-[color:var(--accent)]'
-          }
-        >
-          {t('stepOfTotal', { n, total })}
-        </span>
-        {done ? (
-          <span className="text-[color:var(--success)]">{t('applied')}</span>
-        ) : null}
-      </div>
-      <h3 className="font-display mt-1 text-lg font-medium text-[color:var(--fg-strong)]">
-        {title}
-      </h3>
-      {children}
-    </div>
   );
 }
 

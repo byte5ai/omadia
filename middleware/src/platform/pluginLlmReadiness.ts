@@ -349,3 +349,33 @@ export async function resolveRuntimeReadinessCause(
     return 'unknown';
   }
 }
+
+/** How long one readiness verdict is shared between callers. A dashboard load
+ *  fires several widgets that all probe `/operator/agents` within the same
+ *  second; the verdict cannot change faster than an operator can click. */
+export const READINESS_CAUSE_MEMO_MS = 8_000;
+
+/**
+ * Share one in-flight / recent verdict across a burst of 503s. The resolver's
+ * result is cached for `ttlMs` from the moment it was REQUESTED, so concurrent
+ * callers join the same promise instead of each spawning a CLI detection. A
+ * rejected resolver is not cached: the next caller retries.
+ */
+export function memoizeRuntimeReadinessCause(
+  resolver: () => Promise<RuntimeReadinessCause>,
+  ttlMs: number = READINESS_CAUSE_MEMO_MS,
+  now: () => number = Date.now,
+): () => Promise<RuntimeReadinessCause> {
+  let memo: { readonly at: number; readonly value: Promise<RuntimeReadinessCause> } | undefined;
+  return () => {
+    const t = now();
+    if (memo !== undefined && t - memo.at < ttlMs) return memo.value;
+    const value = resolver();
+    const entry = { at: t, value };
+    memo = entry;
+    value.catch(() => {
+      if (memo === entry) memo = undefined;
+    });
+    return value;
+  };
+}

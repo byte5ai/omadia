@@ -120,6 +120,9 @@
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
         "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
         "doneViaCli": "Du bist in einer Abo-CLI angemeldet und der Orchestrator läuft darüber.",
+        "doneViaOauth": "Ein Abo ist verbunden und die Agent-Runtime läuft darüber.",
+        "doneViaRuntime": "Die Agent-Runtime läuft über {label}.",
+        "doneViaRuntimeNoLabel": "Die Agent-Runtime läuft.",
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
         "assignOrchestrator": "Orchestrator zuordnen"
       },
@@ -1333,7 +1336,9 @@
     "title": "LLM-Zugang fehlt",
     "body": "Die Agent-Runtime ist offline: Es ist noch kein LLM-API-Key und kein Abo hinterlegt. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang und ordne den Orchestrator diesem Zugang zu. Diese Karte verschwindet, sobald die Runtime läuft.",
     "titleNoAssignment": "Orchestrator nicht zugeordnet",
-    "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator (bei einem Abo: Claude, subscription CLI). Die Runtime startet danach ohne Neustart.",
+    "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator, bei einem Abo „Claude (subscription CLI)“. Die Runtime startet danach ohne Neustart.",
+    "titleUnknown": "Agent-Runtime antwortet nicht",
+    "bodyUnknown": "Zugang und Zuordnung sind gesetzt, die Agent-Runtime antwortet trotzdem nicht. Prüfe den hinterlegten Zugang unter LLM-Zugang.",
     "cta": "LLM-Zugang öffnen",
     "ctaNoAssignment": "Zuordnung öffnen",
     "dismiss": "Später"

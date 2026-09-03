@@ -15,8 +15,10 @@ import { providerApiKeyVaultKey } from '@omadia/llm-provider';
 
 import {
   computeRuntimeReadinessCause,
+  memoizeRuntimeReadinessCause,
   resolveRuntimeReadinessCause,
   type LlmProviderCatalogView,
+  type RuntimeReadinessCause,
 } from '../src/platform/pluginLlmReadiness.js';
 import { __clearVerificationCache } from '../src/platform/providerCredentialVerifier.js';
 import type {
@@ -183,6 +185,48 @@ test('resolveRuntimeReadinessCause: a stored anthropic key on the default assign
     detectCli: async () => snapshot([{ id: 'claude', loggedIn: 'no' }]),
   });
   assert.equal(cause, 'unknown');
+});
+
+// ── The memo ────────────────────────────────────────────────────────────────
+
+test('memoizeRuntimeReadinessCause: concurrent callers within the TTL share one resolver run', async () => {
+  let calls = 0;
+  let clock = 1_000;
+  const memo = memoizeRuntimeReadinessCause(
+    async () => {
+      calls += 1;
+      return 'no_assignment';
+    },
+    5_000,
+    () => clock,
+  );
+  const [a, b, c] = await Promise.all([memo(), memo(), memo()]);
+  assert.deepEqual([a, b, c], ['no_assignment', 'no_assignment', 'no_assignment']);
+  assert.equal(calls, 1);
+
+  clock += 4_999;
+  assert.equal(await memo(), 'no_assignment');
+  assert.equal(calls, 1, 'still inside the TTL');
+
+  clock += 1;
+  assert.equal(await memo(), 'no_assignment');
+  assert.equal(calls, 2, 'TTL elapsed → recomputed');
+});
+
+test('memoizeRuntimeReadinessCause: a rejected run is not cached, the next caller retries', async () => {
+  let calls = 0;
+  const memo = memoizeRuntimeReadinessCause(
+    async (): Promise<RuntimeReadinessCause> => {
+      calls += 1;
+      if (calls === 1) throw new Error('first run explodes');
+      return 'unknown';
+    },
+    5_000,
+    () => 1_000,
+  );
+  await assert.rejects(memo(), /first run explodes/);
+  assert.equal(await memo(), 'unknown');
+  assert.equal(calls, 2);
 });
 
 test('resolveRuntimeReadinessCause: a throwing lookup degrades to unknown instead of failing the 503', async () => {

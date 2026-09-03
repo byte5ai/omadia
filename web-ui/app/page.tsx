@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 import {
+  ApiError,
   getCliBackends,
   getEmbeddingProviderStatus,
   getProviders,
@@ -75,9 +76,12 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       ? cliP.value.backends.some((b) => b.loggedIn === 'yes')
       : false;
   // OM-78 (#1001) — the ONE readiness signal this page and the
-  // RuntimeReadinessBanner share: `/operator/agents` answered instead of
-  // 503ing. Everything that claims "LLM connected" reads this.
-  const runtimeUp = agents !== null;
+  // RuntimeReadinessBanner share: `/operator/agents` answered, or failed with
+  // anything OTHER than its structured 503. Only the 503 means "runtime down";
+  // a transient 500 or a network blip must not un-tick step 1.
+  const runtimeUp =
+    agentP.status === 'fulfilled' ||
+    !(agentP.reason instanceof ApiError && agentP.reason.status === 503);
 
   // Middleware is "connected" if any call came back at all — a transport
   // failure rejects every call with the same network error.
@@ -103,18 +107,24 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     )?.label ??
     verified[0]?.label ??
     null;
-  // OM-74 (#999) — what KIND of provider the orchestrator is assigned to. A
-  // keyless subscription CLI (`toolLess`, or the built-in `claude-cli` id)
-  // must not be described as "its key was verified".
+  // OM-74 (#999) — what KIND of provider the orchestrator is assigned to, and
+  // whether its credential was actually proved. A keyless subscription CLI
+  // (`toolLess`, or the built-in `claude-cli` id) and an OAuth subscription
+  // (`oauthConnect`) have no key to describe as "verified"; a key-based
+  // provider earns that sentence only with `status === 'verified'`.
   const assignedProvider = providers?.providers.find(
     (p) => p.id === activeAssignment?.provider,
   );
-  const assignedProviderKind: 'cli' | 'api' | null =
+  const assignedProviderKind: 'cli' | 'oauth' | 'api' | null =
     assignedProvider === undefined
       ? null
       : assignedProvider.toolLess === true || assignedProvider.id === 'claude-cli'
         ? 'cli'
-        : 'api';
+        : assignedProvider.oauthConnect === true
+          ? 'oauth'
+          : 'api';
+  const assignedProviderStatus = assignedProvider?.status ?? null;
+  const assignedProviderLabel = assignedProvider?.label ?? null;
   // OM-84 (#1003) — only claim "off" when the status route actually said so.
   const embeddingsOff = embeddings !== null && !embeddings.capabilityPublished;
   // A rejected key is the most actionable signal, so it wins the detail line.
@@ -301,6 +311,8 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           cliLoggedIn={cliLoggedIn}
           runtimeUp={runtimeUp}
           assignedProviderKind={assignedProviderKind}
+          assignedProviderStatus={assignedProviderStatus}
+          assignedProviderLabel={assignedProviderLabel}
           embeddingsOff={embeddingsOff}
           hasInstalledPlugin={installedCount > 0}
         />

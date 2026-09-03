@@ -55,14 +55,18 @@ function renderCard(
     llmVerified: boolean;
     cliLoggedIn: boolean;
     runtimeUp: boolean;
-    assignedProviderKind: 'cli' | 'api' | null;
+    assignedProviderKind: 'cli' | 'oauth' | 'api' | null;
+    assignedProviderStatus: 'no_key' | 'unverified' | 'verified' | 'invalid' | null;
+    assignedProviderLabel: string | null;
     embeddingsOff: boolean;
     hasInstalledPlugin: boolean;
   }> = {},
 ) {
   // OM-78 (#1001) — a stored access implies the runtime is up in the default
   // fixture, so the pre-existing step-model tests keep describing the happy
-  // path. The OM-78 tests below set `runtimeUp` explicitly.
+  // path. The OM-78 tests below set `runtimeUp` explicitly. Likewise the
+  // default assignment mirrors the access flags: CLI login → CLI assignment,
+  // verified key → verified API assignment.
   const runtimeUp =
     over.runtimeUp ?? Boolean(over.llmVerified || over.cliLoggedIn);
   return renderWithIntl(
@@ -71,6 +75,8 @@ function renderCard(
       llmVerified={false}
       cliLoggedIn={false}
       assignedProviderKind={over.cliLoggedIn ? 'cli' : 'api'}
+      assignedProviderStatus={over.llmVerified ? 'verified' : 'no_key'}
+      assignedProviderLabel="Anthropic"
       embeddingsOff={false}
       hasInstalledPlugin={false}
       {...over}
@@ -173,7 +179,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     expect(screen.getByText(/0 von 3 erledigt/)).toBeTruthy();
   });
 
-  it('OM-78/OM-79: a stored access without a runtime points at the assignment, not at connecting again', () => {
+  it('OM-78 / #994: a stored access without a runtime points at the assignment, not at connecting again', () => {
     renderCard({ cliLoggedIn: true, runtimeUp: false });
 
     expect(screen.getByTestId('onboarding-step-1-assign-hint')).toBeTruthy();
@@ -209,15 +215,65 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     expect(screen.queryByText(/Schlüssel wurde geprüft/)).toBeNull();
   });
 
-  it('OM-74: an API-key assignment keeps the key copy even when a CLI is also logged in', () => {
+  it('OM-74: a VERIFIED API-key assignment keeps the key copy even when a CLI is also logged in', () => {
     renderCard({
       cliLoggedIn: true,
       llmVerified: true,
       runtimeUp: true,
       assignedProviderKind: 'api',
+      assignedProviderStatus: 'verified',
     });
     expect(screen.getByText(/Schlüssel wurde geprüft/)).toBeTruthy();
     expect(screen.queryByText(/Abo-CLI angemeldet/)).toBeNull();
+  });
+
+  it('OM-74: an UNVERIFIED key that the runtime happens to run on is not called "geprüft"', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'api',
+      assignedProviderStatus: 'unverified',
+      assignedProviderLabel: 'Anthropic',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Agent-Runtime läuft über Anthropic/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+  });
+
+  it('OM-74: a rejected (invalid) key is not called "geprüft" either', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'api',
+      assignedProviderStatus: 'invalid',
+      assignedProviderLabel: 'OpenAI',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/läuft über OpenAI/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+  });
+
+  it('OM-74: an OAuth subscription assignment gets its own neutral sentence', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: 'oauth',
+      assignedProviderStatus: 'verified',
+      assignedProviderLabel: 'ChatGPT',
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Abo ist verbunden/);
+    expect(copy.textContent).not.toMatch(/geprüft/);
+    expect(copy.textContent).not.toMatch(/Abo-CLI/);
+  });
+
+  it('OM-74: an unknown assignment (providers call failed) falls back to the label-less sentence', () => {
+    renderCard({
+      runtimeUp: true,
+      assignedProviderKind: null,
+      assignedProviderStatus: null,
+      assignedProviderLabel: null,
+    });
+    const copy = screen.getByTestId('onboarding-step-1-done-copy');
+    expect(copy.textContent).toMatch(/Die Agent-Runtime läuft\./);
+    expect(copy.textContent).not.toMatch(/geprüft/);
   });
 
   it('OM-84: names the missing embedding provider and links to its setting', () => {

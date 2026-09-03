@@ -170,6 +170,7 @@ import { createAdminTranscriptionProviderRouter } from './routes/adminTranscript
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import {
+  memoizeRuntimeReadinessCause,
   resolvePluginLlmReadiness,
   resolveRuntimeReadinessCause,
   type RuntimeReadinessCause,
@@ -3413,13 +3414,19 @@ async function main(): Promise<void> {
   // OM-75 / OM-78 (#1000, #1001) — the readiness verdict the operator-agents
   // 503 carries. Hoisted out of the mount so the wiring-pin tests' lazy
   // `createOperatorAgentsRouter\(\{…\}\)` match still spans every option.
-  const resolveOperatorRuntimeReadinessCause = (): Promise<RuntimeReadinessCause> =>
-    resolveRuntimeReadinessCause({
-      providerIds: [...new Set(listModels().map((m) => m.provider))],
-      orchestratorConfig: installedRegistry.get('@omadia/orchestrator')?.config,
-      vault: secretVault,
-      llmProviderCatalog,
-    });
+  // `async` so a synchronous throw from `listModels()` / the registry lands in
+  // the router's `.catch` instead of escaping the handler. Memoised for a few
+  // seconds: a fresh dashboard fires several 503-probing widgets at once, and
+  // each would otherwise re-run the credential lookup and CLI detection.
+  const resolveOperatorRuntimeReadinessCause = memoizeRuntimeReadinessCause(
+    async (): Promise<RuntimeReadinessCause> =>
+      resolveRuntimeReadinessCause({
+        providerIds: [...new Set(listModels().map((m) => m.provider))],
+        orchestratorConfig: installedRegistry.get('@omadia/orchestrator')?.config,
+        vault: secretVault,
+        llmProviderCatalog,
+      }),
+  );
 
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
@@ -3437,6 +3444,13 @@ async function main(): Promise<void> {
       getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
+      // is down, so the readiness banner can tell "no access at all" from
+      // "access exists, orchestrator not assigned to it". Same credential
+      // verdicts the providers admin renders; no network probe. Kept above
+      // the closure-heavy options so the wiring-pin tests' lazy regex, which
+      // ends at the first closing paren-brace pair, still sees it.
+      getReadinessCause: resolveOperatorRuntimeReadinessCause,
       // W0c (#861) — the per-agent grant read model needs the graph store.
       // Same graphPool-guarded shape as the other AgentGraphStore sites; when
       // no DATABASE_URL is set the route degrades to its own 503.
@@ -3573,11 +3587,6 @@ async function main(): Promise<void> {
           serviceRegistry.get<OperatorAgentIdentityStore>('agentIdentityStore');
         return store ? { store } : undefined;
       },
-      // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
-      // is down, so the readiness banner can tell "no access at all" from
-      // "access exists, orchestrator not assigned to it". Same credential
-      // verdicts the providers admin renders; no network probe.
-      getReadinessCause: resolveOperatorRuntimeReadinessCause,
     }),
   );
   console.log(

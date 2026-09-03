@@ -1201,6 +1201,13 @@ describe('createOperatorAgentsRouter', () => {
       'index.ts must pass getAgentGraphStore to createOperatorAgentsRouter — without it every GET /:slug/grants 503s',
     );
     assert.match(mount, /new AgentGraphStore\(graphPool\)/, 'the option must construct the real store from graphPool');
+    // OM-75 / OM-78 (#1000, #1001) — without this the readiness banner never
+    // learns WHY the runtime is down and falls back to the no-access copy.
+    assert.match(
+      mount,
+      /getReadinessCause:/,
+      'index.ts must pass getReadinessCause to createOperatorAgentsRouter — without it the 503 carries no cause',
+    );
   });
 
   it('index.ts wires syncBotConfig into the provisioning runner (wiring pin, #910)', async () => {

@@ -129,9 +129,30 @@ describe('<RuntimeReadinessBanner />', () => {
     expect(screen.queryByText('Orchestrator nicht zugeordnet')).not.toBeInTheDocument();
   });
 
+  // `unknown` is derived as "access AND assignment are set" — e.g. an invalid
+  // key. Telling that operator no key is stored would be false.
+  it('does not claim a missing access when the 503 says cause=unknown', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'unknown',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText('Agent-Runtime antwortet nicht')).toBeInTheDocument();
+    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.dataset['cause']).toBe('unknown');
+    expect(card.textContent).toMatch(/Zugang und Zuordnung sind gesetzt/);
+    expect(card.textContent).not.toMatch(/kein LLM-API-Key/);
+    expect(
+      screen.getByRole('link', { name: /LLM-Zugang öffnen/i }),
+    ).toHaveAttribute('href', '/admin/providers');
+  });
+
   // OM-72 (#1002) / OM-75 — the body must not promise "sofort verfügbar" nor
-  // point at a middleware restart the UI does not offer.
-  it('does not promise instant availability or a restart control', async () => {
+  // point at a middleware restart the UI does not offer. Both locales.
+  it('does not promise instant availability or a restart control (de)', async () => {
     respondWith(503, { error: 'multi_orchestrator_unavailable' });
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
@@ -139,6 +160,16 @@ describe('<RuntimeReadinessBanner />', () => {
     const card = screen.getByTestId('runtime-readiness-card');
     expect(card.textContent).not.toMatch(/sofort verfügbar/);
     expect(card.textContent).not.toMatch(/Neustart der Middleware/);
+  });
+
+  it('does not promise instant availability or a restart control (en)', async () => {
+    respondWith(503, { error: 'multi_orchestrator_unavailable' });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'en' });
+    await flush();
+
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.textContent).not.toMatch(/right away/);
+    expect(card.textContent).not.toMatch(/middleware restart/i);
   });
 
   it('clears itself once a heartbeat sees the runtime come up', async () => {

@@ -1,7 +1,7 @@
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AdminProvider, ProvidersResponse } from '../_lib/api';
+import { ApiError, type AdminProvider, type ProvidersResponse } from '../_lib/api';
 
 /**
  * Dashboard LLM-health derivation (OM-02/03/04).
@@ -47,7 +47,10 @@ vi.mock('next/link', () => ({
   }): React.ReactElement => <a href={href}>{children}</a>,
 }));
 
-vi.mock('../_lib/api', () => ({
+// `ApiError` stays real: page.tsx narrows the operator-agents rejection with
+// `instanceof ApiError` to tell the structured 503 from any other failure.
+vi.mock('../_lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/api')>()),
   getProviders: mockGetProviders,
   listStorePlugins: mockListStorePlugins,
   getCliBackends: mockGetCliBackends,
@@ -69,12 +72,16 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
     cliLoggedIn,
     runtimeUp,
     assignedProviderKind,
+    assignedProviderStatus,
+    assignedProviderLabel,
     embeddingsOff,
   }: {
     llmVerified: boolean;
     cliLoggedIn: boolean;
     runtimeUp: boolean;
-    assignedProviderKind: 'cli' | 'api' | null;
+    assignedProviderKind: 'cli' | 'oauth' | 'api' | null;
+    assignedProviderStatus: string | null;
+    assignedProviderLabel: string | null;
     embeddingsOff: boolean;
   }): React.ReactElement => (
     <div
@@ -83,6 +90,8 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
       data-cli-logged-in={String(cliLoggedIn)}
       data-runtime-up={String(runtimeUp)}
       data-assigned-kind={String(assignedProviderKind)}
+      data-assigned-status={String(assignedProviderStatus)}
+      data-assigned-label={String(assignedProviderLabel)}
       data-embeddings-off={String(embeddingsOff)}
     />
   ),
@@ -254,7 +263,7 @@ describe('dashboard — LLM health derivation', () => {
       providersResponse([provider({ status: 'verified', connected: true })]),
     );
     mockListOperatorAgents.mockRejectedValue(
-      Object.assign(new Error('503'), { status: 503 }),
+      new ApiError(503, 'GET /v1/operator/agents failed: 503', '{"error":"multi_orchestrator_unavailable"}'),
     );
     render(await DashboardPage());
     const onboarding = screen.getByTestId('onboarding').dataset;
@@ -264,6 +273,20 @@ describe('dashboard — LLM health derivation', () => {
 
   it('OM-78: runtimeUp is true once the operator route answers', async () => {
     mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
+  });
+
+  it('OM-78: a transient 500 (or a network blip) does not un-tick step 1 — only the structured 503 does', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+    mockListOperatorAgents.mockRejectedValue(
+      new ApiError(500, 'GET /v1/operator/agents failed: 500'),
+    );
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
+
+    cleanup();
+    mockListOperatorAgents.mockRejectedValue(new TypeError('fetch failed'));
     render(await DashboardPage());
     expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
   });
@@ -290,10 +313,45 @@ describe('dashboard — LLM health derivation', () => {
     expect(screen.getByTestId('onboarding').dataset['assignedKind']).toBe('cli');
   });
 
-  it('OM-74: an anthropic assignment is reported as kind=api', async () => {
-    mockGetProviders.mockResolvedValue(providersResponse([provider()]));
+  it('OM-74: an anthropic assignment is reported as kind=api with its status and label', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse([provider({ status: 'unverified', connected: true })]),
+    );
     render(await DashboardPage());
-    expect(screen.getByTestId('onboarding').dataset['assignedKind']).toBe('api');
+    const onboarding = screen.getByTestId('onboarding').dataset;
+    expect(onboarding['assignedKind']).toBe('api');
+    expect(onboarding['assignedStatus']).toBe('unverified');
+    expect(onboarding['assignedLabel']).toBe('Anthropic');
+  });
+
+  it('OM-74: an OAuth subscription assignment is reported as kind=oauth', async () => {
+    mockGetProviders.mockResolvedValue({
+      ...providersResponse([
+        provider({ id: 'openai-chatgpt', label: 'ChatGPT', oauthConnect: true, status: 'verified' }),
+      ]),
+      assignments: [
+        {
+          pluginId: '@omadia/orchestrator',
+          label: 'Orchestrator',
+          installed: true,
+          provider: 'openai-chatgpt',
+          model: 'openai-chatgpt:gpt-5',
+          modelKey: 'orchestrator_model',
+        },
+      ],
+    });
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['assignedKind']).toBe('oauth');
+  });
+
+  it('OM-74: no matching provider row reports kind=null, not api', async () => {
+    mockGetProviders.mockResolvedValue({
+      ...providersResponse([]),
+    });
+    render(await DashboardPage());
+    const onboarding = screen.getByTestId('onboarding').dataset;
+    expect(onboarding['assignedKind']).toBe('null');
+    expect(onboarding['assignedStatus']).toBe('null');
   });
 });
 

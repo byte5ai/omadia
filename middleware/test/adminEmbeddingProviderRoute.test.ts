@@ -188,6 +188,8 @@ describe('mount-time auth', () => {
     const dispatcher = new Agent({ keepAliveTimeout: 10, keepAliveMaxTimeout: 10 });
     try {
       assert.equal((await undiciFetch(base, { dispatcher })).status, 401);
+      // OM-84 (#1003) — the dashboard's status summary sits behind the same guard.
+      assert.equal((await undiciFetch(`${base}/status`, { dispatcher })).status, 401);
       assert.equal(
         (
           await undiciFetch(`${base}/switch`, {

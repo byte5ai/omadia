@@ -65,8 +65,12 @@ carries a new `cause` field — `no_llm_access` (no key, no OAuth, no CLI login
 anywhere), `no_assignment` (an access exists, the orchestrator points elsewhere)
 or `unknown` — computed from the same credential verdicts the providers page
 renders, without a network probe. The banner renders a distinct title, body and
-CTA for `no_assignment` ("Orchestrator nicht zugeordnet" → "Zuordnung öffnen").
-A 503 without a cause (older middleware) keeps the no-access copy.
+CTA for `no_assignment` ("Orchestrator nicht zugeordnet" → "Zuordnung öffnen")
+and for `unknown` ("Agent-Runtime antwortet nicht"), which by construction
+means access and assignment are set — e.g. a stored but rejected key — so the
+no-access sentence would be false there. A 503 without a cause (older
+middleware) keeps the no-access copy. The verdict is memoised for 8 s so a
+dashboard load with several probing widgets runs one credential lookup.
 
 **No more promises about a control that does not exist (#1002, OM-72).** The
 banner body no longer says chat is available "sofort" nor that routines need
