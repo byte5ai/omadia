@@ -125,17 +125,17 @@ describe('<SubscriptionClisPanel />', () => {
     });
 
     // The connect box renders; the install steps stay collapsed behind the
-    // existing <details>, exactly as before.
-    await waitFor(() => {
-      expect(screen.queryByText(/CLI installieren/)).toBeNull();
-    });
+    // existing <details>, exactly as before. Wait for the READY render (the
+    // manual-install steps) before asserting — the earlier `waitFor(null)` was
+    // satisfied by the loading state and made this test flake under load.
     expect(
-      screen.getByText(
+      await screen.findByText(
         new RegExp(
           `npm install -g @anthropic-ai/claude-code --prefix ${CLI_TOOLS_DIR}`,
         ),
       ),
     ).toBeTruthy();
+    expect(screen.queryByText(/CLI installieren/)).toBeNull();
   });
 
   it('an uninstalled installable CLI offers the in-app install button (manual steps collapsed)', async () => {
