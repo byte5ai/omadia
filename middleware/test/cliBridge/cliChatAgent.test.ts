@@ -138,7 +138,7 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     const agent = new CliChatAgent({
       dispatch: {
         listDispatchableToolSpecs: () => [],
-      } as CliChatAgentDeps['dispatch'],
+      } as unknown as CliChatAgentDeps['dispatch'],
       createLoopbackServer: () =>
         ({
           start: async () => ({
@@ -243,7 +243,7 @@ describe('CliChatAgent turn context reaches the loopback server (OM-82)', () => 
     const agent = new CliChatAgent({
       dispatch: {
         listDispatchableToolSpecs: () => [],
-      } as CliChatAgentDeps['dispatch'],
+      } as unknown as CliChatAgentDeps['dispatch'],
       // The factory runs where `LoopbackMcpServer` takes its snapshot. If server
       // creation were hoisted out of the turn (e.g. into the constructor), this
       // would read `undefined` and the snapshot would carry no user context.
