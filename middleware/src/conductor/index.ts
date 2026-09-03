@@ -38,6 +38,9 @@ import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
+import { ConductorSayService } from './sayService.js';
+import type { ConductorSayDeps } from './sayService.js';
+import { ConductorDiscussionService } from './discussionService.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
@@ -114,6 +117,24 @@ export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits } 
 export { ConductorEphemeralReaper } from './ephemeralReaper.js';
 export { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 export type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
+
+export { ConductorSayService, formatUtterance, stripFencedJson, SAY_TEXT_MAX_CHARS } from './sayService.js';
+export type { ConductorSayInput, ConductorSayOutcome, ConductorSayDeps } from './sayService.js';
+export {
+  ConductorDiscussionService,
+  DiscussionConversationBusyError,
+  DiscussionInvalidInputError,
+  DISCUSSION_PATTERN_ID,
+  DISCUSSION_DEFAULT_TTL_MS,
+} from './discussionService.js';
+export type { StartDiscussionInput } from './discussionService.js';
+export {
+  appendTranscript,
+  renderTranscript,
+  TRANSCRIPT_MAX_ENTRIES,
+  TRANSCRIPT_TEXT_MAX_CHARS,
+} from './transcript.js';
+export type { TranscriptEntry } from './transcript.js';
 export { createScopedRoleAssignments, FACILITATION_ROLE_PREFIX, RoleKeyOutOfScopeError } from './scopedRoleAssignments.js';
 export type { ScopedRoleAssignments } from './scopedRoleAssignments.js';
 
@@ -154,6 +175,9 @@ export interface ConductorWiring {
   /** #330 C2a — auto-provisioned binding/role rows tied to ephemeral workflows;
    *  consumed by the kernel's onEphemeralReaped cleanup + the agent-setup seam. */
   ephemeralAttachments: ConductorEphemeralAttachmentsStore;
+  /** Starts an agent topic discussion in a bound conversation (the `discussion`
+   *  pattern plus the conversation floor its `say` steps speak on). */
+  discussionService: ConductorDiscussionService;
   /** Deps for the unauthenticated `/api/hooks/:endpointId` router, which is mounted
    *  much earlier in `index.ts` (before `express.json()`) via a forward reference —
    *  `index.ts` assigns this once `wireConductor` returns. */
@@ -198,6 +222,10 @@ export async function wireConductor(deps: {
   /** #330 round 4 — durable audit trace for the destructive operator
    *  terminate. Late-bound thunk like auditRoleChange. */
   auditFacilitationTerminate?: (entry: { actor: string; actorUserId?: string; workflowId: string; slug: string; cancelledRuns: number }) => Promise<void>;
+  /** Conversation-send providers, so a `say` step can publish an agent's turn
+   *  into the chat. Omit on hosts without a channel plugin — agent dialogue
+   *  then degrades to silent turns rather than failing the run. */
+  conversationSendProviders?: ConductorSayDeps['providers'];
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -331,6 +359,17 @@ export async function wireConductor(deps: {
     effects: new RealStepEffects({
       getRegistry: deps.getRegistry,
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
+      // The agent-dialogue seam: a `say` step's answer reaches the chat through
+      // here. Absent providers = silent turns, never a failing run.
+      ...(deps.conversationSendProviders
+        ? {
+            say: new ConductorSayService({
+              attachments: ephemeralAttachments,
+              providers: deps.conversationSendProviders,
+              log,
+            }),
+          }
+        : {}),
       log,
     }),
     // #333 phase 3 — resolved through the holder registry rather than the assignment table
@@ -428,6 +467,11 @@ export async function wireConductor(deps: {
     },
     log,
   });
+  const discussionService = new ConductorDiscussionService({
+    ephemeralRuns: ephemeralRunService,
+    attachments: ephemeralAttachments,
+    log,
+  });
   const ephemeralReaper = new ConductorEphemeralReaper({
     store: ephemeralStore,
     ...(deps.onEphemeralReaped ? { onReaped: (wf: { id: string; slug: string }) => deps.onEphemeralReaped!(wf) } : {}),
@@ -491,6 +535,7 @@ export async function wireConductor(deps: {
       runStore,
       awaitStore,
       facilitationAdmin,
+      discussionService,
       roleStore,
       scheduleStore,
       executor,
@@ -537,6 +582,6 @@ export async function wireConductor(deps: {
     resumeWorker, scheduleWorker, eventRouter, builderAgent, templateStore, templateCatalog,
     webhookEndpoints, webhookSubscriptions, webhookDispatcher, webhookRetryWorker, webhookInboundDeps,
     patternCatalog, ephemeralStore, ephemeralRunService, ephemeralReaper, roleHolderRegistry,
-    ephemeralAttachments,
+    ephemeralAttachments, discussionService,
   };
 }

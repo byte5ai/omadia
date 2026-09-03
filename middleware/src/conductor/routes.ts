@@ -13,6 +13,11 @@ import type { ConductorWorkflowStore } from './workflowStore.js';
 import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
 import type { ConductorFacilitationAdmin } from './facilitationAdmin.js';
+import {
+  DiscussionConversationBusyError,
+  DiscussionInvalidInputError,
+} from './discussionService.js';
+import type { ConductorDiscussionService } from './discussionService.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { ConductorRoleStore } from './roleStore.js';
 import type { ConductorScheduleStore } from './scheduleStore.js';
@@ -55,6 +60,9 @@ export interface ConductorRouterDeps {
   /** #330 round 4 — operator lens + terminate for live facilitations
    *  (ephemeral workflows are hidden from the library by design). */
   facilitationAdmin?: ConductorFacilitationAdmin;
+  /** Starts an agent topic discussion in a bound conversation. Optional: absent
+   *  on hosts without Postgres (the whole ephemeral machinery is inert there). */
+  discussionService?: ConductorDiscussionService;
   roleStore: ConductorRoleStore;
   scheduleStore: ConductorScheduleStore;
   executor: ConductorRunExecutor;
@@ -409,6 +417,48 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       res.json({ cancelledRuns: result.cancelledRuns, disposed: true });
     } catch (err) {
       res.status(500).json({ code: 'conductor.facilitation_terminate_failed', message: errMsg(err) });
+    }
+  });
+
+  /**
+   * Start a topic discussion between two agents in one conversation. The run
+   * is an ordinary ephemeral run, so it appears in the facilitation lens above
+   * and `POST /facilitations/:workflowId/terminate` stops it.
+   */
+  router.post('/discussions', async (req: Request, res: Response): Promise<void> => {
+    if (!deps.discussionService) {
+      res
+        .status(501)
+        .json({ code: 'conductor.discussions_unavailable', message: 'discussions not wired on this host' });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const handle = await deps.discussionService.start({
+        channelType: typeof body.channelType === 'string' ? body.channelType : 'teams',
+        conversationId: body.conversationId as string,
+        agentA: body.agentA as string,
+        agentB: body.agentB as string,
+        topic: body.topic as string,
+        ...(typeof body.guidingQuestion === 'string' ? { guidingQuestion: body.guidingQuestion } : {}),
+        ...(typeof body.ttlMs === 'number' ? { ttlMs: body.ttlMs } : {}),
+      });
+      res.status(201).json(handle);
+    } catch (err) {
+      if (err instanceof DiscussionInvalidInputError) {
+        res.status(400).json({ code: 'conductor.discussion_invalid', message: err.message });
+        return;
+      }
+      if (err instanceof DiscussionConversationBusyError) {
+        res.status(409).json({ code: 'conductor.discussion_conversation_busy', message: err.message });
+        return;
+      }
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'EphemeralQuotaExceededError' || name === 'EphemeralSlotsMissingError' || name === 'EphemeralInvalidInputError') {
+        res.status(400).json({ code: 'conductor.discussion_refused', message: errMsg(err) });
+        return;
+      }
+      res.status(500).json({ code: 'conductor.discussion_start_failed', message: errMsg(err) });
     }
   });
 

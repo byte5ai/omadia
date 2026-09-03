@@ -1,6 +1,7 @@
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
+import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
 import type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 
 /** Resolve a dot-path over a plain object root (for prompt interpolation). */
@@ -67,6 +68,10 @@ export interface RealStepEffectsDeps {
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
   stepTimeoutMs?: number;
+  /** Publishes a `say` step's answer into the run's bound conversation. Absent
+   *  (no database / no channel plugin) = agent dialogue degrades to silent
+   *  turns: the run still works, nothing reaches the chat. */
+  say?: ConductorSayService;
   log?: (msg: string) => void;
 }
 
@@ -145,10 +150,50 @@ export class RealStepEffects implements StepEffects {
     // Tolerant by design: missing/broken JSON just means no `data` — a guard
     // like `ne stepResult.data.dodMet true` then keeps the bounded loop going.
     const data = extractFencedJson(answer.text);
+    // The agent-dialogue seam: without `say` an agent step's prose never leaves
+    // the run context (which is why two agent bots could not converse). With
+    // it, the turn is published into the run's bound conversation — and the
+    // OUTCOME is recorded on the step, so a silent failure can never read as a
+    // delivered utterance.
+    const said = step.say ? await this.publish(step, context, meta, slug, answer.text) : undefined;
     return {
-      result: { text: answer.text, ...(data !== undefined ? { data } : {}) },
+      result: {
+        text: answer.text,
+        ...(data !== undefined ? { data } : {}),
+        ...(said !== undefined ? { said: said.said, ...(said.said ? {} : { sayError: said.reason }) } : {}),
+      },
       actor: { kind: 'agent', agentSlug: slug },
     };
+  }
+
+  /** Never throws — a chat we could not reach must not fail the run. */
+  private async publish(
+    step: Step,
+    context: JsonObject,
+    meta: StepMeta,
+    slug: string,
+    text: string,
+  ): Promise<ConductorSayOutcome> {
+    const say = step.say!;
+    if (!this.deps.say) {
+      return { said: false, reason: 'no_provider', message: 'no say service wired (no database / no channel plugin)' };
+    }
+    const conversationId = typeof context.conversationId === 'string' ? context.conversationId : '';
+    return this.deps.say
+      .say({
+        workflowId: meta.workflowId ?? null,
+        runId: meta.runId,
+        agentSlug: slug,
+        speaker: say.speaker ?? slug,
+        channelType: say.channel,
+        conversationId,
+        text,
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.log?.(`[conductor] say step '${step.id}' failed: ${message}`);
+        return { said: false as const, reason: 'channel_error' as const, message };
+      });
   }
 
   async runActionStep(step: Step, _context: JsonObject, meta: StepMeta): Promise<StepExecution> {
