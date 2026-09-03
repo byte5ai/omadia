@@ -59,6 +59,100 @@ export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
   'AWS_DEFAULT_REGION',
 ];
 
+/**
+ * OM-81 (#991) — the CLI's built-in tool set, denied by name at spawn time.
+ *
+ * `--allowedTools mcp__omadia__*` only pre-approves omadia's loopback tools; it
+ * never restricted the CLI's own Bash/Edit/Write/Read/WebFetch. A beta tester
+ * asked the omadia chat to run `whoami && hostname` and the CLI did, with the
+ * user's OS permissions and none of omadia's gates (plugin grants, audience
+ * floor, privacy guard, `sandbox_execute_enabled`) involved. `--tools ""`
+ * removes the built-in set; this list is the belt to that braces for a CLI
+ * that ignores `--tools`, and the contract a test can assert against.
+ */
+export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
+  'Agent',
+  'Task',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'PowerShell',
+  'REPL',
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'NotebookEdit',
+  'NotebookRead',
+  'WebFetch',
+  'WebSearch',
+  'Skill',
+  'SlashCommand',
+  'ToolSearch',
+  'Workflow',
+  'TodoWrite',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+  'TaskOutput',
+  'TaskStop',
+  'ScheduleWakeup',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ListAgents',
+  'SendMessage',
+  'PushNotification',
+  'RemoteTrigger',
+  'ReportFindings',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'EnterWorktree',
+  'ExitWorktree',
+  'LSP',
+  'Monitor',
+  'Artifact',
+  'AskUserQuestion',
+  'ListMcpResourcesTool',
+  'ReadMcpResourceTool',
+  'ReadMcpResourceDirTool',
+];
+
+/** Prefix of every tool omadia serves to the CLI over the loopback MCP server. */
+export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
+
+/**
+ * OM-83 (#992) — the runtime context every CLI-backed turn carries in its
+ * system prompt. Appended AFTER the caller's persona so identity stays with
+ * omadia's text; it exists because `--system-prompt` drops the CLI's default
+ * prompt entirely (intended: the CLI's self-description made the model believe
+ * it was "Claude Code in the middleware repo" and route users out of omadia),
+ * so the model has to be told here what runtime it is in and which tools it has.
+ */
+const CLI_RUNTIME_CONTEXT = [
+  'You are running inside omadia, an enterprise agent platform, as the assistant of an omadia chat channel.',
+  'You are not Claude Code and you are not in a terminal, repository or IDE; the person you talk to is already inside omadia.',
+  `Your only tools are the omadia tools served over MCP (names starting with ${OMADIA_MCP_TOOL_PREFIX}).`,
+  'You have no shell, file, web or scheduling tools of your own; never claim to run commands or to act in another system.',
+].join(' ');
+
+const DEFAULT_CLI_SYSTEM_PROMPT = 'You are a helpful, precise assistant.';
+
+/**
+ * Compose the `--system-prompt` value: the caller's persona (or a neutral
+ * default when none is configured) followed by the omadia runtime context.
+ */
+export function composeCliSystemPrompt(persona: string | undefined): string {
+  const base = typeof persona === 'string' && persona.trim().length > 0
+    ? persona.trimEnd()
+    : DEFAULT_CLI_SYSTEM_PROMPT;
+  return `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 export interface CliUsage {
@@ -292,6 +386,10 @@ export class StreamJsonParser {
         id,
         name,
         input: block.input,
+        // OM-81 — a call that did not come through omadia's loopback server is
+        // one of the CLI's own tools. They are removed at spawn time; if one
+        // still shows up it must never read like an omadia tool in the trace.
+        ...(name.startsWith(OMADIA_MCP_TOOL_PREFIX) ? {} : { foreign: true as const }),
       });
     }
 
@@ -603,15 +701,44 @@ export class CliChatAgent implements ChatAgent {
         '--strict-mcp-config',
         '--mcp-config',
         configPath,
+        // OM-81 (#991) — the permission boundary. `--allowedTools` is only a
+        // pre-approval of omadia's loopback tools; on its own it left the
+        // CLI's Bash/Edit/Write/Read/WebFetch reachable with the user's OS
+        // rights and none of omadia's gates in the way. Four flags close it:
+        //   --tools ""            remove the built-in tool set (MCP tools stay)
+        //   --disallowedTools ... deny the built-ins by name as well, for a CLI
+        //                         that ignores `--tools`
+        //   --permission-mode dontAsk  deny anything not pre-approved instead of
+        //                         prompting a UI nobody is watching
+        //   --setting-sources ""  load no user/project/local settings.json.
+        //                         Without it the CLI picks up the host user's
+        //                         ~/.claude settings, including `hooks`, which
+        //                         run shell commands on the machine whenever a
+        //                         tool fires, and personal allow rules. `--tools`
+        //                         closes the built-ins; this closes the side
+        //                         channel. Credentials are unaffected: they are
+        //                         read from CLAUDE_CONFIG_DIR, not from settings,
+        //                         and the MCP server still comes from
+        //                         --mcp-config under --strict-mcp-config.
+        '--tools',
+        '',
+        '--disallowedTools',
+        ...CLI_BUILTIN_TOOL_DENYLIST,
+        '--permission-mode',
+        'dontAsk',
+        '--setting-sources',
+        '',
         '--allowedTools',
-        'mcp__omadia__*',
+        `${OMADIA_MCP_TOOL_PREFIX}*`,
         '--model',
         this.deps.model ?? DEFAULT_MODEL,
+        // OM-83 (#992) — replace, do not append. With `--append-system-prompt`
+        // the CLI's own identity stayed primary and the model told users it
+        // was "Claude Code in the middleware repo", sending them out of the
+        // omadia chat they were already in.
+        '--system-prompt',
+        composeCliSystemPrompt(this.deps.systemPrompt),
       ];
-
-      if (typeof this.deps.systemPrompt === 'string' && this.deps.systemPrompt.length > 0) {
-        argv.push('--append-system-prompt', this.deps.systemPrompt);
-      }
 
       child = (this.deps.spawnFn ?? nodeSpawn)(
         this.deps.cliBinary ?? DEFAULT_CLI_BINARY,

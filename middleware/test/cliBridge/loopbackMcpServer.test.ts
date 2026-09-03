@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterEach, describe, it } from 'node:test';
 
 import { LoopbackMcpServer } from '../../packages/harness-orchestrator/src/loopbackMcpServer.js';
@@ -448,5 +449,66 @@ describe('LoopbackMcpServer', () => {
     };
     assert.equal(payload.error?.code, 413);
     assert.equal(payload.error?.message, 'Payload Too Large');
+  });
+
+  /**
+   * OM-82 (#993) — on the subscription path a tool call arrives as an HTTP
+   * request from the external `claude` process, i.e. in a fresh async context.
+   * Every AsyncLocalStorage the channel turn set (routineTurnContext,
+   * privacyHandle, toolIdempotency, ...) was undefined inside `dispatch()`, so
+   * `manage_routine` answered "no user context" to a user who was in a channel.
+   * The server must capture the turn's async context when it is created and
+   * run each dispatch inside it.
+   */
+  it('runs tools/call inside the async context the server was created in', async (t) => {
+    const turnStore = new AsyncLocalStorage<{ readonly tenant: string; readonly userId: string }>();
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        const turn = turnStore.getStore();
+        return { content: `${name}:${turn ? `${turn.tenant}/${turn.userId}` : 'no-context'}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    // Construct inside the turn scope, exactly as CliChatAgent.runLifecycle does.
+    server = turnStore.run({ tenant: 'te-printline', userId: 'silvio' }, () =>
+      new LoopbackMcpServer({
+        dispatch: fakeDispatch,
+        bearer: 'secret-token',
+        tools: [{ name: 'manage_routine', description: 'r', input_schema: { type: 'object', properties: {} } }],
+      }),
+    );
+
+    let handle: Awaited<ReturnType<typeof server.start>>;
+    try {
+      handle = await server.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    // The call comes from outside the turn scope (a different async context).
+    assert.equal(turnStore.getStore(), undefined);
+    const callResponse = await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'manage_routine', arguments: { action: 'list' } },
+        id: 7,
+      }),
+    });
+    assert.equal(callResponse.status, 200);
+    const payload = parseMcpJson(await callResponse.text()) as {
+      result?: { content?: Array<{ text?: string }> };
+    };
+    assert.equal(payload.result?.content?.[0]?.text, 'manage_routine:te-printline/silvio');
   });
 });
