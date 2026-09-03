@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the desktop app has its own icon, and the tray icon is visible (#888)
+
+2026-09-03 — OM-53 / OM-63, reported in three consecutive beta rounds. "About
+omadia" showed Electron's default atom symbol and the menu-bar entry was
+guaranteed blank: `electron-builder.yml` named no `icon:` at all, and
+`tray.ts` fell back to `nativeImage.createEmpty()` because
+`assets/trayTemplate.png` had never existed. Neither silence failed a build.
+
+Since #1002 the tray was not only cosmetic. The readiness copy points a stuck
+user at Tray → Restart, which is unreachable when the tray has no artwork.
+
+- The app now ships `icon.icns` (macOS), `icon.ico` (Windows, 16 through 256),
+  a 1024px `icon.png` (Linux) and `trayTemplate.png` / `@2x` as real macOS
+  template images. All are generated from two committed SVGs by
+  `npm run icons`, so the artwork has a single source instead of six
+  hand-exported binaries that drift apart.
+- The icons are **derived from `logo-concepts/omadia-logo-concept.svg`**, not
+  designed: the mark's paths, radii and colours are copied verbatim. Replacing
+  `desktop/buildResources/icon.svg` and re-running `npm run icons` is the whole
+  swap, no code touched.
+- `electron-builder.yml` states each platform's icon explicitly. Convention
+  scanning falls back to Electron's own icon when a file is missing, which is
+  how this shipped three times; a named path fails the build instead.
+- `tray.ts` still falls back to an empty image rather than refusing to start,
+  but now logs a warning naming every path it tried.
+- Tests parse the PNG, ICNS and ICO headers directly (no `sips`, `iconutil` or
+  ImageMagick, none of which exist on a Linux runner) and assert that the
+  config names an icon per platform and that each named file exists.
+
 ### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
 
 2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
