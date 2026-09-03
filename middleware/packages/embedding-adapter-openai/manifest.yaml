@@ -8,7 +8,7 @@ identity:
   domain: "core.embeddings"
   description:
     en: "Connects omadia to an OpenAI compatible embedding server, so semantic search and memory can run on OpenAI, Azure, vLLM, LM Studio or LiteLLM. Use it instead of the Ollama based Embeddings plugin, only one of the two can be active."
-    de: "Verbindet omadia mit einem OpenAI-kompatiblen Embedding-Server, damit semantische Suche und Gedächtnis über OpenAI, Azure, vLLM, LM Studio oder LiteLLM laufen. Nutze es alternativ zum Ollama-basierten Embeddings-Plugin, aktiv sein darf immer nur eines von beiden."
+    de: "Lässt omadia die Umrechnung von Texten in Zahlenvektoren über einen OpenAI-kompatiblen Server erledigen, damit semantische Suche und Gedächtnis über OpenAI, Azure, vLLM, LM Studio oder LiteLLM laufen. Nutze es alternativ zum Ollama-Plugin, aktiv sein darf immer nur eines von beiden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

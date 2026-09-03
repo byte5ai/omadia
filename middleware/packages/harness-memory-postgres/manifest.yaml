@@ -8,7 +8,7 @@ identity:
   domain: "core.memory"
   description:
     en: "Stores the agents' memory in Postgres, so it survives a restart. It shares the knowledge graph database connection and brings its own schema. Use it instead of Memory, only one of the two can be active."
-    de: "Speichert das Gedächtnis der Agenten in Postgres, damit es einen Neustart übersteht. Es nutzt die Datenbankverbindung des Wissensgraphen mit und bringt sein eigenes Schema mit. Nutze es alternativ zu Memory, aktiv sein darf immer nur eines von beiden."
+    de: "Speichert das Gedächtnis der Agenten in Postgres, damit es einen Neustart übersteht. Es teilt die Datenbankverbindung mit dem Wissensgraphen, legt seine Tabellen aber getrennt davon ab. Nutze es alternativ zu Memory, aktiv sein darf immer nur eines von beiden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

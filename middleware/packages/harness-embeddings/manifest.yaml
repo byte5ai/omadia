@@ -8,7 +8,7 @@ identity:
   domain: "core.embeddings"
   description:
     en: "Computes embeddings through a local Ollama server, which is what semantic search, the knowledge graph and topic detection need. Use it instead of the OpenAI compatible adapter, only one of the two can be active."
-    de: "Berechnet Embeddings über einen lokalen Ollama-Server, die Grundlage für semantische Suche, Wissensgraph und Themenerkennung. Nutze es alternativ zum OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines von beiden."
+    de: "Rechnet Texte über einen lokalen Ollama-Server in Zahlenvektoren um, die Grundlage für semantische Suche, Wissensgraph und Themenerkennung. Nutze es alternativ zum OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines von beiden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
