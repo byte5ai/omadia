@@ -41,6 +41,9 @@ const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
  *  turn without pretending the list is immortal across turns. */
 const LOOPBACK_TOOLLIST_TTL_MS = 300_000;
 
+/** #1015 — upper bound on `stop()`, so teardown can never hang a turn. */
+const STOP_TIMEOUT_MS = 2_000;
+
 class PayloadTooLargeError extends Error {}
 
 export interface LoopbackMcpServerDeps {
@@ -49,6 +52,18 @@ export interface LoopbackMcpServerDeps {
   readonly tools: readonly DispatchableToolSpec[];
   readonly serverName?: string;
   readonly serverVersion?: string;
+  /**
+   * The turn's async context, captured by the caller at its public entry
+   * point (#1016). Preferred over the construction-time snapshot below,
+   * because this server is built inside an async generator whose body runs at
+   * first iteration rather than at call time.
+   */
+  readonly runInTurnContext?: <T>(fn: () => T) => T;
+  /**
+   * Throws when the restored context does not belong to this turn (#1016).
+   * Runs inside the restored context, immediately before dispatch.
+   */
+  readonly assertTurnOwner?: () => void;
 }
 
 export interface LoopbackMcpServerHandle {
@@ -74,15 +89,42 @@ export class LoopbackMcpServer {
    * (see `cliChatAgent.runLifecycle`), so we snapshot the context here and run
    * every dispatch inside it.
    *
-   * The snapshot restores whatever stores are active at construction time: on
+   * The snapshot restores whatever stores are active where it was taken: on
    * the CLI path today that is `routineTurnContext` (entered by the channel
    * adapter around `chat()`); the orchestrator's own `turnContext` is NOT set
    * on this path, because the CLI owns the loop. Any store a caller enters in
    * the future is carried automatically. `AsyncLocalStorage.snapshot()` needs
    * Node >= 20; this package requires >= 20.
+   *
+   * #1016 — prefer `deps.runInTurnContext`, captured by the caller at its
+   * public entry point. Constructing this server happens inside an async
+   * generator, whose body runs at first iteration rather than at call time, so
+   * a snapshot taken here can belong to whoever iterated. The
+   * construction-time snapshot remains the fallback for callers that pass
+   * nothing.
+   *
+   * Restoring a context is not the same as trusting it: `routineTurnContext`
+   * is entered with `enterWith`, which has no scope exit, so a stale async
+   * chain can still carry an older turn's value. `deps.assertTurnOwner` is the
+   * hook that turns that back into a refusal; it cannot default to anything
+   * here because the store it would have to read lives in the application
+   * layer, not in this package.
    */
-  private readonly runInTurnContext: <T>(fn: () => T) => T =
-    AsyncLocalStorage.snapshot();
+  private readonly runInTurnContext: <T>(fn: () => T) => T;
+
+  /**
+   * The tool names this server advertises, as a set (#1015).
+   *
+   * `tools/call` used to dispatch any name the client sent. That is a wider
+   * set than what is advertised: `toolDispatchService` keeps handler-only
+   * registrations dispatchable but unadvertised, and filters out tools whose
+   * plugin failed the readiness gate. `dispatch` fails closed on a genuinely
+   * unknown name, so the exposure was bounded to real omadia tools
+   * deliberately kept off the wire — but `--allowedTools mcp__omadia__*`
+   * pre-approves the entire namespace, which makes this handler the only
+   * enforcement point there is.
+   */
+  private readonly advertisedToolNames: ReadonlySet<string>;
 
   constructor(private readonly deps: LoopbackMcpServerDeps) {
     if (!deps.bearer) {
@@ -90,6 +132,8 @@ export class LoopbackMcpServer {
         'LoopbackMcpServer: bearer must be a non-empty string',
       );
     }
+    this.runInTurnContext = deps.runInTurnContext ?? AsyncLocalStorage.snapshot();
+    this.advertisedToolNames = new Set(deps.tools.map((tool) => tool.name));
   }
 
   async start(): Promise<LoopbackMcpServerHandle> {
@@ -127,15 +171,33 @@ export class LoopbackMcpServer {
     return { url, port, bearer: this.deps.bearer };
   }
 
+  /**
+   * Stop listening, and do it in bounded time (#1015).
+   *
+   * `close()` alone resolves only once every live connection has ended. The
+   * CLI child keeps a keep-alive socket to this server, so on an abort or
+   * timeout path — where the child may still be running — awaiting `close()`
+   * could block indefinitely, and the caller's kill escalation never ran.
+   * `closeAllConnections()` drops those sockets first, and the race is the
+   * backstop for anything `close()` still fails to settle.
+   */
   async stop(): Promise<void> {
     if (!this.started) {
       return;
     }
 
-    if (this.http) {
-      await new Promise<void>((resolve) => {
-        this.http?.close(() => resolve());
-      });
+    const http = this.http;
+    if (http) {
+      http.closeAllConnections();
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          http.close(() => resolve());
+        }),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, STOP_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
     }
 
     this.http = undefined;
@@ -197,12 +259,27 @@ export class LoopbackMcpServer {
 
     mcp.server.setRequestHandler('tools/call', async (request) => {
       const { name, arguments: args } = request.params;
-      // OM-82 — run the dispatch inside the turn's captured async context so
-      // context-bound tools (`manage_routine`, privacy handle, idempotency)
-      // see the same (tenant, user) the in-process path would.
-      const result = await this.runInTurnContext(() =>
-        this.deps.dispatch.dispatch(name, args ?? {}),
-      );
+
+      // #1015 — only what this server advertised. Anything else is refused
+      // here, because the pre-approval the CLI runs with covers the whole
+      // `mcp__omadia__*` namespace and cannot tell an advertised tool from an
+      // unadvertised one.
+      if (!this.advertisedToolNames.has(name)) {
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `LoopbackMcpServer: tool "${name}" is not advertised by this server`,
+        );
+      }
+
+      // OM-82 (#993) — run the dispatch inside the turn's captured async
+      // context so context-bound tools (`manage_routine`) see the same
+      // (tenant, user) the in-process path would. #1016 — and refuse when that
+      // context does not belong to this turn, so a stale chain fails closed
+      // instead of acting as the previous principal.
+      const result = await this.runInTurnContext(() => {
+        this.deps.assertTurnOwner?.();
+        return this.deps.dispatch.dispatch(name, args ?? {});
+      });
       return {
         content: [{ type: 'text' as const, text: result.content }],
         ...(result.isError ? { isError: true } : {}),

@@ -22,8 +22,19 @@ function parseMcpJson(text: string): unknown {
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
-/** True when the sandbox refuses loopback listeners, so the test self-skips. */
+/**
+ * True when the sandbox refuses loopback listeners, so the test self-skips.
+ *
+ * #1017 — every behavioural test in this file, including the OM-82 context
+ * test, hangs off this guard. On a runner where listening is denied the whole
+ * file therefore passed green while asserting nothing. Setting
+ * `OMADIA_EXPECT_LOOPBACK=1` (CI does) makes the guard return false, so the
+ * caller rethrows and the suite fails loudly instead of silently skipping.
+ */
 function isSandboxListenDenied(error: unknown): boolean {
+  if (process.env.OMADIA_EXPECT_LOOPBACK === '1') {
+    return false;
+  }
   return error instanceof Error && 'code' in error && error.code === 'EPERM';
 }
 
@@ -510,5 +521,292 @@ describe('LoopbackMcpServer', () => {
       result?: { content?: Array<{ text?: string }> };
     };
     assert.equal(payload.result?.content?.[0]?.text, 'manage_routine:te-printline/silvio');
+  });
+
+  /**
+   * #1016 — the context must come from where the caller captured it, not from
+   * wherever this server happened to be constructed. `CliChatAgent` builds the
+   * server inside an async generator, whose body runs at first iteration, so
+   * the construction-time snapshot can belong to whoever iterated.
+   */
+  it('prefers the caller-captured async context over its own construction scope', async (t) => {
+    const turnStore = new AsyncLocalStorage<string>();
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        return { content: `${name}:${turnStore.getStore() ?? 'no-context'}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    // Capture in the CALLER's scope...
+    const captured = turnStore.run('caller-scope', () => AsyncLocalStorage.snapshot());
+
+    // ...then construct in a DIFFERENT scope, as a lazily-started generator would.
+    server = turnStore.run('generator-scope', () =>
+      new LoopbackMcpServer({
+        dispatch: fakeDispatch,
+        bearer: 'secret-token',
+        tools: [{ name: 'ping', description: 'p', input_schema: { type: 'object', properties: {} } }],
+        runInTurnContext: captured,
+      }),
+    );
+
+    let handle: Awaited<ReturnType<typeof server.start>>;
+    try {
+      handle = await server.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    const response = await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'ping', arguments: {} },
+        id: 11,
+      }),
+    });
+    const payload = parseMcpJson(await response.text()) as {
+      result?: { content?: Array<{ text?: string }> };
+    };
+    assert.equal(payload.result?.content?.[0]?.text, 'ping:caller-scope');
+  });
+
+  /**
+   * #1016 — restoring a context is not the same as trusting it.
+   * `routineTurnContext` is entered with `enterWith`, which has no scope exit,
+   * so a stale async chain can carry an older turn's identity. Before this
+   * guard the failure mode was "acts as the previous principal"; now it is a
+   * refusal.
+   */
+  it('refuses a dispatch when the restored context is not this turn', async (t) => {
+    let dispatched = 0;
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        dispatched += 1;
+        return { content: `dispatched:${name}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    server = new LoopbackMcpServer({
+      dispatch: fakeDispatch,
+      bearer: 'secret-token',
+      tools: [{ name: 'manage_routine', description: 'r', input_schema: { type: 'object', properties: {} } }],
+      assertTurnOwner: () => {
+        throw new Error('turn owner mismatch: context belongs to another turn');
+      },
+    });
+
+    let handle: Awaited<ReturnType<typeof server.start>>;
+    try {
+      handle = await server.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    const response = await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'manage_routine', arguments: { action: 'create' } },
+        id: 12,
+      }),
+    });
+
+    const payload = parseMcpJson(await response.text()) as {
+      error?: { message?: string };
+      result?: { isError?: boolean; content?: Array<{ text?: string }> };
+    };
+    const surfaced = payload.error?.message ?? payload.result?.content?.[0]?.text ?? '';
+    assert.match(surfaced, /turn owner mismatch/);
+    assert.equal(dispatched, 0, 'the tool must not run when the owner check fails');
+  });
+
+  it('dispatches normally when the owner check passes', async (t) => {
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        return { content: `dispatched:${name}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    let checks = 0;
+    server = new LoopbackMcpServer({
+      dispatch: fakeDispatch,
+      bearer: 'secret-token',
+      tools: [{ name: 'manage_routine', description: 'r', input_schema: { type: 'object', properties: {} } }],
+      assertTurnOwner: () => {
+        checks += 1;
+      },
+    });
+
+    let handle: Awaited<ReturnType<typeof server.start>>;
+    try {
+      handle = await server.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    const response = await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'manage_routine', arguments: {} },
+        id: 13,
+      }),
+    });
+
+    const payload = parseMcpJson(await response.text()) as {
+      result?: { content?: Array<{ text?: string }> };
+    };
+    assert.equal(payload.result?.content?.[0]?.text, 'dispatched:manage_routine');
+    assert.equal(checks, 1, 'the owner check must run on every dispatch');
+  });
+
+  /**
+   * #1015 — `tools/call` used to dispatch any name the client sent. The
+   * dispatchable set is wider than the advertised one: handler-only
+   * registrations stay dispatchable but unadvertised, and readiness-gated
+   * tools are filtered out of the advertised list. Since the CLI runs with
+   * `--allowedTools mcp__omadia__*`, which pre-approves the whole namespace,
+   * this handler is the only place that can tell the two apart.
+   */
+  it('refuses a tool it never advertised', async (t) => {
+    let dispatched = 0;
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        dispatched += 1;
+        return { content: `dispatched:${name}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    server = new LoopbackMcpServer({
+      dispatch: fakeDispatch,
+      bearer: 'secret-token',
+      // Advertises `ping` only. `secret_admin_tool` is dispatchable in the
+      // service but deliberately kept off the wire.
+      tools: [{ name: 'ping', description: 'p', input_schema: { type: 'object', properties: {} } }],
+    });
+
+    let handle: Awaited<ReturnType<typeof server.start>>;
+    try {
+      handle = await server.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    const response = await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'secret_admin_tool', arguments: {} },
+        id: 14,
+      }),
+    });
+
+    const payload = parseMcpJson(await response.text()) as {
+      error?: { code?: number; message?: string };
+      result?: { content?: Array<{ text?: string }> };
+    };
+    const surfaced = payload.error?.message ?? payload.result?.content?.[0]?.text ?? '';
+    assert.match(surfaced, /not advertised/);
+    assert.equal(dispatched, 0, 'an unadvertised tool must never reach dispatch');
+  });
+
+  /**
+   * #1015 — `stop()` must not be able to hang a turn. It used to await
+   * `close()`, which waits for live connections; the CLI child holds a
+   * keep-alive socket, so on an abort path that await could block forever and
+   * the caller's kill escalation never ran.
+   */
+  it('stops in bounded time with a live keep-alive connection open', async (t) => {
+    const fakeDispatch = {
+      async dispatch(name: string) {
+        return { content: `dispatched:${name}` };
+      },
+    } as unknown as ToolDispatchService;
+
+    const local = new LoopbackMcpServer({
+      dispatch: fakeDispatch,
+      bearer: 'secret-token',
+      tools: [{ name: 'ping', description: 'p', input_schema: { type: 'object', properties: {} } }],
+    });
+
+    let handle: Awaited<ReturnType<typeof local.start>>;
+    try {
+      handle = await local.start();
+    } catch (error) {
+      if (isSandboxListenDenied(error)) {
+        t.skip('sandbox blocks loopback listeners');
+        return;
+      }
+      throw error;
+    }
+
+    // A keep-alive agent holds the socket open after the response, which is
+    // what the CLI child does between tool calls.
+    const keepAlive = new (await import('node:http')).Agent({ keepAlive: true });
+    await fetch(handle.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${handle.bearer}`,
+        'Content-Type': 'application/json',
+        Accept: MCP_ACCEPT,
+        Connection: 'keep-alive',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'ping', arguments: {} },
+        id: 15,
+      }),
+    });
+
+    const startedAt = Date.now();
+    await local.stop();
+    const elapsed = Date.now() - startedAt;
+    keepAlive.destroy();
+
+    // The bound in `stop()` is 2s; anything near it means the race saved us
+    // rather than `closeAllConnections()`, and anything above it is a hang.
+    assert.ok(elapsed < 2_500, `stop() took ${elapsed}ms`);
   });
 });
