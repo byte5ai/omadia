@@ -458,7 +458,8 @@
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
     "help": "Hilfe",
-    "teamsSignIn": "Teams-Anmeldung"
+    "teamsSignIn": "Teams-Anmeldung",
+    "llmAccess": "LLM-Zugang"
   },
   "conductor": {
     "title": "Conductor",
@@ -1373,6 +1374,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
+    "errorAgentUnavailable": "Der Orchestrator dieser Session ist nicht mehr aktiv. Binde ihn unten neu, oder wähle einen anderen.",
+    "errorNoAgentsActive": "Es läuft noch kein Orchestrator. Ordne unter LLM-Zugang einen LLM-Anbieter zu und versuche es erneut.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
     "errorProviderAuth": "Der KI-Anbieter hat den hinterlegten API-Schlüssel abgelehnt. Prüfe ihn unter Admin → LLM-Zugang mit „Schlüssel testen“ und hinterlege ggf. einen neuen.",
@@ -1671,7 +1674,10 @@
     "unavailableTitle": "Der Orchestrator dieser Session ist nicht mehr verfügbar",
     "unavailableBody": "Der Orchestrator „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
     "actionReSnapshot": "Auf Standard umbinden",
-    "actionDelete": "Session löschen"
+    "actionDelete": "Session löschen",
+    "noAgentsTitle": "Es läuft kein Orchestrator",
+    "noAgentsBody": "Es ist noch kein LLM-Anbieter einem Orchestrator zugeordnet, daher kann kein Agent antworten. Öffne den LLM-Zugang und hinterlege einen API-Schlüssel oder eine Abo-CLI.",
+    "actionOpenLlmAccess": "LLM-Zugang öffnen"
   },
   "skills": {
     "metaTitle": "Skills · omadia",
@@ -3611,7 +3617,7 @@
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",
-    "selectModelLink": "Nach der Anmeldung ein CLI-Modell für einen Agenten unter LLM-Provider auswählen",
+    "selectModelLink": "Ordne nach der Anmeldung den Orchestrator unter LLM-Zugang dieser CLI zu — sonst läuft kein Agent. omadia setzt das automatisch, wenn kein anderer Anbieter konfiguriert ist",
     "detected": {
       "heading": "Erkannte CLIs"
     },
@@ -3639,6 +3645,8 @@
       "retry": "Erneut versuchen",
       "failed": "Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
       "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
+      "callbackWait": "Bestätige den Zugriff im Browser. Diese CLI schließt die Anmeldung selbst ab, kein Code zum Einfügen — diese Seite aktualisiert sich, sobald es fertig ist.",
+      "callbackTimedOut": "Die Anmeldung wurde nicht rechtzeitig abgeschlossen. Starte erneut, bestätige den Zugriff im Browser und lass diese Seite offen.",
       "manualSummary": "Lieber das Terminal?",
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",

@@ -71,8 +71,11 @@ describe('<LlmAccessTabs /> cross-panel navigation', () => {
     });
     expect(mockGetProviders).not.toHaveBeenCalled();
 
+    // OM-79 (#994): the explainer link is now an instruction ("assign the
+    // orchestrator to this CLI under LLM access"), no longer an aside about
+    // selecting a model. It is still the in-page switch to the API-keys panel.
     const switchControl = screen.getByRole('button', {
-      name: /select a CLI model/i,
+      name: /assign the orchestrator to this CLI/i,
     });
     fireEvent.click(switchControl);
 

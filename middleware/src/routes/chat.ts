@@ -171,6 +171,13 @@ export interface CreateChatRouterOptions {
   /** Phase A — the no-pick default slug. Returns the platform fallback
    *  Agent's slug, or `undefined` when no fallback is configured. */
   getDefaultSlug: () => string | undefined;
+  /** OM-76 (#996) — is ANY Agent active right now? When this answers `false`
+   *  the 503 carries `no_agents_active` instead of `agent_unavailable`: the
+   *  requested slug is not "deleted or disabled", there simply is no
+   *  orchestrator running (fresh install, no LLM provider assigned). The UI
+   *  must not offer "re-bind to default" in that state — the default is the
+   *  very thing that is missing. Optional so older mounts keep the old code. */
+  hasActiveAgents?: () => boolean;
   /** Phase A — chat session store, for snapshot capture on the first
    *  turn of a session. */
   chatSessionStore?: ChatSessionStore;
@@ -232,6 +239,15 @@ async function resolveAgentForRequest(
 
   const chatAgent = options.resolveChatAgent(effectiveSlug);
   if (!chatAgent) {
+    if (options.hasActiveAgents?.() === false) {
+      res.status(503).json({
+        error: 'no_agents_active',
+        message:
+          'no orchestrator is active. Assign an LLM provider (API key or subscription CLI) under LLM access.',
+        slug: effectiveSlug,
+      });
+      return undefined;
+    }
     res.status(503).json({
       error: 'agent_unavailable',
       message: `agent "${effectiveSlug}" is not currently active`,

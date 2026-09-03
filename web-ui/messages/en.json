@@ -458,7 +458,8 @@
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
     "help": "Help",
-    "teamsSignIn": "Teams sign-in"
+    "teamsSignIn": "Teams sign-in",
+    "llmAccess": "LLM access"
   },
   "conductor": {
     "title": "Conductor",
@@ -1373,6 +1374,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
+    "errorAgentUnavailable": "This session's orchestrator is no longer active. Re-bind it below, or pick another.",
+    "errorNoAgentsActive": "No orchestrator is running yet. Assign an LLM provider under LLM access, then try again.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
@@ -1671,7 +1674,10 @@
     "unavailableTitle": "This session's Orchestrator is no longer available",
     "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
     "actionReSnapshot": "Re-bind to standard",
-    "actionDelete": "Delete session"
+    "actionDelete": "Delete session",
+    "noAgentsTitle": "No orchestrator is running",
+    "noAgentsBody": "No LLM provider is assigned to an orchestrator yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {
     "metaTitle": "Skills · omadia",
@@ -3611,7 +3617,7 @@
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
-    "selectModelLink": "Once logged in, select a CLI model for an agent in LLM providers",
+    "selectModelLink": "After you sign in, assign the orchestrator to this CLI under LLM access — otherwise no agent runs. omadia sets this for you automatically when no other provider is configured",
     "detected": {
       "heading": "Detected CLIs"
     },
@@ -3639,6 +3645,8 @@
       "retry": "Try again",
       "failed": "Sign-in failed. Try again.",
       "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
+      "callbackWait": "Approve access in the browser. This CLI finishes the sign-in on its own, no code to paste — this page updates when it is done.",
+      "callbackTimedOut": "The sign-in did not complete in time. Start again, approve access in the browser, and keep this page open.",
       "manualSummary": "Prefer the terminal?",
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",

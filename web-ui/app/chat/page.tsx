@@ -593,6 +593,7 @@ export default function ChatPage(): React.ReactElement {
           <AgentUnavailableBanner
             sessionId={activeId}
             unavailableSlug={rec.agentUnavailableSlug}
+            reason={rec.agentUnavailableReason}
             onRecovered={() => {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
