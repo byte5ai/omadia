@@ -136,7 +136,12 @@ placeholders:
   AGENT_ID: id
   AGENT_NAME: name
   AGENT_SLUG: __derived__/agentSlug
+  # #885 — `identity.description` in the manifest is a locale map, so both
+  # placeholders must resolve or the scaffold ships an unsubstituted `{{…}}`.
+  # The builder collects ONE description, so both start from it and CLAUDE.md
+  # tells the author to translate the `en:` line.
   AGENT_DESCRIPTION_DE: description
+  AGENT_DESCRIPTION_EN: description
   AGENT_AUTHOR: author
   AGENT_VERSION: version
   AGENT_DOMAIN: domain

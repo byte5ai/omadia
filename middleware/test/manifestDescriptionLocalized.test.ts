@@ -78,6 +78,52 @@ test('every bundled manifest declares an English and a German description', () =
   assert.deepEqual(missing, [], `manifests without a full locale map:\n${missing.join('\n')}`);
 });
 
+/**
+ * The scaffolding templates have to teach the fixed shape, not the broken one.
+ *
+ * The guard above scans `packages/*` only, so both boilerplates kept
+ * `description: "{{AGENT_DESCRIPTION_DE}}"` — a bare string holding German,
+ * which `normalizeLocalized` reads as English. Every plugin the BuilderAgent
+ * scaffolds reproduced the defect #885 had just fixed 22 times by hand.
+ *
+ * Placeholders are still unsubstituted here, so this checks the SHAPE: a
+ * locale map with both keys, each pointing at its own placeholder.
+ */
+test('the agent boilerplates scaffold a locale map, not a bare string', () => {
+  const boilerplate = join(
+    fileURLToPath(new URL('.', import.meta.url)),
+    '..',
+    'assets',
+    'boilerplate',
+  );
+  const templates = ['agent-integration', 'agent-pure-llm'];
+
+  for (const name of templates) {
+    const file = join(boilerplate, name, 'manifest.yaml');
+    assert.ok(existsSync(file), `${name}/manifest.yaml must exist`);
+    const doc = YAML.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const identity = doc['identity'] as Record<string, unknown> | undefined;
+    const description = identity?.['description'];
+
+    assert.ok(
+      description && typeof description === 'object' && !Array.isArray(description),
+      `${name}: identity.description must be a locale map, not a bare string`,
+    );
+    const map = description as Record<string, unknown>;
+    assert.equal(map['en'], '{{AGENT_DESCRIPTION_EN}}', `${name}: en must carry the EN placeholder`);
+    assert.equal(map['de'], '{{AGENT_DESCRIPTION_DE}}', `${name}: de must carry the DE placeholder`);
+
+    // Both placeholders must be declared, or the scaffold ships a literal
+    // `{{AGENT_DESCRIPTION_EN}}` into someone's plugin listing.
+    const templateFile = join(boilerplate, name, 'template.yaml');
+    const templateDoc = YAML.parse(readFileSync(templateFile, 'utf8')) as Record<string, unknown>;
+    const placeholders = (templateDoc['placeholders'] ?? {}) as Record<string, unknown>;
+    for (const key of ['AGENT_DESCRIPTION_EN', 'AGENT_DESCRIPTION_DE']) {
+      assert.ok(key in placeholders, `${name}/template.yaml must map ${key}`);
+    }
+  }
+});
+
 test('German descriptions follow the project copy rules', () => {
   const offences: string[] = [];
   for (const { pkg, doc } of bundledManifests()) {
