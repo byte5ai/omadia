@@ -683,6 +683,14 @@ export type ChatStreamEvent =
       input: unknown;
       /** Set by the chat route when `name` resolves to an installed agent. */
       agent?: AgentMeta;
+      /**
+       * OM-81 — set by the subscription-CLI agent when the call did NOT go
+       * through omadia's loopback MCP server (`mcp__omadia__*`), i.e. it was
+       * one of the CLI's own built-in tools. Those are removed from the CLI
+       * at spawn time; the flag exists so a call that slips through can never
+       * look like an omadia tool in the trace.
+       */
+      foreign?: true;
     }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   /**

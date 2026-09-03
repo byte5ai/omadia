@@ -7,6 +7,7 @@
  * the dispatch service and the MCP SDK this package already depends on.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   createServer,
   type IncomingMessage,
@@ -61,6 +62,27 @@ export class LoopbackMcpServer {
   private started = false;
   /** #562 — the long-lived serving entry; see `nodeHandler()`. */
   private handler?: ReturnType<typeof toNodeHandler>;
+
+  /**
+   * OM-82 (#993) — the async context this server was CONSTRUCTED in.
+   *
+   * On the subscription path a tool call arrives as an HTTP request from the
+   * external `claude` process, so the `tools/call` handler runs in a fresh
+   * async root with none of the AsyncLocalStorage values the caller had set
+   * around `chat()`. That is why `manage_routine` answered "no user context"
+   * to a user who was in a channel. The server is constructed inside the turn
+   * (see `cliChatAgent.runLifecycle`), so we snapshot the context here and run
+   * every dispatch inside it.
+   *
+   * The snapshot restores whatever stores are active at construction time: on
+   * the CLI path today that is `routineTurnContext` (entered by the channel
+   * adapter around `chat()`); the orchestrator's own `turnContext` is NOT set
+   * on this path, because the CLI owns the loop. Any store a caller enters in
+   * the future is carried automatically. `AsyncLocalStorage.snapshot()` needs
+   * Node >= 20; this package requires >= 20.
+   */
+  private readonly runInTurnContext: <T>(fn: () => T) => T =
+    AsyncLocalStorage.snapshot();
 
   constructor(private readonly deps: LoopbackMcpServerDeps) {
     if (!deps.bearer) {
@@ -175,7 +197,12 @@ export class LoopbackMcpServer {
 
     mcp.server.setRequestHandler('tools/call', async (request) => {
       const { name, arguments: args } = request.params;
-      const result = await this.deps.dispatch.dispatch(name, args ?? {});
+      // OM-82 — run the dispatch inside the turn's captured async context so
+      // context-bound tools (`manage_routine`, privacy handle, idempotency)
+      // see the same (tenant, user) the in-process path would.
+      const result = await this.runInTurnContext(() =>
+        this.deps.dispatch.dispatch(name, args ?? {}),
+      );
       return {
         content: [{ type: 'text' as const, text: result.content }],
         ...(result.isError ? { isError: true } : {}),
