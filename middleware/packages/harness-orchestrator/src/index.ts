@@ -450,6 +450,16 @@ export type {
   LoopbackMcpServerHandle,
 } from './loopbackMcpServer.js';
 export { CLI_ENV_SCRUB_KEYS, CliChatAgent, StreamJsonParser } from './cliChatAgent.js';
+// #1007 — the CLI spawn gate, shared with `platform/claudeCliAdapter.ts`.
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildCompletionCliArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
+export type { CliToolGateOptions, CompletionCliArgvOptions } from './cliSpawnGate.js';
 export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
