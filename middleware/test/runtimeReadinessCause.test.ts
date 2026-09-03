@@ -122,6 +122,7 @@ function snapshot(
       }),
     ),
     generatedAt: 0,
+    cliToolsDir: '/tmp/cli-tools',
   };
 }
 
