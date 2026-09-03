@@ -1,0 +1,50 @@
+[
+  {
+    "family": "Geist",
+    "slug": "geist",
+    "subset": "latin",
+    "file": "geist-latin.woff2",
+    "weight": "100 900",
+    "style": "normal",
+    "unicodeRange": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+    "bytes": 29288,
+    "source": "https://fonts.gstatic.com/s/geist/v5/gyByhwUxId8gMEwcGFWNOITd.woff2",
+    "cssUrl": "https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap"
+  },
+  {
+    "family": "Source Serif 4",
+    "slug": "source-serif-4",
+    "subset": "latin",
+    "file": "source-serif-4-latin.woff2",
+    "weight": "200 900",
+    "style": "normal",
+    "unicodeRange": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+    "bytes": 50924,
+    "source": "https://fonts.gstatic.com/s/sourceserif4/v14/vEFF2_tTDB4M7-auWDN0ahZJW3IX2ih5nk3AucvUHf6kDXr4Y3qwzQ.woff2",
+    "cssUrl": "https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@200..900&display=swap"
+  },
+  {
+    "family": "Geist Mono",
+    "slug": "geist-mono",
+    "subset": "latin",
+    "file": "geist-mono-latin.woff2",
+    "weight": "100 900",
+    "style": "normal",
+    "unicodeRange": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+    "bytes": 23108,
+    "source": "https://fonts.gstatic.com/s/geistmono/v6/or3nQ6H-1_WfwkMZI_qYFrcdmhHkjko.woff2",
+    "cssUrl": "https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap"
+  },
+  {
+    "family": "Days One",
+    "slug": "days-one",
+    "subset": "latin",
+    "file": "days-one-latin.woff2",
+    "weight": "400",
+    "style": "normal",
+    "unicodeRange": "U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD",
+    "bytes": 15308,
+    "source": "https://fonts.gstatic.com/s/daysone/v19/mem9YaCnxnKRiYZOCIYScrg0V8Bs.woff2",
+    "cssUrl": "https://fonts.googleapis.com/css2?family=Days+One:wght@400&display=swap"
+  }
+]
