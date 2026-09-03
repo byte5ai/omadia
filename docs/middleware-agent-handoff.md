@@ -161,6 +161,20 @@ es zusätzlich ein Gate auf der Spawn-Seite: `CliChatAgent` startet die CLI mit
 (Bash, Edit, Write, …) und die `~/.claude`-Hooks des Host-Users nie erreichbar
 sind (#991/#992; Details in `docs/security-architecture.md` § 3a).
 
+Seit #1007 liegt dieses Gate in **einem** Modul,
+`packages/harness-orchestrator/src/cliSpawnGate.ts`
+(`buildCliToolGateArgv`, `buildCompletionCliArgv`, `buildGatedCliEnv`,
+`CLI_BUILTIN_TOOL_DENYLIST`), und wird von **beiden** Spawn-Stellen benutzt:
+`cliChatAgent.ts` (Shape 3) und `platform/claudeCliAdapter.ts` (Shape 2,
+Single-Shot-Completions für Session-Summary, Fact-Extraction, Classifier,
+Verifier-Judge). Letztere hatte das Gate nicht und war die exponiertere von
+beiden, weil ihre Prompts aus Nutzertext und Uploads zusammengesetzt werden.
+Wer eine neue Spawn-Stelle baut, importiert dieses Modul und kopiert die Flags
+nicht. Dazu kommen ein leeres `cwd` (die CLI-eigene `CLAUDE.md`-Discovery ist
+hartkodiert und nur über `--bare` abschaltbar, was aber OAuth nicht mehr liest)
+und eine Env-**Allowlist** statt der alten Scrub-Liste, die `NODE_OPTIONS`
+durchgelassen hat.
+
 Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
 Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
 gemergten, damit keins das Urteil des anderen stillschweigend überschreiben
