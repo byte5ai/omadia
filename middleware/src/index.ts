@@ -5842,7 +5842,9 @@ async function main(): Promise<void> {
 
   // LAN zero-config discovery (#293): advertise `_omadia._tcp` so a desktop
   // client on the same network can pair with zero typing. Best-effort — a host
-  // with no LAN reachability (Fly) simply never gets discovered this way.
+  // with no LAN reachability (Fly) simply never gets discovered this way. The
+  // desktop shell disables it via env (OM-70); the advertiser itself never
+  // claims the machine's own host name (see pairing/mdns.ts).
   if (config.OMADIA_UI_MDNS_ENABLED) {
     const advertisedAuthMode: 'none' | 'password' | 'oidc' = pairingProviders
       ?.length

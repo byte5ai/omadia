@@ -183,6 +183,9 @@ const ConfigSchema = z.object({
   // Advertise `_omadia._tcp` on the LAN for zero-config discovery. On by
   // default for self-hosters; harmless to leave on where there is no LAN
   // reachability (Fly), but set to `false` to silence the responder there.
+  // The desktop shell sets `false` (OM-70): on a single-user machine there is
+  // nothing to discover, and the responder used to claim the Mac's own `.local`
+  // name so macOS renamed the machine on every start.
   OMADIA_UI_MDNS_ENABLED: z
     .enum(['true', 'false'])
     .transform((v) => v === 'true')

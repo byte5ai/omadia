@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — The desktop app no longer renames the user's Mac on every start
+
+2026-09-03 — Beta round 4, OM-70 (#1004). Since v0.142 the Mac of the tester
+had been counting up: `MacBook-Pro-von-Silvio-8.local`, then `-9`, then `-10`,
+one increment per omadia start, with macOS announcing each time that the local
+hostname was "already in use on this network". The culprit was our own LAN
+pairing advertiser (#293): `bonjour-service` publishes `_omadia._tcp` with the
+machine's own host name as SRV target and answers A queries for it, so macOS
+saw a second responder defending its `.local` name, treated it as a foreign
+device and yielded. In a company network that name carries file shares,
+printers, SSH targets, backups and MDM inventory.
+
+Two layers. The desktop supervisor now passes `OMADIA_UI_MDNS_ENABLED=false`
+to the kernel unless the user set the variable themselves; on a single-user
+machine there is nothing to discover. And the advertiser itself never claims
+the OS name any more: self-hosters advertise as `<instance>-<machine>.local`
+(capped at 63 octets, a valid DNS label) or an explicit `host`, so two
+responders on one device can no longer collide. The variable is documented in
+`middleware/.env.example`.
+
 ### Fixed — MCP marketplace search now answers from the cached catalog when only the registry's search is broken
 
 2026-09-01 — Follow-up to the entry below, found by watching the deployed fix
