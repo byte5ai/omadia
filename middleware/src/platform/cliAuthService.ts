@@ -62,6 +62,31 @@ const STATUS_POLL_INTERVAL_MS = 1500;
  *  before concluding this CLI finishes via a browser callback (no code). */
 const CODE_PROMPT_PROBE_MS = 2500;
 
+/**
+ * Injection seam. Production uses the real child_process + detector; tests
+ * swap in a fake ChildProcess and a scripted detector so the exit-code paths
+ * (OM-73) are unit-testable without spawning anything.
+ */
+interface CliAuthDeps {
+  readonly spawn: typeof spawn;
+  readonly detectCliBackends: typeof detectCliBackends;
+  readonly resolveCliBin: typeof resolveCliBin;
+  /** How long to watch for a "paste code" prompt after the URL appears. */
+  readonly codePromptProbeMs: number;
+}
+const DEFAULT_DEPS: CliAuthDeps = {
+  spawn,
+  detectCliBackends,
+  resolveCliBin,
+  codePromptProbeMs: CODE_PROMPT_PROBE_MS,
+};
+let io: CliAuthDeps = DEFAULT_DEPS;
+
+/** Test seam: override any dependency; call with no argument to restore. */
+export function __setCliAuthDepsForTests(over?: Partial<CliAuthDeps>): void {
+  io = over ? { ...DEFAULT_DEPS, ...over } : DEFAULT_DEPS;
+}
+
 let counter = 0;
 let active: LoginSession | undefined;
 
@@ -157,7 +182,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   assertSupported(cliId);
 
   // A logged-in CLI does not need re-login; surface that to the caller.
-  const snap = await detectCliBackends({ force: true });
+  const snap = await io.detectCliBackends({ force: true });
   const backend = snap.backends.find((b) => b.id === cliId);
   if (!backend?.installed) {
     throw new Error(`${cliId} is not installed in this environment.`);
@@ -167,7 +192,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
 
   // Resolve through the runtime install dir so a CLI installed in-app is
   // spawnable even when it is not on PATH.
-  const child = spawn(resolveCliBin(backend.bin), ['auth', 'login', '--claudeai'], {
+  const child = io.spawn(io.resolveCliBin(backend.bin), ['auth', 'login', '--claudeai'], {
     env: scrubbedEnv(),
     windowsHide: true,
   });
@@ -222,6 +247,11 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
       session.error = tail
         ? `The login process ended without signing in: ${tail}`
         : 'The login process ended without signing in. Start again.';
+      // Keep the terminal session visible: a UI polling the status (callback
+      // flow) must see `error` + the message, not an `idle` that hides it. The
+      // process is gone, so there is nothing to kill; the lifetime timer reaps.
+      session.child = undefined;
+      return;
     }
     if (active === session && session.status !== 'authorized') disposeActive();
   });
@@ -247,7 +277,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   // Decide which leg follows: a stdin code prompt (older CLI) or a browser
   // callback (newer CLI). Watch briefly for the prompt; if the process finishes
   // or a prompt never appears, this is the callback flow (codeEntry=false).
-  const promptDeadline = Date.now() + CODE_PROMPT_PROBE_MS;
+  const promptDeadline = Date.now() + io.codePromptProbeMs;
   let codeEntry = false;
   while (Date.now() < promptDeadline) {
     if (session.status !== 'pending') break; // exited (authorized or error)
@@ -272,7 +302,7 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
  */
 async function confirmAuthorizedAfterExit(session: LoginSession): Promise<void> {
   try {
-    const snap = await detectCliBackends({ force: true });
+    const snap = await io.detectCliBackends({ force: true });
     const backend = snap.backends.find((b) => b.id === session.cliId);
     if (backend?.loggedIn === 'yes') {
       session.status = 'authorized';
@@ -293,8 +323,9 @@ async function confirmAuthorizedAfterExit(session: LoginSession): Promise<void> 
     session.status = 'error';
     session.error = err instanceof Error ? err.message : String(err);
   }
-  // Error path: drop the dead session so getActiveLogin reports the truth.
-  if (active === session) disposeActive();
+  // Error path: the process is gone; keep the terminal session so a polling UI
+  // reads `error` + message (the lifetime timer or the next login reaps it).
+  session.child = undefined;
 }
 
 /**
@@ -332,7 +363,7 @@ export async function submitCliCode(
 
       // Authoritative success check FIRST — a confirmed login must win over any
       // lagging "invalid code" text (e.g. from a previous attempt).
-      const snap = await detectCliBackends({ force: true });
+      const snap = await io.detectCliBackends({ force: true });
       const backend = snap.backends.find((b) => b.id === session.cliId);
       if (backend?.loggedIn === 'yes') {
         session.status = 'authorized';
@@ -385,11 +416,11 @@ export function cancelCliLogin(): void {
 export async function cliLogout(cliId: string): Promise<{ ok: boolean }> {
   assertSupported(cliId);
   disposeActive();
-  const snap = await detectCliBackends({ force: true });
+  const snap = await io.detectCliBackends({ force: true });
   const backend = snap.backends.find((b) => b.id === cliId);
   if (!backend?.installed) return { ok: true };
   await new Promise<void>((resolve) => {
-    const c = spawn(resolveCliBin(backend.bin), ['auth', 'logout'], { env: scrubbedEnv(), windowsHide: true });
+    const c = io.spawn(io.resolveCliBin(backend.bin), ['auth', 'logout'], { env: scrubbedEnv(), windowsHide: true });
     c.on('error', () => resolve());
     c.on('exit', () => resolve());
     setTimeout(() => {
