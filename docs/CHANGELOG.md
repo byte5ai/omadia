@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a privacy and an auth suite can no longer delete themselves and report success (#1024)
+
+2026-09-04 — follow-up to #1017, which fixed one copy of this and revealed how
+far it had spread.
+
+Seven places in `middleware/test` had grown their own version of "the sandbox
+refused a loopback listener, so skip this test": three named
+`isSandboxListenDenied`, two named `isSandboxListenError`, two written inline.
+They did not agree. #1017 taught only the `cliBridge` copy to respect
+`OMADIA_EXPECT_LOOPBACK`, so on a runner where `bind(127.0.0.1:0)` returns
+`EPERM` the rest still swallowed the failure — including
+`publicMcpPrivacy.e2e`, `publicMcpMaskingAssertion` and
+`devEndpointsAuth.e2e`. A privacy-masking assertion and an auth e2e passing
+green while asserting nothing is the failure family `ci.yml` cites #640 and
+#752 for.
+
+All seven now call one helper in `test/_helpers/listenLoopback.ts`, next to the
+`listenLoopback` they already shared. It honours `OMADIA_EXPECT_LOOPBACK` (the
+CI signal from #1017) and `CI` (the signal the two `test/auth/**` suites had
+grown independently), so no site is weakened and a runner that sets either one
+gets the strict behaviour. `isDeniedListenError` exposes the error shape alone,
+for the two suites that raise a better diagnostic than a bare `EPERM`.
+
+The naming was the second half of the trap: same-named functions with different
+behaviour, while `.env.example` documents a flag that only one of them read.
+
+Guarded against regrowth by `test/sandboxListenGuard.test.ts`: unit cases for
+the helper's four outcomes, plus two greps over the whole test tree asserting
+that nothing else defines the predicate or compares an error code to `EPERM`
+inline. Proven by reverting one call site to its local copy — two assertions go
+red — rather than by observing a green run. The exemption list is two files and
+each is justified in place, because an exclusion list is where a guard goes
+blind. Two guards in this repo have already turned out to prove nothing.
+
 ### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
 
 2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
