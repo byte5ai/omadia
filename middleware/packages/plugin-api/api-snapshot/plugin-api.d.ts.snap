@@ -15,6 +15,17 @@ readonly triage?: string;
 readonly simple?: string;
 readonly escalateOn?: readonly EscalationTrigger[];
 }
+export type ModelPolicyEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export interface ModelRef {
+readonly provider: string;
+readonly model: string;
+readonly effort?: ModelPolicyEffort;
+}
+export interface ModelPolicy {
+readonly primary: 'auto' | ModelRef;
+readonly fallback: 'none' | 'auto' | ModelRef;
+}
+export declare const DEFAULT_MODEL_POLICY: ModelPolicy;
 export interface AgentNode {
 readonly id: string;
 readonly slug: string;
@@ -23,6 +34,7 @@ readonly description: string | null;
 readonly privacyProfile: 'strict' | 'default';
 readonly status: 'enabled' | 'disabled';
 readonly modelRouting: ModelRoutingConfig | null;
+readonly modelPolicy?: ModelPolicy;
 readonly position: CanvasPosition | null;
 }
 export interface ChannelNode {
