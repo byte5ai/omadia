@@ -255,3 +255,43 @@ describe('createProviderHealth', () => {
     assert.equal(health.inCooldown('p'), false);
   });
 });
+
+describe('breaker scope (#1033 W3, advisor round)', () => {
+  it('an unknown MODEL hops but does not open the provider-wide breaker', async () => {
+    const health = createProviderHealth({ now: () => 1_000 });
+    const err = Object.assign(new Error('not_found_error: model'), { status: 404 });
+    const primary = {
+      id: 'anthropic',
+      capabilities: CAPS,
+      complete: async () => {
+        throw err;
+      },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          throw err;
+        },
+      }),
+      classifyError: () => ({ retryable: false, kind: 'other' as const }),
+    } as unknown as LlmProvider;
+    const events = await collect(
+      streamMessageEvents({
+        provider: primary,
+        params: PARAMS,
+        observer: undefined,
+        iteration: 0,
+        streamLabel: 'test',
+        fallback: { provider: answering('backup', 'b'), params: FB_PARAMS, health },
+      }),
+    );
+    assert.equal((events[0] as { reason: string }).reason, 'model_not_found');
+    assert.equal(health.inCooldown('anthropic'), false, 'one bad model ref must not stampede every agent');
+    const buffered = await completeWithFallback({
+      provider: primary,
+      request: { model: 'nope', maxTokens: 1, messages: [] },
+      fallback: { provider: answering('backup', 'b'), request: { model: 'f', maxTokens: 1, messages: [] }, health },
+      streamLabel: 'test',
+    });
+    assert.equal(buffered.fallbackUsed?.reason, 'model_not_found');
+    assert.equal(health.inCooldown('anthropic'), false);
+  });
+});
