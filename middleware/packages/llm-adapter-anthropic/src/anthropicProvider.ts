@@ -284,8 +284,18 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     ...(req.toolChoice !== undefined
       ? { tool_choice: toAnthropicToolChoice(req.toolChoice) }
       : {}),
+    // #1033 — the normalized effort maps 1:1 onto Anthropic's
+    // `output_config.effort` vocabulary (`low|medium|high|xhigh|max`); we
+    // never send `max`, which the contract deliberately does not carry.
+    ...(req.effort !== undefined
+      ? { output_config: { effort: req.effort } }
+      : {}),
   };
 }
+
+/** The beta that unlocks `output_config.effort`. Attached only when a request
+ *  actually carries an effort, so the common path keeps its header set. */
+export const EFFORT_BETA = 'effort-2025-11-24';
 
 /** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
  *  undefined when there are none, so callers pass nothing extra (preserving
@@ -293,8 +303,14 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
 function toRequestOptions(
   req: LlmRequest,
 ): { headers: Record<string, string> } | undefined {
-  return req.betas !== undefined && req.betas.length > 0
-    ? { headers: { 'anthropic-beta': req.betas.join(',') } }
+  const betas = [
+    ...(req.betas ?? []),
+    ...(req.effort !== undefined && !(req.betas ?? []).includes(EFFORT_BETA)
+      ? [EFFORT_BETA]
+      : []),
+  ];
+  return betas.length > 0
+    ? { headers: { 'anthropic-beta': betas.join(',') } }
     : undefined;
 }
 

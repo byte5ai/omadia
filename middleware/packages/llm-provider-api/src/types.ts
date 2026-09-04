@@ -138,7 +138,26 @@ export interface LlmRequest {
    *  them. The one sanctioned escape hatch for vendor preview features — keep
    *  it short and provider-neutral at the call site (pass a documented const). */
   readonly betas?: ReadonlyArray<string>;
+  /**
+   * Reasoning-effort level (#1033). A NORMALIZED vocabulary: each adapter maps
+   * it to its vendor's parameter (Anthropic `output_config.effort`, OpenAI
+   * `reasoning_effort` / `reasoning.effort`) and adapters for providers or
+   * models without the concept IGNORE it — never error — with a one-time
+   * warning, so a policy that names an effort can never break a turn on a
+   * provider that has no such knob. Whether a model offers a level at all is
+   * declared per model (`ModelInfo.effortLevels`), not guessed here.
+   */
+  readonly effort?: EffortLevel;
 }
+
+/**
+ * The normalized effort vocabulary, lowest to highest. Vendors disagree on
+ * names and counts (OpenAI has `minimal`…`xhigh`, Anthropic `low`…`max`); the
+ * contract carries the intersection that maps cleanly onto both, and each
+ * adapter owns its own edge mapping.
+ */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 /** Neutral completion-end signal. `stop_sequence` and other vendor
  *  nuances collapse into `stop`; the raw vendor value survives in

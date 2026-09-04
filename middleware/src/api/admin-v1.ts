@@ -387,7 +387,26 @@ export interface ChannelManifestBlock {
    * version is negotiated in the boot handshake.
    */
   canvas_protocol_version?: string;
+  /**
+   * #1018 (additive): whether the platform natively delivers one omadia bot's
+   * message to another omadia bot in the same chat.
+   *
+   *   `'none'`   — DEFAULT. Teams, Telegram, WhatsApp: the platform never
+   *                delivers bot→bot, so the orchestrator-internal relay is
+   *                the only path and nothing needs suppressing inbound.
+   *   `'native'` — Slack, Discord: peers' messages DO arrive natively. The
+   *                channel's inbound handler must then drop messages authored
+   *                by a known omadia peer bot, or every relayed utterance
+   *                would arrive twice (natively + via relay) and race.
+   *
+   * Contract only for now: no shipped channel declares `'native'`, and the
+   * inbound drop lands with the first channel that does.
+   */
+  peer_delivery?: PeerDelivery;
 }
+
+/** See `ChannelManifestBlock.peer_delivery`. */
+export type PeerDelivery = 'none' | 'native';
 
 /**
  * A short piece of UI text available in several languages, keyed by locale

@@ -4,4 +4,4 @@
  * mismatch at install. Bump MAJOR on a breaking change to any exported type in
  * this package, MINOR on a backward-compatible addition.
  */
-export const LLM_PROVIDER_API_VERSION = '1.1.0' as const;
+export const LLM_PROVIDER_API_VERSION = '1.2.0' as const;
