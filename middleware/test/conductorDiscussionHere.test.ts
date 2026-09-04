@@ -308,6 +308,37 @@ describe('discussion_start tool', () => {
     assert.match(out, /messias \(Messias\)/);
   });
 
+  it('RESOLVES THE CAPABILITY PER CALL — one absent at activation must not freeze', async () => {
+    // The live failure: `optional_requires` creates no activation edge, so the
+    // capability was undefined when the plugin activated and the tool answered
+    // "not available" for the process's whole life. It must recover the moment
+    // the kernel publishes it.
+    let published: DiscussionsCapability | undefined;
+    const handler = createDiscussionStartHandler({ resolveDiscussions: () => published });
+
+    const before = await handler({ with_agent: 'accounting', topic: 'T' });
+    assert.match(before, /not available on this deployment/);
+
+    published = fakeCapability();
+    const after = await handler({ with_agent: 'accounting', topic: 'T' });
+    assert.equal((JSON.parse(after) as { started: boolean }).started, true);
+  });
+
+  it('answers an unknown partner WITH the candidate list so the model can retry', async () => {
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async () => {
+            throw new DiscussionUnknownPartnerError('messias', PARTNERS);
+          },
+        }),
+    });
+    const out = await handler({ with_agent: 'messias', topic: 'T' });
+    assert.match(out, /^Error: /);
+    assert.match(out, /Available in this chat/);
+    assert.match(out, /messias \(Messias\)/);
+  });
+
   it('rejects a malformed agent slug before reaching the kernel', async () => {
     const handler = createDiscussionStartHandler({
       resolveDiscussions: () =>
