@@ -21,7 +21,7 @@ import type {
   GrantStore,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -97,6 +97,8 @@ export interface AgentRuntimeConfig {
   readonly model: string;
   /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
   readonly modelRouting?: ModelRoutingConfig;
+  /** #1033 — reasoning effort the agent's model policy pins; absent = vendor default. */
+  readonly effort?: EffortLevel;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -679,6 +681,7 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.effort !== undefined ? { effort: config.effort } : {}),
     ...(config.directLineSticky ? { directLineSticky: true } : {}),
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }

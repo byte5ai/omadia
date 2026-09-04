@@ -119,6 +119,20 @@ export type {
   AgentToAgentMode,
 } from './registry/agentToAgent.js';
 export {
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  sameRef,
+  validateModelPolicy,
+} from './registry/modelPolicy.js';
+export type {
+  ModelPolicyValidation,
+  ModelPolicyValidationContext,
+  ResolvedModelPolicy,
+} from './registry/modelPolicy.js';
+export {
   ConfigStore,
   ConfigValidationError,
   validateModelRef,

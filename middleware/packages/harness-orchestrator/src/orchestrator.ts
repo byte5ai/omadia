@@ -43,7 +43,7 @@ import {
 } from './securityScreener.js';
 import { recordScreenOutcome } from './securityScreenMetrics.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -320,6 +320,12 @@ export interface OrchestratorOptions {
    * every turn uses `model` (routing off). See {@link routeTurnModel}.
    */
   modelRouting?: ModelRoutingConfig;
+  /**
+   * #1033 — reasoning effort pinned by the agent's model policy, sent on every
+   * request of this agent (the adapter maps it to its vendor's parameter or
+   * ignores it). Absent = the vendor's default.
+   */
+  effort?: EffortLevel;
   maxTokens: number;
   /**
    * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
@@ -1841,6 +1847,8 @@ export class Orchestrator {
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
+  /** #1033 — see {@link OrchestratorOptions.effort}. */
+  private readonly effort: EffortLevel | undefined;
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
@@ -1985,6 +1993,7 @@ export class Orchestrator {
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
+    this.effort = options.effort;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
     this.visionSupported = options.visionSupported;
@@ -4554,6 +4563,7 @@ export class Orchestrator {
         forceObligationNext = false;
         const baseParams = {
           model: turnModel,
+          ...(this.effort !== undefined ? { effort: this.effort } : {}),
           max_tokens: this.maxTokens,
           system: buildSystemBlocks(
             this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
@@ -5679,6 +5689,7 @@ export class Orchestrator {
           provider: this.provider,
           params: {
             model: turnModel,
+            ...(this.effort !== undefined ? { effort: this.effort } : {}),
             max_tokens: this.maxTokens,
             system: buildSystemBlocks(
               this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),

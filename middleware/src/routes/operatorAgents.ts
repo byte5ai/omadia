@@ -1,5 +1,6 @@
 import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
+import type { ModelPolicy } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -9,8 +10,15 @@ import {
   mcpToolNameFromRef,
   type AgentGraphStore,
   AGENT_TO_AGENT_MODES,
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
   parseAgentToAgentMode,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  validateModelPolicy,
   type AgentToAgentMode,
+  type ModelPolicyValidationContext,
   type ChatSessionStore,
   type ConfigStore,
   type ContextMemoryMode,
@@ -196,6 +204,18 @@ const PeerChannelSchema = z.object({
 /** `channel_key` values carry `:`/`@` (`19:…@thread.skype`) — path-segment safe
  *  once URL-encoded, but bound it so a stray body cannot become a 64 KB key. */
 const PEER_CHANNEL_SEGMENT = z.string().trim().min(1).max(512);
+
+// #1033 — the model policy. Shape-checked here, semantically validated by
+// `validateModelPolicy` (catalogue, key, effort, fallback ≠ primary).
+const ModelRefSchema = z.object({
+  provider: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(128),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+});
+const ModelPolicySchema = z.object({
+  primary: z.union([z.literal('auto'), ModelRefSchema]),
+  fallback: z.union([z.literal('none'), z.literal('auto'), ModelRefSchema]),
+});
 
 const AgentPluginsSchema = z.object({
   plugins: z.array(
@@ -1511,9 +1531,51 @@ export function projectAgentIdentity(
  */
 function agentPersonaFamily(agent: {
   readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
 }): PersonaModelFamily {
+  // #1033 — an explicit primary in the model policy outranks model_routing.
+  const primary = agent.modelPolicy?.primary;
+  if (primary !== undefined && isModelRef(primary)) return inferFamilyFromModel(primary.model);
   const main = agent.modelRouting?.['main'];
   return inferFamilyFromModel(typeof main === 'string' ? main : '');
+}
+
+/**
+ * #1033 — EVERY family the agent may speak with: the primary's (see above)
+ * plus the fallback's when the policy names one. The persona is compiled for
+ * each, so a cross-family fallback never runs on a prompt whose deltas were
+ * computed against the other family. The primary's family comes first.
+ */
+function agentPersonaFamilies(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
+}): readonly PersonaModelFamily[] {
+  const primary = agentPersonaFamily(agent);
+  const fallback = agent.modelPolicy?.fallback;
+  if (fallback !== undefined && isModelRef(fallback)) {
+    const fam = inferFamilyFromModel(fallback.model);
+    if (fam !== primary) return [primary, fam];
+  }
+  return [primary];
+}
+
+/**
+ * Compile the identity prompt for every family in `families`; the FIRST
+ * family is the primary and becomes `text`/`family`, the map carries all.
+ */
+function composeForFamilies(
+  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
+  families: readonly PersonaModelFamily[],
+): { primary: ReturnType<typeof composeAgentIdentityPrompt>; family: PersonaModelFamily; byFamily: Record<string, string> } {
+  const byFamily: Record<string, string> = {};
+  let primary: ReturnType<typeof composeAgentIdentityPrompt> | undefined;
+  for (const family of families) {
+    const composed = composeAgentIdentityPrompt({ ...input, family });
+    if (!primary) primary = composed;
+    if (composed.text !== null) byFamily[family] = composed.text;
+  }
+  const first = families[0] ?? 'sonnet';
+  return { primary: primary ?? composeAgentIdentityPrompt({ ...input, family: first }), family: first, byFamily };
 }
 
 /**
@@ -1575,6 +1637,15 @@ export interface OperatorAgentsRouterOptions {
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
   readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
+  /**
+   * #1033 — what the model-policy write path validates against: the model
+   * catalogue and whether a provider is keyed, plus the orchestrator's active
+   * provider for the read-out. Late-bound like the others; the policy routes
+   * 503 while it returns undefined.
+   */
+  readonly getModelPolicyContext?: () =>
+    | (ModelPolicyValidationContext & { readonly activeProvider?: string })
+    | undefined;
   /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
    *  banner probes `GET /` and reads `cause` off the 503 so it can name the
    *  actual remedy (add access vs. assign the orchestrator). Optional: tests
@@ -1961,6 +2032,122 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── model policy (#1033) ─────────────────────────────────────────────
+  // Read + write as a pair like context-memory: which model answers under
+  // an agent's name is a cost / data-residency / quality decision that must
+  // not ride along on a rename.
+  router.get('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const policy = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const ctx = options.getModelPolicyContext?.();
+      const built = live.registry.get(agent.slug)?.built;
+      const resolved = resolveModelPolicyRuntime(policy, ctx?.activeProvider);
+      res.json({
+        slug: agent.slug,
+        policy,
+        // What `auto` currently resolves to, so the UI can say "Auto (Opus 4.8)".
+        effectiveModel: built?.effectiveModel ?? null,
+        activeProvider: ctx?.activeProvider ?? null,
+        // An explicit primary on another provider is honoured for its effort
+        // only until the multi-provider turn loop lands — the UI must say so.
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+        vision: {
+          ...(isModelRef(policy.primary)
+            ? { primary: ctx?.resolveModel(policy.primary.provider, policy.primary.model)?.vision ?? null }
+            : {}),
+          ...(isModelRef(policy.fallback)
+            ? { fallback: ctx?.resolveModel(policy.fallback.provider, policy.fallback.model)?.vision ?? null }
+            : {}),
+        },
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const ctx = options.getModelPolicyContext?.();
+    if (!ctx) {
+      res.status(503).json({
+        error: 'model_policy_unavailable',
+        message: 'the model catalogue is not available — the policy cannot be validated',
+      });
+      return;
+    }
+    try {
+      const raw = ModelPolicySchema.parse(req.body);
+      const policy = {
+        primary: raw.primary === 'auto' ? ('auto' as const) : parseModelRef(raw.primary)!,
+        fallback:
+          raw.fallback === 'none' || raw.fallback === 'auto'
+            ? raw.fallback
+            : parseModelRef(raw.fallback)!,
+      };
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const vision = await validateModelPolicy(policy, ctx);
+      const previous = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const updated = await live.store.updateAgent(agent.id, { modelPolicy: policy });
+      // The families the agent may speak with may have changed: recompile the
+      // persona for each of them so a fallback never runs on the wrong prompt.
+      // Deliberately does not bump the identity revision (nothing authored
+      // changed); absent identity store / row = nothing to recompose.
+      const identityDeps = options.getAgentIdentity?.();
+      if (identityDeps) {
+        const identity = await identityDeps.store.getByAgentId(agent.id);
+        if (identity) {
+          const compiled = composeForFamilies(
+            {
+              instructions: identity.instructions,
+              persona: identity.persona,
+              quality: identity.quality,
+            },
+            agentPersonaFamilies(updated),
+          );
+          await identityDeps.store.recompose(agent.id, {
+            text: compiled.primary.text,
+            family: compiled.family,
+            byFamily: compiled.byFamily,
+          });
+        }
+      }
+      await live.registry.reload();
+      if (JSON.stringify(previous) !== JSON.stringify(policy)) {
+        console.warn(
+          `[security-audit] model_policy ${JSON.stringify(previous)} -> ${JSON.stringify(policy)} for agent ${agent.slug}`,
+        );
+      }
+      const resolved = resolveModelPolicyRuntime(policy, ctx.activeProvider);
+      res.json({
+        ok: true,
+        policy,
+        vision: {
+          ...(vision.primaryVision !== undefined ? { primary: vision.primaryVision } : {}),
+          ...(vision.fallbackVision !== undefined ? { fallback: vision.fallbackVision } : {}),
+        },
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
   router.get('/:slug/peer-channels', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -2120,13 +2307,13 @@ export function createOperatorAgentsRouter(
       // comes from the agent's own model routing — persona axes are deltas
       // against it, so composing against the wrong one would emit the wrong
       // traits.
-      const family = agentPersonaFamily(agent);
-      const composed = composeAgentIdentityPrompt({
-        instructions: body.instructions ?? null,
-        persona,
-        quality,
-        family,
-      });
+      // #1033 — one compile per family the policy names (primary first).
+      const compiled = composeForFamilies(
+        { instructions: body.instructions ?? null, persona, quality },
+        agentPersonaFamilies(agent),
+      );
+      const family = compiled.family;
+      const composed = compiled.primary;
       const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
@@ -2135,7 +2322,7 @@ export function createOperatorAgentsRouter(
         accentColor: body.accent_color ?? null,
         persona,
         quality,
-        composed: { text: composed.text, family },
+        composed: { text: composed.text, family, byFamily: compiled.byFamily },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
@@ -2183,6 +2370,7 @@ export function createOperatorAgentsRouter(
           : ((await deps.store.recompose(agent.id, {
               text: composed.text,
               family,
+              byFamily: compiled.byFamily,
             })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),

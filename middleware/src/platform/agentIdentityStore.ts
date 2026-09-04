@@ -60,6 +60,13 @@ export interface AgentIdentityComposedPrompt {
   readonly text: string | null;
   /** Which model family the persona deltas were computed against. */
   readonly family: string | null;
+  /**
+   * #1033 — the compiled prompt for EVERY family the agent's model policy
+   * names (`{ opus: "...", sonnet: "..." }`), `text` being the entry for
+   * `family`. A cross-family fallback picks from here. Absent on rows
+   * written before migration 0059.
+   */
+  readonly byFamily?: Readonly<Record<string, string>>;
 }
 
 /** The authored text of an identity. `null` = not authored, inherit. */
@@ -205,7 +212,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 
 /** Everything except the three BYTEA columns. */
 const META_COLUMNS =
-  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, avatar_etag, revision, created_at, updated_at';
+  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
 
 interface AgentIdentityMetaRow {
   agent_id: string;
@@ -218,10 +225,20 @@ interface AgentIdentityMetaRow {
   quality: QualityConfig | null;
   composed_prompt: string | null;
   composed_family: string | null;
+  /** #1033 — absent on a DB that predates migration 0059. */
+  composed_prompts?: Record<string, unknown> | null;
   avatar_etag: string | null;
   revision: number;
   created_at: Date;
   updated_at: Date;
+}
+
+function composedByFamily(raw: unknown): Readonly<Record<string, string>> | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const entries = Object.entries(raw as Record<string, unknown>).filter(
+    (e): e is [string, string] => typeof e[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
@@ -237,6 +254,9 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
     composed: {
       text: row.composed_prompt,
       family: row.composed_family,
+      ...(composedByFamily(row.composed_prompts) !== undefined
+        ? { byFamily: composedByFamily(row.composed_prompts) }
+        : {}),
     },
     // `revision` is an INT; `pg` hands INT4 back as a number, but a driver
     // that ever changes its mind must not turn the manifest version into
@@ -381,13 +401,14 @@ export class AgentIdentityStore {
       input.quality === null ? null : JSON.stringify(input.quality),
       input.composed.text,
       input.composed.family,
+      input.composed.byFamily ? JSON.stringify(input.composed.byFamily) : null,
     ];
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
          instructions, accent_color, persona, quality,
-         composed_prompt, composed_family
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         composed_prompt, composed_family, composed_prompts
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
        ON CONFLICT (agent_id) DO UPDATE SET
          display_name      = EXCLUDED.display_name,
          short_description = EXCLUDED.short_description,
@@ -398,6 +419,7 @@ export class AgentIdentityStore {
          quality           = EXCLUDED.quality,
          composed_prompt   = EXCLUDED.composed_prompt,
          composed_family   = EXCLUDED.composed_family,
+         composed_prompts  = EXCLUDED.composed_prompts,
          revision          = agent_identities.revision + 1,
          updated_at        = now()
        RETURNING ${META_COLUMNS}`,
@@ -423,11 +445,17 @@ export class AgentIdentityStore {
   ): Promise<AgentIdentityRecord | undefined> {
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `UPDATE agent_identities SET
-         composed_prompt = $2,
-         composed_family = $3
+         composed_prompt  = $2,
+         composed_family  = $3,
+         composed_prompts = $4::jsonb
        WHERE agent_id = $1
        RETURNING ${META_COLUMNS}`,
-      [agentId, composed.text, composed.family],
+      [
+        agentId,
+        composed.text,
+        composed.family,
+        composed.byFamily ? JSON.stringify(composed.byFamily) : null,
+      ],
     );
     const row = res.rows[0];
     return row ? mapRow(row) : undefined;

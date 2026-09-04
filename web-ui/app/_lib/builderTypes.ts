@@ -40,7 +40,18 @@ export interface BuilderModelInfo {
 
 export interface ListBuilderModelsResponse {
   models: BuilderModelInfo[];
+  /** #1033 — the unfiltered catalogue, grouped by provider and flagged usable. */
+  providers?: BuilderProviderGroup[];
   default: BuilderModelId;
+}
+
+export interface BuilderProviderGroup {
+  id: string;
+  /** A key (or keyless policy) is configured — the provider could serve a turn. */
+  usable: boolean;
+  /** The orchestrator's currently configured provider. */
+  active: boolean;
+  models: BuilderModelInfo[];
 }
 
 export interface DraftQuotaSnapshot {

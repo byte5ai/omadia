@@ -15,6 +15,7 @@ import {
   LlmProviderCatalog,
   createLlmProviderPool,
   readProviderApiKey,
+  resolveModelRef,
   readProviderOAuthTokens,
   readProviderOAuthUpdatedAt,
   registerProviderOAuthStoreBinding,
@@ -3467,6 +3468,19 @@ async function main(): Promise<void> {
       }),
   );
 
+  // #1033 W2 — what the model-policy write path validates against: the live
+  // model catalogue (built-in adapters + manifest-installed provider plugins,
+  // via `resolveModelRef`) and the kernel provider pool (keyed = usable).
+  // Nothing about models is hard-coded here; the catalogue is the source.
+  // `orchestratorActiveProviderId` is declared further down and read lazily
+  // per request, long after boot.
+  const modelPolicyContextFor = () => ({
+    resolveModel: (provider: string, model: string) =>
+      resolveModelRef(`${provider}:${model}`),
+    usable: (provider: string) => kernelProviderPool.usable(provider),
+    activeProvider: orchestratorActiveProviderId(),
+  });
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -3478,6 +3492,7 @@ async function main(): Promise<void> {
     createOperatorAgentsRouter({
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      // (#1033 W2 — `getModelPolicyContext` is passed further down.)
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
@@ -3490,6 +3505,9 @@ async function main(): Promise<void> {
       // the closure-heavy options so the wiring-pin tests' lazy regex, which
       // ends at the first closing paren-brace pair, still sees it.
       getReadinessCause: resolveOperatorRuntimeReadinessCause,
+      // #1033 W2 — see `modelPolicyContextFor` above. Kept out of line so the
+      // wiring-pin tests' lazy regex is not cut short by an inline object.
+      getModelPolicyContext: modelPolicyContextFor,
       // W0c (#861) — the per-agent grant read model needs the graph store.
       // Same graphPool-guarded shape as the other AgentGraphStore sites; when
       // no DATABASE_URL is set the route degrades to its own 503.
