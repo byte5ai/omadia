@@ -68,10 +68,12 @@ export class DiscussionUnknownOpenerError extends Error {
 }
 
 export interface StartDiscussionHereInput {
-  /** The agent to discuss WITH. The opener is derived from the turn. */
-  agentB: string;
+  /** The agents to discuss WITH — one or several. The opener comes from the turn. */
+  partners: readonly string[];
   topic: string;
   guidingQuestion?: string;
+  /** Ceiling on contributions; the service clamps it. Absent = its default. */
+  maxTurns?: number;
   ttlMs?: number;
 }
 
@@ -158,29 +160,39 @@ export function createDiscussionsCapability(deps: {
     async startHere(input) {
       const { turn, opener } = resolveHere();
 
-      // Resolve the partner against who can ACTUALLY speak in this chat. This
-      // is where a guessed name is caught — before a run exists, before a floor
-      // is claimed, and with the real candidates attached to the refusal.
+      // Resolve every named partner against who can ACTUALLY speak in this
+      // chat. This is where a guessed name is caught — before a run exists,
+      // before a floor is claimed, and with the real candidates attached.
       const candidates = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
         (p) => p.slug !== opener,
       );
-      const partner = candidates.find((p) => matchesPartner(input.agentB, p));
-      if (!partner) {
-        throw new DiscussionUnknownPartnerError(input.agentB, candidates);
+      const named = Array.isArray(input.partners) ? input.partners : [];
+      if (named.length === 0) {
+        throw new DiscussionUnknownPartnerError('', candidates);
+      }
+      const resolved: string[] = [];
+      for (const wanted of named) {
+        const partner = candidates.find((p) => matchesPartner(wanted, p));
+        // One unknown name fails the whole start rather than quietly dropping a
+        // participant: a discussion missing the agent someone asked for is not
+        // the discussion they asked for.
+        if (!partner) throw new DiscussionUnknownPartnerError(wanted, candidates);
+        if (!resolved.includes(partner.slug)) resolved.push(partner.slug);
       }
 
       deps.log?.(
-        `[conductor] discussion requested: '${opener}' with '${partner.slug}' in ${turn.channelType}/${turn.conversationId}`,
+        `[conductor] discussion requested: '${opener}' with ${resolved.join(', ')} in ${turn.channelType}/${turn.conversationId}`,
       );
       return deps.discussions.start({
         channelType: turn.channelType,
         conversationId: turn.conversationId,
-        agentA: opener,
-        // The RESOLVED slug, never the caller's spelling — a display name must
-        // not reach the registry as if it were a slug.
-        agentB: partner.slug,
+        // The opener speaks first and closes; then the RESOLVED slugs, never
+        // the caller's spelling — a display name must not reach the registry as
+        // if it were a slug.
+        participants: [opener, ...resolved],
         topic: input.topic,
         ...(input.guidingQuestion !== undefined ? { guidingQuestion: input.guidingQuestion } : {}),
+        ...(input.maxTurns !== undefined ? { maxTurns: input.maxTurns } : {}),
         ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
       });
     },

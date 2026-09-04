@@ -6,6 +6,7 @@ import type { JsonObject, Step } from '@omadia/conductor-core';
 
 import { loadPatternCatalog } from '../src/conductor/patternCatalog.js';
 import {
+  advanceSpeaker,
   appendTranscript,
   renderTranscript,
   TRANSCRIPT_MAX_ENTRIES,
@@ -93,6 +94,38 @@ describe('run transcript — the bus a Teams bot cannot be', () => {
   });
 });
 
+describe('the floor rotates through the cast', () => {
+  it('hands the floor on after each utterance, wrapping round', () => {
+    const cast = { participants: ['hr', 'accounting', 'clippy'], speaker: 'hr' };
+    const a = advanceSpeaker(cast);
+    assert.equal(a.speaker, 'accounting');
+    assert.equal(advanceSpeaker(a).speaker, 'clippy');
+    assert.equal(advanceSpeaker(advanceSpeaker(a)).speaker, 'hr');
+  });
+
+  it('rotates as part of appending an utterance — one step serves every voice', () => {
+    const ctx = appendTranscript(
+      { participants: ['hr', 'accounting'], speaker: 'hr' },
+      sayStep(),
+      { text: 'Moin.' },
+    );
+    assert.equal(ctx.speaker, 'accounting');
+  });
+
+  it('leaves a single-voice workflow alone', () => {
+    assert.deepEqual(advanceSpeaker({ speaker: 'hr' }), { speaker: 'hr' });
+  });
+
+  it('restarts at the top when the current speaker is not in the cast', () => {
+    assert.equal(advanceSpeaker({ participants: ['hr', 'accounting'], speaker: 'ghost' }).speaker, 'hr');
+  });
+
+  it('ignores non-string entries rather than handing the floor to nothing', () => {
+    const out = advanceSpeaker({ participants: ['hr', 42, '', 'clippy'], speaker: 'hr' } as never);
+    assert.equal(out.speaker, 'clippy');
+  });
+});
+
 describe('discussion pattern', () => {
   const catalog = loadPatternCatalog();
   const pattern = catalog.get(DISCUSSION_PATTERN_ID);
@@ -105,52 +138,59 @@ describe('discussion pattern', () => {
     assert.deepEqual(checkTemplateManifest(pattern!).errors, []);
   });
 
-  it('declares two agent slots and a channel slot', () => {
-    const agents = (pattern!.slots.agents ?? []).map((s) => s.key).sort();
-    assert.deepEqual(agents, ['a', 'b']);
+  it('declares NO agent slot — the cast comes from the run, not the graph', () => {
+    // An agent slot per participant would freeze the roster at authoring time,
+    // which is what limited the first cut to exactly two voices.
+    assert.equal((pattern!.slots.agents ?? []).length, 0);
     assert.deepEqual((pattern!.slots.channels ?? []).map((s) => s.key), ['discussion']);
   });
 
-  it('reports both agents and the channel as required slots when unmapped', () => {
-    const missing = missingSlotMappings(pattern!, {}).map((m) => `${m.kind}:${m.key}`).sort();
-    assert.deepEqual(missing, ['agents:a', 'agents:b', 'channels:discussion']);
+  it('needs only the channel mapped', () => {
+    const missing = missingSlotMappings(pattern!, {}).map((m) => `${m.kind}:${m.key}`);
+    assert.deepEqual(missing, ['channels:discussion']);
   });
 
-  it('produces a valid graph once the slots are filled — no unguarded cycle', () => {
-    const graph = applyTemplateSlots(pattern!, {
-      agents: { a: 'hr', b: 'accounting' },
-      channels: { discussion: 'teams' },
-    });
+  it('produces a valid graph once the channel is filled — no unguarded cycle', () => {
+    const graph = applyTemplateSlots(pattern!, { channels: { discussion: 'teams' } });
     assert.deepEqual(validate(graph).errors, []);
   });
 
+  it('validates even with known-agent refs supplied — the speaker is a run value', () => {
+    const graph = applyTemplateSlots(pattern!, { channels: { discussion: 'teams' } });
+    // `{{ctx.speaker}}` is not an agent id and must not be checked as one.
+    assert.deepEqual(validate(graph, { agentIds: ['hr', 'accounting'] }).errors, []);
+  });
+
+  it('rotates ONE speak step rather than one step per participant', () => {
+    const graph = applyTemplateSlots(pattern!, { channels: { discussion: 'teams' } });
+    assert.deepEqual(graph.steps.map((s) => s.id).sort(), ['close', 'speak']);
+    assert.equal(graph.steps.find((s) => s.id === 'speak')?.agentId, '{{ctx.speaker}}');
+    assert.equal(graph.steps.find((s) => s.id === 'close')?.agentId, '{{ctx.closer}}');
+  });
+
   it('publishes every turn: each agent step carries say', () => {
-    const graph = applyTemplateSlots(pattern!, {
-      agents: { a: 'hr', b: 'accounting' },
-      channels: { discussion: 'teams' },
-    });
-    assert.equal(graph.steps.length, 3);
+    const graph = applyTemplateSlots(pattern!, { channels: { discussion: 'teams' } });
     for (const step of graph.steps) {
       assert.equal(step.say?.channel, 'teams', `step '${step.id}' does not publish`);
     }
   });
 
-  it('bounds the round cycle on the executor-owned attempt counter', () => {
-    const loop = pattern!.graph.transitions.find((t) => t.source === 'speak-b' && t.target === 'speak-a');
-    assert.ok(loop?.guard, 'the loop edge back to speak-a must be guarded');
+  it('bounds the loop on a CALLER-supplied ceiling, not a literal', () => {
+    const loop = pattern!.graph.transitions.find((t) => t.source === 'speak' && t.target === 'speak');
+    assert.ok(loop?.guard, 'the self-loop must be guarded');
     const serialized = JSON.stringify(loop!.guard);
-    assert.ok(serialized.includes('ctx.stepAttempts.speak-a'), serialized);
-    assert.ok(/"value":\s*\d+/.test(serialized), serialized);
+    assert.ok(serialized.includes('ctx.stepAttempts.speak'), serialized);
+    // The ceiling is a path into the run context — a literal here is what
+    // capped every discussion at seven regardless of whether it was improving.
+    assert.ok(serialized.includes('"valuePath":"ctx.maxTurns"'), serialized);
   });
 
-  it('ends on declared convergence', () => {
-    for (const source of ['speak-a', 'speak-b']) {
-      const forward = pattern!.graph.transitions.find((t) => t.source === source && t.guard);
-      assert.ok(JSON.stringify(forward!.guard).includes('converged'), source);
-      const step = pattern!.graph.steps.find((s) => s.id === source);
-      const fallback = pattern!.graph.transitions.find((t) => t.id === step!.fallbackTransitionId);
-      assert.equal(fallback?.target, 'close', `${source} must fall back to the closing summary`);
-    }
+  it('ends on declared convergence, and falls back to the closing summary', () => {
+    const loop = pattern!.graph.transitions.find((t) => t.source === 'speak' && t.target === 'speak');
+    assert.ok(JSON.stringify(loop!.guard).includes('converged'));
+    const speak = pattern!.graph.steps.find((s) => s.id === 'speak');
+    const fallback = pattern!.graph.transitions.find((t) => t.id === speak!.fallbackTransitionId);
+    assert.equal(fallback?.target, 'close');
   });
 });
 
@@ -196,8 +236,7 @@ function serviceHarness(existing?: EphemeralAttachment, identities: Record<strin
 const start = {
   channelType: 'teams',
   conversationId: 'conv-1',
-  agentA: 'hr',
-  agentB: 'accounting',
+  participants: ['hr', 'accounting'],
   topic: 'Wie verbuchen wir Weiterbildungsbudgets?',
 };
 
@@ -210,15 +249,19 @@ describe('ConductorDiscussionService', () => {
     const input = created[0] as {
       patternId: string;
       slots: Record<string, Record<string, string>>;
-      payload: Record<string, string>;
+      payload: Record<string, unknown>;
     };
     assert.equal(input.patternId, DISCUSSION_PATTERN_ID);
-    assert.deepEqual(input.slots.agents, { a: 'hr', b: 'accounting' });
     assert.deepEqual(input.slots.channels, { discussion: 'teams' });
     assert.equal(input.payload.conversationId, 'conv-1');
     assert.equal(input.payload.topic, start.topic);
     // guidingQuestion defaults to the topic rather than going empty.
     assert.equal(input.payload.guidingQuestion, start.topic);
+    // The cast, who holds the floor, who closes, and the ceiling.
+    assert.deepEqual(input.payload.participants, ['hr', 'accounting']);
+    assert.equal(input.payload.speaker, 'hr');
+    assert.equal(input.payload.closer, 'hr');
+    assert.equal(input.payload.maxTurns, 16);
     assert.equal(attached.length, 1);
   });
 
@@ -258,9 +301,32 @@ describe('ConductorDiscussionService', () => {
     });
   });
 
-  it('refuses the same agent twice — a discussion needs two voices', async () => {
+  it('de-duplicates a repeated agent and then refuses the single voice left', async () => {
     const { service } = serviceHarness();
-    await assert.rejects(() => service.start({ ...start, agentB: 'hr' }), DiscussionInvalidInputError);
+    await assert.rejects(
+      () => service.start({ ...start, participants: ['hr', 'hr'] }),
+      DiscussionInvalidInputError,
+    );
+  });
+
+  it('carries three participants through in speaking order', async () => {
+    const { service, created } = serviceHarness(undefined, {
+      hr: IDENTITIES.hr!,
+      accounting: IDENTITIES.accounting!,
+      clippy: '28:cccccccc-9999-0000-1111-222222222222',
+    });
+    await service.start({ ...start, participants: ['hr', 'accounting', 'clippy'] });
+    const payload = (created[0] as { payload: Record<string, unknown> }).payload;
+    assert.deepEqual(payload.participants, ['hr', 'accounting', 'clippy']);
+  });
+
+  it('clamps the turn ceiling instead of trusting the caller', async () => {
+    const { service, created } = serviceHarness();
+    await service.start({ ...start, maxTurns: 5000 });
+    assert.equal((created[0] as { payload: Record<string, unknown> }).payload.maxTurns, 40);
+    created.length = 0;
+    await service.start({ ...start, maxTurns: 1 });
+    assert.equal((created[0] as { payload: Record<string, unknown> }).payload.maxTurns, 2);
   });
 
   it('refuses missing input', async () => {
