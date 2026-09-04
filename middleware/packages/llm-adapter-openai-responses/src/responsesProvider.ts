@@ -175,6 +175,9 @@ function toRequestBody(req: LlmRequest): Record<string, unknown> {
       ? { tool_choice: toToolChoice(req.toolChoice) }
       : {}),
     ...(disableParallel ? { parallel_tool_calls: false } : {}),
+    // #1033 — Responses API spells effort as `reasoning.effort`; the
+    // normalized vocabulary maps 1:1.
+    ...(req.effort !== undefined ? { reasoning: { effort: req.effort } } : {}),
     // Backend contract: stream-only, and omadia never stores server-side.
     stream: true,
     store: false,

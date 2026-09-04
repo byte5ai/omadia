@@ -15,6 +15,7 @@ import type { Pool } from 'pg';
 
 import {
   PgTurnReceiptStore,
+  receiptChainPayload,
   resetTurnReceiptCounters,
   startTurnReceiptReaper,
   turnReceiptCounters,
@@ -84,6 +85,38 @@ describe('#757 PgTurnReceiptStore', () => {
     );
     assert.equal(turnReceiptCounters().persisted, 1);
     assert.equal(turnReceiptCounters().persistFailures, 0);
+  });
+
+  it('#1033 W0 — writes provider + fallback_used as attribution columns outside the hash payload', async () => {
+    resetTurnReceiptCounters();
+    const { pool, queries } = fakePool(() => ({ rowCount: 1 }));
+    await new PgTurnReceiptStore(pool).record({
+      turnId: 't-5',
+      model: 'claude-fallback',
+      provider: 'anthropic',
+      fallbackUsed: true,
+      receipt: RECEIPT,
+    });
+    const q = queries.find((x) => x.sql.includes('INSERT INTO turn_receipts'))!;
+    assert.match(q.sql, /provider, fallback_used/);
+    assert.equal(q.params[10], 'anthropic');
+    assert.equal(q.params[11], true);
+    // The chain payload is unchanged by the new columns: a row with and
+    // without attribution hashes identically, so no existing row turns
+    // `unsupported_hash_version` and the verifier needs no fork.
+    assert.deepEqual(
+      receiptChainPayload({ turnId: 't-5', model: 'claude-fallback', provider: 'anthropic', fallbackUsed: true, receipt: RECEIPT }),
+      receiptChainPayload({ turnId: 't-5', model: 'claude-fallback', receipt: RECEIPT }),
+    );
+  });
+
+  it('#1033 W0 — absent attribution stores NULL provider and FALSE fallback_used', async () => {
+    resetTurnReceiptCounters();
+    const { pool, queries } = fakePool(() => ({ rowCount: 1 }));
+    await new PgTurnReceiptStore(pool).record({ turnId: 't-6', receipt: RECEIPT });
+    const q = queries.find((x) => x.sql.includes('INSERT INTO turn_receipts'))!;
+    assert.equal(q.params[10], null);
+    assert.equal(q.params[11], false);
   });
 
   it('counts a storage failure and rethrows (caller decides turn fate)', async () => {

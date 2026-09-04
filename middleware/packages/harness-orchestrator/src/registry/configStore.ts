@@ -3,6 +3,12 @@ import type { Pool } from 'pg';
 import { resolveModelRef } from '@omadia/llm-provider';
 
 import type { ContextMemoryMode } from '../memoryBinder.js';
+import {
+  parseAgentToAgentMode,
+  type AgentChannelPolicyInput,
+  type AgentChannelPolicyRow,
+  type AgentToAgentMode,
+} from './agentToAgent.js';
 
 import {
   AgentGraphStore,
@@ -61,6 +67,13 @@ export interface AgentRow {
    * flag itself, not just to the scope it controls.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /**
+   * #1018 — the agent's own agent-to-agent switch (`agents.agent_to_agent`,
+   * migration 0058). One half of the AND rule; the other half is the
+   * `(channel, agent)` policy row. Optional and deny-default for the same
+   * reasons as `contextMemory` (see {@link parseAgentToAgentMode}).
+   */
+  readonly agentToAgent?: AgentToAgentMode;
   /**
    * #914 — the agent's authored behaviour text (`agent_identities.
    * instructions`). Read-only here: the identity is written through
@@ -183,6 +196,8 @@ export interface AgentPatch {
    * three values, so a widened union cannot reach the database either.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /** #1018 — same COALESCE contract as `contextMemory`: absent leaves it. */
+  readonly agentToAgent?: AgentToAgentMode;
 }
 
 export interface AgentPluginInput {
@@ -305,6 +320,8 @@ interface AgentDbRow {
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
   context_memory?: string | null;
+  /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
+  agent_to_agent?: string | null;
   /** #914 — `agent_identities.instructions`, joined in by the three read
    *  queries below. Absent on the RETURNING rows of the write paths, which do
    *  not join: a write never changes the identity, and a caller that needs it
@@ -356,6 +373,26 @@ interface PlatformSettingsDbRow {
   updated_at: Date;
 }
 
+interface AgentChannelPolicyDbRow {
+  channel_type: string;
+  channel_key: string;
+  agent_id: string;
+  agent_to_agent: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function mapAgentChannelPolicy(row: AgentChannelPolicyDbRow): AgentChannelPolicyRow {
+  return {
+    channelType: row.channel_type,
+    channelKey: row.channel_key,
+    agentId: row.agent_id,
+    agentToAgent: row.agent_to_agent === true,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function mapAgent(row: AgentDbRow): AgentRow {
   return {
     id: row.id,
@@ -367,6 +404,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
+    agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
     instructions: row.identity_instructions ?? null,
     identityName: row.identity_display_name ?? null,
     identityShortDescription: row.identity_short_description ?? null,
@@ -508,6 +546,7 @@ export class ConfigStore {
          model_routing   = COALESCE($6::jsonb, model_routing),
          canvas_position = COALESCE($7::jsonb, canvas_position),
          context_memory  = COALESCE($8, context_memory),
+         agent_to_agent  = COALESCE($9, agent_to_agent),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -520,6 +559,7 @@ export class ConfigStore {
         patch.modelRouting ? JSON.stringify(patch.modelRouting) : null,
         patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
         patch.contextMemory ?? null,
+        patch.agentToAgent ?? null,
       ],
     );
     const row = rows[0];
@@ -527,6 +567,80 @@ export class ConfigStore {
       throw new ConfigValidationError(`agent ${id} not found`);
     }
     return mapAgent(row);
+  }
+
+  // ── #1018 — per-(channel, agent) peer policies (migration 0058) ──────
+
+  async listAgentChannelPolicies(agentId: string): Promise<AgentChannelPolicyRow[]> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE agent_id = $1
+        ORDER BY channel_type, channel_key`,
+      [agentId],
+    );
+    return rows.map(mapAgentChannelPolicy);
+  }
+
+  /** All policies for one chat — what the relay needs to filter partners. */
+  async listChannelPeerPolicies(
+    channelType: string,
+    channelKey: string,
+  ): Promise<AgentChannelPolicyRow[]> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2`,
+      [channelType, channelKey],
+    );
+    return rows.map(mapAgentChannelPolicy);
+  }
+
+  async getAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<AgentChannelPolicyRow | undefined> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2 AND agent_id = $3`,
+      [channelType, channelKey, agentId],
+    );
+    const row = rows[0];
+    return row ? mapAgentChannelPolicy(row) : undefined;
+  }
+
+  async upsertAgentChannelPolicy(
+    input: AgentChannelPolicyInput,
+  ): Promise<AgentChannelPolicyRow> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `INSERT INTO agent_channel_policies
+         (channel_type, channel_key, agent_id, agent_to_agent)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (channel_type, channel_key, agent_id)
+       DO UPDATE SET agent_to_agent = EXCLUDED.agent_to_agent, updated_at = now()
+       RETURNING channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at`,
+      [input.channelType, input.channelKey, input.agentId, input.agentToAgent],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new Error('upsertAgentChannelPolicy: INSERT RETURNING produced no row');
+    }
+    return mapAgentChannelPolicy(row);
+  }
+
+  async deleteAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `DELETE FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2 AND agent_id = $3`,
+      [channelType, channelKey, agentId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async deleteAgent(id: string): Promise<void> {

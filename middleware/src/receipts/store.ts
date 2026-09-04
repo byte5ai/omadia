@@ -95,11 +95,16 @@ export class PgTurnReceiptStore implements TurnReceiptStore {
         prevHash,
         payload: receiptChainPayload(entry),
       });
+      // #1033 W0 — `provider` / `fallback_used` are attribution columns
+      // OUTSIDE the hashed payload (`receiptChainPayload` above): the chain
+      // seals the privacy receipt, and widening the sealed shape would mark
+      // every existing row `unsupported_hash_version`. See migration 0057.
       const inserted = await client.query(
         `INSERT INTO turn_receipts
            (turn_id, session_scope, channel, model, receipt,
-            stream_id, seq, prev_hash, entry_hash, hash_version)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+            stream_id, seq, prev_hash, entry_hash, hash_version,
+            provider, fallback_used)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (turn_id) DO NOTHING`,
         [
           entry.turnId,
@@ -112,6 +117,8 @@ export class PgTurnReceiptStore implements TurnReceiptStore {
           prevHash,
           entryHash,
           HASH_VERSION,
+          entry.provider ?? null,
+          entry.fallbackUsed === true,
         ],
       );
       if ((inserted.rowCount ?? 0) === 0) {

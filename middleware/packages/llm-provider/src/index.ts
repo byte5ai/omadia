@@ -37,10 +37,12 @@ export type {
 } from '@omadia/llm-provider-api';
 export {
   collectText,
+  EFFORT_LEVELS,
   LLM_PROVIDER_API_VERSION,
   textMessage,
   toolCalls,
 } from '@omadia/llm-provider-api';
+export type { EffortLevel } from '@omadia/llm-provider-api';
 
 // ---- Runtime: credentials ----
 export {
