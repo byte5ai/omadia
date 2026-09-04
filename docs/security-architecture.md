@@ -217,13 +217,12 @@ working across it:
   both are the same channel-native id written by the same adapter, so they agree
   for a turn that owns its context and disagree exactly when the chain is stale.
   Context present but the turn names no owner ⇒ refuse, that being the stale
-  shape; mismatch ⇒ refuse; no context ⇒ pass. That last row is narrower than
-  the obvious phrasing: `manage_routine` refuses a missing context in `create`
-  and `list` only, while `pause`, `resume` and `delete` never resolve context
-  and pass a bare id to a runner that does no tenant scoping. Passing here
-  neither creates nor closes that hole — it is tracked separately — and the
-  reason to pass is that throwing would harden every context-free HTTP turn,
-  this guard's job being staleness rather than authorization. The refusal names
+  shape; mismatch ⇒ refuse; no context ⇒ pass. When this guard landed, that
+  last row was narrower than the obvious phrasing: `manage_routine` refused a
+  missing context in `create` and `list` only. #1025 closed the rest, so all
+  five actions now resolve context and refuse without it. The reason to pass
+  is still that throwing would harden every context-free HTTP turn, this
+  guard's job being staleness rather than authorization. The refusal names
   neither principal (it reaches the model) and carries a short correlation ref
   that also appears in the server log, so a user's report can be matched to a
   log line without either side naming anyone.
@@ -237,6 +236,71 @@ working across it:
   drift there would look exactly like the supported "no provider installed"
   state. `pluginServiceGrantCoverage.test.ts` catches the undeclared half
   repo-wide.
+- **A routine id is not an authorization (#1025).** `manage_routine` resolved
+  the turn context for `create` and `list` but not for `pause`, `resume` and
+  `delete`, which passed a bare `args.id` to a runner whose store filtered on
+  `WHERE id = $1` alone. Knowing an id was therefore enough to pause, resume
+  or delete any tenant's routine. Ids are uuids and `list` is scoped, so an id
+  had to leak rather than be enumerated — obscurity, not authorization.
+
+  Three things changed. The scope is a required, discriminated argument on the
+  runner (`{ kind: 'channel-user', tenant, userId }` or `{ kind: 'operator' }`)
+  rather than an optional `owner?`, because an optional scope is one a caller
+  can forget and forgetting it is how this arose; a cross-tenant operation is
+  now a greppable `operator` literal instead of an omission. The predicate
+  itself lives in the SQL (`AND tenant = $n AND user_id = $n`), so it cannot
+  be raced by a read-then-act caller and cannot be bypassed by a caller that
+  never supplied a scope. And a scoped miss raises the same
+  `RoutineNotFoundError` as a genuinely absent id, so the error channel is not
+  an existence oracle.
+
+  Two neighbours were the same class of gap and are fixed with it. The
+  smart-card actions in `integration.ts` are a second door onto the same
+  mutations and were equally unscoped — the card carries the id, so a replayed
+  payload reached pause/resume/trigger/delete for any row. And
+  `triggerRoutineNow` delivers into the routine's *own* `conversationRef`, so
+  an unscoped trigger let one principal push messages into another tenant's
+  conversation on demand. The operator HTTP router stays deliberately
+  cross-tenant, stated once as `OPERATOR_SCOPE`. Precisely: it sits behind
+  `requireAuth`, which verifies the session JWT and, for Entra sessions, the
+  `ADMIN_ALLOWED_EMAILS` whitelist — it checks neither role nor tenant, so
+  the gate is "any valid operator session", not "operators-only" as an
+  earlier draft of this entry claimed.
+
+  **The card path needed a different answer (#1029).** Scoping the smart-card
+  handler from the turn context alone would have broken all four buttons in
+  production. The Teams adapter dispatches card clicks out-of-band —
+  `handleMessage` takes the routine branch and returns before
+  `runOrchestratorTurn`, so `captureRoutineTurn` never fires and the context
+  is always absent there. Refusing on absence is an outage, not a safe
+  default. The contract therefore takes an optional `actor` from the channel,
+  with documented precedence: explicit `actor`, then the turn context, then
+  UNSCOPED as before #1025 — counted by `unscopedActionMetrics` and logged at
+  error level naming the action and id. A hole you can see beats scoping to
+  nobody, and the counter is what tells an operator the adapter-side fix has
+  shipped: the count stops rising and the fallback can be deleted. Teams
+  already holds both fields on the activity (tenant id and
+  `from.aadObjectId`); passing them is the adapter-side follow-up.
+
+  The test for that path deliberately does NOT wrap the call in
+  `routineTurnContext.run`. That wrapper is what made the first version pass
+  while production would have answered "routines are unavailable in this
+  session" on every click.
+
+  One ordering bug surfaced while scoping `delete`: the runner unregistered
+  the scheduler *before* deleting, so a cross-tenant id silently disarmed
+  someone else's cron while the row survived — a routine that still looks
+  active in `list` and never fires again, which is harder to notice than a
+  deleted row. Unregistration now happens only after the scoped delete
+  reports a row was removed.
+
+  Reviewer note: the layer tests stub the store, so they prove the callers
+  *pass* a scope, not that the store *uses* it. Measured — with the SQL
+  predicate removed, all 14 layer tests stayed green. `routineScoping.test.ts`
+  therefore also drives the real `RoutineStore` against a recording pool and
+  follows each `$n` the SQL names into its bound value, which is what makes a
+  dropped predicate fail. Planted-omission results: tool scope dropped 2 red,
+  store predicate dropped 1 red, delete ordering flipped 1 red.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but

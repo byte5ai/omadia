@@ -4,6 +4,7 @@ import { afterEach, describe, it } from 'node:test';
 
 import { LoopbackMcpServer } from '../../packages/harness-orchestrator/src/loopbackMcpServer.js';
 import type { ToolDispatchService } from '../../packages/harness-orchestrator/src/toolDispatchService.js';
+import { isSandboxListenDenied } from '../_helpers/listenLoopback.js';
 
 function parseMcpJson(text: string): unknown {
   const trimmed = text.trim();
@@ -22,21 +23,9 @@ function parseMcpJson(text: string): unknown {
 
 const MCP_ACCEPT = 'application/json, text/event-stream';
 
-/**
- * True when the sandbox refuses loopback listeners, so the test self-skips.
- *
- * #1017 — every behavioural test in this file, including the OM-82 context
- * test, hangs off this guard. On a runner where listening is denied the whole
- * file therefore passed green while asserting nothing. Setting
- * `OMADIA_EXPECT_LOOPBACK=1` (CI does) makes the guard return false, so the
- * caller rethrows and the suite fails loudly instead of silently skipping.
- */
-function isSandboxListenDenied(error: unknown): boolean {
-  if (process.env.OMADIA_EXPECT_LOOPBACK === '1') {
-    return false;
-  }
-  return error instanceof Error && 'code' in error && error.code === 'EPERM';
-}
+// #1017 gave this file's local guard the `OMADIA_EXPECT_LOOPBACK` behaviour;
+// #1024 moved it to `test/_helpers/listenLoopback.ts` so the six other sites
+// that had grown their own copy share it instead of diverging.
 
 describe('LoopbackMcpServer', () => {
   let server: LoopbackMcpServer | undefined;

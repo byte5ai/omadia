@@ -101,16 +101,18 @@ function idOrUndefined(value: string | undefined): string | undefined {
  * | present | differs  | REFUSE — the bug this issue is about |
  * | present | matches  | pass |
  *
- * On the "absent ⇒ pass" row, stated precisely because the obvious phrasing
- * overclaims: `manage_routine` refuses a missing context in `handleCreate` and
- * `handleList` only. `handlePause`, `handleResume` and `handleDelete` never
- * call `resolveContext` at all — they pass a bare `args.id` to the runner,
- * which does no tenant scoping. So for two of five actions the absent-context
- * case is genuinely covered downstream; for the other three nothing checks,
- * and passing here neither creates nor closes that hole. The reason to pass is
- * narrower than "the tool handles it": throwing on absence would harden every
- * context-free HTTP turn into an error, and this guard's job is staleness, not
- * authorization. The pause/resume/delete scoping gap is tracked separately.
+ * On the "absent ⇒ pass" row: as of #1025 all five `manage_routine` actions
+ * resolve the turn context and refuse without it, and `pause`/`resume`/
+ * `delete`/`trigger` additionally scope the row to the caller's
+ * (tenant, userId) in SQL. So the absent-context case is now genuinely
+ * covered downstream for every action, not just `create` and `list` as it
+ * was when this guard landed.
+ *
+ * Passing here is still the right call, and for a reason narrower than "the
+ * tool handles it": throwing on absence would harden every context-free HTTP
+ * turn into an error, and this guard's job is staleness — a chain carrying
+ * the PREVIOUS turn's principal — not authorization, which is #1025's SQL
+ * predicate.
  */
 export function createRoutineTurnOwnerGuard(
   deps: RoutineTurnOwnerGuardDeps = {},

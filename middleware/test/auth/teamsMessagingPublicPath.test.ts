@@ -36,6 +36,11 @@ import { createRequireAuth } from '../../src/auth/requireAuth.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { buildTeamsBotMessagingEndpoint } from '../../src/platform/teamsProvisionerService.js';
 import {
+  isDeniedListenError,
+  isSandboxListenDenied,
+  loopbackRequired,
+} from '../_helpers/listenLoopback.js';
+import {
   TEAMS_DEFAULT_MESSAGING_PATH,
   teamsBotMessagingPath,
 } from '../../src/platform/teamsMessagingPath.js';
@@ -106,17 +111,20 @@ describe('the Teams messaging webhook is reachable without a session', () => {
       // loopback listeners, but skipping in CI would delete this whole suite
       // while the job stayed green — the failure mode that let the original bug
       // ship in the first place.
-      if (err instanceof Error && 'code' in err && err.code === 'EPERM') {
-        if (process.env.CI) {
-          throw new Error(
-            'CI must allow a loopback listener for teamsMessagingPublicPath.test.ts. ' +
-              'Without bind(127.0.0.1:0) both halves of this guard — the webhook ' +
-              'being reachable and its siblings staying closed — would be skipped.',
-            { cause: err },
-          );
-        }
+      //
+      // #1024 — both halves of that decision now come from the one shared
+      // helper, so this suite and the six others cannot drift apart.
+      if (isSandboxListenDenied(err)) {
         sandboxDeniedListen = true;
         return;
+      }
+      if (loopbackRequired() && isDeniedListenError(err)) {
+        throw new Error(
+          'CI must allow a loopback listener for teamsMessagingPublicPath.test.ts. ' +
+            'Without bind(127.0.0.1:0) both halves of this guard — the webhook ' +
+            'being reachable and its siblings staying closed — would be skipped.',
+          { cause: err },
+        );
       }
       throw err;
     }
