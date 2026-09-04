@@ -14,9 +14,16 @@ import EmbeddingProviderPage from '../page';
  *     `vectorWritesAllowed: true` and means "the corpus is being re-earned".
  */
 
-const { mockGetEmbeddingProvider, mockSwitchEmbeddingProvider } = vi.hoisted(() => ({
+const {
+  mockGetEmbeddingProvider,
+  mockSwitchEmbeddingProvider,
+  mockGetLocalEmbeddingModel,
+  mockStartLocalEmbeddingModelFetch,
+} = vi.hoisted(() => ({
   mockGetEmbeddingProvider: vi.fn(),
   mockSwitchEmbeddingProvider: vi.fn(),
+  mockGetLocalEmbeddingModel: vi.fn(),
+  mockStartLocalEmbeddingModelFetch: vi.fn(),
 }));
 
 vi.mock('../../../_lib/api', () => ({
@@ -31,6 +38,8 @@ vi.mock('../../../_lib/api', () => ({
   },
   getEmbeddingProvider: mockGetEmbeddingProvider,
   switchEmbeddingProvider: mockSwitchEmbeddingProvider,
+  getLocalEmbeddingModel: mockGetLocalEmbeddingModel,
+  startLocalEmbeddingModelFetch: mockStartLocalEmbeddingModelFetch,
 }));
 
 const OLLAMA = '@omadia/embeddings';
@@ -85,7 +94,10 @@ function baseState(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The default for every existing case: no keyless adapter active, which is
+ *  what a keyed deployment looks like and must render nothing. */
 beforeEach(() => {
+  mockGetLocalEmbeddingModel.mockResolvedValue(null);
   mockGetEmbeddingProvider.mockResolvedValue(baseState());
 });
 
@@ -237,5 +249,113 @@ describe('<EmbeddingProviderPage />', () => {
     const panel = reason.closest('section');
     expect(panel?.className).toContain('--danger');
     expect(panel?.className).not.toContain('--accent');
+  });
+});
+
+/**
+ * OM-84 follow-up — the keyless embedder's weights are not bundled, so until
+ * they are fetched the adapter publishes nothing. Printing a shell command at
+ * a desktop user with no terminal in the flow is the same as telling them no,
+ * so the page drives the download.
+ */
+describe('keyless embedder — weight download', () => {
+  const LOCAL_MODEL = {
+    modelDir: '/var/embedding-models',
+    missingFiles: ['onnx/model_quantized.onnx'],
+    totalBytes: 135_392_208,
+    job: {
+      state: 'idle' as const,
+      downloadedBytes: 0,
+      totalBytes: 135_392_208,
+      currentFile: null,
+      error: null,
+    },
+  };
+
+  it('renders nothing when no keyless adapter is active', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue(null);
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    // Same render signal the other cases use: the plugin id, which appears
+    // verbatim in the current-state list.
+    await screen.findByText(OLLAMA);
+
+    // A keyed deployment must not be shown a card about a provider it does not
+    // have — the 404 is a fact about the install, not a failure.
+    expect(screen.queryByTestId('local-model-card')).toBeNull();
+    expect(screen.queryByTestId('local-model-ready')).toBeNull();
+  });
+
+  it('offers the download with its size and location when weights are missing', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue(LOCAL_MODEL);
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const card = await screen.findByTestId('local-model-card');
+    // The size has to be stated BEFORE the click: 135 MB on a metered
+    // connection is a decision, not a detail.
+    expect(card.textContent).toContain('129');
+    expect(card.textContent).toContain('/var/embedding-models');
+    expect(screen.getByTestId('local-model-fetch')).toBeTruthy();
+  });
+
+  it('names the dedup threshold, which nobody would otherwise notice', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue(LOCAL_MODEL);
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    // At the knowledge-graph default of 0.90 this model's dedup never fires,
+    // silently — the same failure class OM-84 was about.
+    const card = await screen.findByTestId('local-model-card');
+    expect(card.textContent).toContain('0.45');
+    expect(card.textContent).toContain('0.90');
+  });
+
+  it('starts the download on click and shows progress instead of the button', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue(LOCAL_MODEL);
+    mockStartLocalEmbeddingModelFetch.mockResolvedValue({
+      ok: true,
+      started: true,
+      ...LOCAL_MODEL,
+      job: { ...LOCAL_MODEL.job, state: 'running', currentFile: 'onnx/model_quantized.onnx' },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('local-model-fetch'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('local-model-progress')).toBeTruthy();
+    });
+    expect(mockStartLocalEmbeddingModelFetch).toHaveBeenCalledTimes(1);
+    // The button must go away, or a second click races two downloads through
+    // the same .partial paths.
+    expect(screen.queryByTestId('local-model-fetch')).toBeNull();
+  });
+
+  it('shows a failed download with its message', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue({
+      ...LOCAL_MODEL,
+      job: { ...LOCAL_MODEL.job, state: 'failed', error: 'GET … → HTTP 503' },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const error = await screen.findByTestId('local-model-error');
+    expect(error.textContent).toContain('HTTP 503');
+    // And a failure must stay retryable rather than dead-ending.
+    expect(screen.getByTestId('local-model-fetch')).toBeTruthy();
+  });
+
+  it('confirms readiness once the weights are complete', async () => {
+    mockGetLocalEmbeddingModel.mockResolvedValue({
+      ...LOCAL_MODEL,
+      missingFiles: [],
+      job: { ...LOCAL_MODEL.job, state: 'done', downloadedBytes: LOCAL_MODEL.totalBytes },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    await screen.findByTestId('local-model-ready');
+    expect(screen.queryByTestId('local-model-card')).toBeNull();
   });
 });

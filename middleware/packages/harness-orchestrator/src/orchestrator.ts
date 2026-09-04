@@ -4725,7 +4725,18 @@ export class Orchestrator {
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
         const safeParams = ensureWellFormedParams(baseParams);
-        const fb = turnExec.fallback;
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
 
         const completed = await completeWithFallback({
           provider: turnExec.provider,
@@ -5876,7 +5887,18 @@ export class Orchestrator {
             : {}),
           messages,
         };
-        const fb = turnExec.fallback;
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
         for await (const ev of streamMessageEvents({
           provider: turnExec.provider,
           params: streamParams,

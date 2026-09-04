@@ -126,7 +126,7 @@
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
         "assignOrchestrator": "Orchestrator zuordnen"
       },
-      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer eingerichtet ist.",
+      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
       "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
@@ -5263,7 +5263,15 @@
     "unknownTargetError": "Dieses Plugin ist kein installierter embeddingClient@1-Provider.",
     "alreadyActiveError": "Dieser Provider ist bereits aktiv.",
     "targetUnavailableError": "Der Ziel-Provider konnte nicht übernehmen, deshalb ist der vorherige wieder aktiv. Konfiguriere ihn erst (API-Key, Base-URL) und versuch es dann noch mal.",
-    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte."
+    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte.",
+    "localModelTitle": "Schlüsselloser Embedder: Modell noch nicht geladen",
+    "localModelBody": "Dieser Anbieter rechnet ohne API-Schlüssel und ohne eigenen Server — die Modellgewichte ({size} MB) sind aber bewusst nicht im Installer enthalten und müssen einmal geladen werden. Danach läuft alles offline.",
+    "localModelFetch": "Modell jetzt laden",
+    "localModelStarting": "Wird gestartet …",
+    "localModelProgress": "Lädt … {done} von {total} MB ({file})",
+    "localModelFailed": "Der Download ist fehlgeschlagen: {message}",
+    "localModelReady": "Die Modellgewichte liegen vollständig vor. Beim nächsten Aktivieren des Anbieters veröffentlicht er `embeddingClient@1` — Gedächtnis, semantische Suche und Dublettenerkennung laufen dann.",
+    "localModelThreshold": "Wichtig: Die Cosinus-Skala dieses Modells ist nicht die Voreinstellung des Wissensgraphen. Setze `process_dedup_threshold` auf 0.45 — beim Standardwert 0.90 greift die Dublettenerkennung nie, und zwar ohne Fehlermeldung."
   },
   "graph": {
     "page": {

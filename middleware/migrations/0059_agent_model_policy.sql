@@ -45,17 +45,31 @@ BEGIN
         DEFAULT '{"primary":"auto","fallback":"none"}'::jsonb;
 
     -- Backfill: qualified single refs become an explicit primary (see header).
-    UPDATE agents
-       SET model_policy = jsonb_build_object(
-             'primary', jsonb_build_object(
-               'provider', split_part(model_routing->>'main', ':', 1),
-               'model',    substr(model_routing->>'main', position(':' in model_routing->>'main') + 1)
-             ),
-             'fallback', 'none'
-           )
-     WHERE model_routing IS NOT NULL
-       AND model_routing->>'mode' = 'single'
-       AND position(':' in coalesce(model_routing->>'main', '')) > 1;
+    -- `model_routing` arrived with 0003; a schema built from a subset of the
+    -- series (the identity-store Postgres suite applies 0001/0002/0052/0053
+    -- + this file) has no such column and nothing to backfill. Guarded, and
+    -- run as dynamic SQL, because a plain UPDATE is parsed — and rejected —
+    -- even when the branch is never taken.
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'agents'
+         AND column_name = 'model_routing'
+    ) THEN
+      EXECUTE $backfill$
+        UPDATE agents
+           SET model_policy = jsonb_build_object(
+                 'primary', jsonb_build_object(
+                   'provider', split_part(model_routing->>'main', ':', 1),
+                   'model',    substr(model_routing->>'main', position(':' in model_routing->>'main') + 1)
+                 ),
+                 'fallback', 'none'
+               )
+         WHERE model_routing IS NOT NULL
+           AND model_routing->>'mode' = 'single'
+           AND position(':' in coalesce(model_routing->>'main', '')) > 1
+      $backfill$;
+    END IF;
   END IF;
 END
 $$;

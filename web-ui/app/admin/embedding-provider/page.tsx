@@ -9,10 +9,13 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   getEmbeddingProvider,
+  getLocalEmbeddingModel,
+  startLocalEmbeddingModelFetch,
   switchEmbeddingProvider,
   type EmbeddingGateState,
   type EmbeddingProviderOption,
   type EmbeddingProviderState,
+  type LocalEmbeddingModelState,
 } from '../../_lib/api';
 
 /**
@@ -43,6 +46,8 @@ import {
  *  without a reload. */
 const POLL_INTERVAL_MS = 10_000;
 const POLL_INTERVAL_SECONDS = POLL_INTERVAL_MS / 1000;
+/** While weights are downloading, 10s of nothing reads as "stuck". */
+const DOWNLOAD_POLL_INTERVAL_MS = 2_000;
 
 /** Gate reasons that are progress reports, not failures. Both are published
  *  together with `vectorWritesAllowed: true`. */
@@ -97,6 +102,17 @@ export default function EmbeddingProviderPage(): React.ReactElement {
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switchedTo, setSwitchedTo] = useState<string | null>(null);
 
+  /**
+   * OM-84 follow-up — the keyless adapter's weights. `null` means that adapter
+   * is not active (the middleware answers 404), which is the normal state on a
+   * keyed deployment and must render nothing at all.
+   */
+  const [localModel, setLocalModel] = useState<LocalEmbeddingModelState | null>(
+    null,
+  );
+  const [fetchStarting, setFetchStarting] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   /** Silent re-read used by both the mount fetch and the poll. Never toggles
    *  `loading`, so a poll cannot make the page flash. */
   const refresh = useCallback(async (): Promise<void> => {
@@ -105,6 +121,15 @@ export default function EmbeddingProviderPage(): React.ReactElement {
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
+    }
+    // Settled separately and deliberately not inside the try above: a keyed
+    // deployment has no keyless adapter, and letting its absence blank the
+    // whole page would be a regression for every install that will never use
+    // it.
+    try {
+      setLocalModel(await getLocalEmbeddingModel());
+    } catch {
+      setLocalModel(null);
     }
   }, []);
 
@@ -115,9 +140,33 @@ export default function EmbeddingProviderPage(): React.ReactElement {
     void refresh().finally(() => setLoading(false));
   }, [refresh]);
 
+  const downloading = localModel?.job.state === 'running';
+
   useEffect(() => {
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    const timer = setInterval(
+      () => void refresh(),
+      downloading ? DOWNLOAD_POLL_INTERVAL_MS : POLL_INTERVAL_MS,
+    );
     return () => clearInterval(timer);
+  }, [refresh, downloading]);
+
+  const onFetchWeights = useCallback(async (): Promise<void> => {
+    setFetchStarting(true);
+    setFetchError(null);
+    try {
+      const result = await startLocalEmbeddingModelFetch();
+      setLocalModel(result);
+    } catch (err) {
+      // A 409 means someone else already started it — not an error worth
+      // shouting about, so re-read and let the progress row speak.
+      if (err instanceof ApiError && err.status === 409) {
+        await refresh();
+      } else {
+        setFetchError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setFetchStarting(false);
+    }
   }, [refresh]);
 
   const candidates = useMemo(
@@ -238,6 +287,92 @@ export default function EmbeddingProviderPage(): React.ReactElement {
               {t('pollingNote', { seconds: POLL_INTERVAL_SECONDS })}
             </p>
           </section>
+
+          {/* OM-84 follow-up — the keyless adapter is active but its weights
+              are not on disk, so it publishes nothing. Printing
+              "npm run fetch-model" here would be useless to the person this
+              adapter exists for: a subscription user in the desktop app, who
+              has no terminal in the flow. So the page drives the download.
+              Rendered only when that adapter is active — `localModel` is null
+              on every keyed deployment. */}
+          {localModel !== null && localModel.missingFiles.length > 0 && (
+            <section
+              data-testid="local-model-card"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.info}`}
+            >
+              <p className="font-semibold">{t('localModelTitle')}</p>
+              <p className="mt-1">
+                {t('localModelBody', {
+                  size: format.number(
+                    Math.round(localModel.totalBytes / 1024 / 1024),
+                  ),
+                })}
+              </p>
+              <p className="mt-1 font-mono text-xs opacity-80">
+                {localModel.modelDir}
+              </p>
+
+              {localModel.job.state === 'running' ? (
+                <p data-testid="local-model-progress" className="mt-3">
+                  {t('localModelProgress', {
+                    done: format.number(
+                      Math.round(localModel.job.downloadedBytes / 1024 / 1024),
+                    ),
+                    total: format.number(
+                      Math.round(localModel.job.totalBytes / 1024 / 1024),
+                    ),
+                    file: localModel.job.currentFile ?? '—',
+                  })}
+                </p>
+              ) : (
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    onClick={() => void onFetchWeights()}
+                    disabled={fetchStarting}
+                    data-testid="local-model-fetch"
+                  >
+                    {fetchStarting
+                      ? t('localModelStarting')
+                      : t('localModelFetch')}
+                  </Button>
+                </div>
+              )}
+
+              {localModel.job.state === 'failed' && localModel.job.error !== null && (
+                <p
+                  data-testid="local-model-error"
+                  className="mt-3 text-[color:var(--danger)]"
+                >
+                  {t('localModelFailed', { message: localModel.job.error })}
+                </p>
+              )}
+              {fetchError !== null && (
+                <p className="mt-3 text-[color:var(--danger)]">
+                  {t('localModelFailed', { message: fetchError })}
+                </p>
+              )}
+
+              {/* The threshold is the one thing an operator cannot infer and
+                  will not notice: at the knowledge-graph default of 0.90 this
+                  model's dedup never fires, silently. */}
+              <p className="mt-3 text-xs opacity-80">{t('localModelThreshold')}</p>
+            </section>
+          )}
+
+          {/* Weights arrived while the page was open. The adapter picks them up
+              on its next activation, not retroactively, so say so rather than
+              letting the operator wait for a state that will not change. */}
+          {localModel !== null &&
+            localModel.missingFiles.length === 0 &&
+            localModel.job.state === 'done' && (
+              <section
+                data-testid="local-model-ready"
+                className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.ok}`}
+              >
+                {t('localModelReady')}
+              </section>
+            )}
 
           {state.activeProviderId !== null && !state.capabilityPublished && (
             <section className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}>

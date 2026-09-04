@@ -1,0 +1,100 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/embedding-adapter-local"
+  name: "Embeddings (lokal, ohne Schlüssel)"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "core.embeddings"
+  description:
+    en: "Turns text into vectors on this machine, with no API key and no separate server, so semantic search, memory and duplicate detection also work on the subscription path. Use it instead of the Ollama or OpenAI compatible adapter, only one of the three can be active. The model is downloaded once, about 144 MB, and then runs offline."
+    de: "Rechnet Texte auf diesem Rechner in Zahlenvektoren um, ohne API-Schlüssel und ohne eigenen Server, damit semantische Suche, Gedächtnis und Duplikaterkennung auch auf dem Abo-Weg funktionieren. Nutze es alternativ zum Ollama- oder OpenAI-kompatiblen Adapter, aktiv sein darf immer nur eines der drei. Das Modell wird einmal geladen, etwa 144 MB, und läuft danach ohne Internet."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "Proprietary"
+  categories:
+    - "infrastructure"
+    - "ml"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  fields:
+    - key: "model_dir"
+      type: "string"
+      label: "Modell-Verzeichnis"
+      help: "Verzeichnis, in dem die Modellgewichte liegen. Leer lassen → `var/embedding-models` unterhalb der Middleware. Fehlen die Gewichte, aktiviert sich das Plugin, veröffentlicht aber keine Capability — Konsumenten laufen dann ohne Embeddings weiter."
+      required: false
+      default: ""
+    - key: "max_input_chars"
+      type: "integer"
+      label: "Maximale Eingabelänge (Zeichen)"
+      help: "Längere Texte werden vor der Tokenisierung abgeschnitten. Standard: 8000."
+      required: false
+      default: 8000
+    - key: "max_concurrent"
+      type: "integer"
+      label: "Parallele Berechnungen"
+      help: "Standard 1. Die Berechnung läuft CPU-gebunden in diesem Prozess und serialisiert ohnehin; höhere Werte konkurrieren nur mit der Event-Loop des Kernels. 0 hebt die Begrenzung auf."
+      required: false
+      default: 1
+
+  guide:
+    de: |
+      **Der schlüssellose Weg.** Dieses Plugin braucht weder einen API-Schlüssel
+      noch einen laufenden Ollama-Server. Es rechnet die Vektoren selbst, auf
+      der CPU dieses Rechners, mit einem quantisierten mehrsprachigen
+      Sentence-Transformer (`paraphrase-multilingual-MiniLM-L12-v2`, 384
+      Dimensionen).
+
+      **Einmal Gewichte holen.** Die Gewichte sind bewusst *nicht* im Paket
+      enthalten — sie wären rund 144 MB in jedem Desktop-Installer, für ein
+      Plugin, das viele Installationen nie aktivieren. Stattdessen einmalig:
+
+      ```
+      npm run fetch-model --workspace @omadia/embedding-adapter-local
+      ```
+
+      Danach läuft alles offline. Solange die Gewichte fehlen, aktiviert sich
+      das Plugin und sagt im Log, welche Datei fehlt — veröffentlicht aber
+      keine Capability, damit Konsumenten sauber ohne Embeddings weiterlaufen.
+
+      **Wichtig: Dedup-Schwelle anpassen.** Die Cosinus-Skala dieses Modells
+      ist nicht die, auf die der Wissensgraph voreingestellt ist. Deutsche
+      Paraphrasen landen hier bei 0,58–0,73, unzusammenhängende Sätze unter
+      0,24 — der Standardwert `process_dedup_threshold=0.90` würde also
+      **nie** greifen, und zwar stillschweigend. Setze ihn im
+      Wissensgraph-Plugin auf **0.45**.
+
+      **Nur eines von drei.** Ollama-Adapter, OpenAI-kompatibler Adapter und
+      dieses Plugin liefern dieselbe Capability `embeddingClient@1`. Aktiv sein
+      darf immer nur eines; die anderen vorher deinstallieren oder ihre
+      Zugangsfelder leeren.
+
+      **Dimensionswechsel.** 384 Dimensionen. Passt das zur bereits
+      gespeicherten Vektorbreite, wird nach dem Umschalten nur nachgerechnet;
+      passt es nicht, blockiert der Wissensgraph Vektor-Writes, bis die Spalte
+      migriert ist (siehe `docs/CHANGELOG.md`, #440).
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+provides:
+  - "embeddingClient@1"
+requires: []

@@ -49,6 +49,19 @@ export interface StreamFallback {
  * does not know. Content or tool errors do NOT: they would reproduce on the
  * fallback and cost a second full request for the same failure.
  */
+/**
+ * #1033 W3 — which fallback reasons open the PROVIDER-wide breaker. A rate
+ * limit, an overload, an unreachable endpoint and a rejected key (one key per
+ * provider on this host) affect every agent on that provider, so every turn
+ * should skip it for the cooldown. An unknown MODEL is one agent's bad ref:
+ * that turn hops, but the provider stays open for everyone else — otherwise a
+ * single typo would stampede every agent onto its fallback, including those
+ * whose fallback was withheld and now have nowhere to go.
+ */
+export function isProviderWideFailure(reason: string): boolean {
+  return reason !== 'model_not_found';
+}
+
 export function fallbackReasonFor(
   provider: Pick<LlmProvider, 'classifyError'>,
   err: unknown,
@@ -320,7 +333,7 @@ export async function* streamMessageEvents(args: {
       if (fallback && !forwardedText) {
         const reason = fallbackReasonFor(provider, err, attempt);
         if (reason !== undefined) {
-          fallback.health?.markFailed(provider.id, reason);
+          if (isProviderWideFailure(reason)) fallback.health?.markFailed(provider.id, reason);
           console.warn(
             `[${streamLabel}] provider '${provider.id}' failed (${reason}) before any output — falling back to '${fallback.provider.id}':`,
             err instanceof Error ? err.message : err,
@@ -385,7 +398,7 @@ export async function completeWithFallback(args: {
     // throws, so a rate-limit/overload here counts as "retries exhausted".
     const reason = fallback ? fallbackReasonFor(args.provider, err, MAX_STREAM_ATTEMPTS) : undefined;
     if (!fallback || reason === undefined) throw err;
-    fallback.health?.markFailed(args.provider.id, reason);
+    if (isProviderWideFailure(reason)) fallback.health?.markFailed(args.provider.id, reason);
     console.warn(
       `[${streamLabel}] provider '${args.provider.id}' failed (${reason}) — completing on fallback '${fallback.provider.id}':`,
       err instanceof Error ? err.message : err,
