@@ -1,39 +1,61 @@
 'use strict';
-/* Loading screen shown while an already-configured omadia install boots. */
-const PHASE_PCT = {
-  'starting-db': 15,
-  'starting-kernel': 35,
-  'waiting-kernel': 60,
-  'starting-ui': 85,
-  ready: 100,
-  error: 100,
-};
+/*
+ * Loading screen shown while an already-configured omadia install boots.
+ *
+ * Presentation only — every decision (phase percentage, which dictionary key to
+ * try, when an error must open the detail view) lives in `bootView.js` so it can
+ * be tested without a DOM. See that file for why OM-59 and OM-60 both land here.
+ */
 
-const msgEl = document.getElementById('progressMsg');
+var view = window.omadiaBootView;
+var wt = window.wizardT || function (_key, fallback) { return fallback; };
+if (window.applyWizardLocale) window.applyWizardLocale();
+
+var msgEl = document.getElementById('progressMsg');
+var detailsEl = document.getElementById('bootDetails');
+var summaryEl = document.getElementById('bootDetailsSummary');
+var logEl = document.getElementById('bootLog');
+var logRowCount = 0;
+
+function refreshSummary() {
+  if (summaryEl && view) summaryEl.textContent = view.detailSummaryLabel(logRowCount, wt);
+}
 
 if (!window.omadia) {
-  // Preload bridge failed — show it instead of a frozen progress bar.
-  if (msgEl) msgEl.textContent = 'Internal error: the app bridge did not load (tray → Open Logs).';
+  // Preload bridge failed — say so instead of showing a frozen progress bar.
+  if (msgEl) {
+    msgEl.textContent = wt(
+      'loading.bridgeMissing',
+      'Internal error: the app bridge did not load (tray → Open Logs).',
+    );
+  }
 } else {
-  window.omadia.onBootProgress((p) => {
-    const fill = document.getElementById('barFill');
-    fill.style.width = (PHASE_PCT[p.phase] ?? 10) + '%';
-    if (msgEl) msgEl.textContent = p.message + (p.detail ? ' — ' + p.detail : '');
-    if (p.phase === 'error') fill.style.background = 'var(--err)';
+  refreshSummary();
+
+  window.omadia.onBootProgress(function (p) {
+    var fill = document.getElementById('barFill');
+    if (fill) {
+      fill.style.width = view.phasePercent(p.phase) + '%';
+      if (p.phase === 'error') fill.style.background = 'var(--err)';
+    }
+    if (msgEl) msgEl.textContent = view.phaseMessage(p, wt);
   });
 
-  // Live, granular startup log for verbosity.
   if (window.omadia.onBootLog) {
-    const logEl = document.getElementById('bootLog');
-    window.omadia.onBootLog((line) => {
+    window.omadia.onBootLog(function (line) {
       if (!logEl) return;
-      const row = document.createElement('div');
-      const cls = line.level === 'ERROR' ? 'l-err' : line.level === 'WARN' ? 'l-warn' : '';
+      var row = document.createElement('div');
+      var cls = view.logLineClass(line.level);
       if (cls) row.className = cls;
       row.textContent = line.msg;
       logEl.appendChild(row);
-      while (logEl.childElementCount > 400) logEl.removeChild(logEl.firstChild);
+      logRowCount += 1;
+      while (logEl.childElementCount > view.MAX_LOG_ROWS) {
+        logEl.removeChild(logEl.firstChild);
+      }
       logEl.scrollTop = logEl.scrollHeight;
+      refreshSummary();
+      if (detailsEl && view.shouldAutoRevealDetails(line.level)) detailsEl.open = true;
     });
   }
 }

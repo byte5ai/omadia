@@ -38,6 +38,21 @@ export interface ChannelResolveResult {
    * iff `decision !== 'reject'`.
    */
   readonly chatAgent?: ChatAgent;
+  /**
+   * `true` iff the key IS the agent's provisioned identity — the bot that
+   * was registered to BE this agent — rather than a binding an operator (or
+   * the auto-bind sweep) chose for it.
+   *
+   * Only matters for an adapter that probes MORE THAN ONE key per turn.
+   * Teams has two: the conversation the message arrived in, and the bot's own
+   * `28:<appId>`. Several provisioned bots can share one group chat, so a hit
+   * on the conversation identifies the chat, never the bot — prefer an
+   * exclusive hit over any other, no matter which key you probed first.
+   *
+   * Optional and additive. Older platforms never set it and adapters that
+   * ignore it behave exactly as they did before.
+   */
+  readonly exclusive?: boolean;
 }
 
 /**

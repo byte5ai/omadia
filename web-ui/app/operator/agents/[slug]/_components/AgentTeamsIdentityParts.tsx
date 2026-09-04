@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import {
@@ -8,6 +9,7 @@ import {
   type TeamsProvisioningState,
 } from '../../../../_lib/agents';
 import {
+  needsTenantSignIn,
   teamsIdentityErrorLink,
   teamsIdentityErrorMessages,
   teamsIdentityErrorTechnicalDetail,
@@ -131,6 +133,20 @@ export function LastError(props: {
           >
             {t(`teamsIdentity.${link.labelKey}`)}
           </a>
+        </p>
+      )}
+      {/* #924 — three of the four delegated codes are fixed on ANOTHER page:
+          the tenant sign-in. Naming it without linking it would leave the
+          operator to find a page they may not know exists. */}
+      {needsTenantSignIn(detail) && (
+        <p className="mt-1">
+          <Link
+            href="/operator/teams"
+            data-testid="teams-tenant-sign-in-link"
+            className="underline"
+          >
+            {t('teamsIdentity.errors.tenantSignInLink')}
+          </Link>
         </p>
       )}
       <details className="mt-1">

@@ -232,6 +232,319 @@ export function parseTeamsIdentityEnvelope(value: unknown): TeamsIdentityView | 
 }
 
 // ---------------------------------------------------------------------------
+// The provisioning timeline (#915) — mirrors migration 0053
+//
+// FOURTH MIRRORED CONTRACT, same rules as the three in the module header: the
+// middleware owns the vocabulary (`TEAMS_PROVISIONING_STEPS` and
+// `TeamsProvisioningEventStatus` in `services/teamsProvisioningJob.ts`, the
+// CHECK constraint of migration 0053), this module only recognises it.
+//
+// The parser is DEFENSIVE ON PURPOSE, and differently so from
+// `parseTeamsIdentityEnvelope` above. That one rejects an unknown `state`
+// outright, because a state with no label is a state this build cannot
+// explain. An event is the opposite case: it is decoration, it arrives in a
+// list, and a newer middleware emitting a step this build has never heard of
+// must cost the operator that ONE row — not the whole timeline, and certainly
+// not the panel. So unknown steps and malformed entries are dropped and the
+// rest renders.
+// ---------------------------------------------------------------------------
+
+/** The steps the runner reports, mirroring `TEAMS_PROVISIONING_STEPS`. */
+export const TEAMS_PROVISIONING_EVENT_STEPS = [
+  'run',
+  'app_registered',
+  'bot_created',
+  'package_built',
+  'catalog_uploaded',
+  'installed',
+  'config_sync',
+] as const;
+
+export type TeamsProvisioningEventStep =
+  (typeof TEAMS_PROVISIONING_EVENT_STEPS)[number];
+
+/** Status vocabulary — the CHECK constraint of migration 0053, verbatim. */
+export const TEAMS_PROVISIONING_EVENT_STATUSES = [
+  'started',
+  'progress',
+  'retrying',
+  'succeeded',
+  'failed',
+] as const;
+
+export type TeamsProvisioningEventStatus =
+  (typeof TEAMS_PROVISIONING_EVENT_STATUSES)[number];
+
+const EVENT_STEP_SET: ReadonlySet<string> = new Set(
+  TEAMS_PROVISIONING_EVENT_STEPS,
+);
+const EVENT_STATUS_SET: ReadonlySet<string> = new Set(
+  TEAMS_PROVISIONING_EVENT_STATUSES,
+);
+
+export interface TeamsProvisioningEventView {
+  readonly id: string;
+  /** Parsed `at`. Kept as a `Date` because every consumer here does
+   *  arithmetic on it (elapsed time, ordering) rather than printing it raw. */
+  readonly at: Date;
+  readonly step: TeamsProvisioningEventStep;
+  readonly status: TeamsProvisioningEventStatus;
+  /** 1-based retry counter; `null` on everything that is not a retry. */
+  readonly attempt: number | null;
+  /** The runner's short machine note, verbatim. */
+  readonly detail: string | null;
+  /** {@link detail} decoded as `key=value;…` — empty for a plain note. */
+  readonly tokens: Readonly<Record<string, string>>;
+}
+
+/**
+ * Decode a `key=value;…` detail into a map.
+ *
+ * The producer is `retryDetail` in `middleware/src/services/teamsProvisioningJob.ts`
+ * and the format exists because migration 0053 has one free-form `detail`
+ * column, not a column per number. Total and forgiving: a plain note
+ * (`skipped`) yields `{}`, a half-written token is dropped, nothing throws.
+ * Callers must treat every key as possibly absent.
+ */
+export function parseEventDetailTokens(
+  detail: string | null,
+): Readonly<Record<string, string>> {
+  if (typeof detail !== 'string' || detail.length === 0) return {};
+  const tokens: Record<string, string> = {};
+  for (const part of detail.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key.length > 0 && value.length > 0) tokens[key] = value;
+  }
+  return tokens;
+}
+
+/** A finite, non-negative integer from a token, or `null`. Guards the two
+ *  numbers the retry copy renders — a NaN would reach the UI as "attempt NaN
+ *  of 5". */
+function tokenCount(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function parseEvent(value: unknown): TeamsProvisioningEventView | null {
+  if (!isRecord(value)) return null;
+  const step = value.step;
+  const status = value.status;
+  if (typeof step !== 'string' || !EVENT_STEP_SET.has(step)) return null;
+  if (typeof status !== 'string' || !EVENT_STATUS_SET.has(status)) return null;
+  const at = new Date(typeof value.at === 'string' ? value.at : '');
+  if (Number.isNaN(at.getTime())) return null;
+  const id = optionalString(value.id);
+  if (id === null) return null;
+  const attempt = value.attempt;
+  const detail = optionalString(value.detail);
+  return {
+    id,
+    at,
+    step: step as TeamsProvisioningEventStep,
+    status: status as TeamsProvisioningEventStatus,
+    attempt:
+      typeof attempt === 'number' && Number.isInteger(attempt) && attempt > 0
+        ? attempt
+        : null,
+    detail,
+    tokens: parseEventDetailTokens(detail),
+  };
+}
+
+/**
+ * Narrow `provisioning_events` at the boundary — newest first, as the route
+ * sends it.
+ *
+ * Absent (a middleware below migration 0053) and empty are the same answer
+ * here: no timeline to show. That is deliberate — the difference is not
+ * actionable for an operator, and the panel says "no events yet" either way
+ * rather than inventing a version complaint.
+ */
+export function parseTeamsProvisioningEvents(
+  value: unknown,
+): readonly TeamsProvisioningEventView[] {
+  if (!Array.isArray(value)) return [];
+  const events: TeamsProvisioningEventView[] = [];
+  for (const entry of value) {
+    const parsed = parseEvent(entry);
+    if (parsed !== null) events.push(parsed);
+  }
+  return events;
+}
+
+/**
+ * Detail notes this build can put a sentence to.
+ *
+ * The runner writes short machine codes, not prose (migration 0053), and the
+ * panel localizes them — so a code it does not know has no copy, and printing
+ * the raw token as if it were a sentence would violate the i18n rule this
+ * screen is built on. {@link isKnownEventDetail} is the gate: known codes get
+ * their localized line, everything else falls back to a generic technical
+ * line with the token as an ICU argument.
+ */
+export const TEAMS_PROVISIONING_EVENT_DETAILS = [
+  // Chain notes
+  'skipped',
+  'awaiting_entra_replication',
+  'registration_created',
+  // config_sync report statuses (#910)
+  'synced',
+  'unchanged',
+  'config_sync_failed',
+  // Terminal reasons the runner classifies
+  'consent_missing',
+  'arm_not_configured',
+  'bot_handle_unavailable',
+  'error',
+  'retries_exhausted',
+  'team_conflict',
+  'stopped',
+  // #924 — the catalog step's own intra-step notes, plus the four terminal
+  // reasons the runner classifies for the delegated upload.
+  'delegated_upload',
+  'delegated_token_refreshed',
+  'delegated_sign_in_required',
+  'delegated_consent_required',
+  'delegated_token_expired',
+  'device_code_flow_failed',
+] as const;
+
+const EVENT_DETAIL_SET: ReadonlySet<string> = new Set(
+  TEAMS_PROVISIONING_EVENT_DETAILS,
+);
+
+export function isKnownEventDetail(detail: string | null): boolean {
+  return detail !== null && EVENT_DETAIL_SET.has(detail);
+}
+
+/** The retry the run is currently sitting in — the numbers the copy needs. */
+export interface TeamsProvisioningRetryView {
+  readonly step: TeamsProvisioningEventStep;
+  readonly attempt: number;
+  readonly maxAttempts: number | null;
+  readonly retryInMs: number | null;
+  readonly since: Date;
+}
+
+/**
+ * What the timeline says is happening right now.
+ *
+ * `activeStep` is the step whose `started` has no matching `succeeded` or
+ * `failed` after it — the honest definition of "still working on this",
+ * derived from the log rather than guessed from the row's state. `startedAt`
+ * is what the panel ticks a duration off, which is the whole point of this
+ * feature: the operator sees a number moving even when three consecutive
+ * polls return byte-identical data.
+ *
+ * `runStarted` distinguishes the two things that look alike when a row sits
+ * at `pending`: a run that died in its first step, and a run that never
+ * started at all.
+ */
+export interface TeamsProvisioningRunSummary {
+  readonly runStarted: boolean;
+  readonly runFinished: boolean;
+  readonly activeStep: TeamsProvisioningEventStep | null;
+  readonly startedAt: Date | null;
+  readonly retry: TeamsProvisioningRetryView | null;
+  /** Steps the log records as done, whatever the identity row says. */
+  readonly completedSteps: ReadonlySet<TeamsProvisioningEventStep>;
+}
+
+const EMPTY_RUN_SUMMARY: TeamsProvisioningRunSummary = {
+  runStarted: false,
+  runFinished: false,
+  activeStep: null,
+  startedAt: null,
+  retry: null,
+  completedSteps: new Set(),
+};
+
+/**
+ * Fold the (newest-first) event list into what the panel renders.
+ *
+ * Walks OLDEST first so "the last thing that happened to this step" is simply
+ * the last write — no sorting, no timestamp comparison, and correct even when
+ * two events of one run share a millisecond (the route orders by the serial
+ * id, which is insertion order).
+ */
+export function summarizeProvisioningRun(
+  events: readonly TeamsProvisioningEventView[],
+): TeamsProvisioningRunSummary {
+  if (events.length === 0) return EMPTY_RUN_SUMMARY;
+
+  const chronological = [...events].reverse();
+  const completedSteps = new Set<TeamsProvisioningEventStep>();
+  let runStarted = false;
+  let runFinished = false;
+  let activeStep: TeamsProvisioningEventStep | null = null;
+  let startedAt: Date | null = null;
+  let retry: TeamsProvisioningRetryView | null = null;
+
+  for (const event of chronological) {
+    if (event.step === 'run') {
+      if (event.status === 'started') {
+        runStarted = true;
+        runFinished = false;
+      } else if (event.status === 'succeeded' || event.status === 'failed') {
+        runFinished = true;
+        // The run is over; whatever step was open is not open any more.
+        activeStep = null;
+        startedAt = null;
+        retry = null;
+      }
+      continue;
+    }
+    switch (event.status) {
+      case 'started':
+        activeStep = event.step;
+        startedAt = event.at;
+        // A fresh attempt clears the previous wait: the copy must not still
+        // say "next in 8s" once the retry has actually fired.
+        retry = null;
+        break;
+      case 'progress':
+        // Movement inside the same step. The elapsed clock deliberately keeps
+        // running from the step's start — an operator waiting on Entra
+        // replication wants to know how long the STEP has taken, not how long
+        // since the last heartbeat.
+        if (activeStep === event.step) retry = null;
+        break;
+      case 'retrying':
+        retry = {
+          step: event.step,
+          attempt: event.attempt ?? 1,
+          maxAttempts: tokenCount(event.tokens['max_attempts']),
+          retryInMs: tokenCount(event.tokens['retry_in_ms']),
+          since: event.at,
+        };
+        activeStep = event.step;
+        break;
+      case 'succeeded':
+        completedSteps.add(event.step);
+        if (activeStep === event.step) {
+          activeStep = null;
+          startedAt = null;
+          retry = null;
+        }
+        break;
+      case 'failed':
+        if (activeStep === event.step) {
+          activeStep = null;
+          startedAt = null;
+        }
+        break;
+    }
+  }
+
+  return { runStarted, runFinished, activeStep, startedAt, retry, completedSteps };
+}
+
+// ---------------------------------------------------------------------------
 // The paste-able config block
 // ---------------------------------------------------------------------------
 
@@ -339,12 +652,42 @@ export interface TeamsIdentityErrorLink {
 export function teamsIdentityErrorLink(
   detail: TeamsIdentityLastErrorDetailDto,
 ): TeamsIdentityErrorLink | null {
-  return detail.code === 'consent_missing'
-    ? {
-        href: ENTRA_ADMIN_CONSENT_DOCS_URL,
-        labelKey: 'errors.consent_missing.consentLink',
-      }
-    : null;
+  if (detail.code === 'consent_missing') {
+    return {
+      href: ENTRA_ADMIN_CONSENT_DOCS_URL,
+      labelKey: 'errors.consent_missing.consentLink',
+    };
+  }
+  // #924 — the TENANT's own consent URL, captured from the connector's error.
+  // Not documentation: the exact page an admin has to approve on. Without it
+  // "grant consent" is an instruction with no destination.
+  if (detail.code === 'delegated_consent_required' && detail.adminConsentUrl) {
+    return {
+      href: detail.adminConsentUrl,
+      labelKey: 'errors.delegated_consent_required.consentLink',
+    };
+  }
+  return null;
+}
+
+/**
+ * Does this failure send the operator to the TENANT sign-in page (#924)?
+ *
+ * Three of the four delegated codes do, for three different reasons — nobody
+ * has signed in, the sign-in expired, or consent is missing — and all three
+ * need the same affordance: a link out of the agent panel to
+ * `/operator/teams`. The fourth (`device_code_flow_failed`) does not: no
+ * amount of clicking sign-in fixes a publisher app that will not do
+ * device-code flows.
+ */
+export function needsTenantSignIn(
+  detail: TeamsIdentityLastErrorDetailDto,
+): boolean {
+  return (
+    detail.code === 'delegated_sign_in_required' ||
+    detail.code === 'delegated_token_expired' ||
+    detail.code === 'delegated_consent_required'
+  );
 }
 
 /**
@@ -366,11 +709,29 @@ export function teamsIdentityErrorMessages(
   const base = `errors.${detail.code}`;
   const messages: LocalizedMessage[] = [{ key: `${base}.what` }];
 
-  if (detail.code === 'consent_missing' && (detail.scopes?.length ?? 0) > 0) {
+  // #924 — the two delegated codes that name scopes use the same `.scopes`
+  // line as `consent_missing`: same shape, same argument, different sentence
+  // above it. Listing them here rather than widening the condition to "has
+  // scopes" keeps the copy an explicit, reviewable decision per code.
+  const NAMES_SCOPES: readonly TeamsIdentityLastErrorDetailDto['code'][] = [
+    'consent_missing',
+    'delegated_sign_in_required',
+    'delegated_consent_required',
+  ];
+  if (NAMES_SCOPES.includes(detail.code) && (detail.scopes?.length ?? 0) > 0) {
     const scopes = detail.scopes as readonly string[];
     messages.push({
       key: `${base}.scopes`,
       values: { scopes: scopes.join(', '), count: scopes.length },
+    });
+  }
+
+  // #924 — the connector's own OAuth code, shown as an argument on its own
+  // line. It is the difference between "Microsoft refused" and knowing WHY.
+  if (detail.code === 'device_code_flow_failed' && (detail.reason ?? '') !== '') {
+    messages.push({
+      key: `${base}.reason`,
+      values: { reason: detail.reason as string },
     });
   }
 
@@ -404,6 +765,14 @@ export function teamsIdentityErrorMessages(
   // last, where a worried operator stops reading.
   if (detail.code === 'arm_not_configured') {
     messages.push({ key: `${base}.keepsRegistration` });
+  }
+
+  // #924 — the same reassurance for the three PARKED delegated codes, and for
+  // the same reason: the run stopped without failing, and everything it built
+  // is still there. Without this line an operator reads a red box and starts
+  // cleaning up an Entra app the next run is about to reuse.
+  if (needsTenantSignIn(detail)) {
+    messages.push({ key: `${base}.keepsProgress` });
   }
 
   return messages;

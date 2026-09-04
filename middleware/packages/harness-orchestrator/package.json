@@ -36,6 +36,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "csv-parse": "^7.0.2",
+    "exceljs": "^4.4.0",
     "mammoth": "^1.12.1",
     "pdf-parse": "^2.4.5"
   },

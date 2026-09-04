@@ -69,8 +69,9 @@ describe('McpRegistryClient', () => {
   it('searches name and description case-insensitively', async () => {
     const client = new McpRegistryClient({ fetchImpl: fetchOk(OFFICIAL_DOC), log: () => {} });
     const hits = await client.search(REGISTRY, 'BILLING');
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0]?.id, 'io.github.acme/billing');
+    assert.equal(hits.entries.length, 1);
+    assert.equal(hits.entries[0]?.id, 'io.github.acme/billing');
+    assert.equal(hits.scope, 'registry');
   });
 
   it('resolve throws catalog_entry_not_found for unknown ids', async () => {
@@ -336,6 +337,180 @@ describe('McpRegistryClient', () => {
       const entry = (await client.catalog({ ...REGISTRY, id: 'reg-541b' }))[0];
       assert.equal(entry?.transport, 'stdio');
       assert.equal(entry?.transportDeprecated, false);
+    });
+  });
+
+  // ── dead-host search latency ────────────────────────────────────────────
+  // registry.modelcontextprotocol.io started black-holing packets, and the
+  // marketplace search reacted by spending FOUR full timeouts on it: two
+  // candidate URLs for the server-side search, then two more for the
+  // local-filter fallback. At the 15s default that is a ~60s spinner with no
+  // feedback, which reads as "search is broken" rather than "registry is down".
+  describe('unreachable registry fails fast', () => {
+    /** A host that never answers: every attempt rejects at the transport level. */
+    function deadHost(counter: { n: number }): typeof fetch {
+      return (async () => {
+        counter.n += 1;
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch;
+    }
+
+    it('does not retry a dead official registry through the local-filter fallback', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      const official = { ...REGISTRY, id: 'dead-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'transport_failed',
+      );
+      // One attempt: the /v0/servers search URL. The bare base URL is not a
+      // catalog endpoint for a typed `official` registry, and the local-filter
+      // fallback must not re-run against the same dead host.
+      assert.equal(calls.n, 1);
+    });
+
+    it('keeps the base-URL candidate for a generic registry', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      await assert.rejects(client.catalog({ ...REGISTRY, id: 'dead-generic' }));
+      // /v0/servers then the plain document at the base URL — the `generic`
+      // shape genuinely lives at one of the two, so both are still probed.
+      assert.equal(calls.n, 2);
+    });
+
+    it('reports an expired deadline as `timeout`, not a transport failure', async () => {
+      const stalls: typeof fetch = (async (_input: unknown, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        })) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: stalls, log: () => {}, timeoutMs: 20 });
+      const official = { ...REGISTRY, id: 'slow-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'timeout',
+      );
+    });
+
+    // The fast-fail must key off TRANSPORT failure only. A registry that
+    // answers 200 with a non-JSON body is answering — the local-filter
+    // fallback is exactly the rescue path for it, and labelling it
+    // "unreachable" would both skip that path and misinform the operator.
+    it('still falls back to the local filter when the registry answers badly', async () => {
+      let calls = 0;
+      const answersHtml: typeof fetch = (async () => {
+        calls += 1;
+        return new Response('<!doctype html><html>nope</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        });
+      }) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: answersHtml, log: () => {} });
+      const official = { ...REGISTRY, id: 'html-official', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'strava'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'bad_catalog_shape',
+      );
+      // Two attempts: the server-side search, then the local-filter fallback's
+      // catalog() — NOT short-circuited after the first, because the host
+      // answered.
+      assert.equal(calls, 2);
+    });
+
+    it('does not re-dial a host that just refused, until an explicit refresh', async () => {
+      const calls = { n: 0 };
+      const client = new McpRegistryClient({ fetchImpl: deadHost(calls), log: () => {} });
+      const official = { ...REGISTRY, id: 'sticky-dead', kind: 'official' as const };
+
+      await assert.rejects(client.search(official, 'strava'));
+      assert.equal(calls.n, 1);
+
+      // An auto-loading UI re-entering the tab must not pay the timeout again.
+      await assert.rejects(client.search(official, 'strava'));
+      await assert.rejects(client.catalog(official));
+      assert.equal(calls.n, 1);
+
+      // The operator explicitly asking to retry does reach the host again.
+      client.invalidate(official.id);
+      await assert.rejects(client.search(official, 'strava'));
+      assert.equal(calls.n, 2);
+    });
+  });
+
+  // Live finding after deploying the fast-fail: registry.modelcontextprotocol.io
+  // serves /v0/servers in under a second (66 servers) while ?search= hangs to
+  // the full timeout. Failing fast was right, but reporting an error while
+  // holding a perfectly good browse page in cache was not — the operator asked
+  // for hits and we had hits.
+  describe('falls back to the cached browse page when only search is broken', () => {
+    /** Browse answers; the search URL never does. */
+    function browseOkSearchDead(counter: { search: number }): typeof fetch {
+      return (async (input: unknown) => {
+        if (String(input).includes('search=')) {
+          counter.search += 1;
+          throw new TypeError('fetch failed');
+        }
+        return new Response(JSON.stringify(OFFICIAL_DOC), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+    }
+
+    it('filters the cached catalog instead of surfacing the search failure', async () => {
+      const calls = { search: 0 };
+      const client = new McpRegistryClient({
+        fetchImpl: browseOkSearchDead(calls),
+        log: () => {},
+      });
+      const official = { ...REGISTRY, id: 'search-dead', kind: 'official' as const };
+
+      // The UI's auto-load browses first, which fills the cache.
+      const browsed = await client.search(official, '');
+      assert.equal(browsed.scope, 'registry');
+      assert.equal(browsed.entries.length, 3);
+
+      const hits = await client.search(official, 'billing');
+      assert.equal(calls.search, 1, 'the server-side search is still attempted once');
+      assert.equal(hits.scope, 'cached-page', 'provenance is reported, not hidden');
+      assert.equal(hits.entries.length, 1);
+      assert.equal(hits.entries[0]?.id, 'io.github.acme/billing');
+    });
+
+    it('keeps serving the cached page while the host stays suppressed', async () => {
+      const calls = { search: 0 };
+      const client = new McpRegistryClient({
+        fetchImpl: browseOkSearchDead(calls),
+        log: () => {},
+      });
+      const official = { ...REGISTRY, id: 'search-dead-2', kind: 'official' as const };
+      await client.search(official, '');
+
+      await client.search(official, 'billing');
+      const again = await client.search(official, 'notes');
+      // The negative cache suppresses the re-dial, and the cached page still
+      // answers — so a second query is instant AND useful.
+      assert.equal(calls.search, 1);
+      assert.equal(again.scope, 'cached-page');
+      assert.equal(again.entries[0]?.id, 'io.github.acme/local-notes');
+    });
+
+    it('still fails when there is no cached page to fall back to', async () => {
+      const calls = { n: 0 };
+      const dead: typeof fetch = (async () => {
+        calls.n += 1;
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch;
+      const client = new McpRegistryClient({ fetchImpl: dead, log: () => {} });
+      const official = { ...REGISTRY, id: 'nothing-cached', kind: 'official' as const };
+      await assert.rejects(
+        client.search(official, 'billing'),
+        (err: unknown) => err instanceof McpRegistryError && err.code === 'transport_failed',
+      );
+      assert.equal(calls.n, 1);
     });
   });
 });

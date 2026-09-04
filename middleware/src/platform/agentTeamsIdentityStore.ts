@@ -31,6 +31,8 @@
 
 import type { Pool } from 'pg';
 
+import type { TeamsTargetKind } from './teamsInstallTarget.js';
+
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of migration 0049, verbatim.
 // ---------------------------------------------------------------------------
@@ -68,7 +70,27 @@ export interface AgentTeamsIdentityRecord {
   readonly state: TeamsProvisioningState;
   /** Install target of the last provisioning request — resume evidence. */
   readonly teamId: string | null;
+  /**
+   * WHICH KIND of target {@link teamId} addresses (migration 0054): a team, a
+   * group chat or a 1:1 chat. Resume evidence too — a run that picks up an
+   * interrupted chain must call the Graph endpoint the request asked for, and
+   * a bare 32-hex id cannot be classified back into one afterwards.
+   */
+  readonly targetKind: TeamsTargetKind;
   readonly appId: string | null;
+  /**
+   * The Entra application's DIRECTORY OBJECT id (migration 0055) — a
+   * different identifier from {@link appId}, and the only one the
+   * recycle-bin purge accepts.
+   *
+   * `null` on rows provisioned before migration 0055 and on rows whose
+   * registration does not exist yet. See the migration on why it is stored
+   * rather than looked up: after `DELETE /applications/{id}` the application
+   * is gone from `/applications`, so the appId → objectId lookup that would
+   * have produced it no longer works — and without it the deleted app sits
+   * in the recycle bin holding this agent's `uniqueName` for 30 days.
+   */
+  readonly appObjectId: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
@@ -85,6 +107,9 @@ export interface EnsureAgentTeamsIdentityInput {
    *  ensure updates on an existing row; bot_slug/display_name stay as
    *  created (one identity per agent). */
   readonly teamId?: string;
+  /** Kind of the target above. Defaults to `'team'`, which is what every
+   *  request before migration 0054 meant. */
+  readonly targetKind?: TeamsTargetKind;
 }
 
 export interface AgentTeamsIdentityUpdate {
@@ -92,10 +117,20 @@ export interface AgentTeamsIdentityUpdate {
   /** `null` clears the recorded install target — what an uninstall leaves
    *  behind (byte5ai/omadia#900). The column is nullable (migration 0049). */
   readonly teamId?: string | null;
-  readonly appId?: string;
-  readonly tenantId?: string;
-  readonly teamsAppId?: string;
-  readonly teamsAppExternalId?: string;
+  /** Set together with {@link teamId} when a request re-targets the row. */
+  readonly targetKind?: TeamsTargetKind;
+  /**
+   * The four Azure identifiers accept `null` as well as a value: the
+   * provisioning chain only ever writes them, but a teardown
+   * (`services/teamsIdentityReset.ts`) has to CLEAR them, and a row that
+   * kept pointing at a purged app registration would send the next run
+   * looking for something that is not there any more.
+   */
+  readonly appId?: string | null;
+  readonly appObjectId?: string | null;
+  readonly tenantId?: string | null;
+  readonly teamsAppId?: string | null;
+  readonly teamsAppExternalId?: string | null;
   /** `null` clears a previous error. */
   readonly lastError?: string | null;
 }
@@ -143,7 +178,7 @@ export class AgentTeamsIdentityStateError extends Error {
 // ---------------------------------------------------------------------------
 
 const COLUMNS =
-  'agent_id, bot_slug, display_name, state, team_id, app_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
+  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, app_object_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
 
 interface AgentTeamsIdentityRow {
   agent_id: string;
@@ -151,7 +186,9 @@ interface AgentTeamsIdentityRow {
   display_name: string;
   state: string;
   team_id: string | null;
+  target_kind: TeamsTargetKind;
   app_id: string | null;
+  app_object_id: string | null;
   tenant_id: string | null;
   teams_app_id: string | null;
   teams_app_external_id: string | null;
@@ -171,7 +208,9 @@ function mapRow(row: AgentTeamsIdentityRow): AgentTeamsIdentityRecord {
     displayName: row.display_name,
     state: row.state,
     teamId: row.team_id,
+    targetKind: row.target_kind,
     appId: row.app_id,
+    appObjectId: row.app_object_id,
     tenantId: row.tenant_id,
     teamsAppId: row.teams_app_id,
     teamsAppExternalId: row.teams_app_external_id,
@@ -216,13 +255,25 @@ export class AgentTeamsIdentityStore {
   ): Promise<AgentTeamsIdentityRecord> {
     try {
       const res = await this.pool.query<AgentTeamsIdentityRow>(
-        `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, team_id)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO agent_teams_identities (agent_id, bot_slug, display_name, team_id, target_kind)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (agent_id) DO UPDATE SET
-           team_id    = COALESCE(EXCLUDED.team_id, agent_teams_identities.team_id),
+           team_id     = COALESCE(EXCLUDED.team_id, agent_teams_identities.team_id),
+           -- Moves WITH the id: a re-target that changed the kind must not
+           -- leave the row claiming the previous endpoint.
+           target_kind = CASE
+             WHEN EXCLUDED.team_id IS NULL THEN agent_teams_identities.target_kind
+             ELSE EXCLUDED.target_kind
+           END,
            updated_at = now()
          RETURNING ${COLUMNS}`,
-        [input.agentId, input.botSlug, input.displayName, input.teamId ?? null],
+        [
+          input.agentId,
+          input.botSlug,
+          input.displayName,
+          input.teamId ?? null,
+          input.targetKind ?? 'team',
+        ],
       );
       const row = res.rows[0];
       if (row === undefined) {
@@ -262,7 +313,9 @@ export class AgentTeamsIdentityStore {
       add('state', patch.state);
     }
     if (patch.teamId !== undefined) add('team_id', patch.teamId);
+    if (patch.targetKind !== undefined) add('target_kind', patch.targetKind);
     if (patch.appId !== undefined) add('app_id', patch.appId);
+    if (patch.appObjectId !== undefined) add('app_object_id', patch.appObjectId);
     if (patch.tenantId !== undefined) add('tenant_id', patch.tenantId);
     if (patch.teamsAppId !== undefined) add('teams_app_id', patch.teamsAppId);
     if (patch.teamsAppExternalId !== undefined) {
@@ -296,8 +349,90 @@ export class AgentTeamsIdentityStore {
     return this.update(agentId, {
       state: 'catalog_uploaded',
       teamId: null,
+      targetKind: 'team',
       lastError: null,
     });
+  }
+
+  /**
+   * Return the row to the position it held before anything was provisioned —
+   * the last act of a teardown (`services/teamsIdentityReset.ts`).
+   *
+   * A RESET, NOT A ROW DELETION. `bot_slug` and `display_name` are the only
+   * two fields in this row a human typed; every other one is an identifier
+   * Azure handed back. Dropping the row would throw the operator's two
+   * answers away and make them retype both to try again — and because
+   * `bot_slug` is `UNIQUE`, dropping it also silently changes what a
+   * re-create is allowed to be called. Keeping them means the retry is one
+   * button, with the same slug, which is the whole reason someone asked for
+   * this in the first place.
+   *
+   * `state` goes to `'pending'` rather than to some intermediate rank because
+   * by the time this runs the Entra app, the Azure bot and the catalog entry
+   * are all provably gone — the caller does not reach this step otherwise.
+   * That is exactly the difference from {@link clearTeamInstall}, which stops
+   * at `'catalog_uploaded'` precisely because those three still exist.
+   *
+   * The Azure identifiers are NULLed for the same reason: a row that kept a
+   * purged `app_id` would let the chain's evidence guards skip step 1 and
+   * then build a bot on an application that is not there any more.
+   *
+   * ON THE ORDER OF WRITES. This is the LAST thing a teardown does, never the
+   * first. `app_object_id` is what makes an interrupted purge resumable, so
+   * clearing it before the purge landed would destroy the only pointer to the
+   * tombstone holding this agent's `uniqueName`.
+   */
+  async resetForRetry(agentId: string): Promise<AgentTeamsIdentityRecord> {
+    return this.update(agentId, {
+      state: 'pending',
+      teamId: null,
+      targetKind: 'team',
+      appId: null,
+      appObjectId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+    });
+  }
+
+  /**
+   * Drop the row — the last act of a FULL teardown
+   * (`services/teamsIdentityReset.ts`, scope `'identity'`).
+   *
+   * A DELETION, NOT A RESET, and the difference is the whole point.
+   * {@link resetForRetry} deliberately keeps `bot_slug` and `display_name`
+   * because they are the two answers a human typed and a retry should not
+   * make them retype either. That is exactly wrong when the identity ITSELF
+   * was the mistake: a slug that reads badly, a name nobody agreed to. A
+   * `bot_slug` is `UNIQUE`, so as long as the row exists nothing else may
+   * claim that name — keeping it is what makes "pick a different slug"
+   * impossible. Dropping the row is the only thing that frees it.
+   *
+   * WHAT GOES WITH IT, BY SCHEMA. `agent_teams_installs` (migration 0051) and
+   * `agent_teams_provisioning_events` (0053) both reference `agent_id`
+   * `ON DELETE CASCADE`, and 0051 says in as many words that deleting the
+   * identity is the documented way to unprovision an agent. So the bindings
+   * and the progress timeline go too, which is correct: both are statements
+   * ABOUT an identity that no longer exists.
+   *
+   * WHAT MUST HAVE HAPPENED FIRST. Every Azure object this row points at has
+   * to be provably gone before this is called — `app_id` is the only handle
+   * left for finding a deleted registration in the directory's recycle bin,
+   * so a row dropped too early strands a tombstone that quietly holds the
+   * `uniqueName` for thirty days with nothing left pointing at it. The
+   * teardown enforces that ordering; this method only obeys it.
+   *
+   * Idempotent: deleting a row that is not there reports `false` rather than
+   * raising, so a retried teardown finishes instead of failing on its own
+   * success.
+   */
+  async deleteForAgent(agentId: string): Promise<boolean> {
+    const res = await this.pool.query(
+      `DELETE FROM agent_teams_identities WHERE agent_id = $1`,
+      [agentId],
+    );
+    return (res.rowCount ?? 0) > 0;
   }
 
   /** Persist an enqueue failure so the status endpoint can show WHY nothing

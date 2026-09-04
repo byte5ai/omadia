@@ -36,7 +36,6 @@ import {
   pollDeviceToken,
   primeProviderOAuthTokens,
   requestUserCode,
-  resolveModelRef,
   writeProviderOAuthTokens,
   type OAuthClientConfig,
   type OAuthTokens,
@@ -66,6 +65,7 @@ import {
   resolveProviderVerification,
   type LlmProviderCatalogView,
 } from '../platform/pluginLlmReadiness.js';
+import { applyProviderAssignment } from '../platform/providerAssignment.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -370,81 +370,17 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       | { pluginId?: unknown; provider?: unknown; model?: unknown }
       | null;
     const pluginId = typeof body?.pluginId === 'string' ? body.pluginId : '';
-    const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
-    const model = typeof body?.model === 'string' ? body.model.trim() : '';
+    const provider = typeof body?.provider === 'string' ? body.provider : '';
+    const model = typeof body?.model === 'string' ? body.model : '';
 
-    const desc = LLM_PLUGINS.find((p) => p.id === pluginId);
-    if (desc === undefined) {
-      res.status(400).json({
-        code: 'providers.unknown_plugin',
-        message: `'${pluginId}' is not a selectable LLM plugin`,
-      });
+    // The validation + persist rules live in `providerAssignment.ts` so the
+    // subscription-login hand-off (OM-79) applies exactly the same checks.
+    const result = await applyProviderAssignment(deps, { pluginId, provider, model });
+    if (!result.ok) {
+      res.status(result.status).json({ code: result.code, message: result.message });
       return;
     }
-    if (provider.length === 0 || model.length === 0) {
-      res.status(400).json({
-        code: 'providers.invalid_request',
-        message: 'body must be { pluginId, provider, model }',
-      });
-      return;
-    }
-    if (!deps.installedRegistry.has(pluginId)) {
-      res.status(404).json({
-        code: 'providers.not_installed',
-        message: `${pluginId} is not installed`,
-      });
-      return;
-    }
-    // Fail closed: never assign a tool-less provider (the `claude-cli` Shape-2
-    // backend) to a plugin that drives a tool loop — it would silently disable
-    // tools/memory/sub-agents. Tool-less plugins (extractors/classifiers) are
-    // fine and are the intended target for the subscription CLI.
-    const providerWire = deps.llmProviderCatalog?.get(provider)?.wireFormat;
-    if (desc.requiresTools === true && providerWire === 'claude-cli') {
-      res.status(400).json({
-        code: 'providers.tool_incompatible',
-        message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
-      });
-      return;
-    }
-    // Resolve against the CHOSEN provider so class refs (`class:frontier`),
-    // provider-qualified ids (`openai:gpt-5.5`) and legacy aliases (`opus`) all
-    // disambiguate to it. Guard the classic mistake: a known model that belongs
-    // to a DIFFERENT provider (e.g. claude-* assigned to openai). Unknown models
-    // (custom / openai-compatible) are allowed through.
-    const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
-    if (known !== undefined && known.provider !== provider) {
-      res.status(400).json({
-        code: 'providers.model_provider_mismatch',
-        message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
-      });
-      return;
-    }
-    // Persist the bare vendor id the adapter expects — normalise qualified ids /
-    // class refs / aliases to `modelId`; pass unknown custom ids through as-is.
-    const storeModel = known?.modelId ?? model;
-
-    const entry = deps.installedRegistry.get(pluginId);
-    const nextConfig: Record<string, unknown> = { ...(entry?.config ?? {}) };
-    nextConfig['llm_provider'] = provider;
-    for (const mk of desc.modelKeys) nextConfig[mk] = storeModel;
-    if (provider !== 'anthropic' && desc.extraOnNonAnthropic !== undefined) {
-      for (const [k, v] of Object.entries(desc.extraOnNonAnthropic)) {
-        nextConfig[k] = v;
-      }
-    }
-
-    try {
-      await deps.installedRegistry.updateConfig(pluginId, nextConfig);
-      if (deps.reactivate) await deps.reactivate(pluginId);
-    } catch (err) {
-      res.status(500).json({
-        code: 'providers.apply_failed',
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    res.json({ ok: true, pluginId, provider, model: storeModel });
+    res.json({ ok: true, pluginId: result.pluginId, provider: result.provider, model: result.model });
   });
 
   // -------------------------------------------------------------------------

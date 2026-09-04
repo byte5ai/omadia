@@ -29,10 +29,19 @@
 
 import type { Pool } from 'pg';
 
-/** One persisted `(agent, team)` binding. */
+import type { TeamsTargetKind } from './teamsInstallTarget.js';
+
+/** One persisted `(agent, target)` binding. */
 export interface AgentTeamsInstallRecord {
   readonly agentId: string;
   readonly teamId: string;
+  /**
+   * Which kind of target `teamId` addresses (migration 0054) — a team, a
+   * group chat or a 1:1 chat. Recorded rather than derived: it says which
+   * Graph endpoint actually performed this install, which a bare 32-hex id
+   * cannot tell you afterwards.
+   */
+  readonly targetKind: TeamsTargetKind;
   /** Catalog app id that was installed into THIS team. */
   readonly teamsAppId: string | null;
   /** Cached Graph display name — `null` until resolved once. */
@@ -46,6 +55,8 @@ export interface AgentTeamsInstallRecord {
 export interface RecordAgentTeamsInstallInput {
   readonly agentId: string;
   readonly teamId: string;
+  /** Defaults to `'team'` — what every caller before migration 0054 meant. */
+  readonly targetKind?: TeamsTargetKind;
   readonly teamsAppId?: string | null;
   /** Only written when provided — a re-record without a resolved name must
    *  not wipe a name resolved by an earlier run. */
@@ -53,11 +64,12 @@ export interface RecordAgentTeamsInstallInput {
 }
 
 const COLUMNS =
-  'agent_id, team_id, teams_app_id, team_display_name, display_name_synced_at, installed_at, updated_at';
+  'agent_id, team_id, target_kind, teams_app_id, team_display_name, display_name_synced_at, installed_at, updated_at';
 
 interface AgentTeamsInstallRow {
   agent_id: string;
   team_id: string;
+  target_kind: TeamsTargetKind;
   teams_app_id: string | null;
   team_display_name: string | null;
   display_name_synced_at: Date | null;
@@ -69,6 +81,7 @@ function mapRow(row: AgentTeamsInstallRow): AgentTeamsInstallRecord {
   return {
     agentId: row.agent_id,
     teamId: row.team_id,
+    targetKind: row.target_kind,
     teamsAppId: row.teams_app_id,
     teamDisplayName: row.team_display_name,
     displayNameSyncedAt: row.display_name_synced_at,
@@ -123,9 +136,10 @@ export class AgentTeamsInstallStore {
     const name = input.teamDisplayName ?? null;
     const res = await this.pool.query<AgentTeamsInstallRow>(
       `INSERT INTO agent_teams_installs
-         (agent_id, team_id, teams_app_id, team_display_name, display_name_synced_at)
-       VALUES ($1, $2, $3, $4, CASE WHEN $4::text IS NULL THEN NULL ELSE now() END)
+         (agent_id, team_id, target_kind, teams_app_id, team_display_name, display_name_synced_at)
+       VALUES ($1, $2, $5, $3, $4, CASE WHEN $4::text IS NULL THEN NULL ELSE now() END)
        ON CONFLICT (agent_id, team_id) DO UPDATE SET
+         target_kind = EXCLUDED.target_kind,
          teams_app_id = COALESCE(EXCLUDED.teams_app_id, agent_teams_installs.teams_app_id),
          team_display_name =
            COALESCE(EXCLUDED.team_display_name, agent_teams_installs.team_display_name),
@@ -135,7 +149,13 @@ export class AgentTeamsInstallStore {
          END,
          updated_at = now()
        RETURNING ${COLUMNS}`,
-      [input.agentId, input.teamId, input.teamsAppId ?? null, name],
+      [
+        input.agentId,
+        input.teamId,
+        input.teamsAppId ?? null,
+        name,
+        input.targetKind ?? 'team',
+      ],
     );
     const row = res.rows[0];
     if (row === undefined) {
@@ -176,5 +196,35 @@ export class AgentTeamsInstallStore {
       [agentId, teamId],
     );
     return (res.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Drop EVERY binding of one agent, returning how many there were — the
+   * teardown's counterpart to {@link remove}
+   * (`services/teamsIdentityReset.ts`).
+   *
+   * Why a bulk call rather than a loop over {@link listForAgent}: the rows
+   * this table holds are the record of what omadia INSTALLED, and after a
+   * teardown has withdrawn the app from the tenant catalog none of them
+   * describes anything that still exists. Deleting them one id at a time
+   * would leave a half-emptied read model behind if the process died in the
+   * middle, and the operator screen would go on listing installs that Graph
+   * has no memory of.
+   *
+   * `0` is an ordinary answer, not an error: an identity that never reached
+   * the install step has no bindings to drop, and a teardown resumed after an
+   * interruption finds the table already empty. Both are success.
+   *
+   * NOTE the cascade this does NOT rely on. `agent_teams_installs` cascades
+   * from `agent_teams_identities`, but a teardown keeps the identity row
+   * (only its Azure identifiers are cleared), so nothing deletes these rows
+   * for us. They have to be removed explicitly, which is what this is for.
+   */
+  async removeAllForAgent(agentId: string): Promise<number> {
+    const res = await this.pool.query(
+      `DELETE FROM agent_teams_installs WHERE agent_id = $1`,
+      [agentId],
+    );
+    return res.rowCount ?? 0;
   }
 }

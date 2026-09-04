@@ -1,0 +1,62 @@
+-- ── Agent factory: remember the Entra app's DIRECTORY OBJECT id ────────────
+-- Adds `app_object_id` to `agent_teams_identities`.
+--
+-- WHY A SECOND IDENTIFIER FOR THE SAME APPLICATION
+-- -----------------------------------------------
+-- An Entra application has two ids and they are not interchangeable:
+--
+--   * `appId` — the client id. It is what the bot authenticates with, what
+--     the Teams manifest carries as `bots[0].botId`, and it is the only one
+--     the row has stored until now (`app_id`).
+--   * `objectId` — the directory object id. It is what
+--     `DELETE /applications/{id}` and `DELETE /directory/deletedItems/{id}`
+--     address.
+--
+-- Provisioning only ever needed the first. TEARDOWN needs the second, and it
+-- needs it at a moment when it can no longer be looked up.
+--
+-- THE 30-DAY TRAP THIS COLUMN EXISTS TO CLOSE
+-- -------------------------------------------
+-- Deleting an Entra application does not remove it. It goes to the
+-- directory's recycle bin for 30 days and KEEPS RESERVING ITS `uniqueName`
+-- while it is there. omadia derives that name from the operator's bot slug
+-- (`omadia-teams-bot-<botSlug>`, see `services/teamsProvisioningJob.ts`), so
+-- a teardown that deletes without purging does not restore the starting
+-- position — it makes the operator's next attempt with the same slug collide
+-- with the corpse of the previous one. That is byte5ai/omadia#916, and it
+-- cost a slug for a month.
+--
+-- The purge needs the OBJECT id. And the moment the delete lands, the
+-- application is gone from `/applications`, so `getAppRegistration` can no
+-- longer turn the `appId` we do have into the `objectId` we need. There is
+-- exactly one window in which the pair can be observed together — before the
+-- delete — so the object id has to be written down then or it is lost.
+--
+-- Hence a persisted column rather than a lookup:
+--
+--   * it is captured when the registration is CREATED (the connector returns
+--     both ids from `createAppRegistration`), so an identity provisioned
+--     from now on is purgeable even if the process dies mid-teardown;
+--   * a reset re-captures and PERSISTS it before it deletes anything, so a
+--     row that predates this migration becomes purgeable on its way through;
+--   * and because it survives the delete, an interrupted teardown can be
+--     resumed: the second call still knows what to purge.
+--
+-- NULLABLE, WITH NO BACKFILL
+-- --------------------------
+-- Existing rows genuinely do not know their object id — it was never
+-- returned to anything that persisted it, and a migration cannot ask Graph.
+-- `NULL` is the honest value and the reset path is written for it: it
+-- resolves the id live (the application still exists at that point, so the
+-- lookup works), writes it here, and only then deletes. The one case that
+-- stays unrecoverable is a row whose application was ALREADY deleted by hand
+-- before this migration — nothing can name that tombstone any more, and the
+-- reset reports it rather than pretending.
+--
+-- Idempotent by construction (ADD COLUMN IF NOT EXISTS), because schema CI
+-- double-applies every file in this series.
+
+ALTER TABLE agent_teams_identities
+  ADD COLUMN IF NOT EXISTS app_object_id TEXT;
+
+-- rollback: ALTER TABLE agent_teams_identities DROP COLUMN app_object_id;

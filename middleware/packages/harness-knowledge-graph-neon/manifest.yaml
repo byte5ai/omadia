@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.knowledge-graph"
-  description: "Neon-Postgres + pgvector KnowledgeGraph provider plugin. Durable storage, vector search, embedding-backfill scheduler, schema-Migrationen. Provider der Capabilities `knowledgeGraph@1`, `entityRefBus@1` und `graphPool@1` (Pool-Bridge für kernel-side Konsumenten wie VerifierStore und devGraph-Router). Operator wählt diesen Provider via RequiresWizard für Produktion. Mutual exclusion mit @omadia/knowledge-graph-inmemory — nur einer der beiden Provider darf gleichzeitig in installed.json stehen."
+  description:
+    en: "Stores the knowledge graph in a Neon Postgres database with vector search, so it survives a restart and grows with the data. This is the provider for production. Only one knowledge graph provider can be active."
+    de: "Speichert den Wissensgraphen in einer Neon-Postgres-Datenbank mit Vektorsuche, sodass er einen Neustart übersteht und mit den Daten wächst. Das ist der Anbieter für den Produktivbetrieb. Aktiv sein darf immer nur ein Wissensgraph-Anbieter."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

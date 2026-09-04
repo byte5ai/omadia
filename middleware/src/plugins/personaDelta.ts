@@ -178,3 +178,20 @@ function resolveBaseAxes(family: PersonaModelFamily | string): Required<PersonaA
   }
   return getBaseProfile(family).dimensions;
 }
+
+/**
+ * Map an Anthropic model id (e.g. `claude-sonnet-4-6`) to one of the three
+ * persona-family buckets. Unknown / mis-spelled models default to Sonnet —
+ * the safe middle ground for the per-family delta math.
+ *
+ * Lives HERE, next to {@link FAMILY_DEFAULTS}, because the family decides
+ * which axes are emitted at all: a second mapper elsewhere would let a
+ * preview and the running agent describe different characters. Re-exported
+ * by `dynamicAgentRuntime.ts` for its existing callers.
+ */
+export function inferFamilyFromModel(modelId: string): PersonaModelFamily {
+  const lower = modelId.toLowerCase();
+  if (lower.includes('haiku')) return 'haiku';
+  if (lower.includes('opus')) return 'opus';
+  return 'sonnet';
+}

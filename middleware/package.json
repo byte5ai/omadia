@@ -56,9 +56,9 @@
   "license": "MIT",
   "_dependencyNote": "epic #470 §5 — express, pg and zod must NOT be dropped even though core no longer runs any Dev Platform code. They are peerDependencies of the extracted Dev Platform plugin and of every other Hub plugin, resolved through the host node_modules symlink. Removing them breaks every installed plugin at runtime, with no compile-time signal in this repo.",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
-    "@aws-sdk/client-s3": "^3.1116.0",
-    "@azure/msal-node": "^5.5.0",
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@aws-sdk/client-s3": "^3.1120.0",
+    "@azure/msal-node": "^5.6.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/better-sqlite3": "^9.6.0",
@@ -81,7 +81,7 @@
     "pg": "^8.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sharp": "^0.35.3",
+    "sharp": "^0.35.4",
     "typescript-eslint": "^8.67.0",
     "undici": "^8.10.0",
     "ws": "^8.21.3",
@@ -93,7 +93,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
@@ -106,7 +106,7 @@
   "overrides": {
     "esbuild": "^0.28.1",
     "axios": "1.18.1",
-    "fast-uri": "3.1.5",
+    "fast-uri": "3.1.7",
     "postcss": "8.5.23",
     "brace-expansion": "5.0.9"
   }

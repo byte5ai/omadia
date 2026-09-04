@@ -14,20 +14,45 @@ import {
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
 
+import {
+  isChatTarget,
+  resolveTeamsInstallTarget,
+  TEAMS_TARGET_EXAMPLES,
+  type TeamsTargetKind,
+} from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
+  buildBotHandle,
   classifyTeamsProvisioningError,
+  TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
   type TeamsProvisioningErrorDetail,
 } from '../services/teamsProvisioningJob.js';
 import {
+  supportsChatInstall,
+  supportsChatUninstall,
   supportsTeamUninstall,
   type TeamsProvisionerAccessor,
+  type UninstallFromTeamOutcome,
 } from '../platform/teamsProvisionerService.js';
+import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
+import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
+import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
+import {
+  resetTeamsIdentity,
+  TEAMS_RESET_SCOPES,
+  TeamsIdentityResetNotFoundError,
+  TeamsIdentityResetUnsupportedError,
+  type TeamsResetEventSink,
+  type TeamsResetIdentityStore,
+  type TeamsResetProvisionerPort,
+  type TeamsResetScope,
+} from '../services/teamsIdentityReset.js';
 import {
   projectTeamsBotConfig,
   projectTeamsBotsConfigSyncStatus,
+  type TeamsBotsConfigSyncOutcome,
 } from '../services/teamsBotsConfigSync.js';
 import {
   AgentAvatarError,
@@ -38,9 +63,21 @@ import {
   resolveAgentIdentity,
   type AgentIdentityAvatarBytes,
   type AgentIdentityAvatarInput,
+  type AgentIdentityComposedPrompt,
   type AgentIdentityRecord,
-  type AgentIdentityTextInput,
+  type AgentIdentitySaveInput,
 } from '../platform/agentIdentityStore.js';
+import {
+  PersonaConfigSchema,
+  QualityConfigSchema,
+  type PersonaConfig,
+  type QualityConfig,
+} from '../plugins/builder/agentSpec.js';
+import {
+  composeAgentIdentityPrompt,
+  inferFamilyFromModel,
+} from '../services/agentIdentityPrompt.js';
+import type { PersonaModelFamily } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -186,7 +223,28 @@ const ResolveChannelSchema = z.object({
  *  agent (unique agent_id), later POSTs re-run provisioning on the
  *  existing row. */
 const TeamsIdentityProvisionSchema = z.object({
+  // NOT transformed to a GUID here any more. `team_id` may now name a group
+  // chat or a 1:1 chat as well, and `normalizeTeamsTeamId` only knows how to
+  // spell a TEAM — running it first would hyphenate the 32-hex stem of a chat
+  // id into a team GUID that Graph has never heard of, which is exactly the
+  // field-test failure. `resolveTeamsInstallTarget` decides the kind FIRST and
+  // normalises only what is actually a team.
   team_id: z.string().min(1).max(200),
+  /**
+   * WHERE `team_id` CAME FROM, when it came from the tenant directory.
+   *
+   * The operator picks a team or a chat out of `GET /:slug/teams-targets`,
+   * which is Graph's own listing — so Graph already said what each entry is.
+   * Re-deriving that from the id's suffix is how a legacy
+   * `19:…@thread.skype` group chat, offered by our own picker, came back as
+   * "not a Teams install target": the pattern list had never heard of the
+   * suffix and the listing's answer had been thrown away.
+   *
+   * Optional, because a hand-typed id has no provenance to declare and must
+   * still be classified. `resolveTeamsInstallTarget` binds the claim to this
+   * exact `team_id` and never lets it override a channel verdict.
+   */
+  target_kind: z.enum(['team', 'group-chat', 'one-on-one-chat']).optional(),
   bot_slug: z
     .string()
     .regex(
@@ -203,7 +261,23 @@ const TeamsIdentityProvisionSchema = z.object({
  *  installed into `team_id` by resuming the provisioning chain. Creating the
  *  identity itself stays `POST /:slug/teams-identity`. */
 const TeamsInstallSchema = z.object({
+  /** See the note on {@link TeamsIdentityProvisionSchema.team_id}. */
   team_id: z.string().min(1).max(200),
+  /**
+   * WHERE `team_id` CAME FROM, when it came from the tenant directory.
+   *
+   * The operator picks a team or a chat out of `GET /:slug/teams-targets`,
+   * which is Graph's own listing — so Graph already said what each entry is.
+   * Re-deriving that from the id's suffix is how a legacy
+   * `19:…@thread.skype` group chat, offered by our own picker, came back as
+   * "not a Teams install target": the pattern list had never heard of the
+   * suffix and the listing's answer had been thrown away.
+   *
+   * Optional, because a hand-typed id has no provenance to declare and must
+   * still be classified. `resolveTeamsInstallTarget` binds the claim to this
+   * exact `team_id` and never lets it override a channel verdict.
+   */
+  target_kind: z.enum(['team', 'group-chat', 'one-on-one-chat']).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -232,7 +306,17 @@ export interface OperatorTeamsIdentityRecord {
    *  for why the team read model can never be plural without a schema
    *  change. */
   readonly teamId: string | null;
+  /** Kind of the target above (migration 0054). OPTIONAL on this structural
+   *  mirror: a store predating the chat targets still satisfies the port and
+   *  its rows mean `'team'`, the only thing they could have meant. */
+  readonly targetKind?: TeamsTargetKind;
   readonly appId: string | null;
+  /** The Entra app's DIRECTORY OBJECT id (migration 0055) — what the
+   *  recycle-bin purge of a teardown needs, and what `appId` cannot stand in
+   *  for. OPTIONAL on this structural mirror for the usual reason: a store
+   *  predating the column still satisfies the port. Never surfaced in a
+   *  response; it is an internal identifier, like `appId`'s secret ref. */
+  readonly appObjectId?: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
@@ -255,6 +339,11 @@ export interface OperatorTeamsIdentityStore {
     readonly botSlug: string;
     readonly displayName: string;
     readonly teamId?: string;
+    /** Which kind of target `teamId` addresses (migration 0054). OPTIONAL on
+     *  this structural mirror on purpose: a store that predates the chat
+     *  targets still satisfies the port, and its rows keep meaning `'team'` —
+     *  which is the only thing they could ever have meant. */
+    readonly targetKind?: TeamsTargetKind;
   }): Promise<OperatorTeamsIdentityRecord>;
   /** Optional: persist an enqueue failure into the row's last_error so the
    *  status endpoint can distinguish 'queueing failed' from 'just created,
@@ -273,6 +362,36 @@ export interface OperatorTeamsIdentityStore {
    * is no longer in.
    */
   clearTeamInstall?(agentId: string): Promise<OperatorTeamsIdentityRecord>;
+  /**
+   * Return the row to `pending` with every Azure identifier cleared, keeping
+   * the two fields a human typed (`botSlug`, `displayName`) — the last act of
+   * a teardown.
+   *
+   * Optional for the same reason as {@link clearTeamInstall}, and refused the
+   * same way: without it the reset route answers 501 rather than deleting
+   * Azure objects it could not then forget. A middleware that removed an app
+   * registration and kept a row pointing at it would send the next
+   * provisioning run building a bot on an application that is gone.
+   */
+  resetForRetry?(agentId: string): Promise<OperatorTeamsIdentityRecord>;
+  /**
+   * Drop the row entirely — the last act of a FULL teardown, the one that
+   * winds the agent back to having no Teams identity at all so a new
+   * `bot_slug` and display name can be chosen.
+   *
+   * Optional and gated the same way as the two above: without it the route
+   * answers 501 for `scope: 'identity'` while the milder reset keeps working,
+   * because a half-supported destructive reset is worse than an unavailable
+   * one.
+   */
+  deleteForAgent?(agentId: string): Promise<unknown>;
+  /** Persist a single field mid-teardown — today only the freshly resolved
+   *  `appObjectId`, which must reach the database BEFORE the delete that
+   *  makes it unlookupable. Optional, like every other write above. */
+  update?(
+    agentId: string,
+    patch: { readonly appObjectId?: string | null },
+  ): Promise<unknown>;
 }
 
 /** Structural subset of `TeamsProvisioningJobRunner` — enqueue is
@@ -294,6 +413,22 @@ export interface OperatorTeamsProvisioningRunner {
    *  fire-and-forget caller cannot learn about the refusal in time. See
    *  {@link assertTeamRetargetAllowed}. */
   runningTeamId(agentId: string): string | null;
+  /**
+   * Reserve this agent for an operation that is not a provisioning run, and
+   * hand back the release — or `null` when it is already busy.
+   *
+   * The reset route needs this rather than an `isRunning` check alone,
+   * because `isRunning` answers a question about the PAST instant: between
+   * reading it and starting to delete an app registration, an enqueue can
+   * arrive and start building on the very objects the teardown is removing.
+   * The lease closes that window from the one place that knows what is in
+   * flight.
+   *
+   * Optional so a stub runner (and every existing test) still satisfies the
+   * port; the route falls back to refusing on `isRunning` alone, which is the
+   * pre-teardown behaviour of every other destructive route here.
+   */
+  acquireExclusive?(agentId: string, label: string): (() => void) | null;
 }
 
 export interface OperatorTeamsIdentityDeps {
@@ -330,13 +465,139 @@ export interface OperatorTeamsIdentityDeps {
    */
   readonly installs?: OperatorTeamsInstallStore;
   /**
+   * The provisioning progress log (`agent_teams_provisioning_events`,
+   * migration 0053, #915). Optional — see
+   * {@link OperatorTeamsEventStore}.
+   */
+  readonly events?: OperatorTeamsEventStore;
+  /**
    * Resolve one team id to its Graph display name (`teamsProvisioner@1`
    * >= 0.5.0), or `null` when the connector cannot answer. Optional and
    * best-effort: a name is decoration on a binding the route already knows,
    * never a precondition for reporting it.
    */
   readonly resolveTeamName?: (teamId: string) => Promise<string | null>;
+  /**
+   * Render this identity's Teams app package ON DEMAND (byte5ai/omadia#924).
+   *
+   * BUILT PER REQUEST, NEVER STORED. A package saved at provisioning time
+   * starts drifting the moment the agent's identity is edited — name,
+   * description, accent colour, avatar all feed the manifest — and the
+   * operator would be handed a zip that differs from what a re-run would
+   * upload. Since the render is pure and cheap (`loadPackageAssets` reads
+   * files, `buildAppPackage` is documented "pure, no network"), rebuilding is
+   * both the correct and the simpler answer.
+   *
+   * Optional: a mount without the connector or without the channel-teams
+   * package cannot render one, and the route says so as a capability rather
+   * than 500ing.
+   */
+  readonly buildAppPackage?: (
+    record: OperatorTeamsIdentityRecord,
+  ) => Promise<Uint8Array>;
+  /**
+   * The tenant's delegated token set (#924/#949), read on demand.
+   *
+   * Two routes need it and neither can fake it: withdrawing the app from the
+   * tenant catalog is delegated-only at Microsoft, and chat enumeration may
+   * be. Optional — absent means "nobody is signed in", which both routes
+   * report as a blocked capability rather than a failure.
+   */
+  readonly delegatedTokens?: {
+    read(): Promise<DelegatedTokenSet | undefined>;
+    /**
+     * WRITE, for rotations only — both consumers refresh a spent access token
+     * rather than reporting it as a missing sign-in, and a rotation the vault
+     * never sees is a refresh token already spent.
+     *
+     * Optional, and its absence is enforced rather than merely tolerated: no
+     * write port means neither route refreshes at all. Signing a tenant out
+     * silently is a far worse outcome than one blocked listing. See
+     * `platform/teamsDelegatedRefresh.ts`.
+     */
+    write?(tokens: DelegatedTokenSet): Promise<void>;
+  };
+  /**
+   * WRITE access to the provisioning progress log, so a teardown lands on the
+   * same timeline as a run (`events` above is the read side).
+   *
+   * Deliberately a second dep rather than a widening of `events`: the router
+   * has been a pure READER of that table since #915 — the job runner is its
+   * only writer — and the teardown is the first thing the router itself does
+   * that an operator watches happen. Keeping the two directions apart makes
+   * that exception visible instead of quietly granting the whole router write
+   * access to a log it does not own.
+   */
+  readonly eventWriter?: TeamsResetEventSink;
+  /**
+   * Remove this bot's `teams_bots` entry from the channel-teams plugin config
+   * — the teardown half of the automatic write the provisioning chain does
+   * (#910).
+   *
+   * Optional like every other capability here: a mount that never wired the
+   * automatic write has no entry the teardown put there, and the reset simply
+   * reports that step as skipped.
+   */
+  readonly unsyncBotConfig?: (
+    botSlug: string,
+  ) => Promise<TeamsBotsConfigSyncOutcome>;
 }
+
+/**
+ * The subset of `TeamsProvisioningEventStore` this router uses (migration
+ * 0053, byte5ai/omadia#915) — read-only. The runner is the only writer.
+ *
+ * Optional on the deps for the same reason `installs` is: a middleware whose
+ * migrations have not reached 0053 answers the status endpoint without a
+ * timeline rather than 500ing against a table that is not there.
+ */
+export interface OperatorTeamsEventStore {
+  listRecent(
+    agentId: string,
+    limit?: number,
+  ): Promise<readonly OperatorTeamsProvisioningEventRecord[]>;
+}
+
+/** One `agent_teams_provisioning_events` row, camelCase — see
+ *  `platform/teamsProvisioningEventStore.ts`. */
+export interface OperatorTeamsProvisioningEventRecord {
+  readonly id: string;
+  readonly agentId: string;
+  readonly at: Date;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/**
+ * Filename stem for a downloaded Teams app package (byte5ai/omadia#924).
+ *
+ * Derived from the BOT slug, because that is the name the package carries into
+ * the Teams catalogue — an operator comparing a download against what is live
+ * matches on that, not on the orchestrator's slug.
+ *
+ * Sanitised rather than trusted: the value lands in a `Content-Disposition`
+ * header, where a quote or a newline is a header-injection primitive. The bot
+ * slug is already constrained upstream (`BOT_SLUG_RE` in
+ * `platform/teamsProvisionerService.ts`), so this narrowing normally changes
+ * nothing — which is exactly the property a defence at a boundary should have.
+ */
+export function teamsPackageFilenameFor(record: {
+  readonly botSlug: string;
+}): string {
+  const safe = record.botSlug
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, 64);
+  return `omadia-teams-${safe.length > 0 ? safe : 'app'}`;
+}
+
+/** How many events the status endpoint publishes. A run emits roughly a
+ *  dozen; thirty covers a full retry storm without turning a status poll
+ *  (every 3s, per open panel) into a page of JSON. */
+export const TEAMS_PROVISIONING_EVENT_LIMIT = 30;
 
 /** The subset of `AgentTeamsInstallStore` this router uses. */
 export interface OperatorTeamsInstallStore {
@@ -347,12 +608,19 @@ export interface OperatorTeamsInstallStore {
     displayName: string,
   ): Promise<boolean>;
   remove(agentId: string, teamId: string): Promise<boolean>;
+  /** Drop every binding of one agent — the teardown's counterpart of
+   *  {@link remove}. Optional so a store predating it still satisfies the
+   *  port; without it the teardown leaves the read model alone and says so. */
+  removeAllForAgent?(agentId: string): Promise<number>;
 }
 
 /** One persisted binding, camelCase — see `platform/agentTeamsInstallStore.ts`. */
 export interface OperatorTeamsInstallRecord {
   readonly agentId: string;
   readonly teamId: string;
+  /** Optional for the same structural-mirror reason as on the identity
+   *  record; absent means `'team'`. */
+  readonly targetKind?: TeamsTargetKind;
   readonly teamsAppId: string | null;
   readonly teamDisplayName: string | null;
   readonly displayNameSyncedAt?: Date | null;
@@ -381,6 +649,61 @@ export function projectTeamsIdentityErrorDetail(
   record: OperatorTeamsIdentityRecord,
 ): TeamsProvisioningErrorDetail | null {
   return record.lastError ? classifyTeamsProvisioningError(record.lastError) : null;
+}
+
+/** One event as the status endpoint publishes it — snake_case like the rest
+ *  of the payload, `at` as an ISO string. */
+export interface TeamsProvisioningEventProjection {
+  readonly id: string;
+  readonly at: string;
+  readonly step: string;
+  readonly status: string;
+  readonly attempt: number | null;
+  readonly detail: string | null;
+}
+
+/**
+ * The run's timeline, newest first (#915).
+ *
+ * THIS FUNCTION IS THE ROUTE'S ONE CHOKE POINT for progress-log failures, the
+ * mirror of the runner's `emit`. The timeline is decoration on a response
+ * whose actual payload is the identity row: a middleware that has not reached
+ * migration 0053, a table that is briefly unreadable, a query that times out —
+ * none of those are a reason to deny an operator the state of their agent. So
+ * every one of them degrades to an empty list, loudly in the server log and
+ * silently in the response.
+ *
+ * The empty list is honest, not a lie: it says "no events to show", which is
+ * exactly what a pre-0053 middleware has. What it must never do is claim a
+ * run failed or succeeded, and it cannot — every entry here is written by the
+ * runner or does not exist.
+ */
+async function projectProvisioningEvents(
+  deps: OperatorTeamsIdentityDeps,
+  agentId: string,
+): Promise<readonly TeamsProvisioningEventProjection[]> {
+  const events = deps.events;
+  if (!events) return [];
+  try {
+    const rows = await events.listRecent(
+      agentId,
+      TEAMS_PROVISIONING_EVENT_LIMIT,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      at: row.at.toISOString(),
+      step: row.step,
+      status: row.status,
+      attempt: row.attempt,
+      detail: row.detail,
+    }));
+  } catch (err) {
+    console.warn(
+      `[operator-agents] provisioning timeline for agent '${agentId}' could not be read:`,
+      err,
+    );
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -415,10 +738,17 @@ export function projectTeamsIdentityErrorDetail(
 // doing, and `capabilities.enumerate` stays false so the UI can say so.
 // ---------------------------------------------------------------------------
 
-/** One team an agent's Teams app is known to be installed in. */
+/** One target an agent's Teams app is known to be installed in. */
 export interface InstalledTeamProjection {
-  /** Teams team (group) id. */
+  /** Teams team (group) id, or a chat conversation id — see `target_kind`. */
   readonly team_id: string;
+  /**
+   * WHICH KIND of target `team_id` addresses (migration 0054). Sent so the
+   * operator UI can label a chat as a chat instead of listing it under a
+   * heading that says team — the whole reason the field test read as a
+   * mystery rather than as a wrong-kind-of-id.
+   */
+  readonly target_kind: TeamsTargetKind;
   /**
    * Graph display name of the team, as last resolved — `null` when it was
    * never resolved (no connector, connector < 0.5.0, or the team is not
@@ -463,6 +793,10 @@ export function projectInstalledTeams(
   return [
     {
       team_id: record.teamId,
+      // The pre-0054 derivation can only ever have described a team: it is
+      // the fallback for a mount with no installs table, and no code path
+      // that wrote those rows could install anywhere else.
+      target_kind: record.targetKind ?? 'team',
       team_display_name: null,
       display_name_synced_at: null,
       teams_app_id: record.teamsAppId,
@@ -496,6 +830,7 @@ export async function readInstalledTeams(
   const named = await resolveMissingTeamNames(deps, agentId, rows);
   return named.map((row) => ({
     team_id: row.teamId,
+    target_kind: row.targetKind ?? 'team',
     team_display_name: row.teamDisplayName,
     display_name_synced_at: row.displayNameSyncedAt ?? null,
     teams_app_id: row.teamsAppId,
@@ -518,7 +853,10 @@ async function resolveMissingTeamNames(
   const installs = deps.installs;
   if (!resolve || !installs) return rows;
   const missing = rows
-    .filter((row) => row.teamDisplayName === null)
+    // `resolveTeamName` is `teamsProvisioner@1.getTeam`, which answers for a
+    // TEAM. Asking it about a chat id spends a Graph call to be told
+    // `found: false` and leaves exactly the nameless row we started with.
+    .filter((row) => row.teamDisplayName === null && (row.targetKind ?? 'team') === 'team')
     .slice(0, MAX_NAME_LOOKUPS_PER_READ);
   if (missing.length === 0) return rows;
 
@@ -560,6 +898,20 @@ export interface TeamsAssignmentCapabilities {
   readonly enumerate: boolean;
   /** Track more than one team per agent — migration 0049 stores one. */
   readonly multi_team: boolean;
+  /** Install into a GROUP CHAT or 1:1 chat — requires a connector that
+   *  publishes `installToChat` (M365 connector >= 0.7.0). */
+  readonly chat_install: boolean;
+  /**
+   * Remove a CHAT install — requires `uninstallFromChat`, a different
+   * connector method from the one `uninstall` reports.
+   *
+   * SEPARATE FLAG, not a widening of `uninstall`, because the two directions
+   * arrived in different connector versions and a single boolean can only
+   * lie about one of them: reporting the team verdict for a chat row lights
+   * up a control that answers 501, and reporting the chat verdict for a team
+   * row greys out a removal that works.
+   */
+  readonly chat_uninstall: boolean;
   /** Why a `false` above is false, keyed by capability. */
   readonly unsupported_reason: Readonly<Record<string, string>>;
 }
@@ -575,6 +927,29 @@ export const TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION = '0.4.0';
 export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
   `the installed teamsProvisioner@1 publishes no uninstallFromTeam method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a team is a manual Teams-admin step.`;
 
+/** Reason text for the chat direction against a connector that predates it —
+ *  a version skew an operator can fix, so the sentence names the version. */
+export const TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`;
+
+/** Reason text for the chat REMOVAL direction. Same version as the chat
+ *  install — `installToChat` and `uninstallFromChat` shipped together — but
+ *  its own sentence, because an operator reading it is looking at an install
+ *  they cannot remove, not one they cannot create. */
+export const TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no uninstallFromChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a chat is a manual Teams step.`;
+
+/** Minimum connector that can tear a provisioning run down without making
+ *  things worse — see `platform/teamsProvisionerCleanup.ts` on the purge. */
+export const TEAMS_RESET_MIN_CONNECTOR_VERSION = '0.8.0';
+
+/** Reason text for a mount that cannot reset. Two independent causes, one
+ *  sentence: no connector at all, or an identity store predating
+ *  `resetForRetry`. Both mean the same thing to the operator — the cleanup is
+ *  still a manual Azure-portal step. */
+export const TEAMS_RESET_UNSUPPORTED_REASON =
+  `resetting a Teams provisioning run needs teamsProvisioner@1 and an identity store that can return the row to 'pending' — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_RESET_MIN_CONNECTOR_VERSION} and apply migration 0055; until then the Entra app, the Azure bot and the catalog entry have to be removed by hand.`;
+
 const STRUCTURAL_UNSUPPORTED_REASONS: Readonly<Record<string, string>> = {
   enumerate:
     'teamsProvisioner@1 publishes no installation-listing method — the team list is what omadia recorded when it installed (agent_teams_installs), not a live enumeration from Graph.',
@@ -589,9 +964,10 @@ const MULTI_TEAM_UNSUPPORTED_REASON =
 /**
  * The capability block for ONE request.
  *
- * `uninstall` is the only entry that varies at runtime: it mirrors whether
- * the connector installed RIGHT NOW publishes `uninstallFromTeam`
- * (byte5ai/omadia#900). Everything else is a structural property of this
+ * `uninstall` and `chat_install` are the entries that vary at runtime: each
+ * mirrors whether the connector installed RIGHT NOW publishes the method
+ * behind it (`uninstallFromTeam`, byte5ai/omadia#900; `installToChat`, the
+ * chat targets). Everything else is a structural property of this
  * middleware's schema and the capability contract, so it stays constant.
  *
  * A `false` always ships with its reason, and the reason distinguishes the
@@ -601,15 +977,25 @@ const MULTI_TEAM_UNSUPPORTED_REASON =
 export function teamsAssignmentCapabilities(
   canUninstall: boolean,
   canMultiTeam = false,
+  canChatInstall = false,
+  canChatUninstall = false,
 ): TeamsAssignmentCapabilities {
   return {
     install: true,
     uninstall: canUninstall,
     enumerate: false,
     multi_team: canMultiTeam,
+    chat_install: canChatInstall,
+    chat_uninstall: canChatUninstall,
     unsupported_reason: {
       ...(canUninstall ? {} : { uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON }),
       ...(canMultiTeam ? {} : { multi_team: MULTI_TEAM_UNSUPPORTED_REASON }),
+      ...(canChatInstall
+        ? {}
+        : { chat_install: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON }),
+      ...(canChatUninstall
+        ? {}
+        : { chat_uninstall: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON }),
       ...STRUCTURAL_UNSUPPORTED_REASONS,
     },
   };
@@ -747,6 +1133,109 @@ function rejectedRunDetail(result: unknown): string | null {
 }
 
 /**
+ * Turn the operator's pasted `team_id` into a decided install target, or
+ * answer the request with a message they can act on.
+ *
+ * THE FAILURE THIS REPLACES. A pasted id that was neither a team nor a
+ * channel used to travel all the way down the provisioning chain and die at
+ * step five against Graph — `400 teamId needs to be a valid GUID`, then
+ * `404 No team found with Group Id`. Five successful steps, an Entra app, an
+ * Azure bot and a catalog upload later, the operator learned only that
+ * something about their id was wrong. Deciding it HERE means the answer
+ * arrives in the same request, before anything is provisioned.
+ *
+ * `knownKind` IS THE DIRECTORY'S ANSWER, NOT A HINT. When the body carries
+ * `target_kind`, the operator picked this id out of `GET /:slug/teams-targets`
+ * and Graph had already said what it was. Passing it on is what stops the
+ * middleware from re-guessing what the listing knew — the failure that made a
+ * legacy `19:…@thread.skype` group chat unpickable even though our own picker
+ * had offered it. `resolveTeamsInstallTarget` binds the claim to this exact
+ * string and still refuses a channel, so the guarantee above survives it.
+ *
+ * Returns `null` when it has already answered `res`.
+ */
+function resolveInstallTargetOrRefuse(
+  res: Response,
+  raw: string,
+  knownKind?: TeamsTargetKind,
+): { readonly id: string; readonly kind: TeamsTargetKind } | null {
+  const target = resolveTeamsInstallTarget(
+    raw,
+    knownKind === undefined ? undefined : { id: raw.trim(), kind: knownKind },
+  );
+  if (target.ok) return { id: target.id, kind: target.kind };
+
+  if (target.reason === 'channel') {
+    // A channel is refused rather than redirected to its parent team.
+    // Installing into the team would succeed and put the app in EVERY channel
+    // of it — a wider audience than was asked for, produced by a guess.
+    res.status(400).json({
+      error: 'teams_target_is_channel',
+      message:
+        'this is a CHANNEL id (19:…@thread.tacv2), and a channel cannot be an install target: Teams installs an app into a team or into a chat, never into a single channel. Use the id of the team that owns the channel (Teams → team → "Get link to team" → the groupId), or a group chat id (19:…@thread.v2).',
+      target_id: raw.trim(),
+    });
+    return null;
+  }
+
+  if (target.reason === 'ambiguous') {
+    // NOT guessed at. The id is both a team group id without its dashes and
+    // the stem of a group-chat id, and the only party who knows which was
+    // meant is the operator — so the refusal hands back both spellings and
+    // asks them to paste the one they mean. This is the field-test failure,
+    // answered in the first request instead of at step five.
+    res.status(400).json({
+      error: 'teams_target_ambiguous',
+      message: `'${raw.trim()}' is 32 hex digits, which is BOTH a team (group) id without its dashes AND the stem of a group chat id — omadia will not guess. Paste '${target.asTeamId}' for the team, or '${target.asGroupChatId}' for the group chat.`,
+      target_id: raw.trim(),
+      /** The two ways out, ready to paste — the UI offers them as choices. */
+      as_team_id: target.asTeamId,
+      as_group_chat_id: target.asGroupChatId,
+    });
+    return null;
+  }
+
+  res.status(400).json({
+    error: 'teams_target_unrecognised',
+    message: `'${raw.trim()}' is not a Teams install target — expected a team (group) id, a group chat id (19:…@thread.v2, or 19:…@thread.skype for one created before the v2 split) or a 1:1 chat id (19:…@unq.gbl.spaces).`,
+    target_id: raw.trim(),
+    examples: {
+      team: TEAMS_TARGET_EXAMPLES.team,
+      group_chat: TEAMS_TARGET_EXAMPLES.groupChat,
+      legacy_group_chat: TEAMS_TARGET_EXAMPLES.legacyGroupChat,
+      one_on_one_chat: TEAMS_TARGET_EXAMPLES.oneOnOneChat,
+    },
+  });
+  return null;
+}
+
+/**
+ * Refuse a CHAT target the installed connector cannot reach (`installToChat`,
+ * connector >= 0.7.0).
+ *
+ * 501 rather than 400: the request is well-formed and will work verbatim once
+ * the plugin is upgraded, so the refusal names the version instead of blaming
+ * the input. Checked before anything is written, so a refused request leaves
+ * no re-targeted row behind.
+ *
+ * Returns `true` when it has answered `res`.
+ */
+function refuseUnsupportedChatTarget(
+  res: Response,
+  deps: OperatorTeamsIdentityDeps,
+  kind: TeamsTargetKind,
+): boolean {
+  if (!isChatTarget(kind)) return false;
+  if (supportsChatInstall(deps.getProvisioner?.())) return false;
+  res.status(501).json({
+    error: 'teams_chat_install_unsupported',
+    message: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON,
+    target_kind: kind,
+  });
+  return true;
+}
+
+/**
  * Start (or resume) the provisioning chain without awaiting the run.
  *
  * Fire-and-forget by design — the chain takes minutes — but NOT fire-and-
@@ -761,12 +1250,16 @@ function startProvisioningRun(
   deps: OperatorTeamsIdentityDeps,
   agent: { readonly id: string; readonly slug: string },
   teamId: string,
-  opts?: { readonly republish?: boolean },
+  opts?: { readonly republish?: boolean; readonly targetKind?: TeamsTargetKind },
 ): void {
   void Promise.resolve(
     deps.runner.enqueue({
       agentId: agent.id,
       teamId,
+      // Omitted rather than defaulted to `'team'` here: the runner owns that
+      // default, and forwarding an explicit value the caller never chose would
+      // hide a caller that forgot to pass one.
+      ...(opts?.targetKind !== undefined ? { targetKind: opts.targetKind } : {}),
       ...(opts?.republish === true ? { republish: true } : {}),
     }),
   )
@@ -794,6 +1287,55 @@ function startProvisioningRun(
     });
 }
 
+/**
+ * Carry the provisioned Teams name into the agent's own identity (#967).
+ *
+ * WHY HERE. This is the one moment an operator states what the bot is called.
+ * The name reaches the bot registration and the app package from the
+ * provisioning row; before this call it reached nothing else, so the agent
+ * kept speaking as the platform assistant — outwardly `Messias`, inwardly the
+ * platform's name. Seeding at the START of the chain rather than at its end
+ * means the very first package and the very first turn already agree, and a
+ * chain that fails at step two still leaves the operator's chosen name
+ * visible on the agent page.
+ *
+ * FROM THE STORED ROW, NOT THE REQUEST BODY. `ensureForAgent` is
+ * create-if-absent: a re-POST carrying a different `display_name` does NOT
+ * rename an existing Teams identity. Seeding from the body would therefore
+ * write a name the tenant does not use — re-creating the exact split this
+ * fixes, pointing the other way. The row's `displayName` is what the bot
+ * actually wears.
+ *
+ * NEVER FAILS THE REQUEST. Provisioning is the operator's actual intent; the
+ * name adoption is convergence on top of it. A failure is logged and the
+ * chain proceeds, in the same spirit as the `teams_bots` config sync.
+ */
+async function adoptProvisionedDisplayName(
+  identity: OperatorAgentIdentityDeps | undefined,
+  registry: OrchestratorRegistry,
+  agent: { readonly id: string; readonly slug: string },
+  displayName: string,
+): Promise<void> {
+  // No identity store wired (minimal mount, no DATABASE_URL): nothing to
+  // seed, and provisioning never depended on it.
+  if (!identity) return;
+  try {
+    const before = await identity.store.getByAgentId(agent.id);
+    const after = await identity.store.adoptDisplayName(agent.id, displayName);
+    // The store refuses an authored name, so an unchanged value means either
+    // "already named" or "already named exactly this" — neither is a change
+    // the running Agent needs to hear about. Only a real adoption reloads,
+    // because the name is part of this Agent's system prompt and a stored
+    // name nobody rebuilt for is a name the bot never says.
+    if ((before?.displayName ?? null) === (after?.displayName ?? null)) return;
+    await registry.reload();
+  } catch (err) {
+    console.warn(
+      `[operator-agents] could not adopt the provisioned Teams name for '${agent.slug}' into its identity: ${err instanceof Error ? err.message : String(err)} — provisioning continues; the operator can set the name on the agent's identity page`,
+    );
+  }
+}
+
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
  *  Bounds and charset follow channel-teams' BOT_SLUG_PATTERN (max 63); the
  *  dash-trim runs AFTER the length cut so a truncation can never leave a
@@ -814,10 +1356,20 @@ function deriveBotSlug(agentSlug: string): string {
 /** Structural subset of `AgentIdentityStore` — the router never learns `pg`. */
 export interface OperatorAgentIdentityStore {
   getByAgentId(agentId: string): Promise<AgentIdentityRecord | undefined>;
-  saveText(
+  save(
     agentId: string,
-    input: AgentIdentityTextInput,
+    input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord>;
+  recompose(
+    agentId: string,
+    composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined>;
+  /** #967 — adopt the provisioned Teams name, ONLY when none is authored.
+   *  The refusal lives in the store's SQL; see `adoptDisplayName`. */
+  adoptDisplayName(
+    agentId: string,
+    displayName: string,
+  ): Promise<AgentIdentityRecord | undefined>;
   setAvatar(
     agentId: string,
     avatar: AgentIdentityAvatarInput,
@@ -854,6 +1406,13 @@ const AgentIdentitySchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
     .nullish(),
+  // The persona and quality blocks are validated by the SPEC's own schemas,
+  // not by a second definition here. They are the same documents the Agent
+  // Builder writes and `agent.md` frontmatter mirrors; a private copy would
+  // drift the moment an axis or a preset is added, and the compilers this
+  // route calls are written against those schemas.
+  persona: PersonaConfigSchema.nullish(),
+  quality: QualityConfigSchema.nullish(),
 });
 
 /** What a write did to the agent's published Teams package. */
@@ -896,6 +1455,8 @@ export function projectAgentIdentity(
       long_description: identity?.longDescription ?? null,
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
+      persona: identity?.persona ?? null,
+      quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
       avatar:
         identity?.avatar == null
@@ -907,6 +1468,12 @@ export function projectAgentIdentity(
             },
       updated_at: identity?.updatedAt.toISOString() ?? null,
     },
+    // The compiled prompt is surfaced read-only: it is what the agent
+    // actually speaks with, assembled from four controls that each show only
+    // their own part. An operator tuning axes should be able to read the
+    // result rather than infer it.
+    composed_prompt: identity?.composed.text ?? null,
+    composed_family: identity?.composed.family ?? null,
     resolved: {
       display_name: resolved.displayName,
       short_description: resolved.shortDescription,
@@ -916,6 +1483,21 @@ export function projectAgentIdentity(
       has_avatar: resolved.hasAvatar,
     },
   };
+}
+
+/**
+ * Which persona family this agent's persona deltas are computed against.
+ *
+ * `model_routing.main` is the operator's per-agent model choice; without one
+ * the agent runs on the platform default, which this router does not know —
+ * and {@link inferFamilyFromModel} answers `sonnet` for an unknown id, the
+ * documented safe middle ground for the delta math.
+ */
+function agentPersonaFamily(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+}): PersonaModelFamily {
+  const main = agent.modelRouting?.['main'];
+  return inferFamilyFromModel(typeof main === 'string' ? main : '');
 }
 
 /**
@@ -977,6 +1559,12 @@ export interface OperatorAgentsRouterOptions {
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
   readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
+  /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
+   *  banner probes `GET /` and reads `cause` off the 503 so it can name the
+   *  actual remedy (add access vs. assign the orchestrator). Optional: tests
+   *  and minimal mounts omit it and the 503 carries no `cause`. Must not
+   *  throw; a rejection degrades to `unknown`. */
+  readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
 }
 
 export function createOperatorAgentsRouter(
@@ -995,11 +1583,23 @@ export function createOperatorAgentsRouter(
   }
 
   function unavailable(res: Response): void {
-    res.status(503).json({
+    const body = {
       error: 'multi_orchestrator_unavailable',
       message:
         'orchestratorRegistry@1 is not published — DATABASE_URL must be set and the orchestrator plugin must be active.',
-    });
+    };
+    const readinessCause = options.getReadinessCause;
+    if (readinessCause === undefined) {
+      res.status(503).json(body);
+      return;
+    }
+    // The cause is a decoration on an error that is being sent regardless, so
+    // a failing lookup must never turn the 503 into a hung request or a 500.
+    void readinessCause()
+      .catch((): RuntimeReadinessCause => 'unknown')
+      .then((cause) => {
+        res.status(503).json({ ...body, cause });
+      });
   }
 
   function slugParam(req: Request, res: Response): string | undefined {
@@ -1340,28 +1940,94 @@ export function createOperatorAgentsRouter(
         return;
       }
       const before = await deps.store.getByAgentId(agent.id);
-      const identity = await deps.store.saveText(agent.id, {
+      const persona = (body.persona ?? null) as PersonaConfig | null;
+      const quality = (body.quality ?? null) as QualityConfig | null;
+      // Compile HERE, on the write path: the orchestrator package cannot
+      // import the middleware's compilers, so the prompt an agent speaks
+      // with is stored alongside the settings it was built from. The family
+      // comes from the agent's own model routing — persona axes are deltas
+      // against it, so composing against the wrong one would emit the wrong
+      // traits.
+      const family = agentPersonaFamily(agent);
+      const composed = composeAgentIdentityPrompt({
+        instructions: body.instructions ?? null,
+        persona,
+        quality,
+        family,
+      });
+      const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
         longDescription: body.long_description ?? null,
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
+        persona,
+        quality,
+        composed: { text: composed.text, family },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
       // change the operator can see and the agent never speaks. Same reload
       // contract as every other write on this router; the diff decides whether
       // an Orchestrator is actually rebuilt.
-      if (before?.instructions !== identity.instructions) {
+      // Normalised on both sides: a first save has no `before` at all, and
+      // `undefined !== null` would rebuild every Agent over a value that did
+      // not actually move.
+      //
+      // #967 — the display name is on this list now. It used to be excluded
+      // as "a label change, not worth dropping sessions", which was true
+      // while the name only reached the Teams manifest. It reaches the system
+      // prompt as well now (`AgentRow.identityName`), so leaving it out would
+      // store a rename the agent never speaks — the same silent no-op this
+      // reload exists to prevent for `instructions`.
+      const nameChanged =
+        (before?.displayName ?? '').trim() !== (body.display_name ?? '').trim();
+      // #967 follow-up — and the Steckbrief for exactly the same reason the
+      // name joined this list: both descriptions are part of the system prompt
+      // now (`AgentRow.identityShortDescription` / `…Long…`), so an edit that
+      // does not reload is an edit the agent never speaks. They used to be
+      // manifest-only, which is why they were not here before.
+      const descriptionChanged =
+        (before?.shortDescription ?? '').trim() !==
+          (body.short_description ?? '').trim() ||
+        (before?.longDescription ?? '').trim() !==
+          (body.long_description ?? '').trim();
+      if (
+        (before?.composed.text ?? null) !== (composed.text ?? null) ||
+        nameChanged ||
+        descriptionChanged
+      ) {
         await live.registry.reload();
       }
+      // A save whose CONTENT did not change returns the stored row
+      // untouched — including a prompt that may have been compiled against a
+      // model family the agent has since moved off. Recompose covers exactly
+      // that case, and deliberately does not bump the revision: nothing the
+      // operator authored changed.
+      const current =
+        identity.composed.text === composed.text &&
+        identity.composed.family === family
+          ? identity
+          : ((await deps.store.recompose(agent.id, {
+              text: composed.text,
+              family,
+            })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),
         agent,
         before?.revision,
-        identity.revision,
+        current.revision,
       );
-      res.json({ ...projectAgentIdentity(agent, identity), republish });
+      res.json({
+        ...projectAgentIdentity(agent, current),
+        republish,
+        // Boundary presets this build could not resolve. A rule that silently
+        // stopped applying is worse than one that never existed, so the
+        // operator hears about it on the save that dropped it.
+        ...(composed.droppedBoundaryPresets.length > 0
+          ? { dropped_boundary_presets: composed.droppedBoundaryPresets }
+          : {}),
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -1703,10 +2369,16 @@ export function createOperatorAgentsRouter(
       // same single `team_id` column the team read model publishes, so an
       // 'installed' row or an in-flight run toward another team is a 409 —
       // before any write. See refuseConflictingTeamRetarget.
+      // Decide WHAT the pasted id addresses before anything is written or
+      // compared: a channel id and an unusable string are answered here, and
+      // a team id is normalised to the form Graph accepts.
+      const target = resolveInstallTargetOrRefuse(res, body.team_id, body.target_kind);
+      if (!target) return;
+      if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       const current = await deps.store.getByAgentId(existing.id);
       if (
         current &&
-        refuseConflictingTeamRetarget(res, deps, existing, current, body.team_id)
+        refuseConflictingTeamRetarget(res, deps, existing, current, target.id)
       ) {
         return;
       }
@@ -1716,7 +2388,8 @@ export function createOperatorAgentsRouter(
           agentId: existing.id,
           botSlug: body.bot_slug ?? deriveBotSlug(existing.slug),
           displayName: body.display_name ?? existing.name,
-          teamId: body.team_id,
+          teamId: target.id,
+          targetKind: target.kind,
         });
       } catch (err) {
         if ((err as { code?: unknown } | null)?.code === 'bot_slug_taken') {
@@ -1729,10 +2402,20 @@ export function createOperatorAgentsRouter(
         }
         throw err;
       }
-      startProvisioningRun(deps, existing, body.team_id);
+      // #967 — before the run, so the first package and the first turn are
+      // built from an identity that already carries the operator's name.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        existing,
+        row.displayName,
+      );
+      startProvisioningRun(deps, existing, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
         agent: existing.slug,
+        team_id: target.id,
+        target_kind: target.kind,
         bot_slug: row.botSlug,
         state: row.state,
         // Honest signal: true only when the runner actually holds a run for
@@ -1783,10 +2466,24 @@ export function createOperatorAgentsRouter(
         },
         row,
       );
+      // #915 — what the run has been DOING. Read after the projections above
+      // so a slow timeline never delays the parts of this response that
+      // matter; failures are absorbed inside projectProvisioningEvents.
+      const provisioningEvents = await projectProvisioningEvents(
+        deps,
+        existing.id,
+      );
       res.json({
         ok: true,
         agent: existing.slug,
         state: row.state,
+        // #915 — `running` means the runner still has WORK in flight, not
+        // "there is still a map entry". The fix lives in the runner
+        // (`TeamsProvisioningJobRunner.isRunning`), deliberately not here:
+        // suppressing it from a terminal `state` would have hidden the two
+        // legitimate cases where both are true at once — an installed agent
+        // being provisioned into a second team (migration 0051), and a re-run
+        // of a failed row before it writes its first state.
         running: deps.runner.isRunning(existing.id),
         provisioner_installed: deps.isProvisionerInstalled(),
         identity: {
@@ -1816,6 +2513,11 @@ export function createOperatorAgentsRouter(
         // channel-teams plugin config. The copy-paste block above STAYS —
         // this tells the operator whether they still need it.
         teams_bots_sync: teamsBotsSync,
+        // Additive (#915): the current run's step timeline, newest first.
+        // The five persisted chain states say WHERE the run is; these say
+        // what it has been doing between them — which is where the minutes
+        // actually go (Entra replication, ARM backoff, catalog upload).
+        provisioning_events: provisioningEvents,
       });
     } catch (err) {
       badRequest(res, err);
@@ -1844,8 +2546,86 @@ export function createOperatorAgentsRouter(
     );
   }
 
+  /**
+   * The same question for a CHAT install, against the other connector method.
+   *
+   * The store half is identical — a removal that cannot be recorded is not a
+   * removal — so only the provisioner half differs.
+   */
+  function canUninstallChats(deps: OperatorTeamsIdentityDeps): boolean {
+    return (
+      typeof deps.store.clearTeamInstall === 'function' &&
+      supportsChatUninstall(deps.getProvisioner?.())
+    );
+  }
+
   /** Resolve agent + identity row for the team routes, answering the shared
    *  404s. `undefined` means a response was already sent. */
+  /**
+   * Adapt the router's identity-store port to the teardown's.
+   *
+   * They are two different shapes on purpose: the teardown needs a row it can
+   * reason about (`appObjectId` is load-bearing there and absent from most
+   * responses here) and exactly two writes, while this router's port is a
+   * read model with optional everything. The adapter is where the optionality
+   * is resolved ONCE — `resetForRetry` has already been proven present by the
+   * caller's 501 gate, and `update` degrades to a no-op because a store that
+   * cannot persist the object id simply forces the teardown down its
+   * recycle-bin-search path instead.
+   */
+  /**
+   * Read the teardown scope off a request body.
+   *
+   * `undefined` means REFUSE — an unknown value must not fall back to the
+   * default, because the two scopes differ in exactly the way a silent
+   * fallback would hide: the destructive one frees the bot slug and the
+   * milder one keeps it, and an operator who asked to free it and got it kept
+   * finds out only when the create form is still filled in.
+   *
+   * A body-less POST, on the other hand, is not an unknown value — it is
+   * every client written before scopes existed, and it means what it has
+   * always meant.
+   */
+  function parseTeamsResetScope(body: unknown): TeamsResetScope | undefined {
+    const raw = (body as { scope?: unknown } | null | undefined)?.scope;
+    if (raw === undefined || raw === null) return 'run';
+    return (TEAMS_RESET_SCOPES as readonly string[]).includes(raw as string)
+      ? (raw as TeamsResetScope)
+      : undefined;
+  }
+
+  function teamsResetStore(
+    deps: OperatorTeamsIdentityDeps,
+    resetForRetry: (agentId: string) => Promise<OperatorTeamsIdentityRecord>,
+  ): TeamsResetIdentityStore {
+    const deleteForAgent = deps.store.deleteForAgent;
+    return {
+      getByAgentId: async (agentId) => {
+        const row = await deps.store.getByAgentId(agentId);
+        if (!row) return undefined;
+        return {
+          agentId: row.agentId,
+          botSlug: row.botSlug,
+          appId: row.appId,
+          appObjectId: row.appObjectId ?? null,
+          teamsAppId: row.teamsAppId,
+        };
+      },
+      update: async (agentId, patch) => {
+        const update = deps.store.update;
+        if (typeof update !== 'function') return undefined;
+        return update.call(deps.store, agentId, patch);
+      },
+      resetForRetry: (agentId) => resetForRetry.call(deps.store, agentId),
+      // Forwarded only when the store really has it, so the teardown's own
+      // feature detection (`typeof … === 'function'`) reads the truth rather
+      // than a wrapper that would throw on the line after it was called.
+      ...(typeof deleteForAgent === 'function'
+        ? { deleteForAgent: (agentId: string) => deleteForAgent.call(deps.store, agentId) }
+        : {}),
+    };
+  }
+
   async function teamsIdentityRow(
     req: Request,
     res: Response,
@@ -1873,6 +2653,310 @@ export function createOperatorAgentsRouter(
     return { agent: { id: existing.id, slug: existing.slug }, row };
   }
 
+  /**
+   * Download this agent's Teams app package (byte5ai/omadia#924).
+   *
+   * A FALLBACK, NOT THE PATH. Provisioning uploads the package itself — since
+   * #924 through the tenant's delegated sign-in, which is what made the
+   * per-agent manual upload unnecessary. This endpoint exists for the cases
+   * that are always left over: a tenant whose policy forbids programmatic
+   * catalog writes, an admin who wants to inspect the manifest before it goes
+   * live, a support conversation. Offering it does not make it the documented
+   * route, and the UI is deliberately explicit about that.
+   *
+   * AVAILABLE WHENEVER IT IS BUILDABLE, not only after a failure. The package
+   * is a pure render of the identity, so gating it on an error state would
+   * have withheld a harmless artefact exactly from the operators calmly
+   * preparing a rollout, and handed it only to the ones already in trouble.
+   *
+   * REBUILT PER REQUEST — see `buildAppPackage` on the deps for why a stored
+   * blob would be a lie.
+   */
+  router.get(
+    '/:slug/teams-identity/package',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const deps = teamsIdentity(res);
+      if (!deps) return;
+      try {
+        const found = await teamsIdentityRow(req, res, live, deps);
+        if (!found) return;
+        const { row } = found;
+        const build = deps.buildAppPackage;
+        if (!build) {
+          // A capability, not a fault: this mount cannot render a package
+          // (no connector, or no installed channel-teams package to take the
+          // manifest template and icons from).
+          res.status(501).json({
+            error: 'teams_app_package_unavailable',
+            message:
+              'This deployment cannot render a Teams app package — the M365 connector and the channel-teams plugin package must both be installed.',
+          });
+          return;
+        }
+        const zip = await build(row);
+        // The bot slug, not the agent slug: the package IS the bot, and an
+        // operator with two downloads open needs to tell them apart by the
+        // name that appears in the Teams catalogue.
+        const filename = `${teamsPackageFilenameFor(row)}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${filename}"`,
+        );
+        res.setHeader('Content-Length', String(zip.byteLength));
+        // No caching: the package is rendered from the CURRENT identity, and a
+        // cached copy is the stored-blob drift this endpoint exists to avoid.
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(200).end(Buffer.from(zip));
+      } catch (err) {
+        console.warn(
+          `[operator-agents] Teams app package for '${req.params.slug ?? ''}' could not be rendered:`,
+          err,
+        );
+        res.status(500).json({
+          error: 'teams_app_package_failed',
+          message:
+            'The Teams app package could not be rendered — see the middleware log for the underlying error.',
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /:slug/teams/targets — what the operator can PICK instead of type.
+   *
+   * The field this replaces is the one that produced migration 0054's field
+   * test: a bare 32-hex id is a legal reading of both a team's group id and
+   * the stem of a chat id, `resolveTeamsInstallTarget` is therefore obliged
+   * to refuse it as ambiguous, and the operator holding it cannot
+   * disambiguate it either. Every id in this response classifies
+   * unambiguously — teams come back hyphenated, chats keep their `19:…@…`
+   * suffix — so picking from the list cannot produce that input at all.
+   *
+   * ALWAYS 200 WHEN THE AGENT EXISTS. Each half carries its own
+   * `available` flag with a machine-readable `reason`, because an enumeration
+   * is a convenience over a field the operator can still type into, and a 500
+   * from the convenience must not take the field down with it. The one thing
+   * this endpoint must never do is answer `[]` for "I could not look" — see
+   * `services/teamsTargetDirectoryService.ts`.
+   */
+  router.get('/:slug/teams/targets', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const deps = teamsIdentity(res);
+    if (!deps) return;
+    try {
+      // Deliberately NOT `teamsIdentityRow`: an operator choosing where an
+      // agent should live may not have created its Teams identity yet, and a
+      // 404 would hide the picker exactly when it is most useful.
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const directory = await loadTeamsTargetDirectory({
+        getProvisioner: () => deps.getProvisioner?.(),
+        ...(deps.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
+      });
+      res.json({
+        ok: true,
+        agent: agent.slug,
+        provisioner_installed: deps.isProvisionerInstalled(),
+        ...directory,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  /**
+   * POST /:slug/teams-identity/reset — undo a provisioning run.
+   *
+   * TWO SCOPES, ONE TEARDOWN. The body's optional `scope` chooses how far
+   * back the agent is wound:
+   *
+   *   * `'run'` (the default, and what a body-less POST has always meant) —
+   *     the Entra app registration, the Azure bot and the tenant catalog
+   *     entry go; `bot_slug` and `display_name` stay, because they are the
+   *     two answers a human gave and the point is that the retry is one
+   *     button with the same slug.
+   *   * `'identity'` — the same Azure teardown, and then the row itself, so
+   *     the agent is back to having no Teams identity and the operator picks
+   *     a fresh slug and display name from an empty form. `bot_slug` is
+   *     `UNIQUE`, so nothing short of dropping the row can free the name.
+   *
+   * DEFAULTING TO `'run'` IS THE SAFE DIRECTION and it is also what keeps
+   * every existing caller correct: a client that does not know about scopes
+   * cannot accidentally ask for the destructive one.
+   *
+   * WHY THE ORDER AND THE PARTIAL REPORT LIVE IN THE SERVICE, NOT HERE:
+   * `services/teamsIdentityReset.ts`. This route owns three things the
+   * service must not: the connector/version gate, the exclusion against a
+   * provisioning run, and the HTTP shape.
+   *
+   * A PARTIAL TEARDOWN IS A 200. `status: 'incomplete'` with a per-step
+   * report is an ANSWER — it says which Azure objects went and which are
+   * still there — and putting it behind a non-2xx would push it into the
+   * UI's error path, where the steps get collapsed into "reset failed". That
+   * single unhelpful sentence is what this endpoint exists to replace. Only
+   * a REFUSAL (nothing attempted) is a 4xx.
+   */
+  router.post(
+    '/:slug/teams-identity/reset',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      const deps = teamsIdentity(res);
+      if (!deps) return;
+      try {
+        const found = await teamsIdentityRow(req, res, live, deps);
+        if (!found) return;
+        const { agent, row } = found;
+
+        if (!deps.isProvisionerInstalled()) {
+          res.status(503).json({
+            error: 'teams_provisioner_unavailable',
+            message:
+              'teamsProvisioner@1 is not installed — install and activate the M365 connector plugin before resetting a provisioning run.',
+            agent: agent.slug,
+          });
+          return;
+        }
+        // Read BEFORE the capability gates, so an unknown scope is refused as
+        // the client error it is rather than being silently downgraded to the
+        // milder teardown — a caller that asked to free the slug and got a
+        // row back at `pending` would have no way to tell.
+        const scope = parseTeamsResetScope(req.body);
+        if (scope === undefined) {
+          res.status(400).json({
+            error: 'invalid_body',
+            message: `scope must be one of ${TEAMS_RESET_SCOPES.join(' | ')}`,
+            agent: agent.slug,
+          });
+          return;
+        }
+
+        const provisioner = deps.getProvisioner?.();
+        const resetForRetry = deps.store.resetForRetry;
+        if (provisioner === undefined || typeof resetForRetry !== 'function') {
+          // Same rule as the uninstall route: never remove something we
+          // cannot then record as removed. A row still pointing at a purged
+          // app registration would send the next run building a bot on an
+          // application that is not there.
+          res.status(501).json({
+            error: 'teams_reset_unsupported',
+            message: TEAMS_RESET_UNSUPPORTED_REASON,
+            agent: agent.slug,
+          });
+          return;
+        }
+        if (scope === 'identity' && typeof deps.store.deleteForAgent !== 'function') {
+          // Refused BEFORE the exclusive lease and before the first Azure
+          // call. A full reset that emptied Azure and then could not drop the
+          // row would leave the operator holding a filled-in form for an
+          // identity whose objects are gone — the state this route exists to
+          // prevent, reached by the route itself.
+          res.status(501).json({
+            error: 'teams_reset_unsupported',
+            message:
+              'this deployment cannot delete Teams identity rows — reset the run instead, or upgrade the middleware that owns the identity store.',
+            agent: agent.slug,
+          });
+          return;
+        }
+
+        // Take the agent for the duration. `isRunning` alone answers about
+        // the instant it was read; between that read and the first delete an
+        // enqueue can arrive and start building on the very objects the
+        // teardown is about to remove.
+        const acquire = deps.runner.acquireExclusive;
+        const release =
+          typeof acquire === 'function'
+            ? acquire.call(deps.runner, agent.id, 'teams_identity_reset')
+            : deps.runner.isRunning(agent.id)
+              ? null
+              : (): void => {};
+        if (release === null) {
+          res.status(409).json({
+            error: 'teams_provisioning_running',
+            message: `agent '${agent.slug}' has a provisioning run in flight — wait for it to finish before resetting.`,
+            agent: agent.slug,
+          });
+          return;
+        }
+
+        try {
+          const result = await resetTeamsIdentity(
+            {
+              store: teamsResetStore(deps, resetForRetry),
+              getProvisioner: () => provisioner as TeamsResetProvisionerPort,
+              buildBotHandle,
+              ...(typeof deps.installs?.removeAllForAgent === 'function'
+                ? {
+                    installs: {
+                      removeAllForAgent: (agentId: string): Promise<number> =>
+                        (
+                          deps.installs?.removeAllForAgent as (
+                            id: string,
+                          ) => Promise<number>
+                        )(agentId),
+                    },
+                  }
+                : {}),
+              ...(deps.delegatedTokens
+                ? { delegatedTokens: deps.delegatedTokens }
+                : {}),
+              ...(deps.eventWriter ? { events: deps.eventWriter } : {}),
+              ...(deps.unsyncBotConfig
+                ? { unsyncBotConfig: deps.unsyncBotConfig }
+                : {}),
+            },
+            agent.id,
+            scope,
+          );
+          // `agentId` is dropped rather than spread: every other route on
+          // this router identifies an agent by its SLUG, and leaking the
+          // internal id here would make this the one response an operator
+          // screen could accidentally start keying on.
+          const { agentId: _agentId, ...report } = result;
+          res.json({
+            ok: result.status === 'reset',
+            agent: agent.slug,
+            // The state the row held when the teardown started — so the
+            // response says what was torn down, not the `pending` it now is.
+            previous_state: row.state,
+            ...report,
+          });
+        } finally {
+          release();
+        }
+      } catch (err) {
+        if (err instanceof TeamsIdentityResetNotFoundError) {
+          res.status(404).json({
+            error: 'teams_identity_not_found',
+            message: err.message,
+          });
+          return;
+        }
+        if (err instanceof TeamsIdentityResetUnsupportedError) {
+          // Belt and braces: the gate above already answered this, and the
+          // service raises it too so that a future caller wiring the teardown
+          // directly cannot half-perform a full reset either.
+          res.status(501).json({
+            error: 'teams_reset_unsupported',
+            message: err.message,
+          });
+          return;
+        }
+        badRequest(res, err);
+      }
+    },
+  );
+
   router.get('/:slug/teams', async (req: Request, res: Response) => {
     const live = svc();
     if (!live) return unavailable(res);
@@ -1892,12 +2976,18 @@ export function createOperatorAgentsRouter(
         // The recorded install TARGET while the chain has not reached
         // 'installed' — a run in flight (or a stalled one), never an install.
         pending_team_id: row.state === 'installed' ? null : row.teamId,
+        /** Kind of `pending_team_id`, so the in-flight hint can name what it
+         *  is installing into rather than calling every target a team. */
+        pending_target_kind:
+          row.state === 'installed' ? null : (row.targetKind ?? 'team'),
         consent: projectTeamsConsent(row),
         last_error: row.lastError,
         last_error_detail: projectTeamsIdentityErrorDetail(row),
         capabilities: teamsAssignmentCapabilities(
           canUninstallTeams(deps),
           deps.installs !== undefined,
+          supportsChatInstall(deps.getProvisioner?.()),
+          canUninstallChats(deps),
         ),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
@@ -1928,6 +3018,14 @@ export function createOperatorAgentsRouter(
         });
         return;
       }
+      // Same choke point and the same ORDER as POST /:slug/teams-identity:
+      // an unknown agent (404) and an absent connector (503) are answered
+      // first, because neither depends on what the target id says. Only then
+      // is the id decided — and only then can a chat target be refused for a
+      // connector that is present but too old (501, not 503).
+      const target = resolveInstallTargetOrRefuse(res, body.team_id, body.target_kind);
+      if (!target) return;
+      if (refuseUnsupportedChatTarget(res, deps, target.kind)) return;
       // Already installed HERE? With the bindings table that is a lookup in
       // it; without one, the identity's single `team_id` is the only record
       // and the answer degrades to the pre-0051 comparison.
@@ -1936,12 +3034,13 @@ export function createOperatorAgentsRouter(
         : row.state === 'installed' && row.teamId !== null
           ? [row.teamId]
           : [];
-      if (boundTeams.includes(body.team_id)) {
-        // Idempotent: the app is already installed in exactly this team.
+      if (boundTeams.includes(target.id)) {
+        // Idempotent: the app is already installed in exactly this target.
         res.json({
           ok: true,
           agent: agent.slug,
-          team_id: body.team_id,
+          team_id: target.id,
+          target_kind: target.kind,
           state: row.state,
           already_installed: true,
           // Honest, not assumed: a run may still be settling even though
@@ -1955,7 +3054,7 @@ export function createOperatorAgentsRouter(
       // is no longer refused (with migration 0051 bound) is installing into an
       // ADDITIONAL team: the binding gets its own row instead of overwriting
       // the previous one, which is the whole point of the table.
-      if (refuseConflictingTeamRetarget(res, deps, agent, row, body.team_id)) {
+      if (refuseConflictingTeamRetarget(res, deps, agent, row, target.id)) {
         return;
       }
       // Record the (new) target through the store's own gate, then let the
@@ -1965,13 +3064,26 @@ export function createOperatorAgentsRouter(
         agentId: agent.id,
         botSlug: row.botSlug,
         displayName: row.displayName,
-        teamId: body.team_id,
+        teamId: target.id,
+        targetKind: target.kind,
       });
-      startProvisioningRun(deps, agent, body.team_id);
+      // #967 — same adoption as the provisioning POST, and for the agents
+      // that need it most: an identity provisioned BEFORE this existed has no
+      // name of its own, and installing it into a(nother) team is the next
+      // operator action that passes through here. Idempotent and guarded, so
+      // running it on an already-named identity costs one refused UPDATE.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        agent,
+        updated.displayName,
+      );
+      startProvisioningRun(deps, agent, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
         agent: agent.slug,
-        team_id: body.team_id,
+        team_id: target.id,
+        target_kind: target.kind,
         bot_slug: updated.botSlug,
         state: updated.state,
         already_installed: false,
@@ -2020,7 +3132,17 @@ export function createOperatorAgentsRouter(
       }
       const provisioner = deps.getProvisioner?.();
       const clearTeamInstall = deps.store.clearTeamInstall;
-      if (!supportsTeamUninstall(provisioner) || typeof clearTeamInstall !== 'function') {
+      const canTeam = supportsTeamUninstall(provisioner);
+      // The chat direction is a DIFFERENT connector method, and until now this
+      // route ignored it: a chat install was torn down by handing its
+      // `19:…@thread.v2` conversation id to `uninstallFromTeam`, which
+      // addresses `/teams/{id}/installedApps`. Graph answers that with a 400
+      // and the operator is left with an install no button can remove.
+      const canChat = supportsChatUninstall(provisioner);
+      // Neither direction available (or nowhere to record the removal) is the
+      // historical 501, unchanged — a connector that predates BOTH methods
+      // gets exactly the answer and the reason it got before.
+      if ((!canTeam && !canChat) || typeof clearTeamInstall !== 'function') {
         res.status(501).json({
           error: 'teams_uninstall_unsupported',
           message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
@@ -2091,23 +3213,57 @@ export function createOperatorAgentsRouter(
         return;
       }
 
-      const uninstall = provisioner?.uninstallFromTeam;
-      if (uninstall === undefined) {
-        // Unreachable after supportsTeamUninstall; narrows for the compiler
-        // without a non-null assertion.
-        res.status(501).json({
-          error: 'teams_uninstall_unsupported',
-          message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
-          min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
-          agent: agent.slug,
-          team_id: teamId,
+      // WHAT THIS INSTALL ACTUALLY IS, from what was recorded when it was
+      // made — the binding first, the identity row as the pre-0051 fallback,
+      // `'team'` last for a row written before migration 0054 knew about
+      // kinds. Never re-derived from the id: `resolveInstallTarget` reads
+      // strings a human typed, and this id was not typed by a human, it was
+      // stored by the run that installed it.
+      const installedKind: TeamsTargetKind =
+        binding?.targetKind ?? row.targetKind ?? 'team';
+      const removingChat = isChatTarget(installedKind);
+
+      // Both branches answer the same `{ outcome }` shape, so everything
+      // below this point — the binding drop, the state walk-back, the
+      // response — stays one code path for both kinds. The per-kind guards
+      // live inside the branches so the compiler narrows the method itself
+      // rather than trusting the boolean that was computed above.
+      let result: { readonly outcome: UninstallFromTeamOutcome };
+      if (removingChat) {
+        const uninstall = provisioner?.uninstallFromChat;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_chat_uninstall_unsupported',
+            message: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          chatId: installedTeamId,
+          teamsAppId: installedAppId,
         });
-        return;
+      } else {
+        const uninstall = provisioner?.uninstallFromTeam;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_uninstall_unsupported',
+            message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          teamId: installedTeamId,
+          teamsAppId: installedAppId,
+        });
       }
-      const result = await uninstall.call(provisioner, {
-        teamId: installedTeamId,
-        teamsAppId: installedAppId,
-      });
 
       // Drop THIS binding. The identity is only walked back to
       // `catalog_uploaded` when nothing is left bound: an agent still
@@ -2129,6 +3285,9 @@ export function createOperatorAgentsRouter(
         ok: true,
         agent: agent.slug,
         team_id: installedTeamId,
+        /** Which direction actually ran — a team removal and a chat removal
+         *  are different Graph calls and the response should not blur them. */
+        target_kind: installedKind,
         // 'already-absent' is the connector's idempotent success: the app was
         // not in the team. The binding is dropped either way — that is the
         // point of an idempotent remove.
@@ -2399,13 +3558,23 @@ export function createOperatorAgentsRouter(
         return;
       }
       const settings = await live.store.getPlatformSettings();
-      const via =
-        match.agent.id === settings.fallbackAgentId &&
-        !match.bindings.some(
-          (b) =>
-            b.channelType === body.channel_type &&
-            b.channelKey === body.channel_key,
-        )
+      // Order mirrors the resolver: a provisioned identity is checked first,
+      // so reporting it first is what keeps this tester an honest preview.
+      // Without this branch a provisioned bot whose agent also happens to be
+      // the platform fallback would be reported as "fallback" — the exact
+      // wrong explanation for the exact case operators come here to check.
+      const identity = live.registry.identityForChannel(
+        body.channel_type,
+        body.channel_key,
+      );
+      const via = identity
+        ? 'identity'
+        : match.agent.id === settings.fallbackAgentId &&
+            !match.bindings.some(
+              (b) =>
+                b.channelType === body.channel_type &&
+                b.channelKey === body.channel_key,
+            )
           ? 'fallback'
           : 'binding';
       res.json({

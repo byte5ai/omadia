@@ -966,6 +966,11 @@ export interface McpRegistryInfo {
   hasToken: boolean;
 }
 
+/** Where a search result actually came from. `cached-page` means the registry's
+ *  own search was unavailable and the middleware substring-filtered the browse
+ *  page it already held — correct, but limited to that page. */
+export type McpCatalogScope = 'registry' | 'cached-page';
+
 export interface McpCatalogEntry {
   id: string;
   name: string;
@@ -1000,15 +1005,25 @@ export async function deleteMcpRegistry(id: string): Promise<void> {
   await callJson(`/v1/operator/mcp-registries/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+/**
+ * @param opts.refresh Operator explicitly asked to re-dial — drops the
+ *   server-side success cache AND the short "recently unreachable" note.
+ * @param opts.signal Abort a superseded request (search-as-you-type, or the
+ *   operator switching registries) instead of leaving it in flight against a
+ *   registry that can take the full timeout to fail.
+ */
 export async function searchMcpCatalog(
   registryId: string,
   q: string,
-): Promise<{ entries: McpCatalogEntry[] }> {
+  opts?: { refresh?: boolean; signal?: AbortSignal },
+): Promise<{ entries: McpCatalogEntry[]; scope?: McpCatalogScope }> {
   const params = new URLSearchParams();
   if (q) params.set('q', q);
+  if (opts?.refresh === true) params.set('refresh', '1');
   const qs = params.toString();
   return callJson(
     `/v1/operator/mcp-registries/${encodeURIComponent(registryId)}/catalog${qs ? `?${qs}` : ''}`,
+    opts?.signal ? { signal: opts.signal } : {},
   );
 }
 

@@ -1,0 +1,24 @@
+<svg width="236" height="236" viewBox="0 0 236 236" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">omadia tray template</title>
+  <desc id="desc">Monochrome silhouette of the omadia mark for the macOS menu bar.</desc>
+
+  <!--
+    macOS TEMPLATE image: black shape plus alpha ONLY. macOS tints a template
+    itself, once for the light menu bar and once for dark, so any colour here
+    would defeat that and any non-black pixel would tint wrongly. `tray.ts`
+    calls `setTemplateImage(true)` on it.
+
+    Same geometry as `icon.svg` (both derived from the mark in
+    `logo-concepts/omadia-logo-concept.svg`), with two changes forced by the
+    16px menu-bar size rather than by taste:
+      * stroke-width 26 instead of 18 — an 18-unit stroke on a 236 canvas is
+        1.2px at 16px, which renders as a grey smear; 26 gives ~1.8px.
+      * only the large node is kept. The three 13-unit dots collapse into the
+        ring at 16px and read as noise, not as nodes.
+    No background rect: the menu bar shows through the alpha.
+  -->
+  <path d="M118 37C162.735 37 199 73.2649 199 118C199 162.735 162.735 199 118 199C73.2649 199 37 162.735 37 118C37 73.2649 73.2649 37 118 37Z" stroke="#000000" stroke-width="26"/>
+  <path d="M74 188L188 74" stroke="#000000" stroke-width="26" stroke-linecap="round"/>
+  <path d="M71 73L165 167" stroke="#000000" stroke-width="26" stroke-linecap="round"/>
+  <circle cx="188" cy="74" r="22" fill="#000000"/>
+</svg>

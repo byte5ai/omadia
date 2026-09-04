@@ -198,13 +198,23 @@ export async function runOneTurn(
             slug?: string;
           };
           msg = parsed.message ?? parsed.error ?? `HTTP ${String(res.status)}`;
-          // Phase A / TA08 — flag the recovery banner.
-          if (
-            res.status === 503 &&
-            parsed.error === 'agent_unavailable' &&
-            parsed.slug
-          ) {
-            store.patch(sessionId, { agentUnavailableSlug: parsed.slug });
+          // Phase A / TA08 + OM-76/77 — flag the recovery banner and give the
+          // bubble a translated sentence, never a raw "HTTP 503".
+          if (res.status === 503 && parsed.error === 'agent_unavailable' && parsed.slug) {
+            store.patch(sessionId, {
+              agentUnavailableSlug: parsed.slug,
+              agentUnavailableReason: 'agent_unavailable',
+            });
+            msg = t('errorAgentUnavailable');
+          } else if (res.status === 503 && parsed.error === 'no_agents_active') {
+            // OM-76 — there is no orchestrator at all (fresh install / no LLM
+            // provider assigned). Distinct from "this one is gone": the banner
+            // must not offer "re-bind to default", it must point at LLM access.
+            store.patch(sessionId, {
+              agentUnavailableSlug: parsed.slug ?? '',
+              agentUnavailableReason: 'no_agents_active',
+            });
+            msg = t('errorNoAgentsActive');
           }
         } catch {
           msg = fallback || `HTTP ${String(res.status)}`;

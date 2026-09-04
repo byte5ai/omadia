@@ -23,10 +23,10 @@ import {
   type PersonaConfig,
 } from '../../../../_lib/personaTypes';
 import { BoundariesSection } from './BoundariesSection';
-import { ConflictBanner } from './ConflictBanner';
+import { ConflictBanner } from '@/app/_components/persona/ConflictBanner';
 import { CulturePresetDropdown } from './CulturePresetDropdown';
-import { DimensionSlider } from './DimensionSlider';
-import { PersonaRadar, personaAxisToSliderTestId } from './PersonaRadar';
+import { DimensionSlider } from '@/app/_components/persona/DimensionSlider';
+import { PersonaRadar, personaAxisToSliderTestId } from '@/app/_components/persona/PersonaRadar';
 import { PersonaTemplateGallery } from './PersonaTemplateGallery';
 import { QualityPanel } from './QualityPanel';
 

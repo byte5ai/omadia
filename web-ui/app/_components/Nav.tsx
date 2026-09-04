@@ -67,11 +67,19 @@ const NAV: readonly NavItem[] = [
     kind: 'cluster',
     key: 'adminCluster',
     children: [
+      // OM-80 — LLM access holds the orchestrator↔provider assignment without
+      // which no agent runs, yet it had no menu entry (reachable only via the
+      // dashboard status card). First position: it is the setup prerequisite.
+      { kind: 'link', href: '/admin/providers', key: 'llmAccess' },
       { kind: 'link', href: '/admin', key: 'admin' },
       { kind: 'link', href: '/system', key: 'system' },
       // Orchestrators and Conductor moved here from the top level — they're
       // operator-facing configuration surfaces, same audience as Admin/System.
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
+      // #924 — the TENANT Teams sign-in. Its own entry, not a tab inside an
+      // agent: one admin signs in once and every agent provisioned afterwards
+      // uses it, so it has to be reachable BEFORE the first agent exists.
+      { kind: 'link', href: '/operator/teams', key: 'teamsSignIn' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
       // #757 — persisted per-turn privacy receipts, same operator audience.
       { kind: 'link', href: '/operator/receipts', key: 'receipts' },

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import {
   ConfigValidationError,
+  type ChannelIdentityRow,
   type ConfigStore,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
@@ -29,6 +30,24 @@ import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegis
  * per-Agent editor uses, so the registry's hot-reload pipeline picks
  * the change up automatically (no separate reload trigger needed).
  */
+
+/**
+ * The provisioned-bot keys, or none.
+ *
+ * FEATURE-DETECTED rather than called outright. `listChannelIdentities`
+ * arrived with the per-bot routing fix and the store is injected here through
+ * an interface every test builds its own double for; calling it blind would
+ * turn "this double predates the method" into a 500 on a route that has
+ * nothing to do with Teams. No method, and no rows, mean the same thing to
+ * the guard below: there is no provisioned bot claiming this key.
+ */
+async function listChannelIdentitiesSafely(
+  store: ConfigStore,
+): Promise<readonly ChannelIdentityRow[]> {
+  const list = (store as Partial<ConfigStore>).listChannelIdentities;
+  if (typeof list !== 'function') return [];
+  return list.call(store);
+}
 
 const SetBindingSchema = z.object({
   channel_type: z.string().min(1).max(64),
@@ -220,6 +239,39 @@ export function createOperatorChannelsRouter(
       const target = await live.store.getAgentBySlug(body.agent_slug);
       if (!target) {
         res.status(404).json({ error: 'agent_not_found', slug: body.agent_slug });
+        return;
+      }
+
+      // A PROVISIONED BOT IS NOT A FREE CHANNEL KEY.
+      //
+      // Routing resolves `28:<appId>` from `agent_teams_identities` — the
+      // agent the bot was provisioned FOR — and that wins over a binding.
+      // So a binding pointing such a key at a different agent is a write the
+      // operator saw succeed and that changes nothing: the bot keeps
+      // answering as its own agent, and the channels screen goes on showing
+      // the agent they picked. Refused rather than accepted-and-ignored.
+      //
+      // Re-binding to the SAME agent is allowed and is a no-op by
+      // construction — it agrees with the identity — so it is not worth an
+      // error the operator cannot act on.
+      const identities = await listChannelIdentitiesSafely(live.store);
+      const owner = identities.find(
+        (row) =>
+          row.channelType === body.channel_type &&
+          row.channelKey === body.channel_key,
+      );
+      if (owner !== undefined && owner.agentId !== target.id) {
+        const agents = await live.store.listAgents();
+        const ownerSlug =
+          agents.find((a) => a.id === owner.agentId)?.slug ?? null;
+        res.status(409).json({
+          error: 'channel_owned_by_provisioned_bot',
+          message:
+            `channel '${body.channel_key}' is the Teams bot provisioned for agent '${ownerSlug ?? owner.agentId}' — its identity decides the routing, so a binding to '${target.slug}' would be recorded and never take effect. Re-provision the bot for the other agent, or bind a channel that is not a provisioned bot.`,
+          channel_type: body.channel_type,
+          channel_key: body.channel_key,
+          owned_by_agent_slug: ownerSlug,
+        });
         return;
       }
 

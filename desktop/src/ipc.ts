@@ -1,4 +1,5 @@
 import { ipcMain, dialog, app, BrowserWindow, WebContents } from 'electron';
+import os from 'node:os';
 import {
   CH,
   ApiKeyProvider,
@@ -13,6 +14,7 @@ import { setProviderKey, exportRecoveryKey, isEncryptionAvailable } from './secr
 import { readSetup, writeSetup } from './setupState';
 import { isSetupComplete } from './setupState';
 import { setDataDirOverride } from './paths';
+import { detectSyncedLocation } from './syncedPaths';
 import { log } from './log';
 
 const PROVIDER_ENV: Record<ApiKeyProvider, string> = {
@@ -25,6 +27,8 @@ export interface IpcDeps {
   boot: (forward: (p: BootProgress) => void) => Promise<string>;
   /** Called once the UI is serving so main can swap the wizard for the app window. */
   onReady: (uiUrl: string) => void;
+  /** OM-71: the web UI reports that its first real screen is standing. */
+  onUiReady: () => void;
 }
 
 /**
@@ -39,7 +43,58 @@ export function requiresApiKey(provider: WizardConfig['provider']): provider is 
   return provider !== 'subscription';
 }
 
+/** Tries before we stop re-opening the picker, so a warning can never trap the user. */
+const MAX_DATA_DIR_PICKS = 3;
+
+/**
+ * Ask for a data directory, and if the answer is inside a cloud-synced folder,
+ * say so before accepting it.
+ *
+ * A business user picks the folder he uses for important data, which is exactly
+ * the folder that gets synced. A live PostgreSQL cluster there is a known
+ * hazard: the sync client can evict, lock or fork files into conflict copies
+ * while the database holds them open. This is a hint and not a ban - the user
+ * may have a good reason, and the choice stays his (#934).
+ */
+async function chooseDataDirWithSyncWarning(
+  win: BrowserWindow | undefined,
+): Promise<string | null> {
+  for (let attempt = 0; attempt < MAX_DATA_DIR_PICKS; attempt += 1) {
+    const res = await dialog.showOpenDialog(win as BrowserWindow, {
+      title: 'Choose where omadia stores its data',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+
+    const chosen = res.filePaths[0];
+    if (chosen === undefined) return null;
+
+    const synced = detectSyncedLocation(chosen, os.homedir());
+    if (synced === null) return chosen;
+
+    log.warn(`[setup] chosen data dir is inside ${synced}: ${chosen}`);
+    const { response } = await dialog.showMessageBox(win as BrowserWindow, {
+      type: 'warning',
+      buttons: ['Choose a different folder', 'Use this folder anyway'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'This folder is synced to the cloud',
+      message: `${chosen} looks like it is inside ${synced}.`,
+      detail:
+        `omadia runs a live PostgreSQL database in this folder. ${synced} can lock, ` +
+        'move or duplicate files while the database has them open, which can corrupt it. ' +
+        'A local folder outside the synced area is the safer choice.\n\n' +
+        'Pre-update database backups will be kept outside the synced folder either way.',
+    });
+    if (response === 1) return chosen;
+  }
+  log.warn('[setup] data dir selection abandoned after repeated cloud-folder warnings');
+  return null;
+}
+
 export function registerIpc(deps: IpcDeps): void {
+  ipcMain.on(CH.uiReady, () => deps.onUiReady());
+
   ipcMain.handle(CH.getState, (): AppState => ({
     setupComplete: isSetupComplete(),
     encryptionAvailable: isEncryptionAvailable(),
@@ -52,14 +107,16 @@ export function registerIpc(deps: IpcDeps): void {
 
   ipcMain.handle(CH.chooseDataDir, async (e): Promise<string | null> => {
     const win = BrowserWindow.fromWebContents(e.sender) ?? undefined;
-    const res = await dialog.showOpenDialog(win as BrowserWindow, {
-      title: 'Choose where omadia stores its data',
-      properties: ['openDirectory', 'createDirectory'],
-    });
-    if (res.canceled || res.filePaths.length === 0) return null;
-    return res.filePaths[0] ?? null;
+    return chooseDataDirWithSyncWarning(win as BrowserWindow);
   });
 
+  // KNOWN GAP (OM-58), and the one-line fix belongs right here: the wizard's
+  // "Reveal" button reaches the key through this handler, but nothing records
+  // that the user has SEEN it. Only the shell's own Help → "Show recovery key…"
+  // path sets `recoveryKeyShown` (see `recoveryKeyActions.ts`), so a user who
+  // read the key off the wizard's last step still gets one reminder on the next
+  // launch. Calling `markRecoveryKeyShown()` here closes that — it was left out
+  // only because this file belonged to a concurrent PR at the time.
   ipcMain.handle(CH.exportRecoveryKey, (): string => exportRecoveryKey());
 
   ipcMain.handle(CH.complete, async (e, config: WizardConfig): Promise<CompleteResult> => {

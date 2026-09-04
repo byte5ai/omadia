@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.orchestrator"
-  description: "Core chat orchestrator: the Orchestrator class itself (agentic tool-loop against Anthropic Claude), the seven native tools (memory, query_knowledge_graph, chat_participants, ask_user_choice, suggest_follow_ups, find_free_slots, book_meeting), the chat-API HTTP route and the VerifierService wrapper that binds verifier@1 to the live Orchestrator + toSemanticAnswer converter. Erstmaliger Konsument der TurnHookRegistry: ContextRetriever wandert zu onBeforeTurn, FactExtractor zu onAfterTurn (fire-and-forget). Konsumiert die plugin-owned Capabilities `knowledgeGraph` (hard requires; query_knowledge_graph + KG-Lookups), `memoryStore` (memory tool), `embeddingClient` (semantic search), `entityRefBus` (turn-scoped entity tracking), `contextRetriever` + `factExtractor` + `topicDetector` (orchestrator-extras hooks), `verifier` (Bundle: pipeline + store + mode + maxRetries) sowie optional `microsoft365.graph` (find_free_slots + book_meeting via delegated OBO-exchange). Published `chatAgent@1` als Bundle-Capability `{ agent: ChatAgent, raw: Orchestrator }` — Channel-Plugins (Teams, Telegram, HTTP) konsumieren `agent.chat()` / `agent.chatStream()` für ihre Connector-Loops."
+  description:
+    en: "Runs the chat itself. It decides which tools an agent uses in each turn, brings memory and the knowledge graph into the answer, and has the result checked before it goes out. Every channel, from Teams to the web interface, talks to this plugin."
+    de: "Führt den Chat aus. Es entscheidet in jedem Zug, welche Werkzeuge ein Agent nutzt, zieht Gedächtnis und Wissensgraph hinzu und lässt das Ergebnis prüfen, bevor es herausgeht. Jeder Kanal, von Teams bis zur Weboberfläche, spricht mit diesem Plugin."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

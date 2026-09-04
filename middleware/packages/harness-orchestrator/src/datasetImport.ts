@@ -67,8 +67,10 @@ import type {
 export const MAX_DATASET_ROWS = 50_000;
 /** Per-cell char cap BEFORE the privacy scan — an absurdly long single CSV
  *  cell (e.g. a stray multi-KB blob in one field) would otherwise dominate
- *  the scan's cost for no import-quality benefit. */
-const MAX_CELL_CHARS = 4_000;
+ *  the scan's cost for no import-quality benefit. Exported so the XLSX
+ *  parser caps cells identically; one format must not be able to smuggle a
+ *  larger cell past the scan budget than the other. */
+export const MAX_CELL_CHARS = 4_000;
 
 /** #430 fixup — per-cell truncation stats. `MAX_CELL_CHARS` still caps every
  *  cell (protects the privacy scan + storage from an absurd single-cell
@@ -76,21 +78,32 @@ const MAX_CELL_CHARS = 4_000;
  *  the PR's "no more silent CSV truncation" claim — this makes the cut
  *  visible instead of removing it (removing it would let one pathological
  *  cell blow the scan/storage budget). */
-export interface CsvTruncationStats {
+export interface TableTruncationStats {
   /** Total cells whose raw value exceeded `MAX_CELL_CHARS` and was cut. */
   truncatedCellCount: number;
   /** Column names that had at least one truncated cell, in header order. */
   truncatedColumns: string[];
 }
 
-export type CsvParseResult =
-  | {
-      ok: true;
-      headers: string[];
-      rows: Array<Record<string, string>>;
-      truncation: CsvTruncationStats;
-    }
+/** A parsed table, format-neutral: header names plus header-keyed string
+ *  rows. Both `parseCsv` and the XLSX parser produce exactly this, which is
+ *  what lets a spreadsheet reuse the CSV path's type inference and privacy
+ *  scan rather than growing a second, subtly-different pipeline. */
+export interface TableParse {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  truncation: TableTruncationStats;
+}
+
+export type TableParseResult =
+  | ({ ok: true } & TableParse)
   | { ok: false; reason: string };
+
+/** @deprecated Use {@link TableTruncationStats} — kept so existing importers
+ *  of the CSV-era name keep compiling. */
+export type CsvTruncationStats = TableTruncationStats;
+/** @deprecated Use {@link TableParseResult}. */
+export type CsvParseResult = TableParseResult;
 
 /** Parse CSV bytes into header-keyed string rows. Never throws — a
  *  malformed CSV (ragged rows, empty file, encoding garbage) resolves to
@@ -202,19 +215,36 @@ export interface PrivacyScanStats {
  * `KnowledgeGraph.ingestDataset` plus the inferred column schema. The
  * privacy scan runs unconditionally — there is no flag to skip it.
  */
-export async function buildDatasetFromCsv(bytes: Buffer): Promise<
+export type BuildDatasetResult =
   | {
       ok: true;
       columns: DatasetColumnSchema[];
       rows: Array<Record<string, unknown>>;
       privacyScan: PrivacyScanStats;
-      truncation: CsvTruncationStats;
+      truncation: TableTruncationStats;
     }
-  | { ok: false; reason: string }
-> {
+  | { ok: false; reason: string };
+
+/** CSV bytes → scrubbed dataset. Thin wrapper over
+ *  {@link buildDatasetFromTable}; the pipeline itself is format-neutral. */
+export async function buildDatasetFromCsv(
+  bytes: Buffer,
+): Promise<BuildDatasetResult> {
   const parsed = parseCsv(bytes);
   if (!parsed.ok) return parsed;
+  return buildDatasetFromTable(parsed);
+}
 
+/**
+ * The shared pipeline every tabular format lands on: infer schema →
+ * privacy-scan every string cell → type-coerce. Taking an already-parsed
+ * {@link TableParse} rather than raw bytes is what guarantees CSV and XLSX
+ * get byte-identical privacy treatment — there is exactly one implementation
+ * of "which cells get scanned", and neither format can opt out of it.
+ */
+export async function buildDatasetFromTable(
+  parsed: TableParse,
+): Promise<BuildDatasetResult> {
   const columnTypes = new Map<string, DatasetColumnType>();
   for (const header of parsed.headers) {
     columnTypes.set(

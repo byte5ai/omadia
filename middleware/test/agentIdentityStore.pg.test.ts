@@ -2,7 +2,8 @@
  * #914 — `agent_identities` store against a real Postgres.
  *
  * The schema is applied from the ACTUAL migration files (0001 for `agents`,
- * which 0052 references, then 0052), each twice, so this suite doubles as the
+ * which 0052 references, then 0052 and 0053), each twice, so this suite
+ * doubles as the
  * double-apply proof the migrations README demands and so the store and the
  * migration cannot drift apart silently: the accent-colour CHECK, the
  * revision CHECK, the cascade from `agents` and the one-row-per-agent primary
@@ -49,13 +50,20 @@ const MIGRATIONS_DIR = resolve(
 
 const SCHEMA = `agent_identity_${String(process.pid)}`;
 
-/** The five authored fields, all blank — the shape a PUT sends. */
+/**
+ * A blank write — the shape a PUT sends when nothing is authored. The
+ * compiled prompt travels with every save because the caller owns the
+ * compilers; `null` is what an identity with nothing in it compiles to.
+ */
 const EMPTY = {
   displayName: null,
   shortDescription: null,
   longDescription: null,
   instructions: null,
   accentColor: null,
+  persona: null,
+  quality: null,
+  composed: { text: null, family: null },
 };
 
 describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailable }, () => {
@@ -82,6 +90,7 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       '0001_multi_orchestrator.sql',
       '0002_fix_notify_trigger.sql',
       '0052_agent_identities.sql',
+      '0053_agent_identity_persona.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       // Twice: the schema CI gate double-applies every file in the series.
@@ -115,7 +124,7 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
   });
 
   it('creates the row on first save and starts the revision at 1', async () => {
-    const saved = await store.saveText(agentId, {
+    const saved = await store.save(agentId, {
       ...EMPTY,
       displayName: 'Vertrieb',
     });
@@ -125,18 +134,18 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
   });
 
   it('bumps the revision when the text changes and leaves it when it does not', async () => {
-    const first = await store.saveText(agentId, {
+    const first = await store.save(agentId, {
       ...EMPTY,
       displayName: 'Vertrieb',
     });
-    const same = await store.saveText(agentId, {
+    const same = await store.save(agentId, {
       ...EMPTY,
       // Same content, differently whitespaced: the manifest would be
       // byte-identical, so re-publishing it would be pure waste.
       displayName: '  Vertrieb  ',
     });
     assert.equal(same.revision, first.revision);
-    const changed = await store.saveText(agentId, {
+    const changed = await store.save(agentId, {
       ...EMPTY,
       displayName: 'Vertrieb DACH',
     });
@@ -144,8 +153,8 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
   });
 
   it('treats a blank string as "inherit", not as an empty name', async () => {
-    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
-    const cleared = await store.saveText(agentId, { ...EMPTY, displayName: '   ' });
+    await store.save(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    const cleared = await store.save(agentId, { ...EMPTY, displayName: '   ' });
     assert.equal(cleared.displayName, null);
     const resolved = resolveAgentIdentity(cleared, {
       name: 'Sales Agent',
@@ -195,7 +204,7 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
   });
 
   it('an avatar write does not disturb the authored text', async () => {
-    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    await store.save(agentId, { ...EMPTY, displayName: 'Vertrieb' });
     const withAvatar = await store.setAvatar(agentId, {
       original: new Uint8Array([1]),
       color: new Uint8Array([2]),
@@ -227,9 +236,178 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
     assert.equal(await store.getByAgentId(agentId), undefined);
   });
 
+  it('round-trips the character documents through JSONB', async () => {
+    const saved = await store.save(agentId, {
+      ...EMPTY,
+      persona: {
+        template: 'customer-service',
+        axes: { directness: 80, warmth: 20 },
+        custom_notes: 'Antworte auf Deutsch.',
+      },
+      quality: {
+        sycophancy: 'high',
+        boundaries: { presets: ['no-pii'], custom: ['Never quote prices.'] },
+      },
+      composed: { text: '<persona>…</persona>', family: 'opus' },
+    });
+    assert.equal(saved.persona?.template, 'customer-service');
+    assert.equal(saved.persona?.axes?.directness, 80);
+    assert.equal(saved.quality?.sycophancy, 'high');
+    assert.deepEqual(saved.quality?.boundaries?.presets, ['no-pii']);
+    assert.equal(saved.composed.text, '<persona>…</persona>');
+    assert.equal(saved.composed.family, 'opus');
+
+    const reread = await store.getByAgentId(agentId);
+    assert.deepEqual(reread?.persona, saved.persona);
+    assert.deepEqual(reread?.quality, saved.quality);
+  });
+
+  it('bumps the revision for a character change that touches no text', async () => {
+    const first = await store.save(agentId, {
+      ...EMPTY,
+      persona: { axes: { directness: 60 } },
+      composed: { text: 'a', family: 'sonnet' },
+    });
+    const second = await store.save(agentId, {
+      ...EMPTY,
+      persona: { axes: { directness: 90 } },
+      composed: { text: 'b', family: 'sonnet' },
+    });
+    // The Teams package renders this identity, and its manifest version is
+    // the revision — a persona-only edit that did not bump it could not be
+    // re-published at all.
+    assert.equal(second.revision, first.revision + 1);
+  });
+
+  it('treats an unchanged character as a no-op save', async () => {
+    const persona = { axes: { directness: 60 } };
+    const first = await store.save(agentId, {
+      ...EMPTY,
+      persona,
+      composed: { text: 'a', family: 'sonnet' },
+    });
+    const again = await store.save(agentId, {
+      ...EMPTY,
+      persona: { axes: { directness: 60 } },
+      composed: { text: 'a', family: 'sonnet' },
+    });
+    assert.equal(again.revision, first.revision);
+  });
+
+  it('recompose refreshes the prompt WITHOUT bumping the revision', async () => {
+    const saved = await store.save(agentId, {
+      ...EMPTY,
+      persona: { axes: { directness: 90 } },
+      composed: { text: 'built for sonnet', family: 'sonnet' },
+    });
+    const recomposed = await store.recompose(agentId, {
+      text: 'built for opus',
+      family: 'opus',
+    });
+    assert.equal(recomposed?.composed.text, 'built for opus');
+    assert.equal(recomposed?.composed.family, 'opus');
+    // Nothing the operator authored changed, so nothing about the Teams
+    // package did either.
+    assert.equal(recomposed?.revision, saved.revision);
+  });
+
+  it('recompose on an agent without an identity creates nothing', async () => {
+    assert.equal(
+      await store.recompose(agentId, { text: 'x', family: 'sonnet' }),
+      undefined,
+    );
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
   it('drops the identity with its agent', async () => {
-    await store.saveText(agentId, { ...EMPTY, displayName: 'Vertrieb' });
+    await store.save(agentId, { ...EMPTY, displayName: 'Vertrieb' });
     await pool.query('DELETE FROM agents WHERE id = $1', [agentId]);
     assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  // ── #967 — adopting the provisioned Teams name ──────────────────────
+  //
+  // The refusal is an `ON CONFLICT … DO UPDATE … WHERE` predicate, so it can
+  // only be proven against a real Postgres: a read-then-write in the caller
+  // would pass the same assertions while still losing a concurrent save.
+
+  it('adopts a name for an agent that has no identity row at all', async () => {
+    const adopted = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(adopted?.displayName, 'Messias');
+    assert.equal((await store.getByAgentId(agentId))?.displayName, 'Messias');
+    // A fresh row starts at revision 1: the Teams manifest already renders
+    // this exact name (it falls back to the provisioning row), so there is no
+    // package change to publish and nothing to bump for.
+    assert.equal(adopted?.revision, 1);
+  });
+
+  it('REFUSES to overwrite an authored name, and leaves the whole row alone', async () => {
+    // The condition the whole feature hangs on. Someone built this by hand.
+    const curated = await store.save(agentId, {
+      ...EMPTY,
+      displayName: 'Karen',
+      shortDescription: 'Kümmert sich um HR-Anliegen',
+      instructions: 'Antworte knapp und freundlich.',
+      composed: { text: 'Antworte knapp und freundlich.', family: 'sonnet' },
+    });
+
+    const after = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(after?.displayName, 'Karen');
+    assert.equal(after?.shortDescription, 'Kümmert sich um HR-Anliegen');
+    assert.equal(after?.instructions, 'Antworte knapp und freundlich.');
+    assert.equal(after?.composed.text, 'Antworte knapp und freundlich.');
+    // Not even a revision bump or an `updated_at` touch: nothing happened.
+    assert.equal(after?.revision, curated.revision);
+    assert.deepEqual(after?.updatedAt, curated.updatedAt);
+  });
+
+  it('treats a blank authored name as unset and fills it', async () => {
+    // `resolveAgentIdentity` already reads blank as "inherit from the
+    // registry", so adopting takes nothing away — and the rest of the row
+    // must survive untouched.
+    await store.save(agentId, {
+      ...EMPTY,
+      displayName: '   ',
+      instructions: 'Antworte knapp.',
+    });
+
+    const after = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(after?.displayName, 'Messias');
+    assert.equal(after?.instructions, 'Antworte knapp.');
+  });
+
+  it('is idempotent: adopting twice writes once', async () => {
+    const first = await store.adoptDisplayName(agentId, 'Messias');
+    const second = await store.adoptDisplayName(agentId, 'Messias');
+
+    assert.equal(second?.displayName, 'Messias');
+    assert.equal(second?.revision, first?.revision);
+    // The second call hit the refusal branch (a name is already authored),
+    // so it must not have moved the timestamp either.
+    assert.deepEqual(second?.updatedAt, first?.updatedAt);
+  });
+
+  it('adopting a blank name creates nothing', async () => {
+    // An empty row whose only effect is switching the manifest onto the
+    // revision-based version number is worse than no row.
+    assert.equal(await store.adoptDisplayName(agentId, '   '), undefined);
+    assert.equal(await store.getByAgentId(agentId), undefined);
+  });
+
+  it('an adopted name is what the registry joins into the system prompt', async () => {
+    // The column the orchestrator's AGENT_SELECT reads (#967). Pinned here so
+    // the store and that join cannot drift apart silently — a name in a
+    // column nobody reads is the bug this feature exists to fix.
+    await store.adoptDisplayName(agentId, 'Messias');
+    const { rows } = await pool.query<{ identity_display_name: string | null }>(
+      `SELECT i.display_name AS identity_display_name
+         FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id
+        WHERE a.id = $1`,
+      [agentId],
+    );
+    assert.equal(rows[0]?.identity_display_name, 'Messias');
   });
 });

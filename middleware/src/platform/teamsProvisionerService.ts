@@ -60,6 +60,19 @@
  */
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from './serviceRegistry.js';
+import type { TeamsDelegatedProvisionerMethods } from './teamsDelegatedSignIn.js';
+import {
+  CLEANUP_METHOD_NAMES,
+  type TeamsProvisionerCleanupMethods,
+} from './teamsProvisionerCleanup.js';
+import {
+  TARGET_DIRECTORY_METHOD_NAMES,
+  type TeamsTargetDirectoryMethods,
+} from './teamsTargetDirectory.js';
+import {
+  TEAMS_BOT_SLUG_RE,
+  teamsBotMessagingPath,
+} from './teamsMessagingPath.js';
 
 /** Service-registry key (bare, unversioned). */
 export const TEAMS_PROVISIONER_SERVICE_NAME = 'teamsProvisioner';
@@ -278,6 +291,46 @@ export interface TeamAppInstallation {
   readonly installationId?: string;
 }
 
+/**
+ * Install into a CHAT rather than a team — `POST /chats/{id}/installedApps`
+ * (connector >= 0.7.0, this change).
+ *
+ * A separate method rather than a `kind` on {@link InstallToTeamRequest}
+ * because they are separate Graph endpoints with separate permissions: the
+ * team direction needs `TeamsAppInstallation.ReadWriteForTeam.All`, this one
+ * needs `TeamsAppInstallation.ReadWriteForChat.All`. Both are Application
+ * permissions — the chat endpoint supports app-only auth, so no delegated
+ * flow is involved here (unlike the catalog upload).
+ *
+ * `chatId` is a Teams conversation id (`19:…@thread.v2` for a group chat,
+ * `19:…@unq.gbl.spaces` for a 1:1). It is NOT a GUID and must never be run
+ * through `normalizeTeamsTeamId` — see `platform/teamsInstallTarget.ts` for
+ * the classification that keeps the two apart.
+ */
+export interface InstallToChatRequest {
+  readonly chatId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`). */
+  readonly teamsAppId: string;
+}
+
+export interface ChatAppInstallation {
+  readonly chatId: string;
+  readonly teamsAppId: string;
+  readonly installationId?: string;
+}
+
+/** Input for the chat uninstall — the same key `installToChat` is idempotent on. */
+export interface UninstallFromChatInput {
+  readonly chatId: string;
+  /** Catalog id (`CatalogTeamsApp.teamsAppId`) — NOT the installation id. */
+  readonly teamsAppId: string;
+}
+
+export interface UninstallFromChatResult {
+  readonly outcome: UninstallFromTeamOutcome;
+  readonly value: ChatAppInstallation;
+}
+
 /** Input for the uninstall step — the same key `installToTeam` is idempotent on. */
 export interface UninstallFromTeamInput {
   readonly teamId: string;
@@ -321,7 +374,10 @@ export interface UninstallFromTeamResult {
  * module doc's version-skew note. Never call it without
  * {@link supportsTeamUninstall}.
  */
-export interface TeamsProvisionerAccessor {
+export interface TeamsProvisionerAccessor
+  extends Partial<TeamsDelegatedProvisionerMethods>,
+    Partial<TeamsTargetDirectoryMethods>,
+    Partial<TeamsProvisionerCleanupMethods> {
   readonly tenantMode: TenantMode;
   /** `true` when the ARM setup fields are configured (bot creation possible). */
   readonly canCreateBots: boolean;
@@ -350,6 +406,25 @@ export interface TeamsProvisionerAccessor {
   installToTeam(input: InstallToTeamRequest): Promise<Idempotent<TeamAppInstallation>>;
 
   /**
+   * Connector >= 0.7.0 only — ABSENT on older installs. Guard every call with
+   * {@link supportsChatInstall}.
+   *
+   * The counterpart of {@link installToTeam} for the target operators
+   * actually asked for: a GROUP CHAT. Until this arrived, `team_id` was the
+   * only target the stack could express, so an operator who wanted a chat had
+   * no way to say so and found out five provisioning steps later that Graph
+   * had never heard of their id.
+   */
+  installToChat?(input: InstallToChatRequest): Promise<Idempotent<ChatAppInstallation>>;
+
+  /**
+   * Connector >= 0.7.0 only — the counterpart of {@link installToChat}, and
+   * absent on older installs exactly like it. Guard with
+   * {@link supportsChatUninstall}.
+   */
+  uninstallFromChat?(input: UninstallFromChatInput): Promise<UninstallFromChatResult>;
+
+  /**
    * Connector >= 0.4.0 only — ABSENT on older installs. Guard every call
    * with {@link supportsTeamUninstall}.
    */
@@ -364,6 +439,22 @@ export interface TeamsProvisionerAccessor {
    * alone.
    */
   getTeam?(input: GetTeamInput): Promise<GetTeamResult>;
+
+  /**
+   * THE DELEGATED HALF — connector >= 0.6.0 only (byte5ai/omadia#924). All six
+   * are optional together, for the same version-skew reason as the two methods
+   * above, and the ONE guard for all of them is
+   * `supportsDelegatedCatalogUpload` (`platform/teamsDelegatedSignIn.ts`).
+   *
+   * They exist because `POST /appCatalogs/teamsApps` is delegated-only at
+   * Microsoft — Application permissions are documented as "Not supported", so
+   * no amount of admin consent makes the app-only {@link uploadToCatalog}
+   * work. An admin signs in once per TENANT; every agent provisioned after
+   * that rides on the stored token set.
+   *
+   * `getDelegatedSignInStatus` and `revokeDelegatedSignIn` are SYNCHRONOUS by
+   * contract — do not await them into a promise-typed seam.
+   */
 }
 
 /** Input of the optional {@link TeamsProvisionerAccessor.getTeam}. */
@@ -405,10 +496,90 @@ export function supportsTeamLookup(
  * onto {@link getTeamsProvisioner} without a second null check: no
  * connector at all is also no uninstall.
  */
+/**
+ * The delegated surface is re-exported from this choke point so every consumer
+ * has ONE import site for `teamsProvisioner@1`, exactly as they do for the
+ * app-only half. The definitions live in `teamsDelegatedSignIn.ts` because
+ * they are a coherent feature of their own (a device-code flow, a token set,
+ * four errors) and putting them here would have pushed this module past the
+ * size where anyone reads it.
+ */
+export {
+  adminConsentUrlOf,
+  delegatedStepOf,
+  isDelegatedConsentRequiredError,
+  isDelegatedSignInRequiredError,
+  isDelegatedTokenExpiredError,
+  isDeviceCodeFlowError,
+  isRecoverableByRefresh,
+  redactDelegated,
+  requiredScopesOf,
+  summarizeTokenSet,
+  supportsDelegatedCatalogUpload,
+  type DelegatedTokenSet,
+  type DeviceCodePollResult,
+  type DeviceCodeStart,
+  type TeamsDelegatedProvisionerMethods,
+} from './teamsDelegatedSignIn.js';
+
+/**
+ * The ENUMERATION half — "which teams and chats could this agent be installed
+ * into?". Re-exported through this choke point for the same reason as the
+ * delegated half above: consumers keep ONE import site for
+ * `teamsProvisioner@1`, while the definitions live next to the feature they
+ * belong to.
+ */
+export {
+  supportsChatListing,
+  supportsTeamListing,
+  teamsChatTargetKind,
+  type ListChatsInput,
+  type TeamsChatSummary,
+  type TeamsChatType,
+  type TeamsTargetDirectoryMethods,
+  type TeamsTeamSummary,
+} from './teamsTargetDirectory.js';
+
+/** The TEARDOWN half — the two primitives an undo needs that the mandatory
+ *  surface does not already carry. Same choke-point rule. */
+export {
+  supportsAppRegistrationPurge,
+  supportsCatalogRemoval,
+  type CleanupOutcome,
+  type PurgeDeletedAppRegistrationInput,
+  type PurgeDeletedAppRegistrationResult,
+  type RemoveFromCatalogInput,
+  type RemoveFromCatalogResult,
+  type TeamsProvisionerCleanupMethods,
+} from './teamsProvisionerCleanup.js';
+
 export function supportsTeamUninstall(
   provisioner: TeamsProvisionerAccessor | undefined,
 ): boolean {
   return typeof provisioner?.uninstallFromTeam === 'function';
+}
+
+/**
+ * Does the CURRENTLY INSTALLED connector publish the chat install
+ * (connector >= 0.7.0)? Same shape and same reason as the two guards above.
+ *
+ * Read it against the WRAPPER returned by {@link getTeamsProvisioner}, which
+ * forwards `installToChat` only when the raw provider really has it — an
+ * unconditional passthrough would make this predicate lie about every older
+ * connector.
+ */
+export function supportsChatInstall(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.installToChat === 'function';
+}
+
+/** Does the CURRENTLY INSTALLED connector publish the chat uninstall
+ *  (connector >= 0.7.0)? Same contract as every guard above. */
+export function supportsChatUninstall(
+  provisioner: TeamsProvisionerAccessor | undefined,
+): boolean {
+  return typeof provisioner?.uninstallFromChat === 'function';
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +768,28 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
     uploadToCatalog: (input) => raw.uploadToCatalog(input),
     getCatalogApp: (input) => raw.getCatalogApp(input),
     installToTeam: (input) => raw.installToTeam(input),
+    // Same conditional-spread contract as the two below, for the same reason:
+    // `supportsChatInstall` must read the WRAPPER and still get the truth
+    // about the connector behind it. A `installToChat: (i) =>
+    // raw.installToChat?.(i)` here would make every connector look
+    // chat-capable and turn an old one's 501 into a silent `undefined`.
+    ...(typeof raw.installToChat === 'function'
+      ? {
+          installToChat: (input: InstallToChatRequest) =>
+            (raw.installToChat as NonNullable<
+              TeamsProvisionerAccessor['installToChat']
+            >).call(raw, input),
+        }
+      : {}),
+    // Same conditional-spread contract, same reason.
+    ...(typeof raw.uninstallFromChat === 'function'
+      ? {
+          uninstallFromChat: (input: UninstallFromChatInput) =>
+            (raw.uninstallFromChat as NonNullable<
+              TeamsProvisionerAccessor['uninstallFromChat']
+            >).call(raw, input),
+        }
+      : {}),
     // Forwarded ONLY when the raw provider has it, so the wrapper's own
     // shape answers `supportsTeamUninstall` truthfully. A `uninstallFromTeam:
     // (input) => raw.uninstallFromTeam?.(input)` here would make every
@@ -622,8 +815,69 @@ function guardAccessor(raw: TeamsProvisionerAccessor): TeamsProvisionerAccessor 
             ),
         }
       : {}),
+    // The delegated half (#924), forwarded under the SAME conditional-spread
+    // contract as the two methods above and for the same hard-won reason: a
+    // `uploadToCatalogDelegated: (i) => raw.uploadToCatalogDelegated?.(i)`
+    // here would make every connector look capable, and turn an old one's
+    // honest absence into a silent `undefined` at the call site.
+    //
+    // Forwarded one by one rather than as a group, even though
+    // `supportsDelegatedCatalogUpload` requires all six: this wrapper's job is
+    // to report the raw provider's shape truthfully, and a half-shipped
+    // connector must read as half-shipped rather than as absent.
+    ...forwardOptional(raw, DELEGATED_METHOD_NAMES),
+    // The enumeration half (`listTeams`/`listChats`) and the teardown half
+    // (`purgeDeletedAppRegistration`/`removeFromCatalog`), under the SAME
+    // rule as everything above it. Forwarded through the data-driven helper
+    // rather than as four more hand-written conditional spreads: the rule is
+    // identical for all of them, and a list of names cannot drift out of
+    // sync with an interface the way twelve near-identical blocks can.
+    ...forwardOptional(raw, TARGET_DIRECTORY_METHOD_NAMES),
+    ...forwardOptional(raw, CLEANUP_METHOD_NAMES),
   };
 }
+
+/**
+ * Conditional forwarding of an OPTIONAL group of methods — the six delegated
+ * ones, the two enumeration ones, the two teardown ones.
+ *
+ * Its own function purely to keep {@link guardAccessor} readable; the rule it
+ * implements is identical — a method appears on the wrapper if and only if the
+ * raw provider actually has it, so `supportsDelegatedCatalogUpload` can read
+ * the WRAPPER and still get the truth about the connector behind it.
+ *
+ * NO SECRET STRIPPING HERE, deliberately. `stripCleartextSecrets` exists
+ * because the app-only contract must never hand a cleartext client secret
+ * across the boundary. The delegated contract is the opposite case: the token
+ * set IS the payload, the middleware is its custodian
+ * (`platform/teamsDelegatedTokenStore.ts`), and stripping it would break the
+ * feature. The guarantee that it never LEAKS lives at the log/response
+ * boundaries instead — `redactDelegated` in `teamsDelegatedSignIn.ts`.
+ */
+function forwardOptional(
+  raw: TeamsProvisionerAccessor,
+  names: readonly (keyof TeamsProvisionerAccessor)[],
+): Partial<TeamsProvisionerAccessor> {
+  const out: Record<string, unknown> = {};
+  for (const name of names) {
+    const method = raw[name];
+    if (typeof method !== 'function') continue;
+    out[name] = (...args: unknown[]) =>
+      (method as (...a: unknown[]) => unknown).apply(raw, args);
+  }
+  return out as Partial<TeamsProvisionerAccessor>;
+}
+
+/** The six method names of the delegated half, as data — so the forwarder
+ *  above cannot silently drift from the interface. */
+const DELEGATED_METHOD_NAMES = [
+  'uploadToCatalogDelegated',
+  'startDelegatedSignIn',
+  'pollDelegatedSignIn',
+  'getDelegatedSignInStatus',
+  'refreshDelegatedToken',
+  'revokeDelegatedSignIn',
+] as const satisfies readonly (keyof TeamsDelegatedProvisionerMethods)[];
 
 /**
  * Resolve the provisioner, or `undefined` when the connector plugin is not
@@ -663,8 +917,14 @@ export function requireTeamsProvisioner(
  * channel-teams' per-bot route (`/api/teams/:botSlug/messages`, 0.20.0), so
  * the charset is deliberately conservative: URL-safe, no separators that
  * could re-shape the path.
+ *
+ * Taken from `teamsMessagingPath.ts` rather than declared here, because the
+ * same charset decides which slugs this builder will mint AND which ones the
+ * requireAuth exemption admits. Two copies would let the provisioner hand Azure
+ * an endpoint the session gate then rejects — which is precisely the outage
+ * those shared constants were extracted to make unrepresentable.
  */
-const BOT_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BOT_SLUG_RE = TEAMS_BOT_SLUG_RE;
 
 /**
  * Build the messaging endpoint handed to Azure for one bot:
@@ -708,5 +968,5 @@ export function buildTeamsBotMessagingEndpoint(
     );
   }
   const basePath = base.pathname.replace(/\/+$/, '');
-  return `${base.origin}${basePath}/api/teams/${encodeURIComponent(botSlug)}/messages`;
+  return `${base.origin}${basePath}${teamsBotMessagingPath(botSlug)}`;
 }

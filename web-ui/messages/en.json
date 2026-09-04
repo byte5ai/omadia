@@ -28,6 +28,12 @@
         "available": "{count, plural, one {# orchestrator available} other {# orchestrators available}}",
         "none": "No orchestrator configured"
       },
+      "embeddings": {
+        "title": "Memory / embeddings",
+        "active": "Active: {model}",
+        "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
+        "unknown": "Status unavailable"
+      },
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
@@ -113,8 +119,15 @@
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
         "doneViaProvider": "An LLM provider is connected and its key has been verified.",
-        "doneViaCli": "You are logged into a subscription CLI — that is enough to run orchestrators."
+        "doneViaCli": "You are logged into a subscription CLI and the orchestrator runs on it.",
+        "doneViaOauth": "A subscription is connected and the agent runtime runs on it.",
+        "doneViaRuntime": "The agent runtime runs on {label}.",
+        "doneViaRuntimeNoLabel": "The agent runtime is running.",
+        "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
+        "assignOrchestrator": "Assign the orchestrator"
       },
+      "embeddingsNote": "Memory is limited: no embedding provider is configured. Process memory, semantic search and duplicate detection stay off until one is set up.",
+      "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
       "applied": "Installed",
@@ -203,7 +216,7 @@
         },
         "datasets": {
           "title": "Datasets",
-          "description": "Import CSVs as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
+          "description": "Import CSV and Excel files as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
         },
         "bulkPromote": {
           "title": "Bulk Promotion",
@@ -444,7 +457,9 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "help": "Help"
+    "help": "Help",
+    "teamsSignIn": "Teams sign-in",
+    "llmAccess": "LLM access"
   },
   "conductor": {
     "title": "Conductor",
@@ -1018,6 +1033,10 @@
       "npm_failed": {
         "what": "npm ran, but the installation failed.",
         "next": "Check the log details below, then try the installation again."
+      },
+      "spawn_failed": {
+        "what": "npm could not be started — the operating system refused to execute the npm file it found. npm never ran, so nothing was installed.",
+        "next": "The affected file is named in the support details. Check whether it is corrupt or not executable, and reinstall Node and npm if in doubt."
       }
     },
     "package": {
@@ -1316,8 +1335,13 @@
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
-    "body": "The agent runtime is offline — usually because no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "body": "The agent runtime is offline: no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings, then assign the orchestrator to that access. This card disappears once the runtime is up.",
+    "titleNoAssignment": "Orchestrator not assigned",
+    "bodyNoAssignment": "An LLM access exists, but the orchestrator is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the orchestrator, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
+    "titleUnknown": "Agent runtime not responding",
+    "bodyUnknown": "Access and assignment are set, but the agent runtime still does not respond. Check the stored access under LLM access.",
     "cta": "Open LLM access",
+    "ctaNoAssignment": "Open assignment",
     "dismiss": "Later"
   },
   "agentDetailsModal": {
@@ -1350,6 +1374,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
+    "errorAgentUnavailable": "This session's orchestrator is no longer active. Re-bind it below, or pick another.",
+    "errorNoAgentsActive": "No orchestrator is running yet. Assign an LLM provider under LLM access, then try again.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
@@ -1395,6 +1421,8 @@
     },
     "inputLabel": "input",
     "outputLabel": "output",
+    "foreignToolBadge": "foreign tool",
+    "foreignToolExplain": "This call did not run through omadia. The subscription CLI used one of its own built-in tools, so omadia's permission rules did not apply to it. Please report this to your operator.",
     "persona": {
       "title": "Persona",
       "matched": "Answering as {name}",
@@ -1648,7 +1676,10 @@
     "unavailableTitle": "This session's Orchestrator is no longer available",
     "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
     "actionReSnapshot": "Re-bind to standard",
-    "actionDelete": "Delete session"
+    "actionDelete": "Delete session",
+    "noAgentsTitle": "No orchestrator is running",
+    "noAgentsBody": "No LLM provider is assigned to an orchestrator yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {
     "metaTitle": "Skills · omadia",
@@ -1804,7 +1835,29 @@
     "memoryWriteTooltip": "Plugin's memory write scope",
     "networkLabel": "Network:",
     "configShow": "Config",
-    "configHide": "Close",
+    "configOverrideBadgeTooltip": "Fields overridden for this orchestrator",
+    "pluginConfig": {
+      "title": "Configuration — {plugin}",
+      "close": "Close",
+      "done": "Done",
+      "overrideSummary": "{set} of {total} overridden",
+      "introMixed": "Overridden fields apply to this orchestrator only; every other field keeps the store configuration.",
+      "introAllFromStore": "Nothing is overridden — this plugin runs entirely on the store configuration.",
+      "resetAll": "Clear all overrides",
+      "filterPlaceholder": "Filter fields …",
+      "filterEmpty": "No field matches that filter.",
+      "badgeSecret": "Secret · Vault",
+      "badgeConfig": "Config",
+      "badgeSecretTitle": "Secret — encrypted in the per-agent vault",
+      "badgeConfigTitle": "Config — non-sensitive value in the instance configuration",
+      "noPasswordWarning": "No account password belongs here. What is expected is a technical key from the provider console.",
+      "statusOverridden": "overrides the store configuration",
+      "statusFromStore": "from the store configuration",
+      "statusFromStoreWithDefault": "from the store configuration · default: {default}",
+      "notSet": "not set",
+      "reset": "Reset to the store value",
+      "unsavedHint": "Changes take effect once you hit Save above."
+    },
     "orphanPluginBadge": "no longer installed",
     "bindingsAdd": "Add binding",
     "bindingsRemove": "Remove",
@@ -1990,7 +2043,9 @@
         "install": "Installing into a team is not available in this deployment.",
         "uninstall": "Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.",
         "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
-        "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused."
+        "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.",
+        "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
+        "chat_uninstall": "Removing the app from a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or remove the app inside the chat manually."
       },
       "unsupportedTechnical": "Server reason: {detail}",
       "notice": {
@@ -2010,9 +2065,32 @@
         "teams_provisioner_unavailable": "The Teams provisioner capability is missing — install the Microsoft 365 connector plugin.",
         "teams_provisioning_running": "A provisioning run is still in flight for this orchestrator. Wait for it to finish, then try again.",
         "teams_uninstall_unsupported": "The Microsoft 365 connector installed here is too old to remove an app from a team. Upgrade it to 0.4.0 or newer, or have a Teams administrator remove the app manually.",
-        "unknown": "The team assignment request failed: {detail}"
+        "unknown": "The team assignment request failed: {detail}",
+        "teams_target_is_channel": "That is a channel id. A channel is not an install target — use the team's group id, or a group chat id.",
+        "teams_target_ambiguous": "Those 32 hex characters are ambiguous — they can be a team id without its dashes, or the stem of a group chat id. Say which one you mean.",
+        "teams_target_unrecognised": "This is not a Teams install target.",
+        "teams_chat_install_unsupported": "The Microsoft 365 connector installed here is too old to install an app into a chat. Update it to 0.7.0 or newer, or choose a team."
       },
-      "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error."
+      "pendingStoppedHint": "Team {teamId} is the recorded target, but no provisioning run is active — the chain stopped before the install step. See the Teams identity section above for the recorded error.",
+      "targetHeading": "Choose a target",
+      "fieldTarget": "Target ID",
+      "fieldTargetHint": "A team or a chat. Team: the group id from “Get link to team”. Group chat: the full id in the form 19:…@thread.v2 — older chats end in 19:…@thread.skype and are just as valid.",
+      "targetKind": {
+        "team": "Team",
+        "group-chat": "Group chat",
+        "one-on-one-chat": "One-to-one chat"
+      },
+      "targetKindLabel": "Detected as: {kind}",
+      "targetKindFromListLabel": "From the list: {kind}",
+      "targetExamples": "Examples — team: {team} · group chat: {groupChat} · older group chat: {legacyGroupChat}",
+      "targetChannel": "That is a channel id, not an install target. Teams installs an app into a team or into a chat, never into a single channel. Use the group id of the team the channel belongs to, or a group chat id (19:…@thread.v2).",
+      "targetAmbiguous": "32 hex characters with no context — this can be a team group id without its dashes, or the stem of a group chat id. Nothing is guessed here: pick which one you mean.",
+      "targetAmbiguousUseTeam": "Use as team",
+      "targetAmbiguousUseChat": "Use as group chat",
+      "targetUnrecognised": "This is not a Teams install target. Expected a team group id, a group chat id (19:…@thread.v2, or 19:…@thread.skype for an older chat) or a one-to-one chat id (19:…@unq.gbl.spaces).",
+      "chatInstallUnsupported": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
+      "pendingHintTyped": "A provisioning run targets {kind} {teamId}. It only counts as installed once the chain reaches the install step.",
+      "chatNameUnavailable": "The connector provides no name for chats — the id is shown instead."
     },
     "identity": {
       "heading": "Identity",
@@ -2029,7 +2107,7 @@
       "avatarHint": "PNG, JPEG or WebP up to 2 MB. It becomes the 192×192 colour icon of the Teams package; a 32×32 outline icon follows only if the picture has transparent areas, otherwise the default outline stays.",
       "fields": {
         "displayName": "Display name",
-        "displayNameHint": "What the agent is called in Teams. Leave it empty to use the registry name.",
+        "displayNameHint": "What the agent is called in Teams — and the name it introduces itself with in chat. Leave it empty to use the registry name.",
         "accentColor": "Accent colour",
         "accentColorHint": "As #RRGGBB. Colours the Teams app package.",
         "shortDescription": "Short description",
@@ -2043,6 +2121,62 @@
         "not_needed": "Nothing changed, so there is nothing to publish.",
         "no_installed_app": "Saved. This agent has no installed Teams app yet, so nothing was published.",
         "provisioner_unavailable": "Saved. The M365 connector is not installed right now, so the Teams package could not be republished."
+      },
+      "revision": "Revision {revision}",
+      "tabs": {
+        "profile": "Profile",
+        "character": "Character",
+        "boundaries": "Limits",
+        "prompt": "Prompt"
+      },
+      "prompt": {
+        "hint": "This exact text opens this agent's system prompt — assembled from its behaviour, character axes, limits and anti-flattery guard.",
+        "hintWithFamily": "This exact text opens the system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all.",
+        "stale": "Unsaved changes are not in here yet — save to see them.",
+        "empty": "Nothing set yet. This agent uses the platform-wide default text."
+      },
+      "droppedPresets": "The server does not know these boundary presets: {ids}",
+      "persona": {
+        "template": {
+          "heading": "Archetype",
+          "none": "No archetype picked — every axis sits at neutral.",
+          "active": "Archetype: {name}",
+          "choose": "Pick an archetype",
+          "clear": "Detach"
+        },
+        "culture": {
+          "heading": "Industry calibration",
+          "hint": "Lays an industry profile over the axes. Only the axes the profile sets are overwritten.",
+          "changes": "Moves {count} axes"
+        },
+        "extended": {
+          "toggle": "Fine tuning (4 more axes)"
+        },
+        "notes": {
+          "label": "Own notes",
+          "hint": "Free text carried into the character block verbatim — for everything no slider covers."
+        }
+      },
+      "boundaries": {
+        "presetsHeading": "Limits from the library",
+        "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
+        "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
+        "categories": {
+          "data": "Data",
+          "scope": "Scope",
+          "authority": "Authority",
+          "communication": "Communication"
+        },
+        "customLabel": "Own prohibitions",
+        "customHint": "One rule per line.",
+        "sycophancyLabel": "Anti-flattery guard",
+        "sycophancyHint": "How firmly the agent may disagree instead of telling the user what they want to hear.",
+        "sycophancyLevels": {
+          "off": "Off",
+          "low": "Light",
+          "medium": "Medium",
+          "high": "Strong"
+        }
       }
     },
     "teamsIdentity": {
@@ -2062,6 +2196,52 @@
       "rerun": "Re-run provisioning",
       "started": "Provisioning started for {botSlug}.",
       "progressLabel": "Provisioning progress",
+      "timeline": {
+        "heading": "Run activity",
+        "listLabel": "Provisioning run events",
+        "empty": "No events recorded for the current run yet.",
+        "neverStarted": "No provisioning run has been started yet — this fills up once one is running.",
+        "finished": "The run has finished. The log below shows what happened.",
+        "working": "The run is working.",
+        "activeStep": "Current step: {step}",
+        "elapsed": "running for {elapsed}",
+        "attemptOf": "Attempt {attempt} of {max} failed.",
+        "attempt": "Attempt {attempt} failed.",
+        "nextAttempt": "Next attempt {when}.",
+        "detailUnknown": "Note: {detail}",
+        "steps": {
+          "run": "Run",
+          "config_sync": "Teams plugin configuration"
+        },
+        "entry": {
+          "started": "{step} started",
+          "progress": "{step} made progress",
+          "retrying": "{step} is being retried",
+          "succeeded": "{step} done",
+          "failed": "{step} stopped"
+        },
+        "details": {
+          "skipped": "was already done",
+          "awaiting_entra_replication": "waiting for Entra replication — this can take up to a minute",
+          "registration_created": "app registration created, application ID stored",
+          "synced": "entry written into the Teams plugin",
+          "unchanged": "the Teams plugin entry was already correct",
+          "config_sync_failed": "the entry could not be written — the identity stays valid and the block can be pasted by hand",
+          "consent_missing": "admin consent is missing",
+          "arm_not_configured": "Azure setup fields on the M365 connector are missing",
+          "bot_handle_unavailable": "the bot name is already taken globally",
+          "error": "error",
+          "retries_exhausted": "retries exhausted — the progress reached is kept",
+          "team_conflict": "another run is already in flight for this orchestrator",
+          "stopped": "interrupted by a shutdown",
+          "delegated_upload": "Catalogue upload via this tenant's Teams sign-in",
+          "delegated_token_refreshed": "Access token renewed automatically",
+          "delegated_sign_in_required": "Waiting for the Teams sign-in",
+          "delegated_consent_required": "Waiting for an admin to consent",
+          "delegated_token_expired": "Sign-in expired",
+          "device_code_flow_failed": "Sign-in flow refused"
+        }
+      },
       "stateSummary": "State: {state}",
       "running": "A provisioning run is in progress.",
       "idle": "No provisioning run is active right now.",
@@ -2130,6 +2310,34 @@
         "bot_handle_unavailable": {
           "what": "Microsoft refused the bot name: it is already registered to another bot application.",
           "next": "Azure bot handles share one global namespace across every Azure customer — like a domain name, not a name inside your tenant. omadia already qualifies the handle automatically with the app registration's id, so this name is taken even in its qualified form. Give the agent a different bot slug and start provisioning again."
+        },
+        "tenantSignInLink": "Go to the Teams sign-in for this tenant",
+        "delegated_sign_in_required": {
+          "what": "The catalogue upload needs a signed-in tenant admin. Microsoft only allows this step on behalf of a person; application permissions are not enough for it.",
+          "scopes": "Required permissions ({count}): {scopes}",
+          "next": "Sign in once under \"Teams sign-in\", then run provisioning again. Every further agent uses that sign-in automatically.",
+          "keepsProgress": "The run did not fail, it is waiting. The Entra app, the Azure bot and the built package are all kept — it continues from exactly this point."
+        },
+        "delegated_consent_required": {
+          "what": "The sign-in is in place, but nobody in the tenant has consented to the required permissions yet.",
+          "scopes": "Missing permissions ({count}): {scopes}",
+          "next": "Have a tenant admin approve on the consent page, then run provisioning again.",
+          "consentLink": "Open the consent page for this tenant",
+          "keepsProgress": "The run did not fail, it is waiting. Nothing was rolled back."
+        },
+        "delegated_token_expired": {
+          "what": "This tenant's stored sign-in is no longer valid and could not be renewed automatically.",
+          "next": "Sign in again under \"Teams sign-in\", then run provisioning once more.",
+          "keepsProgress": "The run did not fail, it is waiting. Everything already created is kept."
+        },
+        "device_code_flow_failed": {
+          "what": "Microsoft refused the sign-in flow itself — not the permissions, but the route to them.",
+          "reason": "Reported by Microsoft: {reason}",
+          "next": "Check that the Microsoft 365 connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them. Retrying changes nothing without that adjustment."
+        },
+        "rsc_permissions_mismatch": {
+          "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
+          "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
         }
       },
       "teamsBot": {
@@ -2151,7 +2359,108 @@
           "unknown": "Whether this configuration is already applied cannot be determined right now. Compare it against the Teams channel plugin and paste the block below if it is missing."
         }
       },
-      "rerunNeedsTeam": "No target team is recorded for this identity, so provisioning cannot be re-run from here."
+      "package": {
+        "heading": "Download the app package",
+        "hint": "Provisioning uploads this package to the tenant catalogue itself — no manual upload per agent is needed. The download stays as a fallback: for tenants where programmatic catalogue uploads are not allowed, or when you want to inspect the manifest first. It is rendered fresh on every request, so it matches exactly what provisioning would upload.",
+        "download": "Download the Teams app package (.zip)"
+      },
+      "retarget": {
+        "heading": "Pick a target and start provisioning",
+        "hint": "No target is recorded for this identity — after a reset that is the normal state. The bot slug and the display name are kept; all that is missing is the team or chat the app should be installed into.",
+        "runningHint": "A run is already under way for this agent. Wait for it to finish — the server refuses a second one."
+      }
+    },
+    "teamsTargets": {
+      "loading": "Loading teams and chats …",
+      "choose": "Please pick one",
+      "teamsLabel": "Pick a team from the list",
+      "chatsLabel": "Pick a chat from the list",
+      "teamsEmpty": "No team is visible in this tenant. Use the field below.",
+      "chatsEmpty": "No chat is visible in this tenant. Use the field below.",
+      "chatType": {
+        "group": "Group chat",
+        "oneOnOne": "One-to-one chat",
+        "meeting": "Meeting chat"
+      },
+      "unavailable": {
+        "teams": {
+          "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
+          "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
+          "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
+          "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
+          "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
+          "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below.",
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below."
+        },
+        "chats": {
+          "connector_unavailable": "Without an active M365 connector there is no chat list — type the id into the field below.",
+          "connector_unsupported": "The installed connector cannot list chats. A list appears here after an upgrade; until then type the chat id below.",
+          "sign_in_required": "Chats can only be listed with a tenant sign-in — Graph offers no app-only route for them. Sign in once, or type the chat id below.",
+          "scope_missing": "The stored sign-in does not yet carry the {scope} permission and cannot pick it up by refreshing. One fresh sign-in unlocks the chat list; until then type the chat id below.",
+          "consent_required": "The tenant has not consented to listing chats. Until it does, type the chat id below.",
+          "lookup_failed": "The chat list could not be loaded just now. Reload the page, or type the chat id below.",
+          "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically — that is not a missing sign-in but one that stopped being valid. Sign in once more, or type the chat id below."
+        }
+      },
+      "filter": "Type to filter …",
+      "noMatch": "Nothing matches “{query}”. For an id that does not appear here, use the field below.",
+      "matchCount": "{count, plural, =0 {No matches} one {One match} other {# matches}}"
+    },
+    "teamsReset": {
+      "heading": "Reset provisioning",
+      "cancel": "Cancel",
+      "hint": "Clears up the objects created in Azure so a new attempt can start with the same slug.",
+      "runningHint": "While a provisioning run is in flight the reset is locked — wait for the run to finish.",
+      "confirmHeading": "This is deleted for good:",
+      "consequenceApp": "The Entra app registration and its secret — deleted and purged from the recycle bin, so the name is free again straight away.",
+      "consequenceBot": "This agent's Azure bot service.",
+      "consequenceCatalog": "The entry in the tenant's Teams app catalog; the app disappears from every team and chat with it.",
+      "consequenceInstalls": "Every team and chat install recorded here.",
+      "keepsHint": "Bot slug and display name are kept — a new run starts from the same answers.",
+      "acknowledge": "I understand these Azure objects are deleted and will have to be created again.",
+      "busy": "Resetting …",
+      "resultComplete": "Reset. The agent can be provisioned again now.",
+      "resultIncomplete": "Stopped at “{step}” — everything before it is cleared, the rest is still there. Calling it again picks up from that point.",
+      "stepLine": "{step}: {outcome}",
+      "steps": {
+        "catalog_removed": "Catalog entry",
+        "bot_deleted": "Azure bot",
+        "app_deleted": "App registration",
+        "config_unsynced": "Teams bot entry",
+        "identity_reset": "Database row",
+        "identity_deleted": "Identity"
+      },
+      "outcomes": {
+        "removed": "removed",
+        "already-absent": "was already gone",
+        "skipped": "not present",
+        "blocked": "blocked",
+        "failed": "failed"
+      },
+      "details": {
+        "nothing_to_remove": "There was no entry for it.",
+        "catalog_removal_unsupported": "The installed connector cannot withdraw the catalog entry. Nothing further was deleted because of it: a new run would otherwise adopt the old catalog entry and bind the bot to a deleted app id.",
+        "tenant_sign_in_required": "The catalog entry can only be withdrawn with a tenant sign-in. Sign in and start the reset again — no extra permission is needed for it.",
+        "purge_unsupported": "The installed connector cannot empty the recycle bin. The app registration was therefore deliberately NOT deleted: it would block its own name for 30 days.",
+        "app_absent_unpurgeable": "The app registration is already gone but could no longer be looked up in the recycle bin. It may still hold the name for up to 30 days — pick a different bot slug if in doubt.",
+        "app_provably_gone": "The app registration is gone and is not in the recycle bin either — the name is free again.",
+        "arm_not_configured": "Without ARM configured, no bot service was ever created.",
+        "config_unsync_unavailable": "This deployment does not write the teams_bots entry automatically, so there was none for the reset to remove.",
+        "config_plugin_not_installed": "The Teams channel is not installed, so there is no configuration to clean up.",
+        "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
+        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
+      },
+      "openRun": "Reset the run …",
+      "openIdentity": "Delete the identity …",
+      "confirmHeadingIdentity": "This is deleted for good — the identity itself included:",
+      "consequenceIdentity": "This orchestrator's Teams identity, bot slug and display name included. Both are freely choosable again afterwards.",
+      "dropsHint": "Bot slug and display name are NOT kept. The orchestrator has no Teams identity afterwards, and creating one starts from an empty form again.",
+      "acknowledgeIdentity": "I understand that the identity is removed as well, and that a bot slug and display name have to be chosen again.",
+      "confirmRun": "Reset the run",
+      "confirmIdentity": "Delete the identity for good",
+      "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
+      "slugMismatch": "That is not the bot slug of this identity.",
+      "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
     }
   },
   "builder": {
@@ -3310,7 +3619,7 @@
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
-    "selectModelLink": "Once logged in, select a CLI model for an agent in LLM providers",
+    "selectModelLink": "After you sign in, assign the orchestrator to this CLI under LLM access — otherwise no agent runs. omadia sets this for you automatically when no other provider is configured",
     "detected": {
       "heading": "Detected CLIs"
     },
@@ -3338,6 +3647,8 @@
       "retry": "Try again",
       "failed": "Sign-in failed. Try again.",
       "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
+      "callbackWait": "Approve access in the browser. This CLI finishes the sign-in on its own, no code to paste — this page updates when it is done.",
+      "callbackTimedOut": "The sign-in did not complete in time. Start again, approve access in the browser, and keep this page open.",
       "manualSummary": "Prefer the terminal?",
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",
@@ -3923,7 +4234,6 @@
     "marketplace": {
       "registry": "Registry",
       "search": "Search",
-      "browse": "Browse catalog",
       "hint": "Pick a registry and browse its catalog. Connected servers arrive disabled: run Discover, review the verdicts, then enable.",
       "noResults": "No catalog entries match.",
       "connect": "Connect",
@@ -3938,7 +4248,27 @@
       "removeRegistry": "Remove registry",
       "registryName": "Name",
       "registryUrl": "URL",
-      "registryToken": "Bearer token (optional)"
+      "registryToken": "Bearer token (optional)",
+      "searchPlaceholder": "Search the catalog — e.g. postgres, github, slack",
+      "clearSearch": "Clear",
+      "searching": "Searching…",
+      "manageRegistries": "Manage registries",
+      "retry": "Try again",
+      "resultCount": "{count, plural, one {# server} other {# servers}} in {name}",
+      "resultCountFor": "{count, plural, one {# match} other {# matches}} for \"{query}\" in {name}",
+      "hintShort": "Imports arrive disabled — run Discover first.",
+      "noResultsFor": "Nothing in this catalog matches \"{query}\".",
+      "noResultsHint": "Try a shorter term, or switch to another registry above.",
+      "errorTimeout": "The registry \"{name}\" did not answer in time.",
+      "errorUnreachable": "The registry \"{name}\" could not be reached.",
+      "errorGeneric": "The catalog of \"{name}\" could not be read.",
+      "errorUnreachableHint": "The registry host is down or blocked from this installation. Pick another registry above, or try again in a moment.",
+      "removeRegistryBody": "Remove the registry \"{name}\"? Servers already imported from it stay.",
+      "unlicensedShort": "unlicensed",
+      "refresh": "Refresh",
+      "scopeCachedPage": "cached page only",
+      "scopeCachedPageWhy": "This registry’s own search did not answer, so these hits are a text match over the catalog page already loaded — servers further into the catalog are not covered. Use Refresh to try the registry’s search again.",
+      "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again."
     },
     "grants": {
       "grantHeading": "Grant tools to an orchestrator",
@@ -4704,10 +5034,10 @@
   },
   "adminDatasets": {
     "title": "Knowledge · Datasets",
-    "intro": "Import a CSV as a structured dataset, read back the schema omadia inferred from it, and delete it again. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
-    "uploadHeading": "Import CSV",
+    "intro": "Import a CSV or Excel file as a structured dataset, read back the schema omadia inferred from it, and delete it again. An Excel workbook becomes one dataset per sheet. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
+    "uploadHeading": "Import table",
     "fields": {
-      "file": "CSV file",
+      "file": "CSV or Excel file",
       "nameOptional": "Name (optional)"
     },
     "placeholders": {
@@ -4744,9 +5074,9 @@
     "nextPage": "Next",
     "errors": {
       "tooLarge": "The file exceeds the {maxMb} MB upload limit.",
-      "notCsv": "Only CSV files are supported so far.",
-      "noFile": "No file arrived — pick a CSV first.",
-      "importFailed": "The CSV could not be imported. {detail}",
+      "notCsv": "Only CSV and Excel files (.xlsx, .xlsm) are supported.",
+      "noFile": "No file arrived — pick a CSV or Excel file first.",
+      "importFailed": "The file could not be imported. {detail}",
       "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
       "generic": "The request failed (HTTP {status}).",
       "unexpected": "The request failed. {detail}"
@@ -5295,5 +5625,61 @@
     "subtitle": "This screen is supplied by the plugin and runs in a sandboxed frame.",
     "frameTitle": "User interface of the plugin {pluginId}",
     "loading": "Loading the plugin interface…"
+  },
+  "operatorTeamsSignIn": {
+    "metaTitle": "Teams sign-in",
+    "heading": "Teams sign-in for this tenant",
+    "why": "Microsoft only allows uploading a Teams app to the tenant catalogue on behalf of a signed-in person — application permissions are explicitly not supported for it. So a tenant admin signs in once, and every agent provisioned afterwards uses that sign-in automatically.",
+    "loading": "Loading sign-in status …",
+    "refresh": "Refresh",
+    "unsupported": "The installed Microsoft 365 connector does not know the delegated sign-in yet. Upgrade it to 0.6.0 or newer — it is already installed.",
+    "technicalReason": "Technical reason:",
+    "start": "Start sign-in",
+    "startBusy": "Starting sign-in",
+    "signOut": "Sign out",
+    "signOutBusy": "Signing out",
+    "signedOut": {
+      "body": "Nobody is signed in for this tenant yet. Until that changes, provisioning gets as far as the catalogue upload and parks there — everything before it is kept and continues once the sign-in exists."
+    },
+    "pending": {
+      "instructions": "Open the sign-in page on any device and enter this code. The person signing in has to be a tenant admin.",
+      "codeLabel": "Sign-in code",
+      "copy": "Copy code",
+      "copied": "Copied",
+      "openVerification": "Open Microsoft's sign-in page",
+      "expiresIn": "The code expires in {seconds} seconds.",
+      "consentHint": "If the sign-in page asks for approval first: approve here, then enter the code.",
+      "consentLink": "Open the consent page",
+      "waiting": "omadia is waiting for the sign-in to finish. This page updates by itself."
+    },
+    "signedIn": {
+      "badge": "Signed in",
+      "as": "Signed in as {who}",
+      "unknownAccount": "unknown account",
+      "since": "Signed in since",
+      "tokenExpires": "Current access token valid until",
+      "tenant": "Tenant",
+      "scopes": "Permissions",
+      "staleNote": "The current access token has expired — not a fault, and nothing to act on. omadia renews it before the next use and the sign-in stays valid.",
+      "selfRenewing": "The sign-in stays valid and renews itself. You only have to sign in again when this panel says the sign-in is missing.",
+      "technicalHeading": "Technical details",
+      "tokenExpiresHint": "Microsoft sets the access token lifetime (roughly 60 to 90 minutes) and it cannot be configured. It says nothing about the sign-in: omadia fetches a fresh token before each use."
+    },
+    "expired": {
+      "headline": "The sign-in code expired.",
+      "body": "Nothing was created and nothing was changed. Just start the sign-in again."
+    },
+    "declined": {
+      "headline": "The sign-in was not completed.",
+      "body": "Microsoft reports this both when someone cancels and when a policy blocks the attempt — Conditional Access or a device requirement, for instance. The technical reason below says which case this is."
+    },
+    "errors": {
+      "teams_sign_in_unavailable": "The Teams sign-in is not wired up in this deployment.",
+      "teams_provisioner_unavailable": "The Microsoft 365 connector is not installed — install and activate it first.",
+      "delegated_sign_in_unsupported": "The installed Microsoft 365 connector is too old for the delegated sign-in. Upgrade it to 0.6.0 or newer.",
+      "device_code_flow_failed": "Microsoft refused the sign-in flow. Check that the connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them.",
+      "teams_sign_in_failed": "The Teams sign-in failed.",
+      "unknown": "The Teams sign-in request failed: {detail}"
+    }
   }
 }

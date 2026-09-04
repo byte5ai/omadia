@@ -8,6 +8,8 @@ export const CH = {
   exportRecoveryKey: 'omadia:exportRecoveryKey',
   bootProgress: 'omadia:bootProgress',
   bootLog: 'omadia:bootLog',
+  /** OM-71: renderer → main, "the first real screen is standing". */
+  uiReady: 'omadia:uiReady',
 } as const;
 
 /** A single line streamed to the wizard/loading UI during boot. */

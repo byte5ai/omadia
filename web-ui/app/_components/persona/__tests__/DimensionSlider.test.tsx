@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { DimensionSlider } from '../DimensionSlider';
-import { renderWithIntl } from './personaIntlHelper';
+import { renderWithIntl } from '../../../store/builder/[id]/_components/__tests__/personaIntlHelper';
 
 const render = (ui: ReactElement) => renderWithIntl(ui, { locale: 'de' });
 

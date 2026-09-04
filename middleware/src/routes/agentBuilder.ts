@@ -2192,8 +2192,20 @@ export function createAgentBuilderRouter(
         return;
       }
       const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
-      const entries = await mcpRegistryClient.search(await toRegistryConfig(registry), q);
-      res.json({ entries });
+      // `refresh=1` is the operator explicitly asking to re-dial: it drops both
+      // the 5-minute success cache and the short "recently unreachable" note,
+      // so Retry and Refresh in the UI actually hit the registry instead of
+      // being answered from either cache.
+      if (req.query['refresh'] === '1') mcpRegistryClient.invalidate(registry.id);
+      const { entries, scope } = await mcpRegistryClient.search(
+        await toRegistryConfig(registry),
+        q,
+      );
+      // `scope` travels to the UI: a 'cached-page' result is a substring filter
+      // over the browse page, not the registry's own ranking of the whole
+      // catalog, and the operator has to be told so before concluding that a
+      // server they expected simply is not there.
+      res.json({ entries, scope });
     } catch (err) {
       if (err instanceof McpRegistryError) {
         res.status(502).json({ error: 'mcp_registry_unreachable', code: err.code, message: err.message });

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { KeyRound } from 'lucide-react';
+import { Cpu, KeyRound } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from './ui/Button';
@@ -13,8 +13,8 @@ import { Button } from './ui/Button';
  * RuntimeReadinessBanner — turns the fresh-install "everything 503s" state
  * into a visible, actionable hint.
  *
- * On a fresh install the orchestrator plugin has no LLM API key, so it never
- * publishes chatAgent@1 / orchestratorRegistry@1: every operator surface
+ * On a fresh install the orchestrator plugin has no usable LLM access, so it
+ * never publishes chatAgent@1 / orchestratorRegistry@1: every operator surface
  * (agents, channels, skills, chat) answers 503
  * `multi_orchestrator_unavailable`, and routines aren't mounted at all. The
  * individual pages then surface raw "GET … failed: 503" strings with no hint
@@ -22,15 +22,32 @@ import { Button } from './ui/Button';
  *
  * Detection is a probe of one representative operator route, looking for the
  * structured 503. It re-probes on tab focus, and on a heartbeat while the
- * card is visible, so it clears itself the moment the key is saved (the
- * operator routes go live without a restart).
+ * card is visible, so it clears itself the moment the runtime comes up.
+ *
+ * OM-75 (#1000) — the 503 carries a `cause`, and the copy follows it. In the
+ * round-4 beta test the tester HAD a working subscription login; what was
+ * missing was the orchestrator's provider assignment. The old single text
+ * ("add a key or subscription") sent him back to a step he had completed, and
+ * promised chat "right away" once he did. Two causes, two texts:
+ *
+ *   - `no_llm_access`  → no key, no OAuth, no CLI login anywhere
+ *   - `no_assignment`  → access exists, the orchestrator points elsewhere
+ *
+ * A 503 without a cause (older middleware) renders the no-access copy.
  *
  * Mounted once in the root layout, next to SessionWatcher. Renders nothing
  * on /login + /setup.
  */
 
-/** Heartbeat cadence while the card is visible — catches the key being saved. */
+/** Heartbeat cadence while the card is visible — catches the fix landing. */
 const HEARTBEAT_MS = 60 * 1000;
+
+/** Mirrors `RuntimeReadinessCause` in middleware/src/platform/pluginLlmReadiness.ts. */
+export type RuntimeReadinessCause = 'no_llm_access' | 'no_assignment' | 'unknown';
+
+function parseCause(value: unknown): RuntimeReadinessCause {
+  return value === 'no_assignment' || value === 'unknown' ? value : 'no_llm_access';
+}
 
 function isAuthPage(pathname: string): boolean {
   return pathname === '/login' || pathname === '/setup';
@@ -40,14 +57,16 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
   const pathname = usePathname();
   const onAuthPage = isAuthPage(pathname);
 
-  const [unavailable, setUnavailable] = useState(false);
+  // `null` = runtime is up (or not this card's concern); a cause = show it.
+  const [cause, setCause] = useState<RuntimeReadinessCause | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const unavailable = cause !== null;
 
   // ── Initial probe + focus re-check + heartbeat-while-visible ────────────
   // One effect à la SessionWatcher: the probe lives inside so every
   // setState happens after an await (no sync-setState-in-effect). The
   // heartbeat is only armed while the card shows — its job is to clear the
-  // card once the key lands and the operator routes come up.
+  // card once the fix lands and the operator routes come up.
   useEffect(() => {
     if (onAuthPage) return;
     let cancelled = false;
@@ -60,14 +79,19 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
         if (cancelled) return;
         if (res.status !== 503) {
           // 200 = runtime is up; 401/403 = not this card's concern.
-          setUnavailable(false);
+          setCause(null);
           return;
         }
         const body = (await res.json().catch(() => null)) as {
           error?: string;
+          cause?: unknown;
         } | null;
         if (cancelled) return;
-        setUnavailable(body?.error === 'multi_orchestrator_unavailable');
+        setCause(
+          body?.error === 'multi_orchestrator_unavailable'
+            ? parseCause(body.cause)
+            : null,
+        );
       } catch {
         // Network blip — leave state intact; the next probe retries.
       }
@@ -90,25 +114,46 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
     };
   }, [onAuthPage, unavailable, dismissed]);
 
-  if (onAuthPage || !unavailable || dismissed) return null;
+  if (onAuthPage || cause === null || dismissed) return null;
 
   // No AnimatePresence exit animation on purpose: the card leaves when the
   // runtime comes up — an instant disappearance is fine, and it keeps the
   // clear-on-heartbeat path deterministic under fake timers in tests.
-  return <ReadinessCard onDismiss={() => setDismissed(true)} />;
+  return <ReadinessCard cause={cause} onDismiss={() => setDismissed(true)} />;
 }
 
 /** Non-blocking bottom-right card, styled after SessionWarningCard. */
 function ReadinessCard({
+  cause,
   onDismiss,
 }: {
+  cause: RuntimeReadinessCause;
   onDismiss: () => void;
 }): React.ReactElement {
   const t = useTranslations('runtimeReadiness');
+  // `unknown` means access AND assignment are set (that is how the middleware
+  // derives it), so the no-access sentence would be a measured falsehood —
+  // e.g. a stored-but-invalid key. It gets its own copy; the CTA still leads
+  // to the provider page because that is where the access is checked.
+  const noAssignment = cause === 'no_assignment';
+  const unknown = cause === 'unknown';
+  const Icon = noAssignment ? Cpu : KeyRound;
+  const title = noAssignment
+    ? t('titleNoAssignment')
+    : unknown
+      ? t('titleUnknown')
+      : t('title');
+  const body = noAssignment
+    ? t('bodyNoAssignment')
+    : unknown
+      ? t('bodyUnknown')
+      : t('body');
 
   return (
     <motion.div
       role="alert"
+      data-testid="runtime-readiness-card"
+      data-cause={cause}
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 24 }}
@@ -116,11 +161,11 @@ function ReadinessCard({
       className="fixed bottom-5 right-5 z-[80] w-[min(92vw,24rem)] border border-[color:var(--rule-strong)] bg-[color:var(--paper)] p-4 shadow-[0_24px_60px_-20px_rgba(0,0,0,0.45)]"
     >
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-[color:var(--accent)]">
-        <KeyRound className="size-3.5" aria-hidden />
-        {t('title')}
+        <Icon className="size-3.5" aria-hidden />
+        {title}
       </div>
       <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--ink)]">
-        {t('body')}
+        {body}
       </p>
       <div className="mt-4 flex items-center gap-2">
         <Link
@@ -128,7 +173,7 @@ function ReadinessCard({
           onClick={onDismiss}
           className="flex-1 border border-[color:var(--ink)] bg-[color:var(--ink)] px-3 py-2 text-center text-[11px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
         >
-          {t('cta')}
+          {noAssignment ? t('ctaNoAssignment') : t('cta')}
         </Link>
         <Button
           type="button"

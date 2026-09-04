@@ -17,6 +17,7 @@ import {
   getCliBackends,
   startCliLogin,
   submitCliLoginCode,
+  getCliLoginStatus,
   cancelCliLogin,
   cliLogout,
   type CliBackendsResponse,
@@ -205,7 +206,16 @@ type LoginPhase =
   | { phase: 'starting' }
   | { phase: 'awaiting'; sessionId: string; url: string }
   | { phase: 'submitting'; sessionId: string; url: string }
+  // OM-73 — the newer CLI finishes through a browser callback with no code to
+  // paste; we show the link and poll the login status until it resolves.
+  | { phase: 'polling'; url: string }
   | { phase: 'error'; message: string; sessionId?: string; url?: string };
+
+/** Poll budget for the login status (OM-73): 100 tries × 3s = 5 min, matching
+ *  the backend's SESSION_LIFETIME_MS (cliAuthService.ts) so the UI never gives
+ *  up before the server does. */
+const LOGIN_POLL_TRIES = 100;
+const LOGIN_POLL_INTERVAL_MS = 3000;
 
 function CliRow({
   b,
@@ -221,6 +231,17 @@ function CliRow({
   const [login, setLogin] = useState<LoginPhase>({ phase: 'idle' });
   const [code, setCode] = useState('');
   const [busyLogout, setBusyLogout] = useState(false);
+  /**
+   * OM-73 — cancellation token for the status poll. Every new login start,
+   * cancel, resolved submit and unmount bumps it; a running loop compares its
+   * own token per tick and stops when it no longer matches, so no stale loop
+   * ever writes into a row that moved on.
+   */
+  const pollToken = useRef(0);
+  const stopPolling = useCallback((): void => {
+    pollToken.current += 1;
+  }, []);
+  useEffect(() => stopPolling, [stopPolling]);
 
   const statusLine = !b.installed
     ? t('status.notInstalled')
@@ -232,12 +253,77 @@ function CliRow({
         ? t('status.installedNotLoggedIn')
         : t('status.installedUnknown');
 
+  /**
+   * OM-73 — poll the login status until it resolves. Runs for BOTH flows: the
+   * browser-callback flow has nothing else to wait on, and in the paste-code
+   * flow the 2.1.259 CLI may still finish via the callback before the operator
+   * pastes anything — so the row resolves regardless of the `codeEntry` guess.
+   */
+  const pollUntilResolved = useCallback(
+    async (url: string): Promise<void> => {
+      const token = ++pollToken.current;
+      const alive = (): boolean => pollToken.current === token;
+      for (let i = 0; i < LOGIN_POLL_TRIES; i++) {
+        await new Promise((r) => setTimeout(r, LOGIN_POLL_INTERVAL_MS));
+        if (!alive()) return;
+        let snap;
+        try {
+          snap = await getCliLoginStatus(b.id);
+        } catch {
+          continue; // transient; keep polling
+        }
+        if (!alive()) return;
+        if (snap.status === 'authorized') {
+          stopPolling();
+          setLogin({ phase: 'idle' });
+          setCode('');
+          onChanged();
+          return;
+        }
+        if (snap.status === 'error' || snap.status === 'expired' || snap.status === 'invalid') {
+          stopPolling();
+          setLogin({ phase: 'error', message: snap.error ?? t('connect.failed'), url });
+          return;
+        }
+        // `idle` is terminal too: the server no longer has our session (reaped
+        // or replaced), so nothing we wait for can still arrive.
+        if (snap.status === 'idle') {
+          stopPolling();
+          setLogin({ phase: 'error', message: t('connect.callbackTimedOut'), url });
+          return;
+        }
+      }
+      if (!alive()) return;
+      setLogin({ phase: 'error', message: t('connect.callbackTimedOut'), url });
+    },
+    [b.id, onChanged, stopPolling, t],
+  );
+
   const onConnect = async (): Promise<void> => {
+    stopPolling(); // a fresh start supersedes any loop from a previous attempt
     setLogin({ phase: 'starting' });
     setCode('');
     try {
-      const { sessionId, verificationUrl } = await startCliLogin(b.id);
-      setLogin({ phase: 'awaiting', sessionId, url: verificationUrl });
+      const start = await startCliLogin(b.id);
+      // The login may already be complete (a cached/instant browser callback).
+      if (start.status === 'authorized') {
+        setLogin({ phase: 'idle' });
+        onChanged();
+        return;
+      }
+      // `codeEntry === false` ⇒ the newer CLI finishes via a browser callback
+      // and prints no code (OM-73). Show the link and poll instead of asking
+      // for a code that will never appear. `undefined` ⇒ old middleware ⇒ old
+      // paste-code flow.
+      if (start.codeEntry === false) {
+        setLogin({ phase: 'polling', url: start.verificationUrl });
+        void pollUntilResolved(start.verificationUrl);
+        return;
+      }
+      setLogin({ phase: 'awaiting', sessionId: start.sessionId, url: start.verificationUrl });
+      // Poll here as well — the heuristic may be wrong, or the CLI may finish
+      // through the browser callback while the code field is still showing.
+      void pollUntilResolved(start.verificationUrl);
     } catch (err) {
       setLogin({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
     }
@@ -246,8 +332,13 @@ function CliRow({
   const onSubmitCode = async (sessionId: string, url: string): Promise<void> => {
     if (!code.trim()) return;
     setLogin({ phase: 'submitting', sessionId, url });
+    const tokenAtSubmit = pollToken.current;
     try {
       const res = await submitCliLoginCode(b.id, sessionId, code.trim());
+      // The status poll may have resolved the row while the submit was in
+      // flight (callback finished first). Its outcome wins; drop ours.
+      if (pollToken.current !== tokenAtSubmit) return;
+      stopPolling();
       if (res.status === 'authorized') {
         setLogin({ phase: 'idle' });
         setCode('');
@@ -276,6 +367,7 @@ function CliRow({
   };
 
   const onCancel = (): void => {
+    stopPolling();
     void cancelCliLogin(b.id);
     setLogin({ phase: 'idle' });
     setCode('');
@@ -368,6 +460,34 @@ function CliRow({
 
           {login.phase === 'starting' && (
             <p className="text-sm text-[color:var(--fg-muted)]">{t('connect.starting')}</p>
+          )}
+
+          {/* OM-73 — browser-callback flow: open the link, then we wait. No code. */}
+          {login.phase === 'polling' && (
+            <div>
+              <div className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
+                {t('connect.heading')}
+              </div>
+              <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm text-[color:var(--fg-muted)]">
+                <li>
+                  {t('connect.openHint')}{' '}
+                  <a
+                    href={login.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="break-all text-[color:var(--accent)] underline"
+                  >
+                    {t('connect.openLink')}
+                  </a>
+                </li>
+                <li>{t('connect.callbackWait')}</li>
+              </ol>
+              <div className="mt-3">
+                <Button variant="ghost" size="sm" onClick={onCancel}>
+                  {t('connect.cancel')}
+                </Button>
+              </div>
+            </div>
           )}
 
           {(login.phase === 'awaiting' || login.phase === 'submitting' || (login.phase === 'error' && login.url)) && (

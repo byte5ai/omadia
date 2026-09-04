@@ -170,6 +170,18 @@ jobs:
       - name: Test — updater sidecar (node --test)
         run: npm run test:updater
 
+      # PII-detector sidecar (#361). Python, therefore outside every glob
+      # above — until now it was tested nowhere, which is how a shipped
+      # IPv4-only bind and a CPU-dependent broken model export both reached
+      # production unnoticed. The suite is stdlib-only and imports `server`
+      # WITHOUT gliner/onnxruntime (the model import is deferred into
+      # `load_model`), so it needs no install step and no model download:
+      # chunking, span merging, request validation, the dual-stack bind, and
+      # the startup selftest's rejection logic all run in milliseconds.
+      - name: Test — PII-detector sidecar (python unittest)
+        working-directory: middleware
+        run: python3 -m unittest sidecars/pii-detector/test_server.py -v
+
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
       # green with zero Postgres coverage. Fail loudly here instead if the
@@ -299,6 +311,54 @@ jobs:
         # disagrees with the shell. Runs inside the existing web-ui job, not as
         # a new required check.
         run: npm run plugin-ui:css:check
+
+  # ------------------------------------------------------------------
+  # Desktop: typecheck + node:test for the Electron shell.
+  #
+  # Added for issue #932. Until now desktop/src was the only source tree in
+  # the repo with no tests and no CI job -- and the only one that produced a
+  # blocker in three rounds of beta testing, because it is the whole of the
+  # user's first impression. Electron's own binary is deliberately NOT
+  # downloaded: nothing here launches the app, so the ~100MB fetch would only
+  # slow the job down.
+  # ------------------------------------------------------------------
+  desktop:
+    name: desktop (typecheck + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The build tsconfig has rootDir: src and emits to dist/, so it cannot
+      # also cover test/. A separate config does, the way middleware/test does,
+      # otherwise a test that type-lies still passes CI.
+      - name: Typecheck (test tree)
+        run: npm run typecheck:test
+
+      # The tests run under node's strip-only TypeScript mode against a stubbed
+      # `electron`, so they cover the lifecycle code (supervisor generation and
+      # single-flight races, child shutdown, PATH resolution, snapshot
+      # retention, synced-path detection, install preflight, update-attempt
+      # bookkeeping) with no display and no Electron runtime.
+      - name: Test (node:test)
+        run: npm test
 
   # ------------------------------------------------------------------
   # Schema smoke: apply every migration in the repo against pgvector.

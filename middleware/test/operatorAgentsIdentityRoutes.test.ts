@@ -35,8 +35,9 @@ import {
 } from '../src/routes/operatorAgents.js';
 import type {
   AgentIdentityAvatarInput,
+  AgentIdentityComposedPrompt,
   AgentIdentityRecord,
-  AgentIdentityTextInput,
+  AgentIdentitySaveInput,
 } from '../src/platform/agentIdentityStore.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
@@ -49,11 +50,20 @@ interface FakeAgent {
   readonly slug: string;
   readonly name: string;
   readonly description: string | null;
+  readonly modelRouting?: Record<string, unknown> | null;
 }
 
 class FakeConfigStore {
   private readonly agents: FakeAgent[] = [
-    { id: 'agent-1', slug: 'sales', name: 'Sales Agent', description: 'Sells' },
+    {
+      id: 'agent-1',
+      slug: 'sales',
+      name: 'Sales Agent',
+      description: 'Sells',
+      // Persona axes are deltas against the model family's own baseline, so
+      // the agent's routing decides which traits get written at all.
+      modelRouting: { main: 'anthropic:claude-opus-5' },
+    },
     { id: 'agent-2', slug: 'plain', name: 'Plain Agent', description: null },
   ];
 
@@ -75,9 +85,9 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
     return Promise.resolve(this.rows.get(agentId));
   }
 
-  saveText(
+  save(
     agentId: string,
-    input: AgentIdentityTextInput,
+    input: AgentIdentitySaveInput,
   ): Promise<AgentIdentityRecord> {
     const existing = this.rows.get(agentId);
     const norm = (v: string | null): string | null => {
@@ -91,6 +101,9 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       longDescription: norm(input.longDescription),
       instructions: norm(input.instructions),
       accentColor: norm(input.accentColor),
+      persona: input.persona,
+      quality: input.quality,
+      composed: input.composed,
       revision: existing?.revision ?? 1,
       avatar: existing?.avatar ?? null,
       createdAt: existing?.createdAt ?? new Date('2026-08-28T10:00:00.000Z'),
@@ -102,7 +115,11 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       existing.shortDescription === next.shortDescription &&
       existing.longDescription === next.longDescription &&
       existing.instructions === next.instructions &&
-      existing.accentColor === next.accentColor;
+      existing.accentColor === next.accentColor &&
+      JSON.stringify(existing.persona ?? null) ===
+        JSON.stringify(next.persona ?? null) &&
+      JSON.stringify(existing.quality ?? null) ===
+        JSON.stringify(next.quality ?? null);
     if (unchanged) return Promise.resolve(existing);
     const bumped = { ...next, revision: (existing?.revision ?? 0) + 1 };
     this.rows.set(agentId, bumped);
@@ -122,6 +139,9 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       longDescription: existing?.longDescription ?? null,
       instructions: existing?.instructions ?? null,
       accentColor: existing?.accentColor ?? null,
+      persona: existing?.persona ?? null,
+      quality: existing?.quality ?? null,
+      composed: existing?.composed ?? { text: null, family: null },
       revision: (existing?.revision ?? 0) + 1,
       avatar: { etag: avatar.etag },
       createdAt: existing?.createdAt ?? new Date('2026-08-28T10:00:00.000Z'),
@@ -140,6 +160,36 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       avatar: null,
       revision: existing.revision + 1,
     };
+    this.rows.set(agentId, next);
+    return Promise.resolve(next);
+  }
+
+  /** #967 — mirrors the store's SQL guard: an authored name is never
+   *  overwritten. Not exercised by these routes, but the port requires it. */
+  adoptDisplayName(
+    agentId: string,
+    displayName: string,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const existing = this.rows.get(agentId);
+    if (existing && (existing.displayName ?? '').trim().length > 0) {
+      return Promise.resolve(existing);
+    }
+    const name = displayName.trim();
+    if (name.length === 0) return Promise.resolve(existing);
+    const next = { ...(existing as AgentIdentityRecord), displayName: name };
+    this.rows.set(agentId, next);
+    return Promise.resolve(next);
+  }
+
+  recompose(
+    agentId: string,
+    composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const existing = this.rows.get(agentId);
+    if (!existing) return Promise.resolve(undefined);
+    // Mirrors the real store: the prompt is refreshed, the revision is NOT —
+    // nothing the operator authored changed.
+    const next = { ...existing, composed };
     this.rows.set(agentId, next);
     return Promise.resolve(next);
   }
@@ -234,8 +284,12 @@ describe('operator agent identity routes (#914)', () => {
   let identityWired = true;
   let provisionerInstalled = true;
 
+  let reloads = 0;
   const registry = {
-    reload: () => Promise.resolve(),
+    reload: () => {
+      reloads += 1;
+      return Promise.resolve();
+    },
   } as unknown as OrchestratorRegistry;
 
   before(async () => {
@@ -272,6 +326,7 @@ describe('operator agent identity routes (#914)', () => {
     teamsRunner = new FakeTeamsRunner();
     identityWired = true;
     provisionerInstalled = true;
+    reloads = 0;
   });
 
   interface IdentityBody {
@@ -286,8 +341,11 @@ describe('operator agent identity routes (#914)', () => {
       short_description: string | null;
       has_avatar: boolean;
     };
+    composed_prompt: string | null;
+    composed_family: string | null;
     republish?: string;
     outline_derived?: boolean;
+    dropped_boundary_presets?: string[];
   }
 
   it('GET reports the agent as unauthored and resolves the registry values', async () => {
@@ -537,6 +595,135 @@ describe('operator agent identity routes (#914)', () => {
     });
     assert.equal(((await res.json()) as IdentityBody).republish, 'queued');
     assert.equal(teamsRunner.runs[0]?.republish, true);
+  });
+
+  // ── the character block (#914 follow-up) ─────────────────────────────
+
+  it('stores the persona and compiles it into the prompt', async () => {
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        instructions: 'You are the sales agent.',
+        persona: {
+          template: 'customer-service',
+          axes: { directness: 95, sarcasm: 95 },
+          custom_notes: 'Antworte auf Deutsch.',
+        },
+        quality: {
+          sycophancy: 'high',
+          boundaries: { presets: ['no-pii'], custom: ['Never quote prices.'] },
+        },
+      }),
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as IdentityBody;
+
+    const stored = identityStore.rows.get('agent-1');
+    assert.equal(stored?.persona?.template, 'customer-service');
+    assert.equal(stored?.quality?.sycophancy, 'high');
+
+    // The compiled prompt is what the agent actually speaks with, so the
+    // response carries it — and it carries the family it was compiled
+    // against, because the axes mean different things per family.
+    const prompt = body.composed_prompt ?? '';
+    assert.ok(prompt.includes('You are the sales agent.'));
+    assert.ok(prompt.includes('<persona>'));
+    assert.ok(prompt.includes('## Boundaries'));
+    assert.ok(prompt.includes('Never quote prices.'));
+    assert.equal(body.composed_family, 'opus');
+    assert.equal(stored?.composed.text, prompt);
+  });
+
+  it('reloads the registry when the compiled prompt changed', async () => {
+    reloads = 0;
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ persona: { axes: { directness: 95 } } }),
+    });
+    // Without this the edit would be stored, reported as saved, and never
+    // spoken: the registry keeps serving the Orchestrator it already built.
+    assert.equal(reloads, 1);
+  });
+
+  it('reloads the registry when the name changed (#967)', async () => {
+    reloads = 0;
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Vertrieb' }),
+    });
+    // This case used to assert the OPPOSITE, on the premise that "a name is
+    // not a prompt" — true while the display name only reached the Teams
+    // manifest. #967 gives it a path into the system prompt (it is the name
+    // the bot introduces itself with), so a rename that never reaches the
+    // registry is a rename the operator sees saved and never hears spoken.
+    // A rename is rare and deliberate; rolling sessions for it is the point.
+    assert.equal(reloads, 1);
+  });
+
+  it('does not reload when nothing about the identity changed', async () => {
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Vertrieb' }),
+    });
+    reloads = 0;
+    // The same values again: no prompt change, no name change, no rebuild.
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Vertrieb' }),
+    });
+    assert.equal(reloads, 0);
+  });
+
+  it('rejects an axis outside the 0-100 range', async () => {
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ persona: { axes: { directness: 140 } } }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(identityStore.rows.size, 0, 'nothing reached the store');
+  });
+
+  it('rejects an axis this platform does not have', async () => {
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ persona: { axes: { charisma: 70 } } }),
+    });
+    // The spec schema is strict; a typo must not be stored as a setting that
+    // silently does nothing.
+    assert.equal(res.status, 400);
+  });
+
+  it('names boundary presets it could not resolve', async () => {
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        quality: {
+          boundaries: { presets: ['no-pii', 'from-the-future'], custom: [] },
+        },
+      }),
+    });
+    const body = (await res.json()) as IdentityBody;
+    assert.deepEqual(body.dropped_boundary_presets, ['from-the-future']);
+  });
+
+  it('a persona edit on an INSTALLED agent republishes the package', async () => {
+    teamsStore.row = installedTeamsRow();
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ persona: { axes: { warmth: 90 } } }),
+    });
+    // The persona changes no text column at all — a republish gate that only
+    // watched the nameplate would call this "unchanged".
+    assert.equal(((await res.json()) as IdentityBody).republish, 'queued');
   });
 
   it('503s with a code of its own while the identity store is not wired', async () => {

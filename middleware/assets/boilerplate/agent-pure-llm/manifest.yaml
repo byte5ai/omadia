@@ -19,7 +19,11 @@ identity:
   domain: "{{AGENT_DOMAIN}}"             # z.B. coaching, m365.sharepoint — lowercase, dotted, kebab-case mid-segment OK
   name: "{{AGENT_NAME}}"
   version: "{{AGENT_VERSION}}"
-  description: "{{AGENT_DESCRIPTION_DE}}"
+  # Locale map, not a bare string (#885): a bare string is read as English, so
+  # German in this slot would show up as the English description in the Hub.
+  description:
+    en: "{{AGENT_DESCRIPTION_EN}}"
+    de: "{{AGENT_DESCRIPTION_DE}}"
   authors:
     - name: "{{AGENT_AUTHOR}}"
   license: "Proprietary"

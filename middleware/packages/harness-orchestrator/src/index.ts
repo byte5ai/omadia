@@ -123,6 +123,7 @@ export type {
   AgentStatus,
   ChannelBindingInput,
   ChannelBindingRow,
+  ChannelIdentityRow,
   ConfigSnapshot,
   PlatformSettingsRow,
   PrivacyProfile,
@@ -449,6 +450,17 @@ export type {
   LoopbackMcpServerHandle,
 } from './loopbackMcpServer.js';
 export { CLI_ENV_SCRUB_KEYS, CliChatAgent, StreamJsonParser } from './cliChatAgent.js';
+// #1007 — the CLI spawn gate, shared with `platform/claudeCliAdapter.ts`.
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildCompletionCliArgv,
+  buildGatedCliEnv,
+  cliEnvAllowlistFor,
+} from './cliSpawnGate.js';
+export type { CliToolGateOptions, CompletionCliArgvOptions } from './cliSpawnGate.js';
 export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
@@ -612,13 +624,34 @@ export {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
-export { isCsvAttachment } from './attachmentExtract.js';
+export {
+  isCsvAttachment,
+  isTabularAttachment,
+  detectTabularFormat,
+} from './attachmentExtract.js';
+export type { TabularFormat } from './attachmentExtract.js';
 export {
   buildDatasetFromCsv,
+  buildDatasetFromTable,
   importCsvDataset,
   parseCsv,
+  MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
 } from './datasetImport.js';
+export {
+  parseXlsx,
+  parseXlsxFirstSheet,
+  cellToString,
+  MAX_SHEETS,
+  MAX_XLSX_BYTES,
+} from './datasetImportXlsx.js';
+export type { XlsxParseResult, XlsxSheetParse } from './datasetImportXlsx.js';
+export { importTabularDataset } from './datasetImportTabular.js';
+export type {
+  ImportTabularDatasetInput,
+  ImportTabularDatasetResult,
+  ImportedTable,
+} from './datasetImportTabular.js';
 export type {
   CsvParseResult,
   ImportCsvDatasetInput,

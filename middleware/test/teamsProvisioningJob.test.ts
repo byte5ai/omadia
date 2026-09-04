@@ -107,6 +107,10 @@ interface StubProvisioner extends TeamsProvisionerPort {
 }
 
 interface StubBehaviour {
+  /** Model a connector < 0.7.0: the key is ABSENT, not undefined — feature
+   *  detection has to see a missing method, and a present-but-undefined
+   *  property would still be a key. */
+  noChatInstall?: boolean;
   createAppRegistration?: () => Promise<void> | void;
   createBot?: 'registration-only' | (() => Promise<void> | void);
   uploadToCatalog?: () => Promise<void> | void;
@@ -169,6 +173,20 @@ function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
         value: { teamId: input.teamId, teamsAppId: input.teamsAppId },
       };
     },
+    ...(behaviour.noChatInstall === true
+      ? {}
+      : {
+          async installToChat(input: {
+            readonly chatId: string;
+            readonly teamsAppId: string;
+          }) {
+            calls.push(`installToChat:${input.chatId}:${input.teamsAppId}`);
+            return {
+              outcome: 'created' as const,
+              value: { chatId: input.chatId, teamsAppId: input.teamsAppId },
+            };
+          },
+        }),
   };
 }
 
@@ -234,6 +252,8 @@ function makeRunner(opts: {
   maxAttempts?: number;
   baseRetryDelayMs?: number;
   maxRetryDelayMs?: number;
+  catalogReplicationAttempts?: number;
+  catalogReplicationDelayMs?: number;
   getProvisioner?: () => TeamsProvisionerPort;
   syncBotConfig?: TeamsBotsConfigSyncPort;
   installs?: TeamsInstallJobStore;
@@ -254,12 +274,33 @@ function makeRunner(opts: {
     ...(opts.maxRetryDelayMs !== undefined
       ? { maxRetryDelayMs: opts.maxRetryDelayMs }
       : {}),
+    ...(opts.catalogReplicationAttempts !== undefined
+      ? { catalogReplicationAttempts: opts.catalogReplicationAttempts }
+      : {}),
+    ...(opts.catalogReplicationDelayMs !== undefined
+      ? { catalogReplicationDelayMs: opts.catalogReplicationDelayMs }
+      : {}),
     ...(opts.syncBotConfig ? { syncBotConfig: opts.syncBotConfig } : {}),
     ...(opts.installs ? { installs: opts.installs } : {}),
     ...(opts.resolveTeamName ? { resolveTeamName: opts.resolveTeamName } : {}),
     log: () => {},
   });
   return { runner, store, provisioner, timers };
+}
+
+/**
+ * Let an enqueued run get as far as it can — up to the parked accessor call.
+ *
+ * A single `await Promise.resolve()` used to be enough because `enqueue`
+ * reached the first accessor call in one microtask hop. It is not a property
+ * worth pinning: since #915 the run opens its progress log first, so the hop
+ * count is an implementation detail that any future step-boundary work will
+ * change again. Draining to a MACROTASK expresses what these tests actually
+ * mean — "everything that can run without the parked promise, has run" — and
+ * stays true however many awaits the prologue grows.
+ */
+function settleUntilParked(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function statesWalked(store: MemoryStore): TeamsProvisioningState[] {
@@ -512,8 +553,11 @@ describe('TeamsProvisioningJobRunner — connector error policy', () => {
     const { runner, store } = makeRunner({ behaviour: { createBot: 'registration-only' } });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'halted');
+    // `halted` gained a second shape with #924 (the delegated sign-in parks
+    // here too), so the reason has to be narrowed before its payload is read.
     assert.ok(
       result.status === 'halted' &&
+        result.reason === 'arm_not_configured' &&
         result.missingSetupFields.includes('azureSubscriptionId'),
     );
     assert.equal(store.row?.state, 'app_registered');
@@ -664,7 +708,7 @@ describe('TeamsProvisioningJobRunner — in-process job semantics', () => {
     });
     // First enqueue parks inside createAppRegistration.
     const first = runner.enqueue(REQUEST);
-    await Promise.resolve();
+    await settleUntilParked();
     assert.equal(runner.isRunning('agent-1'), true);
     const second = runner.enqueue(REQUEST);
     assert.equal(first, second, 'same in-flight promise, no second chain');
@@ -823,7 +867,7 @@ describe('TeamsProvisioningJobRunner — wave-integration hardening', () => {
       behaviour: { createAppRegistration: () => parked },
     });
     const run = runner.enqueue(REQUEST);
-    await Promise.resolve();
+    await settleUntilParked();
     runner.stop();
     release!();
     const result = await run;
@@ -1390,5 +1434,171 @@ describe('botHandleUnavailableDetail (#921)', () => {
     const classified = classifyTeamsProvisioningError(detail);
     assert.equal(classified.code, 'bot_handle_unavailable');
     assert.equal(classified.raw, detail);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Catalog replication window — "one press of the button is enough"
+// ---------------------------------------------------------------------------
+
+/** The bare 400 the field report describes: Graph refuses the install right
+ *  after the upload and says nothing useful about why. */
+function bareInstallBadRequest(): Error {
+  return namedError(
+    'ProvisioningRequestError',
+    'graph chats.installedApps.add 400 POST https://graph.microsoft.com/v1.0/chats/19:x/installedApps body={"error":{"code":"BadRequest","message":""}}',
+    { resource: 'graph', step: 'chats.installedApps.add', status: 400 },
+  );
+}
+
+describe('TeamsProvisioningJobRunner — catalog replication window', () => {
+  it('rides out a bare 400 on the install and finishes in ONE run', async () => {
+    // The whole point: the operator presses the button once. Before this, the
+    // first run died on the 400 and only a second, hand-started run went
+    // through — which is exactly the double-trigger the field report describes.
+    let installs = 0;
+    const { runner, store, provisioner } = makeRunner({
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return installs <= 2 ? Promise.reject(bareInstallBadRequest()) : undefined;
+        },
+      },
+    });
+
+    const result = await runner.enqueue(REQUEST);
+
+    assert.equal(result.status, 'installed');
+    assert.equal(installs, 3, 'two refusals ridden out, third install accepted');
+    assert.equal(store.row?.state, 'installed');
+    assert.equal(store.row?.lastError, null);
+    // The upload happened exactly once — the waits re-drive only the install.
+    assert.equal(
+      provisioner.calls.filter((c) => c.startsWith('uploadToCatalog')).length,
+      1,
+    );
+  });
+
+  it('a 400 that NAMES a configuration reason still fails on attempt 1', async () => {
+    // The other half of the trade. Waiting cannot grant a permission, so a
+    // named 400 must not buy itself a single extra second.
+    let installs = 0;
+    const { runner, store } = makeRunner({
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(
+            namedError(
+              'ProvisioningRequestError',
+              'graph teams.installedApps.add 400 POST https://graph.microsoft.com/... body={"error":{"code":"ResourceSpecificPermissionsMismatch"}}',
+              { resource: 'graph', step: 'teams.installedApps.add', status: 400 },
+            ),
+          );
+        },
+      },
+    });
+
+    const result = await runner.enqueue(REQUEST);
+
+    assert.equal(installs, 1, 'a verdict is not retried, not even once');
+    assert.equal(result.status, 'failed');
+    // Named 400s are lifted to their own typed detail one branch EARLIER than
+    // the deterministic guard, so the assertion is on the actionable sentence
+    // rather than on the word "deterministic". What matters here is that the
+    // replication window never opened: one install call, and a message that
+    // sends the operator to the permission grant.
+    const lastError = String(store.row?.lastError);
+    assert.ok(lastError.includes('rsc_permissions_mismatch'), lastError);
+    assert.ok(!lastError.includes('replicate'), lastError);
+  });
+
+  it('a run that SKIPPED the upload treats the same bare 400 as terminal', async () => {
+    // Gate 3. The catalog entry is old here (the row already carries a
+    // teams_app_id, so step 4 skips itself), and an old entry that cannot be
+    // referenced is a verdict — there is no replication race to wait out.
+    let installs = 0;
+    const { runner, provisioner } = makeRunner({
+      catalogReplicationDelayMs: 10,
+      storeOverrides: {
+        state: 'catalog_uploaded',
+        appId: 'app-123',
+        tenantId: 'tenant-9',
+        teamsAppId: 'catalog-77',
+        teamsAppExternalId: 'external-abc',
+      },
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(bareInstallBadRequest());
+        },
+      },
+    });
+
+    const result = await runner.enqueue(REQUEST);
+
+    assert.equal(installs, 1, 'no upload this run ⇒ no replication window');
+    assert.equal(result.status, 'failed');
+    assert.ok(!provisioner.calls.some((c) => c.startsWith('uploadToCatalog')));
+  });
+
+  it('gives up after the window and says the wait did not help', async () => {
+    let installs = 0;
+    const { runner, store } = makeRunner({
+      catalogReplicationAttempts: 3,
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(bareInstallBadRequest());
+        },
+      },
+    });
+
+    const result = await runner.enqueue(REQUEST);
+
+    assert.equal(installs, 4, 'first attempt plus the three waits');
+    assert.equal(result.status, 'failed');
+    const lastError = String(store.row?.lastError);
+    assert.ok(
+      lastError.includes('still refused after waiting'),
+      `expected an exhausted-window detail, got: ${lastError}`,
+    );
+    // The operator must not be sent looking for a timing problem twice.
+    assert.ok(lastError.includes('configuration error'), lastError);
+  });
+
+  it('waiting does not eat the chain attempts a real failure needs', async () => {
+    // A replication wait is not a chain attempt. With the two budgets
+    // separate, a run may spend the whole window AND still get its full five
+    // (here: three) attempts at whatever fails next.
+    let installs = 0;
+    const { runner } = makeRunner({
+      maxAttempts: 3,
+      baseRetryDelayMs: 10,
+      catalogReplicationAttempts: 2,
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          if (installs <= 2) return Promise.reject(bareInstallBadRequest());
+          return Promise.reject(
+            namedError(
+              'ProvisioningRequestError',
+              'graph chats.installedApps.add 503 POST https://graph.microsoft.com/...',
+              { resource: 'graph', step: 'chats.installedApps.add', status: 503 },
+            ),
+          );
+        },
+      },
+    });
+
+    const result = await runner.enqueue(REQUEST);
+
+    assert.equal(result.status, 'failed');
+    // 2 replication waits + 3 chain attempts. Were the waits charged to the
+    // chain, this would be 3 in total.
+    assert.equal(installs, 5, 'the two budgets are independent');
   });
 });

@@ -7,7 +7,9 @@ Stdlib-only; `server` is importable without gliner/onnxruntime installed
 """
 
 import os
+import socket
 import sys
+import threading
 import unittest
 
 # Make `import server` work regardless of the caller's cwd (e.g. running
@@ -188,6 +190,127 @@ class ValidateRequestTests(unittest.TestCase):
     def test_rejects_unknown_keys(self):
         with self.assertRaises(ValueError):
             server.validate_request({"text": "t", "prompt": "smuggled"})
+
+
+class BindStackTests(unittest.TestCase):
+    """The listener must be reachable over IPv6.
+
+    Fly.io's private network between apps is IPv6-only, so an IPv4-only
+    listener is invisible to the middleware even though the container looks
+    perfectly healthy locally (process up, model loaded,
+    `curl 127.0.0.1:8812/health` -> 200). That combination cost real debugging
+    time once; these tests pin the bind behaviour so it cannot regress
+    silently.
+    """
+
+    def setUp(self):
+        self._saved = os.environ.get("PII_DETECTOR_BIND_V4_ONLY")
+        os.environ.pop("PII_DETECTOR_BIND_V4_ONLY", None)
+        # Ephemeral port — never contend with a real sidecar on 8812.
+        self._saved_port = server.PORT
+        server.PORT = 0
+
+    def tearDown(self):
+        server.PORT = self._saved_port
+        os.environ.pop("PII_DETECTOR_BIND_V4_ONLY", None)
+        if self._saved is not None:
+            os.environ["PII_DETECTOR_BIND_V4_ONLY"] = self._saved
+
+    def test_default_bind_is_ipv6_and_accepts_v4_mapped(self):
+        srv, desc = server.build_server()
+        try:
+            self.assertEqual(srv.socket.family, socket.AF_INET6)
+            # IPV6_V6ONLY must be OFF so v4-mapped clients (Docker Compose's
+            # v4 bridge) still connect through the same socket.
+            self.assertEqual(
+                srv.socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY),
+                0,
+            )
+            self.assertIn("IPv4-mapped", desc)
+        finally:
+            srv.server_close()
+
+    def test_ipv6_loopback_actually_connects(self):
+        """The regression itself: [::1] must be reachable, not just 127.0.0.1."""
+        srv, _ = server.build_server()
+        try:
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            port = srv.socket.getsockname()[1]
+            with socket.create_connection(("::1", port), timeout=5) as sock:
+                self.assertIsNotNone(sock)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_env_override_forces_ipv4_only(self):
+        os.environ["PII_DETECTOR_BIND_V4_ONLY"] = "1"
+        srv, desc = server.build_server()
+        try:
+            self.assertEqual(srv.socket.family, socket.AF_INET)
+            self.assertIn("IPv4 only", desc)
+        finally:
+            srv.server_close()
+
+
+class SelfTestTests(unittest.TestCase):
+    """`run_selftest` must reject a model that loads but predicts noise.
+
+    The production failure it guards: a u8s8-quantized ONNX export on a CPU
+    without VNNI returns near-uniform ~0.15 scores instead of predictions.
+    Nothing raises, /health answers 200, and every span falls under
+    threshold — so the sidecar masks nothing while looking healthy.
+    """
+
+    class FakeModel:
+        def __init__(self, ents):
+            self._ents = ents
+
+        def predict_entities(self, text, labels, threshold=0.0):
+            return [e for e in self._ents if e["score"] >= threshold]
+
+    class RaisingModel:
+        def predict_entities(self, *a, **k):
+            raise RuntimeError("session failed")
+
+    def test_accepts_a_model_that_finds_the_known_person(self):
+        m = self.FakeModel(
+            [{"start": 0, "end": 12, "text": "Anna Schmidt", "label": "person", "score": 0.99}]
+        )
+        ok, detail = server.run_selftest(m)
+        self.assertTrue(ok)
+        self.assertIn("0.99", detail)
+
+    def test_rejects_the_noise_signature(self):
+        # Exactly what the broken quantized model returned in production:
+        # every token scored ~0.15, decaying with position.
+        noise = [
+            {"start": 0, "end": 4, "text": "Anna", "label": "person", "score": 0.191},
+            {"start": 5, "end": 12, "text": "Schmidt", "label": "person", "score": 0.174},
+            {"start": 13, "end": 18, "text": "wohnt", "label": "person", "score": 0.159},
+            {"start": 19, "end": 21, "text": "in", "label": "person", "score": 0.150},
+        ]
+        ok, detail = server.run_selftest(self.FakeModel(noise))
+        self.assertFalse(ok)
+        self.assertIn("not found", detail)
+
+    def test_rejects_a_correct_span_scored_below_the_floor(self):
+        m = self.FakeModel(
+            [{"start": 0, "end": 12, "text": "Anna Schmidt", "label": "person", "score": 0.2}]
+        )
+        ok, detail = server.run_selftest(m)
+        self.assertFalse(ok)
+        self.assertIn("<", detail)
+
+    def test_rejects_a_model_whose_inference_raises(self):
+        ok, detail = server.run_selftest(self.RaisingModel())
+        self.assertFalse(ok)
+        self.assertIn("RuntimeError", detail)
+
+    def test_detail_never_leaks_request_text(self):
+        # Only the synthetic sentence may ever appear in the audit line.
+        ok, detail = server.run_selftest(self.FakeModel([]))
+        self.assertFalse(ok)
+        self.assertNotIn("@", detail)
 
 
 if __name__ == "__main__":

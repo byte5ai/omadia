@@ -96,6 +96,82 @@ describe('<RuntimeReadinessBanner />', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  // OM-75 (#1000) — two causes, two texts. The tester had a working
+  // subscription login and was still told to "add a key or subscription".
+  it('names the missing assignment when the 503 says cause=no_assignment', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'no_assignment',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText('Orchestrator nicht zugeordnet')).toBeInTheDocument();
+    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    expect(screen.getByText(/keinem Provider mit Zugang zugeordnet/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: /Zuordnung öffnen/i }),
+    ).toHaveAttribute('href', '/admin/providers');
+    expect(screen.getByTestId('runtime-readiness-card').dataset['cause']).toBe(
+      'no_assignment',
+    );
+  });
+
+  it('keeps the access copy for cause=no_llm_access and for a 503 without a cause', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'no_llm_access',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText(TITLE_DE)).toBeInTheDocument();
+    expect(screen.queryByText('Orchestrator nicht zugeordnet')).not.toBeInTheDocument();
+  });
+
+  // `unknown` is derived as "access AND assignment are set" — e.g. an invalid
+  // key. Telling that operator no key is stored would be false.
+  it('does not claim a missing access when the 503 says cause=unknown', async () => {
+    respondWith(503, {
+      error: 'multi_orchestrator_unavailable',
+      cause: 'unknown',
+    });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText('Agent-Runtime antwortet nicht')).toBeInTheDocument();
+    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.dataset['cause']).toBe('unknown');
+    expect(card.textContent).toMatch(/Zugang und Zuordnung sind gesetzt/);
+    expect(card.textContent).not.toMatch(/kein LLM-API-Key/);
+    expect(
+      screen.getByRole('link', { name: /LLM-Zugang öffnen/i }),
+    ).toHaveAttribute('href', '/admin/providers');
+  });
+
+  // OM-72 (#1002) / OM-75 — the body must not promise "sofort verfügbar" nor
+  // point at a middleware restart the UI does not offer. Both locales.
+  it('does not promise instant availability or a restart control (de)', async () => {
+    respondWith(503, { error: 'multi_orchestrator_unavailable' });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.textContent).not.toMatch(/sofort verfügbar/);
+    expect(card.textContent).not.toMatch(/Neustart der Middleware/);
+  });
+
+  it('does not promise instant availability or a restart control (en)', async () => {
+    respondWith(503, { error: 'multi_orchestrator_unavailable' });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'en' });
+    await flush();
+
+    const card = screen.getByTestId('runtime-readiness-card');
+    expect(card.textContent).not.toMatch(/right away/);
+    expect(card.textContent).not.toMatch(/middleware restart/i);
+  });
+
   it('clears itself once a heartbeat sees the runtime come up', async () => {
     respondWith(503, { error: 'multi_orchestrator_unavailable' });
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });

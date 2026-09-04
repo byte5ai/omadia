@@ -6,7 +6,9 @@ identity:
   domain: "reference"
   name: "Reference (Builder Pattern Source)"
   version: "0.3.2"
-  description: "Builder-Reference-Plugin: lauffähige, credential-lose Codebase, die alle heute verfügbaren Plugin-API-Patterns in einer Stelle demonstriert. Pattern-Quelle für den BuilderAgent. Sekundärnutzen: Personal-Knowledge-Companion."
+  description:
+    en: "A runnable reference agent that shows every available plugin pattern in one place. The Builder agent uses it as its pattern source, and on its own it works as a personal knowledge companion."
+    de: "Ein lauffähiger Beispiel-Agent, der alle verfügbaren Plugin-Muster an einer Stelle zeigt. Der Builder-Agent nutzt ihn als Vorlage, und für sich genommen dient er als persönlicher Wissensbegleiter."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

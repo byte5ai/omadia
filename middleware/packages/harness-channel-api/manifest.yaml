@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "channel"
   domain: "api"
-  description: "Exposes omadia's chat flow over a documented public HTTP API (issue #438) so external systems can integrate without a channel or the operator UI. POST /api/public/v1/chat streams an NDJSON turn, authenticated by a per-key vault-backed API key (constant-time verified, per-key rate limit, usage audit log) instead of the operator session cookie. Key lifecycle (create/list/revoke) is managed under /api/public/v1/admin/keys, which stays behind the normal operator session gate."
+  description:
+    en: "Opens omadia's chat to other systems over a documented HTTP API, so an application can ask questions without the operator interface. Every caller gets its own API key with a rate limit and an audit log."
+    de: "Öffnet den omadia-Chat für andere Systeme über eine dokumentierte HTTP-Schnittstelle, damit eine Anwendung Fragen stellen kann, ohne die Operator-Oberfläche zu nutzen. Jeder Zugang bekommt einen eigenen API-Key mit Ratenbegrenzung und Protokoll."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

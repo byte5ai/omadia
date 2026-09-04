@@ -154,7 +154,26 @@ Forced-`tool_choice`) und `executeDirectLine()` (`#token`-Kandidatenauflösung,
 degradiert auf die bestehende "Specialist … is no longer available."-Notiz
 statt den internen Dispatch-Fehler zu zeigen). Die parallele
 `ToolDispatchService` (Subscription-CLI-Bridge) trägt dieselbe Gate-Logik
-unabhängig nach, da sie ohne Orchestrator-Instanz läuft.
+unabhängig nach, da sie ohne Orchestrator-Instanz läuft. Auf dieser Bridge gibt
+es zusätzlich ein Gate auf der Spawn-Seite: `CliChatAgent` startet die CLI mit
+`--tools ""`, `--disallowedTools`, `--permission-mode dontAsk`,
+`--setting-sources ""` und `--system-prompt`, damit die eingebauten CLI-Tools
+(Bash, Edit, Write, …) und die `~/.claude`-Hooks des Host-Users nie erreichbar
+sind (#991/#992; Details in `docs/security-architecture.md` § 3a).
+
+Seit #1007 liegt dieses Gate in **einem** Modul,
+`packages/harness-orchestrator/src/cliSpawnGate.ts`
+(`buildCliToolGateArgv`, `buildCompletionCliArgv`, `buildGatedCliEnv`,
+`CLI_BUILTIN_TOOL_DENYLIST`), und wird von **beiden** Spawn-Stellen benutzt:
+`cliChatAgent.ts` (Shape 3) und `platform/claudeCliAdapter.ts` (Shape 2,
+Single-Shot-Completions für Session-Summary, Fact-Extraction, Classifier,
+Verifier-Judge). Letztere hatte das Gate nicht und war die exponiertere von
+beiden, weil ihre Prompts aus Nutzertext und Uploads zusammengesetzt werden.
+Wer eine neue Spawn-Stelle baut, importiert dieses Modul und kopiert die Flags
+nicht. Dazu kommen ein leeres `cwd` (die CLI-eigene `CLAUDE.md`-Discovery ist
+hartkodiert und nur über `--bare` abschaltbar, was aber OAuth nicht mehr liest)
+und eine Env-**Allowlist** statt der alten Scrub-Liste, die `NODE_OPTIONS`
+durchgelassen hat.
 
 Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
 Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
@@ -980,6 +999,42 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 
 ---
 
+### Subscription-CLI-Login + Provider-Hand-off (`/api/v1/admin/cli-backends`, OM-73/OM-79)
+
+`src/routes/adminCliBackends.ts` treibt `claude auth login` aus der Web-UI
+(`src/platform/cliAuthService.ts`). Auth: required.
+
+| Route | Zweck |
+|---|---|
+| `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
+| `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin (nur ältere CLIs) |
+| `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
+| `POST /:id/logout` | `claude auth logout` + Cache-Bust |
+
+**Zwei CLI-Generationen, ein Flow.** Ältere CLIs (≤ 2.1.187) warten an
+`Paste code here >`; die UI zeigt das Code-Feld. Neuere (≥ 2.1.246) schließen
+den Login per localhost-Callback ab und beenden sich mit Exit 0, ohne Code.
+`startCliLogin` klassifiziert die Startausgabe (`Waiting for browser
+authorization…` / `If the browser didn't open, visit:` vs. `Paste code here`)
+und liefert `codeEntry`; die 2.1.259-Bundle druckt beides, dann gilt Callback
+mit optionalem Code (`codeEntry: false`). Der Exit-Handler liest den Exit-Code:
+0 → Detection bestätigt → `authorized`; ≠ 0 → `error` mit Output-Tail. Die UI
+pollt `login/status` in beiden Fällen.
+
+**Post-Login-Hook (OM-79).** `cliAuthService.setCliLoginAuthorizedHook(fn)`
+feuert genau einmal pro Session auf dem Übergang pending → authorized
+(`markAuthorized`, egal ob Exit-Handler oder Code-Submit zuerst kommt).
+`src/index.ts` hängt dort `autoAssignSubscriptionCli` aus
+`src/platform/providerAssignment.ts` ein: jedes installierte LLM-Plugin, das
+noch auf dem Plattform-Default (`llm_provider` unset oder `anthropic`) ohne
+Credential steht, wird auf `claude-cli` umgestellt und reaktiviert. Eine
+explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben.
+`applyProviderAssignment` ist dieselbe Funktion, die `POST /admin/providers/assignment`
+benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
+Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und
@@ -1437,6 +1492,32 @@ conversationSend{Registry,Service}.ts`, plugin-api 1.8.0) — Gruppen-Nudges,
 Gegenstück zu targetedSend. Tests: `test/conductorTimerStep.test.ts`,
 `test/conversationSendService.test.ts`.
 
+### Runtime-Readiness-Cause + Embedding-Status (Beta-Runde 4, #1000 / #1003)
+
+Zwei kleine API-Ergänzungen, damit Dashboard und Readiness-Banner dieselbe
+Wahrheit lesen (OM-74/75/78/84):
+
+- **`cause` auf dem `multi_orchestrator_unavailable`-503 von
+  `GET /api/v1/operator/agents`.** Werte: `no_llm_access` (kein Key, kein
+  OAuth, kein CLI-Login bei irgendeinem Provider), `no_assignment` (ein Zugang
+  existiert, aber der Provider, dem der Orchestrator per `llm_provider`
+  zugeordnet ist, hat keinen), `unknown` (Zugang und Zuordnung passen; Runtime
+  aus anderem Grund down, z. B. DATABASE_URL, Boot). Berechnung in
+  `src/platform/pluginLlmReadiness.ts` (`computeRuntimeReadinessCause` pur,
+  `resolveRuntimeReadinessCause` mit denselben Credential-Verdicts wie die
+  Providers-Admin, ohne Netz-Probe; `memoizeRuntimeReadinessCause` teilt ein
+  Verdict 8 s zwischen parallelen Aufrufern). Router-Dep `getReadinessCause`
+  in `routes/operatorAgents.ts` ist optional; ohne sie bleibt das 503-Payload
+  unverändert, ein Reject degradiert zu `unknown`. Wiring-Pin in
+  `test/operatorAgentsRouter.test.ts`.
+- **`GET /api/v1/admin/embedding-provider/status`** (auth wie der Rest des
+  Routers): `{ capabilityPublished, activeProviderId, activeModel,
+  installedProviderIds }` aus der Registry allein. Das bestehende `GET /`
+  zählt den Korpus pro Vektorspalte und ist für eine Karte, die bei jedem
+  Dashboard-Load rendert, zu teuer. Konsument: `web-ui/app/page.tsx`
+  (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
+  `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1772,6 +1853,17 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 ---
 
 ## 10. Konfiguration
+
+### Test-Schalter (nicht von der Middleware gelesen)
+
+Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
+AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_EXPECT_LOOPBACK=1` | Die Loopback-MCP-Tests **scheitern** statt sich selbst zu überspringen, wenn die Sandbox keinen 127.0.0.1-Listener erlaubt. Ohne das meldet ein Runner ohne Listener die ganze Datei grün, ohne etwas zu prüfen (#1017). CI setzt es. |
+| `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
+| `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 

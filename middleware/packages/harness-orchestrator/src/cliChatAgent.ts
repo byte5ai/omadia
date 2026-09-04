@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -17,6 +18,11 @@ import type {
 } from './toolDispatchService.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
+import {
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
 
 const DEFAULT_CLI_BINARY = 'claude';
 const DEFAULT_MODEL = 'sonnet';
@@ -34,30 +40,48 @@ const EMPTY_USAGE: CliUsage = {
   numTurns: 0,
 };
 
-export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
-  // Direct API keys / tokens — would switch the CLI off the subscription.
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  // Routing/header overrides — could redirect to a metered gateway/proxy.
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_CUSTOM_HEADERS',
-  // Alternate-backend switches — would bill Bedrock/Vertex, not the sub.
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'CLOUD_ML_REGION',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'AWS_DEFAULT_REGION',
-];
+/**
+ * The spawn gate now lives in `cliSpawnGate.ts` so both CLI spawn sites share
+ * one definition (#1007). Re-exported here because `@omadia/orchestrator`
+ * consumers and the platform's `scrubbedEnv()` already import these names
+ * from this module.
+ */
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  CLI_ENV_SCRUB_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
+
+/**
+ * OM-83 (#992) — the runtime context every CLI-backed turn carries in its
+ * system prompt. Appended AFTER the caller's persona so identity stays with
+ * omadia's text; it exists because `--system-prompt` drops the CLI's default
+ * prompt entirely (intended: the CLI's self-description made the model believe
+ * it was "Claude Code in the middleware repo" and route users out of omadia),
+ * so the model has to be told here what runtime it is in and which tools it has.
+ */
+const CLI_RUNTIME_CONTEXT = [
+  'You are running inside omadia, an enterprise agent platform, as the assistant of an omadia chat channel.',
+  'You are not Claude Code and you are not in a terminal, repository or IDE; the person you talk to is already inside omadia.',
+  `Your only tools are the omadia tools served over MCP (names starting with ${OMADIA_MCP_TOOL_PREFIX}).`,
+  'You have no shell, file, web or scheduling tools of your own; never claim to run commands or to act in another system.',
+].join(' ');
+
+const DEFAULT_CLI_SYSTEM_PROMPT = 'You are a helpful, precise assistant.';
+
+/**
+ * Compose the `--system-prompt` value: the caller's persona (or a neutral
+ * default when none is configured) followed by the omadia runtime context.
+ */
+export function composeCliSystemPrompt(persona: string | undefined): string {
+  const base = typeof persona === 'string' && persona.trim().length > 0
+    ? persona.trimEnd()
+    : DEFAULT_CLI_SYSTEM_PROMPT;
+  return `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -292,6 +316,10 @@ export class StreamJsonParser {
         id,
         name,
         input: block.input,
+        // OM-81 — a call that did not come through omadia's loopback server is
+        // one of the CLI's own tools. They are removed at spawn time; if one
+        // still shows up it must never read like an omadia tool in the trace.
+        ...(name.startsWith(OMADIA_MCP_TOOL_PREFIX) ? {} : { foreign: true as const }),
       });
     }
 
@@ -393,7 +421,21 @@ export interface CliChatAgentDeps {
     readonly dispatch: ToolDispatchService;
     readonly bearer: string;
     readonly tools: readonly DispatchableToolSpec[];
+    readonly runInTurnContext?: <T>(fn: () => T) => T;
+    readonly assertTurnOwner?: () => void;
   }) => LoopbackMcpServer;
+  /**
+   * #1016 — an optional guard that throws when the async context restored
+   * around a loopback dispatch does not belong to this turn.
+   *
+   * The factory is called at `chat()`/`chatStream()` entry, so the guard it
+   * returns can close over who the turn actually belongs to and compare that
+   * against whatever the restored context reports at dispatch time. Left
+   * unset, the context is restored but not cross-checked: see the note in
+   * `loopbackMcpServer.ts` on why the default cannot live in this package.
+   */
+  readonly turnOwnerGuard?: (input: ChatTurnInput) => () => void;
+
   readonly cliBinary?: string;
   readonly model?: string;
   readonly systemPrompt?: string;
@@ -402,6 +444,15 @@ export interface CliChatAgentDeps {
   readonly spawnTimeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly maxConcurrentTurns?: number;
+}
+
+/**
+ * The caller's async context, captured at the public entry point of a turn,
+ * plus the optional owner guard built for that same turn (#1016).
+ */
+interface CapturedTurnContext {
+  readonly runInTurnContext: <T>(fn: () => T) => T;
+  readonly assertTurnOwner?: () => void;
 }
 
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
@@ -414,8 +465,24 @@ export class CliChatAgent implements ChatAgent {
     );
   }
 
+  /**
+   * #1016 — capture the caller's async context HERE, at the public entry, not
+   * inside `runLifecycle`.
+   *
+   * `runLifecycle` is an async generator: its body does not run when the
+   * generator is created, it runs when someone calls the first `.next()`. A
+   * snapshot taken in the body therefore freezes whatever context is ambient
+   * at first iteration, which is not necessarily the context `chat()` was
+   * called in. Taking it here binds the snapshot to the actual caller.
+   */
+  private captureTurnContext(input: ChatTurnInput): CapturedTurnContext {
+    const runInTurnContext = AsyncLocalStorage.snapshot();
+    const guard = this.deps.turnOwnerGuard?.(input);
+    return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
+  }
+
   public async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
       const step = await lifecycle.next();
@@ -435,11 +502,26 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  public async *chatStream(
+  /**
+   * Deliberately NOT an async generator (#1016). An `async *` method's body
+   * runs on the first `.next()`, so capturing the async context inside it
+   * would snapshot whoever iterates rather than whoever called. This plain
+   * method captures synchronously at call time and hands the result to the
+   * generator below.
+   */
+  public chatStream(
     input: ChatTurnInput,
+    observer?: ChatStreamObserver,
+  ): AsyncGenerator<ChatStreamEvent> {
+    return this.streamTurn(input, this.captureTurnContext(input), observer);
+  }
+
+  private async *streamTurn(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
     _observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
 
     try {
@@ -496,6 +578,7 @@ export class CliChatAgent implements ChatAgent {
 
   private async *runLifecycle(
     input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
   ): AsyncGenerator<ChatStreamEvent, StreamJsonParser | undefined> {
     const parser = new StreamJsonParser();
     const tools = this.deps.dispatch.listDispatchableToolSpecs();
@@ -506,6 +589,8 @@ export class CliChatAgent implements ChatAgent {
         readonly dispatch: ToolDispatchService;
         readonly bearer: string;
         readonly tools: readonly DispatchableToolSpec[];
+        readonly runInTurnContext?: <T>(fn: () => T) => T;
+        readonly assertTurnOwner?: () => void;
       }) => new LoopbackMcpServer(serverDeps));
 
     let server: LoopbackMcpServer | undefined;
@@ -587,6 +672,12 @@ export class CliChatAgent implements ChatAgent {
         dispatch: this.deps.dispatch,
         bearer,
         tools,
+        // #1016 — the context captured at the public entry, not whatever is
+        // ambient here in the generator body.
+        runInTurnContext: turnContext.runInTurnContext,
+        ...(turnContext.assertTurnOwner
+          ? { assertTurnOwner: turnContext.assertTurnOwner }
+          : {}),
       });
       handle = await server.start();
 
@@ -600,24 +691,36 @@ export class CliChatAgent implements ChatAgent {
         'stream-json',
         '--include-partial-messages',
         '--verbose',
-        '--strict-mcp-config',
-        '--mcp-config',
-        configPath,
-        '--allowedTools',
-        'mcp__omadia__*',
+        // OM-81 (#991, #1007, #1014) — the permission boundary, defined once in
+        // `cliSpawnGate.ts` and shared with the completion adapter so a spawn
+        // site cannot carry half of it. See that module for what each flag is
+        // for and for what these flags do NOT close.
+        ...buildCliToolGateArgv({
+          mcpConfigPath: configPath,
+          allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*`,
+        }),
         '--model',
         this.deps.model ?? DEFAULT_MODEL,
+        // OM-83 (#992) — replace, do not append. With `--append-system-prompt`
+        // the CLI's own identity stayed primary and the model told users it
+        // was "Claude Code in the middleware repo", sending them out of the
+        // omadia chat they were already in.
+        '--system-prompt',
+        composeCliSystemPrompt(this.deps.systemPrompt),
       ];
-
-      if (typeof this.deps.systemPrompt === 'string' && this.deps.systemPrompt.length > 0) {
-        argv.push('--append-system-prompt', this.deps.systemPrompt);
-      }
 
       child = (this.deps.spawnFn ?? nodeSpawn)(
         this.deps.cliBinary ?? DEFAULT_CLI_BINARY,
         argv,
         {
           env: this.buildEnv(),
+          // #1014 — the CLI hardcodes CLAUDE.md / AGENTS.md discovery and only
+          // `--bare` skips it (and `--bare` never reads OAuth, so it would
+          // break the subscription login). Without a cwd the child inherited
+          // the middleware process's directory, so any CLAUDE.md at or above
+          // it was injected into a turn that also carries end-user text. The
+          // temp dir holds nothing but the mcp-config we just wrote.
+          cwd: tempDir,
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       ) as ChildProcessWithoutNullStreams;
@@ -733,14 +836,13 @@ export class CliChatAgent implements ChatAgent {
         this.turnSemaphore.release();
       }
 
-      if (server !== undefined) {
-        try {
-          await server.stop();
-        } catch {
-          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
-        }
-      }
-
+      // #1015 — kill the child BEFORE stopping the loopback server, not after.
+      // `stop()` waits for live connections to end; on the timeout/abort path
+      // the child is still running and may hold a keep-alive socket to that
+      // server, so awaiting `stop()` first could block indefinitely and the
+      // SIGTERM/SIGKILL escalation below would never run. The turn then hung
+      // holding its semaphore permit while a bearer-gated server stayed
+      // listening past its intended window.
       if (child !== undefined) {
         // Bind to a non-undefined local so the SIGKILL closure below keeps the
         // narrowed type — TS cannot prove the outer `let child` is still defined
@@ -770,6 +872,14 @@ export class CliChatAgent implements ChatAgent {
         }
       }
 
+      if (server !== undefined) {
+        try {
+          await server.stop();
+        } catch {
+          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
+        }
+      }
+
       if (tempDir !== undefined) {
         await rm(tempDir, { recursive: true, force: true });
       }
@@ -777,14 +887,12 @@ export class CliChatAgent implements ChatAgent {
   }
 
   private buildEnv(): NodeJS.ProcessEnv {
-    const env = this.deps.buildEnv?.() ?? { ...process.env };
-
-    // Subscription-authenticated CLI runs must not inherit API-key or proxy overrides from the
-    // host process, otherwise tests become flaky and production can silently switch auth modes.
-    for (const key of CLI_ENV_SCRUB_KEYS) {
-      delete env[key];
-    }
-
-    return env;
+    // #1014 — allowlist, not scrub list. The scrub list removed credentials and
+    // billing switches but passed everything else through, including
+    // `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and
+    // the `CLAUDE_CODE_*` feature switches. The policy applies to an injected
+    // `buildEnv` too, so a test cannot prove a laxer environment than
+    // production runs with.
+    return buildGatedCliEnv(this.deps.buildEnv?.() ?? process.env);
   }
 }

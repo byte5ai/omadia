@@ -138,7 +138,45 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
     assert.equal(owned.length, 1);
   });
 
-  it('does not import as a dataset (falls through to plain text) when channelIdentity is absent AND userId is absent', async () => {
+  /**
+   * #976 — the model must be TOLD what happened to an upload, not left to
+   * guess. Asked whether a file was protected, it told a user "der Privacy
+   * Shield greift bei Datei-Uploads nicht — der Inhalt liegt im Klartext
+   * vor" about a file that had in fact been imported with most fields
+   * masked. A wrong reassurance is bad; a wrong ALARM is worse, because the
+   * user acts on it. No prompt rule fixes a model that lacks the fact.
+   */
+  it('states the privacy facts of a successful import in the prompt', async () => {
+    const requests: LlmRequest[] = [];
+    const graph = new InMemoryKnowledgeGraph();
+    const orch = new Orchestrator(options(requests, graph));
+
+    await orch.runTurn({
+      userMessage: CSV_MANIFEST,
+      sessionScope: 'sess-1',
+      userId: 'a1b2c3d4-0000-0000-0000-000000000002',
+    });
+
+    const wire = JSON.stringify(requests);
+    assert.ok(wire.includes('[dataset-imported:'), 'import block missing');
+    assert.ok(
+      wire.includes('PRIVACY STATUS OF THIS FILE'),
+      'the prompt must carry the privacy facts, not leave them to the model',
+    );
+    assert.ok(
+      wire.includes('never speculate'),
+      'the block must forbid speculation explicitly',
+    );
+    assert.ok(
+      wire.includes('NOT inlined into this prompt'),
+      'the block must state that rows did not reach the prompt as text',
+    );
+    // And the raw rows genuinely are absent.
+    assert.equal(wire.includes('Ada'), false);
+    assert.equal(wire.includes('Grace'), false);
+  });
+
+  it('refuses the file WITHOUT leaking its rows as plain text when the uploading user cannot be resolved', async () => {
     const requests: LlmRequest[] = [];
     const graph = new InMemoryKnowledgeGraph();
     const orch = new Orchestrator(options(requests, graph));
@@ -147,5 +185,19 @@ describe('#430 fixup — CSV dataset-import ACL identity resolution', () => {
 
     const stats = await graph.stats();
     assert.equal(stats.byNodeType['PluginEntity'] ?? 0, 0, 'no Dataset node should have been created');
+
+    // The regression this guards: `ingestAttachments` used to fall through to
+    // the plain-text path here, appending every CSV row to the prompt as
+    // `[attachment-content]` cleartext — bypassing the per-cell privacy scan
+    // exactly when the dataset pipeline was unavailable. A tabular upload now
+    // either becomes a scanned dataset or is refused; it is never inlined.
+    const wire = JSON.stringify(requests);
+    assert.equal(wire.includes('Ada'), false, 'CSV row values must not reach the model');
+    assert.equal(wire.includes('Grace'), false, 'CSV row values must not reach the model');
+    assert.equal(
+      wire.includes('attachment-not-ingested'),
+      true,
+      'the model must be told the file was not ingested',
+    );
   });
 });

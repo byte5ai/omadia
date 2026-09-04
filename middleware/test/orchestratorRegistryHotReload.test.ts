@@ -102,7 +102,7 @@ const baseSnapshot: ConfigSnapshot = {
 
 test('SC-001/SC-002: removing one Agent does NOT touch the other Agent\'s Orchestrator', async () => {
   const store = new MutableFakeStore(baseSnapshot);
-  const registry = new OrchestratorRegistry(store as ConfigStore, deps(), {
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
   });
   await registry.start();
@@ -135,7 +135,7 @@ test('SC-001/SC-002: adding a new Agent leaves existing Agents instances untouch
     ...baseSnapshot,
     agents: [agent('public', '00000000-0000-0000-0000-000000000001')],
   });
-  const registry = new OrchestratorRegistry(store as ConfigStore, deps(), {
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
   });
   await registry.start();
@@ -157,7 +157,7 @@ test('SC-001/SC-002: adding a new Agent leaves existing Agents instances untouch
 
 test('T020: privacy_profile flip emits a rebuild action and replaces the Orchestrator', async () => {
   const store = new MutableFakeStore(baseSnapshot);
-  const registry = new OrchestratorRegistry(store as ConfigStore, deps(), {
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
   });
   await registry.start();
@@ -181,9 +181,29 @@ test('T020: privacy_profile flip emits a rebuild action and replaces the Orchest
   assert.notEqual(registry.get('public')!.built.orchestrator, publicBefore);
 });
 
-test('T020: plugin list change emits an update action without rebuilding the Orchestrator', async () => {
+const SEO_PLUGIN = '@omadia/agent-seo-analyst';
+
+function pluginRow(agentId: string, pluginId: string, enabled = true) {
+  return { agentId, pluginId, config: {}, enabled, createdAt: new Date(0) };
+}
+
+/**
+ * A grant reaches the running Agent only through a BUILD.
+ *
+ * The granted plugin set is baked into the `Orchestrator` twice: as the
+ * `grantedPluginIds` its dispatch gate checks, and as the domain tools the
+ * kernel hydrates from `onAgentBuilt` — which only `add`/`rebuild` fire. So a
+ * metadata-only `update` left the operator's change persisted, reported as
+ * saved, and inert until the next process start.
+ *
+ * These two tests pin both directions, because only one of them is merely
+ * annoying. Granting late means a capability arrives after a restart nobody
+ * asked for; revoking late means a capability the operator took away is still
+ * live — the same privilege escalation as #984, just on a timer.
+ */
+test('granting a plugin rebuilds the Orchestrator (the grant must not wait for a restart)', async () => {
   const store = new MutableFakeStore(baseSnapshot);
-  const registry = new OrchestratorRegistry(store as ConfigStore, deps(), {
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
   });
   await registry.start();
@@ -192,12 +212,96 @@ test('T020: plugin list change emits an update action without rebuilding the Orc
 
   store.set({
     ...baseSnapshot,
+    agentPlugins: [pluginRow('00000000-0000-0000-0000-000000000001', SEO_PLUGIN)],
+  });
+  const plan = await registry.reload();
+
+  assert.equal(plan.actions.length, 1);
+  const action = plan.actions[0]!;
+  assert.equal(action.kind, 'rebuild');
+  assert.match(
+    action.kind === 'rebuild' ? action.reason : '',
+    /plugin_grants/,
+    'the reason names the grant change, so the log says why the agent restarted',
+  );
+  assert.notEqual(
+    registry.get('public')!.built.orchestrator,
+    publicBefore,
+    'a fresh Orchestrator is what carries the new grant + tool surface',
+  );
+  assert.deepEqual(
+    registry.get('public')!.plugins.map((p) => p.pluginId),
+    [SEO_PLUGIN],
+    'plugin list is refreshed on the ActiveAgent metadata',
+  );
+});
+
+test('revoking a plugin rebuilds too — a withdrawn capability must stop working now', async () => {
+  const granted: ConfigSnapshot = {
+    ...baseSnapshot,
+    agentPlugins: [pluginRow('00000000-0000-0000-0000-000000000001', SEO_PLUGIN)],
+  };
+  const store = new MutableFakeStore(granted);
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+  });
+  await registry.start();
+
+  const publicBefore = registry.get('public')!.built.orchestrator;
+
+  store.set(baseSnapshot);
+  const plan = await registry.reload();
+
+  assert.equal(plan.actions.length, 1);
+  assert.equal(plan.actions[0]!.kind, 'rebuild');
+  assert.notEqual(registry.get('public')!.built.orchestrator, publicBefore);
+  assert.deepEqual(registry.get('public')!.plugins, []);
+});
+
+test('disabling a granted plugin counts as a revocation, not a metadata edit', async () => {
+  // `enabled: false` is the UI's toggle. The diff groups on the ENABLED rows,
+  // so a flip has to read as a set change and not as "same row, new column".
+  const granted: ConfigSnapshot = {
+    ...baseSnapshot,
+    agentPlugins: [pluginRow('00000000-0000-0000-0000-000000000001', SEO_PLUGIN)],
+  };
+  const store = new MutableFakeStore(granted);
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+  });
+  await registry.start();
+
+  store.set({
+    ...baseSnapshot,
     agentPlugins: [
+      pluginRow('00000000-0000-0000-0000-000000000001', SEO_PLUGIN, false),
+    ],
+  });
+  const plan = await registry.reload();
+
+  assert.equal(plan.actions.length, 1);
+  assert.equal(plan.actions[0]!.kind, 'rebuild');
+});
+
+test('T020: a binding-only change still emits a cheap update, not a rebuild', async () => {
+  // The `update` path keeps its reason to exist: channel bindings decide WHERE
+  // an agent is reachable, never WHAT it may do, so routing changes must not
+  // cost every live session its Orchestrator.
+  const store = new MutableFakeStore(baseSnapshot);
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+  });
+  await registry.start();
+
+  const publicBefore = registry.get('public')!.built.orchestrator;
+
+  store.set({
+    ...baseSnapshot,
+    channelBindings: [
       {
         agentId: '00000000-0000-0000-0000-000000000001',
-        pluginId: '@omadia/agent-seo-analyst',
-        config: {},
-        enabled: true,
+        channelType: 'teams',
+        channelKey: '19:abc@thread.skype',
         createdAt: new Date(0),
       },
     ],
@@ -211,16 +315,11 @@ test('T020: plugin list change emits an update action without rebuilding the Orc
     publicBefore,
     'update should NOT replace the Orchestrator instance',
   );
-  assert.deepEqual(
-    registry.get('public')!.plugins.map((p) => p.pluginId),
-    ['@omadia/agent-seo-analyst'],
-    'plugin list is refreshed on the ActiveAgent metadata',
-  );
 });
 
 test('T020: an idempotent reload (no DB change) emits zero actions', async () => {
   const store = new MutableFakeStore(baseSnapshot);
-  const registry = new OrchestratorRegistry(store as ConfigStore, deps(), {
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
     defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
   });
   await registry.start();
@@ -258,7 +357,7 @@ test('T022: a throw inside one Agent\'s rebuild does NOT abort the rest of the d
   // SECOND agent — but during start() both build sequentially. We expect the
   // first to throw + be skipped, the second to come up.
   const registry = new OrchestratorRegistry(
-    store as ConfigStore,
+    store as unknown as ConfigStore,
     flakyDeps,
     {
       defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },

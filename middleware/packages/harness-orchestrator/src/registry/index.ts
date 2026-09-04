@@ -24,6 +24,7 @@ import {
   type AgentPluginRow,
   type AgentRow,
   type ChannelBindingRow,
+  type ChannelIdentityRow,
   type ConfigSnapshot,
   type ConfigStore,
   type PlatformSettingsRow,
@@ -171,6 +172,13 @@ export class OrchestratorRegistry {
     updatedAt: new Date(0),
   };
   private snapshot: ConfigSnapshot | undefined;
+  /**
+   * Provisioned channel identities from the last snapshot. Flat, not indexed
+   * per agent: the lookup is always key → agent and the list is one row per
+   * provisioned bot (single digits in practice), so a scan costs less than
+   * keeping a second map in sync across four diff actions.
+   */
+  private channelIdentities: readonly ChannelIdentityRow[] = [];
 
   constructor(
     private readonly store: ConfigStore,
@@ -217,6 +225,13 @@ export class OrchestratorRegistry {
     validateSnapshot(safe, this.options.pluginLookup);
     const plan = diffSnapshots(this.snapshot, safe);
     if (plan.actions.length === 0 && !plan.platformChanged) {
+      // Identities are NOT part of the diff: an agent whose bot finished
+      // provisioning has the same row, plugins and bindings it had a minute
+      // ago, so the plan is empty and the fast path returns here. Adopting
+      // them on this branch too is what makes a bot start routing to its own
+      // agent on the next reconcile instead of only after some unrelated
+      // config edit forces a rebuild.
+      this.channelIdentities = safe.channelIdentities ?? [];
       this.snapshot = safe;
       return plan;
     }
@@ -300,6 +315,7 @@ export class OrchestratorRegistry {
         fallbackAgentId: snap.platformSettings.fallbackAgentId,
       });
     }
+    this.channelIdentities = snap.channelIdentities ?? [];
     this.snapshot = snap;
   }
 
@@ -311,13 +327,16 @@ export class OrchestratorRegistry {
   ): void {
     switch (action.kind) {
       case 'add': {
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
@@ -359,13 +378,16 @@ export class OrchestratorRegistry {
       }
       case 'rebuild': {
         const before = this.active.get(action.agent.slug);
+        // Resolved BEFORE the build: the enabled set is this agent's
+        // authorisation, and the orchestrator enforces it at dispatch.
+        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const built = buildForAgent(
           action.agent,
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
+          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
         );
-        const plugins = pluginsByAgent.get(action.agent.id) ?? [];
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
         this.active.set(action.agent.slug, {
@@ -444,6 +466,8 @@ export class OrchestratorRegistry {
     channelType: string,
     channelKey: string,
   ): ActiveAgent | undefined {
+    const identity = this.identityForChannel(channelType, channelKey);
+    if (identity) return identity;
     for (const entry of this.active.values()) {
       for (const binding of entry.bindings) {
         if (
@@ -460,6 +484,68 @@ export class OrchestratorRegistry {
       if (entry.agent.id === fallbackId) return entry;
     }
     return undefined;
+  }
+
+  /**
+   * Resolve a key that IS an agent's provisioned identity — its own Teams
+   * bot, not a channel someone bound to it.
+   *
+   * Checked BEFORE `channel_bindings` and reported as exclusive, because a
+   * provisioned bot is the one routing input that cannot be ambiguous.
+   * Several bots share one group chat, so a binding on that conversation
+   * names a chat, not a bot; if it were allowed to win, every bot in the chat
+   * would answer as the same agent — which is precisely the failure this
+   * exists to prevent. A stale `channel_bindings` row pointing the bot key
+   * somewhere else loses for the same reason.
+   *
+   * Returns `undefined` when the identity names an agent the registry does
+   * not hold (deleted, disabled, or failed to build). Routing then continues
+   * down the normal path — bindings, then the platform fallback — so an
+   * orphaned identity row degrades instead of dead-ending the bot.
+   */
+  identityForChannel(
+    channelType: string,
+    channelKey: string,
+  ): ActiveAgent | undefined {
+    const match = this.channelIdentities.find(
+      (i) => i.channelType === channelType && i.channelKey === channelKey,
+    );
+    if (!match) return undefined;
+    for (const entry of this.active.values()) {
+      if (entry.agent.id === match.agentId) return entry;
+    }
+    return undefined;
+  }
+
+  /**
+   * Is this key a provisioned bot's own identity — WHATEVER state that bot's
+   * agent is in?
+   *
+   * The counterpart of {@link identityForChannel}, and the difference is the
+   * whole point: that method answers "which live agent owns this bot", so it
+   * returns `undefined` both when the key belongs to nobody AND when it
+   * belongs to an agent the registry cannot currently serve (deleted,
+   * disabled, failed to build). Those two cases must not be treated alike.
+   *
+   * A key that belongs to nobody is an unknown channel, and falling back is
+   * the right answer. A key that IS a provisioned bot whose agent is missing
+   * is a bot with an owner, and answering it from the platform fallback means
+   * replying with SOMEBODY ELSE'S PERMISSIONS — the fallback agent is
+   * typically granted every installed plugin, so that is a privilege
+   * escalation dressed up as resilience. The caller uses this to refuse
+   * instead.
+   *
+   * Returns the owning agent id (useful for the log line) rather than a
+   * boolean, so an operator reading the refusal can see which agent is
+   * missing without a second lookup.
+   */
+  identityOwnerFor(
+    channelType: string,
+    channelKey: string,
+  ): string | undefined {
+    return this.channelIdentities.find(
+      (i) => i.channelType === channelType && i.channelKey === channelKey,
+    )?.agentId;
   }
 
   /** The currently-held snapshot. Useful for diffing in US5. */

@@ -7,12 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 The canonical, always-current changelog per version is each release's GitHub
 Release notes — generated automatically by `.github/workflows/auto-release.yml`
-from Conventional Commit messages, no release ships without one. This file is
-a periodically-refreshed mirror of the same data (every section from
-`[0.2.1]` onward via `.github/scripts/generate-changelog.mjs backfill`), not
-auto-committed on every release. Add hand-written notes under
-`## [Unreleased]` any time; they carry over verbatim into the next version's
-entry. See `CONTRIBUTING.md` § Releases & changelog.
+from Conventional Commit messages, no release ships without one.
+
+This file is a mirror of the same data, and the mirror is refreshed **by hand**:
+
+```
+node .github/scripts/generate-changelog.mjs backfill
+```
+
+Nothing refreshes it automatically, and that is deliberate rather than an
+oversight — `main` requires a pull request and this org forbids GitHub Actions
+from opening one, so the alternatives were a standing PAT-backed bot identity
+or a PR per release to merge manually. Both were judged worse than a mirror
+that drifts. See the reasoning in `.github/workflows/auto-release.yml`.
+
+**So this file can be behind, and it has been.** To check before you trust it,
+compare the newest `## [x.y.z]` heading below against `git tag --sort=-v:refname
+| head -1`. If they differ, the mirror is stale and the GitHub Releases are
+authoritative. It drifted for 145 versions between 2026-07-06 and 2026-08-28
+(#937), during which everything shipped in that span sat under `[Unreleased]`
+and read as unreleased to anyone outside the team.
+
+Add hand-written notes under `## [Unreleased]` any time; they carry over
+verbatim into the next version's entry. See `CONTRIBUTING.md` § Releases &
+changelog.
 
 ---
 
@@ -40,6 +58,497 @@ grant path is only claimed by `toolPluginRuntime` and only dispatches to
 Extending grants to channel plugins would let this entry go again.
 
 Also: `ChannelUserKind` gains `'imessage-handle'` in `@omadia/channel-sdk`.
+
+### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
+
+2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
+the subscription-CLI process boundary on the chat path; the review found the
+gate was half-applied and unverified.
+
+- **#1007** — `platform/claudeCliAdapter.ts`, the second spawn site, ran with
+  the CLI's full default tool set, the operator's `settings.json` (including
+  `hooks`, which execute shell commands whenever a tool fires) and the
+  operator's MCP servers. Its prompts are assembled from end-user chat text and
+  uploaded documents, and the read-only built-ins never prompt for permission,
+  so injected text could read host files and return them inside a summary
+  omadia persists. The gate now lives in one module,
+  `harness-orchestrator/src/cliSpawnGate.ts`, and both sites build their argv
+  from it.
+- **#1014** — the deny list was hand-collected and missed 40 real tool names,
+  `Tmux` (a terminal) among them, plus every `self_hosted_runner_*`. It is now
+  a superset of the installed binary's own inventory and names all ten declared
+  aliases beside their canonical names, including `RunWorkflow` (alias of
+  `Workflow`, metadata declares `enablesCodeExecution`) and the MCP-resource
+  short forms, which a review caught still open. The drift guard mines the
+  binary and subtracts the deny list; its first version did the reverse and so
+  could not detect a deletion at all. Added `--restricted`, an empty `cwd` (the
+  CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it, but `--bare`
+  never reads OAuth), and an env **allowlist**, platform-branched for Windows,
+  replacing a scrub list that passed `NODE_OPTIONS` through.
+- **#1015** — the loopback MCP server dispatched any tool name it was sent, a
+  wider set than it advertises; it now refuses an unadvertised name. Teardown
+  killed the child *after* awaiting `server.stop()`, which waits for live
+  connections, so an abort path could hang a turn holding its semaphore permit;
+  the kill now comes first and `stop()` is bounded.
+- **#1016** — the turn's async context is captured at `chat()`/`chatStream()`
+  entry instead of inside the async generator's body, which runs at first
+  iteration and could belong to whoever iterated. Added an `assertTurnOwner`
+  hook so a stale `enterWith` chain fails closed instead of acting as the
+  previous principal. Wiring that guard to the app's routine context is the
+  open half.
+- **#1017** — the gate is now verified behaviourally, not only by argv shape:
+  a live probe spawns the real binary with the production argv and asks it to
+  run a shell command. Measured on 2.1.259 — production gate: no tools;
+  pre-#991 argv: `Bash`. The deny-list test no longer checks the constant
+  against itself, and the loopback tests fail instead of silently skipping
+  where a sandbox blocks listeners (`OMADIA_EXPECT_LOOPBACK=1` in CI).
+
+### Fixed — a foreign tool call is now loud instead of invisible (#1008, #1017)
+
+2026-09-03 — post-merge review of #1009. The subscription-CLI agent marks a
+`tool_use` event `foreign` when the call did not go through omadia's loopback
+MCP server, i.e. when one of the CLI's own built-ins ran despite the OM-81
+spawn gate. The flag was written and never read: no log, no counter, and the
+matching `tool_result` was unmarked, so in the chat trace such a call looked
+exactly like an omadia tool call. The tripwire for "a built-in slipped
+through" was inert, which matters because the deny list behind it is still
+being widened.
+
+- The chat route now records every foreign call in `foreignToolMetrics`
+  (per tool name and per agent slug, same shape as `brokerMetrics`) and logs
+  it at error level. Unlike the broker's denial streaks this alerts on every
+  occurrence: the expected count is zero, so there is no benign steady state
+  to suppress.
+- The matching `tool_result` is stamped `foreign` too, correlated by
+  `tool_use` id, so the pair can no longer disagree.
+- The chat trace renders a foreign call with a translated label and a
+  `role="alert"` explanation saying omadia's permission rules did not apply.
+  The warning is carried by text, not by colour alone.
+- Receipts were left alone deliberately: `turnReceiptStore` is written by the
+  orchestrator at turn end, and the CLI path is a separate `ChatAgent` that
+  writes no receipt at all, so there is no per-turn record to stamp. Worth
+  revisiting if the CLI path ever gains one.
+
+### Fixed — the web-ui build no longer needs the Google Fonts CDN (#1019)
+
+2026-09-03 — a build-time font download took out a release. On `7a0d4675` the
+macOS x64 desktop build failed with `Turbopack build failed with 4 errors` and,
+four times, `next/font: error: Failed to fetch <family> from Google Fonts`. The
+cascade behaved exactly as the round-3 release fail-safe intends and is worth
+reading as a success: no x64 artifact, so `desktop-apps / mac-update-feed`
+failed with `FAIL: missing artifacts/omadia-installers-macos-latest/latest-mac.yml`,
+so `promote-release` failed, so the release stayed a draft and the previous
+version kept the `latest` flag. Nobody shipped a half-built release. But the
+release did not ship at all, and the cause was a font CDN being briefly
+unreachable from a CI runner.
+
+`next/font/google` self-hosts the faces it serves, which is why the running app
+never asked a CDN for a font. It downloads them at build time, though, so every
+build needed `fonts.googleapis.com`. The four faces now live in the repo at
+`web-ui/app/_fonts/` and load through `next/font/local`.
+
+- The vendored woff2 files are **byte-identical** to what `next/font/google`
+  downloaded before, verified by SHA-256 against the previous build's output, so
+  nothing about the rendered type changes. The weight ranges, `display: swap`,
+  the latin `unicode-range` and the preload split (Geist eager, prose/mono/
+  wordmark deferred) are carried over unchanged, and so are the CSS variable
+  names `_lib/theme.css` composes into `--font-sans` / `--font-serif` /
+  `--font-mono`.
+- 116 KB total for all four families, latin subset only, which is what
+  `layout.tsx` already asked for.
+- All four are SIL Open Font License 1.1; the license text ships next to each
+  file and `app/_fonts/LICENSES.md` records the provenance and update procedure.
+- Two guards so it cannot regress: an ESLint `no-restricted-imports` rule that
+  rejects `next/font/google` outright, and `app/_fonts/fonts.test.ts`, which
+  fails if the import returns, if a referenced woff2 is missing or is not really
+  a woff2, if a CSS variable is renamed, or if a license file is dropped.
+- Verified by building with all outbound HTTP forced through a dead proxy
+  (`HTTPS_PROXY=http://127.0.0.1:1`). The build succeeds, which is the whole
+  point.
+
+### Fixed — the plugin store speaks German (OM-50, #885)
+
+2026-09-03 — reported by Silvio Lange (TE Printline) in beta rounds 1, 2, 3 and
+again in round 4, and it was never the plumbing. `identity.description` has
+accepted a `{ en, de }` language map since #602, `adaptManifestV1` passes it
+along as `description_localized`, and both store render sites already resolve it
+with `pickLocalized`. What was missing was the content: not one of the 22
+bundled manifests declared a `de:` description, so a German business user
+choosing what to install read developer English.
+
+Worse, and previously unnoticed: eleven of those manifests held German text in
+the bare string, which the loader reads as **English**. An English-speaking
+operator was shown German, and the `en` slot had no English text at all to fall
+back to. The template in `docs/creating-plugins.md` was the source of that
+habit, since it literally read `description: "<Beschreibung DE>"`.
+
+All 22 bundled manifests now carry both languages, rewritten for a business
+reader rather than translated literally, following the project copy rules (no
+em dashes, no AI vocabulary, no capability names a customer has never heard of).
+`middleware/test/manifestDescriptionLocalized.test.ts` guards it: a new plugin
+without a German description fails the suite instead of the next beta report,
+and the test also pins the English resolution, the plain-string fallback and the
+German-only fallback.
+
+### Fixed — the desktop app has its own icon, and the tray icon is visible (#888)
+
+2026-09-03 — OM-53 / OM-63, reported in three consecutive beta rounds. "About
+omadia" showed Electron's default atom symbol and the menu-bar entry was
+guaranteed blank: `electron-builder.yml` named no `icon:` at all, and
+`tray.ts` fell back to `nativeImage.createEmpty()` because
+`assets/trayTemplate.png` had never existed. Neither silence failed a build.
+
+Since #1002 the tray was not only cosmetic. The readiness copy points a stuck
+user at Tray → Restart, which is unreachable when the tray has no artwork.
+
+- The app now ships `icon.icns` (macOS), `icon.ico` (Windows, 16 through 256),
+  a 1024px `icon.png` (Linux) and `trayTemplate.png` / `@2x` as real macOS
+  template images. All are generated from two committed SVGs by
+  `npm run icons`, so the artwork has a single source instead of six
+  hand-exported binaries that drift apart.
+- The icons are **derived from `logo-concepts/omadia-logo-concept.svg`**, not
+  designed: the mark's paths, radii and colours are copied verbatim. Replacing
+  `desktop/buildResources/icon.svg` and re-running `npm run icons` is the whole
+  swap, no code touched.
+- `electron-builder.yml` states each platform's icon explicitly. Convention
+  scanning falls back to Electron's own icon when a file is missing, which is
+  how this shipped three times; a named path fails the build instead.
+- `tray.ts` still falls back to an empty image rather than refusing to start,
+  but now logs a warning naming every path it tried.
+- Tests parse the PNG, ICNS and ICO headers directly (no `sips`, `iconutil` or
+  ImageMagick, none of which exist on a Linux runner) and assert that the
+  config names an icon per platform and that each named file exists.
+
+### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
+
+2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
+carries a user from login to a working agent instead of stopping silently.
+
+- **OM-79** — after a successful `claude auth login`, the platform now points
+  every credential-less LLM plugin at the `claude-cli` provider automatically
+  (`autoAssignSubscriptionCli`, wired via a post-login hook in
+  `cliAuthService.setCliLoginAuthorizedHook`). Previously `llm_provider` stayed
+  on `anthropic`, the orchestrator asked the vault for a key it did not have,
+  and every operator surface answered 503 with no hint. A working API key is
+  never overridden. The assignment rules moved to `platform/providerAssignment.ts`
+  so the route and the hand-off share one implementation.
+- **OM-73** — `cliAuthService` now reads the login process's exit code. Claude
+  CLI v2.1.246+ finishes via a browser callback and exits 0 with no pasted code;
+  the old exit handler recorded that success as an error. `startCliLogin` reports
+  `codeEntry` so the UI shows the code field only for the older paste-code flow,
+  and a new `GET …/login/status` lets the UI poll the callback flow.
+- **OM-76 / OM-77** — `POST /api/chat` now returns `no_agents_active` (distinct
+  from `agent_unavailable`) when no orchestrator is active at all; the chat UI
+  shows a translated message linking to LLM access instead of a raw "HTTP 503"
+  and a "re-bind to default" that would 503 again.
+- **OM-80** — `LLM access` (`/admin/providers`) is now the first entry of the
+  ADMIN nav cluster.
+
+### Fixed — The subscription-CLI agent can no longer run shell commands on the user's machine
+
+2026-09-03 — Beta test round 4, OM-81 (#991). On the subscription path the
+agent loop runs inside the external `claude` CLI, and a tester asked the omadia
+chat to run `whoami && hostname`. The CLI did, with the user's OS rights, no
+confirmation, and none of omadia's gates (plugin grants, audience floor, privacy
+guard, `sandbox_execute_enabled`) involved. omadia had registered no shell tool;
+the call came from the CLI's own built-in `Bash`. `--allowedTools mcp__omadia__*`
+only pre-approves omadia's loopback tools, it never removed the built-ins.
+
+The spawn argv now closes the boundary four ways: `--tools ""` removes the
+CLI's built-in tool set (MCP tools stay), `--disallowedTools` carries a named,
+test-asserted deny list (`CLI_BUILTIN_TOOL_DENYLIST`) as a fallback for a CLI
+that ignores `--tools`, `--permission-mode dontAsk` denies anything not
+pre-approved instead of prompting a UI nobody sees, and `--setting-sources ""`
+keeps the operator's personal allow rules out of the session. Any tool call in
+the trace whose name is not `mcp__omadia__*` is marked `foreign`, so a CLI-native
+call can never read like an omadia call.
+
+### Fixed — On the subscription path the agent introduces itself as omadia, not as Claude Code
+
+2026-09-03 — OM-83 (#992). omadia's instructions were passed to the CLI with
+`--append-system-prompt`, so Claude Code's own prompt stayed the primary
+identity. The model told a user sitting in the omadia chat that it was "running
+in a CLI session in the middleware repo", advised them to "ask the same thing in
+an omadia chat", and offered to schedule the task in a different system. The
+prompt is now replaced via `--system-prompt`: the agent's persona comes first,
+followed by a fixed runtime note naming omadia and the only toolset the model
+actually has (the `mcp__omadia__*` MCP tools). A neutral default applies when no
+persona is configured, so the CLI's self-description never leaks through.
+
+### Fixed — omadia's own tools keep the user context when called through the loopback MCP server
+
+2026-09-03 — OM-82 (#993). Asked from the omadia chat to create a routine, the
+CLI-backed agent got `Error: cannot create routine outside a channel turn (no
+user context)` although the request came from a channel. On the subscription
+path a tool call reaches the middleware as an HTTP request from the external
+`claude` process, in a fresh async context, so every per-turn
+`AsyncLocalStorage` (`routineTurnContext`, `privacyHandle`, `toolIdempotency`,
+…) was undefined inside `dispatch()`. The loopback server now snapshots the
+async context it is constructed in (inside the turn) and runs every
+`tools/call` within it, so context-bound tools see the same tenant and user the
+in-process path sees. The `manage_routine` error for a genuinely missing
+context now reads as a runtime wiring fault instead of blaming the caller.
+
+### Fixed — dashboard and readiness banner read one runtime truth (#999, #1000, #1001, #1002, #1003)
+
+2026-09-03 — omadia beta test round 4 (TE Printline, OM-72/74/75/78/84). The
+dashboard said "LLM verbunden · 3 von 3 erledigt" while the readiness card two
+centimetres below said "LLM-Zugang fehlt". Both were right from their own
+viewpoint: the onboarding tick checked whether an access was *stored*, the card
+probed whether the orchestrator runtime *answered*. The tester had a working
+subscription login; the orchestrator was still assigned to `anthropic`, for
+which no key existed, so nothing ran — and the only text on screen told him to
+add the key or subscription he already had, and promised chat "sofort".
+
+**Onboarding step 1 follows the live runtime (#1001, OM-78).** Step 1 now ticks
+on the same probe the banner uses (`/operator/agents` answering instead of
+503ing), not on a stored key or CLI login. The counter can no longer reach
+"3 von 3" for a system that cannot run an agent. When an access exists but the
+runtime is down, the step names the missing orchestrator assignment and links
+straight to it instead of offering to connect an access again.
+
+**The CLI wording follows the assignment (#999, OM-74).** "Ein LLM-Anbieter ist
+verbunden und sein Schlüssel wurde geprüft" was shown to a subscription user who
+never stored a key. The done-copy now reads off what the orchestrator is
+actually assigned to: a keyless subscription CLI gets the CLI sentence, a
+key-based provider the key sentence.
+
+**The readiness banner names the cause (#1000, OM-75).** The operator-agents 503
+carries a new `cause` field — `no_llm_access` (no key, no OAuth, no CLI login
+anywhere), `no_assignment` (an access exists, the orchestrator points elsewhere)
+or `unknown` — computed from the same credential verdicts the providers page
+renders, without a network probe. The banner renders a distinct title, body and
+CTA for `no_assignment` ("Orchestrator nicht zugeordnet" → "Zuordnung öffnen")
+and for `unknown` ("Agent-Runtime antwortet nicht"), which by construction
+means access and assignment are set — e.g. a stored but rejected key — so the
+no-access sentence would be false there. A 503 without a cause (older
+middleware) keeps the no-access copy. The verdict is memoised for 8 s so a
+dashboard load with several probing widgets runs one credential lookup.
+
+**No more promises about a control that does not exist (#1002, OM-72).** The
+banner body no longer says chat is available "sofort" nor that routines need
+"einen Neustart der Middleware" — the web UI has no restart control, and the
+only one (Tray → Restart) sits behind an icon that is still missing (#888).
+
+**Embeddings are no longer silently off (#1003, OM-84).** A default install runs
+without an embedding provider, which disables process memory, semantic search
+and dedup; nothing in setup said so and the tester learned it from an agent
+failing mid-answer. New `GET /api/v1/admin/embedding-provider/status` answers
+from the registry alone (the existing `GET /` counts the corpus and is too
+heavy for a card rendered on every dashboard load). The dashboard gets a
+"Gedächtnis / Embeddings" health card linking to the embedding-provider setting,
+and the onboarding card names the limitation while no provider is published.
+
+API additions: `cause` on the `multi_orchestrator_unavailable` 503 of
+`/api/v1/operator/agents`; `GET /api/v1/admin/embedding-provider/status`
+(`capabilityPublished`, `activeProviderId`, `activeModel`, `installedProviderIds`).
+
+### Fixed — The desktop app no longer renames the user's Mac on every start
+
+2026-09-03 — Beta round 4, OM-70 (#1004). Since v0.142 the Mac of the tester
+had been counting up: `MacBook-Pro-von-Silvio-8.local`, then `-9`, then `-10`,
+one increment per omadia start, with macOS announcing each time that the local
+hostname was "already in use on this network". The culprit was our own LAN
+pairing advertiser (#293): `bonjour-service` publishes `_omadia._tcp` with the
+machine's own host name as SRV target and answers A queries for it, so macOS
+saw a second responder defending its `.local` name, treated it as a foreign
+device and yielded. In a company network that name carries file shares,
+printers, SSH targets, backups and MDM inventory.
+
+Two layers. The desktop supervisor now passes `OMADIA_UI_MDNS_ENABLED=false`
+to the kernel unless the user set the variable themselves; on a single-user
+machine there is nothing to discover. And the advertiser itself never claims
+the OS name any more: self-hosters advertise as `<instance>-<machine>.local`
+(capped at 63 octets, a valid DNS label) or an explicit `host`, so two
+responders on one device can no longer collide. The variable is documented in
+`middleware/.env.example`.
+
+### Fixed — Shell dialogs are attached to the window, and the recovery-key reminder waits for the page
+
+2026-09-03 — Beta round 4, OM-71 (#1005). Five of the seven native dialogs,
+among them all three about the vault recovery key, were shown without a parent
+window. On macOS that is an application-modal, free-floating dialog: the
+reminder on start was half covered by a system dialog and unreadable, and the
+one dialog that shows the key decrypting the local database could get lost
+behind other windows. Every dialog now goes through one helper that attaches
+it to the main window (a destroyed window falls back to the old behaviour
+rather than throwing over the key).
+
+The reminder also fired the moment `loadURL` resolved, over a page that still
+read "Lade Login…" — `loadURL` resolves on the document, not on a screen. The
+web UI now tells the shell when its first real screen is standing
+(`omadia:uiReady` via the preload bridge; `/login` and `/setup` report once
+their provider fetch has settled, every other page on hydration), and both the
+boot and the restart path wait for that ping before speaking. A 15-second
+fallback keeps the reminder for an older or crashed renderer: it exists to
+prevent silent data loss, so late beats never.
+
+### Fixed — MCP marketplace search now answers from the cached catalog when only the registry's search is broken
+
+2026-09-01 — Follow-up to the entry below, found by watching the deployed fix
+against the live registry. Failing fast was correct but not sufficient:
+`registry.modelcontextprotocol.io` serves `/v0/servers` in under a second (66
+servers) while `?search=` hangs to the full timeout. So browse worked, search
+showed an error card, and the operator still got no results — the reported
+symptom, just faster and better explained.
+
+`search()` now falls back to substring-filtering the browse page it already
+holds in cache whenever the server-side search fails at the transport level.
+That costs no network, and it is the difference between an error card and
+actual hits. When nothing is cached it still fails fast as before.
+
+Because a filter over one page is *not* the registry's ranking of its whole
+catalog, `search()` now returns a `scope` (`registry` | `cached-page`) that the
+route forwards and the UI renders as a `nur geladene Seite` badge beside the
+result count. Without it, "1 Treffer" would read as "the registry has one", and
+an operator would conclude a server is missing when it merely sits past the
+cached page. The `timeout` failure card also stopped claiming the host is
+"offline or blocked" — that is wrong when browsing works — and now points at
+clearing the search box to list the catalog instead.
+
+### Fixed — MCP marketplace search hung instead of failing, and told you nothing
+
+2026-09-01 — The Marketplace tab's search sat in "Katalog durchsuchen…"
+indefinitely and produced neither results nor an error. The trigger was
+external: `registry.modelcontextprotocol.io` — the registry seeded as `official`
+in migration `0010` — is black-holing packets (DNS resolves to 34.61.200.254,
+TCP times out). What made it read as a broken feature rather than a dead host
+was our own code spending **four** 15-second timeouts on it per search:
+`fetchCatalog` probed two candidate URLs, and when the server-side search threw,
+`search()` fell through to a local-filter fallback that re-ran the whole thing
+against the same dead host. Roughly 60 seconds of spinner, then a bare error
+string.
+
+Three changes in `middleware/src/services/mcpRegistryClient.ts`:
+
+- **Transport failures short-circuit.** `search()` rethrows a transport-level
+  error instead of retrying the same unreachable host through the local-filter
+  fallback. The distinction is load-bearing, so the classification was tightened
+  at the same time: only the `fetchImpl` call itself yields `transport_failed` /
+  `timeout`; status, body-read and `JSON.parse` failures stay on `http_error` /
+  `bad_catalog_shape` and still take the fallback — a registry answering 200
+  with HTML is answering, and may simply be ignoring the search param.
+- **The bare base-URL candidate is dropped for `kind = 'official'`.** Migration
+  `0013` assigns that kind to exactly `registry.modelcontextprotocol.io`, whose
+  base URL is a landing page, never a catalog. Operator-added registries default
+  to `generic` and keep the candidate.
+- **A 60-second negative cache.** Successes were cached, failures were not, so
+  each caller paid the full timeout. That was survivable while browsing sat
+  behind an explicit button; it is not now that the UI loads the catalog on its
+  own. `GET /mcp-registries/:id/catalog?refresh=1` drops both caches, so the
+  UI's Retry and Refresh still reach the host.
+
+The pane itself (`web-ui/app/admin/mcp/page.tsx`) was reworked in the same pass:
+the catalog loads on registry select instead of waiting for a button, search
+runs debounced as you type with in-flight requests aborted, registries are pills
+rather than a select, and failures render a typed card naming the registry and
+what to do about it. Results moved to a card grid with a result count and an
+explicit Refresh; registry removal moved out of the search row into a folded
+management panel behind a confirm dialog.
+
+**Note for operators:** this makes the outage legible and fast — it does not
+bring the official registry back. Use `smithery` (seeded, keyless to browse)
+until `registry.modelcontextprotocol.io` answers again.
+
+### Fixed — omadia beta test round 3: the desktop shell (OM-50 to OM-69, #938)
+
+2026-08-28 — Silvio Lange (TE Printline GmbH) reached the application for the
+first time in three rounds of beta testing, and every serious finding of that
+round sat in one directory: `desktop/src`, which was also the only directory in
+the repository with no tests and no CI run. Thirteen issues, five pull requests.
+The pieces already tagged are noted per version below; #944 and #946 ship in the
+next release.
+
+**The path that blocked the whole test (#925, OM-62, in 0.142.1 via #941).**
+`resolveAugmentedPath()` probed a fixed list of directories, so npm installed at
+`~/.local/node/bin` was invisible and the subscription CLI install failed with
+"npm was most likely not found" on a machine where Node was installed correctly.
+It now scans one level below `~/.local` for `*/bin` instead of naming single
+paths, resolves the nvm `default` alias rather than discarding `lts/*` and
+`node`, and the failure detail names the PATH that was actually searched. With
+no API key a business user has no other way in, so this closed the only door.
+
+**A process that never started, reported as a failed install (#933, OM-68, in
+0.142.2 via #945).** Every thrown runner error was labelled
+`cli_install.npm_failed`, whose help text says npm ran and points at log details
+that do not exist. `npmRunner` had also collapsed `execFile`'s error to
+`ok: !err`, discarding the `code`/`syscall` that made the distinction possible
+at all. Spawn failures now classify as `cli_install.spawn_failed` and name the
+offending file; a spawn `ENOENT` deliberately stays on `no_output`, whose
+searched-PATH line is the right answer for "npm is not installed here".
+
+**The macOS update channel was dead for 30 to 60 minutes after every release
+(#928, OM-69, in 0.142.2 via #943).** `auto-release.yml` flagged a release
+`--latest` before the `desktop-apps` job had built and attached the macOS
+artifacts, so every macOS install queried a `latest-mac.yml` that did not exist
+yet — measured live at roughly 55 minutes on v0.142.1, and silent, because the
+startup check logs a 404 without telling anyone. Releases are now created as
+drafts and promoted only once the merged mac feed is attached AND every file it
+references is present on the release with `state: uploaded`. A repeatedly
+failing silent check now surfaces once instead of never.
+
+**The shutdown path lied to the updater (#927, #926, #934, OM-64/OM-55/OM-66,
+via #944).** `Supervisor.stop()` could return while the kernel and the embedded
+Postgres were still running out of the app bundle — an early return that did not
+await the in-flight stop, a backstop timer that resolved whether or not the
+child exited, and no guard against `stop()` racing `start()` or `restart()`. So
+`quitAndInstall()` handed off to ShipIt, ShipIt could not replace a bundle it
+was still executing, and the updater offered the same version again on the next
+launch: three download-and-snapshot cycles in nine minutes with no error logged
+anywhere, ending with an application that would not start. `stop()` now returns
+`{clean, survivors}` and an unclean stop aborts the install instead of
+installing anyway; attempts are recorded so the same failure is explained once
+rather than re-offered; snapshots get per-attempt names pruned to three instead
+of overwriting the previous backup on every retry; and the data directory warns
+when it points into a cloud-synced folder.
+
+**The desktop shell now says what is happening (#929, #930, #931, #935, #936,
+OM-57/OM-58/OM-56/OM-59/OM-60, via #946).** A superseded boot reached the user
+as `Error: boot superseded` with two buttons that both did damage mid-update,
+while the only correct action, waiting, was not offered. A failed navigation left
+the window showing nothing but its own background colour, because no
+`did-fail-load`, `render-process-gone` or `unresponsive` handler existed. Three
+independent `loadURL` sites raced with no notion of what the window was showing,
+which is what overwrote the setup wizard and cost the user both the data-location
+step and the recovery key without telling them. Electron dialogs, the loading
+screen and the menu headings stayed English against a German UI even though the
+German strings already existed. And the loading screen streamed the raw
+developer log, `.env` instructions included, to every user on every start. A
+navigation arbiter now decides who may replace the window, recovery is bounded
+and explained, an outstanding recovery key is reminded until it has been shown,
+and the boot log is summarized with detail one click away that opens itself on
+an error.
+
+**The gap behind all of it (#932, OM-65, via #944).** `desktop/src` had 0 test
+files and no CI job while `middleware` had 725 and `web-ui` 110. It now has a
+test suite and its own `desktop` job in `ci.yml` running typecheck plus tests,
+including a typecheck of the test tree itself — which immediately caught an
+assertion written as `a < b < c`, i.e. `(a < b) < c`, that had been passing for
+any values.
+
+**Mirror hygiene (#937, OM-67).** This file listed 145 released versions under
+`[Unreleased]`, which is how a reviewer came to report a fix as unreleased two
+hours after it shipped. The mirror is caught up, the stale section is named
+honestly, and the header now says the refresh is manual and how to tell in one
+command whether the file is behind.
+
+Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
+plausible from the code and matches the observed timing, but provoking the race
+would have required a build that still started.
+
+
+---
+
+## Hand-written notes awaiting a mirror refresh (2026-07-06 to 2026-08-28)
+
+These entries were written under `[Unreleased]` while the mirror was not being
+refreshed, so they accumulated for 145 versions and **every one of them has
+shipped**. They are kept because they carry the reasoning behind each change,
+which the generated per-version sections below do not. Each entry is dated;
+match that date against the `## [x.y.z]` sections below, or against the GitHub
+Release, to find the version it went out in.
+
+Do not add to this section. New notes go under `[Unreleased]` above.
 
 ### Added — provisioning writes the `teams_bots` entry itself (#910)
 
@@ -89,6 +598,37 @@ and the title ("LLM API key missing" → "LLM access missing") no longer frames
 the problem as API-key-specific when the body describes both paths. The
 banner test now pins the CTA href so this exact regression is covered
 under #911.
+
+### Fixed — desktop PATH augmentation missed ~/.local/*/bin and non-literal nvm defaults (#925)
+
+2026-08-28 — #906 taught `resolveAugmentedPath()` about `~/.local/bin`, but a
+Node installed the other common way under that prefix — an unpacked tarball
+kept under its own name, `~/.local/node/bin` — was still invisible. On a
+machine where that is the only `node`/`npm`, the subscription-CLI install in
+the admin panel spawned `npm` with a PATH that could not contain it,
+`execFile` failed with empty stdout and stderr, and the UI showed the opaque
+`cli_install.no_output` message. The probe now also scans `~/.local` one level
+deep and adds every existing `~/.local/<tool>/bin` — sorted for a
+deterministic PATH, capped in count so boot stays bounded, and still appended
+*after* the inherited PATH so a system install keeps precedence.
+
+The nvm probe had a second dead end: it only accepted a literal version in
+`~/.nvm/alias/default` and returned "no nvm" for the two most common defaults,
+`lts/*` and `node`. It now follows the alias transitively (`default` →
+`lts/*` → `lts/krypton` → `v24.19.0`), resolves `node` to the newest installed
+version — compared numerically, so `v22.x` beats `v8.x` rather than losing a
+lexical sort — and terminates safely on hostile data: a depth cap, a
+visited-set for cycles, and rejection of an alias value that is absolute or
+escapes `~/.nvm/alias`. As before, any unreadable state is swallowed; app boot
+never depends on the probe succeeding.
+
+Finally, a `cli_install.no_output` failure now states the PATH the npm child
+was actually handed (`Searched PATH: …`, capped at 512 characters) in the
+existing failure detail, so the diagnosis no longer requires a manual
+`which npm` on the host. The `cli_install.npm_failed` branch, which already
+carries an npm log tail, is unchanged. `desktop/` also gains real unit tests
+for the PATH rules, run by its own `npm test` on Node's native TypeScript type
+stripping — no new dependency, no lockfile change.
 
 ### Fixed — desktop kernel PATH augmentation missed ~/.local/bin (#906)
 
@@ -4489,6 +5029,1303 @@ Three live defects in the MCP OAuth path, one migration
 
 ---
 
+## [0.142.2] - 2026-08-28
+
+### Fixed
+
+- promote a release to latest only once its artifacts exist (#943)
+- tell a spawn failure apart from a failed npm install (#945)
+
+---
+
+## [0.142.1] - 2026-08-28
+
+### Fixed
+
+- PATH augmentation misses ~/.local/node/bin for CLI install (#941)
+
+---
+
+## [0.142.0] - 2026-08-28
+
+### Added
+
+- the full persona designer on the agent's own identity page (#940)
+
+---
+
+## [0.141.0] - 2026-08-28
+
+### Added
+
+- agents own their identity, decoupled from the Agent Builder (#923)
+- persist team bindings per (agent, team) and show teams by name (#919)
+
+---
+
+## [0.140.3] - 2026-08-28
+
+### Fixed
+
+- qualify the Azure bot handle, and stop retrying a taken one (#922)
+- **web-ui**: render localized setup-field labels in the plugin config drawer (#917)
+
+---
+
+## [0.140.2] - 2026-08-28
+
+### Fixed
+
+- persist the Entra app id the moment the registration exists (#920)
+
+---
+
+## [0.140.1] - 2026-08-28
+
+### Fixed
+
+- **#911**: runtime-readiness banner now points to the actual LLM access page (#913)
+
+---
+
+## [0.140.0] - 2026-08-28
+
+### Added
+
+- write the teams_bots entry automatically after provisioning (#912)
+
+---
+
+## [0.139.1] - 2026-08-27
+
+### Fixed
+
+- sub-agent memory tool writes through the scoped store (#908)
+- **#906**: desktop kernel PATH augmentation now checks ~/.local/bin (#907)
+
+---
+
+## [0.139.0] - 2026-08-27
+
+### Added
+
+- enable team uninstall for provisioned agent identities (#905)
+- make the context-memory ACL switchable from the operator UI (#903)
+
+---
+
+## [0.138.2] - 2026-08-27
+
+### Fixed
+
+- **#887**: billing-posture badge no longer reads as a second status (#902)
+
+---
+
+## [0.138.1] - 2026-08-27
+
+### Fixed
+
+- **#886**: dashboard onboarding step 3 shows a result, not a stale CTA, when done (#901)
+
+---
+
+## [0.138.0] - 2026-08-27
+
+### Added
+
+- operator UI for Teams agent identities + end-to-end smoke (#896)
+
+---
+
+## [0.137.5] - 2026-08-27
+
+### Fixed
+
+- **#889**: dashboard onboarding step 1 links to both API-key and subscription paths (#895)
+
+---
+
+## [0.137.4] - 2026-08-27
+
+### Fixed
+
+- **#884**: plugin Hub stops counting a plugin ready with no verified LLM credential (#894)
+
+---
+
+## [0.137.3] - 2026-08-27
+
+### Fixed
+
+- **#890**: desktop first-run wizard offers a subscription path, not just API key (#893)
+
+---
+
+## [0.137.2] - 2026-08-27
+
+### Fixed
+
+- **#883**: write real version into desktop package before packaging (#892)
+
+---
+
+## [0.137.1] - 2026-08-27
+
+### Fixed
+
+- **#882**: augment kernel PATH so npm-based CLI install/builder work on desktop (#891)
+
+---
+
+## [0.137.0] - 2026-08-27
+
+### Added
+
+- chat-context memory ACL — per-team/channel/user agent memory with fail-closed scoping (#881)
+
+---
+
+## [0.136.2] - 2026-08-26
+
+### Fixed
+
+- accept the Teams app-package template on plugin ingest (#880)
+
+---
+
+## [0.136.1] - 2026-08-26
+
+### Fixed
+
+- Fresh-Check-Button nur bei echtem Recall, nicht beim Chat-Tail (#878)
+
+---
+
+## [0.136.0] - 2026-08-26
+
+### Added
+
+- agent factory — Teams identity provisioning via teamsProvisioner@1 (#877)
+
+---
+
+## [0.135.0] - 2026-08-25
+
+### Added
+
+- per-agent plugin & MCP grant assignment (operator UI + endpoints) (#876)
+
+---
+
+## [0.134.3] - 2026-08-25
+
+### Fixed
+
+- teams_conversation_refs migration was orphaned — move to KG-neon series as 0031 with per-bot key (#875)
+
+---
+
+## [0.134.2] - 2026-08-25
+
+### Fixed
+
+- gate verifier badge on real checked claims + memoryUsed signal for Fresh Check (#859)
+
+---
+
+## [0.134.1] - 2026-08-25
+
+### Fixed
+
+- facilitation lens must read the verdict from ctx.steps.moderate, not ctx.stepResult (#330 follow-up) (#858)
+
+---
+
+## [0.134.0] - 2026-08-25
+
+### Added
+
+- interim results table per DoD point in the facilitation details modal (#330 follow-up) (#857)
+
+---
+
+## [0.133.0] - 2026-08-24
+
+### Added
+
+- facilitation details modal; hide the panel when nothing runs (#330 follow-up) (#856)
+
+---
+
+## [0.132.0] - 2026-08-24
+
+### Added
+
+- readable facilitation cards and tick nudge discipline (#330 follow-up) (#855)
+
+---
+
+## [0.131.0] - 2026-08-24
+
+### Added
+
+- admin lens and stop for running facilitations (#330 round 4) (#854)
+
+### Fixed
+
+- **publish**: atomic version allocation — upsert instead of SELECT FOR UPDATE + bare INSERT (fixes #834) (#852)
+
+---
+
+## [0.130.0] - 2026-08-24
+
+### Added
+
+- **channels**: channel directory entries can carry resolved member names (#851)
+
+---
+
+## [0.129.0] - 2026-08-24
+
+### Added
+
+- bot_present opens facilitation eligibility (#330 round 3) (#850)
+
+---
+
+## [0.128.0] - 2026-08-23
+
+### Added
+
+- restart-proof facilitation groundwork (#330 field report) (#841)
+
+---
+
+## [0.127.0] - 2026-08-22
+
+### Added
+
+- cancel Conductor runs straight from the run list (#330 field report) (#840)
+
+---
+
+## [0.126.1] - 2026-08-21
+
+### Fixed
+
+- **install**: derive the install job's terminal state from the activation outcome — errored vs failed, activation_state (fixes #825) (#833)
+
+---
+
+## [0.126.0] - 2026-08-21
+
+### Added
+
+- delete conductor workflows from the library (#836)
+
+### Fixed
+
+- **verifier**: pass enclosing sentence to judge for fragment claims (#831)
+- **platform**: provides: grants only after a real provide(), gate replace(), origin-scoped legacy allowlist, refuse bundled-id uploads (fixes #788 #789) (#835)
+
+---
+
+## [0.125.0] - 2026-08-21
+
+### Added
+
+- persist observed-invite index across restarts (0048) (#837)
+- timer steps, machine-checkable DoD loops and scoped conversation nudges (#330 C3) (#830)
+
+---
+
+## [0.124.0] - 2026-08-21
+
+### Added
+
+- transcription@1 capability + batch recording ingestion (#584 WS T+I) (#829)
+
+---
+
+## [0.123.0] - 2026-08-21
+
+### Added
+
+- **update**: blocking progress dialog with stepper, visible polling, decoded rollback (#828)
+
+---
+
+## [0.122.0] - 2026-08-21
+
+### Added
+
+- zero-touch facilitator setup — agent provisioning, invite-guarded auto-bind, scoped role assignments (#330 C2a) (#827)
+
+---
+
+## [0.121.0] - 2026-08-21
+
+### Added
+
+- **runtime**: one operator consent for plugin SQL + public-path grants — wizard step, grants panel, in-process re-activation (epic #470 C16, fixes #817) (#824)
+
+---
+
+## [0.120.0] - 2026-08-21
+
+### Added
+
+- **llm**: Sign in with ChatGPT — OAuth device flow (#294) (#823)
+
+---
+
+## [0.119.0] - 2026-08-21
+
+### Added
+
+- knowledge-graph datasets admin UI with paginated list (#532) (#821)
+- channel-SDK group-conversation primitives + principal-addressed targeted delivery (#330 Workstream B1) (#822)
+
+---
+
+## [0.118.0] - 2026-08-21
+
+### Added
+
+- pattern-based ephemeral conductor workflows with TTL reaper (#330 Workstream A) (#818)
+
+### Fixed
+
+- **#764, #775**: run workspace package suites in CI; land the role-holders audit row (#820)
+
+---
+
+## [0.117.1] - 2026-08-21
+
+### Fixed
+
+- run the declared ledger handoff before core's pre-activate migrations (#470 C15) (#815)
+
+---
+
+## [0.117.0] - 2026-08-21
+
+### Added
+
+- **admin**: runtime install of subscription CLIs from the admin UI (#816)
+
+### Changed
+
+- **auth**: drop the two static public-path exemptions of the extracted subsystem (epic #470 C12) (#807)
+
+---
+
+## [0.116.0] - 2026-08-21
+
+### Added
+
+- **platform**: plugin migration handoff with schema witnesses + ctx.sql.seedLedger (epic #470 C11) (#806)
+
+### Changed
+
+- **core**: delete the Dev Platform — now byte5ai/omadia-dev-platform (epic #470 C10) (#804)
+
+---
+
+## [0.115.3] - 2026-08-21
+
+### Fixed
+
+- **#603**: native required on upload-covered fields blocked the submit silently (#812)
+
+---
+
+## [0.115.2] - 2026-08-21
+
+### Fixed
+
+- **#603**: the install wizard's json_file upload was wired to nothing (#811)
+
+---
+
+## [0.115.1] - 2026-08-21
+
+### Fixed
+
+- fresh installs died at first boot — supervisor never passed CREDENTIAL_KEYCHAIN_KEY (#810)
+
+---
+
+## [0.115.0] - 2026-08-20
+
+### Added
+
+- close the field-test gap list — localized descriptions, visible connection verdicts, error classes, app menu, subscription notice (#809)
+
+---
+
+## [0.114.0] - 2026-08-20
+
+### Added
+
+- **platform**: optional_requires, core migrations at boot, pluginUi nav (epic #470 C9; fixes #795 #796 #798) (#802)
+
+### Fixed
+
+- **platform**: bundled plugins reach graphPool through the C7 SQL gate (#794) (#801)
+
+---
+
+## [0.113.1] - 2026-08-20
+
+### Fixed
+
+- four defects found retesting the packaged Intel app against the field-test report (#800)
+
+---
+
+## [0.113.0] - 2026-08-20
+
+### Added
+
+- **platform**: permissions.sql gate for graphPool + shared advisory-locked plugin migrations (epic #470 C7/G4) (#787)
+
+### Fixed
+
+- **#470**: make the C8 plugin-UI host actually work — same-origin frame, scoped ids, emitted CSS (C8b) (#793)
+- **install**: report a failed activation as errored, not active (#470 P5) (#799)
+
+---
+
+## [0.112.0] - 2026-08-20
+
+### Added
+
+- **#778**: wire #577 skill-promotion route + #578 credential-asks mount (W1) (#792)
+- **platform**: plugin route auth modes + route-local raw body slot (epic #470 C6) (#791)
+
+---
+
+## [0.111.0] - 2026-08-20
+
+### Added
+
+- **platform**: operator-consented plugin public-path grants with terminating early mount (epic #470 C4/H1) (#782)
+
+---
+
+## [0.110.0] - 2026-08-20
+
+### Added
+
+- **#470**: grant-gate ctx.services.get and cut plugin-api 1.0.0 (C2b) (#783)
+- **#470**: plugin UI — generated Tailwind subset, static SPA serving, ingest gate (C8) (#784)
+- **#581**: publish sharing via GrantStore — read=use, write=redeploy/rollback (P3) (#790)
+
+---
+
+## [0.109.0] - 2026-08-20
+
+### Added
+
+- **#581**: publish/publish_rollback native tools behind sandbox_publish_enabled (P2) (#786)
+- **#581**: publish primitive P1 — version store + Docker runtime + origin-isolating gateway (#785)
+- **plugin-api**: golden .d.ts API snapshot test (epic #470 C1) (#780)
+
+---
+
+## [0.108.0] - 2026-08-20
+
+### Added
+
+- **#576**: durable per-scope sandbox — P3 scope durability + RO-layer content hash + reaper (#779)
+
+### Fixed
+
+- **verifier**: check Odoo record existence for anchored soft claims (#781)
+
+---
+
+## [0.107.0] - 2026-08-20
+
+### Added
+
+- **#576**: durable per-scope sandbox — P2 execute tool + command-policy gate (#777)
+- **#576**: durable per-scope sandbox — P1 interface + Docker backend (#776)
+- **#578**: keychain-asks — request, owner-approval, grant (phase 3/4) (#774)
+
+---
+
+## [0.106.0] - 2026-08-20
+
+### Added
+
+- **#578**: credential broker — the egress-stamping layer (phase 2/4) (#772)
+- **#578**: credential keychain data model + store (phase 1/4) (#769)
+- **#577**: sharing via GrantStore + admin-gated promotion + cron write-guard (P3) (#771)
+
+---
+
+## [0.105.0] - 2026-08-20
+
+### Added
+
+- provenance verification surface — verify API, signed export, offline verifier (#761) (#773)
+- **#577**: scope-ordered skill resolution with shadowing (P2) (#768)
+- **#577**: skill ownership + lifecycle model (P1) (#767)
+- tamper-evident receipt chain with signed checkpoints (#758) (#770)
+
+---
+
+## [0.104.0] - 2026-08-20
+
+### Added
+
+- privacy shield operator deny-lists, miss queue, idnum, eval gate (#760) (#766)
+- conductor run cancellation + strict approvals + baton audit (#759) (#765)
+
+---
+
+## [0.103.0] - 2026-08-20
+
+### Added
+
+- persist per-turn privacy receipts with operator API (#757) (#763)
+
+---
+
+## [0.102.0] - 2026-08-20
+
+### Added
+
+- **i18n**: sweep the remaining #687 translate-category literals (#762)
+- **i18n**: sweep the I6 toLocaleString tail (#687) (#756)
+
+---
+
+## [0.101.0] - 2026-08-20
+
+### Added
+
+- **i18n**: resolve #687 tagline and roadmap-stamp product questions (#755)
+
+---
+
+## [0.100.0] - 2026-08-20
+
+### Added
+
+- **ci**: deterministic Odoo fixture + full verified/contradicted coverage (#753)
+- **#343**: adopt Lume icon + state-as-glyph specs (additive, gate-ready) (#725)
+
+---
+
+## [0.99.0] - 2026-08-20
+
+### Added
+
+- **#749**: make a failing security screener visible (#750)
+
+---
+
+## [0.98.4] - 2026-08-20
+
+### Fixed
+
+- **#687**: triage the I3 literal tail — 21 sites, 7 files on the ratchet (#751)
+
+---
+
+## [0.98.3] - 2026-08-20
+
+### Fixed
+
+- **ci**: the decoupling ratchet was timing out before it ran (#752)
+
+---
+
+## [0.98.2] - 2026-08-19
+
+### Fixed
+
+- **#687**: measure i18n literals with an AST scan, sweep ListView (#747)
+
+---
+
+## [0.98.1] - 2026-08-19
+
+### Fixed
+
+- drop temperature for models that reject it (screener was fail-open) (#748)
+
+---
+
+## [0.98.0] - 2026-08-19
+
+### Added
+
+- **#498**: adversarial injection/manipulation eval suite (#730)
+
+---
+
+## [0.97.0] - 2026-08-19
+
+### Added
+
+- **#580**: shell-normalizing command policy + honest-inert enforcement seam (#736)
+
+---
+
+## [0.96.1] - 2026-08-19
+
+### Fixed
+
+- **#727**: mask ISO-8601 dates as dates, not phone numbers (#744)
+
+---
+
+## [0.96.0] - 2026-08-19
+
+### Added
+
+- **#575**: sharedOnly recall — a restricted room keeps what it may have (#745)
+
+---
+
+## [0.95.1] - 2026-08-19
+
+### Fixed
+
+- **#326**: render masked columns on the canvas dataset-publish path (#743)
+
+---
+
+## [0.95.0] - 2026-08-19
+
+### Added
+
+- **#575**: a restricted room narrows its recall instead of losing it (#742)
+
+---
+
+## [0.94.0] - 2026-08-19
+
+### Added
+
+- **#575**: read outbound hosts as an allow-list, behind a flag (#741)
+
+---
+
+## [0.93.0] - 2026-08-19
+
+### Added
+
+- **#575**: a room can forbid an outbound host (#740)
+
+---
+
+## [0.92.0] - 2026-08-18
+
+### Added
+
+- **#575**: prohibitions — one participant's veto binds the whole room (#739)
+- **#575**: bind an attachment handle to the room that minted it (#738)
+
+---
+
+## [0.91.0] - 2026-08-18
+
+### Added
+
+- **#575**: durable audience-floor grants + an operator surface for them (#737)
+
+---
+
+## [0.90.1] - 2026-08-18
+
+### Fixed
+
+- **channel-sdk**: keep NO_REPLY suppressible after the Art. 50 disclosure fold (#735)
+
+---
+
+## [0.90.0] - 2026-08-18
+
+### Added
+
+- **#575**: let a deployment switch the audience floor on (#734)
+- **#575**: wire the audience floor's handle-resolution guard (#733)
+
+---
+
+## [0.89.0] - 2026-08-18
+
+### Added
+
+- **#575**: wire the audience floor's context-recall guard (#732)
+
+---
+
+## [0.88.0] - 2026-08-18
+
+### Added
+
+- **#575**: wire the audience floor's egress guard into tool dispatch (#731)
+
+---
+
+## [0.87.0] - 2026-08-18
+
+### Added
+
+- **#575**: the audience floor and capability grants (phase 2) (#729)
+
+---
+
+## [0.86.0] - 2026-08-18
+
+### Added
+
+- **#333**: role sources + pluggable role→holder resolution (phases 2 and 3) (#726)
+
+---
+
+## [0.85.0] - 2026-08-17
+
+### Added
+
+- **#333**: Principal — the platform's typed answer to "who is this?" (phase 1) (#724)
+
+---
+
+## [0.84.0] - 2026-08-17
+
+### Added
+
+- **#579**: org security postures + provenance-labelled inbound scree… (#681)
+
+---
+
+## [0.83.0] - 2026-08-17
+
+### Added
+
+- **#575**: unsharedConversationScope — a channel turn never lands in a shared scope (#714)
+
+---
+
+## [0.82.0] - 2026-08-17
+
+### Added
+
+- **#575**: ScopeId, and directLineSticky drops both denylists (#713)
+
+---
+
+## [0.81.2] - 2026-08-16
+
+### Fixed
+
+- **#709**: anchor the resume/reaper test on the store's own clock (#710)
+
+---
+
+## [0.81.1] - 2026-08-16
+
+### Fixed
+
+- **#707**: route the remaining test servers through a loopback listen helper (#708)
+
+---
+
+## [0.81.0] - 2026-08-15
+
+### Added
+
+- **issue-545**: cache mcp tool lists (#702)
+
+---
+
+## [0.80.0] - 2026-08-14
+
+### Added
+
+- **#700**: serve MRTR to 2026-07-28 clients on the public MCP endpoint (#704)
+
+---
+
+## [0.79.3] - 2026-08-14
+
+### Fixed
+
+- bind test servers to the IPv4 loopback they dial (#703)
+
+---
+
+## [0.79.2] - 2026-08-14
+
+### Fixed
+
+- **#696**: cap the Fly machine-wait at the API limit and roll back what was really replaced (#706)
+
+---
+
+## [0.79.1] - 2026-08-14
+
+### Fixed
+
+- **#696**: thread the Fly lease nonce so the updater stops blocking itself (#705)
+
+---
+
+## [0.79.0] - 2026-08-14
+
+### Added
+
+- **#432**: name the operator's actual Fly apps in the manual update command (#698)
+
+---
+
+## [0.78.0] - 2026-08-14
+
+### Added
+
+- **#562**: read MRTR off the declared 2026-07-28 contract (phase 3) (#699)
+
+---
+
+## [0.77.0] - 2026-08-14
+
+### Added
+
+- **#562**: connect http MCP servers on the v2 client family (phase 2) (#697)
+
+---
+
+## [0.76.0] - 2026-08-14
+
+### Added
+
+- **#562**: serve the loopback MCP server on the v2 SDK family (phase 1) (#695)
+
+### Fixed
+
+- **skills**: surface frontmatter the SKILL.md import silently drops (#690)
+
+---
+
+## [0.75.0] - 2026-08-14
+
+### Added
+
+- **#432**: publish the updater sidecar image, document the Fly path (#693)
+
+---
+
+## [0.74.2] - 2026-08-14
+
+### Fixed
+
+- **#568**: bridge channel turns to per_user MCP tokens via the IdP subject (#691)
+
+---
+
+## [0.74.1] - 2026-08-13
+
+### Fixed
+
+- **#679**: close the structural i18n categories I3-I6 (#688)
+
+---
+
+## [0.74.0] - 2026-08-13
+
+### Added
+
+- **#648**: make the AI-marking posture readable per channel (#686)
+
+---
+
+## [0.73.0] - 2026-08-13
+
+### Added
+
+- **#650**: record model and provider on the persisted run trace (#683)
+
+---
+
+## [0.72.0] - 2026-08-13
+
+### Added
+
+- **#603**: json_file setup fields — upload the key, do not transcribe it (#682)
+
+---
+
+## [0.71.2] - 2026-08-13
+
+### Fixed
+
+- **#641,#667**: give turn errors a correlation handle and stop blaming the middleware (#680)
+
+---
+
+## [0.71.1] - 2026-08-13
+
+### Fixed
+
+- **#601**: translate the flagged German strings and make the i18n gate real (#678)
+
+---
+
+## [0.71.0] - 2026-08-13
+
+### Added
+
+- **#544**: render MRTR input_required on the public MCP endpoint (#677)
+
+---
+
+## [0.70.2] - 2026-08-13
+
+### Fixed
+
+- **#570**: exempt the MRTR sentinel from interning by provenance, not by prefix (#676)
+- **ci**: stop source-building better-sqlite3 in the desktop build (#675)
+
+---
+
+## [0.70.1] - 2026-08-13
+
+### Fixed
+
+- **#561**: fence the orphan-sweep metric at the store, not the schedule (#670)
+
+---
+
+## [0.70.0] - 2026-08-13
+
+### Added
+
+- **#602**: localized setup-field labels + store-card setup profile (OM-17/OM-15) (#673)
+
+---
+
+## [0.69.0] - 2026-08-13
+
+### Added
+
+- **#560**: durable Postgres TaskStore + boot resume driver for long-running tools (#663)
+
+---
+
+## [0.68.5] - 2026-08-12
+
+### Fixed
+
+- **#669**: authenticate /api/dev and lift the KG operator surfaces off the dev flag (#674)
+
+---
+
+## [0.68.4] - 2026-08-12
+
+### Fixed
+
+- **#671**: stop the store offering installs the server refuses, and say why a key is unverified (#672)
+
+---
+
+## [0.68.3] - 2026-08-12
+
+### Fixed
+
+- **#665**: stop the KG plugin ending the process-wide pg pool (#668)
+
+---
+
+## [0.68.2] - 2026-08-12
+
+### Fixed
+
+- **#566**: guard the file-scoped test timeout instead of splitting by size (#666)
+
+---
+
+## [0.68.1] - 2026-08-12
+
+### Changed
+
+- **dev-platform**: one-way layering + namespaced config (epic #470 C3) (#557)
+- **plugins**: delete the never-provided ctx.devJobs surface (epic #470 C2a) (#555)
+- **conductor**: delete the dead dev-job step coupling (epic #470 C5) (#554)
+
+### Fixed
+
+- **#605**: declare the ICU parser, correct the i18n docs, pin test concurrency (#664)
+
+---
+
+## [0.68.0] - 2026-08-12
+
+### Added
+
+- **#567**: admin UI for channel API keys (#608)
+
+---
+
+## [0.67.2] - 2026-08-11
+
+### Fixed
+
+- **#573**: typecheck test/ + scripts/ trees behind a ratchet (#611)
+
+---
+
+## [0.67.1] - 2026-08-11
+
+### Fixed
+
+- **ci**: run *.pg.test.ts suites — middleware job had no postgres ser… (#612)
+
+---
+
+## [0.67.0] - 2026-08-11
+
+### Added
+
+- **channel-sdk**: channel-agnostic AI-disclosure carrier in outgoing… (#661)
+
+---
+
+## [0.66.0] - 2026-08-11
+
+### Added
+
+- **ci**: golden-set regression eval for LLM verifier behaviour (#129) (#640)
+
+---
+
+## [0.65.0] - 2026-08-11
+
+### Added
+
+- **office**: deterministic OOXML provenance metadata in .docx/.xlsx … (#656)
+- **channel-api**: AI-Act Art. 50 provenance marker in public chat-API and MCP envelope (#647) (#660)
+
+---
+
+## [0.64.0] - 2026-08-11
+
+### Added
+
+- **diagrams**: stamp AI-Act provenance iTXt chunk into rendered diagram PNGs (#646) (#657)
+
+---
+
+## [0.63.0] - 2026-08-10
+
+### Added
+
+- **privacy-guard**: locale-aware C0 prompt-PII patterns for es/fr/nl (#482) (#614)
+
+---
+
+## [0.62.1] - 2026-08-09
+
+### Fixed
+
+- **deps**: bump nanoid to 3.3.18 (GHSA-2v37-7h3g-55p8) (#627)
+
+---
+
+## [0.62.0] - 2026-08-09
+
+### Added
+
+- **web-ui**: migrate drifted buttons to canonical Button + add raw-<button> lint gate (#290) (#616)
+
+---
+
+## [0.61.0] - 2026-08-07
+
+### Added
+
+- OM-09 in-product help — localized error help catalogue (#621)
+
+### Changed
+
+- **mcp**: give pooled connections an explicit lifetime (#563) (#622)
+
+---
+
+## [0.60.0] - 2026-08-07
+
+### Added
+
+- **privacy**: account MCP structured output in the turn receipt (#569) (#624)
+
+---
+
+## [0.59.2] - 2026-08-07
+
+### Fixed
+
+- **web-ui**: override js-yaml to ^4.3.1 (GHSA-5p4m-2wfm-xmqj) (#623)
+
+---
+
+## [0.59.1] - 2026-08-06
+
+### Fixed
+
+- **web-ui**: route chat stream writes by session id (#617) (#620)
+
+---
+
+## [0.59.0] - 2026-08-05
+
+### Added
+
+- **chat**: surface background streams as per-tab status dots (#409)
+
+### Changed
+
+- **read-me**: docs: hoist Prerequisites and Quickstart above the 2-minute pitch (#597)
+
+---
+
+## [0.58.3] - 2026-08-04
+
+### Fixed
+
+- **plugins**: bound the setup-field match, not the worker's birth (#607) (#609)
+
+---
+
+## [0.58.2] - 2026-08-03
+
+### Fixed
+
+- accept {n,} patterns and localize setup-field hints (#606)
+
+---
+
+## [0.58.1] - 2026-08-03
+
+### Fixed
+
+- honest status reporting, routines crash, and setup-field safety (#599)
+
+---
+
+## [0.58.0] - 2026-07-31
+
+### Added
+
+- **desktop**: build and ship a macOS Intel (x64) installer (#574)
+
+---
+
+## [0.57.1] - 2026-07-31
+
+### Fixed
+
+- **desktop**: macOS installer ships an unopenable, unsigned app bundle (#558)
+
+---
+
+## [0.57.0] - 2026-07-31
+
+### Added
+
+- **plugins**: allow .sql in packages + make the 8 migrators concurrency-safe (#552)
+- **channel-api**: public API channel with server-to-server API keys + scopes (#438, #439) (#549)
+- **embeddings**: pluggable embedding provider with a live switch and a model/dimension safety gate (#440) (#537)
+- **platform**: plugin-contributed navigation (phase 1 of Dev Platform extraction) (#536)
+- **direct-line**: sticky multi-turn mode for Direct Line (#445) (#535)
+- **conductor**: add inbound/outbound webhooks (#437) (#534)
+- **issues**: attach sanitized diagnostics excerpt to issues (#433) (#486)
+- **knowledge-graph**: structured dataset ingestion via CSV import (#533)
+- **builder**: decompose health score into seven context-quality criteria (#499) (#522)
+- **dev-platform**: epic #470 implementation — W0–W5 (job spine, isolation, Fly/webhooks/budget, hardening) (#485)
+- **scripts**: spec-driven wave workflows + W0 unit manifest (epic #470) (#476)
+- issue-adapt workflow pair — research-first adaptation of external toolset features (#480)
+- **conductor**: workflow-template library — bundled catalog, slot mapping, guided instantiation (#429) (#479)
+- **scripts**: add checklist reconciliation to the issue-triage workflow (#467)
+- **mcp**: MCP as a first-class capability across Orchestrator/Sub-Agent/Skill/Plugin + Control Center (epic #459) (#464)
+
+### Changed
+
+- **470**: Dev Platform → installable plugin in its own repo — plan + implementation (#539)
+
+### Fixed
+
+- **ci**: auto-release never detects feat/fix once the log exceeds the pipe buffer (#556)
+- **channel-api**: drop dev-platform cross-references from API-key comments (#553)
+- **plugins**: reject path traversal in manifest identity before the install rm (#548)
+- **dev-platform**: wire the runner image into the middleware's job policy + delete jobs (#529)
+- MCP OAuth callback 401 + per-user token key mismatch (#531)
+- **dev-platform**: wire GitHub-App onboarding + device-flow into the composition root (#497)
+- **dev-platform**: make the local docker-compose deploy actually run a job (#496)
+- **orchestrator**: gate unauthenticated plugin tools from the orchestrator's tool surface (#474) (#528)
+- honest done-vs-error reporting on committed tools + routine retry reconciliation (#506) (#527)
+- **orchestrator**: embed image attachments as vision input (#525)
+- **builder**: synthesize manifest capabilities per tool (#507) (#523)
+- **ci**: grant id-token: write to release.yml's edge-images job (#514)
+- **scripts**: issue-loop follow-ups from the first live run (#475)
+- **routines**: hot-enable on LLM key save — resolve chat agent live per run (#483)
+- **web-ui**: humanize provider errors across chat surfaces (#403) (#472)
+- **mcp**: store registry bearer tokens in the vault, not the DB row (#463) (#466)
+
+---
+
+## [0.56.0] - 2026-07-06
+
+### Added
+
+- **skills**: add skill verdict system (issue #436, OpenClaw/SkillSpector eval) (#452)
+
+---
+
+## [0.55.3] - 2026-07-06
+
+### Fixed
+
+- **release**: drop the PR-based docs/CHANGELOG.md auto-sync entirely (#451)
+- **web-ui**: make session-warning "Relogin now" actually re-login (#412) (#449)
+
+---
+
+## [0.55.2] - 2026-07-06
+
+### Fixed
+
+- **web-ui**: replace hardcoded German UI strings with next-intl translations (#447)
+- close #332 gaps — agentId, Direct Line privacy masking, standing L3 obligation, web-ui render (#446)
+
+---
+
+## [0.55.1] - 2026-07-06
+
+### Fixed
+
+- **release**: isolate the changelog PR job from image/desktop publishing (#444)
+
+---
+
+## [0.55.0] - 2026-07-06
+
+### ⚠ BREAKING CHANGES
+
+- **release**: automate a categorized changelog for every release (#443)
+
+### Added
+
+- **release**: automate a categorized changelog for every release (#443)
+
+---
+
 ## [0.54.0] - 2026-07-06
 
 ### Added
@@ -5404,7 +7241,154 @@ Initial public release of Omadia — *An Agentic OS*.
 - The full pre-release development history is preserved in the maintainer's
   internal repository and is not part of the public git history.
 
-[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/byte5ai/omadia/compare/v0.142.2...HEAD
+[0.142.2]: https://github.com/byte5ai/omadia/compare/v0.142.1...v0.142.2
+[0.142.1]: https://github.com/byte5ai/omadia/compare/v0.142.0...v0.142.1
+[0.142.0]: https://github.com/byte5ai/omadia/compare/v0.141.0...v0.142.0
+[0.141.0]: https://github.com/byte5ai/omadia/compare/v0.140.3...v0.141.0
+[0.140.3]: https://github.com/byte5ai/omadia/compare/v0.140.2...v0.140.3
+[0.140.2]: https://github.com/byte5ai/omadia/compare/v0.140.1...v0.140.2
+[0.140.1]: https://github.com/byte5ai/omadia/compare/v0.140.0...v0.140.1
+[0.140.0]: https://github.com/byte5ai/omadia/compare/v0.139.1...v0.140.0
+[0.139.1]: https://github.com/byte5ai/omadia/compare/v0.139.0...v0.139.1
+[0.139.0]: https://github.com/byte5ai/omadia/compare/v0.138.2...v0.139.0
+[0.138.2]: https://github.com/byte5ai/omadia/compare/v0.138.1...v0.138.2
+[0.138.1]: https://github.com/byte5ai/omadia/compare/v0.138.0...v0.138.1
+[0.138.0]: https://github.com/byte5ai/omadia/compare/v0.137.5...v0.138.0
+[0.137.5]: https://github.com/byte5ai/omadia/compare/v0.137.4...v0.137.5
+[0.137.4]: https://github.com/byte5ai/omadia/compare/v0.137.3...v0.137.4
+[0.137.3]: https://github.com/byte5ai/omadia/compare/v0.137.2...v0.137.3
+[0.137.2]: https://github.com/byte5ai/omadia/compare/v0.137.1...v0.137.2
+[0.137.1]: https://github.com/byte5ai/omadia/compare/v0.137.0...v0.137.1
+[0.137.0]: https://github.com/byte5ai/omadia/compare/v0.136.2...v0.137.0
+[0.136.2]: https://github.com/byte5ai/omadia/compare/v0.136.1...v0.136.2
+[0.136.1]: https://github.com/byte5ai/omadia/compare/v0.136.0...v0.136.1
+[0.136.0]: https://github.com/byte5ai/omadia/compare/v0.135.0...v0.136.0
+[0.135.0]: https://github.com/byte5ai/omadia/compare/v0.134.3...v0.135.0
+[0.134.3]: https://github.com/byte5ai/omadia/compare/v0.134.2...v0.134.3
+[0.134.2]: https://github.com/byte5ai/omadia/compare/v0.134.1...v0.134.2
+[0.134.1]: https://github.com/byte5ai/omadia/compare/v0.134.0...v0.134.1
+[0.134.0]: https://github.com/byte5ai/omadia/compare/v0.133.0...v0.134.0
+[0.133.0]: https://github.com/byte5ai/omadia/compare/v0.132.0...v0.133.0
+[0.132.0]: https://github.com/byte5ai/omadia/compare/v0.131.0...v0.132.0
+[0.131.0]: https://github.com/byte5ai/omadia/compare/v0.130.0...v0.131.0
+[0.130.0]: https://github.com/byte5ai/omadia/compare/v0.129.0...v0.130.0
+[0.129.0]: https://github.com/byte5ai/omadia/compare/v0.128.0...v0.129.0
+[0.128.0]: https://github.com/byte5ai/omadia/compare/v0.127.0...v0.128.0
+[0.127.0]: https://github.com/byte5ai/omadia/compare/v0.126.1...v0.127.0
+[0.126.1]: https://github.com/byte5ai/omadia/compare/v0.126.0...v0.126.1
+[0.126.0]: https://github.com/byte5ai/omadia/compare/v0.125.0...v0.126.0
+[0.125.0]: https://github.com/byte5ai/omadia/compare/v0.124.0...v0.125.0
+[0.124.0]: https://github.com/byte5ai/omadia/compare/v0.123.0...v0.124.0
+[0.123.0]: https://github.com/byte5ai/omadia/compare/v0.122.0...v0.123.0
+[0.122.0]: https://github.com/byte5ai/omadia/compare/v0.121.0...v0.122.0
+[0.121.0]: https://github.com/byte5ai/omadia/compare/v0.120.0...v0.121.0
+[0.120.0]: https://github.com/byte5ai/omadia/compare/v0.119.0...v0.120.0
+[0.119.0]: https://github.com/byte5ai/omadia/compare/v0.118.0...v0.119.0
+[0.118.0]: https://github.com/byte5ai/omadia/compare/v0.117.1...v0.118.0
+[0.117.1]: https://github.com/byte5ai/omadia/compare/v0.117.0...v0.117.1
+[0.117.0]: https://github.com/byte5ai/omadia/compare/v0.116.0...v0.117.0
+[0.116.0]: https://github.com/byte5ai/omadia/compare/v0.115.3...v0.116.0
+[0.115.3]: https://github.com/byte5ai/omadia/compare/v0.115.2...v0.115.3
+[0.115.2]: https://github.com/byte5ai/omadia/compare/v0.115.1...v0.115.2
+[0.115.1]: https://github.com/byte5ai/omadia/compare/v0.115.0...v0.115.1
+[0.115.0]: https://github.com/byte5ai/omadia/compare/v0.114.0...v0.115.0
+[0.114.0]: https://github.com/byte5ai/omadia/compare/v0.113.1...v0.114.0
+[0.113.1]: https://github.com/byte5ai/omadia/compare/v0.113.0...v0.113.1
+[0.113.0]: https://github.com/byte5ai/omadia/compare/v0.112.0...v0.113.0
+[0.112.0]: https://github.com/byte5ai/omadia/compare/v0.111.0...v0.112.0
+[0.111.0]: https://github.com/byte5ai/omadia/compare/v0.110.0...v0.111.0
+[0.110.0]: https://github.com/byte5ai/omadia/compare/v0.109.0...v0.110.0
+[0.109.0]: https://github.com/byte5ai/omadia/compare/v0.108.0...v0.109.0
+[0.108.0]: https://github.com/byte5ai/omadia/compare/v0.107.0...v0.108.0
+[0.107.0]: https://github.com/byte5ai/omadia/compare/v0.106.0...v0.107.0
+[0.106.0]: https://github.com/byte5ai/omadia/compare/v0.105.0...v0.106.0
+[0.105.0]: https://github.com/byte5ai/omadia/compare/v0.104.0...v0.105.0
+[0.104.0]: https://github.com/byte5ai/omadia/compare/v0.103.0...v0.104.0
+[0.103.0]: https://github.com/byte5ai/omadia/compare/v0.102.0...v0.103.0
+[0.102.0]: https://github.com/byte5ai/omadia/compare/v0.101.0...v0.102.0
+[0.101.0]: https://github.com/byte5ai/omadia/compare/v0.100.0...v0.101.0
+[0.100.0]: https://github.com/byte5ai/omadia/compare/v0.99.0...v0.100.0
+[0.99.0]: https://github.com/byte5ai/omadia/compare/v0.98.4...v0.99.0
+[0.98.4]: https://github.com/byte5ai/omadia/compare/v0.98.3...v0.98.4
+[0.98.3]: https://github.com/byte5ai/omadia/compare/v0.98.2...v0.98.3
+[0.98.2]: https://github.com/byte5ai/omadia/compare/v0.98.1...v0.98.2
+[0.98.1]: https://github.com/byte5ai/omadia/compare/v0.98.0...v0.98.1
+[0.98.0]: https://github.com/byte5ai/omadia/compare/v0.97.0...v0.98.0
+[0.97.0]: https://github.com/byte5ai/omadia/compare/v0.96.1...v0.97.0
+[0.96.1]: https://github.com/byte5ai/omadia/compare/v0.96.0...v0.96.1
+[0.96.0]: https://github.com/byte5ai/omadia/compare/v0.95.1...v0.96.0
+[0.95.1]: https://github.com/byte5ai/omadia/compare/v0.95.0...v0.95.1
+[0.95.0]: https://github.com/byte5ai/omadia/compare/v0.94.0...v0.95.0
+[0.94.0]: https://github.com/byte5ai/omadia/compare/v0.93.0...v0.94.0
+[0.93.0]: https://github.com/byte5ai/omadia/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/byte5ai/omadia/compare/v0.91.0...v0.92.0
+[0.91.0]: https://github.com/byte5ai/omadia/compare/v0.90.1...v0.91.0
+[0.90.1]: https://github.com/byte5ai/omadia/compare/v0.90.0...v0.90.1
+[0.90.0]: https://github.com/byte5ai/omadia/compare/v0.89.0...v0.90.0
+[0.89.0]: https://github.com/byte5ai/omadia/compare/v0.88.0...v0.89.0
+[0.88.0]: https://github.com/byte5ai/omadia/compare/v0.87.0...v0.88.0
+[0.87.0]: https://github.com/byte5ai/omadia/compare/v0.86.0...v0.87.0
+[0.86.0]: https://github.com/byte5ai/omadia/compare/v0.85.0...v0.86.0
+[0.85.0]: https://github.com/byte5ai/omadia/compare/v0.84.0...v0.85.0
+[0.84.0]: https://github.com/byte5ai/omadia/compare/v0.83.0...v0.84.0
+[0.83.0]: https://github.com/byte5ai/omadia/compare/v0.82.0...v0.83.0
+[0.82.0]: https://github.com/byte5ai/omadia/compare/v0.81.2...v0.82.0
+[0.81.2]: https://github.com/byte5ai/omadia/compare/v0.81.1...v0.81.2
+[0.81.1]: https://github.com/byte5ai/omadia/compare/v0.81.0...v0.81.1
+[0.81.0]: https://github.com/byte5ai/omadia/compare/v0.80.0...v0.81.0
+[0.80.0]: https://github.com/byte5ai/omadia/compare/v0.79.3...v0.80.0
+[0.79.3]: https://github.com/byte5ai/omadia/compare/v0.79.2...v0.79.3
+[0.79.2]: https://github.com/byte5ai/omadia/compare/v0.79.1...v0.79.2
+[0.79.1]: https://github.com/byte5ai/omadia/compare/v0.79.0...v0.79.1
+[0.79.0]: https://github.com/byte5ai/omadia/compare/v0.78.0...v0.79.0
+[0.78.0]: https://github.com/byte5ai/omadia/compare/v0.77.0...v0.78.0
+[0.77.0]: https://github.com/byte5ai/omadia/compare/v0.76.0...v0.77.0
+[0.76.0]: https://github.com/byte5ai/omadia/compare/v0.75.0...v0.76.0
+[0.75.0]: https://github.com/byte5ai/omadia/compare/v0.74.2...v0.75.0
+[0.74.2]: https://github.com/byte5ai/omadia/compare/v0.74.1...v0.74.2
+[0.74.1]: https://github.com/byte5ai/omadia/compare/v0.74.0...v0.74.1
+[0.74.0]: https://github.com/byte5ai/omadia/compare/v0.73.0...v0.74.0
+[0.73.0]: https://github.com/byte5ai/omadia/compare/v0.72.0...v0.73.0
+[0.72.0]: https://github.com/byte5ai/omadia/compare/v0.71.2...v0.72.0
+[0.71.2]: https://github.com/byte5ai/omadia/compare/v0.71.1...v0.71.2
+[0.71.1]: https://github.com/byte5ai/omadia/compare/v0.71.0...v0.71.1
+[0.71.0]: https://github.com/byte5ai/omadia/compare/v0.70.2...v0.71.0
+[0.70.2]: https://github.com/byte5ai/omadia/compare/v0.70.1...v0.70.2
+[0.70.1]: https://github.com/byte5ai/omadia/compare/v0.70.0...v0.70.1
+[0.70.0]: https://github.com/byte5ai/omadia/compare/v0.69.0...v0.70.0
+[0.69.0]: https://github.com/byte5ai/omadia/compare/v0.68.5...v0.69.0
+[0.68.5]: https://github.com/byte5ai/omadia/compare/v0.68.4...v0.68.5
+[0.68.4]: https://github.com/byte5ai/omadia/compare/v0.68.3...v0.68.4
+[0.68.3]: https://github.com/byte5ai/omadia/compare/v0.68.2...v0.68.3
+[0.68.2]: https://github.com/byte5ai/omadia/compare/v0.68.1...v0.68.2
+[0.68.1]: https://github.com/byte5ai/omadia/compare/v0.68.0...v0.68.1
+[0.68.0]: https://github.com/byte5ai/omadia/compare/v0.67.2...v0.68.0
+[0.67.2]: https://github.com/byte5ai/omadia/compare/v0.67.1...v0.67.2
+[0.67.1]: https://github.com/byte5ai/omadia/compare/v0.67.0...v0.67.1
+[0.67.0]: https://github.com/byte5ai/omadia/compare/v0.66.0...v0.67.0
+[0.66.0]: https://github.com/byte5ai/omadia/compare/v0.65.0...v0.66.0
+[0.65.0]: https://github.com/byte5ai/omadia/compare/v0.64.0...v0.65.0
+[0.64.0]: https://github.com/byte5ai/omadia/compare/v0.63.0...v0.64.0
+[0.63.0]: https://github.com/byte5ai/omadia/compare/v0.62.1...v0.63.0
+[0.62.1]: https://github.com/byte5ai/omadia/compare/v0.62.0...v0.62.1
+[0.62.0]: https://github.com/byte5ai/omadia/compare/v0.61.0...v0.62.0
+[0.61.0]: https://github.com/byte5ai/omadia/compare/v0.60.0...v0.61.0
+[0.60.0]: https://github.com/byte5ai/omadia/compare/v0.59.2...v0.60.0
+[0.59.2]: https://github.com/byte5ai/omadia/compare/v0.59.1...v0.59.2
+[0.59.1]: https://github.com/byte5ai/omadia/compare/v0.59.0...v0.59.1
+[0.59.0]: https://github.com/byte5ai/omadia/compare/v0.58.3...v0.59.0
+[0.58.3]: https://github.com/byte5ai/omadia/compare/v0.58.2...v0.58.3
+[0.58.2]: https://github.com/byte5ai/omadia/compare/v0.58.1...v0.58.2
+[0.58.1]: https://github.com/byte5ai/omadia/compare/v0.58.0...v0.58.1
+[0.58.0]: https://github.com/byte5ai/omadia/compare/v0.57.1...v0.58.0
+[0.57.1]: https://github.com/byte5ai/omadia/compare/v0.57.0...v0.57.1
+[0.57.0]: https://github.com/byte5ai/omadia/compare/v0.56.0...v0.57.0
+[0.56.0]: https://github.com/byte5ai/omadia/compare/v0.55.3...v0.56.0
+[0.55.3]: https://github.com/byte5ai/omadia/compare/v0.55.2...v0.55.3
+[0.55.2]: https://github.com/byte5ai/omadia/compare/v0.55.1...v0.55.2
+[0.55.1]: https://github.com/byte5ai/omadia/compare/v0.55.0...v0.55.1
+[0.55.0]: https://github.com/byte5ai/omadia/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/byte5ai/omadia/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/byte5ai/omadia/compare/v0.52.3...v0.53.0
 [0.52.3]: https://github.com/byte5ai/omadia/compare/v0.52.2...v0.52.3

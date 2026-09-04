@@ -39,11 +39,23 @@ import type {
  *  - `remove`  — Agent disappeared (row deleted OR status flipped to
  *                disabled). Drop the existing `BuiltOrchestrator`.
  *  - `rebuild` — Agent kept its slug but a runtime-relevant field changed
- *                (privacy_profile, runtime config). Tear down + rebuild.
- *  - `update`  — Agent kept its slug AND its runtime config; only the
- *                plugin / binding lists changed. Refresh registry metadata
- *                without touching the `Orchestrator` instance — sessions
- *                in-flight on the old plugin set keep working (US6).
+ *                (privacy_profile, runtime config, PLUGIN GRANTS). Tear down
+ *                + rebuild.
+ *  - `update`  — Agent kept its slug, its runtime config AND its plugin
+ *                grants; only the channel bindings changed. Refresh registry
+ *                metadata without touching the `Orchestrator` instance.
+ *
+ * Why plugin grants rebuild rather than update: the granted plugin set is
+ * baked into the `Orchestrator` at build time twice over — once as the
+ * `grantedPluginIds` the dispatch gate checks, and once as the domain tools
+ * the kernel hydrates through `onAgentBuilt`, which only an `add`/`rebuild`
+ * fires. An `update` refreshed the registry's metadata and left both stale,
+ * so the operator's grant took effect on the NEXT PROCESS START and not
+ * before. The original design read `update` as the cheap path that let
+ * in-flight sessions finish on the old plugin set (US6); with an enforcing
+ * dispatch gate that same sentence describes a revocation that does not
+ * revoke. Capability changes are rare and operator-driven — correctness
+ * beats the saved rebuild.
  *
  * The function does NOT touch the registry itself; it returns a typed plan
  * the caller (OrchestratorRegistry) executes. This keeps `applyDiff` pure
@@ -111,9 +123,17 @@ export function diffSnapshots(
     if (!isEnabled) continue;
 
     // Both old and new are enabled. Decide rebuild vs metadata-only update.
+    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
+    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
+
     const reasons = [
       ...runtimeChangeReasons(oldAgent!, newAgent),
       ...graphChangeReasons(oldAgent!.id, newAgent.id, oldSnap, newSnap),
+      // The enabled plugin set IS this agent's authorisation. It reaches the
+      // running orchestrator only through a build, so a grant change that
+      // produced a metadata-only `update` was persisted, reported as saved
+      // and never armed — in both directions.
+      ...(equalPlugins(oldPlugins, newPlugins) ? [] : ['plugin_grants']),
     ];
     if (reasons.length > 0) {
       actions.push({
@@ -124,15 +144,10 @@ export function diffSnapshots(
       continue;
     }
 
-    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
-    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
     const oldBindings = oldBindingsByAgent.get(oldAgent!.id) ?? [];
     const newBindings = newBindingsByAgent.get(newAgent.id) ?? [];
 
-    if (
-      !equalPlugins(oldPlugins, newPlugins) ||
-      !equalBindings(oldBindings, newBindings)
-    ) {
+    if (!equalBindings(oldBindings, newBindings)) {
       actions.push({ kind: 'update', agent: newAgent });
     }
   }
@@ -165,6 +180,10 @@ export function buildForAgent(
    *  resolves from `GraphIndex.personaSkillsByAgent`; per-agent, so passed
    *  separately from the shared `runtime`/`deps`). */
   personaSkills?: readonly OrchestratorPersonaSkill[],
+  /** The plugin ids this agent is granted (enabled `agent_plugins` rows).
+   *  Passed separately for the same reason as `personaSkills`: it is per-agent
+   *  and the caller is the one holding the snapshot. Omitted ⇒ ungated. */
+  grantedPluginIds?: readonly string[],
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -254,6 +273,40 @@ export function buildForAgent(
       ...(agent.instructions?.trim()
         ? { identityInstructions: agent.instructions.trim() }
         : {}),
+      // #967 — the agent's authored NAME. Layered onto whichever identity
+      // text applies rather than replacing it, so a bot that was given a name
+      // introduces itself under that name without losing the behaviour the
+      // platform (or its own instructions) already describe.
+      ...(agent.identityName?.trim()
+        ? { identityName: agent.identityName.trim() }
+        : {}),
+      // #967 follow-up — the agent's authored Steckbrief. Layered on like the
+      // name (never replacing the behaviour text), so an operator who filled in
+      // what the agent IS gets a bot that can actually say it.
+      ...(agent.identityShortDescription?.trim()
+        ? { identityShortDescription: agent.identityShortDescription.trim() }
+        : {}),
+      ...(agent.identityLongDescription?.trim()
+        ? { identityLongDescription: agent.identityLongDescription.trim() }
+        : {}),
+      // W5 memory-ACL — the agent's own rollout mode. Omitted here until now,
+      // which made `agents.context_memory` a switch with nothing behind it:
+      // the column was written, read back into `AgentRow`, echoed by the API
+      // and rendered in the UI, and then dropped on the floor at exactly the
+      // point where it would have changed behaviour. Every registry-built
+      // agent ran the `'off'` default no matter what its row said.
+      //
+      // Spread conditionally like every other optional above, so an agent on
+      // a DB predating migration 0050 (no column → `undefined`) still yields a
+      // byte-identical config object.
+      ...(agent.contextMemory !== undefined
+        ? { contextMemory: agent.contextMemory }
+        : {}),
+      // The authorisation set. An agent with rows but none enabled yields an
+      // EMPTY array, which is meaningful (grant nothing) and must not collapse
+      // to `undefined` (grant everything) — hence the explicit presence check
+      // on the argument rather than on its length.
+      ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
     },
     deps,
   );
@@ -296,6 +349,39 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // registry would keep serving the Orchestrator built from the old text.
   if ((oldAgent.instructions ?? '') !== (newAgent.instructions ?? '')) {
     reasons.push('identity_instructions');
+  }
+  // #967 — the authored name is part of the system prompt too (it is what the
+  // bot calls itself), so a rename has to reach the running Agent. Without
+  // this reason the operator would rename the bot in Teams and in the UI and
+  // keep hearing the old name in chat until some unrelated edit rebuilt it.
+  if ((oldAgent.identityName ?? '') !== (newAgent.identityName ?? '')) {
+    reasons.push('identity_display_name');
+  }
+  // #967 follow-up — the Steckbrief is part of the system prompt too, so the
+  // same rule applies as for the name: an edit the operator saved and the UI
+  // confirmed must reach the running Agent, or the agent page and the bot go on
+  // disagreeing until some unrelated change happens to rebuild it.
+  if (
+    (oldAgent.identityShortDescription ?? '') !==
+    (newAgent.identityShortDescription ?? '')
+  ) {
+    reasons.push('identity_short_description');
+  }
+  if (
+    (oldAgent.identityLongDescription ?? '') !==
+    (newAgent.identityLongDescription ?? '')
+  ) {
+    reasons.push('identity_long_description');
+  }
+  // W5 memory-ACL — the mode decides which memory stack every turn of this
+  // Agent gets, so it is as runtime-relevant as the model. The rebuild is the
+  // second half of the fix above: forwarding the value only helps agents built
+  // AFTER the flip, and an operator who switches a live agent to `enforce`
+  // would otherwise keep the un-partitioned stack until something unrelated
+  // happened to rebuild it — i.e. a memory-isolation switch that reports
+  // success and does not isolate.
+  if ((oldAgent.contextMemory ?? 'off') !== (newAgent.contextMemory ?? 'off')) {
+    reasons.push('context_memory');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.

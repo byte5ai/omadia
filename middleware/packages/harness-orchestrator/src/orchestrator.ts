@@ -127,10 +127,14 @@ import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
+  detectTabularFormat,
   extractAttachmentText,
-  isCsvAttachment,
+  type TabularFormat,
 } from './attachmentExtract.js';
-import { importCsvDataset } from './datasetImport.js';
+import {
+  importTabularDataset,
+  type ImportTabularDatasetResult,
+} from './datasetImportTabular.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -361,6 +365,15 @@ export interface OrchestratorOptions {
   maxTurnSeconds?: number;
   /** One delegation tool per Managed Agent domain (accounting, hr, …). */
   domainTools: DomainTool[];
+  /**
+   * The plugin ids this Agent is granted. Present ⇒ a domain tool owned by a
+   * plugin NOT in this set is refused at dispatch, whatever put it on this
+   * instance. Absent ⇒ ungated (the legacy single-Agent orchestrator, which
+   * legitimately holds the whole deployment's tools).
+   * See `AgentRuntimeConfig.grantedPluginIds` for why this is re-checked here
+   * rather than trusted from registration.
+   */
+  grantedPluginIds?: readonly string[];
   /**
    * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
    * directed specialist's verbatim answer with no orchestrator generation;
@@ -684,6 +697,24 @@ export interface OrchestratorOptions {
    * the concrete agent roster is still rendered live from `domainTools`.
    */
   assistantIdentity?: string;
+  /**
+   * #967 — this Agent's own authored name (`agent_identities.display_name`),
+   * already folded into {@link assistantIdentity} by `withAgentName`.
+   *
+   * Supplied SEPARATELY as well because the system prompt is not the only
+   * surface that states a name: the AI-Act Art. 50 marking names the assistant
+   * too, and it is deliberately resolved behind the model (see
+   * `resolveTurnDisclosure`) where the prompt is out of reach by design. Without
+   * this field that line has only the platform-wide
+   * `ai_disclosure_assistant_name` to go on — ONE operator-typed string for the
+   * whole deployment, which in a multi-agent deployment is right for at most
+   * one Agent and signs every other Agent's answers with a stranger's name.
+   *
+   * An override, not a replacement: absent (or blank) falls through to the
+   * operator's configured name, so a single-Agent deployment that set one is
+   * completely unaffected.
+   */
+  identityName?: string;
   /**
    * Wave 8 — skills attached to this Agent as direct-answer persona
    * candidates. When non-empty, each turn runs a Haiku classifier
@@ -1409,6 +1440,14 @@ a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit 
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
 
+b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
+
+   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
+
+   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
+
+   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
+
 c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
    1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
@@ -1820,6 +1859,8 @@ export class Orchestrator {
   /** W5 — per-chat-context binder; overrides `memoryToolHandler` per turn. */
   private readonly memoryBinder: MemoryBinder | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
+  /** `undefined` = ungated. A Set for O(1) checks on the dispatch path. */
+  private readonly grantedPluginIds: ReadonlySet<string> | undefined;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
@@ -1889,6 +1930,9 @@ export class Orchestrator {
   /** Operator persona — first line(s) of the system prompt. See
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
+  /** #967 — this Agent's own authored name. See
+   *  `OrchestratorOptions.identityName`. */
+  private readonly identityName: string | undefined;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -1939,6 +1983,9 @@ export class Orchestrator {
     this.memoryToolHandler = options.memoryToolHandler;
     this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.grantedPluginIds = options.grantedPluginIds
+      ? new Set(options.grantedPluginIds)
+      : undefined;
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
     this.directLineSticky = options.directLineSticky ?? false;
@@ -2004,6 +2051,7 @@ export class Orchestrator {
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
+    this.identityName = options.identityName?.trim() || undefined;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -2182,7 +2230,18 @@ export class Orchestrator {
     if (!stateStore) return;
 
     const sessionScope = input.sessionScope ?? '';
-    const agentId = 'orchestrator';
+    // THIS Agent, not the literal `'orchestrator'` this used to be. The state
+    // store keys cooldowns and open-emission follow-ups on `(agentId,
+    // nudgeId)`, so a shared constant made every Agent in the process share
+    // one nudge budget: agent A emitting a nudge put it on cooldown for agent
+    // B, and B's follow-up matched A's open emission. Single-agent
+    // deployments are unaffected — `this.agentId` defaults to `'default'` and
+    // there is only ever one of them.
+    //
+    // Existing rows keyed `'orchestrator'` are simply no longer read, which
+    // resets cooldowns once. That is the cheap direction of the error: a nudge
+    // fires again, rather than being suppressed by a key nobody owns.
+    const agentId = this.agentId;
     // OB-77 — append THIS iteration's entries onto the turn-cumulative
     // trace BEFORE running the pipeline so the multi-domain trigger sees
     // every tool the agent has used so far in this turn (sub-agents
@@ -3037,7 +3096,9 @@ export class Orchestrator {
       result,
       result.aiDisclosure
         ? {
-            ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+            ...(input.sessionScope
+              ? { scope: this.disclosureFoldScope(input.sessionScope) }
+              : {}),
             seen: this.disclosureSeen,
           }
         : undefined,
@@ -3086,12 +3147,50 @@ export class Orchestrator {
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
     };
+    // #967 — THIS Agent's authored name outranks the platform-wide
+    // `ai_disclosure_assistant_name`. The setup field is one string for the
+    // whole deployment, so with several provisioned bots alive it can be
+    // correct for at most one of them and makes every other bot sign its
+    // answers as that one. Same precedence the system prompt already uses
+    // (`config.identityInstructions || deps.assistantIdentity`), applied to
+    // the one other surface that states a name.
+    //
+    // Reading the Agent's OWN name here does not reopen the AC2 hole the
+    // doc-comment above guards: `identityName` is a single operator-authored
+    // name from `agent_identities`, not the prompt, so a branded persona still
+    // cannot reach in and suppress or reword the marking.
+    const assistantName = this.identityName ?? setup?.assistantName;
     return resolveAiDisclosure({
       policy,
       ...(setup?.locale ? { locale: setup.locale } : {}),
-      ...(setup?.assistantName ? { assistantName: setup.assistantName } : {}),
+      ...(assistantName ? { assistantName } : {}),
       ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
     });
+  }
+
+  /**
+   * #644 / #967 — the first-turn fold-dedup key for a conversation.
+   *
+   * Agent-QUALIFIED, because the store behind it is process-wide (one
+   * `InMemoryDisclosureSeenStore` in the shared `OrchestratorDeps`, deliberately
+   * so a rebuild does not re-mark an ongoing conversation) while a conversation
+   * scope is NOT exclusive to one Agent. Several provisioned bots share one
+   * Teams group chat — the deployment `identityForChannel` exists to serve — so
+   * on the raw scope the first bot to answer consumed the marking slot for
+   * every other bot in the room, and their answers went out unmarked.
+   *
+   * Same `<agentSlug>::<scope>` convention, and the same reasoning, as
+   * `graphScopeFor`, which agent-qualifies the KG scope built from this
+   * identical `sessionScope`; this was the one remaining consumer of it that
+   * still keyed on the raw value.
+   *
+   * A key change re-marks each live conversation once after the upgrade. That
+   * is the direction #644 asks for on any doubt ("an undeterminable scope folds
+   * rather than omits") — one repeated marking is a non-event, a missing one is
+   * the compliance gap.
+   */
+  private disclosureFoldScope(sessionScope: string | undefined): string | undefined {
+    return sessionScope === undefined ? undefined : `${this.agentId}::${sessionScope}`;
   }
 
   /**
@@ -3112,7 +3211,9 @@ export class Orchestrator {
     if (!aiDisclosure) return done;
     const { text } = applyAiDisclosure(done.answer, {
       disclosure: aiDisclosure,
-      ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
       seen: this.disclosureSeen,
     });
     return { ...done, answer: text, aiDisclosure };
@@ -6868,6 +6969,21 @@ export class Orchestrator {
       if (!this.isToolAvailable(domainTool.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
       }
+      // THE AUTHORISATION GATE. Registration decides what this Agent is
+      // OFFERED; this decides what it may actually DO, and only the second is
+      // a security boundary. A tool that reached this instance without a grant
+      // — a hydrate path that forgot to scope, a hot-install reconcile, a
+      // rebuild racing a config change — stops here instead of running.
+      //
+      // Refused by NAME without naming the owning plugin: an agent that was
+      // never granted a capability has no business learning which plugin holds
+      // it from an error string.
+      if (!this.isPluginGranted(domainTool.agentId)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted domain tool "${name}" — refused`,
+        );
+        return `Error: tool \`${name}\` is not available to this agent.`;
+      }
       // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
       // above: the turn-bound stack when one is bound, the build-time
       // agent-scoped one otherwise) for the lifetime of the delegation, so a
@@ -7039,6 +7155,20 @@ export class Orchestrator {
   }
 
   /** Probe used by DynamicAgentRuntime for pre-flight collision messages. */
+  /**
+   * Is the plugin that owns a tool granted to THIS Agent?
+   *
+   * `undefined` owner ⇒ the tool belongs to no agent-plugin (a kernel/native
+   * capability), which the grant model does not govern — those are allowed, as
+   * they always were. No grant set at all ⇒ ungated, for the legacy
+   * single-Agent orchestrator.
+   */
+  private isPluginGranted(pluginId: string | undefined): boolean {
+    if (this.grantedPluginIds === undefined) return true;
+    if (pluginId === undefined) return true;
+    return this.grantedPluginIds.has(pluginId);
+  }
+
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
   }
@@ -7275,40 +7405,36 @@ export class Orchestrator {
           // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
           // for the resolution + fallback rules (still idempotent, still
           // degrades to the plain-text path below when unresolved).
-          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
-            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
-            if (ownerOmadiaUserId) {
-              const imported = await importCsvDataset({
-                graph: this.knowledgeGraph,
+          // Tabular uploads (CSV, XLSX) route through the structured dataset
+          // pipeline and NEVER fall back to the plain-text path.
+          //
+          // The fallback that used to live here was the bug: when the
+          // KnowledgeGraph was absent, the turn owner unresolved, or the
+          // import merely failed, a spreadsheet's every row was appended to
+          // the prompt as `[attachment-content]` cleartext — the exact
+          // "uploads are not shielded" behaviour this path exists to
+          // prevent. The dataset pipeline privacy-scans every cell before
+          // persisting (`datasetImport.ts`); the text path has no equivalent
+          // per-field step. Degrading from one to the other silently traded
+          // the guarantee away at the moment it mattered most, on files
+          // large or structured enough that a user would never re-read what
+          // the model was handed.
+          //
+          // Refusals are announced to the model instead, so it can tell the
+          // user the file was not ingested rather than inventing an answer
+          // from data it never received.
+          const tabularFormat = detectTabularFormat(contentType, attachmentFileName);
+          if (tabularFormat !== undefined) {
+            textBlocks.push(
+              await this.ingestTabularAttachment({
                 bytes: fetched.bytes,
-                datasetName: attachmentFileName ?? label,
-                sourceFileName: attachmentFileName ?? label,
-                ownerOmadiaUserId,
-                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
-              });
-              if (imported.ok) {
-                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
-                // happens (see datasetImport.ts module doc); only tell the
-                // model "not truncated" when that's actually true this time,
-                // rather than making a blanket claim the PR no longer backs.
-                const { truncatedCellCount, truncatedColumns } = imported.truncation;
-                const truncationNote =
-                  truncatedCellCount > 0
-                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
-                    : 'No cells were truncated on import.';
-                textBlocks.push(
-                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
-                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
-                );
-                continue;
-              }
-              console.warn(
-                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
-              );
-              // Fall through to the plain-text path below so the CSV's raw
-              // text (even if capped) still reaches the model rather than
-              // vanishing silently.
-            }
+                format: tabularFormat,
+                label,
+                fileName: attachmentFileName ?? label,
+                ...(c.storageKey ? { storageKey: c.storageKey } : {}),
+              }),
+            );
+            continue;
           }
           const result = await extractAttachmentText(
             fetched.bytes,
@@ -7316,8 +7442,21 @@ export class Orchestrator {
             attachmentFileName,
           );
           if (!result.ok) continue;
+          // #976 — the honest counterpart to `[dataset-imported]`'s privacy
+          // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
+          // structured equivalent), so say so rather than letting the model
+          // invent either a reassurance or an alarm. Whether the prompt-mask
+          // layer additionally redacted spans here depends on the operator's
+          // `mask_user_prompt` setting, which this code cannot observe — so
+          // it claims nothing about it.
           textBlocks.push(
-            `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
+            `\n\n[attachment-content: ${label}]\n${result.text}\n` +
+              `PRIVACY STATUS OF THIS FILE (state only this, never speculate): this is ` +
+              `extracted document text placed directly into the prompt. It did NOT go ` +
+              `through the dataset store's per-field PII scan — that path exists only for ` +
+              `tabular files (CSV/XLSX). Say this plainly if asked; do not claim a ` +
+              `protection that is not listed here, and do not claim the file was withheld.` +
+              `\n[/attachment-content]`,
           );
         } catch (err) {
           console.warn(
@@ -7341,6 +7480,112 @@ export class Orchestrator {
       );
       return empty;
     }
+  }
+
+  /**
+   * Import one tabular attachment (CSV/XLSX) as queryable dataset(s) and
+   * return the text block describing the outcome to the model.
+   *
+   * Always returns a block, never raw file content: on every failure path
+   * the model is told the file could not be ingested and why. That is the
+   * whole point — a spreadsheet's rows reach the model through
+   * `query_dataset` (privacy-scanned at import, materialized server-side) or
+   * they do not reach it at all.
+   *
+   * A workbook may yield several datasets (one per sheet); all of their ids
+   * are reported so the model can query the right one.
+   */
+  private async ingestTabularAttachment(args: {
+    bytes: Buffer;
+    format: TabularFormat;
+    label: string;
+    fileName: string;
+    storageKey?: string;
+  }): Promise<string> {
+    const { label, format } = args;
+    const refuse = (reason: string): string => {
+      console.warn(
+        `[harness-orchestrator] ingestAttachments: ${format} dataset import unavailable for ${label} — ${reason}`,
+      );
+      return (
+        `\n\n[attachment-not-ingested: ${label}]\n` +
+        `This ${format.toUpperCase()} file could not be imported as a queryable dataset (${reason}). ` +
+        `Its contents were NOT read. Tell the user the file could not be processed — ` +
+        `do not guess at or invent its contents.\n[/attachment-not-ingested]`
+      );
+    };
+
+    if (!this.knowledgeGraph) return refuse('no knowledge graph available');
+    const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+    if (!ownerOmadiaUserId) {
+      return refuse('could not resolve the uploading user');
+    }
+
+    let imported: ImportTabularDatasetResult;
+    try {
+      imported = await importTabularDataset({
+        graph: this.knowledgeGraph,
+        bytes: args.bytes,
+        datasetName: args.fileName,
+        sourceFileName: args.fileName,
+        ownerOmadiaUserId,
+        format,
+        ...(args.storageKey ? { sourceStorageKey: args.storageKey } : {}),
+      });
+    } catch (err) {
+      return refuse(
+        `import error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!imported.ok) return refuse(imported.reason);
+
+    let scannedCells = 0;
+    let maskedCells = 0;
+    const lines = imported.imported.map((t) => {
+      const { truncatedCellCount, truncatedColumns } = t.truncation;
+      // Only claim "not truncated" when that is actually true for this table
+      // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
+      const truncationNote =
+        truncatedCellCount > 0
+          ? ` ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+          : ' No cells were truncated on import.';
+      const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
+      scannedCells += t.privacyScan.scannedCells;
+      maskedCells += t.privacyScan.maskedCells;
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
+    });
+
+    // Observability: a successful import used to log nothing at all, so the
+    // only way to confirm one had happened was to infer it from a later
+    // `query_dataset` call's column names. Say it plainly instead.
+    console.log(
+      `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
+        `datasets=${String(imported.imported.length)} ` +
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
+    );
+
+    // #976 — state the privacy FACTS for this file in the prompt.
+    //
+    // Without them the model is left to guess what happened to an upload,
+    // and it guesses badly: it told a user "der Privacy Shield greift bei
+    // Datei-Uploads nicht — der Inhalt liegt im Klartext vor" about a file
+    // that had in fact been imported with 16 of 23 fields masked. A wrong
+    // reassurance is bad; a wrong ALARM is worse, because the user acts on
+    // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
+    // the fact — so ship the fact.
+    const privacyFact =
+      `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
+      `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
+      `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
+      `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
+      `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
+      `boundary as any other tool result.`;
+
+    return (
+      `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +
+      `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with a dataset_id above to filter/aggregate this data — ` +
+      `do not ask the user to re-paste it.\n[/dataset-imported]`
+    );
   }
 
   /**

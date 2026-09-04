@@ -71,17 +71,21 @@ const COVERED_ROUTE_FILES = [
  * codes the ingest service can emit, and a coverage guard that overclaims is
  * worse than one with an honest boundary.
  *
- * `cli_install.no_output` and `cli_install.npm_failed` are set by
- * `startCliInstall` in `middleware/src/platform/cliInstallService.ts` and
- * reach the UI on the `GET /v1/admin/cli-backends/:id/install/status` poll
- * response, not on an error envelope from a covered route file. A route scan
- * can therefore never discover them.
+ * `cli_install.no_output`, `cli_install.npm_failed` and
+ * `cli_install.spawn_failed` are set by `startCliInstall` in
+ * `middleware/src/platform/cliInstallService.ts` and reach the UI on the
+ * `GET /v1/admin/cli-backends/:id/install/status` poll response, not on an
+ * error envelope from a covered route file. A route scan can therefore never
+ * discover them. `spawn_failed` was split off `npm_failed` in #933 (OM-68):
+ * a child that the OS never started did not run an install and has no log
+ * tail, so the npm_failed copy was untrue in both of its sentences.
  */
 const NON_ROUTE_CODES = [
   'providers.key_rejected',
   'package.id_conflict_bundled',
   'cli_install.no_output',
   'cli_install.npm_failed',
+  'cli_install.spawn_failed',
 ] as const;
 
 /**
@@ -124,6 +128,21 @@ const FORWARDED_CODE_SOURCES = [
     literal: /:\s*'(runtime\.json_file_[a-z_]+)'/g,
     minCodes: 7,
   },
+  {
+    /**
+     * OM-79 (#994) — `POST /admin/providers/assignment` used to hold the
+     * assignment rules inline; they moved to `platform/providerAssignment.ts`
+     * so the subscription-login hand-off applies the same fail-closed checks.
+     * The route now forwards `result.code` wholesale; the literals live in
+     * `applyProviderAssignment`'s failure returns (`code: 'providers.…'`).
+     */
+    route: 'adminProviders.ts',
+    forwards: 'code: result.code',
+    source: ['middleware', 'src', 'platform', 'providerAssignment.ts'],
+    /** `code: 'providers.tool_incompatible',` */
+    literal: /code:\s*'(providers\.[a-z_]+)'/g,
+    minCodes: 6,
+  },
 ] as const;
 
 /**
@@ -148,6 +167,12 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
     {
       expr: 'code: err.code',
       why: 'a thrown InstallError — followed via FORWARDED_CODE_SOURCES',
+    },
+  ],
+  'adminProviders.ts': [
+    {
+      expr: 'code: result.code',
+      why: 'an applyProviderAssignment failure (OM-79) — followed via FORWARDED_CODE_SOURCES',
     },
   ],
   'runtime.ts': [
