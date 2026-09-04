@@ -36,4 +36,17 @@ export interface ConversationSendProvider {
     message: TargetedMessage,
     opts?: ConversationSendOptions,
   ): Promise<TargetedDeliveryOutcome>;
+  /**
+   * Show that this sender is composing — the chat client's "…" animation.
+   *
+   * Optional, and best-effort by contract: an activity indicator that fails is
+   * never worth surfacing, let alone worth failing the work it was announcing.
+   * A relayed conversation can leave twenty seconds of silence between turns
+   * while an agent thinks, and to everyone watching that is indistinguishable
+   * from nothing happening.
+   *
+   * Most clients dim the indicator after a few seconds, so a caller waiting
+   * longer than that calls this repeatedly rather than once.
+   */
+  sendTyping?(conversationId: string, opts?: ConversationSendOptions): Promise<void>;
 }

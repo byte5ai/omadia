@@ -145,14 +145,33 @@ export class RealStepEffects implements StepEffects {
       : `Conductor workflow step "${step.id}". Run your configured task. Run context: ${JSON.stringify(context)}`;
 
     this.deps.log?.(`[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId})`);
-    const answer = await withTimeout(
-      entry.built.bundle.agent.chat({
-        userMessage,
-        sessionScope: `conductor:${meta.runId}:${step.id}`,
-      }),
-      this.stepTimeoutMs,
-      `agent step '${step.id}'`,
-    );
+
+    // A publishing step is one people are watching for. Show that this agent is
+    // composing while it works — the turn regularly runs twenty seconds, and
+    // silence in a chat reads as nothing happening. Stopped in `finally` so a
+    // thrown turn never leaves the dots running.
+    const stopTyping =
+      step.say && this.deps.say
+        ? this.deps.say.startTyping({
+            agentSlug: slug,
+            channelType: step.say.channel,
+            conversationId: typeof context.conversationId === 'string' ? context.conversationId : '',
+          })
+        : () => undefined;
+
+    let answer;
+    try {
+      answer = await withTimeout(
+        entry.built.bundle.agent.chat({
+          userMessage,
+          sessionScope: `conductor:${meta.runId}:${step.id}`,
+        }),
+        this.stepTimeoutMs,
+        `agent step '${step.id}'`,
+      );
+    } finally {
+      stopTyping();
+    }
 
     // #330 C3 — structured verdicts: mirror of the action-step's `data` field.
     // A fenced ```json block in the agent's answer becomes `result.data`, so
