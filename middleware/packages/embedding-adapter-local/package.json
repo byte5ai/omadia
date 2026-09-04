@@ -1,0 +1,22 @@
+{
+  "name": "@omadia/embedding-adapter-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Keyless in-process embedding adapter for omadia. Runs a quantized multilingual sentence-transformer on the CPU through onnxruntime and provides the 'embeddingClient@1' capability, as the alternative to the Ollama adapter (needs a local server) and the OpenAI-compatible adapter (needs an API key). Model weights are fetched once, never bundled.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "fetch-model": "node scripts/fetch-model.mjs"
+  },
+  "peerDependencies": {
+    "@huggingface/transformers": "^3.0.0",
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
