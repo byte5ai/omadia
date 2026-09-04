@@ -126,7 +126,7 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator"
       },
-      "embeddingsNote": "Memory is limited: no embedding provider is configured. Process memory, semantic search and duplicate detection stay off until one is set up.",
+      "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
@@ -5193,7 +5193,15 @@
     "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
     "alreadyActiveError": "That provider is already the active one.",
     "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
-    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights.",
+    "localModelTitle": "Keyless embedder: model not downloaded yet",
+    "localModelBody": "This provider computes without an API key and without a separate server — but the model weights ({size} MB) are deliberately not shipped in the installer and have to be fetched once. Everything runs offline afterwards.",
+    "localModelFetch": "Download the model now",
+    "localModelStarting": "Starting …",
+    "localModelProgress": "Downloading … {done} of {total} MB ({file})",
+    "localModelFailed": "The download failed: {message}",
+    "localModelReady": "The model weights are complete. The next time this provider activates it publishes `embeddingClient@1` — memory, semantic search and duplicate detection then work.",
+    "localModelThreshold": "Important: this model’s cosine scale is not the knowledge graph default. Set `process_dedup_threshold` to 0.45 — at the 0.90 default duplicate detection never fires, and it fails silently."
   },
   "graph": {
     "page": {

@@ -28,3 +28,26 @@ export {
   missingModelFiles,
   modelPath,
 } from './localEmbeddingClient.js';
+
+export type {
+  FetchModelOptions,
+  FetchModelResult,
+  FetchProgress,
+  PinnedModelFile,
+} from './fetchModel.js';
+export {
+  MODEL_REVISION,
+  PINNED_MODEL_FILES,
+  PINNED_MODEL_TOTAL_BYTES,
+  fetchLocalEmbeddingModel,
+  isFileIntact,
+  modelFileUrl,
+} from './fetchModel.js';
+
+export type {
+  FetchJobState,
+  LocalEmbeddingModelFetcher,
+  LocalEmbeddingModelStatus,
+  ModelFetcherOptions,
+} from './modelFetcherService.js';
+export { createLocalEmbeddingModelFetcher } from './modelFetcherService.js';

@@ -95,12 +95,51 @@ const SwitchBodySchema = z.object({
   confirmDiscardVectors: z.boolean().optional(),
 });
 
+/**
+ * Structural view of the keyless adapter's `localEmbeddingModelFetcher`
+ * service. The plugin publishes a plain object
+ * (`packages/embedding-adapter-local/src/modelFetcherService.ts`); this module
+ * only reads it, so neither side imports the other. Same shape of contract as
+ * `EmbeddingGateStatus`.
+ */
+export interface LocalEmbeddingModelFetcher {
+  status(): {
+    readonly modelDir: string;
+    readonly missingFiles: readonly string[];
+    readonly totalBytes: number;
+    readonly job: {
+      readonly state: 'idle' | 'running' | 'done' | 'failed';
+      readonly downloadedBytes: number;
+      readonly totalBytes: number;
+      readonly currentFile: string | null;
+      readonly error: string | null;
+    };
+  };
+  /** Single-flight. `false` ⇒ a run was already in progress. */
+  start(): boolean;
+}
+
 export interface AdminEmbeddingProviderDeps {
   readonly installedRegistry: InstalledRegistry;
   /** Manifest catalog — the source of truth for who provides the capability. */
   readonly catalog: EmbeddingProviderCatalog;
   /** Live `embeddingClient@1` service, as the knowledge-graph resolves it. */
   readonly getEmbeddingClient: () => EmbeddingClient | undefined;
+  /**
+   * The keyless adapter's weight downloader, when that adapter is active.
+   *
+   * OM-84 follow-up — the keyless provider exists but its weights are not
+   * bundled, and "run npm run fetch-model" is indistinguishable from "you
+   * cannot have this" for the desktop user this adapter was built for. So the
+   * page drives the download.
+   *
+   * Resolved per request and never imported: same rule as the dimension
+   * previews in `embeddingProviderCatalog.ts` — the kernel reads what the
+   * adapters publish structurally and takes no build dependency on either,
+   * since both may be uninstalled. `undefined` simply means the keyless
+   * adapter is not active, which is the normal state on a keyed deployment.
+   */
+  readonly getLocalModelFetcher?: () => LocalEmbeddingModelFetcher | undefined;
   /** Live gate verdict. NOT cached — `vectorWritesAllowed` flips false→true
    *  in-process when a stale-vector clear drains, and a captured copy would
    *  show a stale red forever. Also carries the (non-enumerable) `reevaluate`
@@ -454,6 +493,62 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  /**
+   * What the keyless adapter needs before it can publish anything, and how far
+   * a running download has got. 404 rather than an empty body when the adapter
+   * is not active: "there is no keyless provider here" and "its weights are
+   * missing" are different answers and the UI reacts differently to each.
+   */
+  router.get('/local-model', (_req: Request, res: Response) => {
+    const fetcher = deps.getLocalModelFetcher?.();
+    if (!fetcher) {
+      res.status(404).json({
+        code: 'embeddingProvider.local_model_unavailable',
+        message:
+          'the keyless embedding adapter (@omadia/embedding-adapter-local) is not active',
+      });
+      return;
+    }
+    res.json(fetcher.status());
+  });
+
+  /**
+   * Start the download. Answers 202 immediately — it moves ~135 MB and takes
+   * minutes, so holding the request open would just time out behind whatever
+   * proxy sits in front. The UI polls `GET /local-model`.
+   *
+   * 409 on a second click while one is running, rather than silently starting
+   * a second run: two runs would write the same `.partial` paths and race the
+   * renames.
+   */
+  router.post('/local-model/fetch', (_req: Request, res: Response) => {
+    const fetcher = deps.getLocalModelFetcher?.();
+    if (!fetcher) {
+      res.status(404).json({
+        code: 'embeddingProvider.local_model_unavailable',
+        message:
+          'the keyless embedding adapter (@omadia/embedding-adapter-local) is not active',
+      });
+      return;
+    }
+    const status = fetcher.status();
+    if (status.missingFiles.length === 0) {
+      // Nothing to do, and saying so beats a 202 that resolves instantly and
+      // leaves the operator wondering whether anything happened.
+      res.json({ ok: true, started: false, reason: 'already-complete', ...status });
+      return;
+    }
+    if (!fetcher.start()) {
+      res.status(409).json({
+        code: 'embeddingProvider.local_model_busy',
+        message: 'a weight download is already running',
+        ...fetcher.status(),
+      });
+      return;
+    }
+    res.status(202).json({ ok: true, started: true, ...fetcher.status() });
   });
 
   router.post('/switch', async (req: Request, res: Response) => {

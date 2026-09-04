@@ -4,6 +4,7 @@ import {
   type PluginContext,
 } from '@omadia/plugin-api';
 
+import { createLocalEmbeddingModelFetcher } from './modelFetcherService.js';
 import {
   LOCAL_EMBEDDING_DIMENSIONS,
   LOCAL_EMBEDDING_MODEL,
@@ -52,6 +53,8 @@ import {
  */
 
 const EMBEDDING_CLIENT_SERVICE = 'embeddingClient';
+/** Published even without weights — see `modelFetcherService.ts`. */
+const MODEL_FETCHER_SERVICE = 'localEmbeddingModelFetcher';
 /** Under the middleware's own tree, so a container bind-mount or a desktop
  *  data dir can redirect it with one config field. */
 const DEFAULT_MODEL_DIR = 'var/embedding-models';
@@ -83,6 +86,28 @@ export async function activate(
     DEFAULT_MAX_CONCURRENT,
   );
 
+  // Published on BOTH paths, and on the missing-weights path it is the whole
+  // point: the admin page needs something to ask "can I install this?" exactly
+  // when the capability does not exist yet. `provide` is wrapped because this
+  // plugin may activate beside a sibling adapter (see the note further down)
+  // and a duplicate name throws.
+  const fetcher = createLocalEmbeddingModelFetcher({
+    modelDir,
+    log: (message) => ctx.log(message),
+  });
+  let disposeFetcher: (() => void) | undefined;
+  try {
+    disposeFetcher = ctx.services.provide(MODEL_FETCHER_SERVICE, fetcher);
+  } catch (err) {
+    ctx.log(
+      `[embedding-adapter-local] ${MODEL_FETCHER_SERVICE} already provided ` +
+        `(${err instanceof Error ? err.message : String(err)}) — not re-publishing`,
+    );
+  }
+  const releaseFetcher = (): void => {
+    disposeFetcher?.();
+  };
+
   const missing = (overrides.missingFiles ?? missingModelFiles)(modelDir);
   if (missing.length > 0) {
     // Naming the first missing file rather than "model not found": the two
@@ -91,9 +116,10 @@ export async function activate(
     ctx.log(
       `[embedding-adapter-local] model weights incomplete in ${modelPath(modelDir)} ` +
         `(missing: ${missing.join(', ')}) — plugin active but capability not published. ` +
-        `Fetch them with: npm run fetch-model --workspace @omadia/embedding-adapter-local`,
+        `Fetch them with: npm run fetch-model --workspace @omadia/embedding-adapter-local, ` +
+        'or from ADMIN → LLM-Zugang → Embeddings, which drives the same download.',
     );
-    return { close: closeNoop(ctx) };
+    return { close: closeNoop(ctx, releaseFetcher) };
   }
 
   const raw: EmbeddingProvider = createLocalEmbeddingClient({
@@ -128,7 +154,7 @@ export async function activate(
         `(${err instanceof Error ? err.message : String(err)}) — standing down, capability not published. ` +
         'Uninstall or blank out the Ollama / OpenAI-compatible adapter to switch to the keyless one.',
     );
-    return { close: closeNoop(ctx) };
+    return { close: closeNoop(ctx, releaseFetcher) };
   }
   ctx.log(
     `[embedding-adapter-local] ${client.modelId} ready ` +
@@ -140,14 +166,21 @@ export async function activate(
   return {
     close: async () => {
       dispose();
+      releaseFetcher();
       ctx.log('[embedding-adapter-local] capability withdrawn');
     },
   };
 }
 
-function closeNoop(ctx: PluginContext): () => Promise<void> {
+function closeNoop(
+  ctx: PluginContext,
+  release?: () => void,
+): () => Promise<void> {
   return async () => {
-    ctx.log('[embedding-adapter-local] deactivated (nothing was published)');
+    release?.();
+    ctx.log(
+      '[embedding-adapter-local] deactivated (embeddingClient was never published)',
+    );
   };
 }
 
