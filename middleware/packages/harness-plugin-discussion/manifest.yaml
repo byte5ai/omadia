@@ -73,6 +73,20 @@ permissions:
   filesystem:
     scratch: false
 
+# Both tools return CONFIGURATION, not user content: agent slugs and the names
+# their bots carry in the chat. The Privacy Shield cannot know that a bot called
+# "Karen" is a bot, so it classifies the partner list as personal data and masks
+# it — and a masked slug is useless, because the slug is the whole point. That
+# was observed live: `pii=[partners]`, both fields masked, and the agent
+# concluded no partner existed. Recommend bypass; the operator still decides.
+privacy:
+  recommendation:
+    mode: "bypass"
+    reason: >-
+      Die Tools liefern nur Agenten-Slugs und die Bot-Namen aus diesem Chat —
+      Konfigurationsdaten, keine Personendaten. Maskiert sind die Slugs
+      unbrauchbar, und der Agent hält die Partnerliste dann für leer.
+
 provides: []
 requires: []
 # The kernel seam this plugin lives on. Optional so the plugin still
