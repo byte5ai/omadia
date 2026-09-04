@@ -204,6 +204,19 @@ const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 // Kept in sync with the kernel default `ORCHESTRATOR_MODEL` in
 // middleware/src/config.ts.
 const DEFAULT_MODEL = DEFAULT_ORCHESTRATOR_MODEL;
+
+/**
+ * #1016 — the kernel service carrying the per-turn owner guard.
+ *
+ * Duplicated rather than imported: the kernel exports
+ * `ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME` from
+ * `middleware/src/plugins/routines/`, which this package cannot depend on
+ * (the app layer imports packages, never the reverse). Exported so
+ * `test/routineTurnOwnerGuardGrant.test.ts` can assert this literal equals the
+ * kernel constant AND is declared in this plugin's manifest — a drift guard
+ * standing in for the import that is not available.
+ */
+export const ROUTINE_TURN_OWNER_GUARD_SERVICE = 'routineTurnOwnerGuard';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
@@ -651,9 +664,23 @@ export async function activate(
   // because the store it reads (`routineTurnContext`) lives in the application
   // layer, not in this package. Absent (legacy hosts, unit tests) → the
   // restored context is not cross-checked, the pre-#1016 behaviour.
-  const turnOwnerGuard = ctx.services.get<
+  //
+  // `getOptional`, paired with `optional_requires: ["routineTurnOwnerGuard@1"]`
+  // in the manifest, because absence is a supported steady state rather than a
+  // misconfiguration. BOTH halves are load-bearing: the verb advertises the
+  // contract, and the declaration is what makes the call legal at all — the
+  // grant gate throws `ServiceNotDeclaredError` for an undeclared name, and
+  // this call sits near the top of `activate()`, so an undeclared name takes
+  // `chatAgent@1` down on every boot instead of degrading the guard.
+  //
+  // Resolved eagerly, which the `getOptional` docblock cautions against for
+  // PLUGIN providers (an optional dependency contributes no activation edge).
+  // Safe here because the provider is the kernel: `serviceRegistry.provide`
+  // runs at boot, before any plugin activates — the same ordering the two
+  // sibling readers above already rely on.
+  const turnOwnerGuard = ctx.services.getOptional<
     (input: ChatTurnInput) => (() => void) | undefined
-  >('routineTurnOwnerGuard');
+  >(ROUTINE_TURN_OWNER_GUARD_SERVICE);
 
   // Setup-field config (with defaults)
   const model =
