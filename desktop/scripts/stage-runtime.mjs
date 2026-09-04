@@ -11,6 +11,11 @@
 // shipped bundle.
 import fs from 'node:fs';
 import path from 'node:path';
+
+import {
+  hostTriple,
+  pruneUnloadableOnnxPayloads,
+} from './prune-onnx-payloads.mjs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -194,6 +199,17 @@ function pruneBuildTimeOnlyFiles(root) {
 console.log(
   `[stage-runtime] pruned ${pruneBuildTimeOnlyFiles(mwDest)} build-time-only file(s) (*.d.ts, *.ts, *.map)`,
 );
+
+// --- drop the onnxruntime payloads this platform can never load ----------
+// See `prune-onnx-payloads.mjs` for why each of the three rules is safe. It is
+// a separate module so it can be exercised against a throwaway tree.
+{
+  const { bytes, files } = pruneUnloadableOnnxPayloads(mwDest);
+  console.log(
+    `[stage-runtime] pruned ${files} unloadable onnxruntime file(s), ` +
+      `${(bytes / 1024 / 1024).toFixed(0)} MB (kept the ${hostTriple()} native build)`,
+  );
+}
 
 // --- prune symlinks that escape the staged tree --------------------------
 // `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
