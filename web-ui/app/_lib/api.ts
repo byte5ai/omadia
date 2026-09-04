@@ -377,6 +377,10 @@ export interface AdminProvider {
   /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
    *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
+  /** #1033 — present only while the fallback circuit breaker is open for
+   *  this provider: agents with a fallback route straight to it until
+   *  `until`, when the primary is probed again. */
+  cooldown?: { until: string; since: string; reason: string };
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */

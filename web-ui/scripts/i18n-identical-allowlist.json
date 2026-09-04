@@ -23,6 +23,9 @@
     "                 it stops being useful for diagnosis."
   ],
   "keys": {
+    "operatorAgents.agentCardModelAuto": "loanword",
+    "operatorAgents.modelPolicy.summaryAuto": "loanword",
+    "operatorAgents.peers.channelKeyPlaceholder": "placeholder",
     "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
     "conductor.graphLabel": "loanword",

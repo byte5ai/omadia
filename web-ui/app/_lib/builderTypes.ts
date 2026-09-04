@@ -34,6 +34,9 @@ export interface BuilderModelInfo {
   model_class: string;
   vision: boolean;
   description: string;
+  /** #1033 — effort levels the model declares; absent = no effort knob. */
+  effort_levels?: readonly string[];
+  effort_default?: string;
   max_tokens: number;
   aliases: string[];
 }

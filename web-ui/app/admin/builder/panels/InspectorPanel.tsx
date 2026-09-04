@@ -160,6 +160,32 @@ function AgentEditor({
           {t('inspector.effectiveModel', { model: agent.effectiveModel })}
         </p>
       )}
+      {/* #1033 — the routing editor below is the AUTO configuration. An
+          explicit policy (primary/fallback, possibly on another provider)
+          outranks it and is edited on the operator page; the Inspector
+          shows it so the two never look contradictory. */}
+      {agent.modelPolicy && (
+        <p className="text-xs text-[color:var(--fg-muted)]">
+          {t('inspector.modelPolicy', {
+            primary:
+              typeof agent.modelPolicy.primary === 'string'
+                ? t('inspector.modelPolicyAuto')
+                : `${agent.modelPolicy.primary.provider}:${agent.modelPolicy.primary.model}`,
+            fallback:
+              agent.modelPolicy.fallback === 'none'
+                ? t('inspector.modelPolicyNone')
+                : agent.modelPolicy.fallback === 'auto'
+                  ? t('inspector.modelPolicyAuto')
+                  : `${agent.modelPolicy.fallback.provider}:${agent.modelPolicy.fallback.model}`,
+          })}{' '}
+          <a
+            href={`/operator/agents/${encodeURIComponent(slug)}`}
+            className="text-[color:var(--accent)] hover:underline"
+          >
+            {t('inspector.modelPolicyEdit')}
+          </a>
+        </p>
+      )}
       <Field label={t('inspector.routingMode')}>
         <select
           value={mode}

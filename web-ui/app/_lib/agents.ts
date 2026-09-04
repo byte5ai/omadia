@@ -65,6 +65,11 @@ export interface OperatorAgentDto {
   memory_scope: string[];
   plugins: OperatorAgentPluginDto[];
   bindings: OperatorAgentBindingDto[];
+  /** #1033 — the model the registry currently runs this agent on; `null`
+   *  until built. Absent on a pre-W4 middleware. */
+  effective_model?: string | null;
+  /** #1033 — the agent's model policy. Absent on a pre-W4 middleware. */
+  model_policy?: ModelPolicy;
 }
 
 export interface OperatorAgentsListDto {
@@ -222,6 +227,182 @@ export async function toggleAgentPlugin(
   );
 }
 
+// ── #1033 — per-agent model policy ──────────────────────────────────────
+
+export const MODEL_POLICY_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type ModelPolicyEffort = (typeof MODEL_POLICY_EFFORTS)[number];
+
+/** One explicit model choice: which provider, which model, optionally how hard. */
+export interface ModelRef {
+  provider: string;
+  model: string;
+  effort?: ModelPolicyEffort;
+}
+
+/**
+ * `agents.model_policy` as the middleware persists it. `'auto'` is today's
+ * resolution (`model_routing` → platform default); `'none'` is today's
+ * failure behaviour (the turn dies once retries are spent).
+ */
+export interface ModelPolicy {
+  primary: 'auto' | ModelRef;
+  fallback: 'none' | 'auto' | ModelRef;
+}
+
+export const DEFAULT_MODEL_POLICY: ModelPolicy = { primary: 'auto', fallback: 'none' };
+
+export function isModelRef(v: ModelPolicy['primary'] | ModelPolicy['fallback']): v is ModelRef {
+  return typeof v === 'object' && v !== null;
+}
+
+function parseModelRef(raw: unknown): ModelRef | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.provider !== 'string' || typeof rec.model !== 'string') return undefined;
+  const effort = rec.effort;
+  return {
+    provider: rec.provider,
+    model: rec.model,
+    ...(typeof effort === 'string' && (MODEL_POLICY_EFFORTS as readonly string[]).includes(effort)
+      ? { effort: effort as ModelPolicyEffort }
+      : {}),
+  };
+}
+
+/**
+ * Deny-default narrowing, mirroring the middleware's `parseModelPolicy`: a
+ * shape this bundle does not understand renders as the default rather than
+ * as a model the runtime would not actually use.
+ */
+export function parseModelPolicy(raw: unknown): ModelPolicy {
+  if (raw === null || typeof raw !== 'object') return DEFAULT_MODEL_POLICY;
+  const rec = raw as Record<string, unknown>;
+  const primary = rec.primary === 'auto' ? 'auto' : parseModelRef(rec.primary);
+  const fallback =
+    rec.fallback === 'none' || rec.fallback === 'auto' ? rec.fallback : parseModelRef(rec.fallback);
+  if (primary === undefined || fallback === undefined) return DEFAULT_MODEL_POLICY;
+  return { primary, fallback };
+}
+
+export interface ModelPolicyDto {
+  slug: string;
+  policy: ModelPolicy;
+  /** What `auto` currently resolves to (the registry's built model), or null. */
+  effectiveModel: string | null;
+  activeProvider: string | null;
+  /** An explicit primary on another provider that the host cannot run there. */
+  deferredProvider?: string;
+  vision: { primary?: boolean | null; fallback?: boolean | null };
+}
+
+export async function getAgentModelPolicy(slug: string): Promise<ModelPolicyDto> {
+  const res = await callJson<ModelPolicyDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/model-policy`,
+  );
+  return { ...res, policy: parseModelPolicy(res.policy) };
+}
+
+export interface SetModelPolicyResponse {
+  ok: boolean;
+  policy: ModelPolicy;
+  vision: { primary?: boolean; fallback?: boolean };
+  deferredProvider?: string;
+}
+
+/**
+ * Dedicated endpoint, like context-memory: which model answers under an
+ * agent's name is a cost / data-residency / quality decision that must not
+ * ride along on a rename. A `ConfigValidationError` (unknown model, unkeyed
+ * provider, undeclared effort, fallback = primary) surfaces as 409
+ * `config_validation`.
+ */
+export async function setAgentModelPolicy(
+  slug: string,
+  policy: ModelPolicy,
+): Promise<SetModelPolicyResponse> {
+  const res = await callJson<SetModelPolicyResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/model-policy`,
+    { method: 'PUT', body: JSON.stringify(policy) },
+  );
+  return { ...res, policy: parseModelPolicy(res.policy) };
+}
+
+// ── #1018 — agent-to-agent switches ─────────────────────────────────────
+
+export const AGENT_TO_AGENT_MODES = ['off', 'on'] as const;
+export type AgentToAgentMode = (typeof AGENT_TO_AGENT_MODES)[number];
+
+export function parseAgentToAgentMode(raw: unknown): AgentToAgentMode {
+  return raw === 'on' ? 'on' : 'off';
+}
+
+export interface AgentToAgentDto {
+  slug: string;
+  mode: AgentToAgentMode;
+  modes: readonly string[];
+}
+
+export async function getAgentAgentToAgent(slug: string): Promise<AgentToAgentDto> {
+  const res = await callJson<AgentToAgentDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/agent-to-agent`,
+  );
+  return { ...res, mode: parseAgentToAgentMode(res.mode) };
+}
+
+export async function setAgentAgentToAgent(
+  slug: string,
+  mode: AgentToAgentMode,
+): Promise<{ ok: boolean; mode: AgentToAgentMode }> {
+  return callJson<{ ok: boolean; mode: AgentToAgentMode }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/agent-to-agent`,
+    { method: 'PUT', body: JSON.stringify({ mode }) },
+  );
+}
+
+/** One `(channel, agent)` enablement row. */
+export interface PeerChannelDto {
+  channelType: string;
+  channelKey: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface PeerChannelsDto {
+  slug: string;
+  mode: AgentToAgentMode;
+  channels: PeerChannelDto[];
+}
+
+export async function getAgentPeerChannels(slug: string): Promise<PeerChannelsDto> {
+  const res = await callJson<PeerChannelsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels`,
+  );
+  return { ...res, mode: parseAgentToAgentMode(res.mode) };
+}
+
+export async function setAgentPeerChannel(
+  slug: string,
+  channelType: string,
+  channelKey: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; channelType: string; channelKey: string; enabled: boolean }> {
+  return callJson(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels/${encodeURIComponent(channelType)}/${encodeURIComponent(channelKey)}`,
+    { method: 'PUT', body: JSON.stringify({ enabled }) },
+  );
+}
+
+export async function removeAgentPeerChannel(
+  slug: string,
+  channelType: string,
+  channelKey: string,
+): Promise<{ ok: boolean }> {
+  return callJson<{ ok: boolean }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels/${encodeURIComponent(channelType)}/${encodeURIComponent(channelKey)}`,
+    { method: 'DELETE' },
+  );
+}
+
 // ── W5 memory-ACL rollout switch (#899) ────────────────────────────────
 
 /**
@@ -371,6 +552,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'multi_orchestrator_unavailable',
   'not_found',
   'plugin_not_assigned',
+  // #1033 — the model-policy routes 503 with this while the catalogue is
+  // not wired (no DATABASE_URL / orchestrator not active).
+  'model_policy_unavailable',
   // #914 — the agent identity routes. Listed here rather than in a second
   // catalogue so one page needs one mapping: the identity section renders
   // `detailErrors.<code>` exactly like every other operator-agents surface.

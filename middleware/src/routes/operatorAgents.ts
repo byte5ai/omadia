@@ -1801,6 +1801,9 @@ export function createOperatorAgentsRouter(
           active: active.has(a.id),
           memory_scope:
             live.registry.get(a.slug)?.memoryScope.slice() ?? [],
+          // #1033 W4 — what the dashboard card shows as "runs on".
+          effective_model: live.registry.get(a.slug)?.built?.effectiveModel ?? null,
+          model_policy: parseModelPolicy(a.modelPolicy ?? DEFAULT_MODEL_POLICY),
           plugins: (pluginsByAgent.get(a.id) ?? []).map((p) => ({
             id: p.pluginId,
             config: p.config,

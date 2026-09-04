@@ -15,6 +15,8 @@ import {
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { PluginsDnd } from '../../_components/PluginsDnd';
 import { AgentIdentity } from './AgentIdentity';
+import { AgentModelPolicy } from './AgentModelPolicy';
+import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
 
@@ -167,6 +169,13 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
           mount for an agent that has neither an identity row nor a Teams
           bot. */}
       <AgentIdentity slug={props.agent.slug} />
+
+      {/* #1033 — how the agent THINKS comes right after who it is: which
+          model answers under its name, and which one steps in when that is
+          unavailable. Then (#1018) with whom it may converse. Both fetch
+          their own read models by slug. */}
+      <AgentModelPolicy slug={props.agent.slug} />
+      <AgentPeers slug={props.agent.slug} />
 
       {/* Teams sections (epic #860, wave W2a). This component is the single
           composition point for them, so the sibling Teams units (config

@@ -98,6 +98,13 @@ export interface AgentNode {
   privacyProfile: PrivacyProfile;
   status: NodeStatus;
   modelRouting: ModelRoutingConfig | null;
+  /** #1033 — the agent's model policy (absent on a pre-W2 middleware). */
+  modelPolicy?: {
+    primary: 'auto' | { provider: string; model: string; effort?: string };
+    fallback: 'none' | 'auto' | { provider: string; model: string; effort?: string };
+  };
+  /** #1033 — what the fallback resolves to (`provider:model`, the auto model, or null). */
+  effectiveFallback?: string | null;
   /**
    * Resolved orchestrator model the registry currently runs this Agent on
    * (per-Agent overlay applied to the platform default). `null` when the
