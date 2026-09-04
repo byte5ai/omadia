@@ -17,14 +17,18 @@ import { z } from 'zod';
 
 export const DISCUSSION_START_TOOL_NAME = 'discussion_start';
 
+/** A slug or the name the bot carries in the chat — the kernel resolves both. */
+const PartnerRef = z.string().min(1, 'name a partner').max(64, 'partner names are ≤ 64 chars');
+
 const DiscussionStartInputSchema = z.object({
-  with_agent: z
-    .string()
-    .min(1, 'with_agent must be a non-empty agent slug')
-    .max(64, 'with_agent must be ≤ 64 chars')
-    .regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u, 'with_agent must be an agent slug'),
+  // An ARRAY, so one call can open a three- or four-way round. The single-name
+  // form is accepted and normalised: a model that reaches for `with_agent`
+  // should not be punished for it.
+  with_agents: z.union([PartnerRef, z.array(PartnerRef).min(1).max(6)]).optional(),
+  with_agent: PartnerRef.optional(),
   topic: z.string().min(1, 'topic must be non-empty').max(2000, 'topic must be ≤ 2000 chars'),
   guiding_question: z.string().min(1).max(2000).optional(),
+  max_turns: z.number().int().min(2).max(40).optional(),
 });
 
 export type DiscussionStartInput = z.infer<typeof DiscussionStartInputSchema>;
@@ -32,14 +36,15 @@ export type DiscussionStartInput = z.infer<typeof DiscussionStartInputSchema>;
 export const discussionStartToolSpec: NativeToolSpec = {
   name: DISCUSSION_START_TOOL_NAME,
   description:
-    "Open a visible, bounded topic discussion with ANOTHER agent in this chat. The two of you then post in turn under your own names, responding to each other, for at most seven contributions before you write a closing summary. Use it when the person asks two agents to discuss, compare, or reconcile something across domains — 'discuss X with the accounting agent', 'get HR's and finance's view on Y'. If you do not know the partner's slug for certain, call discussion_partners FIRST — do not guess and do not tell the person the agent is unknown before you have checked. A result starting with 'Error:' means nothing was started; report that in one sentence and never claim otherwise. Do NOT use this to answer a question you can answer yourself, and do NOT use it to talk to a person. Call it at most once per request; after a successful call, reply with one short sentence and stop — your first contribution is posted by the discussion itself, not by this turn.",
+    "Open a visible, bounded topic discussion with ONE OR MORE other agents in this chat. You all then post in turn under your own names, responding to each other, until the participants agree another round would add nothing — then you write the closing summary. Pass every agent the person named in ONE call: with_agents is an array, so a three- or four-way round is one call, not several. Use it when the person asks two agents to discuss, compare, or reconcile something across domains — 'discuss X with the accounting agent', 'get HR's and finance's view on Y'. If you do not know the partner's slug for certain, call discussion_partners FIRST — do not guess and do not tell the person the agent is unknown before you have checked. A result starting with 'Error:' means nothing was started; report that in one sentence and never claim otherwise. Do NOT use this to answer a question you can answer yourself, and do NOT use it to talk to a person. Call it at most once per request; after a successful call, reply with one short sentence and stop — your first contribution is posted by the discussion itself, not by this turn.",
   input_schema: {
     type: 'object',
     properties: {
-      with_agent: {
-        type: 'string',
+      with_agents: {
+        type: 'array',
+        items: { type: 'string' },
         description:
-          "Slug of the agent to discuss with (e.g. 'accounting'). It must be a different agent, and it needs its own bot in this chat — otherwise the start is refused.",
+          "The agents to discuss with — ONE ARRAY, so a single call opens a three- or four-way round: [\"accounting\", \"clippy\"]. Use the slug or the name the bot carries in this chat; discussion_partners lists both. Every one of them needs its own bot here, or the start is refused naming the one that does not.",
       },
       topic: {
         type: 'string',
@@ -51,8 +56,13 @@ export const discussionStartToolSpec: NativeToolSpec = {
         description:
           'The single question the exchange should answer. Defaults to the topic when omitted — pass it whenever the person named something more specific than the subject.',
       },
+      max_turns: {
+        type: 'integer',
+        description:
+          'Optional ceiling on contributions (2-40). Leave it out unless the person asked for a short or a long exchange: the discussion already ends itself when another round would add nothing, and this is only the guard against never converging.',
+      },
     },
-    required: ['with_agent', 'topic'],
+    required: ['with_agents', 'topic'],
   },
 };
 
@@ -72,10 +82,12 @@ export const DISCUSSION_PARTNERS_PROMPT_DOC = [
 ].join(' ');
 
 export const DISCUSSION_PROMPT_DOC = [
-  'discussion_start opens a real, visible conversation between you and another agent in this chat.',
-  'Both of you post under your own bot identities; there is no need to label who is speaking.',
-  'It is bounded (at most seven contributions plus a summary) and can be stopped by an operator.',
-  'Start one only when the person actually asked for two agents to talk — otherwise just answer.',
+  'discussion_start opens a real, visible conversation between you and one or more agents here.',
+  'Everyone posts under their own bot identity; there is no need to label who is speaking.',
+  'Name every partner in ONE call — with_agents is an array, a three-way round is not three calls.',
+  'It runs while it is still going somewhere and ends when another round would add nothing;',
+  'a turn ceiling stops it becoming endless, and an operator can terminate it.',
+  'Start one only when the person actually asked agents to talk to each other — otherwise just answer.',
   'If you are unsure of the partner\'s slug, call discussion_partners first instead of guessing.',
   'If discussion_start returns a string beginning with "Error:", the discussion did NOT start:',
   'say what went wrong in one sentence. Never claim a discussion is running when it is not.',
@@ -95,9 +107,10 @@ export interface DiscussionPartner {
 
 export interface DiscussionsCapability {
   startHere(input: {
-    agentB: string;
+    partners: readonly string[];
     topic: string;
     guidingQuestion?: string;
+    maxTurns?: number;
   }): Promise<{ runId: string; workflowSlug: string; expiresAt: string }>;
   /** Who could take part in THIS chat — agents with their own bot present here. */
   partnersHere(): Promise<readonly DiscussionPartner[]>;
@@ -122,6 +135,21 @@ export function createDiscussionStartHandler(deps: {
     }
     const input = parsed.data;
 
+    // Accept `with_agents` as a list or a single name, and tolerate the older
+    // `with_agent` spelling — the aim is that a model naming three partners
+    // gets three, and one naming a single partner is not corrected for it.
+    const named = [
+      ...(Array.isArray(input.with_agents)
+        ? input.with_agents
+        : input.with_agents
+          ? [input.with_agents]
+          : []),
+      ...(input.with_agent ? [input.with_agent] : []),
+    ];
+    if (named.length === 0) {
+      return 'Error: with_agents: name at least one agent to discuss with (an array opens a three- or four-way round).';
+    }
+
     const discussions = deps.resolveDiscussions();
     if (!discussions) {
       deps.log?.('[discussion] start refused: capability unavailable');
@@ -130,16 +158,17 @@ export function createDiscussionStartHandler(deps: {
 
     try {
       const handle = await discussions.startHere({
-        agentB: input.with_agent,
+        partners: named,
         topic: input.topic,
         ...(input.guiding_question !== undefined ? { guidingQuestion: input.guiding_question } : {}),
+        ...(input.max_turns !== undefined ? { maxTurns: input.max_turns } : {}),
       });
-      deps.log?.(`[discussion] opened a discussion with '${input.with_agent}' (run ${handle.runId})`);
+      deps.log?.(`[discussion] opened a discussion with ${named.join(', ')} (run ${handle.runId})`);
       return JSON.stringify({
         started: true,
-        with_agent: input.with_agent,
+        with_agents: named,
         topic: input.topic,
-        max_contributions: 7,
+        ends: 'when the participants agree another round would add nothing, or at the turn ceiling',
         note: 'The discussion posts itself into this chat. Reply with one short sentence and stop; do not repeat the topic or write the first contribution here.',
       });
     } catch (err) {

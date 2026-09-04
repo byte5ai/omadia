@@ -22,7 +22,23 @@ export type JsonObject = { [key: string]: JsonValue };
 export interface ComparePredicate {
   op: 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte';
   path: string;
-  value: JsonValue;
+  value?: JsonValue;
+  /**
+   * Compare against another dot-path instead of a literal.
+   *
+   * A budget the CALLER chooses cannot be a literal baked into the graph: a
+   * discussion that should run as long as it stays productive needs its own
+   * ceiling in the run context, not a number frozen at authoring time. With
+   * only `value`, "stop after N turns" forces one N for every run of that
+   * pattern — which is how the first cut ended up capping every discussion at
+   * seven regardless of whether it was still going somewhere.
+   *
+   * Exactly one of `value` / `valuePath` is meaningful; `valuePath` wins when
+   * both are present. An unresolvable path yields `undefined`, which the
+   * ordering comparisons treat as "not comparable" (false) — a missing budget
+   * therefore ENDS a loop rather than running it forever.
+   */
+  valuePath?: string;
 }
 
 /** True iff the dot-path resolves to a defined value. */

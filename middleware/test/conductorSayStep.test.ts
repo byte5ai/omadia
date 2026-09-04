@@ -311,6 +311,68 @@ describe('ConductorSayService — the floor is derived from the RUN', () => {
   });
 });
 
+// --- composing indicator ---------------------------------------------------
+
+describe('startTyping — the chat shows WHO is thinking', () => {
+  function typingHarness(over: { identities?: Record<string, string>; provider?: unknown } = {}) {
+    const typed: Array<{ conversationId: string; asChannelKey?: string | undefined }> = [];
+    const provider = {
+      channelType: 'teams',
+      sendToConversation: async () => ({ outcome: 'delivered' as const }),
+      sendTyping: async (conversationId: string, opts?: { asChannelKey?: string }) => {
+        typed.push({ conversationId, asChannelKey: opts?.asChannelKey });
+      },
+    };
+    const identities = over.identities ?? IDENTITIES;
+    const service = new ConductorSayService({
+      attachments: { getByConversation: async () => attachment() },
+      providers: { get: () => (over.provider === undefined ? provider : (over.provider as typeof provider)) },
+      identityFor: (slug) => (identities[slug] ? { channelKey: identities[slug] } : undefined),
+    });
+    return { service, typed };
+  }
+
+  it('shows the indicator under the working agent’s own bot', () => {
+    const { service, typed } = typingHarness();
+    const stop = service.startTyping({
+      agentSlug: 'accounting',
+      channelType: 'teams',
+      conversationId: 'conv-1',
+    });
+    stop();
+    assert.deepEqual(typed, [{ conversationId: 'conv-1', asChannelKey: IDENTITIES.accounting }]);
+  });
+
+  it('stops cleanly and is safe to stop twice', () => {
+    const { service } = typingHarness();
+    const stop = service.startTyping({ agentSlug: 'hr', channelType: 'teams', conversationId: 'conv-1' });
+    stop();
+    stop();
+  });
+
+  it('does nothing when the provider cannot show it — never an error path', () => {
+    const service = new ConductorSayService({
+      attachments: { getByConversation: async () => attachment() },
+      // A provider from before `sendTyping` existed.
+      providers: { get: () => ({ channelType: 'teams', sendToConversation: async () => ({ outcome: 'delivered' as const }) }) },
+      identityFor: () => ({ channelKey: IDENTITIES.hr! }),
+    });
+    service.startTyping({ agentSlug: 'hr', channelType: 'teams', conversationId: 'conv-1' })();
+  });
+
+  it('shows nothing for an agent with no identity — no borrowed dots', () => {
+    const { service, typed } = typingHarness({ identities: {} });
+    service.startTyping({ agentSlug: 'hr', channelType: 'teams', conversationId: 'conv-1' })();
+    assert.deepEqual(typed, []);
+  });
+
+  it('shows nothing without a conversation', () => {
+    const { service, typed } = typingHarness();
+    service.startTyping({ agentSlug: 'hr', channelType: 'teams', conversationId: '  ' })();
+    assert.deepEqual(typed, []);
+  });
+});
+
 // --- effects wiring --------------------------------------------------------
 
 function effectsHarness(sayResult: Awaited<ReturnType<ConductorSayService['say']>>) {
@@ -333,6 +395,9 @@ function effectsHarness(sayResult: Awaited<ReturnType<ConductorSayService['say']
         calls.push(payload);
         return sayResult;
       },
+      // The step starts a composing indicator around the turn; the fake just
+      // has to hand back a stop.
+      startTyping: () => () => undefined,
     } as never,
   });
   return { effects, calls };
