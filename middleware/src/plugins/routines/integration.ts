@@ -5,10 +5,9 @@ import {
 
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
-import {
-  actorScope,
-  ROUTINE_NO_CONTEXT_ERROR,
-} from './manageRoutineTool.js';
+import { actorScope } from './manageRoutineTool.js';
+import type { RoutineActorScope } from './routineRunner.js';
+import { recordUnscopedRoutineAction } from './unscopedActionMetrics.js';
 import {
   ADAPTIVE_CARD_CONTENT_TYPE,
   buildRoutineListSmartCard,
@@ -72,15 +71,37 @@ export function createRoutinesIntegration(
      * #1025 — the smart-card buttons are the SECOND door onto the same
      * mutations as `manage_routine`, and they were equally unscoped: the
      * card carries the routine id, so a replayed or hand-crafted action
-     * payload reached pause/resume/trigger/delete for any id. Scoped to
-     * the turn's own (tenant, user), and refused outright when the card
-     * fires outside a channel turn, where there is no principal to scope
-     * to and acting anyway would mean acting as nobody.
+     * payload reached pause/resume/trigger/delete for any id.
+     *
+     * #1029 — the first version of this refused when no turn context was
+     * present, which would have broken all four buttons in production.
+     * The Teams adapter dispatches card clicks out-of-band: `handleMessage`
+     * takes the routine branch and returns before `runOrchestratorTurn`,
+     * so `captureRoutineTurn` never fires and `current()` is always
+     * undefined on this path. Refusing there is not a safe default, it is
+     * an outage.
+     *
+     * Precedence, documented in the contract next to the `actor` field:
+     *   1. `actor` from the channel — the only source that is correct on
+     *      the out-of-band path, because the adapter holds the activity.
+     *   2. the per-turn context, for clicks that do arrive inside a
+     *      captured turn.
+     *   3. neither ⇒ proceed UNSCOPED as before #1025, and record it.
+     *
+     * Case 3 keeps a known hole open on purpose, and counts every use so
+     * it is observable rather than silent. It disappears the moment the
+     * adapter passes `actor`.
      */
-    async handleRoutineAction({ action, id }) {
+    async handleRoutineAction({ action, id, actor }) {
       const ctx = routineTurnContext.current();
-      if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
-      const scope = actorScope(ctx);
+      const scope: RoutineActorScope = actor
+        ? { kind: 'channel-user', tenant: actor.tenant, userId: actor.userId }
+        : ctx
+          ? actorScope(ctx)
+          : { kind: 'operator' };
+      if (!actor && !ctx) {
+        recordUnscopedRoutineAction(action, id);
+      }
       if (action === 'pause') {
         const updated = await handle.runner.pauseRoutine(id, scope);
         return `Routine "${updated.name}" pausiert.`;
