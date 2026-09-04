@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a scaffolded plugin is correct in both locales (#1022)
+
+2026-09-04 — follow-up to #885. That change gave `identity.description` a
+locale map and fixed the 22 bundled manifests by hand, but left the generator
+feeding ONE input into both locales: every plugin the BuilderAgent scaffolded
+shipped its German text in the `en:` slot, which is the same defect four
+consecutive beta rounds had reported. Fixing the shipped manifests without
+fixing the generator left it one `create plugin` away.
+
+- `spec.description` is now explicitly the German store description, and
+  `spec.description_en` its English counterpart. The builder prompt asks for
+  both and states that the English one is neither optional nor a copy.
+- Both `template.yaml` files map each locale to its own field. The `en`
+  mapping is `description_en|description` — a new `|` fallback chain in
+  `resolveSource` (codegen) so a spec written before the field existed, or a
+  clone-from-installed of one, still generates instead of failing on an
+  unresolved placeholder.
+- The chain falls through on `undefined` only, never on `''`. An empty string
+  is a legitimate value: `spec.author` defaults to `''` (#225, no attribution)
+  and treating that as unresolved turned every author-less spec into a
+  `placeholder_residue` error. That regression was caught by the existing
+  codegen suite while this change was being built, and there is now a test
+  pinning it.
+- `lint_spec` warns (never blocks, since the fallback keeps the build green)
+  when `description_en` is missing or identical to the German text.
+- The `#885` boilerplate guard now also asserts the two locales resolve from
+  DIFFERENT sources, so mapping them back to one field turns tests red.
+- Both boilerplate `CLAUDE.md` tables dropped the "translate the `en:` line
+  afterwards" instruction, which is no longer true.
+
 ### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
 
 2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
