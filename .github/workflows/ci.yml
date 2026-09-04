@@ -130,6 +130,13 @@ jobs:
       # everyone to re-run — the habit that let #549 break main.
       - name: Test (node --test via tsx)
         run: npm run test
+        env:
+          # #1017 — the loopback MCP tests bind a localhost listener. Where a
+          # sandbox denies that, they used to skip themselves, so the whole
+          # file could pass green while asserting nothing about the CLI spawn
+          # gate. This flag turns that skip into a failure: on a runner that
+          # can listen, a skip now means the test is broken, not the sandbox.
+          OMADIA_EXPECT_LOOPBACK: '1'
 
       # #764 — the workspace packages carry their own test suites, and until
       # this step NO workflow ran them: `npm run test` above globs only
