@@ -39,7 +39,7 @@ import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
 import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import { ConductorSayService } from './sayService.js';
-import type { ConductorSayDeps } from './sayService.js';
+import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
 import { ConductorDiscussionService } from './discussionService.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
@@ -119,9 +119,15 @@ export { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.
 export type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
 
 export { ConductorSayService, formatUtterance, stripFencedJson, SAY_TEXT_MAX_CHARS } from './sayService.js';
-export type { ConductorSayInput, ConductorSayOutcome, ConductorSayDeps } from './sayService.js';
+export type {
+  AgentChannelIdentityResolver,
+  ConductorSayInput,
+  ConductorSayOutcome,
+  ConductorSayDeps,
+} from './sayService.js';
 export {
   ConductorDiscussionService,
+  DiscussionAgentHasNoIdentityError,
   DiscussionConversationBusyError,
   DiscussionInvalidInputError,
   DISCUSSION_PATTERN_ID,
@@ -330,6 +336,12 @@ export async function wireConductor(deps: {
   // (the reaper's TTL poll is the safety net, not the primary path).
   const ephemeralStore = new ConductorEphemeralStore(deps.pool);
   const ephemeralAttachments = new ConductorEphemeralAttachmentsStore(deps.pool);
+
+  // Which bot IS this agent. Read live from the registry on every call: a
+  // just-provisioned identity has to work without a restart, and a revoked one
+  // has to stop working just as fast.
+  const agentChannelIdentity: AgentChannelIdentityResolver = (agentSlug, channelType) =>
+    deps.getRegistry()?.channelIdentityFor(agentSlug, channelType);
   // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
   // operator's facilitation terminate — #330 round 4). Idempotent: an already
   // reaped or non-ephemeral workflow is a no-op.
@@ -366,6 +378,7 @@ export async function wireConductor(deps: {
             say: new ConductorSayService({
               attachments: ephemeralAttachments,
               providers: deps.conversationSendProviders,
+              identityFor: agentChannelIdentity,
               log,
             }),
           }
@@ -470,6 +483,10 @@ export async function wireConductor(deps: {
   const discussionService = new ConductorDiscussionService({
     ephemeralRuns: ephemeralRunService,
     attachments: ephemeralAttachments,
+    // The SAME resolver the say service uses — the start gate and the delivery
+    // rule must answer "can this agent speak as itself" identically, or a
+    // discussion passes the gate and then goes half-silent.
+    identityFor: agentChannelIdentity,
     log,
   });
   const ephemeralReaper = new ConductorEphemeralReaper({

@@ -156,11 +156,17 @@ describe('discussion pattern', () => {
 
 // --- discussion service ----------------------------------------------------
 
-function serviceHarness(existing?: EphemeralAttachment) {
+const IDENTITIES: Record<string, string> = {
+  hr: '28:aaaaaaaa-1111-2222-3333-444444444444',
+  accounting: '28:bbbbbbbb-5555-6666-7777-888888888888',
+};
+
+function serviceHarness(existing?: EphemeralAttachment, identities: Record<string, string> = IDENTITIES) {
   const created: unknown[] = [];
   const attached: unknown[] = [];
   const pending: unknown[] = [];
   const service = new ConductorDiscussionService({
+    identityFor: (slug) => (identities[slug] ? { channelKey: identities[slug] } : undefined),
     ephemeralRuns: {
       createEphemeralRun: async (input: unknown) => {
         created.push(input);
@@ -229,6 +235,27 @@ describe('ConductorDiscussionService', () => {
     });
     await assert.rejects(() => service.start(start), DiscussionConversationBusyError);
     assert.deepEqual(created, []);
+  });
+
+  it('REFUSES to start when a participant has no bot of its own', async () => {
+    const { service, created, pending } = serviceHarness(undefined, { hr: IDENTITIES.hr! });
+    await assert.rejects(() => service.start(start), (err: Error) => {
+      assert.equal(err.name, 'DiscussionAgentHasNoIdentityError');
+      assert.match(err.message, /accounting/);
+      return true;
+    });
+    // Refused BEFORE any side effect: no floor claimed, no run started.
+    assert.deepEqual(pending, []);
+    assert.deepEqual(created, []);
+  });
+
+  it('refuses when neither participant has a bot', async () => {
+    const { service } = serviceHarness(undefined, {});
+    await assert.rejects(() => service.start(start), (err: Error) => {
+      assert.equal(err.name, 'DiscussionAgentHasNoIdentityError');
+      assert.match(err.message, /'hr'/);
+      return true;
+    });
   });
 
   it('refuses the same agent twice — a discussion needs two voices', async () => {

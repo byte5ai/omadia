@@ -9,6 +9,7 @@
 
 import type { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 import type { ConductorEphemeralRunService, EphemeralRunHandle } from './ephemeralRunService.js';
+import type { AgentChannelIdentityResolver } from './sayService.js';
 
 export const DISCUSSION_PATTERN_ID = 'discussion';
 
@@ -34,6 +35,22 @@ export class DiscussionConversationBusyError extends Error {
   }
 }
 
+/**
+ * An agent without its own provisioned bot cannot appear in the chat as
+ * itself. Refused HERE rather than mid-run: a discussion that starts and then
+ * goes half-silent, with one side's turns landing and the other's dropped, is
+ * worse than one that never started — the humans watching would read the
+ * silence as the agent having nothing to say.
+ */
+export class DiscussionAgentHasNoIdentityError extends Error {
+  constructor(readonly agentSlug: string, readonly channelType: string) {
+    super(
+      `agent '${agentSlug}' has no provisioned ${channelType} identity — it would have to speak through another bot's name, so the discussion is refused`,
+    );
+    this.name = 'DiscussionAgentHasNoIdentityError';
+  }
+}
+
 export interface StartDiscussionInput {
   channelType: string;
   conversationId: string;
@@ -49,6 +66,9 @@ export interface StartDiscussionInput {
 export interface DiscussionServiceDeps {
   ephemeralRuns: Pick<ConductorEphemeralRunService, 'createEphemeralRun'>;
   attachments: Pick<ConductorEphemeralAttachmentsStore, 'getByConversation' | 'upsertPending' | 'attachToWorkflow'>;
+  /** Resolves the bot an agent speaks as — the same resolver the say service
+   *  uses, so the start gate and the delivery rule cannot drift apart. */
+  identityFor?: AgentChannelIdentityResolver;
   now?: () => Date;
   log?: (msg: string) => void;
 }
@@ -80,6 +100,13 @@ export class ConductorDiscussionService {
       typeof input.guidingQuestion === 'string' && input.guidingQuestion.trim().length > 0
         ? input.guidingQuestion.trim().slice(0, 2000)
         : topic;
+
+    // Both voices must be able to appear as themselves before anything starts.
+    for (const slug of [agentA, agentB]) {
+      if (!this.deps.identityFor?.(slug, channelType)) {
+        throw new DiscussionAgentHasNoIdentityError(slug, channelType);
+      }
+    }
 
     const existing = await this.deps.attachments.getByConversation(channelType, conversationId);
     if (existing?.workflowId) {

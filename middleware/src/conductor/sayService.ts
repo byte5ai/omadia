@@ -30,13 +30,25 @@ import type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
  *  keeping a runaway generation from flooding a chat, not about the protocol. */
 export const SAY_TEXT_MAX_CHARS = 4000;
 
+/**
+ * Resolves the provisioned channel identity an agent speaks as — its OWN bot.
+ * Backed by `OrchestratorRegistry.channelIdentityFor`. Absent (no registry)
+ * means no agent can be shown to own an identity, and every say is refused.
+ */
+export type AgentChannelIdentityResolver = (
+  agentSlug: string,
+  channelType: string,
+) => { channelKey: string } | undefined;
+
 export interface ConductorSayInput {
   /** The run's workflow; null on a run whose workflow could not be resolved. */
   workflowId: string | null;
   runId: string;
   /** The speaking agent's slug — audit provenance, and the default speaker name. */
   agentSlug: string;
-  /** Display name put before the utterance. */
+  /** Display name for the transcript and the log line. NOT written into the
+   *  chat: the message carries the agent's own bot as its sender, and a name
+   *  in the text would be a second claim about the same thing. */
   speaker: string;
   channelType: string;
   conversationId: string;
@@ -55,6 +67,7 @@ export type ConductorSayOutcome =
         | 'no_attachment'
         | 'foreign_workflow'
         | 'no_provider'
+        | 'no_identity'
         | 'channel_error';
       message: string;
     };
@@ -62,6 +75,9 @@ export type ConductorSayOutcome =
 export interface ConductorSayDeps {
   attachments: { getByConversation(channelType: string, channelKey: string): Promise<EphemeralAttachment | undefined> };
   providers: Pick<ConversationSendRegistry, 'get'>;
+  /** Resolves the bot the speaking agent IS. Absent = nobody can be shown to
+   *  own an identity, so nothing is posted. */
+  identityFor?: AgentChannelIdentityResolver;
   log?: (msg: string) => void;
 }
 
@@ -72,14 +88,18 @@ export function stripFencedJson(text: string): string {
   return text.replace(/```json\s*\n[\s\S]*?```/g, '').trim();
 }
 
-/** `**Speaker:** utterance` — the poor man's per-bot identity. Real per-speaker
- *  avatars need an agent-aware `ConversationSendProvider` (channel-sdk) plus a
- *  channel-teams release; the per-bot conversation references that would back
- *  it already exist (teams_conversation_refs is keyed by bot since #860 W0a). */
-export function formatUtterance(speaker: string, text: string): string {
-  const body = text.length > SAY_TEXT_MAX_CHARS ? `${text.slice(0, SAY_TEXT_MAX_CHARS)}…` : text;
-  const name = speaker.trim();
-  return name.length > 0 ? `**${name}:** ${body}` : body;
+/**
+ * The utterance as it appears in the chat: the agent's words, nothing else.
+ *
+ * There is deliberately NO `**Speaker:**` prefix. Every turn is posted through
+ * the speaking agent's own bot, so the chat already shows who is talking — its
+ * name, its avatar, its message bubble. A prefix would be a second, weaker
+ * claim about the same thing, and the moment the two disagreed the prefix
+ * would be the lie. Where an agent cannot post in its own name, the answer is
+ * to not post it (see `no_identity`), not to label it.
+ */
+export function formatUtterance(text: string): string {
+  return text.length > SAY_TEXT_MAX_CHARS ? `${text.slice(0, SAY_TEXT_MAX_CHARS)}…` : text;
 }
 
 export class ConductorSayService {
@@ -155,11 +175,29 @@ export class ConductorSayService {
       };
     }
 
+    // AN AGENT SPEAKS IN ITS OWN NAME OR NOT AT ALL.
+    //
+    // In a group chat holding several provisioned bots, posting through some
+    // other identity puts this agent's words under another bot's name and
+    // avatar, and nobody in the chat can tell. Prefixing the text with a name
+    // is not a fix — it is a second, weaker claim next to the sender the chat
+    // actually shows. So a missing identity is a refusal, not a degradation.
+    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType);
+    if (!identity) {
+      return {
+        said: false,
+        reason: 'no_identity',
+        message: `agent '${input.agentSlug}' has no provisioned ${input.channelType} identity — it cannot speak in its own name here, and it will not speak in someone else's`,
+      };
+    }
+
     let outcome: TargetedDeliveryOutcome;
     try {
-      outcome = await provider.sendToConversation(conversationId, {
-        text: formatUtterance(input.speaker || input.agentSlug, text),
-      });
+      outcome = await provider.sendToConversation(
+        conversationId,
+        { text: formatUtterance(text) },
+        { asChannelKey: identity.channelKey },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.deps.log?.(`[conductor] say by '${input.agentSlug}' threw: ${message}`);
@@ -172,7 +210,7 @@ export class ConductorSayService {
       return { said: false, reason: 'channel_error', message: outcome.message };
     }
     this.deps.log?.(
-      `[conductor] say by '${input.agentSlug}' delivered into ${input.channelType}/${conversationId} (run ${input.runId})`,
+      `[conductor] say by '${input.agentSlug}' delivered into ${input.channelType}/${conversationId} as ${identity.channelKey} (run ${input.runId})`,
     );
     return { said: true };
   }

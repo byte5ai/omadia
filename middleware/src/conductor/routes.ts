@@ -14,6 +14,7 @@ import type { ConductorRunStore } from './runStore.js';
 import { resolveAwaitHolders } from './awaitStore.js';
 import type { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import {
+  DiscussionAgentHasNoIdentityError,
   DiscussionConversationBusyError,
   DiscussionInvalidInputError,
 } from './discussionService.js';
@@ -451,6 +452,14 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       }
       if (err instanceof DiscussionConversationBusyError) {
         res.status(409).json({ code: 'conductor.discussion_conversation_busy', message: err.message });
+        return;
+      }
+      if (err instanceof DiscussionAgentHasNoIdentityError) {
+        res.status(400).json({
+          code: 'conductor.discussion_agent_has_no_identity',
+          message: err.message,
+          agentSlug: err.agentSlug,
+        });
         return;
       }
       const name = err instanceof Error ? err.name : '';

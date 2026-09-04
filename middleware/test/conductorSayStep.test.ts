@@ -111,12 +111,9 @@ describe('utterance formatting', () => {
     assert.equal(stripFencedJson(text), 'Mein Punkt steht.');
   });
 
-  it('prefixes the speaker name', () => {
-    assert.equal(formatUtterance('HR', 'Moin'), '**HR:** Moin');
-  });
-
-  it('falls back to the bare text when there is no speaker name', () => {
-    assert.equal(formatUtterance('  ', 'Moin'), 'Moin');
+  it('posts the agent’s words and NOTHING else — the bot is the attribution', () => {
+    assert.equal(formatUtterance('Moin'), 'Moin');
+    assert.equal(formatUtterance('Moin').includes('**'), false);
   });
 });
 
@@ -134,18 +131,36 @@ const attachment = (over: Partial<EphemeralAttachment> = {}): EphemeralAttachmen
   ...over,
 });
 
-function harness(over: { attachment?: EphemeralAttachment | undefined; provider?: unknown } = {}) {
-  const sent: Array<{ conversationId: string; text: string }> = [];
+/** Two provisioned bots, one per agent — the setup the hard criterion assumes. */
+const IDENTITIES: Record<string, string> = {
+  hr: '28:aaaaaaaa-1111-2222-3333-444444444444',
+  accounting: '28:bbbbbbbb-5555-6666-7777-888888888888',
+};
+
+function harness(
+  over: {
+    attachment?: EphemeralAttachment | undefined;
+    provider?: unknown;
+    identities?: Record<string, string>;
+  } = {},
+) {
+  const sent: Array<{ conversationId: string; text: string; asChannelKey?: string | undefined }> = [];
   const provider = {
     channelType: 'teams',
-    async sendToConversation(conversationId: string, message: { text: string }) {
-      sent.push({ conversationId, text: message.text });
+    async sendToConversation(
+      conversationId: string,
+      message: { text: string },
+      opts?: { asChannelKey?: string },
+    ) {
+      sent.push({ conversationId, text: message.text, asChannelKey: opts?.asChannelKey });
       return { outcome: 'delivered' as const };
     },
   };
+  const identities = over.identities ?? IDENTITIES;
   const service = new ConductorSayService({
     attachments: { getByConversation: async () => over.attachment },
     providers: { get: () => (over.provider === undefined ? provider : (over.provider as typeof provider)) },
+    identityFor: (slug) => (identities[slug] ? { channelKey: identities[slug] } : undefined),
   });
   return { service, sent };
 }
@@ -164,7 +179,25 @@ describe('ConductorSayService — the floor is derived from the RUN', () => {
   it('delivers when the conversation is attached to this run’s workflow', async () => {
     const { service, sent } = harness({ attachment: attachment() });
     assert.deepEqual(await service.say(input), { said: true });
-    assert.deepEqual(sent, [{ conversationId: 'conv-1', text: '**HR:** Mein Beitrag.' }]);
+    // THE HARD CRITERION: the agent's own bot is the sender, and the text is
+    // the agent's words alone — no "who said what" label in the body.
+    assert.deepEqual(sent, [
+      { conversationId: 'conv-1', text: 'Mein Beitrag.', asChannelKey: IDENTITIES.hr },
+    ]);
+  });
+
+  it('sends each agent as ITS OWN bot — two speakers, two identities', async () => {
+    const { service, sent } = harness({ attachment: attachment() });
+    await service.say(input);
+    await service.say({ ...input, agentSlug: 'accounting', speaker: 'FiBu', text: 'Mein Gegenpunkt.' });
+    assert.deepEqual(
+      sent.map((s) => s.asChannelKey),
+      [IDENTITIES.hr, IDENTITIES.accounting],
+    );
+    assert.deepEqual(
+      sent.map((s) => s.text),
+      ['Mein Beitrag.', 'Mein Gegenpunkt.'],
+    );
   });
 
   it('delivers on a still-pending attachment — createEphemeralRun starts before it can attach', async () => {
@@ -207,14 +240,38 @@ describe('ConductorSayService — the floor is derived from the RUN', () => {
   });
 
   it('names a missing provider instead of throwing', async () => {
-    const { service } = harness({ attachment: attachment(), provider: undefined as never });
     const noProvider = new ConductorSayService({
       attachments: { getByConversation: async () => attachment() },
       providers: { get: () => undefined },
+      identityFor: () => ({ channelKey: IDENTITIES.hr! }),
     });
-    void service;
     const outcome = await noProvider.say(input);
     assert.equal(outcome.said === false && outcome.reason, 'no_provider');
+  });
+
+  it('REFUSES rather than borrow another bot when the agent has no identity', async () => {
+    const { service, sent } = harness({ attachment: attachment(), identities: {} });
+    const outcome = await service.say(input);
+    assert.equal(outcome.said === false && outcome.reason, 'no_identity');
+    assert.deepEqual(sent, [], 'nothing may reach the chat under a foreign name');
+  });
+
+  it('refuses when only the OTHER agent has an identity', async () => {
+    const { service, sent } = harness({ attachment: attachment(), identities: { accounting: IDENTITIES.accounting! } });
+    const outcome = await service.say(input);
+    assert.equal(outcome.said === false && outcome.reason, 'no_identity');
+    assert.deepEqual(sent, []);
+  });
+
+  it('refuses when no resolver is wired at all — fail closed', async () => {
+    const service = new ConductorSayService({
+      attachments: { getByConversation: async () => attachment() },
+      providers: {
+        get: () => ({ channelType: 'teams', sendToConversation: async () => ({ outcome: 'delivered' as const }) }),
+      },
+    });
+    const outcome = await service.say(input);
+    assert.equal(outcome.said === false && outcome.reason, 'no_identity');
   });
 
   it('turns a throwing provider into a named outcome, never an exception', async () => {
@@ -228,15 +285,29 @@ describe('ConductorSayService — the floor is derived from the RUN', () => {
           },
         }),
       },
+      identityFor: () => ({ channelKey: IDENTITIES.hr! }),
     });
     const outcome = await service.say(input);
     assert.equal(outcome.said === false && outcome.reason, 'channel_error');
   });
 
-  it('defaults the speaker to the agent slug', async () => {
-    const { service, sent } = harness({ attachment: attachment() });
-    await service.say({ ...input, speaker: '', agentSlug: 'accounting' });
-    assert.equal(sent[0]?.text.startsWith('**accounting:**'), true, sent[0]?.text ?? 'nothing sent');
+  it('reports an undelivered send — the bot could not reach the chat, so nobody heard it', async () => {
+    const service = new ConductorSayService({
+      attachments: { getByConversation: async () => attachment() },
+      providers: {
+        get: () => ({
+          channelType: 'teams',
+          sendToConversation: async () => ({
+            outcome: 'unreachable' as const,
+            code: 'no_binding' as const,
+            message: 'bot 28:… has no reference for this conversation',
+          }),
+        }),
+      },
+      identityFor: () => ({ channelKey: IDENTITIES.hr! }),
+    });
+    const outcome = await service.say(input);
+    assert.equal(outcome.said === false && outcome.reason, 'channel_error');
   });
 });
 

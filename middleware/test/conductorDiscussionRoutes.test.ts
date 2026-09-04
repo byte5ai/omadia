@@ -9,6 +9,7 @@ import type { Express } from 'express';
 import { createConductorRouter } from '../src/conductor/routes.js';
 import type { ConductorRouterDeps } from '../src/conductor/routes.js';
 import {
+  DiscussionAgentHasNoIdentityError,
   DiscussionConversationBusyError,
   DiscussionInvalidInputError,
 } from '../src/conductor/discussionService.js';
@@ -104,6 +105,21 @@ describe('POST /discussions', () => {
     });
     assert.equal(res.status, 400);
     assert.equal(((await res.json()) as { code?: string }).code, 'conductor.discussion_invalid');
+  });
+
+  it('answers 400 naming the agent that has no bot of its own', async () => {
+    const { baseUrl } = await startApp(() => {
+      throw new DiscussionAgentHasNoIdentityError('accounting', 'teams');
+    });
+    const res = await fetch(`${baseUrl}/discussions`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+    assert.equal(res.status, 400);
+    const payload = (await res.json()) as { code?: string; agentSlug?: string };
+    assert.equal(payload.code, 'conductor.discussion_agent_has_no_identity');
+    assert.equal(payload.agentSlug, 'accounting');
   });
 
   it('answers 409 when the conversation already hosts another workflow', async () => {
