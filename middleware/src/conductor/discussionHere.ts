@@ -75,37 +75,110 @@ export interface StartDiscussionHereInput {
   ttlMs?: number;
 }
 
+export interface DiscussionPartner {
+  slug: string;
+  /** The bot's name as people read it in the chat. */
+  name: string;
+}
+
+/**
+ * Everyone who could take part in one conversation: agents with a provisioned
+ * identity for the channel whose bot is actually PRESENT in that chat.
+ *
+ * Presence matters, not just provisioning. A partner whose bot was never added
+ * to the chat has no conversation reference there, so its turns would be
+ * generated, charged and then dropped — the half-silent discussion this design
+ * refuses to produce.
+ */
+export type PartnerLister = (
+  channelType: string,
+  conversationId: string,
+) => Promise<readonly DiscussionPartner[]>;
+
 /** What `ctx.services.get('conductorDiscussions')` hands a granted plugin. */
 export interface ConductorDiscussionsCapability {
   startHere(input: StartDiscussionHereInput): Promise<EphemeralRunHandle>;
+  partnersHere(): Promise<readonly DiscussionPartner[]>;
+}
+
+/**
+ * The named partner is not someone this chat can hear from. Carries the real
+ * candidates so the caller can correct itself in one step — the first live
+ * attempt died because the model guessed a roster, guessed wrong, and stopped.
+ */
+export class DiscussionUnknownPartnerError extends Error {
+  constructor(
+    readonly requested: string,
+    readonly candidates: readonly DiscussionPartner[],
+  ) {
+    super(
+      candidates.length > 0
+        ? `'${requested}' is not an agent with its own bot in this chat`
+        : `'${requested}' is not available here, and no other agent has its own bot in this chat`,
+    );
+    this.name = 'DiscussionUnknownPartnerError';
+  }
+}
+
+/** Match a free-text partner reference against a candidate: people name the bot
+ *  the way the chat shows it ('Messias'), models reach for the slug. Accept both,
+ *  case- and whitespace-insensitively. */
+function matchesPartner(requested: string, partner: DiscussionPartner): boolean {
+  const want = requested.trim().toLowerCase();
+  return partner.slug.toLowerCase() === want || partner.name.trim().toLowerCase() === want;
 }
 
 export function createDiscussionsCapability(deps: {
   discussions: Pick<ConductorDiscussionService, 'start'>;
   resolveTurn: AmbientTurnResolver;
   resolveOpener: OpenerResolver;
+  listPartners: PartnerLister;
   log?: (msg: string) => void;
 }): ConductorDiscussionsCapability {
+  /** The turn's conversation + the agent that answered it, or a typed refusal. */
+  const resolveHere = (): { turn: AmbientTurn; opener: string } => {
+    const turn = deps.resolveTurn();
+    if (!turn || turn.conversationId.trim().length === 0) {
+      throw new DiscussionNoConversationError();
+    }
+    const opener = turn.botChannelKey
+      ? deps.resolveOpener(turn.channelType, turn.botChannelKey)
+      : undefined;
+    if (!opener) throw new DiscussionUnknownOpenerError(turn.botChannelKey);
+    return { turn, opener };
+  };
+
   return {
+    async partnersHere() {
+      const { turn, opener } = resolveHere();
+      const all = await deps.listPartners(turn.channelType, turn.conversationId);
+      return all.filter((p) => p.slug !== opener);
+    },
+
     async startHere(input) {
-      const here = deps.resolveTurn();
-      if (!here || here.conversationId.trim().length === 0) {
-        throw new DiscussionNoConversationError();
+      const { turn, opener } = resolveHere();
+
+      // Resolve the partner against who can ACTUALLY speak in this chat. This
+      // is where a guessed name is caught — before a run exists, before a floor
+      // is claimed, and with the real candidates attached to the refusal.
+      const candidates = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
+        (p) => p.slug !== opener,
+      );
+      const partner = candidates.find((p) => matchesPartner(input.agentB, p));
+      if (!partner) {
+        throw new DiscussionUnknownPartnerError(input.agentB, candidates);
       }
-      const opener = here.botChannelKey
-        ? deps.resolveOpener(here.channelType, here.botChannelKey)
-        : undefined;
-      if (!opener) {
-        throw new DiscussionUnknownOpenerError(here.botChannelKey);
-      }
+
       deps.log?.(
-        `[conductor] discussion requested: '${opener}' with '${input.agentB}' in ${here.channelType}/${here.conversationId}`,
+        `[conductor] discussion requested: '${opener}' with '${partner.slug}' in ${turn.channelType}/${turn.conversationId}`,
       );
       return deps.discussions.start({
-        channelType: here.channelType,
-        conversationId: here.conversationId,
+        channelType: turn.channelType,
+        conversationId: turn.conversationId,
         agentA: opener,
-        agentB: input.agentB,
+        // The RESOLVED slug, never the caller's spelling — a display name must
+        // not reach the registry as if it were a slug.
+        agentB: partner.slug,
         topic: input.topic,
         ...(input.guidingQuestion !== undefined ? { guidingQuestion: input.guidingQuestion } : {}),
         ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),

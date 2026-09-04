@@ -455,7 +455,15 @@ jobs:
   audit:
     name: audit (high+critical block)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 5 minutes was too tight for the middleware workspace. A `timeout-minutes`
+    # kill is reported as "cancelled", not "failure" — so it read as the upstream
+    # registry outage the step comment below genuinely describes, and every
+    # re-run looked like the reasonable response. It was the budget: five
+    # consecutive cancels on one PR (2026-09-04) plus one each on the two before
+    # it, while the web-ui half of the same matrix always passed. The step
+    # installs npm@latest and then audits a workspace with 40+ packages; 12
+    # gives real headroom while still catching a job that has genuinely hung.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:

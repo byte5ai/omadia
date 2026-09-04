@@ -1,8 +1,11 @@
 import type { PluginContext } from '@omadia/plugin-api';
 
 import {
+  DISCUSSION_PARTNERS_PROMPT_DOC,
   DISCUSSION_PROMPT_DOC,
+  createDiscussionPartnersHandler,
   createDiscussionStartHandler,
+  discussionPartnersToolSpec,
   discussionStartToolSpec,
 } from './discussionTool.js';
 import type { DiscussionsCapability } from './discussionTool.js';
@@ -32,32 +35,42 @@ export interface DiscussionPluginHandle {
 export async function activate(ctx: PluginContext): Promise<DiscussionPluginHandle> {
   ctx.log('[discussion] activating');
 
-  // `optional_requires` in the manifest is what grants this lookup; a kernel
-  // that does not publish the capability yields undefined rather than throwing.
-  const discussions = ctx.services.getOptional?.<DiscussionsCapability>(
-    CONDUCTOR_DISCUSSIONS_SERVICE_NAME,
-  );
-  if (!discussions) {
-    ctx.log(
-      '[discussion] kernel publishes no conductorDiscussions capability — the tool is registered but will explain that discussions are unavailable',
-    );
-  }
+  // RESOLVE LAZILY, PER CALL — NOT ONCE AT ACTIVATION.
+  //
+  // `optional_requires` contributes no activation edge, so the kernel may not
+  // have published `conductorDiscussions` yet when this activate() runs. Caching
+  // that first lookup froze `undefined` into the handler for the process's whole
+  // life: the tool then answered "discussions are not available on this
+  // deployment" forever, on a kernel that published the capability seconds
+  // later. Observed in production on the very first live attempt. The
+  // ServicesAccessor doc calls this out explicitly — resolve at first use.
+  const resolveDiscussions = (): DiscussionsCapability | undefined =>
+    ctx.services.getOptional<DiscussionsCapability>(CONDUCTOR_DISCUSSIONS_SERVICE_NAME);
 
   const disposeTool = ctx.tools.register(
     discussionStartToolSpec,
     createDiscussionStartHandler({
-      discussions,
+      resolveDiscussions,
       log: (msg) => ctx.log(msg),
     }),
     { promptDoc: DISCUSSION_PROMPT_DOC },
   );
 
-  ctx.log(`[discussion] ready (seam=${discussions ? 'on' : 'absent'})`);
+  const disposePartners = ctx.tools.register(
+    discussionPartnersToolSpec,
+    createDiscussionPartnersHandler({ resolveDiscussions, log: (msg) => ctx.log(msg) }),
+    { promptDoc: DISCUSSION_PARTNERS_PROMPT_DOC },
+  );
+
+  // Seam state is reported as "checked at call time" rather than a boot-time
+  // verdict, precisely because a boot-time verdict is what went wrong.
+  ctx.log('[discussion] ready (capability resolved per call)');
 
   return {
     async close(): Promise<void> {
       ctx.log('[discussion] deactivating');
       disposeTool();
+      disposePartners();
     },
   };
 }
