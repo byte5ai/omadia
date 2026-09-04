@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "quality.response-guard"
-  description: "Response-quality core plugin. Publishes the `responseGuard@1` capability with sycophancy-levels (off/low/medium/high) and a boundary-preset library that splices guardrails into the system prompt ahead of body prose."
+  description:
+    en: "Keeps answers factual and on topic. It sets how firmly an agent should avoid flattery and adds those boundaries to its instructions."
+    de: "Hält Antworten sachlich und beim Thema. Es legt fest, wie deutlich ein Agent Gefälligkeit vermeiden soll, und ergänzt diese Grenzen in seinen Anweisungen."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

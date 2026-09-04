@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "tool"
   domain: "visualization.diagrams"
-  description: "Rendert Mermaid/Graphviz/PlantUML/Vega-Lite-Diagramme über Kroki und liefert signierte PNG-URLs aus Tigris."
+  description:
+    en: "Turns Mermaid, Graphviz, PlantUML and Vega-Lite descriptions into diagram images and returns a link that can be shared."
+    de: "Wandelt Beschreibungen in Mermaid, Graphviz, PlantUML und Vega-Lite in Diagramm-Bilder um und liefert einen Link, der weitergegeben werden kann."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

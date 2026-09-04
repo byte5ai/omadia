@@ -161,6 +161,20 @@ es zusätzlich ein Gate auf der Spawn-Seite: `CliChatAgent` startet die CLI mit
 (Bash, Edit, Write, …) und die `~/.claude`-Hooks des Host-Users nie erreichbar
 sind (#991/#992; Details in `docs/security-architecture.md` § 3a).
 
+Seit #1007 liegt dieses Gate in **einem** Modul,
+`packages/harness-orchestrator/src/cliSpawnGate.ts`
+(`buildCliToolGateArgv`, `buildCompletionCliArgv`, `buildGatedCliEnv`,
+`CLI_BUILTIN_TOOL_DENYLIST`), und wird von **beiden** Spawn-Stellen benutzt:
+`cliChatAgent.ts` (Shape 3) und `platform/claudeCliAdapter.ts` (Shape 2,
+Single-Shot-Completions für Session-Summary, Fact-Extraction, Classifier,
+Verifier-Judge). Letztere hatte das Gate nicht und war die exponiertere von
+beiden, weil ihre Prompts aus Nutzertext und Uploads zusammengesetzt werden.
+Wer eine neue Spawn-Stelle baut, importiert dieses Modul und kopiert die Flags
+nicht. Dazu kommen ein leeres `cwd` (die CLI-eigene `CLAUDE.md`-Discovery ist
+hartkodiert und nur über `--bare` abschaltbar, was aber OAuth nicht mehr liest)
+und eine Env-**Allowlist** statt der alten Scrub-Liste, die `NODE_OPTIONS`
+durchgelassen hat.
+
 Zwei unabhängige Readiness-Signale werden UND-verknüpft (jedes kann
 Verfügbarkeit allein verweigern) — bewusst zwei getrennte Caches statt einem
 gemergten, damit keins das Urteil des anderen stillschweigend überschreiben
@@ -1839,6 +1853,17 @@ echte Regressions-Bugs auftauchen, gezielt nachrüsten.
 ---
 
 ## 10. Konfiguration
+
+### Test-Schalter (nicht von der Middleware gelesen)
+
+Drei Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
+AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_EXPECT_LOOPBACK=1` | Die Loopback-MCP-Tests **scheitern** statt sich selbst zu überspringen, wenn die Sandbox keinen 127.0.0.1-Listener erlaubt. Ohne das meldet ein Runner ohne Listener die ganze Datei grün, ohne etwas zu prüfen (#1017). CI setzt es. |
+| `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
+| `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 

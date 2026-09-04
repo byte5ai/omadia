@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { Days_One, Geist, Geist_Mono, Source_Serif_4 } from 'next/font/google';
 import { NextIntlClientProvider } from 'next-intl';
 import { getLocale, getMessages, getTranslations } from 'next-intl/server';
 
@@ -14,6 +13,7 @@ import { SessionWatcher } from './_components/SessionWatcher';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { DesktopUiReady } from './_components/DesktopUiReady';
 import { StreamRunner } from './_components/StreamRunner';
+import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { fetchNavEntries } from './_lib/navigation';
@@ -21,50 +21,13 @@ import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
 
 /**
- * Typography per the Lume spec (§2.7) — three registers, three variable
- * families, all self-hosted by next/font (no runtime font-CDN requests):
- *   - Geist          — structural register: UI, labels, headings, buttons.
- *   - Source Serif 4 — prose register: long-form agent narration.
- *   - Geist Mono     — data/code register: IDs, numbers, code, paths.
- *
- * next/font assigns dedicated CSS variables (--font-geist, --font-source-serif,
- * --font-geist-mono); _lib/theme.css composes them into --font-sans / --font-serif
- * / --font-mono with platform-strongest fallbacks. Geist is preloaded for FCP;
- * the prose + mono faces are deferred (§2.7 "Font loading").
+ * Typography per the Lume spec (§2.7) lives in `./_fonts` — three registers,
+ * three variable families plus the wordmark face, loaded from woff2 files
+ * vendored in this repo so the build never talks to a font CDN. That module
+ * owns the CSS variables (--font-geist, --font-source-serif, --font-geist-mono,
+ * --font-days-one); _lib/theme.css composes them into --font-sans /
+ * --font-serif / --font-mono with platform-strongest fallbacks.
  */
-const sans = Geist({
-  subsets: ['latin'],
-  variable: '--font-geist',
-  display: 'swap',
-});
-
-const serif = Source_Serif_4({
-  subsets: ['latin'],
-  variable: '--font-source-serif',
-  display: 'swap',
-  preload: false,
-});
-
-const mono = Geist_Mono({
-  subsets: ['latin'],
-  variable: '--font-geist-mono',
-  display: 'swap',
-  preload: false,
-});
-
-/**
- * Brand wordmark only — the omadia logo (header + login card) keeps the
- * original Days One face. Lume headings elsewhere stay on Geist per §2.7
- * (see globals.css .font-display); this is a separate `.font-logo` class
- * so the wordmark can diverge without reopening that decision sitewide.
- */
-const logo = Days_One({
-  subsets: ['latin'],
-  weight: '400',
-  variable: '--font-days-one',
-  display: 'swap',
-  preload: false,
-});
 
 /**
  * No-FOUC palette/theme (issue #287). The choice now lives in a server-side
@@ -105,7 +68,7 @@ export default async function RootLayout({
   return (
     <html
       lang={locale}
-      className={`${sans.variable} ${serif.variable} ${mono.variable} ${logo.variable}`}
+      className={fontVariables}
       data-palette={palette}
       {...(theme ? { 'data-theme': theme } : {})}
       suppressHydrationWarning

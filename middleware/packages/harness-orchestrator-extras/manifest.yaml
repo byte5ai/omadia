@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.orchestrator-extras"
-  description: "Tool-Set: ContextRetriever (pre-turn KG/Embedding-Lookup), FactExtractor (LLM-getriebener KG-Ingest aus Chat-Turns), TopicDetector (per-Message-Embedding-Similarity-Routing) und GraphBackfill-Function (Offline-Graph-Evidence-Catchup; vom Kernel-Boot direkt aus dem Plugin-Barrel aufgerufen — nicht in activate(), da der 88-Turn-Replay routinemäßig das 10s-Activate-Budget sprengt). Konsumiert die Kernel-Capabilities `knowledgeGraph` und `embeddingClient` via `ctx.services.get` und published seinerseits drei Service-Capabilities (`contextRetriever`, `factExtractor`, `topicDetector`) für Orchestrator + Channels."
+  description:
+    en: "Adds the steps around a chat turn that make answers better over time. It looks up relevant context before the turn, records facts in the knowledge graph afterwards, and recognises what a message is about."
+    de: "Ergänzt die Schritte rund um einen Chat-Zug, die Antworten mit der Zeit besser machen. Es sucht vorher passenden Kontext, hält danach Fakten im Wissensgraphen fest und erkennt, worum es in einer Nachricht geht."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

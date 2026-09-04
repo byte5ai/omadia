@@ -36,6 +36,166 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
+
+2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
+the subscription-CLI process boundary on the chat path; the review found the
+gate was half-applied and unverified.
+
+- **#1007** — `platform/claudeCliAdapter.ts`, the second spawn site, ran with
+  the CLI's full default tool set, the operator's `settings.json` (including
+  `hooks`, which execute shell commands whenever a tool fires) and the
+  operator's MCP servers. Its prompts are assembled from end-user chat text and
+  uploaded documents, and the read-only built-ins never prompt for permission,
+  so injected text could read host files and return them inside a summary
+  omadia persists. The gate now lives in one module,
+  `harness-orchestrator/src/cliSpawnGate.ts`, and both sites build their argv
+  from it.
+- **#1014** — the deny list was hand-collected and missed 40 real tool names,
+  `Tmux` (a terminal) among them, plus every `self_hosted_runner_*`. It is now
+  a superset of the installed binary's own inventory and names all ten declared
+  aliases beside their canonical names, including `RunWorkflow` (alias of
+  `Workflow`, metadata declares `enablesCodeExecution`) and the MCP-resource
+  short forms, which a review caught still open. The drift guard mines the
+  binary and subtracts the deny list; its first version did the reverse and so
+  could not detect a deletion at all. Added `--restricted`, an empty `cwd` (the
+  CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it, but `--bare`
+  never reads OAuth), and an env **allowlist**, platform-branched for Windows,
+  replacing a scrub list that passed `NODE_OPTIONS` through.
+- **#1015** — the loopback MCP server dispatched any tool name it was sent, a
+  wider set than it advertises; it now refuses an unadvertised name. Teardown
+  killed the child *after* awaiting `server.stop()`, which waits for live
+  connections, so an abort path could hang a turn holding its semaphore permit;
+  the kill now comes first and `stop()` is bounded.
+- **#1016** — the turn's async context is captured at `chat()`/`chatStream()`
+  entry instead of inside the async generator's body, which runs at first
+  iteration and could belong to whoever iterated. Added an `assertTurnOwner`
+  hook so a stale `enterWith` chain fails closed instead of acting as the
+  previous principal. Wiring that guard to the app's routine context is the
+  open half.
+- **#1017** — the gate is now verified behaviourally, not only by argv shape:
+  a live probe spawns the real binary with the production argv and asks it to
+  run a shell command. Measured on 2.1.259 — production gate: no tools;
+  pre-#991 argv: `Bash`. The deny-list test no longer checks the constant
+  against itself, and the loopback tests fail instead of silently skipping
+  where a sandbox blocks listeners (`OMADIA_EXPECT_LOOPBACK=1` in CI).
+
+### Fixed — a foreign tool call is now loud instead of invisible (#1008, #1017)
+
+2026-09-03 — post-merge review of #1009. The subscription-CLI agent marks a
+`tool_use` event `foreign` when the call did not go through omadia's loopback
+MCP server, i.e. when one of the CLI's own built-ins ran despite the OM-81
+spawn gate. The flag was written and never read: no log, no counter, and the
+matching `tool_result` was unmarked, so in the chat trace such a call looked
+exactly like an omadia tool call. The tripwire for "a built-in slipped
+through" was inert, which matters because the deny list behind it is still
+being widened.
+
+- The chat route now records every foreign call in `foreignToolMetrics`
+  (per tool name and per agent slug, same shape as `brokerMetrics`) and logs
+  it at error level. Unlike the broker's denial streaks this alerts on every
+  occurrence: the expected count is zero, so there is no benign steady state
+  to suppress.
+- The matching `tool_result` is stamped `foreign` too, correlated by
+  `tool_use` id, so the pair can no longer disagree.
+- The chat trace renders a foreign call with a translated label and a
+  `role="alert"` explanation saying omadia's permission rules did not apply.
+  The warning is carried by text, not by colour alone.
+- Receipts were left alone deliberately: `turnReceiptStore` is written by the
+  orchestrator at turn end, and the CLI path is a separate `ChatAgent` that
+  writes no receipt at all, so there is no per-turn record to stamp. Worth
+  revisiting if the CLI path ever gains one.
+
+### Fixed — the web-ui build no longer needs the Google Fonts CDN (#1019)
+
+2026-09-03 — a build-time font download took out a release. On `7a0d4675` the
+macOS x64 desktop build failed with `Turbopack build failed with 4 errors` and,
+four times, `next/font: error: Failed to fetch <family> from Google Fonts`. The
+cascade behaved exactly as the round-3 release fail-safe intends and is worth
+reading as a success: no x64 artifact, so `desktop-apps / mac-update-feed`
+failed with `FAIL: missing artifacts/omadia-installers-macos-latest/latest-mac.yml`,
+so `promote-release` failed, so the release stayed a draft and the previous
+version kept the `latest` flag. Nobody shipped a half-built release. But the
+release did not ship at all, and the cause was a font CDN being briefly
+unreachable from a CI runner.
+
+`next/font/google` self-hosts the faces it serves, which is why the running app
+never asked a CDN for a font. It downloads them at build time, though, so every
+build needed `fonts.googleapis.com`. The four faces now live in the repo at
+`web-ui/app/_fonts/` and load through `next/font/local`.
+
+- The vendored woff2 files are **byte-identical** to what `next/font/google`
+  downloaded before, verified by SHA-256 against the previous build's output, so
+  nothing about the rendered type changes. The weight ranges, `display: swap`,
+  the latin `unicode-range` and the preload split (Geist eager, prose/mono/
+  wordmark deferred) are carried over unchanged, and so are the CSS variable
+  names `_lib/theme.css` composes into `--font-sans` / `--font-serif` /
+  `--font-mono`.
+- 116 KB total for all four families, latin subset only, which is what
+  `layout.tsx` already asked for.
+- All four are SIL Open Font License 1.1; the license text ships next to each
+  file and `app/_fonts/LICENSES.md` records the provenance and update procedure.
+- Two guards so it cannot regress: an ESLint `no-restricted-imports` rule that
+  rejects `next/font/google` outright, and `app/_fonts/fonts.test.ts`, which
+  fails if the import returns, if a referenced woff2 is missing or is not really
+  a woff2, if a CSS variable is renamed, or if a license file is dropped.
+- Verified by building with all outbound HTTP forced through a dead proxy
+  (`HTTPS_PROXY=http://127.0.0.1:1`). The build succeeds, which is the whole
+  point.
+
+### Fixed — the plugin store speaks German (OM-50, #885)
+
+2026-09-03 — reported by Silvio Lange (TE Printline) in beta rounds 1, 2, 3 and
+again in round 4, and it was never the plumbing. `identity.description` has
+accepted a `{ en, de }` language map since #602, `adaptManifestV1` passes it
+along as `description_localized`, and both store render sites already resolve it
+with `pickLocalized`. What was missing was the content: not one of the 22
+bundled manifests declared a `de:` description, so a German business user
+choosing what to install read developer English.
+
+Worse, and previously unnoticed: eleven of those manifests held German text in
+the bare string, which the loader reads as **English**. An English-speaking
+operator was shown German, and the `en` slot had no English text at all to fall
+back to. The template in `docs/creating-plugins.md` was the source of that
+habit, since it literally read `description: "<Beschreibung DE>"`.
+
+All 22 bundled manifests now carry both languages, rewritten for a business
+reader rather than translated literally, following the project copy rules (no
+em dashes, no AI vocabulary, no capability names a customer has never heard of).
+`middleware/test/manifestDescriptionLocalized.test.ts` guards it: a new plugin
+without a German description fails the suite instead of the next beta report,
+and the test also pins the English resolution, the plain-string fallback and the
+German-only fallback.
+
+### Fixed — the desktop app has its own icon, and the tray icon is visible (#888)
+
+2026-09-03 — OM-53 / OM-63, reported in three consecutive beta rounds. "About
+omadia" showed Electron's default atom symbol and the menu-bar entry was
+guaranteed blank: `electron-builder.yml` named no `icon:` at all, and
+`tray.ts` fell back to `nativeImage.createEmpty()` because
+`assets/trayTemplate.png` had never existed. Neither silence failed a build.
+
+Since #1002 the tray was not only cosmetic. The readiness copy points a stuck
+user at Tray → Restart, which is unreachable when the tray has no artwork.
+
+- The app now ships `icon.icns` (macOS), `icon.ico` (Windows, 16 through 256),
+  a 1024px `icon.png` (Linux) and `trayTemplate.png` / `@2x` as real macOS
+  template images. All are generated from two committed SVGs by
+  `npm run icons`, so the artwork has a single source instead of six
+  hand-exported binaries that drift apart.
+- The icons are **derived from `logo-concepts/omadia-logo-concept.svg`**, not
+  designed: the mark's paths, radii and colours are copied verbatim. Replacing
+  `desktop/buildResources/icon.svg` and re-running `npm run icons` is the whole
+  swap, no code touched.
+- `electron-builder.yml` states each platform's icon explicitly. Convention
+  scanning falls back to Electron's own icon when a file is missing, which is
+  how this shipped three times; a named path fails the build instead.
+- `tray.ts` still falls back to an empty image rather than refusing to start,
+  but now logs a warning naming every path it tried.
+- Tests parse the PNG, ICNS and ICO headers directly (no `sips`, `iconutil` or
+  ImageMagick, none of which exist on a Linux runner) and assert that the
+  config names an icon per platform and that each named file exists.
+
 ### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
 
 2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now

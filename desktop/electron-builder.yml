@@ -19,6 +19,12 @@ directories:
   output: release
   buildResources: buildResources
 
+# Icons are stated per target rather than left to electron-builder's convention
+# scan (#888). Auto-detection silently falls back to Electron's own atom icon
+# when a file is missing or renamed, which is exactly how three beta rounds
+# shipped with the default icon; an explicit path fails the build instead.
+# All of them are generated from `buildResources/icon.svg` by `npm run icons`.
+
 # Only the compiled desktop app + its own node_modules go into the app bundle.
 # The ~130MB Postgres engine ships via extraResources (staged to runtime/omadia-pg),
 # so exclude its node_modules copy to avoid duplicating it inside the asar.
@@ -49,6 +55,7 @@ afterPack: buildResources/afterPack.js
 
 mac:
   category: public.app-category.developer-tools
+  icon: buildResources/icon.icns
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: buildResources/entitlements.mac.plist
@@ -92,12 +99,16 @@ dmg:
       path: /Applications
 
 win:
+  icon: buildResources/icon.ico
   target:
     - target: nsis
       arch: [x64]
   # signtool / azure-trusted-signing wired via CSC_* env in CI.
 
 nsis:
+  installerIcon: buildResources/icon.ico
+  uninstallerIcon: buildResources/icon.ico
+  installerHeaderIcon: buildResources/icon.ico
   oneClick: false
   perMachine: false        # per-user install → state in %APPDATA%, no admin prompt
   allowToChangeInstallationDirectory: true
@@ -106,6 +117,7 @@ nsis:
 
 linux:
   category: Development
+  icon: buildResources/icon.png
   target:
     - target: AppImage      # portable, the true "one-click, no package manager" path
       arch: [x64]
