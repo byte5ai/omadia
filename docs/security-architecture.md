@@ -185,10 +185,30 @@ working across it:
   the tool refused); afterwards the same staleness would mean acting as the
   previous principal. `LoopbackMcpServerDeps.assertTurnOwner` restores the
   refusal: it runs inside the restored context immediately before dispatch and
-  throws on mismatch. **It has to be wired by whoever constructs the agent**
-  (`CliChatAgentDeps.turnOwnerGuard`), because the store lives in the app layer
-  and the orchestrator package cannot read it; unwired, the context is restored
-  but not cross-checked. That wiring is the open half of #1016.
+  throws on mismatch.
+
+  That hook is now wired end to end. The implementation cannot default inside
+  the orchestrator package, because the store it reads (`routineTurnContext`)
+  lives in the application layer, so the chain is: the kernel publishes
+  `createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+  (`middleware/src/plugins/routines/turnOwnerGuard.ts`), the orchestrator plugin
+  resolves it, and `buildOrchestratorForAgent` forwards it into `CliChatAgent`
+  as `turnOwnerGuard` — the CLI runtime only, since that is the one path where a
+  tool call crosses a process boundary. The guard compares the restored
+  context's `userId` against the turn's own; both are the same channel-native id
+  written by the same adapter, so they agree for a turn that owns its context
+  and disagree exactly when the chain is stale. Its decision table is
+  deliberate: no context ⇒ pass, because `manage_routine` already refuses with
+  "no user context" and turning that into a throw would harden every
+  context-free HTTP turn; context present but the turn names no owner ⇒ refuse,
+  that being the stale shape; mismatch ⇒ refuse. The refusal message names
+  neither principal (it reaches the model), and the detail goes to the server
+  log. A host that publishes no such service keeps the pre-#1016 behaviour.
+
+  Reviewer note: the wiring is pinned by `buildOrchestrator.test.ts`, which
+  asserts the constructed `CliChatAgent` carries the guard. The first round of
+  this fix shipped a correct guard with no caller, so a test on the guard
+  function alone does not cover the risk.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but

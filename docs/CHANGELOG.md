@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
+
+2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
+earlier; the guard that cross-checks the restored context had no production
+caller, so it protected nothing.
+
+Channel adapters install the routine context with `AsyncLocalStorage.enterWith`,
+which has no scope exit. The value persists forward on the async chain, so a
+chain that begins a new turn without calling `captureRoutineTurn` again still
+carries the previous turn's `(tenant, userId)`. Before #993 the subscription-CLI
+path saw no context at all and `manage_routine` refused; once #993 restored the
+context across the process boundary, the same staleness meant acting **as the
+previous principal**.
+
+The guard now runs in production: the kernel publishes
+`createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+(`middleware/src/plugins/routines/turnOwnerGuard.ts`), the orchestrator plugin
+resolves it, and `buildOrchestratorForAgent` forwards it into `CliChatAgent`,
+whose loopback server calls it inside the restored context immediately before
+dispatch. It could not default inside the orchestrator package, because the
+store it reads lives in the application layer. Scope is the CLI runtime alone —
+the in-process path never crosses a process boundary.
+
+It compares the restored context's `userId` against the turn's own; both are the
+same channel-native id written by the same adapter. No context still passes, so
+`manage_routine`'s existing "no user context" refusal is unchanged; a context
+the turn cannot vouch for, and a mismatch, both refuse. The message the caller
+sees names neither principal, since it can reach the model, and the detail goes
+to the server log.
+
+Pinned by a wiring test that asserts the constructed agent carries the guard, not
+just that the guard function is correct: removing only the forward turns it red.
+The first round of this fix is the reason that distinction is now a test.
+
 ### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
 
 2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
