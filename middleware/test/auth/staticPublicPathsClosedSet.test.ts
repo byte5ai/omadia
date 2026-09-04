@@ -70,7 +70,12 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   },
   {
     path: '/api/imessage/webhook/token',
-    why: 'Sendblue iMessage webhook + answer links (#410) — the plugin verifies its shared secret / capability token in the handler',
+    why:
+      'Sendblue iMessage webhook + answer links (#410) — the plugin verifies its ' +
+      'shared secret / capability token in the handler. One row per entry, so ' +
+      'this row names ONE of the three route families the entry admits ' +
+      '(webhook|a|answers); the other two, and the siblings that must stay ' +
+      'gated, are pinned in channelImessage/publicPathsExemption.test.ts',
   },
   {
     // Built from the shared builder, for the reason stated above this array:

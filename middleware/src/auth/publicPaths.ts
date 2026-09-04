@@ -40,17 +40,6 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Bot Framework webhook for channel-teams: the adapter validates the
   // Bot-issued JWT inside the handler; Teams never sends a session cookie.
   /^\/api\/messages(?:\/|$|\?)/,
-  // Sendblue iMessage relay for channel-imessage (#410). Same shape as the
-  // Teams webhook above: Sendblue POSTs with no session cookie and the plugin
-  // authenticates each delivery itself (timing-safe shared secret in the
-  // `:token` path segment, header fallback). `/a/:token` and
-  // `/answers/:token[/reply]` are the answer-link routes — opened from an
-  // iMessage bubble in a plain browser where no operator session exists; the
-  // single-use, TTL-bound capability token in the URL IS the authorization and
-  // GET is side-effect free by contract. Narrow to the three public route
-  // families only — the plugin's admin UI lives under `/api/imessage-channel/`
-  // and stays behind this gate like every other admin surface.
-  /^\/api\/imessage\/(?:webhook|a|answers)(?:\/|$|\?)/,
   // The SAME Bot Framework webhook, reached by its slug-addressed spellings —
   // `/api/teams/messages` (default-bot alias) and `/api/teams/<botSlug>/messages`
   // (that one bot's own credentials), both shipped in channel-teams 0.20.0.
@@ -75,6 +64,28 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // definition and cannot drift apart again. It admits the two messaging shapes
   // and NOT the `/api/teams` namespace — see `platform/teamsMessagingPath.ts`.
   TEAMS_MESSAGING_PATH_RE,
+  // Sendblue iMessage relay for channel-imessage (#410). Same shape as the two
+  // Teams webhook entries above: Sendblue POSTs with no session cookie and the
+  // plugin authenticates each delivery itself (timing-safe shared secret in the
+  // `:token` path segment, header fallback). `/a/:token` and
+  // `/answers/:token[/reply]` are the answer-link routes — opened from an
+  // iMessage bubble in a plain browser where no operator session exists; the
+  // single-use, TTL-bound capability token in the URL IS the authorization and
+  // GET is side-effect free by contract. Narrow to the three public route
+  // families only — the plugin's admin UI lives under `/api/imessage-channel/`
+  // and stays behind this gate like every other admin surface.
+  //
+  // CONTRACT with the out-of-tree plugin. `/api/imessage` is the plugin's
+  // `ROUTE_PREFIX` (`omadia-channel-imessage/src/plugin.ts`), handed verbatim
+  // to `core.registerRouter`. Unlike the Teams entry above there is no shared
+  // constant to build this from — the plugin does not live in this repo — so
+  // the binding is by test on BOTH sides: the plugin's integration test pins the
+  // prefix it registers, and `test/channelImessage/publicPathsExemption.test.ts`
+  // pins that exactly these three families, and none of their siblings, are
+  // exempt here. Renaming the prefix or adding a fourth public family is a
+  // change to both repos, landed together; a plugin-only change 401s every
+  // public iMessage route in production while this repo's suite stays green.
+  /^\/api\/imessage\/(?:webhook|a|answers)(?:\/|$|\?)/,
   // Epic #459 W9 — generic MCP-server OAuth callback (bugfix). Same shape as
   // the spec-005 kernel OAuth broker callback above: the provider (Notion,
   // etc.) redirects the operator's browser back here after consent, and the
