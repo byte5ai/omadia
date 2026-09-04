@@ -49,12 +49,16 @@ import { describe, it } from 'node:test';
  *
  * WHAT THIS GUARD DOES NOT CATCH — measured, not assumed
  * ------------------------------------------------------
- * The scan keys on the two tokens appearing near each other in code, so it
- * sees the INLINE form — which is the form all five real occurrences had, and
- * the form a newcomer writes. It does NOT see a regression hidden behind a
- * helper's parameter names: reverting `isEntryPoint` to
- * `moduleUrl === 'file://' + entry` leaves both tokens out of the file and this
- * guard stays green (verified by planting exactly that).
+ * The scan works on the statement around each `import.meta.url`, so it sees
+ * every spelling the real occurrences used — including the one that assigns
+ * argv to a local first, which pure statement scoping missed until the
+ * substring rule was added (measured, by planting the original `stubServer`
+ * form back).
+ *
+ * What it does NOT see is a regression hidden behind a helper's PARAMETER
+ * names: reverting `isEntryPoint` to `moduleUrl === 'file://' + entry` leaves
+ * neither token in the file and this guard stays green. Verified by planting
+ * exactly that.
  *
  * That case is covered by the other half of the pair, and covered hard:
  * `desktop/scripts/set-desktop-version.test.mjs` drives the real CLI from a
@@ -75,6 +79,23 @@ const ENTRY_ARGV = 'process.argv' + '[1]';
 
 /** The correct ways to cross the URL/path boundary. */
 const SANCTIONED = ['fileURLToPath', 'pathToFileURL'];
+
+/**
+ * Substring matching ON the module URL — the fourth real spelling.
+ *
+ * `stubServer.ts` compared only the basename:
+ * `import.meta.url.endsWith(argv[1].split('/').pop())`. Dead on Windows, and
+ * it fires for ANY entry script sharing the filename. Worth flagging on its
+ * own, because this form does not need the entry token in the same statement:
+ * the real code assigned argv to a local one line earlier, which is precisely
+ * how statement scoping alone would have missed it (measured — the first
+ * statement-scoped version did).
+ */
+const SUBSTRING_MATCHERS = ['endsWith(', 'startsWith(', 'includes('];
+
+/** A literal `file://` in the same statement is the defect, whatever it is
+ *  concatenated with — the entry path is not the only wrong operand. */
+const URL_LITERAL = 'file://';
 
 const SCANNED_EXTENSIONS = [
   '.ts',
@@ -157,22 +178,24 @@ function lineOf(text: string, index: number): number {
  */
 function neutralizeInterpolation(code: string): string {
   const out = code.split('');
-  const stack: number[] = [];
+  // Brace depth per open interpolation — a template literal can nest inside
+  // one. Only push/pop, never an indexed write: `noUncheckedIndexedAccess`
+  // types `depths[depths.length - 1]` as possibly undefined, and casting that
+  // away in a guard's own helper would be the wrong kind of shortcut.
+  const depths: number[] = [];
   for (let i = 0; i < out.length; i += 1) {
     if (out[i] === '$' && out[i + 1] === '{') {
       out[i + 1] = '(';
-      stack.push(1);
+      depths.push(1);
       i += 1;
-    } else if (stack.length > 0) {
-      if (out[i] === '{') stack[stack.length - 1] += 1;
-      else if (out[i] === '}') {
-        const depth = (stack[stack.length - 1] as number) - 1;
-        if (depth === 0) {
-          out[i] = ')';
-          stack.pop();
-        } else stack[stack.length - 1] = depth;
-      }
+      continue;
     }
+    const depth = depths.pop();
+    if (depth === undefined) continue; // outside any interpolation
+    if (out[i] === '{') depths.push(depth + 1);
+    else if (out[i] !== '}') depths.push(depth);
+    else if (depth === 1) out[i] = ')';
+    else depths.push(depth - 1);
   }
   return out.join('');
 }
@@ -213,11 +236,22 @@ function findComparisons(
       if (at === -1) break;
       from = at + MODULE_URL.length;
       const statement = enclosingStatement(code, at);
-      if (!statement.includes(ENTRY_ARGV)) continue;
+      const comparesToEntryPath = statement.includes(ENTRY_ARGV);
+      const buildsUrlLiteral = statement.includes(URL_LITERAL);
+      const matchesSubstring = SUBSTRING_MATCHERS.some((m) =>
+        statement.includes(`${MODULE_URL}.${m}`),
+      );
+      if (!comparesToEntryPath && !buildsUrlLiteral && !matchesSubstring) {
+        continue;
+      }
       hits.push({
         file: relative(repoRoot, file),
         line: lineOf(code, at),
-        sanctioned: SANCTIONED.some((ok) => statement.includes(`${ok}(`)),
+        // A substring match on the module URL is wrong even with
+        // `fileURLToPath` in the statement, so it is never sanctioned.
+        sanctioned:
+          !matchesSubstring &&
+          SANCTIONED.some((ok) => statement.includes(`${ok}(`)),
       });
     }
   }
@@ -291,6 +325,18 @@ describe('entry-point guards compare paths as paths', () => {
         'good-pathtofileurl.mjs',
         'const m = import' +
           '.meta.url === pathToFileURL(process.argv[1]).href;\n',
+        false,
+      ],
+      [
+        'split-statements.ts',
+        'const argv1 = process.argv[1];\n' +
+          "const m = argv1 && import" +
+          ".meta.url.endsWith(argv1.split('/').pop());\n",
+        true,
+      ],
+      [
+        'good-new-url.mjs',
+        "const asset = new URL('./data.json', import" + ".meta.url);\n",
         false,
       ],
       [
