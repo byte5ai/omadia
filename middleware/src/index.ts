@@ -423,6 +423,8 @@ import {
 import { ASSETS, verifyAssetBundles } from './platform/assets.js';
 import { resolveBuilderReferenceCatalog } from './plugins/builder/builderReferenceCatalog.js';
 import {
+  ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+  createRoutineTurnOwnerGuard,
   createRoutinesIntegration,
   initRoutines,
   type RoutinesHandle,
@@ -1121,6 +1123,19 @@ async function main(): Promise<void> {
     (agentId: string): boolean =>
       pluginStatusRegistry.isReady(agentId) &&
       oauthConnectionTracker.isConnected(agentId),
+  );
+
+  // #1016 — per-turn owner guard for the subscription-CLI runtime. Published
+  // here, and not defaulted inside the orchestrator package, because the store
+  // it has to read (`routineTurnContext`) lives in this layer. The orchestrator
+  // plugin resolves it as `routineTurnOwnerGuard` and forwards it into
+  // `CliChatAgent`, where it runs inside the restored async context immediately
+  // before a loopback dispatch. Unconditional: `routineTurnContext.enter` is
+  // installed by channel adapters regardless of which backends are configured,
+  // so the staleness this refuses does not depend on a pg pool.
+  serviceRegistry.provide(
+    ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+    createRoutineTurnOwnerGuard(),
   );
 
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or

@@ -136,6 +136,30 @@ src/
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
 
+### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
+
+Neue Kernel-Service-Registrierung neben `installedPluginConfigReader` und
+`installedPluginToolsReadyReader`: `serviceRegistry.provide('routineTurnOwnerGuard',
+createRoutineTurnOwnerGuard())` in `middleware/src/index.ts`. Der Orchestrator-Plugin
+löst sie per `ctx.services.get` auf, `buildOrchestratorForAgent` reicht sie als
+`turnOwnerGuard` in `CliChatAgent` weiter.
+
+Warum nicht als Default im Orchestrator-Package: der Guard liest
+`routineTurnContext`, und der Store liegt in der App-Schicht. Deshalb Service
+statt Konstante.
+
+Was er tut: Kanal-Adapter setzen den Routine-Kontext mit `enterWith` — ohne
+Scope-Exit. Ein Async-Chain, der einen neuen Turn beginnt, ohne
+`captureRoutineTurn` erneut zu rufen, trägt noch die `(tenant, userId)` des
+vorherigen Turns. Seit #993 überquert dieser Kontext die Prozessgrenze zur CLI,
+also hieße Staleness dort **als vorheriger Principal handeln**. Der Guard läuft
+im wiederhergestellten Kontext direkt vor dem Dispatch und vergleicht dessen
+`userId` mit der des laufenden Turns; beide schreibt derselbe Adapter aus
+derselben Quelle. Kein Kontext ⇒ Durchlass (`manage_routine` verweigert dort
+schon selbst), Kontext ohne belegbaren Turn-Owner ⇒ Verweigerung, Mismatch ⇒
+Verweigerung. Nur der CLI-Pfad, der In-Process-Pfad ist unberührt. Hosts ohne
+diesen Service verhalten sich wie vor #1016.
+
 ### Plugin-Tool-Readiness-Gate (#474)
 
 `Orchestrator.isToolAvailable(agentId)` entscheidet pro Tool, ob es dem
