@@ -32,7 +32,7 @@ export type DiscussionStartInput = z.infer<typeof DiscussionStartInputSchema>;
 export const discussionStartToolSpec: NativeToolSpec = {
   name: DISCUSSION_START_TOOL_NAME,
   description:
-    "Open a visible, bounded topic discussion with ANOTHER agent in this chat. The two of you then post in turn under your own names, responding to each other, for at most seven contributions before you write a closing summary. Use it when the person asks two agents to discuss, compare, or reconcile something across domains — 'discuss X with the accounting agent', 'get HR's and finance's view on Y'. Do NOT use it to answer a question you can answer yourself, and do NOT use it to talk to a person. Call it at most once per request; after it returns, reply with one short sentence and stop — your first contribution is posted by the discussion itself, not by this turn.",
+    "Open a visible, bounded topic discussion with ANOTHER agent in this chat. The two of you then post in turn under your own names, responding to each other, for at most seven contributions before you write a closing summary. Use it when the person asks two agents to discuss, compare, or reconcile something across domains — 'discuss X with the accounting agent', 'get HR's and finance's view on Y'. If you do not know the partner's slug for certain, call discussion_partners FIRST — do not guess and do not tell the person the agent is unknown before you have checked. A result starting with 'Error:' means nothing was started; report that in one sentence and never claim otherwise. Do NOT use this to answer a question you can answer yourself, and do NOT use it to talk to a person. Call it at most once per request; after a successful call, reply with one short sentence and stop — your first contribution is posted by the discussion itself, not by this turn.",
   input_schema: {
     type: 'object',
     properties: {
@@ -56,11 +56,29 @@ export const discussionStartToolSpec: NativeToolSpec = {
   },
 };
 
+export const DISCUSSION_PARTNERS_TOOL_NAME = 'discussion_partners';
+
+export const discussionPartnersToolSpec: NativeToolSpec = {
+  name: DISCUSSION_PARTNERS_TOOL_NAME,
+  description:
+    'List the agents you could hold a discussion with IN THIS CHAT: their slug and the name people see on their bot. Call this FIRST whenever someone asks you to discuss something with another agent and you are not certain of that agent\'s slug — never guess a slug, and never claim an agent does not exist without checking here. Takes no arguments.',
+  input_schema: { type: 'object', properties: {}, required: [] },
+};
+
+export const DISCUSSION_PARTNERS_PROMPT_DOC = [
+  'discussion_partners answers "who is in this chat that I could discuss with".',
+  'The person will name a partner the way they see them — the bot name shown in the chat, not a slug.',
+  'Look the name up here and pass the matching slug to discussion_start.',
+].join(' ');
+
 export const DISCUSSION_PROMPT_DOC = [
   'discussion_start opens a real, visible conversation between you and another agent in this chat.',
   'Both of you post under your own bot identities; there is no need to label who is speaking.',
   'It is bounded (at most seven contributions plus a summary) and can be stopped by an operator.',
   'Start one only when the person actually asked for two agents to talk — otherwise just answer.',
+  'If you are unsure of the partner\'s slug, call discussion_partners first instead of guessing.',
+  'If discussion_start returns a string beginning with "Error:", the discussion did NOT start:',
+  'say what went wrong in one sentence. Never claim a discussion is running when it is not.',
 ].join(' ');
 
 /**
@@ -69,17 +87,31 @@ export const DISCUSSION_PROMPT_DOC = [
  * cannot know which agent invoked it or where — so the kernel reads both off
  * the turn being answered instead of taking this plugin's word for them.
  */
+export interface DiscussionPartner {
+  slug: string;
+  /** The bot's display name as people see it in the chat (e.g. 'Karen'). */
+  name: string;
+}
+
 export interface DiscussionsCapability {
   startHere(input: {
     agentB: string;
     topic: string;
     guidingQuestion?: string;
   }): Promise<{ runId: string; workflowSlug: string; expiresAt: string }>;
+  /** Who could take part in THIS chat — agents with their own bot present here. */
+  partnersHere(): Promise<readonly DiscussionPartner[]>;
 }
 
+/** Resolved per call, never cached: `optional_requires` creates no activation
+ *  edge, so the capability may appear after this plugin has activated. */
+export type ResolveDiscussions = () => DiscussionsCapability | undefined;
+
+const NOT_AVAILABLE =
+  'Error: agent discussions are not available on this deployment (the kernel publishes no conductorDiscussions capability — it needs Postgres and a recent core).';
+
 export function createDiscussionStartHandler(deps: {
-  /** Absent = the kernel seam is missing; the tool says so instead of throwing. */
-  discussions: DiscussionsCapability | undefined;
+  resolveDiscussions: ResolveDiscussions;
   log?: (msg: string) => void;
 }): (raw: unknown) => Promise<string> {
   return async (raw: unknown): Promise<string> => {
@@ -90,12 +122,14 @@ export function createDiscussionStartHandler(deps: {
     }
     const input = parsed.data;
 
-    if (!deps.discussions) {
-      return 'Error: agent discussions are not available on this deployment (the kernel publishes no conductorDiscussions capability — it needs Postgres and a recent core).';
+    const discussions = deps.resolveDiscussions();
+    if (!discussions) {
+      deps.log?.('[discussion] start refused: capability unavailable');
+      return NOT_AVAILABLE;
     }
 
     try {
-      const handle = await deps.discussions.startHere({
+      const handle = await discussions.startHere({
         agentB: input.with_agent,
         topic: input.topic,
         ...(input.guiding_question !== undefined ? { guidingQuestion: input.guiding_question } : {}),
@@ -114,7 +148,39 @@ export function createDiscussionStartHandler(deps: {
       // silently answering as if nothing had been asked.
       const message = err instanceof Error ? err.message : String(err);
       deps.log?.(`[discussion] start refused: ${message}`);
-      return `Error: ${message}`;
+      // An unknown partner is the one refusal the model can fix by itself, so
+      // it comes back WITH the candidates rather than as a bare no. Karen's
+      // first live attempt failed exactly here: she guessed at the roster,
+      // guessed wrong, and gave up without ever calling the tool.
+      const partners = await discussions.partnersHere().catch(() => []);
+      const list =
+        partners.length > 0
+          ? ` Available in this chat: ${partners.map((p) => `${p.slug} (${p.name})`).join(', ')}.`
+          : '';
+      return `Error: ${message}${list}`;
+    }
+  };
+}
+
+export function createDiscussionPartnersHandler(deps: {
+  resolveDiscussions: ResolveDiscussions;
+  log?: (msg: string) => void;
+}): (raw: unknown) => Promise<string> {
+  return async (): Promise<string> => {
+    const discussions = deps.resolveDiscussions();
+    if (!discussions) return NOT_AVAILABLE;
+    try {
+      const partners = await discussions.partnersHere();
+      deps.log?.(`[discussion] partners here: ${partners.map((p) => p.slug).join(', ') || 'none'}`);
+      return JSON.stringify({
+        partners,
+        note:
+          partners.length > 0
+            ? 'Pass one of these `slug` values as with_agent. The name is what people see in the chat.'
+            : 'No other agent has its own bot in this chat, so no discussion can be held here. Say so plainly.',
+      });
+    } catch (err) {
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
     }
   };
 }

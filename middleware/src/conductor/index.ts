@@ -139,12 +139,15 @@ export {
   createDiscussionsCapability,
   DiscussionNoConversationError,
   DiscussionUnknownOpenerError,
+  DiscussionUnknownPartnerError,
 } from './discussionHere.js';
 export type {
   AmbientTurn,
   AmbientTurnResolver,
   ConductorDiscussionsCapability,
+  DiscussionPartner,
   OpenerResolver,
+  PartnerLister,
   StartDiscussionHereInput,
 } from './discussionHere.js';
 export {

@@ -4156,6 +4156,31 @@ async function main(): Promise<void> {
         // opened it" and "who was addressed" can never be two different answers.
         resolveOpener: (channelType, botChannelKey) =>
           getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        // Who can actually be heard in this chat: an agent needs its own bot AND
+        // that bot has to be a member here. Provisioning alone is not enough —
+        // a partner whose bot was never added has no conversation reference, so
+        // its turns would be generated, paid for and dropped.
+        listPartners: async (channelType, conversationId) => {
+          const roster = await conversationRosterRegistry
+            .getRoster(channelType, conversationId)
+            .catch(() => undefined);
+          if (!roster) return [];
+          const registry = getRegistry();
+          if (!registry) return [];
+          const seen = new Set<string>();
+          const partners: { slug: string; name: string }[] = [];
+          for (const p of roster.participants) {
+            if (p.isBot !== true) continue;
+            const owner = registry.identityForChannel(channelType, p.userRef.id);
+            if (!owner || seen.has(owner.agent.slug)) continue;
+            seen.add(owner.agent.slug);
+            partners.push({
+              slug: owner.agent.slug,
+              name: p.userRef.displayName ?? owner.agent.name ?? owner.agent.slug,
+            });
+          }
+          return partners;
+        },
         log: (msg: string) => console.log(msg),
       }),
     );
