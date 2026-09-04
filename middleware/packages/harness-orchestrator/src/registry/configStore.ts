@@ -9,6 +9,8 @@ import {
   type AgentChannelPolicyRow,
   type AgentToAgentMode,
 } from './agentToAgent.js';
+import { parseModelPolicy } from './modelPolicy.js';
+import type { ModelPolicy } from '@omadia/plugin-api';
 
 import {
   AgentGraphStore,
@@ -74,6 +76,21 @@ export interface AgentRow {
    * reasons as `contextMemory` (see {@link parseAgentToAgentMode}).
    */
   readonly agentToAgent?: AgentToAgentMode;
+  /**
+   * #1033 — the agent's model policy (`agents.model_policy`, migration 0059),
+   * narrowed deny-default by {@link parseModelPolicy}: absent column or an
+   * unrecognised shape both read as `{primary: auto, fallback: none}`, which
+   * is today's behaviour.
+   */
+  readonly modelPolicy?: ModelPolicy;
+  /**
+   * #1033 — the compiled identity prompt PER MODEL FAMILY
+   * (`agent_identities.composed_prompts`), for every family the policy names.
+   * `instructions` stays the primary family's text; this map is what the
+   * fallback path picks from so a cross-family fallback never speaks a prompt
+   * composed for the other family.
+   */
+  readonly instructionsByFamily?: Readonly<Record<string, string>>;
   /**
    * #914 — the agent's authored behaviour text (`agent_identities.
    * instructions`). Read-only here: the identity is written through
@@ -198,6 +215,8 @@ export interface AgentPatch {
   readonly contextMemory?: ContextMemoryMode;
   /** #1018 — same COALESCE contract as `contextMemory`: absent leaves it. */
   readonly agentToAgent?: AgentToAgentMode;
+  /** #1033 — validated by the caller ({@link validateModelPolicy}); absent leaves it. */
+  readonly modelPolicy?: ModelPolicy;
 }
 
 export interface AgentPluginInput {
@@ -322,6 +341,10 @@ interface AgentDbRow {
   context_memory?: string | null;
   /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
   agent_to_agent?: string | null;
+  /** #1033 — `agents.model_policy`; absent on a DB that predates 0059. */
+  model_policy?: unknown;
+  /** #1033 — `agent_identities.composed_prompts`, joined by the read queries. */
+  identity_composed_prompts?: Record<string, unknown> | null;
   /** #914 — `agent_identities.instructions`, joined in by the three read
    *  queries below. Absent on the RETURNING rows of the write paths, which do
    *  not join: a write never changes the identity, and a caller that needs it
@@ -405,6 +428,16 @@ function mapAgent(row: AgentDbRow): AgentRow {
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
     agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
+    modelPolicy: parseModelPolicy(row.model_policy),
+    ...(row.identity_composed_prompts && typeof row.identity_composed_prompts === 'object'
+      ? {
+          instructionsByFamily: Object.fromEntries(
+            Object.entries(row.identity_composed_prompts).filter(
+              (e): e is [string, string] => typeof e[1] === 'string' && e[1].trim().length > 0,
+            ),
+          ),
+        }
+      : {}),
     instructions: row.identity_instructions ?? null,
     identityName: row.identity_display_name ?? null,
     identityShortDescription: row.identity_short_description ?? null,
@@ -468,6 +501,7 @@ function mapPlatformSettings(
  */
 const AGENT_SELECT =
   'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions, ' +
+  'i.composed_prompts AS identity_composed_prompts, ' +
   'i.display_name AS identity_display_name, ' +
   'i.short_description AS identity_short_description, ' +
   'i.long_description AS identity_long_description ' +
@@ -547,6 +581,7 @@ export class ConfigStore {
          canvas_position = COALESCE($7::jsonb, canvas_position),
          context_memory  = COALESCE($8, context_memory),
          agent_to_agent  = COALESCE($9, agent_to_agent),
+         model_policy    = COALESCE($10::jsonb, model_policy),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -560,6 +595,7 @@ export class ConfigStore {
         patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
         patch.contextMemory ?? null,
         patch.agentToAgent ?? null,
+        patch.modelPolicy ? JSON.stringify(patch.modelPolicy) : null,
       ],
     );
     const row = rows[0];

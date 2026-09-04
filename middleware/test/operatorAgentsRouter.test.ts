@@ -41,6 +41,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
 import express from 'express';
+import type { ModelInfo } from '@omadia/llm-provider';
 
 import {
   ConfigValidationError,
@@ -79,6 +80,31 @@ import {
 } from '../src/services/teamsBotsConfigSync.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
+/** #1033 — the model catalogue the policy routes validate against. */
+const POLICY_CATALOG: Record<string, ModelInfo | undefined> = {
+  'anthropic:claude-opus-4-8': {
+    id: 'anthropic:claude-opus-4-8',
+    provider: 'anthropic',
+    modelId: 'claude-opus-4-8',
+    label: 'Opus',
+    class: 'frontier',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh'],
+  },
+  'openai:gpt-5.5': {
+    id: 'openai:gpt-5.5',
+    provider: 'openai',
+    modelId: 'gpt-5.5',
+    label: 'GPT',
+    class: 'frontier',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: false,
+  },
+};
+
 interface AgentMem {
   id: string;
   slug: string;
@@ -91,6 +117,8 @@ interface AgentMem {
   contextMemory?: 'off' | 'enforce' | 'enforce-strict';
   /** #1018 — optional like the real row; absent models a pre-0058 agent. */
   agentToAgent?: 'off' | 'on';
+  /** #1033 — optional like the real row; absent models a pre-0059 agent. */
+  modelPolicy?: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -195,6 +223,7 @@ class FakeConfigStore {
       status: 'enabled' | 'disabled';
       contextMemory: 'off' | 'enforce' | 'enforce-strict';
       agentToAgent: 'off' | 'on';
+      modelPolicy: Record<string, unknown>;
     }>,
   ): Promise<AgentMem> {
     const row = this.agents.get(id);
@@ -657,6 +686,12 @@ describe('createOperatorAgentsRouter', () => {
         getAgentGraphStore: () => graph as unknown as AgentGraphStore,
         // #910 — read live, like every other getter here.
         getInstalledRegistry: () => installedPlugins,
+        // #1033 — a two-provider catalogue; only anthropic holds a key.
+        getModelPolicyContext: () => ({
+          resolveModel: (provider: string, model: string) => POLICY_CATALOG[`${provider}:${model}`],
+          usable: async (provider: string) => provider === 'anthropic',
+          activeProvider: 'anthropic',
+        }),
         // W1a (#860) — getters read the CURRENT fakes so afterEach resets apply.
         getTeamsIdentity: () => ({
           store: teamsStore,
@@ -692,6 +727,85 @@ describe('createOperatorAgentsRouter', () => {
     teamsInstalls = undefined;
     resolveTeamName = undefined;
     teamsEvents = undefined;
+  });
+
+  // ── model policy (#1033) ─────────────────────────────────────────────
+  describe('model policy (#1033)', () => {
+    it('GET /:slug/model-policy defaults to auto/none with the active provider', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { policy: unknown; activeProvider: string; vision: unknown };
+      assert.deepEqual(body.policy, { primary: 'auto', fallback: 'none' });
+      assert.equal(body.activeProvider, 'anthropic');
+      assert.deepEqual(body.vision, {});
+    });
+
+    it('PUT /:slug/model-policy persists a validated policy, reports vision, reloads', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          primary: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'xhigh' },
+          fallback: 'auto',
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { ok: boolean; vision: { primary?: boolean } };
+      assert.equal(body.ok, true);
+      assert.equal(body.vision.primary, true);
+      assert.deepEqual((await store.getAgentBySlug('public'))?.modelPolicy, {
+        primary: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'xhigh' },
+        fallback: 'auto',
+      });
+      assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('PUT /:slug/model-policy rejects an unkeyed provider (409, like every config validation) and persists nothing', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: { provider: 'openai', model: 'gpt-5.5' }, fallback: 'none' }),
+      });
+      // ConfigValidationError → 409 on this router (the same code a duplicate
+      // slug or a cross-provider routing pick gets); a malformed BODY is 400.
+      assert.equal(res.status, 409);
+      assert.equal((await store.getAgentBySlug('public'))?.modelPolicy, undefined);
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('PUT /:slug/model-policy rejects an effort the model does not declare and a malformed body', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const undeclared = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'auto', fallback: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'max' } }),
+      });
+      // `max` is outside the contract vocabulary → the zod shape check (400).
+      assert.equal(undeclared.status, 400);
+      const outsideDeclared = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'auto', fallback: { provider: 'openai', model: 'gpt-5.5', effort: 'high' } }),
+      });
+      // In the vocabulary, but the model declares no levels → validation (409).
+      assert.equal(outsideDeclared.status, 409);
+      const malformed = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'sometimes' }),
+      });
+      assert.equal(malformed.status, 400);
+    });
+
+    it('GET /:slug/model-policy reads an unrecognised stored shape as the default', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, modelPolicy: { primary: 'best', fallback: 'none' } });
+      const res = await fetch(`${baseUrl}/public/model-policy`);
+      assert.deepEqual(((await res.json()) as { policy: unknown }).policy, { primary: 'auto', fallback: 'none' });
+    });
   });
 
   // ── agent-to-agent switches (#1018) ─────────────────────────────────
