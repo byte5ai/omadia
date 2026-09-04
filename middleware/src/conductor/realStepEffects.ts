@@ -98,8 +98,18 @@ export class RealStepEffects implements StepEffects {
   }
 
   async runAgentStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution> {
-    const slug = step.agentId;
-    if (!slug) throw new Error(`agent step '${step.id}' has no agentId (Agent slug)`);
+    // The agent may be named by the RUN rather than by the graph
+    // (`agentId: "{{ctx.speaker}}"`). That is what lets a single step serve a
+    // rotating cast: two participants, or five, without a step per voice and
+    // without a slot per participant frozen into the pattern.
+    const rawSlug = step.agentId;
+    if (!rawSlug) throw new Error(`agent step '${step.id}' has no agentId (Agent slug)`);
+    const slug = renderTemplate(rawSlug, { ctx: context, steps: asObject(context.steps) }).trim();
+    if (!slug) {
+      throw new Error(
+        `agent step '${step.id}' resolved '${rawSlug}' to an empty agent slug — the run context does not name a speaker`,
+      );
+    }
 
     const registry = this.deps.getRegistry();
     if (!registry) throw new Error('orchestrator registry is unavailable (no graphPool / registry not built)');
