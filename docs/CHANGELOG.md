@@ -41,9 +41,11 @@ changelog.
 2026-08-28 — `@omadia/channel-imessage` receives Sendblue webhooks at
 `POST /api/imessage/webhook/:token` and serves answer links for choice cards at
 `GET /api/imessage/a/:token`, `GET /api/imessage/answers/:token` and
-`POST /api/imessage/answers/:token/reply`. All of them are reached without an
-operator session — by Sendblue, or by a recipient tapping a link in an iMessage
-bubble — so the blanket `/api` `requireAuth` mount 401'd every one of them
+`POST /api/imessage/answers/:token/reply`, plus the static og:image the link
+card points at, `GET /api/imessage/a/assets/preview.jpg`. All five are reached
+without an operator session — by Sendblue, by a recipient tapping a link in an
+iMessage bubble, or by Apple's link-preview crawler fetching the card — so the
+blanket `/api` `requireAuth` mount 401'd every one of them
 before the plugin's own check (timing-safe shared secret, single-use
 capability token) ever ran. `src/auth/publicPaths.ts` now exempts exactly
 those three route families (`/api/imessage/{webhook,a,answers}`), with the

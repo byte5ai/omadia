@@ -75,6 +75,23 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // families only — the plugin's admin UI lives under `/api/imessage-channel/`
   // and stays behind this gate like every other admin surface.
   //
+  // PATH FIRST, HEADER SECOND — on purpose, and the reverse of what the #410
+  // triage asked for ("prefer the header variant, keep the path variant as
+  // fallback"). Sendblue signs nothing (no HMAC) and the name of the header it
+  // would carry a configured secret in is undocumented, so the `:token` path
+  // segment is the one spelling that verifiably works; header-first would be
+  // nominal. Accepted residual risk, recorded here and in the plugin's README:
+  // the secret can surface in intermediary access logs (reverse proxies, load
+  // balancers) on its way in.
+  //
+  // UNCONDITIONAL. This entry is open whether the plugin is installed,
+  // disabled or uninstalled — a static exemption knows nothing about plugin
+  // state, unlike a `permissions.public_paths` grant, which is scoped to
+  // installed AND operator-consented. With the plugin absent nothing is
+  // mounted behind these paths, but the gate is off for them regardless. That
+  // is the real price of the static variant, and the reason a grant path for
+  // channel plugins should replace this entry.
+  //
   // CONTRACT with the out-of-tree plugin. `/api/imessage` is the plugin's
   // `ROUTE_PREFIX` (`omadia-channel-imessage/src/plugin.ts`), handed verbatim
   // to `core.registerRouter`. Unlike the Teams entry above there is no shared
