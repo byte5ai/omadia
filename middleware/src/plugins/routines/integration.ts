@@ -6,6 +6,10 @@ import {
 import type { RoutinesHandle } from './initRoutines.js';
 import { createProactiveSender } from './genericProactiveSender.js';
 import {
+  actorScope,
+  ROUTINE_NO_CONTEXT_ERROR,
+} from './manageRoutineTool.js';
+import {
   ADAPTIVE_CARD_CONTENT_TYPE,
   buildRoutineListSmartCard,
   buildRoutineSmartCard,
@@ -64,23 +68,35 @@ export function createRoutinesIntegration(
       );
     },
 
+    /**
+     * #1025 — the smart-card buttons are the SECOND door onto the same
+     * mutations as `manage_routine`, and they were equally unscoped: the
+     * card carries the routine id, so a replayed or hand-crafted action
+     * payload reached pause/resume/trigger/delete for any id. Scoped to
+     * the turn's own (tenant, user), and refused outright when the card
+     * fires outside a channel turn, where there is no principal to scope
+     * to and acting anyway would mean acting as nobody.
+     */
     async handleRoutineAction({ action, id }) {
+      const ctx = routineTurnContext.current();
+      if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+      const scope = actorScope(ctx);
       if (action === 'pause') {
-        const updated = await handle.runner.pauseRoutine(id);
+        const updated = await handle.runner.pauseRoutine(id, scope);
         return `Routine "${updated.name}" pausiert.`;
       }
       if (action === 'resume') {
-        const updated = await handle.runner.resumeRoutine(id);
+        const updated = await handle.runner.resumeRoutine(id, scope);
         return `Routine "${updated.name}" wieder aktiv.`;
       }
       if (action === 'trigger_now') {
-        const updated = await handle.runner.triggerRoutineNow(id);
+        const updated = await handle.runner.triggerRoutineNow(id, scope);
         const status = updated.lastRunStatus ?? 'ok';
         return status === 'ok'
           ? `Routine "${updated.name}" wurde manuell ausgelöst — Antwort kommt gleich.`
           : `Routine "${updated.name}" lief manuell, aber mit Status "${status}" — siehe Operator-UI für Details.`;
       }
-      const ok = await handle.runner.deleteRoutine(id);
+      const ok = await handle.runner.deleteRoutine(id, scope);
       return ok
         ? 'Routine gelöscht.'
         : 'Routine wurde bereits gelöscht oder nicht gefunden.';
