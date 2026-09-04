@@ -6,6 +6,7 @@ import {
   createDiscussionsCapability,
   DiscussionNoConversationError,
   DiscussionUnknownOpenerError,
+  DiscussionPeerDisabledError,
   DiscussionUnknownPartnerError,
 } from '../src/conductor/discussionHere.js';
 import type { DiscussionPartner } from '../src/conductor/discussionHere.js';
@@ -384,5 +385,63 @@ describe('discussion_partners tool', () => {
     assert.match(await handler({}), /not available on this deployment/);
     published = fakeCapability();
     assert.match(await handler({}), /"partners"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1018 W1 — the peer gate on start and roster
+// ---------------------------------------------------------------------------
+
+describe('conductorDiscussions peer gate (#1018)', () => {
+  function gated(allowed: readonly string[]) {
+    const started: unknown[] = [];
+    const capability = createDiscussionsCapability({
+      discussions: {
+        start: async (input: unknown) => {
+          started.push(input);
+          return {
+            runId: 'run-1',
+            workflowId: 'wf-1',
+            workflowSlug: 'eph-discussion-abc',
+            expiresAt: new Date(0).toISOString(),
+          };
+        },
+      } as never,
+      resolveTurn: () => ({ channelType: 'teams', conversationId: '19:chat@thread.v2', botChannelKey: HR_BOT }),
+      resolveOpener: () => 'hr',
+      listPartners: async () => PARTNERS,
+      peerGate: async (_t, _c, slug) => allowed.includes(slug),
+    });
+    return { capability, started };
+  }
+
+  it('refuses the start when the OPENER is not enabled here', async () => {
+    const { capability, started } = gated(['accounting', 'messias']);
+    await assert.rejects(
+      capability.startHere({ partners: ['accounting'], topic: 'T' }),
+      (err: unknown) =>
+        err instanceof DiscussionPeerDisabledError && err.agentSlug === 'hr',
+    );
+    assert.equal(started.length, 0);
+  });
+
+  it('drops disabled partners from the roster and from the candidates', async () => {
+    const { capability } = gated(['hr', 'accounting']);
+    const here = await capability.partnersHere();
+    assert.deepEqual(here.map((p) => p.slug), ['accounting']);
+    // Naming a present-but-disabled partner reads like an unknown one — with
+    // the ENABLED candidates attached, not the merely present ones.
+    await assert.rejects(
+      capability.startHere({ partners: ['messias'], topic: 'T' }),
+      (err: unknown) =>
+        err instanceof DiscussionUnknownPartnerError &&
+        err.candidates.map((c) => c.slug).join(',') === 'accounting',
+    );
+  });
+
+  it('starts when opener and partner are both enabled', async () => {
+    const { capability, started } = gated(['hr', 'accounting']);
+    await capability.startHere({ partners: ['accounting'], topic: 'T' });
+    assert.equal((started[0] as { participants: string[] }).participants.join(','), 'hr,accounting');
   });
 });

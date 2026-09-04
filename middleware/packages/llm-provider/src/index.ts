@@ -123,3 +123,10 @@ export {
   type ModelRole,
   type ProviderId,
 } from './modelRegistry.js';
+
+// ---- Runtime: provider pool (#1033) ----
+export {
+  createLlmProviderPool,
+  type LlmProviderPool,
+  type LlmProviderPoolOptions,
+} from './providerPool.js';

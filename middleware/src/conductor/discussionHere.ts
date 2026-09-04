@@ -104,6 +104,32 @@ export interface ConductorDiscussionsCapability {
 }
 
 /**
+ * #1018 — `(channelType, conversationId, agentSlug) → may this agent talk to
+ * peers in this chat?` The AND of the agent's own switch and the pair's policy
+ * row; the kernel supplies the evaluator (`conductor/peerPolicy.ts`).
+ */
+export type PeerGate = (
+  channelType: string,
+  conversationId: string,
+  agentSlug: string,
+) => Promise<boolean>;
+
+/**
+ * The agent that received the turn is not allowed to talk to peers in this
+ * chat — its own switch is off, or no operator enabled it for this
+ * conversation. Distinct from an unknown opener: the agent is known and
+ * present, the operator simply has not opened the gate.
+ */
+export class DiscussionPeerDisabledError extends Error {
+  constructor(readonly agentSlug: string) {
+    super(
+      `agent '${agentSlug}' is not enabled for agent-to-agent conversation in this chat — an operator must switch it on for the agent and for this conversation`,
+    );
+    this.name = 'DiscussionPeerDisabledError';
+  }
+}
+
+/**
  * The named partner is not someone this chat can hear from. Carries the real
  * candidates so the caller can correct itself in one step — the first live
  * attempt died because the model guessed a roster, guessed wrong, and stopped.
@@ -135,10 +161,17 @@ export function createDiscussionsCapability(deps: {
   resolveTurn: AmbientTurnResolver;
   resolveOpener: OpenerResolver;
   listPartners: PartnerLister;
+  /**
+   * #1018 — the peer gate. Applied to the opener (refuses the start) and to
+   * every candidate partner (drops them from the roster). Absent = no gate,
+   * which is the pre-W1 behaviour and what a test harness without a store
+   * gets; production always wires one.
+   */
+  peerGate?: PeerGate;
   log?: (msg: string) => void;
 }): ConductorDiscussionsCapability {
   /** The turn's conversation + the agent that answered it, or a typed refusal. */
-  const resolveHere = (): { turn: AmbientTurn; opener: string } => {
+  const resolveHere = async (): Promise<{ turn: AmbientTurn; opener: string }> => {
     const turn = deps.resolveTurn();
     if (!turn || turn.conversationId.trim().length === 0) {
       throw new DiscussionNoConversationError();
@@ -147,25 +180,42 @@ export function createDiscussionsCapability(deps: {
       ? deps.resolveOpener(turn.channelType, turn.botChannelKey)
       : undefined;
     if (!opener) throw new DiscussionUnknownOpenerError(turn.botChannelKey);
+    if (deps.peerGate && !(await deps.peerGate(turn.channelType, turn.conversationId, opener))) {
+      throw new DiscussionPeerDisabledError(opener);
+    }
     return { turn, opener };
+  };
+
+  /** Who is present AND allowed — the opener excluded. */
+  const permittedPartners = async (
+    turn: AmbientTurn,
+    opener: string,
+  ): Promise<DiscussionPartner[]> => {
+    const present = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
+      (p) => p.slug !== opener,
+    );
+    if (!deps.peerGate) return present;
+    const gate = deps.peerGate;
+    const verdicts = await Promise.all(
+      present.map((p) => gate(turn.channelType, turn.conversationId, p.slug)),
+    );
+    return present.filter((_, i) => verdicts[i] === true);
   };
 
   return {
     async partnersHere() {
-      const { turn, opener } = resolveHere();
-      const all = await deps.listPartners(turn.channelType, turn.conversationId);
-      return all.filter((p) => p.slug !== opener);
+      const { turn, opener } = await resolveHere();
+      return permittedPartners(turn, opener);
     },
 
     async startHere(input) {
-      const { turn, opener } = resolveHere();
+      const { turn, opener } = await resolveHere();
 
       // Resolve every named partner against who can ACTUALLY speak in this
-      // chat. This is where a guessed name is caught — before a run exists,
-      // before a floor is claimed, and with the real candidates attached.
-      const candidates = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
-        (p) => p.slug !== opener,
-      );
+      // chat — present AND enabled. This is where a guessed name is caught —
+      // before a run exists, before a floor is claimed, and with the real
+      // candidates attached.
+      const candidates = await permittedPartners(turn, opener);
       const named = Array.isArray(input.partners) ? input.partners : [];
       if (named.length === 0) {
         throw new DiscussionUnknownPartnerError('', candidates);
