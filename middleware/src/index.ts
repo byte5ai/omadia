@@ -72,7 +72,7 @@ import {
   CHANNEL_TEAMS_PLUGIN_ID,
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -425,6 +425,7 @@ import { resolveBuilderReferenceCatalog } from './plugins/builder/builderReferen
 import {
   createRoutinesIntegration,
   initRoutines,
+  routineTurnContext,
   type RoutinesHandle,
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -4141,6 +4142,23 @@ async function main(): Promise<void> {
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
     serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // Agent topic discussions, startable FROM A CHAT. No conversation id in the
+    // signature on purpose: the kernel reads the conversation off the inbound
+    // turn the calling plugin is answering, so a granted plugin can open a
+    // discussion where it was addressed and nowhere else.
+    serviceRegistry.provide(
+      'conductorDiscussions',
+      createDiscussionsCapability({
+        discussions: conductorWiring.discussionService,
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        // The opener is the bot that received the turn, mapped back through the
+        // SAME provisioned-identity table inbound routing uses — so "who
+        // opened it" and "who was addressed" can never be two different answers.
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        log: (msg: string) => console.log(msg),
+      }),
+    );
     // #330 C2a — the three zero-touch-setup services (all deny-by-default via
     // the manifest grant gate). Constructed above, BEFORE wireConductor.
     serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);
