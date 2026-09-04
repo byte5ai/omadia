@@ -1572,7 +1572,9 @@
       "classifierTooltip": "Triage classifier: {classifier} → {bucket} → {model}",
       "bucketSimple": "simple",
       "bucketComplex": "complex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback model",
+      "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
     }
   },
   "privacyReceipt": {

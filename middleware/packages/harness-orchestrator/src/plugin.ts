@@ -16,6 +16,7 @@ import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   createLlmProviderPool,
   type LlmProviderCatalog,
+  type LlmProviderPool,
 } from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
@@ -227,6 +228,9 @@ export const ROUTINE_TURN_OWNER_GUARD_SERVICE = 'routineTurnOwnerGuard';
  * block, which may come up after this plugin.
  */
 export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+
+/** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
+export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
@@ -505,13 +509,21 @@ export async function activate(
   // the pool's first entry; a per-agent policy naming another provider
   // (primary or fallback) resolves through the same pool at turn time, with
   // the same credentials source and the same retry budget.
-  const providerPool = createLlmProviderPool({
-    getSecret: (k) => ctx.secrets.get(k),
-    maxRetries: 5,
-    ...(llmProviderCatalog !== undefined
-      ? { catalog: llmProviderCatalog }
-      : {}),
-  });
+  //
+  // #1033 W3 — prefer the KERNEL's pool when it publishes one (declared as
+  // `llmProviderPool@1`, optional): the fallback breaker then has one state
+  // for the turn loop and `/admin/providers` alike. Resolved eagerly, which
+  // is safe here for the same reason as `routineTurnOwnerGuard`: the kernel
+  // provides it at boot, before any plugin activates.
+  const providerPool =
+    ctx.services.getOptional<LlmProviderPool>(LLM_PROVIDER_POOL_SERVICE) ??
+    createLlmProviderPool({
+      getSecret: (k: string) => ctx.secrets.get(k),
+      maxRetries: 5,
+      ...(llmProviderCatalog !== undefined
+        ? { catalog: llmProviderCatalog }
+        : {}),
+    });
   const provider = await providerPool.get(providerId);
   if (!provider) {
     ctx.log(
@@ -1042,6 +1054,8 @@ export async function activate(
   // same `deps`.
   const orchestratorDeps: OrchestratorDeps = {
     provider,
+    // #1033 W3 — the policy's other providers resolve through the same pool.
+    providerPool,
     knowledgeGraph,
     memoryStore,
     entityRefBus,

@@ -21,7 +21,8 @@ import type {
   GrantStore,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
+import type { ModelRef } from '@omadia/plugin-api';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -99,6 +100,11 @@ export interface AgentRuntimeConfig {
   readonly modelRouting?: ModelRoutingConfig;
   /** #1033 — reasoning effort the agent's model policy pins; absent = vendor default. */
   readonly effort?: EffortLevel;
+  /** #1033 W3 — see the matching {@link OrchestratorOptions} fields. */
+  readonly primaryRef?: ModelRef;
+  readonly fallbackRef?: ModelRef;
+  readonly identityByFamily?: Readonly<Record<string, string>>;
+  readonly fallbackVisionSupported?: boolean;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -205,6 +211,10 @@ export interface AgentRuntimeConfig {
  */
 export interface OrchestratorDeps {
   readonly provider: LlmProvider;
+  /** #1033 W3 — resolves any provider a model policy names (primary on
+   *  another provider, fallback). Absent ⇒ every agent runs on `provider`
+   *  and no policy hop is possible, the pre-W3 behaviour. */
+  readonly providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
   readonly knowledgeGraph: KnowledgeGraph;
   readonly memoryStore: MemoryStore;
   readonly entityRefBus: EntityRefBus;
@@ -682,6 +692,14 @@ export function buildOrchestratorForAgent(
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
     ...(config.effort !== undefined ? { effort: config.effort } : {}),
+    // #1033 W3 — the policy's providers, resolved through the shared pool.
+    ...(deps.providerPool ? { providerPool: deps.providerPool } : {}),
+    ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
+    ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
+    ...(config.identityByFamily ? { identityByFamily: config.identityByFamily } : {}),
+    ...(config.fallbackVisionSupported !== undefined
+      ? { fallbackVisionSupported: config.fallbackVisionSupported }
+      : {}),
     ...(config.directLineSticky ? { directLineSticky: true } : {}),
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }

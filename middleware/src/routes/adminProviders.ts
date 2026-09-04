@@ -78,6 +78,9 @@ export interface AdminProvidersDeps {
   /** OAuth client config for the device flow. Defaults to the OpenAI Codex
    *  client; a test injects a fake pointing at a mock issuer. */
   readonly oauthConfig?: OAuthClientConfig;
+  /** #1033 W3 — the fallback breaker: which providers are currently being
+   *  skipped in favour of their fallback, and why. Optional (tests). */
+  readonly providerHealth?: { snapshot(): readonly { providerId: string; cooldownUntil: number; reason: string; failedAt: number }[] };
   /** Injected fetch for the device-flow HTTP calls (test seam). */
   readonly oauthFetch?: typeof fetch;
 }
@@ -155,6 +158,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     // an uncaught vault/read failure would hang the request. Catch → 500.
     try {
       const providerIds = [...new Set(listModels().map((m) => m.provider))];
+      // #1033 W3 — breaker state per provider id (empty when no pool is wired).
+      const cooldownById = new Map(
+        (deps.providerHealth?.snapshot() ?? []).map((e) => [e.providerId, e] as const),
+      );
       // #309: a CLI-backed provider is keyless — "connected" means the local CLI
       // is installed AND logged in (host capability), not a vault key. Detect once.
       const cliSnap = await detectCliBackends().catch(() => undefined);
@@ -233,6 +240,18 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // #294: the provider connects via an OAuth device flow, so the UI
           // renders a "Sign in with ChatGPT" button instead of a key field.
           oauthConnect,
+          // #1033 W3 — present only while the fallback breaker is open for
+          // this provider: turns route straight to the agents' fallback
+          // until `cooldownUntil`, when the primary is probed again.
+          ...(cooldownById.get(id)
+            ? {
+                cooldown: {
+                  until: new Date(cooldownById.get(id)!.cooldownUntil).toISOString(),
+                  since: new Date(cooldownById.get(id)!.failedAt).toISOString(),
+                  reason: cooldownById.get(id)!.reason,
+                },
+              }
+            : {}),
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,

@@ -124,9 +124,15 @@ export {
   type ProviderId,
 } from './modelRegistry.js';
 
-// ---- Runtime: provider pool (#1033) ----
+// ---- Runtime: provider pool + health (#1033) ----
 export {
   createLlmProviderPool,
   type LlmProviderPool,
   type LlmProviderPoolOptions,
 } from './providerPool.js';
+export {
+  createProviderHealth,
+  DEFAULT_PROVIDER_COOLDOWN_MS,
+  type ProviderHealth,
+  type ProviderHealthEntry,
+} from './providerHealth.js';

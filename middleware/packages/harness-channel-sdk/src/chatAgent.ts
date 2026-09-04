@@ -659,6 +659,16 @@ export type ChatStreamEvent =
       bucket: 'simple' | 'complex' | 'fallback';
       classifierModel: string;
       model: string;
+      /**
+       * #1033 — `'provider_fallback'` marks a turn that ran on the agent's
+       * FALLBACK model because the primary was unavailable (rate-limited,
+       * overloaded, unreachable, unauthorised). Distinct from
+       * `bucket: 'fallback'`, which is the TRIAGE fallback (the classifier
+       * itself failed). Emitted when the switch happens; `provider` names the
+       * provider the turn continued on.
+       */
+      reason?: 'provider_fallback';
+      provider?: string;
     }
   /**
    * Wave 8 — per-turn direct-answer persona verdict. Emitted ONCE at turn

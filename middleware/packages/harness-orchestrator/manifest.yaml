@@ -64,10 +64,16 @@ requires:
 # AGENTS the calling agent may see in the current chat (presence + the
 # agent-to-agent policy both live in kernel-owned tables). Resolved per call
 # by `get_chat_participants`; absent → the roster stays humans-only.
+#
+# #1033 — llmProviderPool@1 is the kernel's shared provider pool (+ health /
+# cooldown). When published, this plugin runs its turns through it so the
+# operator surfaces and the turn loop see ONE breaker state; absent → the
+# plugin builds a private pool, which behaves the same minus the sharing.
 optional_requires:
   - "transcription@1"
   - "routineTurnOwnerGuard@1"
   - "chatPeerAgents@1"
+  - "llmProviderPool@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
