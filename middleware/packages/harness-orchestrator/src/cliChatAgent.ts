@@ -425,16 +425,22 @@ export interface CliChatAgentDeps {
     readonly assertTurnOwner?: () => void;
   }) => LoopbackMcpServer;
   /**
-   * #1016 — an optional guard that throws when the async context restored
-   * around a loopback dispatch does not belong to this turn.
+   * #1016 — a guard that throws when the async context restored around a
+   * loopback dispatch does not belong to this turn.
    *
    * The factory is called at `chat()`/`chatStream()` entry, so the guard it
    * returns can close over who the turn actually belongs to and compare that
-   * against whatever the restored context reports at dispatch time. Left
-   * unset, the context is restored but not cross-checked: see the note in
-   * `loopbackMcpServer.ts` on why the default cannot live in this package.
+   * against whatever the restored context reports at dispatch time. Returning
+   * `undefined` means "no guard for this turn".
+   *
+   * Wired in production by `buildOrchestratorForAgent` from the kernel's
+   * `routineTurnOwnerGuard` service — the implementation has to live in the
+   * application layer because the store it reads (`routineTurnContext`) does,
+   * which is why this stays a seam rather than a default. Left unset (unit
+   * tests, hosts that publish no such service) the context is restored but not
+   * cross-checked.
    */
-  readonly turnOwnerGuard?: (input: ChatTurnInput) => () => void;
+  readonly turnOwnerGuard?: (input: ChatTurnInput) => (() => void) | undefined;
 
   readonly cliBinary?: string;
   readonly model?: string;

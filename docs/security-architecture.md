@@ -185,10 +185,58 @@ working across it:
   the tool refused); afterwards the same staleness would mean acting as the
   previous principal. `LoopbackMcpServerDeps.assertTurnOwner` restores the
   refusal: it runs inside the restored context immediately before dispatch and
-  throws on mismatch. **It has to be wired by whoever constructs the agent**
-  (`CliChatAgentDeps.turnOwnerGuard`), because the store lives in the app layer
-  and the orchestrator package cannot read it; unwired, the context is restored
-  but not cross-checked. That wiring is the open half of #1016.
+  throws on mismatch.
+
+  That hook is now wired end to end. The implementation cannot default inside
+  the orchestrator package, because the store it reads (`routineTurnContext`)
+  lives in the application layer, so the chain is: the kernel publishes
+  `createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+  (`middleware/src/plugins/routines/turnOwnerGuard.ts`); the orchestrator plugin
+  **declares** it under `optional_requires:` in its manifest and resolves it
+  with `ctx.services.getOptional`; and `buildOrchestratorForAgent` forwards it
+  into `CliChatAgent` as `turnOwnerGuard` — the CLI runtime only, since that is
+  the one path where a tool call crosses a process boundary. Among the shipped
+  channels only the Teams adapter calls `captureRoutineTurn`, so it is the only
+  one that installs a context this guard can find stale.
+
+  **The declaration is part of the mechanism, not bookkeeping.** Both
+  `services.get` and `services.getOptional` run `assertServiceGranted`, which
+  throws `ServiceNotDeclaredError` for a name in none of `requires:`,
+  `optional_requires:` or `provides:`. This resolution sits near the top of
+  `activate()`, so the first cut of the wiring — a `get` on an undeclared name —
+  threw on every boot, `toolPluginRuntime` recorded an activation failure,
+  `chatAgent@1` was never published, and every channel declaring
+  `requires: ["chatAgent@^1"]` skipped activation. A guard intended to harden
+  one dispatch took chat down on every channel instead. `optional_requires` is
+  the correct block, and `getOptional` the matching verb, because a host that
+  publishes no such service must keep booting with the pre-#1016 behaviour. The
+  legacy allowlist table is explicitly not the remedy: its docblock declares it
+  a closed, dated set where a new row is a regression.
+
+  The guard compares the restored context's `userId` against the turn's own;
+  both are the same channel-native id written by the same adapter, so they agree
+  for a turn that owns its context and disagree exactly when the chain is stale.
+  Context present but the turn names no owner ⇒ refuse, that being the stale
+  shape; mismatch ⇒ refuse; no context ⇒ pass. That last row is narrower than
+  the obvious phrasing: `manage_routine` refuses a missing context in `create`
+  and `list` only, while `pause`, `resume` and `delete` never resolve context
+  and pass a bare id to a runner that does no tenant scoping. Passing here
+  neither creates nor closes that hole — it is tracked separately — and the
+  reason to pass is that throwing would harden every context-free HTTP turn,
+  this guard's job being staleness rather than authorization. The refusal names
+  neither principal (it reaches the model) and carries a short correlation ref
+  that also appears in the server log, so a user's report can be matched to a
+  log line without either side naming anyone.
+
+  Reviewer note, two parts. The wiring is pinned by `buildOrchestrator.test.ts`,
+  which asserts the constructed `CliChatAgent` carries the guard — the first
+  round shipped a correct guard with no caller, so a test on the guard function
+  alone does not cover the risk. And the service name exists three times in
+  files that cannot import each other (kernel constant, package-side literal,
+  manifest entry), so `routineTurnOwnerGuardGrant.test.ts` ties them together;
+  drift there would look exactly like the supported "no provider installed"
+  state. `pluginServiceGrantCoverage.test.ts` catches the undeclared half
+  repo-wide.
 - **Only advertised tools are dispatchable (#1015).** `tools/call` used to
   forward any name into `dispatch()`. The dispatchable set is wider than the
   advertised one — handler-only registrations stay dispatchable but

@@ -117,7 +117,11 @@ function filledPartialIndices(
   return out;
 }
 
-function resolveSource(spec: AgentSpec, source: string): string | undefined {
+/**
+ * Resolve ONE source path. `resolveSource` wraps this with fallback-chain
+ * handling; nothing else should call it directly.
+ */
+function resolveSingleSource(spec: AgentSpec, source: string): string | undefined {
   if (source.startsWith('__derived__/')) {
     const key = source.slice('__derived__/'.length);
     if (key === 'agentSlug') return deriveAgentSlug(spec);
@@ -144,6 +148,33 @@ function resolveSource(spec: AgentSpec, source: string): string | undefined {
   if (cur === undefined || cur === null) return undefined;
   if (typeof cur === 'string') return cur;
   if (typeof cur === 'number' || typeof cur === 'boolean') return String(cur);
+  return undefined;
+}
+
+/**
+ * Resolve a placeholder source, honouring an optional `a|b|c` fallback
+ * chain: the first path that RESOLVES wins.
+ *
+ * #1022 — `AGENT_DESCRIPTION_EN: description_en|description`. The English
+ * description is a separate spec field so a scaffolded plugin is correct in
+ * both locales, but a spec written before that field existed (or a
+ * clone-from-installed of one) carries only `description`. Without the
+ * chain those specs would fail codegen on an unresolved placeholder; with
+ * it they fall back to the one description they have, which is exactly what
+ * the generator did before.
+ *
+ * "Resolves" means `!== undefined`, NOT "is non-empty". An empty string is a
+ * legitimate value: `spec.author` defaults to `''` (#225 — no attribution,
+ * filtered out later by manifestLoader.extractAuthors), and treating that as
+ * unresolved turns every author-less spec into a placeholder_residue error.
+ * Optional fields that are simply absent are `undefined`, which is exactly
+ * the case the chain is for. Sources without a `|` behave as they always did.
+ */
+function resolveSource(spec: AgentSpec, source: string): string | undefined {
+  for (const candidate of source.split('|')) {
+    const value = resolveSingleSource(spec, candidate.trim());
+    if (value !== undefined) return value;
+  }
   return undefined;
 }
 
@@ -190,7 +221,15 @@ function buildPlaceholderMap(
  * path (e.g. `depends_on[0]`) to a "do this" instruction the user can
  * action without reading the codegen internals.
  */
-function placeholderHintFor(source: string): string {
+function placeholderHintFor(rawSource: string): string {
+  // A fallback chain (`a|b`) only reaches here when EVERY candidate failed,
+  // so the hint names the primary field — that is the one the author is
+  // meant to fill.
+  const source = (rawSource.split('|')[0] ?? rawSource).trim();
+  if (source === 'description_en') {
+    return 'Set spec.description_en to the English one-line summary ' +
+      '(spec.description holds the German one).';
+  }
   if (source === 'depends_on[0]') {
     return 'Set spec.depends_on to an integration plugin id (e.g. ' +
       'de.byte5.integration.confluence) — the agent-integration template ' +

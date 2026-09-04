@@ -64,11 +64,13 @@ export const routineTurnContext = {
    * into the CLI path, so the same staleness would mean acting as the previous
    * principal instead of refusing. The refusal is restored by
    * `LoopbackMcpServer`'s `assertTurnOwner` hook, which runs inside the
-   * restored context immediately before dispatch — but it has to be WIRED by
-   * the caller that constructs the agent, because this store lives in the app
-   * layer and the orchestrator package cannot read it. Until a wiring exists,
-   * the context is restored and not cross-checked: see `CliChatAgentDeps.
-   * turnOwnerGuard`.
+   * restored context immediately before dispatch.
+   *
+   * That hook is wired in production by `createRoutineTurnOwnerGuard`
+   * (`./turnOwnerGuard.ts`), published by the kernel as
+   * `routineTurnOwnerGuard` and forwarded into `CliChatAgent` by
+   * `buildOrchestratorForAgent`. It compares this store's `userId` against the
+   * turn's own, so a stale chain fails closed.
    */
   enter(value: ManageRoutineContext): void {
     storage.enterWith(value);
