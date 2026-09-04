@@ -301,8 +301,11 @@ export function buildForAgent(
       // active provider, which only matters when the primary sits elsewhere
       // (the orchestrator withholds a fallback identical to the primary).
       ...(isModelRef(modelPolicy.primary) ? { primaryRef: modelPolicy.primary } : {}),
-      ...(fallbackRefFor(modelPolicy, model, activeProvider ?? deps.provider.id)
-        ? { fallbackRef: fallbackRefFor(modelPolicy, model, activeProvider ?? deps.provider.id)! }
+      // `activeProvider` is undefined on hosts (and test fixtures) that build
+      // without a provider; an `auto` fallback then has no provider to name
+      // and is simply not offered — the pre-W3 behaviour.
+      ...(activeProvider !== undefined && fallbackRefFor(modelPolicy, model, activeProvider)
+        ? { fallbackRef: fallbackRefFor(modelPolicy, model, activeProvider)! }
         : {}),
       ...(agent.instructionsByFamily ? { identityByFamily: agent.instructionsByFamily } : {}),
       ...(fallbackVisionFor(modelPolicy) !== undefined
