@@ -7,6 +7,7 @@ import {
 } from '../plugins/routines/routineOutputTemplate.js';
 import {
   RoutineNotFoundError,
+  type RoutineActorScope,
   type RoutineRunner,
 } from '../plugins/routines/routineRunner.js';
 import type {
@@ -15,6 +16,15 @@ import type {
 } from '../plugins/routines/routineRunsStore.js';
 import type { Routine, RoutineStore } from '../plugins/routines/routineStore.js';
 import { renderRoutineTemplate } from '../plugins/routines/routineTemplateRenderer.js';
+
+/**
+ * #1025 — every mutation on this router runs cross-tenant, which is a
+ * decision rather than an omission: the whole router is operators-only
+ * behind `requireAuth`, and an operator managing one tenant's routines
+ * from the Operator UI is the feature. Named once so the intent is
+ * greppable and a future non-operator route cannot inherit it by accident.
+ */
+const OPERATOR_SCOPE: RoutineActorScope = { kind: 'operator' };
 
 export interface RoutinesRouterDeps {
   store: RoutineStore;
@@ -210,10 +220,13 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
         return;
       }
       try {
+        // #1025 — cross-tenant on purpose, same rationale as the list
+        // above: this router is operators-only behind requireAuth. The
+        // scope is stated rather than omitted so it reads as a decision.
         const updated =
           status === 'paused'
-            ? await deps.runner.pauseRoutine(id)
-            : await deps.runner.resumeRoutine(id);
+            ? await deps.runner.pauseRoutine(id, OPERATOR_SCOPE)
+            : await deps.runner.resumeRoutine(id, OPERATOR_SCOPE);
         const body: RoutineResponse = { routine: toDto(updated) };
         res.json(body);
       } catch (err) {
@@ -275,7 +288,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // arrives via the proactive sender. Return 202 immediately;
       // the run's outcome is observable via `GET /:id/runs`.
       void deps.runner
-        .triggerRoutineNow(id)
+        .triggerRoutineNow(id, OPERATOR_SCOPE)
         .catch((err: unknown) => {
           log(
             `[routines/route] background trigger run for ${id} failed: ${errMsg(err)}`,
@@ -458,7 +471,8 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
     const idRaw = req.params['id'];
     const id = typeof idRaw === 'string' ? idRaw : '';
     try {
-      const ok = await deps.runner.deleteRoutine(id);
+      // #1025 — operators-only router, cross-tenant by design (see PATCH).
+      const ok = await deps.runner.deleteRoutine(id, OPERATOR_SCOPE);
       if (!ok) {
         res.status(404).json({
           code: 'routines.not_found',
