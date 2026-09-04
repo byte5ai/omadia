@@ -36,6 +36,90 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
+
+2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
+earlier; the guard that cross-checks the restored context had no production
+caller, so it protected nothing.
+
+Channel adapters install the routine context with `AsyncLocalStorage.enterWith`,
+which has no scope exit. The value persists forward on the async chain, so a
+chain that begins a new turn without calling `captureRoutineTurn` again still
+carries the previous turn's `(tenant, userId)`. Before #993 the subscription-CLI
+path saw no context at all and `manage_routine` refused; once #993 restored the
+context across the process boundary, the same staleness meant acting **as the
+previous principal**.
+
+The guard now runs in production: the kernel publishes
+`createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+(`middleware/src/plugins/routines/turnOwnerGuard.ts`), the orchestrator plugin
+declares it under `optional_requires:` and resolves it with
+`ctx.services.getOptional`, and `buildOrchestratorForAgent` forwards it into
+`CliChatAgent`, whose loopback server calls it inside the restored context
+immediately before dispatch. It could not default inside the orchestrator
+package, because the store it reads lives in the application layer. Scope is the
+CLI runtime alone — the in-process path never crosses a process boundary, and
+among the shipped channels only the Teams adapter calls `captureRoutineTurn`, so
+it is the only one that installs a context this guard can find stale.
+
+**The manifest declaration is not paperwork.** `ctx.services.getOptional` is
+declaration-gated on the same terms as `get`: an undeclared name throws
+`ServiceNotDeclaredError`. The resolution sits near the top of `activate()`, so
+the first cut of this change — a `get` on a name no manifest declared — failed
+activation on every boot, which meant `chatAgent@1` was never published and every
+channel declaring `requires: ["chatAgent@^1"]` skipped activation. A guard meant
+to harden one dispatch took chat down instead. `optional_requires` is the right
+block because a host that publishes no such service must keep booting.
+
+It compares the restored context's `userId` against the turn's own; both are the
+same channel-native id written by the same adapter. A context the turn cannot
+vouch for, and a mismatch, both refuse. No context passes — narrower than it
+sounds: `manage_routine` refuses a missing context in `create` and `list` only,
+while `pause`, `resume` and `delete` never resolve context at all and pass a bare
+id to the runner, which does no tenant scoping. Passing here neither creates nor
+closes that hole (tracked separately); the reason to pass is that throwing would
+harden every context-free HTTP turn, and this guard's job is staleness, not
+authorization. The message the caller sees names neither principal, since it can
+reach the model; it carries a short correlation ref that also appears in the
+server log, so a report can be matched without naming anyone.
+
+Pinned by a wiring test that asserts the constructed agent carries the guard, not
+just that the guard function is correct: removing only the forward turns it red.
+The first round of this fix is the reason that distinction is now a test, and the
+declaration has its own drift guard tying the kernel constant, the package-side
+literal and the manifest entry together — three copies of one string in files
+that cannot import each other.
+
+### Fixed — a scaffolded plugin is correct in both locales (#1022)
+
+2026-09-04 — follow-up to #885. That change gave `identity.description` a
+locale map and fixed the 22 bundled manifests by hand, but left the generator
+feeding ONE input into both locales: every plugin the BuilderAgent scaffolded
+shipped its German text in the `en:` slot, which is the same defect four
+consecutive beta rounds had reported. Fixing the shipped manifests without
+fixing the generator left it one `create plugin` away.
+
+- `spec.description` is now explicitly the German store description, and
+  `spec.description_en` its English counterpart. The builder prompt asks for
+  both and states that the English one is neither optional nor a copy.
+- Both `template.yaml` files map each locale to its own field. The `en`
+  mapping is `description_en|description` — a new `|` fallback chain in
+  `resolveSource` (codegen) so a spec written before the field existed, or a
+  clone-from-installed of one, still generates instead of failing on an
+  unresolved placeholder.
+- The chain falls through on `undefined` only, never on `''`. An empty string
+  is a legitimate value: `spec.author` defaults to `''` (#225, no attribution)
+  and treating that as unresolved turned every author-less spec into a
+  `placeholder_residue` error. That regression was caught by the existing
+  codegen suite while this change was being built, and there is now a test
+  pinning it.
+- `lint_spec` warns (never blocks, since the fallback keeps the build green)
+  when `description_en` is missing or identical to the German text.
+- The `#885` boilerplate guard now also asserts the two locales resolve from
+  DIFFERENT sources, so mapping them back to one field turns tests red.
+- Both boilerplate `CLAUDE.md` tables dropped the "translate the `en:` line
+  afterwards" instruction, which is no longer true.
+
 ### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
 
 2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
@@ -71,8 +155,8 @@ gate was half-applied and unverified.
   entry instead of inside the async generator's body, which runs at first
   iteration and could belong to whoever iterated. Added an `assertTurnOwner`
   hook so a stale `enterWith` chain fails closed instead of acting as the
-  previous principal. Wiring that guard to the app's routine context is the
-  open half.
+  previous principal. Wiring that hook to the app's routine context followed on
+  2026-09-04; see the entry at the top of `[Unreleased]`.
 - **#1017** — the gate is now verified behaviourally, not only by argv shape:
   a live probe spawns the real binary with the production argv and asks it to
   run a shell command. Measured on 2.1.259 — production gate: no tools;

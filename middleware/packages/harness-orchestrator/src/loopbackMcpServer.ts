@@ -106,9 +106,12 @@ export class LoopbackMcpServer {
    * Restoring a context is not the same as trusting it: `routineTurnContext`
    * is entered with `enterWith`, which has no scope exit, so a stale async
    * chain can still carry an older turn's value. `deps.assertTurnOwner` is the
-   * hook that turns that back into a refusal; it cannot default to anything
-   * here because the store it would have to read lives in the application
-   * layer, not in this package.
+   * hook that turns that back into a refusal. It cannot DEFAULT to anything
+   * here, because the store it reads lives in the application layer, so the
+   * kernel publishes the implementation (`createRoutineTurnOwnerGuard`, service
+   * `routineTurnOwnerGuard`) and `buildOrchestratorForAgent` forwards it into
+   * `CliChatAgent`. Absent — a host that publishes no such service, or a unit
+   * test — the context is restored without a cross-check.
    */
   private readonly runInTurnContext: <T>(fn: () => T) => T;
 

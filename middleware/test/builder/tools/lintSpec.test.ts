@@ -12,7 +12,11 @@ import {
 const validBaseline = [
   { op: 'replace' as const, path: '/id', value: 'de.byte5.agent.weather' },
   { op: 'replace' as const, path: '/name', value: 'Weather' },
-  { op: 'replace' as const, path: '/description', value: 'forecast agent' },
+  { op: 'replace' as const, path: '/description', value: 'Wetter-Agent für Vorhersagen' },
+  // #1022 — the English locale is its own field. Without it lint emits a
+  // `missing_english_description` warning (asserted separately below), so a
+  // baseline that claims to be "fully valid" has to carry both.
+  { op: 'replace' as const, path: '/description_en', value: 'forecast agent' },
   { op: 'replace' as const, path: '/category', value: 'analysis' },
   { op: 'replace' as const, path: '/domain', value: 'weather' },
   { op: 'replace' as const, path: '/skill', value: { role: 'a weather expert' } },
@@ -46,6 +50,44 @@ describe('lintSpecTool', () => {
     const result = await lintSpecTool.run({}, harness.context());
     assert.equal(result.ok, true);
     assert.deepEqual(result.issues, []);
+  });
+
+  // #1022 — a scaffolded plugin used to ship its German description in the
+  // manifest's `en:` slot, which is the #885 defect. Codegen still falls back
+  // so an older spec builds, so these are warnings, not errors.
+  it('warns when the English description is missing', async () => {
+    const withoutEnglish = validBaseline.filter((p) => p.path !== '/description_en');
+    await patchSpecTool.run({ patches: withoutEnglish }, harness.context());
+    const result = await lintSpecTool.run({}, harness.context());
+
+    const issue = result.issues.find((i) => i.code === 'missing_english_description');
+    assert.ok(issue, 'expected a missing_english_description warning');
+    assert.equal(issue.severity, 'warning');
+    assert.equal(issue.path, '/description_en');
+    // A warning must not block codegen.
+    assert.equal(result.ok, true);
+  });
+
+  it('warns when the English description is a copy of the German one', async () => {
+    await patchSpecTool.run(
+      {
+        patches: [
+          ...validBaseline,
+          {
+            op: 'replace',
+            path: '/description_en',
+            value: 'Wetter-Agent für Vorhersagen',
+          },
+        ],
+      },
+      harness.context(),
+    );
+    const result = await lintSpecTool.run({}, harness.context());
+
+    const issue = result.issues.find((i) => i.code === 'untranslated_english_description');
+    assert.ok(issue, 'expected an untranslated_english_description warning');
+    assert.equal(issue.severity, 'warning');
+    assert.equal(result.ok, true);
   });
 
   it('flags reserved tool ID collision', async () => {
