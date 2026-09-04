@@ -514,6 +514,21 @@ export const AgentSpecSchema = z
     name: z.string().min(1),
     version: SemverSchema.default('0.1.0'),
     description: z.string().min(1),
+    // #1022 — the GERMAN store description. `identity.description` in the
+    // manifest is a locale map (#885), and a bare string in that slot is
+    // read as English, so German text there surfaces as the English
+    // description in the Hub. The builder used to collect one description
+    // and feed it to BOTH locales, which reproduced that exact defect in
+    // every scaffolded plugin. `description` stays the German one (the
+    // builder prompt and the boilerplate examples are German); this is its
+    // English counterpart.
+    //
+    // Optional, not required: a spec written before this field existed —
+    // or a clone-from-installed of one — must still generate. Codegen
+    // falls back to `description` via the `description_en|description`
+    // chain in both template.yaml files. `lint_spec` warns when the
+    // English side is missing or identical to the German one.
+    description_en: z.string().min(1).optional(),
     // #225 — operator-entered author/publisher attribution. Codegen maps
     // this to `identity.authors[0].name` in the generated manifest via the
     // AGENT_AUTHOR placeholder. Default '' (no attribution) replaces the
