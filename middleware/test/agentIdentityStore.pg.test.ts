@@ -91,6 +91,10 @@ describe('AgentIdentityStore against a real Postgres (#914)', { skip: !pgAvailab
       '0002_fix_notify_trigger.sql',
       '0052_agent_identities.sql',
       '0053_agent_identity_persona.sql',
+      // #1033 W2 — `composed_prompts` (per-family prompt cache) lives on the
+      // identity row; the store reads it in `META_COLUMNS`, so the suite
+      // must carry the migration that adds it (and proves it double-applies).
+      '0059_agent_model_policy.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       // Twice: the schema CI gate double-applies every file in the series.
