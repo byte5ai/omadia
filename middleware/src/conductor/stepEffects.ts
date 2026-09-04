@@ -30,6 +30,13 @@ export interface StepMeta {
    *  it was an event/webhook trigger. Names WHICH channel, so the origin rule
    *  applies only to channels that actually carry an addressed bot. */
   triggerEventId?: string;
+  /**
+   * The run's workflow id. A `say` step's floor is derived from it: the target
+   * conversation's ephemeral attachment must belong to THIS workflow. Optional
+   * for the same back-compat reason as the fields above — preview runs and
+   * tests have no workflow row, and a say there simply finds no floor.
+   */
+  workflowId?: string | null;
 }
 
 /**

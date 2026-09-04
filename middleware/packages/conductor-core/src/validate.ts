@@ -148,6 +148,16 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
     if (s.kind === 'human' && !s.human) {
       errors.push({ code: 'human_step_missing_config', message: `human step '${s.id}' has no human config`, nodeIds: [s.id] });
     }
+    // `say` publishes a step's ANSWER into a conversation — only an agent step
+    // produces one. On an action/human/timer step it would silently do nothing,
+    // so it is rejected at publish time rather than misleading a graph author.
+    if (s.say && s.kind !== 'agent') {
+      errors.push({
+        code: 'say_requires_agent_step',
+        message: `step '${s.id}' carries 'say' but is a ${s.kind} step — only an agent step has an answer to publish`,
+        nodeIds: [s.id],
+      });
+    }
     // #330 C3 — a timer step is a deterministic park-then-fallback: it needs a
     // positive ISO-8601 duration AND the on-expiry edge (fallbackTransitionId),
     // otherwise the run would park forever with nothing to wake it.
