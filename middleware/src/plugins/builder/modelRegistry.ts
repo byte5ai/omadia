@@ -63,6 +63,8 @@ function infoToBuilderModel(info: ModelInfo): BuilderModel {
     maxTokens: info.maxTokens,
     description: describeClass(info.class),
     aliases: info.aliases ?? [],
+    ...(info.effortLevels !== undefined ? { effortLevels: info.effortLevels } : {}),
+    ...(info.effortDefault !== undefined ? { effortDefault: info.effortDefault } : {}),
   };
 }
 

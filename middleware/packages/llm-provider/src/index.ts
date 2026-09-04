@@ -37,10 +37,12 @@ export type {
 } from '@omadia/llm-provider-api';
 export {
   collectText,
+  EFFORT_LEVELS,
   LLM_PROVIDER_API_VERSION,
   textMessage,
   toolCalls,
 } from '@omadia/llm-provider-api';
+export type { EffortLevel } from '@omadia/llm-provider-api';
 
 // ---- Runtime: credentials ----
 export {
@@ -121,3 +123,10 @@ export {
   type ModelRole,
   type ProviderId,
 } from './modelRegistry.js';
+
+// ---- Runtime: provider pool (#1033) ----
+export {
+  createLlmProviderPool,
+  type LlmProviderPool,
+  type LlmProviderPoolOptions,
+} from './providerPool.js';

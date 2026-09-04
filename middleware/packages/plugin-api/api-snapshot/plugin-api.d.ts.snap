@@ -2518,6 +2518,8 @@ readonly turnId: string;
 readonly sessionScope?: string;
 readonly channel?: string;
 readonly model?: string;
+readonly provider?: string;
+readonly fallbackUsed?: boolean;
 readonly receipt: PrivacyReceipt;
 }
 export interface TurnReceiptStore {

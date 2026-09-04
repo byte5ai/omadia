@@ -1904,6 +1904,21 @@ export class Orchestrator {
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
+  /**
+   * #1033 W0 — what each in-flight turn actually ran on, keyed by turn id.
+   * Written where the turn model is resolved (both the buffered and the
+   * streaming loop), read once by `persistTurnReceipt` so the receipt names
+   * the routed model and its provider — not the configured default, which is
+   * what `turn_receipts.model` used to record. The fallback path (W3) flips
+   * `fallbackUsed` on the same entry. Bounded: entries are consumed at
+   * persist, and a turn that never reaches a receipt is evicted FIFO once the
+   * map outgrows the cap, so a long-running process cannot leak turn ids.
+   */
+  private readonly turnAttribution = new Map<
+    string,
+    { model: string; provider: string; fallbackUsed: boolean }
+  >();
+  private static readonly TURN_ATTRIBUTION_CAP = 512;
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
@@ -3640,19 +3655,42 @@ export class Orchestrator {
    * failure (`persistFailures`) and this logs it greppably — the exact
    * inversion of the RunTrace defect (#684), where the drop was invisible.
    */
+  /** #1033 W0 — see `turnAttribution`. Same entry point for both loops. */
+  private recordTurnAttribution(turnId: string, model: string): void {
+    if (this.turnAttribution.size >= Orchestrator.TURN_ATTRIBUTION_CAP) {
+      const oldest = this.turnAttribution.keys().next().value;
+      if (oldest !== undefined) this.turnAttribution.delete(oldest);
+    }
+    this.turnAttribution.set(turnId, {
+      model,
+      provider: this.provider.id,
+      fallbackUsed: false,
+    });
+  }
+
   private async persistTurnReceipt(
     turnId: string,
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
   ): Promise<void> {
     const store = this.turnReceiptStore?.();
+    // Consume the attribution whether or not a store is wired: the entry has
+    // no other reader and must not outlive the turn.
+    const ran = this.turnAttribution.get(turnId);
+    this.turnAttribution.delete(turnId);
     if (!store) return;
     try {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
         channel: input.channelIdentity?.channelKind,
-        model: this.model,
+        // #1033 W0 — the model the turn ran on. `this.model` is the
+        // configured default and was the wrong value for every triage-routed
+        // turn; without a recorded attribution it stays the honest fallback
+        // rather than a guess.
+        model: ran?.model ?? this.model,
+        provider: ran?.provider ?? this.provider.id,
+        fallbackUsed: ran?.fallbackUsed ?? false,
         receipt,
       });
     } catch (err) {
@@ -4499,6 +4537,7 @@ export class Orchestrator {
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
     traceCollector?.recordModel(turnModel, this.provider.id);
+    this.recordTurnAttribution(turnId, turnModel);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -5555,6 +5594,7 @@ export class Orchestrator {
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
     traceCollector?.recordModel(turnModel, this.provider.id);
+    this.recordTurnAttribution(turnId, turnModel);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.

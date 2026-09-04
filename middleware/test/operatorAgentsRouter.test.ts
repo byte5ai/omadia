@@ -89,6 +89,16 @@ interface AgentMem {
   /** W5 memory-ACL rollout mode (#899). Optional exactly like the real
    *  `AgentRow`, so a row seeded without it models a pre-0050 agent. */
   contextMemory?: 'off' | 'enforce' | 'enforce-strict';
+  /** #1018 — optional like the real row; absent models a pre-0058 agent. */
+  agentToAgent?: 'off' | 'on';
+  createdAt: Date;
+  updatedAt: Date;
+}
+interface PeerPolicyMem {
+  channelType: string;
+  channelKey: string;
+  agentId: string;
+  agentToAgent: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -184,6 +194,7 @@ class FakeConfigStore {
       privacyProfile: 'strict' | 'default';
       status: 'enabled' | 'disabled';
       contextMemory: 'off' | 'enforce' | 'enforce-strict';
+      agentToAgent: 'off' | 'on';
     }>,
   ): Promise<AgentMem> {
     const row = this.agents.get(id);
@@ -191,6 +202,43 @@ class FakeConfigStore {
     const updated: AgentMem = { ...row, ...patch, updatedAt: new Date() };
     this.agents.set(id, updated);
     return Promise.resolve(updated);
+  }
+  // #1018 — per-(channel, agent) peer policies. key: type|key|agentId
+  peerPolicies = new Map<string, PeerPolicyMem>();
+  listAgentChannelPolicies(agentId: string): Promise<PeerPolicyMem[]> {
+    return Promise.resolve(
+      Array.from(this.peerPolicies.values()).filter((p) => p.agentId === agentId),
+    );
+  }
+  getAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<PeerPolicyMem | undefined> {
+    return Promise.resolve(this.peerPolicies.get(`${channelType}|${channelKey}|${agentId}`));
+  }
+  upsertAgentChannelPolicy(input: {
+    channelType: string;
+    channelKey: string;
+    agentId: string;
+    agentToAgent: boolean;
+  }): Promise<PeerPolicyMem> {
+    const key = `${input.channelType}|${input.channelKey}|${input.agentId}`;
+    const prev = this.peerPolicies.get(key);
+    const row: PeerPolicyMem = {
+      ...input,
+      createdAt: prev?.createdAt ?? new Date(),
+      updatedAt: new Date(),
+    };
+    this.peerPolicies.set(key, row);
+    return Promise.resolve(row);
+  }
+  deleteAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<boolean> {
+    return Promise.resolve(this.peerPolicies.delete(`${channelType}|${channelKey}|${agentId}`));
   }
   deleteAgent(id: string): Promise<void> {
     this.agents.delete(id);
@@ -644,6 +692,98 @@ describe('createOperatorAgentsRouter', () => {
     teamsInstalls = undefined;
     resolveTeamName = undefined;
     teamsEvents = undefined;
+  });
+
+  // ── agent-to-agent switches (#1018) ─────────────────────────────────
+  describe('agent-to-agent switches (#1018)', () => {
+    it('GET /:slug/agent-to-agent defaults to off and advertises the union', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { slug: 'public', mode: 'off', modes: ['off', 'on'] });
+    });
+
+    it('GET /:slug/agent-to-agent reads an unknown persisted value as off', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, agentToAgent: 'maybe' as never });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`);
+      assert.equal(((await res.json()) as { mode: string }).mode, 'off');
+    });
+
+    it('PUT /:slug/agent-to-agent persists the mode and reloads the registry', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'on' }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { ok: true, mode: 'on' });
+      assert.equal((await store.getAgentBySlug('public'))?.agentToAgent, 'on');
+      assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('PUT /:slug/agent-to-agent rejects a mode outside the union with 400', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'always' }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it('peer-channels: PUT upserts, GET lists, DELETE removes; 404 for unknown pair', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      // Teams group-chat keys carry `:` and `@` — they must survive the path.
+      const key = encodeURIComponent('19:9cdb0cd5@thread.skype');
+      const put = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      assert.equal(put.status, 200);
+      assert.deepEqual(await put.json(), {
+        ok: true,
+        channelType: 'teams',
+        channelKey: '19:9cdb0cd5@thread.skype',
+        enabled: true,
+      });
+
+      const list = await fetch(`${baseUrl}/public/peer-channels`);
+      const body = (await list.json()) as {
+        mode: string;
+        channels: Array<{ channelType: string; channelKey: string; enabled: boolean }>;
+      };
+      assert.equal(body.mode, 'off');
+      assert.equal(body.channels.length, 1);
+      assert.equal(body.channels[0]?.channelKey, '19:9cdb0cd5@thread.skype');
+      assert.equal(body.channels[0]?.enabled, true);
+
+      const off = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      });
+      assert.equal(((await off.json()) as { enabled: boolean }).enabled, false);
+
+      const del = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, { method: 'DELETE' });
+      assert.equal(del.status, 200);
+      const gone = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, { method: 'DELETE' });
+      assert.equal(gone.status, 404);
+    });
+
+    it('peer-channels: a non-boolean body is 400, an unknown agent is 404', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const bad = await fetch(`${baseUrl}/public/peer-channels/teams/x`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: 'yes' }),
+      });
+      assert.equal(bad.status, 400);
+      const missing = await fetch(`${baseUrl}/nope/peer-channels`);
+      assert.equal(missing.status, 404);
+    });
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────

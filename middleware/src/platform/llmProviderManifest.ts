@@ -10,12 +10,14 @@
  * ids, one class-default per (provider,class)) are enforced downstream by
  * `registerExternalModels`; this layer only enforces shape + required fields.
  */
-import type {
-  LlmProviderCatalog,
-  LlmProviderDescriptor,
-  ModelInfo,
-  ProviderPolicy,
-  ProviderQuirks,
+import {
+  EFFORT_LEVELS,
+  type EffortLevel,
+  type LlmProviderCatalog,
+  type LlmProviderDescriptor,
+  type ModelInfo,
+  type ProviderPolicy,
+  type ProviderQuirks,
 } from '@omadia/llm-provider';
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -70,6 +72,7 @@ function parseModel(raw: unknown): ModelInfo {
     }
     aliases = aliasesRaw as string[];
   }
+  const effort = parseEffort(rec);
   return {
     id: reqString(rec, 'id'),
     provider: reqString(rec, 'id').split(':')[0] ?? '',
@@ -81,6 +84,45 @@ function parseModel(raw: unknown): ModelInfo {
     vision: reqBool(rec, 'vision'),
     ...(rec['class_default'] === true ? { classDefault: true } : {}),
     ...(aliases !== undefined ? { aliases } : {}),
+    ...effort,
+  };
+}
+
+/**
+ * #1033 — optional `effort_levels` / `effort_default` on a model entry. A
+ * level outside the contract vocabulary is a manifest error (the operator UI
+ * would otherwise offer a value no adapter can send); a default that is not
+ * among the declared levels is one too, for the same reason.
+ */
+function parseEffort(
+  rec: Record<string, unknown>,
+): Pick<ModelInfo, 'effortLevels' | 'effortDefault'> {
+  const levelsRaw = rec['effort_levels'];
+  if (levelsRaw === undefined) {
+    if (rec['effort_default'] !== undefined) {
+      throw new Error("'effort_default' requires 'effort_levels'");
+    }
+    return {};
+  }
+  if (!Array.isArray(levelsRaw) || levelsRaw.length === 0) {
+    throw new Error("'effort_levels' must be a non-empty array");
+  }
+  const levels: EffortLevel[] = [];
+  for (const level of levelsRaw) {
+    if (typeof level !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(level)) {
+      throw new Error(
+        `'effort_levels' entry '${String(level)}' must be one of ${EFFORT_LEVELS.join('|')}`,
+      );
+    }
+    levels.push(level as EffortLevel);
+  }
+  const defaultRaw = optString(rec, 'effort_default');
+  if (defaultRaw !== undefined && !levels.includes(defaultRaw as EffortLevel)) {
+    throw new Error(`'effort_default' '${defaultRaw}' is not among 'effort_levels'`);
+  }
+  return {
+    effortLevels: levels,
+    ...(defaultRaw !== undefined ? { effortDefault: defaultRaw as EffortLevel } : {}),
   };
 }
 

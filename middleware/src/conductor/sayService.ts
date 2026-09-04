@@ -68,6 +68,7 @@ export type ConductorSayOutcome =
         | 'foreign_workflow'
         | 'no_provider'
         | 'no_identity'
+        | 'peer_disabled'
         | 'channel_error';
       message: string;
     };
@@ -85,6 +86,14 @@ export interface ConductorSayDeps {
   /** Resolves the bot the speaking agent IS. Absent = nobody can be shown to
    *  own an identity, so nothing is posted. */
   identityFor?: AgentChannelIdentityResolver;
+  /**
+   * #1018 — re-evaluated on EVERY utterance, not only at the start of a run.
+   * A discussion that began before an operator switched an agent off would
+   * otherwise keep that agent talking until the run ended; with the check
+   * here, the flip bites at the agent's very next turn. Absent = no gate
+   * (no store wired), which is the pre-W1 behaviour.
+   */
+  peerGate?: (channelType: string, conversationId: string, agentSlug: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }
 
@@ -229,6 +238,23 @@ export class ConductorSayService {
         said: false,
         reason: 'no_identity',
         message: `agent '${input.agentSlug}' has no provisioned ${input.channelType} identity — it cannot speak in its own name here, and it will not speak in someone else's`,
+      };
+    }
+
+    // AN OPERATOR'S SWITCH BITES AT THE NEXT UTTERANCE. Checked after the
+    // identity so the refusal names the agent that is known and present but
+    // not enabled — a different fix than "provision a bot".
+    if (
+      this.deps.peerGate &&
+      !(await this.deps.peerGate(input.channelType, conversationId, input.agentSlug))
+    ) {
+      this.deps.log?.(
+        `[conductor] say by '${input.agentSlug}' into ${input.channelType}/${conversationId} refused: agent-to-agent disabled (run ${input.runId})`,
+      );
+      return {
+        said: false,
+        reason: 'peer_disabled',
+        message: `agent '${input.agentSlug}' is not enabled for agent-to-agent conversation in ${input.channelType}/${conversationId} — an operator switched it off for the agent or for this chat`,
       };
     }
 

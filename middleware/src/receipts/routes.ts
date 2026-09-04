@@ -66,6 +66,9 @@ interface TurnReceiptRow {
   session_scope: string | null;
   channel: string | null;
   model: string | null;
+  /** #1033 W0 — attribution columns (migration 0057); NULL on older rows. */
+  provider: string | null;
+  fallback_used: boolean | null;
   receipt: unknown;
   created_at: Date;
   /** pg's own text rendering of created_at — microsecond-exact, used only
@@ -79,12 +82,18 @@ function toApiShape(row: TurnReceiptRow): Record<string, unknown> {
     sessionScope: row.session_scope ?? undefined,
     channel: row.channel ?? undefined,
     model: row.model ?? undefined,
+    provider: row.provider ?? undefined,
+    // Only ever `true` on the wire: a row that predates the column is
+    // indistinguishable from "primary answered", and the UI must not render
+    // a "no fallback" badge it cannot vouch for.
+    ...(row.fallback_used === true ? { fallbackUsed: true } : {}),
     receipt: row.receipt,
     createdAt: row.created_at.toISOString(),
   };
 }
 
-const SELECT_COLUMNS = `id, turn_id, session_scope, channel, model, receipt,
+const SELECT_COLUMNS = `id, turn_id, session_scope, channel, model, provider,
+       fallback_used, receipt,
        created_at, created_at::text AS created_at_cursor`;
 
 export function createReceiptRoutes(pool: Pool): Router {

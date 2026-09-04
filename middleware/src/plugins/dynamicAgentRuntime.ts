@@ -9,6 +9,7 @@ import {
 import {
   coerceModelToProvider,
   resolveLlmProvider,
+  type LlmProviderPool,
   type LlmProvider,
 } from '@omadia/llm-provider';
 import type { z } from 'zod';
@@ -153,6 +154,10 @@ export interface DynamicAgentRuntimeDeps {
   /** Read a host-scope vault secret (the orchestrator scope) — used to build a
    *  non-Anthropic provider for sub-agents via the provider factory. */
   hostGetSecret?: (key: string) => Promise<string | undefined>;
+  /** #1033 W1 — the kernel's provider pool; preferred over a one-off resolve
+   *  because it memoises per provider id. Optional so existing hosts and unit
+   *  tests keep the `hostGetSecret` path. */
+  providerPool?: Pick<LlmProviderPool, 'get'>;
   serviceRegistry: ServiceRegistry;
   /** Shared registry for plugin-contributed top-level native tools. Activated
    *  plugins register handlers here via `ctx.tools.register(...)`. */
@@ -503,21 +508,30 @@ export class DynamicAgentRuntime {
     if (hostProviderId === 'anthropic') {
       provider = liveAnthropicProvider();
     } else {
-      const resolved = this.deps.hostGetSecret
-        ? await resolveLlmProvider({
-            providerId: hostProviderId,
-            getSecret: this.deps.hostGetSecret,
-          })
-        : undefined;
+      // #1033 W1 — through the kernel's provider pool when one is wired
+      // (memoised per provider id; a key change is picked up on invalidate),
+      // else a one-off resolve as before.
+      const resolved = this.deps.providerPool
+        ? await this.deps.providerPool.get(hostProviderId)
+        : this.deps.hostGetSecret
+          ? await resolveLlmProvider({
+              providerId: hostProviderId,
+              getSecret: this.deps.hostGetSecret,
+            })
+          : undefined;
       if (resolved === undefined) {
-        // No key for the configured non-Anthropic provider — fall back to the
-        // shared client so construction does not throw; a real auth error only
-        // surfaces if the sub-agent is actually invoked.
-        provider = liveAnthropicProvider();
-      } else {
-        provider = resolved;
-        subAgentModel = coerceModelToProvider(effectiveModel, hostProviderId);
+        // #1033 W1 — no key for the configured non-Anthropic provider. This
+        // used to fall back to the shared Anthropic client SILENTLY, so a
+        // sub-agent on a host configured for, say, Mistral would quietly run
+        // on Anthropic (or throw an unrelated auth error at first call).
+        // Refusing to build it names the actual problem at the point where an
+        // operator can fix it.
+        throw new Error(
+          `dynamic agent '${catalogEntry.plugin.id}': the host LLM provider '${hostProviderId}' has no API key configured — add the key under Providers or switch the orchestrator's llm_provider`,
+        );
       }
+      provider = resolved;
+      subAgentModel = coerceModelToProvider(effectiveModel, hostProviderId);
     }
 
     // #309 recursive Shape 3: on the subscription CLI provider the in-process

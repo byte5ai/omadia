@@ -80,6 +80,7 @@ import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger } from './sessionLogger.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
+import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
@@ -251,6 +252,13 @@ export interface OrchestratorDeps {
    * plugin's tools are always available (pre-#474 behaviour).
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
+  /**
+   * #1018 — resolves the peer AGENTS the calling agent may see in the current
+   * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
+   * Kernel-published (`chatPeerAgents@1`); absent ⇒ the roster stays
+   * humans-only, the pre-#1018 behaviour.
+   */
+  readonly chatPeerAgents?: ChatPeerAgentsProvider;
   /**
    * #1016 — per-turn owner guard for the subscription-CLI runtime, published
    * by the kernel as `routineTurnOwnerGuard`.
@@ -601,7 +609,9 @@ export function buildOrchestratorForAgent(
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
-  const chatParticipantsTool = new ChatParticipantsTool();
+  const chatParticipantsTool = new ChatParticipantsTool(
+    deps.chatPeerAgents ? { peerAgents: deps.chatPeerAgents } : {},
+  );
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
   const findFreeSlotsTool = deps.microsoft365

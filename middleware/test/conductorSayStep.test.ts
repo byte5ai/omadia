@@ -439,3 +439,39 @@ describe('RealStepEffects — say wiring', () => {
     assert.equal(result.sayError, 'no_attachment');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1018 W1 — the peer gate bites at the NEXT utterance
+// ---------------------------------------------------------------------------
+
+describe('ConductorSayService peer gate (#1018)', () => {
+  it('refuses with peer_disabled when the gate says no, after identity resolved', async () => {
+    const sent: unknown[] = [];
+    let enabled = true;
+    const service = new ConductorSayService({
+      attachments: { getByConversation: async () => attachment() },
+      providers: {
+        get: () => ({
+          channelType: 'teams',
+          sendToConversation: async (...args: unknown[]) => {
+            sent.push(args);
+            return { outcome: 'delivered' as const };
+          },
+        }),
+      },
+      identityFor: () => ({ channelKey: IDENTITIES.hr! }),
+      peerGate: async () => enabled,
+    });
+    assert.equal((await service.say(input)).said, true);
+    // The operator flips the switch mid-run: the very next utterance is refused.
+    enabled = false;
+    const outcome = await service.say(input);
+    assert.equal(outcome.said === false && outcome.reason, 'peer_disabled');
+    assert.equal(sent.length, 1, 'nothing reaches the chat after the flip');
+  });
+
+  it('without a gate wired, say behaves exactly as before', async () => {
+    const { service } = harness({ attachment: attachment() });
+    assert.equal((await service.say(input)).said, true);
+  });
+});

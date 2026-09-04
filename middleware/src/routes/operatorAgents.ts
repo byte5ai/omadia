@@ -8,6 +8,9 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  AGENT_TO_AGENT_MODES,
+  parseAgentToAgentMode,
+  type AgentToAgentMode,
   type ChatSessionStore,
   type ConfigStore,
   type ContextMemoryMode,
@@ -180,6 +183,19 @@ void _contextMemoryModesPin;
 const ContextMemorySchema = z.object({
   mode: z.enum(CONTEXT_MEMORY_MODES),
 });
+
+// #1018 — the agent-to-agent switches. Same two-endpoint shape as
+// context-memory, for the same reason: a peer-talk switch must not ride along
+// on an unrelated rename.
+const AgentToAgentSchema = z.object({
+  mode: z.enum(AGENT_TO_AGENT_MODES),
+});
+const PeerChannelSchema = z.object({
+  enabled: z.boolean(),
+});
+/** `channel_key` values carry `:`/`@` (`19:…@thread.skype`) — path-segment safe
+ *  once URL-encoded, but bound it so a stray body cannot become a 64 KB key. */
+const PEER_CHANNEL_SEGMENT = z.string().trim().min(1).max(512);
 
 const AgentPluginsSchema = z.object({
   plugins: z.array(
@@ -1893,6 +1909,162 @@ export function createOperatorAgentsRouter(
       badRequest(res, err);
     }
   });
+
+  // ── agent-to-agent switches (#1018) ──────────────────────────────────
+  // Two halves, AND-combined by the relay: the agent's own switch
+  // (`agents.agent_to_agent`) and one row per chat it may converse in
+  // (`agent_channel_policies`). Both deny-default. The relay re-reads them
+  // per utterance, so a flip here stops a running discussion at its next turn.
+  router.get('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const mode: AgentToAgentMode = parseAgentToAgentMode(agent.agentToAgent);
+      res.json({ slug: agent.slug, mode, modes: AGENT_TO_AGENT_MODES });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = AgentToAgentSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const previous = parseAgentToAgentMode(agent.agentToAgent);
+      await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
+      await live.registry.reload();
+      if (previous !== body.mode) {
+        // Whether an agent may talk to peers is a reach decision an incident
+        // review wants to find — same audit prefix as context_memory.
+        console.warn(
+          `[security-audit] agent_to_agent ${previous} -> ${body.mode} for agent ${agent.slug}`,
+        );
+      }
+      res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.get('/:slug/peer-channels', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const policies = await live.store.listAgentChannelPolicies(agent.id);
+      res.json({
+        slug: agent.slug,
+        mode: parseAgentToAgentMode(agent.agentToAgent),
+        channels: policies.map((p) => ({
+          channelType: p.channelType,
+          channelKey: p.channelKey,
+          enabled: p.agentToAgent,
+          updatedAt: p.updatedAt.toISOString(),
+        })),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const body = PeerChannelSchema.parse(req.body);
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const previous = await live.store.getAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        const row = await live.store.upsertAgentChannelPolicy({
+          channelType,
+          channelKey,
+          agentId: agent.id,
+          agentToAgent: body.enabled,
+        });
+        if ((previous?.agentToAgent ?? false) !== body.enabled) {
+          console.warn(
+            `[security-audit] agent_channel_policy ${channelType}/${channelKey} ${previous?.agentToAgent ?? 'unset'} -> ${body.enabled} for agent ${agent.slug}`,
+          );
+        }
+        res.json({
+          ok: true,
+          channelType: row.channelType,
+          channelKey: row.channelKey,
+          enabled: row.agentToAgent,
+        });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const removed = await live.store.deleteAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        if (!removed) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        console.warn(
+          `[security-audit] agent_channel_policy ${channelType}/${channelKey} removed for agent ${agent.slug}`,
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
 
   // ── agent identity (#914) ───────────────────────────────────────────
   //

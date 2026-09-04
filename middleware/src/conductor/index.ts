@@ -248,6 +248,9 @@ export async function wireConductor(deps: {
    *  into the chat. Omit on hosts without a channel plugin — agent dialogue
    *  then degrades to silent turns rather than failing the run. */
   conversationSendProviders?: ConductorSayDeps['providers'];
+  /** #1018 — the peer gate a `say` step re-checks on every utterance. Omit
+   *  on hosts without the policy store; the pre-W1 behaviour then applies. */
+  peerGate?: ConductorSayDeps['peerGate'];
   /** Per-agent-scoped secret vault (issue #437) — inbound endpoint secrets and outbound
    *  subscription signing secrets live here under the `core:conductor` namespace, never
    *  in a Postgres column or an API response body beyond their one-time creation reply. */
@@ -395,6 +398,7 @@ export async function wireConductor(deps: {
               attachments: ephemeralAttachments,
               providers: deps.conversationSendProviders,
               identityFor: agentChannelIdentity,
+              ...(deps.peerGate ? { peerGate: deps.peerGate } : {}),
               log,
             }),
           }

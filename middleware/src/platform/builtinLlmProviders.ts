@@ -45,6 +45,10 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
         contextWindow: 200_000,
         vision: true,
         aliases: ['opus'],
+        // #1033 — `output_config.effort` (Opus 4.5+). Declared only where the
+        // vendor documents the knob; Sonnet/Haiku stay undeclared until they do.
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+        effortDefault: 'high',
       },
       {
         id: 'anthropic:claude-sonnet-4-6',
@@ -88,6 +92,10 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
         maxTokens: 128_000,
         contextWindow: 1_047_576,
         vision: true,
+        // #1033 — `reasoning_effort`; the frontier/balanced tiers take xhigh,
+        // the mini/nano tiers top out at high.
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+        effortDefault: 'medium',
       },
       {
         id: 'openai:gpt-5.4',
@@ -98,6 +106,8 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
         maxTokens: 128_000,
         contextWindow: 400_000,
         vision: true,
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+        effortDefault: 'medium',
       },
       {
         id: 'openai:gpt-5.4-mini',
@@ -109,6 +119,8 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
         contextWindow: 400_000,
         vision: true,
         classDefault: true,
+        effortLevels: ['low', 'medium', 'high'],
+        effortDefault: 'medium',
       },
       {
         id: 'openai:gpt-5.4-nano',
@@ -119,6 +131,8 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
         maxTokens: 128_000,
         contextWindow: 400_000,
         vision: true,
+        effortLevels: ['low', 'medium', 'high'],
+        effortDefault: 'medium',
       },
     ],
   },

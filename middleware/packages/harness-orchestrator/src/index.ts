@@ -109,6 +109,16 @@ export type {
   MemoryBinderOptions,
 } from './memoryBinder.js';
 export {
+  AGENT_TO_AGENT_MODES,
+  isAgentToAgentEnabled,
+  parseAgentToAgentMode,
+} from './registry/agentToAgent.js';
+export type {
+  AgentChannelPolicyInput,
+  AgentChannelPolicyRow,
+  AgentToAgentMode,
+} from './registry/agentToAgent.js';
+export {
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
@@ -572,6 +582,7 @@ export type {
 export type {
   ChatParticipant,
   ChatParticipantsProvider,
+  ChatPeerAgentsProvider,
 } from './chatParticipants.js';
 
 // Native tools — channel-coupled UI cards + calendar + roster

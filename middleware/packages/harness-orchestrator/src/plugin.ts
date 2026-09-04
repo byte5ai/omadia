@@ -14,7 +14,7 @@ import type {
 } from './securityScreener.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
-  resolveLlmProvider,
+  createLlmProviderPool,
   type LlmProviderCatalog,
 } from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
@@ -69,6 +69,7 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
+import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 import {
   audienceGuardedAttachmentReader,
   createAttachmentReader,
@@ -217,6 +218,15 @@ const DEFAULT_MODEL = DEFAULT_ORCHESTRATOR_MODEL;
  * standing in for the import that is not available.
  */
 export const ROUTINE_TURN_OWNER_GUARD_SERVICE = 'routineTurnOwnerGuard';
+
+/**
+ * #1018 — kernel-published resolver for the peer AGENTS the calling agent may
+ * see in the current chat. Declared as `chatPeerAgents@1` in
+ * `optional_requires` (the grant test pins the literal); resolved PER CALL,
+ * not at activation, because the kernel provides it from inside the database
+ * block, which may come up after this plugin.
+ */
+export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
@@ -491,14 +501,18 @@ export async function activate(
   const llmProviderCatalog = ctx.services.get<LlmProviderCatalog>(
     'llmProviderCatalog',
   );
-  const provider = await resolveLlmProvider({
-    providerId,
+  // #1033 W1 — ONE pool, MANY providers. The configured provider is simply
+  // the pool's first entry; a per-agent policy naming another provider
+  // (primary or fallback) resolves through the same pool at turn time, with
+  // the same credentials source and the same retry budget.
+  const providerPool = createLlmProviderPool({
     getSecret: (k) => ctx.secrets.get(k),
     maxRetries: 5,
     ...(llmProviderCatalog !== undefined
       ? { catalog: llmProviderCatalog }
       : {}),
   });
+  const provider = await providerPool.get(providerId);
   if (!provider) {
     ctx.log(
       `[harness-orchestrator] no API key for provider '${providerId}' — chatAgent@1 capability NOT published`,
@@ -1039,6 +1053,10 @@ export async function activate(
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
     ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
+    // #1018 — resolved PER CALL (optional service, provided by the kernel from
+    // inside its database block, possibly after this plugin activated).
+    chatPeerAgents: async () =>
+      (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

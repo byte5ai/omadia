@@ -59,9 +59,15 @@ requires:
 # `ctx.services.getOptional` is declaration-gated on exactly the same terms as
 # `get`, and an undeclared name throws `ServiceNotDeclaredError` out of
 # `activate()`, which takes chatAgent@1 down with it.
+#
+# #1018 — chatPeerAgents@1 is the kernel-published resolver for the peer
+# AGENTS the calling agent may see in the current chat (presence + the
+# agent-to-agent policy both live in kernel-owned tables). Resolved per call
+# by `get_chat_participants`; absent → the roster stays humans-only.
 optional_requires:
   - "transcription@1"
   - "routineTurnOwnerGuard@1"
+  - "chatPeerAgents@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
