@@ -129,6 +129,26 @@ export interface HumanStepConfig {
   strictApproval?: boolean;
 }
 
+/**
+ * Publish an agent step's answer INTO a conversation (the agent-dialogue
+ * primitive). Without it an agent step's prose stays in the run context and
+ * nobody in the chat ever sees it — which is exactly why two agent bots could
+ * not hold a topic conversation: Microsoft Teams does not deliver one bot's
+ * message to another bot, so the conversation has to be relayed server-side
+ * and projected into the chat by the kernel.
+ *
+ * `channel` is the channel TYPE ('teams'), slot-able in a pattern as
+ * `slot:channel:<key>`. The target conversation is NOT part of the graph — it
+ * comes from the run context (`ctx.conversationId`), and the effect side
+ * authorizes it against the run's own ephemeral attachment.
+ */
+export interface StepSayConfig {
+  /** Channel type to publish through, e.g. 'teams'. */
+  channel: string;
+  /** Display name shown before the utterance; defaults to the step's agent slug. */
+  speaker?: string;
+}
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -152,6 +172,8 @@ export interface Step {
   human?: HumanStepConfig;
   /** required when kind='timer' (#330 C3). */
   timer?: TimerStepConfig;
+  /** kind='agent' only: publish this step's answer into the run's bound conversation. */
+  say?: StepSayConfig;
   /** the step's exit postcondition; absent ≡ always met. */
   postcondition?: Predicate;
   /** id of the transition fired when the postcondition is unmet, or when no happy-path
@@ -217,6 +239,7 @@ export type ValidationCode =
   | 'agent_step_missing_agent'
   | 'action_step_missing_action'
   | 'human_step_missing_config'
+  | 'say_requires_agent_step'
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'

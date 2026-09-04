@@ -40,12 +40,22 @@ export const conductorGraphSchema = {
             duration: { type: 'string', minLength: 1 },
           },
         },
+        say: { $ref: '#/$defs/say' },
         postcondition: { $ref: '#/$defs/predicate' },
         fallbackTransitionId: { type: 'string' },
         position: {
           type: 'object',
           properties: { x: { type: 'number' }, y: { type: 'number' } },
         },
+      },
+    },
+    say: {
+      type: 'object',
+      required: ['channel'],
+      additionalProperties: false,
+      properties: {
+        channel: { type: 'string', minLength: 1 },
+        speaker: { type: 'string' },
       },
     },
     human: {
