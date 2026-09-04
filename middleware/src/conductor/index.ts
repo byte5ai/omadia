@@ -135,6 +135,19 @@ export {
 } from './discussionService.js';
 export type { StartDiscussionInput } from './discussionService.js';
 export {
+  ambientTurnFrom,
+  createDiscussionsCapability,
+  DiscussionNoConversationError,
+  DiscussionUnknownOpenerError,
+} from './discussionHere.js';
+export type {
+  AmbientTurn,
+  AmbientTurnResolver,
+  ConductorDiscussionsCapability,
+  OpenerResolver,
+  StartDiscussionHereInput,
+} from './discussionHere.js';
+export {
   appendTranscript,
   renderTranscript,
   TRANSCRIPT_MAX_ENTRIES,

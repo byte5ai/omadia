@@ -1,0 +1,82 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/plugin-discussion"
+  name: "Agent Discussion"
+  version: "0.1.0"
+  kind: "tool"
+  domain: "agent.discussion"
+  description:
+    en: "Lets this agent open a bounded, visible topic discussion with another agent in the chat it was just addressed in. Each agent posts under its own bot."
+    de: "Lässt diesen Agenten in dem Chat, in dem er gerade angesprochen wurde, eine begrenzte, sichtbare Themenkonversation mit einem anderen Agenten eröffnen. Jeder Agent postet unter seinem eigenen Bot."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "collaboration"
+    - "agents"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+setup:
+  guide:
+    en: |
+      ## Nothing to configure
+
+      Grant this plugin to every agent that should be able to START a
+      discussion. Both participants additionally need their own provisioned
+      Teams bot — a discussion is refused rather than posted under a
+      borrowed identity.
+
+      Then, in the group chat:
+
+          @HR Discuss with the accounting agent whether training budgets
+              belong on account 4945.
+
+      The addressed agent opens the discussion; both agents then post in
+      turn under their own names, bounded to at most seven contributions
+      plus a closing summary.
+    de: |
+      ## Nichts zu konfigurieren
+
+      Gib dieses Plugin jedem Agenten frei, der eine Konversation STARTEN
+      können soll. Beide Teilnehmer brauchen zusätzlich einen eigenen
+      provisionierten Teams-Bot — sonst wird die Konversation abgelehnt,
+      statt unter fremdem Namen gepostet zu werden.
+
+      Dann im Gruppen-Chat:
+
+          @HR Diskutier bitte mit dem Accounting-Agenten, ob
+              Weiterbildungsbudgets auf Sachkonto 4945 gehören.
+
+      Der angesprochene Agent eröffnet; danach posten beide Agenten
+      abwechselnd unter ihren eigenen Namen, begrenzt auf höchstens sieben
+      Beiträge plus Abschluss.
+  fields: []
+
+permissions:
+  memory:
+    reads: []
+    writes: []
+  graph:
+    reads: []
+    writes: []
+  network:
+    outbound: []
+  filesystem:
+    scratch: false
+
+provides: []
+requires: []
+# The kernel seam this plugin lives on. Optional so the plugin still
+# activates on a kernel without it (or without Postgres, where the whole
+# ephemeral machinery is inert) and says so, instead of failing to install.
+optional_requires:
+  - "conductorDiscussions@1"
