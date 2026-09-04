@@ -1158,7 +1158,15 @@ async function main(): Promise<void> {
   const kernelProviderPool = createLlmProviderPool({
     getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
     catalog: llmProviderCatalog,
+    // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
+    // the pool is shared with it from W3 on, so both sides agree.
+    maxRetries: 5,
   });
+  // #1033 W3 — published for the orchestrator plugin (`llmProviderPool@1`,
+  // optional_requires) so the fallback circuit breaker has ONE state for the
+  // turn loop and the providers admin page. Provided here, before any plugin
+  // activates, like `llmProviderCatalog`.
+  serviceRegistry.provide('llmProviderPool', kernelProviderPool);
 
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
@@ -4956,6 +4964,9 @@ async function main(): Promise<void> {
       vault: secretVault,
       reactivate: reactivateAgent,
       llmProviderCatalog,
+      // #1033 W3 — the fallback breaker's state, so the page can show a
+      // provider that is currently being skipped in favour of its fallback.
+      providerHealth: kernelProviderPool.health,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');

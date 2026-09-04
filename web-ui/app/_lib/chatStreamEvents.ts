@@ -38,6 +38,9 @@ export type ChatStreamEvent =
       bucket: 'simple' | 'complex' | 'fallback';
       classifierModel: string;
       model: string;
+      /** #1033 — the turn hopped to the agent's fallback model/provider. */
+      reason?: 'provider_fallback';
+      provider?: string;
     }
   /**
    * Wave 8 — per-turn direct-answer persona verdict, emitted once at turn
@@ -207,6 +210,8 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           bucket: event.bucket,
           classifierModel: event.classifierModel,
           model: event.model,
+          ...(event.reason ? { reason: event.reason } : {}),
+          ...(event.provider ? { provider: event.provider } : {}),
         },
       };
     case 'turn_persona':

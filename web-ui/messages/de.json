@@ -1572,7 +1572,9 @@
       "classifierTooltip": "Triage-Klassifizierer: {classifier} → {bucket} → {model}",
       "bucketSimple": "einfach",
       "bucketComplex": "komplex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback-Modell",
+      "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
     }
   },
   "privacyReceipt": {

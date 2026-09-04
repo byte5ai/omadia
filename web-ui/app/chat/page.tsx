@@ -1253,9 +1253,34 @@ function TriageBadge({
     bucket: 'simple' | 'complex' | 'fallback';
     classifierModel: string;
     model: string;
+    /** #1033 — the turn ran on the agent's fallback model (primary unavailable). */
+    reason?: 'provider_fallback';
+    provider?: string;
   };
 }): React.ReactElement {
   const t = useTranslations('chat.routing');
+  // #1033 — a PROVIDER fallback is a different thing from the triage
+  // `bucket: 'fallback'` (classifier failed): the primary model was
+  // unavailable and the answer came from the configured second choice.
+  // One subtle chip, no text in the answer itself.
+  if (routing.reason === 'provider_fallback') {
+    return (
+      <div
+        className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
+        title={t('providerFallbackTooltip', {
+          model: routing.model,
+          provider: routing.provider ?? '',
+        })}
+      >
+        <span className="inline-flex items-center rounded-full bg-[color:var(--warning)]/10 px-2 py-0.5 font-medium uppercase tracking-[0.08em] text-[color:var(--warning)] ring-1 ring-[color:var(--warning)]">
+          {t('providerFallback')}
+        </span>
+        <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
+          {shortModelName(routing.model)}
+        </span>
+      </div>
+    );
+  }
   const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
     simple: {
       label: t('bucketSimple'),

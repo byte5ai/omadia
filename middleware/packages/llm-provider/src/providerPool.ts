@@ -28,11 +28,17 @@
 import type { LlmProvider } from '@omadia/llm-provider-api';
 
 import { resolveLlmProvider, type ResolveLlmProviderOptions } from './providerFactory.js';
+import { createProviderHealth, type ProviderHealth } from './providerHealth.js';
 
 /** Everything `resolveLlmProvider` needs except the provider id. */
-export type LlmProviderPoolOptions = Omit<ResolveLlmProviderOptions, 'providerId'>;
+export type LlmProviderPoolOptions = Omit<ResolveLlmProviderOptions, 'providerId'> & {
+  /** #1033 W3 — cooldown after a fallback-worthy failure (default 60 s). */
+  readonly cooldownMs?: number;
+};
 
 export interface LlmProviderPool {
+  /** #1033 W3 — the per-provider circuit breaker the fallback path consults. */
+  readonly health: ProviderHealth;
   /** The provider for `providerId`, or `undefined` when it cannot be built
    *  (no key, unknown wire format). Memoised per id until invalidated. */
   get(providerId: string): Promise<LlmProvider | undefined>;
@@ -51,12 +57,14 @@ export function createLlmProviderPool(
   resolve: (opts: ResolveLlmProviderOptions) => Promise<LlmProvider | undefined> = resolveLlmProvider,
 ): LlmProviderPool {
   const entries = new Map<string, Promise<LlmProvider | undefined>>();
+  const { cooldownMs, ...factoryOpts } = base;
+  const health = createProviderHealth(cooldownMs !== undefined ? { cooldownMs } : {});
 
   const get = (providerId: string): Promise<LlmProvider | undefined> => {
     const id = providerId.trim();
     const hit = entries.get(id);
     if (hit) return hit;
-    const pending = resolve({ ...base, providerId: id }).catch((err: unknown) => {
+    const pending = resolve({ ...factoryOpts, providerId: id }).catch((err: unknown) => {
       // A throwing factory must not poison the cache: drop the entry so the
       // next call retries, and surface the failure to this caller.
       entries.delete(id);
@@ -67,6 +75,7 @@ export function createLlmProviderPool(
   };
 
   return {
+    health,
     get,
     async usable(providerId) {
       return (await get(providerId)) !== undefined;

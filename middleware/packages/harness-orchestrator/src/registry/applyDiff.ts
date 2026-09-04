@@ -5,7 +5,26 @@ import {
   type OrchestratorDeps,
 } from '../buildOrchestrator.js';
 import type { OrchestratorPersonaSkill } from '../orchestrator.js';
-import { DEFAULT_MODEL_POLICY, resolveModelPolicyRuntime } from './modelPolicy.js';
+import { DEFAULT_MODEL_POLICY, isModelRef, resolveModelPolicyRuntime } from './modelPolicy.js';
+import type { ModelPolicy, ModelRef } from '@omadia/plugin-api';
+import { resolveModelRef } from '@omadia/llm-provider';
+
+/** #1033 W3 — the fallback as a concrete ref, or undefined for `none`. */
+function fallbackRefFor(
+  policy: ModelPolicy,
+  autoModel: string,
+  activeProvider: string,
+): ModelRef | undefined {
+  if (policy.fallback === 'none') return undefined;
+  if (policy.fallback === 'auto') return { provider: activeProvider, model: autoModel };
+  return policy.fallback;
+}
+
+/** #1033 W3 — whether the explicit fallback model can read images (catalogue). */
+function fallbackVisionFor(policy: ModelPolicy): boolean | undefined {
+  if (!isModelRef(policy.fallback)) return undefined;
+  return resolveModelRef(`${policy.fallback.provider}:${policy.fallback.model}`)?.vision;
+}
 
 import type {
   PersonaSkillRow,
@@ -230,13 +249,14 @@ export function buildForAgent(
   // a provider other than the active one is deferred (effort still applies)
   // until the turn loop can switch providers — W3 — and says so in the log
   // rather than quietly running the auto model under the policy's name.
-  const policy = resolveModelPolicyRuntime(
-    agent.modelPolicy ?? DEFAULT_MODEL_POLICY,
-    activeProvider,
-  );
-  if (policy.deferredProvider !== undefined) {
+  const modelPolicy = agent.modelPolicy ?? DEFAULT_MODEL_POLICY;
+  const policy = resolveModelPolicyRuntime(modelPolicy, activeProvider);
+  // #1033 W3 — with a provider pool the turn loop switches providers itself
+  // (`primaryRef` below); without one an explicit primary on another
+  // provider can only be deferred, and the log says so.
+  if (policy.deferredProvider !== undefined && !deps.providerPool) {
     console.warn(
-      `[registry] agent '${agent.slug}': model policy names provider '${policy.deferredProvider}' but the active provider is '${activeProvider ?? 'unknown'}' — running the auto-resolved model until the multi-provider turn loop lands`,
+      `[registry] agent '${agent.slug}': model policy names provider '${policy.deferredProvider}' but the active provider is '${activeProvider ?? 'unknown'}' and no provider pool is wired — running the auto-resolved model`,
     );
   }
   const model =
@@ -274,6 +294,20 @@ export function buildForAgent(
         : {}),
       // #1033 — the policy's effort rides on every request of this agent.
       ...(policy.effort !== undefined ? { effort: policy.effort } : {}),
+      // #1033 W3 — the policy's providers. An explicit primary is handed
+      // through as a ref (the turn loop resolves it via the pool, so a
+      // primary on another provider actually runs there); the fallback is
+      // the explicit ref, or — for `auto` — the auto-resolved model on the
+      // active provider, which only matters when the primary sits elsewhere
+      // (the orchestrator withholds a fallback identical to the primary).
+      ...(isModelRef(modelPolicy.primary) ? { primaryRef: modelPolicy.primary } : {}),
+      ...(fallbackRefFor(modelPolicy, model, activeProvider ?? deps.provider.id)
+        ? { fallbackRef: fallbackRefFor(modelPolicy, model, activeProvider ?? deps.provider.id)! }
+        : {}),
+      ...(agent.instructionsByFamily ? { identityByFamily: agent.instructionsByFamily } : {}),
+      ...(fallbackVisionFor(modelPolicy) !== undefined
+        ? { fallbackVisionSupported: fallbackVisionFor(modelPolicy)! }
+        : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
         : {}),
