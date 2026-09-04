@@ -618,7 +618,8 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    > erscheint im Hub als englische Beschreibung. Die beiden Platzhalter
    > kommen aus **zwei getrennten Spec-Feldern** (#1022): `spec.description`
    > ist der deutsche Text, `spec.description_en` der englische. Der Builder
-   > fragt beide ab, es bleibt also nichts von Hand zu übersetzen. Fehlt
+   > setzt beide selbst — den englischen formuliert er aus dem deutschen,
+   > ohne dafür nachzufragen. Von Hand zu übersetzen ist also nichts. Fehlt
    > `description_en` (alte Spec, Clone-from-installed), fällt Codegen auf
    > die deutsche Zeile zurück und `lint_spec` warnt.
 

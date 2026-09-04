@@ -31,6 +31,8 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = path.join(HERE, 'fixtures', 'minimal-spec.json');
+/** `middleware/` — `test/builder/` is two levels down. */
+const MIDDLEWARE_ROOT = path.resolve(HERE, '..', '..');
 
 const GERMAN = 'Agent für Wetter-Forecasts via OpenWeather API';
 const ENGLISH = 'Fetches weather forecasts from the OpenWeather API.';
@@ -141,12 +143,63 @@ describe('scaffolded description locales (#1022)', () => {
     // (#225) — so the guard against a blank English locale lives in the
     // schema: `description_en` is `.min(1)`.
     assert.throws(() => parseAgentSpec({ ...raw, description: GERMAN, description_en: '' }));
+    // Whitespace only is the same defect wearing a space: bare `.min(1)`
+    // accepted `'   '` and the lint's trim-compare did not flag it either, so
+    // an all-blank `en:` reached the manifest. Hence `.trim().min(1)`.
+    assert.throws(() => parseAgentSpec({ ...raw, description: GERMAN, description_en: '   ' }));
+    // And a padded real value is accepted, trimmed.
+    const padded = parseAgentSpec({ ...raw, description: GERMAN, description_en: `  ${ENGLISH}  ` });
+    assert.equal(padded.description_en, ENGLISH);
 
     // Omitted (the real-world case) still yields a filled locale.
     const spec = parseAgentSpec({ ...raw, description: GERMAN });
     const out = await generate({ spec, slots });
     const map = describedLocales(out);
     assert.ok(String(map['en']).length > 0, 'en locale must never be blank');
+  });
+
+  /**
+   * The untested link. Everything above proves the GENERATOR maps two spec
+   * fields into two locales — but nothing populates `description_en` unless
+   * the builder prompt tells the model to. Deleting that prompt block keeps
+   * every other test here green while each scaffolded plugin regresses to
+   * German in `en:`, because the spec field is optional by design and codegen
+   * then falls back to the German text.
+   *
+   * Same idiom `manifestDescriptionLocalized.test.ts` uses on `template.yaml`:
+   * assert the shape of the artifact that carries the behaviour, since the
+   * behaviour itself lives in a model.
+   */
+  it('the builder prompt still instructs the model to write both locales', () => {
+    const promptPath = path.join(
+      MIDDLEWARE_ROOT,
+      'src/plugins/builder/prompts/builder-system.md',
+    );
+    const prompt = readFileSync(promptPath, 'utf-8');
+
+    assert.match(
+      prompt,
+      /\*\*`spec\.description_en`\*\*/,
+      'builder-system.md must list spec.description_en among the required spec fields',
+    );
+    assert.match(
+      prompt,
+      /description_en[\s\S]{0,400}?Englisch/,
+      'the prompt must say the English field is English',
+    );
+    assert.match(
+      prompt,
+      /description_en[\s\S]{0,400}?keine Kopie/,
+      'the prompt must forbid copying the German text into the English field, ' +
+        'which is the #885 defect the generator cannot detect',
+    );
+    // The prompt and both boilerplate CLAUDE.md files must agree on who
+    // writes the English text; they contradicted each other before.
+    assert.match(
+      prompt,
+      /frag den User nicht\s*\n?\s*danach/,
+      'the prompt must keep saying the model writes the English text itself',
+    );
   });
 
   // #225 regression guard. The chain must not reinterpret an empty string as

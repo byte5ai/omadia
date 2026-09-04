@@ -528,7 +528,13 @@ export const AgentSpecSchema = z
     // falls back to `description` via the `description_en|description`
     // chain in both template.yaml files. `lint_spec` warns when the
     // English side is missing or identical to the German one.
-    description_en: z.string().min(1).optional(),
+    //
+    // `.trim()` before `.min(1)`: bare `.min(1)` accepts `'   '`, and the
+    // lint's trim-compare does not flag whitespace either, so a
+    // whitespace-only English locale would reach the manifest and read as an
+    // empty `en:` — the #885 defect in a new shape. Trimming also normalises
+    // the value that codegen substitutes.
+    description_en: z.string().trim().min(1).optional(),
     // #225 — operator-entered author/publisher attribution. Codegen maps
     // this to `identity.authors[0].name` in the generated manifest via the
     // AGENT_AUTHOR placeholder. Default '' (no attribution) replaces the
