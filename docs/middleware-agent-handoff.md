@@ -140,13 +140,27 @@ src/
 
 Neue Kernel-Service-Registrierung neben `installedPluginConfigReader` und
 `installedPluginToolsReadyReader`: `serviceRegistry.provide('routineTurnOwnerGuard',
-createRoutineTurnOwnerGuard())` in `middleware/src/index.ts`. Der Orchestrator-Plugin
-löst sie per `ctx.services.get` auf, `buildOrchestratorForAgent` reicht sie als
+createRoutineTurnOwnerGuard())` in `middleware/src/index.ts`. Der
+Orchestrator-Plugin **deklariert** sie in seinem Manifest unter
+`optional_requires: ["routineTurnOwnerGuard@1"]` und löst sie per
+`ctx.services.getOptional` auf; `buildOrchestratorForAgent` reicht sie als
 `turnOwnerGuard` in `CliChatAgent` weiter.
 
 Warum nicht als Default im Orchestrator-Package: der Guard liest
 `routineTurnContext`, und der Store liegt in der App-Schicht. Deshalb Service
 statt Konstante.
+
+**Die Deklaration ist Pflicht, nicht Dokumentation.** `getOptional` ist genauso
+deklarations-gated wie `get`: `assertServiceGranted` wirft
+`ServiceNotDeclaredError` für jeden Namen, der in keinem der drei Blöcke steht.
+Der Unterschied zwischen den beiden Verben ist der angekündigte Vertrag, nicht
+das Lookup. Der Aufruf liegt oben in `activate()`, also
+scheitert ohne Deklaration die Aktivierung bei **jedem** Boot, `chatAgent@1`
+wird nie publiziert, und jeder Channel mit `requires: ["chatAgent@^1"]`
+überspringt seine Aktivierung. `optional_requires` (nicht `requires`), weil ein
+Host ohne diesen Service weiter booten muss. Die Legacy-Allowlist ist
+ausdrücklich nicht der Weg: ihr Docblock erklärt sie zum geschlossenen,
+datierten Satz, in dem jede neue Zeile eine Regression ist.
 
 Was er tut: Kanal-Adapter setzen den Routine-Kontext mit `enterWith` — ohne
 Scope-Exit. Ein Async-Chain, der einen neuen Turn beginnt, ohne

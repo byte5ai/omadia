@@ -53,22 +53,42 @@ previous principal**.
 The guard now runs in production: the kernel publishes
 `createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
 (`middleware/src/plugins/routines/turnOwnerGuard.ts`), the orchestrator plugin
-resolves it, and `buildOrchestratorForAgent` forwards it into `CliChatAgent`,
-whose loopback server calls it inside the restored context immediately before
-dispatch. It could not default inside the orchestrator package, because the
-store it reads lives in the application layer. Scope is the CLI runtime alone —
-the in-process path never crosses a process boundary.
+declares it under `optional_requires:` and resolves it with
+`ctx.services.getOptional`, and `buildOrchestratorForAgent` forwards it into
+`CliChatAgent`, whose loopback server calls it inside the restored context
+immediately before dispatch. It could not default inside the orchestrator
+package, because the store it reads lives in the application layer. Scope is the
+CLI runtime alone — the in-process path never crosses a process boundary, and
+among the shipped channels only the Teams adapter calls `captureRoutineTurn`, so
+it is the only one that installs a context this guard can find stale.
+
+**The manifest declaration is not paperwork.** `ctx.services.getOptional` is
+declaration-gated on the same terms as `get`: an undeclared name throws
+`ServiceNotDeclaredError`. The resolution sits near the top of `activate()`, so
+the first cut of this change — a `get` on a name no manifest declared — failed
+activation on every boot, which meant `chatAgent@1` was never published and every
+channel declaring `requires: ["chatAgent@^1"]` skipped activation. A guard meant
+to harden one dispatch took chat down instead. `optional_requires` is the right
+block because a host that publishes no such service must keep booting.
 
 It compares the restored context's `userId` against the turn's own; both are the
-same channel-native id written by the same adapter. No context still passes, so
-`manage_routine`'s existing "no user context" refusal is unchanged; a context
-the turn cannot vouch for, and a mismatch, both refuse. The message the caller
-sees names neither principal, since it can reach the model, and the detail goes
-to the server log.
+same channel-native id written by the same adapter. A context the turn cannot
+vouch for, and a mismatch, both refuse. No context passes — narrower than it
+sounds: `manage_routine` refuses a missing context in `create` and `list` only,
+while `pause`, `resume` and `delete` never resolve context at all and pass a bare
+id to the runner, which does no tenant scoping. Passing here neither creates nor
+closes that hole (tracked separately); the reason to pass is that throwing would
+harden every context-free HTTP turn, and this guard's job is staleness, not
+authorization. The message the caller sees names neither principal, since it can
+reach the model; it carries a short correlation ref that also appears in the
+server log, so a report can be matched without naming anyone.
 
 Pinned by a wiring test that asserts the constructed agent carries the guard, not
 just that the guard function is correct: removing only the forward turns it red.
-The first round of this fix is the reason that distinction is now a test.
+The first round of this fix is the reason that distinction is now a test, and the
+declaration has its own drift guard tying the kernel constant, the package-side
+literal and the manifest entry together — three copies of one string in files
+that cannot import each other.
 
 ### Fixed — a scaffolded plugin is correct in both locales (#1022)
 
@@ -135,8 +155,8 @@ gate was half-applied and unverified.
   entry instead of inside the async generator's body, which runs at first
   iteration and could belong to whoever iterated. Added an `assertTurnOwner`
   hook so a stale `enterWith` chain fails closed instead of acting as the
-  previous principal. Wiring that guard to the app's routine context is the
-  open half.
+  previous principal. Wiring that hook to the app's routine context followed on
+  2026-09-04; see the entry at the top of `[Unreleased]`.
 - **#1017** — the gate is now verified behaviourally, not only by argv shape:
   a live probe spawns the real binary with the production argv and asks it to
   run a shell command. Measured on 2.1.259 — production gate: no tools;
