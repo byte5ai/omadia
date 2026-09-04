@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — knowing a routine id is no longer enough to pause, resume or delete it (#1025)
+
+2026-09-04 — `manage_routine` resolved the channel turn context for `create`
+and `list`, but `pause`, `resume` and `delete` passed a bare `id` to a runner
+whose store filtered on `WHERE id = $1` alone. Knowing an id was therefore
+enough to act on any tenant's routine. Ids are uuids and `list` is scoped, so
+an id had to leak rather than be enumerated, which is obscurity rather than
+authorization.
+
+All five actions now resolve the context and refuse without it, and the
+mutating ones carry the caller's `(tenant, userId)` into the SQL predicate, so
+another tenant's id reports not-found instead of acting — with the same error
+a genuinely absent id produces, so the failure is not an existence oracle. The
+scope is a required discriminated argument on the runner rather than an
+optional `owner?`: an optional scope is one a caller can forget, and forgetting
+it is exactly how this gap arose. Cross-tenant access is now a greppable
+`{ kind: 'operator' }` literal, used by the operators-only HTTP router.
+
+Two neighbours had the same gap and are fixed with it: the routine smart-card
+buttons are a second door onto the same mutations, and `triggerRoutineNow`
+delivers into the routine's own conversation, so an unscoped trigger let one
+principal push messages into another tenant's conversation. A related ordering
+bug also surfaced — `delete` unregistered the scheduler before deleting, so a
+cross-tenant id silently disarmed someone else's cron while the row survived,
+leaving a routine that looks active in `list` and never fires again.
+
+This also widens #1016's "absent context passes" rationale, which was
+documented as true for two of five actions and now holds for all five.
+
 ### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
 
 2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
