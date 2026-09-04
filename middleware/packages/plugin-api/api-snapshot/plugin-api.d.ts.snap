@@ -2224,6 +2224,10 @@ cron: string;
 handleRoutineAction(input: {
 action: 'pause' | 'resume' | 'trigger_now' | 'delete';
 id: string;
+actor?: {
+tenant: string;
+userId: string;
+};
 }): Promise<string>;
 buildRoutineSmartCardAttachment(input: {
 routine: {

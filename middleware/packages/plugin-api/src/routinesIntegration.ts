@@ -118,10 +118,41 @@ export interface RoutinesIntegration {
    * Handle a button-click from a routine smart-card (Pause / Resume /
    * Trigger-now / Delete). Returns a short German confirmation string
    * the channel renders back into the chat.
+   *
+   * SCOPING (#1025, #1029)
+   * ----------------------
+   * The card carries only the routine id, so without a principal this
+   * entry point can act on any tenant's routine. Precedence for deciding
+   * whose routine may be touched:
+   *
+   *   1. `actor` when supplied — the channel knows who clicked and says so.
+   *   2. the per-turn routine context, when the click happens to arrive
+   *      inside a captured turn.
+   *   3. neither ⇒ the call proceeds UNSCOPED, exactly as it did before
+   *      #1025, and the kernel records an error-level log plus a counter
+   *      naming the action and id.
+   *
+   * Case 3 is deliberate and temporary. Card clicks are dispatched
+   * out-of-band by the Teams adapter (`handleMessage` returns before
+   * `runOrchestratorTurn`, so `captureRoutineTurn` never fires), which
+   * means refusing here would break Pausieren, Aktivieren, Löschen and
+   * Jetzt auslösen for every user today. Silently scoping to nobody would
+   * be worse than an observable hole, so the hole is counted instead.
+   *
+   * Channel adapters SHOULD pass `actor`; Teams already holds both fields
+   * on the activity (tenant id and `from.aadObjectId`). Once it does, the
+   * unscoped fallback can be deleted — tracked as the adapter-side
+   * follow-up to #1025.
    */
   handleRoutineAction(input: {
     action: 'pause' | 'resume' | 'trigger_now' | 'delete';
     id: string;
+    /**
+     * Who clicked. Same (tenant, userId) pair `captureRoutineTurn`
+     * carries, and the same pair the routine row is scoped by, so the
+     * two sources cannot disagree about what "mine" means.
+     */
+    actor?: { tenant: string; userId: string };
   }): Promise<string>;
 
   /**

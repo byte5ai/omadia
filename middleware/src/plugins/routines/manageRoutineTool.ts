@@ -9,6 +9,7 @@ import {
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
+  type RoutineActorScope,
   type RoutineRunner,
 } from './routineRunner.js';
 
@@ -281,7 +282,9 @@ export class ManageRoutineTool {
 
   private async handlePause(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `pause` requires `id`.';
-    const updated = await this.runner.pauseRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const updated = await this.runner.pauseRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'paused',
       routine: summariseRoutine(updated),
@@ -290,7 +293,9 @@ export class ManageRoutineTool {
 
   private async handleResume(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `resume` requires `id`.';
-    const updated = await this.runner.resumeRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const updated = await this.runner.resumeRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'resumed',
       routine: summariseRoutine(updated),
@@ -299,12 +304,26 @@ export class ManageRoutineTool {
 
   private async handleDelete(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `delete` requires `id`.';
-    const ok = await this.runner.deleteRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const ok = await this.runner.deleteRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: ok ? 'deleted' : 'not_found',
       id: args.id,
     });
   }
+}
+
+/**
+ * #1025 — the scope every mutating action runs under. `create` and `list`
+ * always resolved the turn context; `pause`, `resume` and `delete` did not,
+ * and passed a bare id to a runner that filtered on nothing, so knowing an
+ * id was enough to act on another tenant's routine. Every action now
+ * derives its scope from the same context, which is why this helper exists
+ * rather than three inline literals that could drift.
+ */
+export function actorScope(ctx: ManageRoutineContext): RoutineActorScope {
+  return { kind: 'channel-user', tenant: ctx.tenant, userId: ctx.userId };
 }
 
 interface SummarisedRoutine {

@@ -36,6 +36,99 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine card buttons keep working, and say when they run unscoped (#1029)
+
+2026-09-04 — follow-up to #1025, which scoped the routine smart-card handler
+from the per-turn context and refused when it was absent. That would have
+broken Pausieren, Aktivieren, Löschen and Jetzt auslösen for every user: the
+Teams adapter dispatches card clicks out-of-band, returning before the
+orchestrator turn, so the context is never captured on that path and every
+click would have answered "routines are unavailable in this session".
+
+`handleRoutineAction` now takes an optional `actor` from the channel, with
+documented precedence — explicit `actor`, then the turn context, then
+unscoped exactly as before #1025. The unscoped case is counted and logged at
+error level naming the action and routine id, because a hole you can see is
+better than silently scoping to nobody. Once the Teams adapter passes the
+tenant and `from.aadObjectId` it already holds on the activity, the fallback
+can be deleted.
+
+Two guards from #1024 and #1025 were also proving less than they claimed. The
+routine store's recording-pool assertions bound `tenant` and `user_id` but not
+`id`, so rewriting the scoped delete to drop the row predicate — deleting
+every routine that user owns — left the suite green; `id` is now bound too.
+And the sandbox-listen scan was name-and-literal shaped: a copy called
+anything, comparing `errno === -1`, using double quotes or `.includes`, or
+living in a `.js` file, passed it. Detection is behaviour-shaped now, with a
+test that proves each spelling is matched and that correct usage is not, plus
+a written note on what it still cannot see. Its directory scan also used
+`new URL(...).pathname`, which leaves percent-encoding intact — a checkout
+path needing decoding made the scan walk nothing and report zero offenders,
+failing open.
+
+### Fixed — knowing a routine id is no longer enough to pause, resume or delete it (#1025)
+
+2026-09-04 — `manage_routine` resolved the channel turn context for `create`
+and `list`, but `pause`, `resume` and `delete` passed a bare `id` to a runner
+whose store filtered on `WHERE id = $1` alone. Knowing an id was therefore
+enough to act on any tenant's routine. Ids are uuids and `list` is scoped, so
+an id had to leak rather than be enumerated, which is obscurity rather than
+authorization.
+
+All five actions now resolve the context and refuse without it, and the
+mutating ones carry the caller's `(tenant, userId)` into the SQL predicate, so
+another tenant's id reports not-found instead of acting — with the same error
+a genuinely absent id produces, so the failure is not an existence oracle. The
+scope is a required discriminated argument on the runner rather than an
+optional `owner?`: an optional scope is one a caller can forget, and forgetting
+it is exactly how this gap arose. Cross-tenant access is now a greppable
+`{ kind: 'operator' }` literal, used by the operators-only HTTP router.
+
+Two neighbours had the same gap and are fixed with it: the routine smart-card
+buttons are a second door onto the same mutations, and `triggerRoutineNow`
+delivers into the routine's own conversation, so an unscoped trigger let one
+principal push messages into another tenant's conversation. A related ordering
+bug also surfaced — `delete` unregistered the scheduler before deleting, so a
+cross-tenant id silently disarmed someone else's cron while the row survived,
+leaving a routine that looks active in `list` and never fires again.
+
+This also widens #1016's "absent context passes" rationale, which was
+documented as true for two of five actions and now holds for all five.
+
+### Fixed — a privacy and an auth suite can no longer delete themselves and report success (#1024)
+
+2026-09-04 — follow-up to #1017, which fixed one copy of this and revealed how
+far it had spread.
+
+Seven places in `middleware/test` had grown their own version of "the sandbox
+refused a loopback listener, so skip this test": three named
+`isSandboxListenDenied`, two named `isSandboxListenError`, two written inline.
+They did not agree. #1017 taught only the `cliBridge` copy to respect
+`OMADIA_EXPECT_LOOPBACK`, so on a runner where `bind(127.0.0.1:0)` returns
+`EPERM` the rest still swallowed the failure — including
+`publicMcpPrivacy.e2e`, `publicMcpMaskingAssertion` and
+`devEndpointsAuth.e2e`. A privacy-masking assertion and an auth e2e passing
+green while asserting nothing is the failure family `ci.yml` cites #640 and
+#752 for.
+
+All seven now call one helper in `test/_helpers/listenLoopback.ts`, next to the
+`listenLoopback` they already shared. It honours `OMADIA_EXPECT_LOOPBACK` (the
+CI signal from #1017) and `CI` (the signal the two `test/auth/**` suites had
+grown independently), so no site is weakened and a runner that sets either one
+gets the strict behaviour. `isDeniedListenError` exposes the error shape alone,
+for the two suites that raise a better diagnostic than a bare `EPERM`.
+
+The naming was the second half of the trap: same-named functions with different
+behaviour, while `.env.example` documents a flag that only one of them read.
+
+Guarded against regrowth by `test/sandboxListenGuard.test.ts`: unit cases for
+the helper's four outcomes, plus two greps over the whole test tree asserting
+that nothing else defines the predicate or compares an error code to `EPERM`
+inline. Proven by reverting one call site to its local copy — two assertions go
+red — rather than by observing a green run. The exemption list is two files and
+each is justified in place, because an exclusion list is where a guard goes
+blind. Two guards in this repo have already turned out to prove nothing.
+
 ### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
 
 2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
