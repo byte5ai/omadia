@@ -121,6 +121,24 @@ test('the agent boilerplates scaffold a locale map, not a bare string', () => {
     for (const key of ['AGENT_DESCRIPTION_EN', 'AGENT_DESCRIPTION_DE']) {
       assert.ok(key in placeholders, `${name}/template.yaml must map ${key}`);
     }
+
+    // #1022 — mapping both locales to the SAME spec field is how the
+    // scaffold shipped German as its English description. The `en` mapping
+    // must lead with its own field; the `|` fallback to the German one is
+    // allowed (older specs), but it may not BE the mapping.
+    const de = String(placeholders['AGENT_DESCRIPTION_DE']);
+    const en = String(placeholders['AGENT_DESCRIPTION_EN']);
+    assert.notEqual(
+      en,
+      de,
+      `${name}/template.yaml: both description locales resolve from '${de}', ` +
+        'so the English side would ship the German text (#1022)',
+    );
+    assert.equal(
+      en.split('|')[0]?.trim(),
+      'description_en',
+      `${name}/template.yaml: AGENT_DESCRIPTION_EN must resolve from description_en first`,
+    );
   }
 });
 

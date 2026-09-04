@@ -17,6 +17,18 @@ export {
   routineTurnContext,
 } from './routineTurnContext.js';
 
+// #1016 — the guard that refuses a loopback dispatch whose restored routine
+// context belongs to an earlier turn. The kernel publishes the factory as a
+// service; the orchestrator package consumes it, since it cannot read this
+// store itself.
+export {
+  ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+  TurnOwnerMismatchError,
+  createRoutineTurnOwnerGuard,
+  type TurnOwnerGuardFactory,
+  type TurnOwnerGuardInput,
+} from './turnOwnerGuard.js';
+
 export {
   createProactiveSender,
 } from './genericProactiveSender.js';

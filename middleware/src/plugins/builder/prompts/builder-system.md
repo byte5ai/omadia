@@ -97,7 +97,13 @@ ohne Codegen.
 Pflicht (per `patch_spec`):
 - **`spec.id`** — npm-scoped (`@omadia/agent-<slug>`).
 - **`spec.name`** — human-readable (`Microsoft SharePoint Agent`).
-- **`spec.description`** — eine Zeile, was der Agent tut.
+- **`spec.description`** — eine Zeile auf **Deutsch**, was der Agent tut.
+- **`spec.description_en`** — dieselbe Zeile auf **Englisch**. Nicht
+  optional und keine Kopie des deutschen Texts: `identity.description` im
+  Manifest ist eine Locale-Map, und deutscher Text im `en:`-Slot erscheint
+  im Hub als englische Beschreibung (#885, vier Beta-Runden lang gemeldet).
+  Du kannst den englischen Text selbst formulieren — frag den User nicht
+  danach, wenn die deutsche Beschreibung schon klar ist.
 - **`spec.category`** — productivity | crm | documents | communication | analysis | other.
 - **`spec.domain`** — **OB-77**, lowercase, dotted, kebab-case mid-segment OK.
   Beispiele: `confluence`, `odoo.hr`, `m365.calendar`, `m365.sharepoint`,

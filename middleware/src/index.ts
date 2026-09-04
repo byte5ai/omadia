@@ -72,7 +72,7 @@ import {
   CHANNEL_TEAMS_PLUGIN_ID,
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -423,8 +423,11 @@ import {
 import { ASSETS, verifyAssetBundles } from './platform/assets.js';
 import { resolveBuilderReferenceCatalog } from './plugins/builder/builderReferenceCatalog.js';
 import {
+  ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+  createRoutineTurnOwnerGuard,
   createRoutinesIntegration,
   initRoutines,
+  routineTurnContext,
   type RoutinesHandle,
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -1121,6 +1124,19 @@ async function main(): Promise<void> {
     (agentId: string): boolean =>
       pluginStatusRegistry.isReady(agentId) &&
       oauthConnectionTracker.isConnected(agentId),
+  );
+
+  // #1016 — per-turn owner guard for the subscription-CLI runtime. Published
+  // here, and not defaulted inside the orchestrator package, because the store
+  // it has to read (`routineTurnContext`) lives in this layer. The orchestrator
+  // plugin resolves it as `routineTurnOwnerGuard` and forwards it into
+  // `CliChatAgent`, where it runs inside the restored async context immediately
+  // before a loopback dispatch. Unconditional: `routineTurnContext.enter` is
+  // installed by channel adapters regardless of which backends are configured,
+  // so the staleness this refuses does not depend on a pg pool.
+  serviceRegistry.provide(
+    ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+    createRoutineTurnOwnerGuard(),
   );
 
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
@@ -4050,6 +4066,10 @@ async function main(): Promise<void> {
       getRegistry,
       // #330 round 4 — participants column of the facilitation admin lens.
       getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
+      // Agent dialogue: a `say` step publishes an agent's turn into the chat.
+      // The SAME registry the plugin-facing conversationSend uses — one owner
+      // per channel type, so a discussion cannot be posted by a hijacked provider.
+      conversationSendProviders: conversationSendRegistry,
       // #330 round 4 — the destructive terminate leaves a durable trace.
       // Closure like auditRoleChange: adminAudit is constructed further down.
       auditFacilitationTerminate: async (entry) => {
@@ -4137,6 +4157,23 @@ async function main(): Promise<void> {
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
     serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // Agent topic discussions, startable FROM A CHAT. No conversation id in the
+    // signature on purpose: the kernel reads the conversation off the inbound
+    // turn the calling plugin is answering, so a granted plugin can open a
+    // discussion where it was addressed and nowhere else.
+    serviceRegistry.provide(
+      'conductorDiscussions',
+      createDiscussionsCapability({
+        discussions: conductorWiring.discussionService,
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        // The opener is the bot that received the turn, mapped back through the
+        // SAME provisioned-identity table inbound routing uses — so "who
+        // opened it" and "who was addressed" can never be two different answers.
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        log: (msg: string) => console.log(msg),
+      }),
+    );
     // #330 C2a — the three zero-touch-setup services (all deny-by-default via
     // the manifest grant gate). Constructed above, BEFORE wireConductor.
     serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);

@@ -9,6 +9,7 @@ import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
+import { appendTranscript } from './transcript.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -161,7 +162,7 @@ export class ConductorRunExecutor {
    */
   private async triggerMetaFor(
     runId: string,
-  ): Promise<{ triggerKind?: TriggerKind; triggerEventId?: string }> {
+  ): Promise<{ triggerKind?: TriggerKind; triggerEventId?: string; workflowId?: string | null }> {
     const run = await this.runStore.get(runId);
     if (!run) return {};
     const source = run.triggerSource;
@@ -169,11 +170,25 @@ export class ConductorRunExecutor {
       typeof source === 'object' && source !== null && !Array.isArray(source)
         ? (source as Record<string, unknown>)['eventId']
         : undefined;
+    // The workflow behind the run's version — a `say` step's floor is checked
+    // against it. Same tolerance as above: an unreadable version yields null,
+    // and the say service then finds no matching attachment and stays silent
+    // rather than posting on an unproven authority.
+    // A dry run rehearses; it must not speak into a live conversation. Leaving
+    // the workflow id off is how that is enforced — the say service refuses a
+    // turn that belongs to no workflow.
+    const workflowId = run.isDryRun
+      ? null
+      : await this.workflowStore
+          .getVersion(run.workflowVersionId)
+          .then((v) => v?.workflowId ?? null)
+          .catch(() => null);
     return {
       ...(run.triggerKind ? { triggerKind: run.triggerKind } : {}),
       ...(typeof eventId === 'string' && eventId !== ''
         ? { triggerEventId: eventId }
         : {}),
+      workflowId,
     };
   }
 
@@ -313,6 +328,7 @@ export class ConductorRunExecutor {
 
         const decision = nextStep(graph, stepId, exec.result, context);
         context = this.accumulate(context, stepId, exec.result);
+        context = appendTranscript(context, step, exec.result);
         currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease);
         if (currentStepId) seq += 1;
       }

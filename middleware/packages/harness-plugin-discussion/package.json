@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/plugin-discussion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Lets an agent open a bounded topic discussion with another agent in the chat it was addressed in. Publishes the `discussion_start` native tool over the kernel's `conductorDiscussions@1` capability.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/plugin-api": "*",
+    "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

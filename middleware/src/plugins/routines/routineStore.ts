@@ -53,6 +53,17 @@ export interface RecordRunInput {
   error?: string | null;
 }
 
+/**
+ * #1025 — the (tenant, user_id) pair a scoped mutation must match. Same
+ * pair `listForUser` filters on and `create` enforces uniqueness within,
+ * so "the rows this principal can see" and "the rows it can act on" are
+ * one definition rather than two that can drift apart.
+ */
+export interface RoutineOwner {
+  tenant: string;
+  userId: string;
+}
+
 export interface RoutineStoreOptions {
   pool: Pool;
   log?: (msg: string) => void;
@@ -353,24 +364,49 @@ export class RoutineStore {
    * was not found. The RoutineRunner mirrors the change into the
    * JobScheduler (register on resume, dispose on pause).
    */
-  async setStatus(id: string, status: RoutineStatus): Promise<Routine | null> {
-    const result = await this.pool.query<RoutineRow>(
-      `UPDATE routines
-          SET status = $2, updated_at = now()
-        WHERE id = $1
-        RETURNING ${SELECT_COLUMNS}`,
-      [id, status],
-    );
+  async setStatus(
+    id: string,
+    status: RoutineStatus,
+    owner?: RoutineOwner,
+  ): Promise<Routine | null> {
+    // #1025 — an `owner` narrows the WHERE clause to that (tenant, user_id),
+    // so a row belonging to someone else returns null exactly like a
+    // non-existent id. The predicate lives HERE rather than as a
+    // read-then-act check in the caller: a single statement cannot be
+    // raced, and a caller that forgets the check cannot bypass a scope it
+    // never supplied.
+    const result = owner
+      ? await this.pool.query<RoutineRow>(
+          `UPDATE routines
+              SET status = $2, updated_at = now()
+            WHERE id = $1 AND tenant = $3 AND user_id = $4
+            RETURNING ${SELECT_COLUMNS}`,
+          [id, status, owner.tenant, owner.userId],
+        )
+      : await this.pool.query<RoutineRow>(
+          `UPDATE routines
+              SET status = $2, updated_at = now()
+            WHERE id = $1
+            RETURNING ${SELECT_COLUMNS}`,
+          [id, status],
+        );
     const row = result.rows[0];
     return row ? rowToRoutine(row) : null;
   }
 
-  /** Returns true if a row was deleted. */
-  async delete(id: string): Promise<boolean> {
-    const result = await this.pool.query(
-      'DELETE FROM routines WHERE id = $1',
-      [id],
-    );
+  /**
+   * Returns true if a row was deleted.
+   *
+   * #1025 — see `setStatus`: an `owner` scopes the delete, so another
+   * tenant's id reports false instead of removing the row.
+   */
+  async delete(id: string, owner?: RoutineOwner): Promise<boolean> {
+    const result = owner
+      ? await this.pool.query(
+          'DELETE FROM routines WHERE id = $1 AND tenant = $2 AND user_id = $3',
+          [id, owner.tenant, owner.userId],
+        )
+      : await this.pool.query('DELETE FROM routines WHERE id = $1', [id]);
     return (result.rowCount ?? 0) > 0;
   }
 

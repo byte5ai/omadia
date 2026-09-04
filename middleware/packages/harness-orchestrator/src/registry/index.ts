@@ -548,6 +548,37 @@ export class OrchestratorRegistry {
     )?.agentId;
   }
 
+  /**
+   * WHICH BOT IS THIS AGENT — the reverse of {@link identityForChannel}.
+   *
+   * Inbound routing asks "whose turn is this key", and both methods above
+   * answer that. Speaking asks the opposite question: an agent is about to
+   * publish something into a conversation, and it must appear as ITSELF. In a
+   * group chat with several provisioned bots, posting through whichever
+   * identity happens to be handy makes one bot say another one's words under
+   * its own name and avatar — indistinguishable, from the chat, from the
+   * agent actually having said it.
+   *
+   * Returns the agent's provisioned channel identity (for Teams, the
+   * `28:<appId>` key), or `undefined` when the agent has none. Callers must
+   * treat `undefined` as "this agent cannot speak in its own name here" and
+   * refuse — never as licence to borrow another identity.
+   *
+   * `slug` is matched among the ACTIVE agents: an identity row for an agent
+   * the registry cannot serve names a bot nothing is behind.
+   */
+  channelIdentityFor(
+    slug: string,
+    channelType: string,
+  ): { channelType: string; channelKey: string } | undefined {
+    const entry = [...this.active.values()].find((e) => e.agent.slug === slug);
+    if (!entry) return undefined;
+    const match = this.channelIdentities.find(
+      (i) => i.channelType === channelType && i.agentId === entry.agent.id,
+    );
+    return match ? { channelType: match.channelType, channelKey: match.channelKey } : undefined;
+  }
+
   /** The currently-held snapshot. Useful for diffing in US5. */
   currentSnapshot(): ConfigSnapshot | undefined {
     return this.snapshot;

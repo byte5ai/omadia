@@ -19,8 +19,11 @@
 -- to. JSONB keeps the migration cost low and the routine row
 -- self-contained.
 --
--- See docs/harness-platform/PHASE-C-DESIGN-server-side-templates.md
--- for the type shape (`RoutineOutputTemplate`).
+-- For the type shape see `RoutineOutputTemplate` in
+-- src/plugins/routines/routineOutputTemplate.ts, which validates it and is
+-- therefore the contract. (The former citation pointed into
+-- docs/harness-platform/, a gitignored local tree that resolves for nobody
+-- else.)
 
 ALTER TABLE routines
   ADD COLUMN IF NOT EXISTS output_template JSONB NULL;

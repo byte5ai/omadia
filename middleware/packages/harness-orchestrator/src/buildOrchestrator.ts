@@ -14,7 +14,12 @@
  * than once in one process.
  */
 
-import type { ChatAgent, DisclosureSeenStore, GrantStore } from '@omadia/channel-sdk';
+import type {
+  ChatAgent,
+  ChatTurnInput,
+  DisclosureSeenStore,
+  GrantStore,
+} from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type {
@@ -246,6 +251,19 @@ export interface OrchestratorDeps {
    * plugin's tools are always available (pre-#474 behaviour).
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
+  /**
+   * #1016 — per-turn owner guard for the subscription-CLI runtime, published
+   * by the kernel as `routineTurnOwnerGuard`.
+   *
+   * Only the CLI agent runtime uses it: that is the one path where a tool call
+   * arrives from another process and has its async context restored, so a
+   * stale `enterWith` chain could dispatch under the previous principal.
+   * Absent (legacy hosts, unit tests) ⇒ the context is restored without a
+   * cross-check, which is the pre-#1016 behaviour.
+   */
+  readonly turnOwnerGuard?: (
+    input: ChatTurnInput,
+  ) => (() => void) | undefined;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -801,6 +819,12 @@ export function buildOrchestratorForAgent(
           model: config.model.replace(/-cli$/, '') || 'sonnet',
           ...(assistantIdentityWithName
             ? { systemPrompt: assistantIdentityWithName }
+            : {}),
+          // #1016 — without this forward the guard exists but nothing installs
+          // it, and a stale routine context dispatches under the previous
+          // principal instead of being refused.
+          ...(deps.turnOwnerGuard
+            ? { turnOwnerGuard: deps.turnOwnerGuard }
             : {}),
         }),
         raw: orchestrator,

@@ -49,8 +49,19 @@ requires:
 # the service per dispatch and answers with a clear error string when no
 # provider is live. Listing it as a hard require would block chat entirely
 # on installs that never transcribe.
+#
+# #1016 — routineTurnOwnerGuard@1 is the per-turn owner guard for the
+# subscription-CLI runtime, published by the KERNEL (not by a plugin) because
+# the store it reads (`routineTurnContext`) lives in the application layer.
+# OPTIONAL by the same reasoning as transcription@1: a host that publishes no
+# such service keeps the pre-#1016 behaviour, so a hard require would block
+# chat on every such install. Declaring it is not optional though —
+# `ctx.services.getOptional` is declaration-gated on exactly the same terms as
+# `get`, and an undeclared name throws `ServiceNotDeclaredError` out of
+# `activate()`, which takes chatAgent@1 down with it.
 optional_requires:
   - "transcription@1"
+  - "routineTurnOwnerGuard@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
