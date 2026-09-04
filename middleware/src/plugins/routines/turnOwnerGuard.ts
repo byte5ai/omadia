@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import { routineTurnContext } from './routineTurnContext.js';
 
 /**
@@ -27,8 +29,11 @@ import { routineTurnContext } from './routineTurnContext.js';
  * uuid via the KnowledgeGraph, which is async and would compare two different
  * id spaces here.
  *
- * Scope: this only guards the CLI agent runtime. The in-process orchestrator
- * path never crosses a process boundary and is untouched.
+ * Scope, twice over. Only the CLI agent runtime is guarded — the in-process
+ * orchestrator path never crosses a process boundary. And among the shipped
+ * channels only the Teams adapter calls `captureRoutineTurn`, so it is the
+ * only one that installs a context this guard can find stale;
+ * `omadia-channel-telegram` never calls it and does not participate.
  */
 
 /** Service name the kernel publishes the factory under. */
@@ -51,16 +56,22 @@ export type TurnOwnerGuardFactory = (
 
 /** Raised when the restored context does not belong to the running turn. */
 export class TurnOwnerMismatchError extends Error {
-  public constructor() {
+  /** Correlation token, also emitted in the server log for this refusal. */
+  public readonly ref: string;
+
+  public constructor(ref: string) {
     // Deliberately says nothing about either principal. This message travels
     // back to the CLI and can reach the model; naming the other user would
     // leak one turn's principal into another's transcript. The detail goes to
-    // the server log instead.
+    // the server log instead, joined to this text only by `ref` — enough to
+    // match a user's report to a log line, and useless to anyone who cannot
+    // read the log.
     super(
-      'Refused: the caller context for this turn could not be verified. ' +
-        'This is a runtime fault, not something you did wrong.',
+      'Refused: the caller context for this turn could not be verified ' +
+        `(ref ${ref}). This is a runtime fault, not something you did wrong.`,
     );
     this.name = 'TurnOwnerMismatchError';
+    this.ref = ref;
   }
 }
 
@@ -68,6 +79,8 @@ interface RoutineTurnOwnerGuardDeps {
   /** Reads the restored context. Injectable so tests need no live ALS. */
   readonly currentContext?: () => { readonly userId?: string } | undefined;
   readonly log?: (message: string) => void;
+  /** Correlation-token source. Injectable so tests can assert a fixed ref. */
+  readonly newRef?: () => string;
 }
 
 /** Normalises a possibly blank id to `undefined` so "" never matches "". */
@@ -83,10 +96,21 @@ function idOrUndefined(value: string | undefined): string | undefined {
  *
  * | restored context | turn `userId` | outcome |
  * |---|---|---|
- * | absent  | any      | pass — `manage_routine` already refuses with "no user context"; turning that into a throw would change an established, correct refusal into a harder error for every context-free HTTP turn |
+ * | absent  | any      | pass — see the note below on why, and on what it does not cover |
  * | present | absent   | REFUSE — a context exists that this turn cannot vouch for, which is the stale-chain shape |
  * | present | differs  | REFUSE — the bug this issue is about |
  * | present | matches  | pass |
+ *
+ * On the "absent ⇒ pass" row, stated precisely because the obvious phrasing
+ * overclaims: `manage_routine` refuses a missing context in `handleCreate` and
+ * `handleList` only. `handlePause`, `handleResume` and `handleDelete` never
+ * call `resolveContext` at all — they pass a bare `args.id` to the runner,
+ * which does no tenant scoping. So for two of five actions the absent-context
+ * case is genuinely covered downstream; for the other three nothing checks,
+ * and passing here neither creates nor closes that hole. The reason to pass is
+ * narrower than "the tool handles it": throwing on absence would harden every
+ * context-free HTTP turn into an error, and this guard's job is staleness, not
+ * authorization. The pause/resume/delete scoping gap is tracked separately.
  */
 export function createRoutineTurnOwnerGuard(
   deps: RoutineTurnOwnerGuardDeps = {},
@@ -98,13 +122,17 @@ export function createRoutineTurnOwnerGuard(
     ((message: string): void => {
       console.error(message);
     });
+  // Short, non-guessable, and not derived from either principal — it exists to
+  // join a user's "ref abc12345" to one log line, nothing more.
+  const newRef = deps.newRef ?? ((): string => randomBytes(4).toString('hex'));
 
   return (input: TurnOwnerGuardInput) => {
     const turnUserId = idOrUndefined(input.userId);
 
     return (): void => {
       const restored = currentContext();
-      // No context at all: the pre-#993 refusal still applies inside the tool.
+      // No context: nothing to cross-check. See the decision table above for
+      // why this passes and what it does not cover.
       if (!restored) return;
 
       const contextUserId = idOrUndefined(restored.userId);
@@ -112,13 +140,14 @@ export function createRoutineTurnOwnerGuard(
         return;
       }
 
+      const ref = newRef();
       log(
-        '[routines] turn-owner guard refused a loopback dispatch (#1016): restored routine context ' +
-          `belongs to userId=${contextUserId ?? '<none>'} but the turn belongs to ` +
-          `userId=${turnUserId ?? '<none>'}. A stale enterWith chain would otherwise have dispatched ` +
-          'under the wrong principal.',
+        `[routines] turn-owner guard refused a loopback dispatch (#1016) ref=${ref}: ` +
+          `restored routine context belongs to userId=${contextUserId ?? '<none>'} ` +
+          `but the turn belongs to userId=${turnUserId ?? '<none>'}. A stale enterWith ` +
+          'chain would otherwise have dispatched under the wrong principal.',
       );
-      throw new TurnOwnerMismatchError();
+      throw new TurnOwnerMismatchError(ref);
     };
   };
 }

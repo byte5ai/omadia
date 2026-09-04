@@ -23,6 +23,7 @@ function guardOver(
   const factory = createRoutineTurnOwnerGuard({
     currentContext: () => context,
     log: (message) => logs.push(message),
+    newRef: () => 'ref00001',
   });
   return {
     run: (turnUserId?: string): void => {
@@ -83,6 +84,40 @@ describe('routine turn-owner guard (#1016)', () => {
       assert.doesNotMatch(message, /aad-oid/);
       assert.match(message, /could not be verified/);
     }
+  });
+
+  it('carries one correlation ref into both the message and the log', () => {
+    // Without this a production report ("the bot refused me") cannot be
+    // matched to a log line, since neither side may name the principal.
+    const { run, logs } = guardOver({ userId: 'aad-oid-PREVIOUS' });
+    try {
+      run('aad-oid-CURRENT');
+      assert.fail('expected a refusal');
+    } catch (err) {
+      assert.ok(err instanceof TurnOwnerMismatchError);
+      assert.equal(err.ref, 'ref00001');
+      assert.match(err.message, /ref ref00001/);
+    }
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? '', /ref=ref00001/);
+  });
+
+  it('mints a fresh ref per refusal so two reports cannot be conflated', () => {
+    const seen: string[] = [];
+    const factory = createRoutineTurnOwnerGuard({
+      currentContext: () => ({ userId: 'aad-oid-PREVIOUS' }),
+      log: () => {},
+    });
+    for (let i = 0; i < 2; i += 1) {
+      try {
+        factory({ userId: 'aad-oid-CURRENT' })?.();
+      } catch (err) {
+        if (err instanceof TurnOwnerMismatchError) seen.push(err.ref);
+      }
+    }
+    assert.equal(seen.length, 2);
+    assert.notEqual(seen[0], seen[1]);
+    assert.match(seen[0] ?? '', /^[0-9a-f]{8}$/);
   });
 
   it('reads the live routine context when no reader is injected', () => {
