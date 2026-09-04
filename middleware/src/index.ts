@@ -13,6 +13,7 @@ import {
   defaultLlmAdapters,
   listModels,
   LlmProviderCatalog,
+  createLlmProviderPool,
   readProviderApiKey,
   readProviderOAuthTokens,
   readProviderOAuthUpdatedAt,
@@ -73,6 +74,7 @@ import {
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
 import { createBotPresenceStore } from './conductor/botPresenceStore.js';
+import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
@@ -1148,6 +1150,15 @@ async function main(): Promise<void> {
     log: (msg) => console.log(msg),
   });
 
+  // #1033 W1 — the kernel's own provider pool: same credentials source as the
+  // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
+  // catalog, memoised per provider id. Consumed by the dynamic sub-agent
+  // runtime today; the model-policy validation (W2) reads `usable()` from it.
+  const kernelProviderPool = createLlmProviderPool({
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    catalog: llmProviderCatalog,
+  });
+
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
   // so tools are hot-registered and torn down (without middleware restart).
@@ -1173,6 +1184,7 @@ async function main(): Promise<void> {
         : 'anthropic';
     },
     hostGetSecret: (key: string) => secretVault.get('@omadia/orchestrator', key),
+    providerPool: kernelProviderPool,
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
@@ -4062,6 +4074,58 @@ async function main(): Promise<void> {
     // Which bots hold a conversation reference where — the presence signal the
     // agent-discussion partner list is built on (graph migration 0031).
     const botPresence = createBotPresenceStore(graphPool, (msg) => console.log(msg));
+    // Who can actually be heard in this chat: an agent needs its own bot AND
+    // that bot needs a conversation reference here. Provisioning alone is
+    // not enough — a partner whose bot was never added would have its turns
+    // generated, paid for and dropped.
+    //
+    // Presence comes from the reference table, NOT the roster: Teams'
+    // roster API returns people, never bots, so a roster-based check finds
+    // nothing in a chat full of bots (which is exactly what it did on the
+    // first live run).
+    const presentBots = async (
+      channelType: string,
+      conversationId: string,
+    ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
+      if (channelType !== 'teams') return [];
+      const registry = getRegistry();
+      if (!registry) return [];
+      const present = await botPresence.botAppIdsIn(conversationId);
+      const seen = new Set<string>();
+      const bots: { slug: string; name: string; channelKey: string }[] = [];
+      for (const appId of present) {
+        const channelKey = `28:${appId}`;
+        const owner = registry.identityForChannel(channelType, channelKey);
+        if (!owner || seen.has(owner.agent.slug)) continue;
+        seen.add(owner.agent.slug);
+        bots.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug, channelKey });
+      }
+      return bots;
+    };
+    // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
+    // row (migration 0058), evaluated in one place for the discussion start,
+    // every relayed utterance, and the roster the calling agent sees.
+    const peerGate = createPeerGate({
+      getRegistry,
+      listChannelPeerPolicies: (channelType, channelKey) => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        return store ? store.listChannelPeerPolicies(channelType, channelKey) : Promise.resolve([]);
+      },
+      log: (msg) => console.log(msg),
+    });
+    // `chatPeerAgents@1` — what `get_chat_participants` merges in as
+    // `kind: 'agent'`. Everything derives from the ambient turn; the caller
+    // supplies nothing and therefore sees no chat but its own.
+    serviceRegistry.provide(
+      'chatPeerAgents',
+      createChatPeerAgentsProvider({
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        listPresent: presentBots,
+        peerGate,
+      }),
+    );
     const conductorWiring = await wireConductor({
       pool: graphPool,
       onEphemeralReaped,
@@ -4074,6 +4138,9 @@ async function main(): Promise<void> {
       // The SAME registry the plugin-facing conversationSend uses — one owner
       // per channel type, so a discussion cannot be posted by a hijacked provider.
       conversationSendProviders: conversationSendRegistry,
+      // #1018 — re-checked on every utterance, so an operator's flip bites at
+      // the agent's next turn rather than at the end of the run.
+      peerGate,
       // #330 round 4 — the destructive terminate leaves a durable trace.
       // Closure like auditRoleChange: adminAudit is constructed further down.
       auditFacilitationTerminate: async (entry) => {
@@ -4175,30 +4242,11 @@ async function main(): Promise<void> {
         // opened it" and "who was addressed" can never be two different answers.
         resolveOpener: (channelType, botChannelKey) =>
           getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
-        // Who can actually be heard in this chat: an agent needs its own bot AND
-        // that bot needs a conversation reference here. Provisioning alone is
-        // not enough — a partner whose bot was never added would have its turns
-        // generated, paid for and dropped.
-        //
-        // Presence comes from the reference table, NOT the roster: Teams'
-        // roster API returns people, never bots, so a roster-based check finds
-        // nothing in a chat full of bots (which is exactly what it did on the
-        // first live run).
-        listPartners: async (channelType, conversationId) => {
-          if (channelType !== 'teams') return [];
-          const registry = getRegistry();
-          if (!registry) return [];
-          const present = await botPresence.botAppIdsIn(conversationId);
-          const seen = new Set<string>();
-          const partners: { slug: string; name: string }[] = [];
-          for (const appId of present) {
-            const owner = registry.identityForChannel(channelType, `28:${appId}`);
-            if (!owner || seen.has(owner.agent.slug)) continue;
-            seen.add(owner.agent.slug);
-            partners.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug });
-          }
-          return partners;
-        },
+        // Presence (see `presentBots` above) — the gate below decides who of
+        // the present may actually take part.
+        listPartners: presentBots,
+        // #1018 — the opener must be enabled here, and so must every partner.
+        peerGate,
         log: (msg: string) => console.log(msg),
       }),
     );

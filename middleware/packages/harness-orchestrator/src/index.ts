@@ -582,6 +582,7 @@ export type {
 export type {
   ChatParticipant,
   ChatParticipantsProvider,
+  ChatPeerAgentsProvider,
 } from './chatParticipants.js';
 
 // Native tools — channel-coupled UI cards + calendar + roster

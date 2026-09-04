@@ -17,7 +17,24 @@ export interface ChatParticipant {
   email: string | null;
   /** User Principal Name (AAD). Null when absent. */
   userPrincipalName: string | null;
+  /**
+   * #1018 — who this participant IS. Absent = `'human'` (every roster provider
+   * predates the field and lists people only). `'agent'` marks another omadia
+   * agent's bot, merged in by the kernel ONLY when agent-to-agent is enabled
+   * for both the calling agent and the peer in this chat; `agentSlug` is the
+   * name the discussion tools accept.
+   */
+  kind?: 'human' | 'agent';
+  agentSlug?: string;
 }
+
+/**
+ * #1018 — resolves the peer AGENTS the calling agent may see in the current
+ * chat. Kernel-published (`chatPeerAgents@1`) because presence and the peer
+ * policy both live in kernel-owned tables; resolved per call, like every
+ * optional service. Empty outside a channel turn or when nothing is enabled.
+ */
+export type ChatPeerAgentsProvider = () => Promise<ChatParticipant[]>;
 
 /**
  * Resolves the active-chat roster on demand. Invoked once per tool call,
