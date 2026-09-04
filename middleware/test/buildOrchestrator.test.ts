@@ -78,3 +78,61 @@ test('the built bundle exposes the orchestrator as its raw + bare agent', () => 
   // No verifier bundle in deps → the bare Orchestrator IS the chatAgent.
   assert.equal(built.bundle.agent, built.orchestrator);
 });
+
+/**
+ * #1016 — the WIRING pin.
+ *
+ * The guard itself is tested in `routineTurnOwnerGuard.test.ts`. What this
+ * pins is that the production construction path actually installs it: the
+ * first round of this fix shipped a correct guard with no caller, so a stale
+ * `enterWith` chain still dispatched under the previous principal. Deleting
+ * the `turnOwnerGuard` forward in `buildOrchestrator.ts` must fail here.
+ */
+function cliDeps(
+  turnOwnerGuard?: OrchestratorDeps['turnOwnerGuard'],
+): OrchestratorDeps {
+  return {
+    ...deps(),
+    // Only `id` is read at construction time; the CLI runtime owns the turn
+    // loop, so nothing calls stream()/complete() on this provider.
+    provider: { id: 'claude-cli' } as unknown as OrchestratorDeps['provider'],
+    ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
+  };
+}
+
+/** Reads the private deps the agent was constructed with. */
+function installedGuard(agent: unknown): unknown {
+  return (agent as { deps?: { turnOwnerGuard?: unknown } }).deps?.turnOwnerGuard;
+}
+
+test('a claude-cli agent is built with the turn-owner guard from deps (#1016)', () => {
+  const guard: OrchestratorDeps['turnOwnerGuard'] = () => (): void => {};
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    cliDeps(guard),
+  );
+
+  // The CLI branch swaps the agent for the CLI runtime rather than the
+  // orchestrator — if this ever stops holding, the assertion below is
+  // inspecting the wrong object and the pin is worthless.
+  assert.notEqual(
+    built.bundle.agent,
+    built.orchestrator,
+    'the claude-cli branch must produce a CliChatAgent, not the orchestrator',
+  );
+  assert.equal(
+    installedGuard(built.bundle.agent),
+    guard,
+    'the guard passed in deps must reach the constructed CliChatAgent',
+  );
+});
+
+test('a claude-cli agent without a guard in deps installs none (#1016)', () => {
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    cliDeps(),
+  );
+  // Hosts that publish no `routineTurnOwnerGuard` service keep the pre-#1016
+  // behaviour instead of getting a half-built guard.
+  assert.equal(installedGuard(built.bundle.agent), undefined);
+});

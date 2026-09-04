@@ -4,6 +4,7 @@ import {
   RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
   type AiDisclosureLevel,
+  type ChatTurnInput,
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
@@ -645,6 +646,15 @@ export async function activate(
     (agentId: string) => boolean
   >('installedPluginToolsReadyReader');
 
+  // #1016 — per-turn owner guard for the subscription-CLI runtime. Published
+  // by the kernel at boot (`middleware/src/index.ts:routineTurnOwnerGuard`)
+  // because the store it reads (`routineTurnContext`) lives in the application
+  // layer, not in this package. Absent (legacy hosts, unit tests) → the
+  // restored context is not cross-checked, the pre-#1016 behaviour.
+  const turnOwnerGuard = ctx.services.get<
+    (input: ChatTurnInput) => (() => void) | undefined
+  >('routineTurnOwnerGuard');
+
   // Setup-field config (with defaults)
   const model =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
@@ -1001,6 +1011,7 @@ export async function activate(
     turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
+    ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
