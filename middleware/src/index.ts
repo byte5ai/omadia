@@ -169,7 +169,10 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
-import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import {
+  createAdminEmbeddingProviderRouter,
+  type LocalEmbeddingModelFetcher,
+} from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
@@ -5037,6 +5040,14 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       getEmbeddingClient: () =>
         serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // OM-84 follow-up — the keyless adapter publishes this even while its
+      // weights are missing, which is the only moment it is useful. Resolved
+      // per request: it appears the moment that adapter activates and vanishes
+      // when it is swapped out, and a captured copy would outlive both.
+      getLocalModelFetcher: () =>
+        serviceRegistry.get<LocalEmbeddingModelFetcher>(
+          'localEmbeddingModelFetcher',
+        ),
       // Resolved per request, never captured: `vectorWritesAllowed` flips
       // false→true in-process when a stale-vector clear drains, and the whole
       // point of the page is that the operator sees that without a reload.
