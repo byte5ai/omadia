@@ -16,8 +16,11 @@
  *   POST /update   → 202 {"accepted":true} | 409 | 400
  */
 
+import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 
 import { isValidTargetVersion, loadConfig } from './config.mjs';
@@ -231,8 +234,34 @@ export function createServer(deps = {}) {
   return { server, config, getStatus: () => status };
 }
 
+/**
+ * True when Node was started with THIS file — the sidecar's boot switch.
+ *
+ * Not a comparison against a `file://` URL built by concatenating
+ * `process.argv[1]`: `import.meta.url` percent-encodes what a path spells
+ * literally (a bind mount named with a space is enough), and Node resolves the
+ * module URL through realpath while leaving argv[1] alone, so a symlinked
+ * WORKDIR breaks it too. Either way the guard goes false, `server.listen` is
+ * never reached, and the container exits 0 as if all were well. The same
+ * comparison was silently disabling `desktop/scripts/set-desktop-version.mjs`
+ * on every Windows CI run — see `desktop/scripts/isEntryPoint.mjs`. Kept local
+ * rather than imported: the Dockerfile ships only this `src/` tree.
+ */
+function isEntryPoint(moduleUrl) {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return (
+      fs.realpathSync(fileURLToPath(moduleUrl)) ===
+      fs.realpathSync(path.resolve(entry))
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Entrypoint — skipped when imported by tests.
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+if (isEntryPoint(import.meta.url)) {
   const { server, config } = createServer();
   // Fail fast on the pin target: an unusable .env mount would otherwise be
   // discovered mid-update, after images have been pulled and before anything
