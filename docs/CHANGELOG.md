@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — routine card buttons keep working, and say when they run unscoped (#1029)
+
+2026-09-04 — follow-up to #1025, which scoped the routine smart-card handler
+from the per-turn context and refused when it was absent. That would have
+broken Pausieren, Aktivieren, Löschen and Jetzt auslösen for every user: the
+Teams adapter dispatches card clicks out-of-band, returning before the
+orchestrator turn, so the context is never captured on that path and every
+click would have answered "routines are unavailable in this session".
+
+`handleRoutineAction` now takes an optional `actor` from the channel, with
+documented precedence — explicit `actor`, then the turn context, then
+unscoped exactly as before #1025. The unscoped case is counted and logged at
+error level naming the action and routine id, because a hole you can see is
+better than silently scoping to nobody. Once the Teams adapter passes the
+tenant and `from.aadObjectId` it already holds on the activity, the fallback
+can be deleted.
+
+Two guards from #1024 and #1025 were also proving less than they claimed. The
+routine store's recording-pool assertions bound `tenant` and `user_id` but not
+`id`, so rewriting the scoped delete to drop the row predicate — deleting
+every routine that user owns — left the suite green; `id` is now bound too.
+And the sandbox-listen scan was name-and-literal shaped: a copy called
+anything, comparing `errno === -1`, using double quotes or `.includes`, or
+living in a `.js` file, passed it. Detection is behaviour-shaped now, with a
+test that proves each spelling is matched and that correct usage is not, plus
+a written note on what it still cannot see. Its directory scan also used
+`new URL(...).pathname`, which leaves percent-encoding intact — a checkout
+path needing decoding made the scan walk nothing and report zero offenders,
+failing open.
+
 ### Fixed — knowing a routine id is no longer enough to pause, resume or delete it (#1025)
 
 2026-09-04 — `manage_routine` resolved the channel turn context for `create`

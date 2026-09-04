@@ -19,7 +19,7 @@ import { renderRoutineTemplate } from '../plugins/routines/routineTemplateRender
 
 /**
  * #1025 — every mutation on this router runs cross-tenant, which is a
- * decision rather than an omission: the whole router is operators-only
+ * decision rather than an omission: the whole router sits behind
  * behind `requireAuth`, and an operator managing one tenant's routines
  * from the Operator UI is the feature. Named once so the intent is
  * greppable and a future non-operator route cannot inherit it by accident.
@@ -193,7 +193,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
     try {
       // Operator view: include paused rows alongside active.
       // Cross-tenant list is acceptable here because the route is behind
-      // requireAuth (operators-only).
+      // requireAuth — any valid operator session, see OPERATOR_SCOPE.
       const rows = await deps.store.listAll();
       const body: ListRoutinesResponse = {
         routines: rows.map(toDto),
@@ -221,7 +221,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       }
       try {
         // #1025 — cross-tenant on purpose, same rationale as the list
-        // above: this router is operators-only behind requireAuth. The
+        // above: this router sits behind requireAuth. The
         // scope is stated rather than omitted so it reads as a decision.
         const updated =
           status === 'paused'
@@ -471,7 +471,7 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
     const idRaw = req.params['id'];
     const id = typeof idRaw === 'string' ? idRaw : '';
     try {
-      // #1025 — operators-only router, cross-tenant by design (see PATCH).
+      // #1025 — cross-tenant by design on this router (see PATCH).
       const ok = await deps.runner.deleteRoutine(id, OPERATOR_SCOPE);
       if (!ok) {
         res.status(404).json({

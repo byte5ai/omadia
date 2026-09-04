@@ -261,7 +261,31 @@ working across it:
   `triggerRoutineNow` delivers into the routine's *own* `conversationRef`, so
   an unscoped trigger let one principal push messages into another tenant's
   conversation on demand. The operator HTTP router stays deliberately
-  cross-tenant behind `requireAuth`, stated once as `OPERATOR_SCOPE`.
+  cross-tenant, stated once as `OPERATOR_SCOPE`. Precisely: it sits behind
+  `requireAuth`, which verifies the session JWT and, for Entra sessions, the
+  `ADMIN_ALLOWED_EMAILS` whitelist — it checks neither role nor tenant, so
+  the gate is "any valid operator session", not "operators-only" as an
+  earlier draft of this entry claimed.
+
+  **The card path needed a different answer (#1029).** Scoping the smart-card
+  handler from the turn context alone would have broken all four buttons in
+  production. The Teams adapter dispatches card clicks out-of-band —
+  `handleMessage` takes the routine branch and returns before
+  `runOrchestratorTurn`, so `captureRoutineTurn` never fires and the context
+  is always absent there. Refusing on absence is an outage, not a safe
+  default. The contract therefore takes an optional `actor` from the channel,
+  with documented precedence: explicit `actor`, then the turn context, then
+  UNSCOPED as before #1025 — counted by `unscopedActionMetrics` and logged at
+  error level naming the action and id. A hole you can see beats scoping to
+  nobody, and the counter is what tells an operator the adapter-side fix has
+  shipped: the count stops rising and the fallback can be deleted. Teams
+  already holds both fields on the activity (tenant id and
+  `from.aadObjectId`); passing them is the adapter-side follow-up.
+
+  The test for that path deliberately does NOT wrap the call in
+  `routineTurnContext.run`. That wrapper is what made the first version pass
+  while production would have answered "routines are unavailable in this
+  session" on every click.
 
   One ordering bug surfaced while scoping `delete`: the runner unregistered
   the scheduler *before* deleting, so a cross-tenant id silently disarmed
