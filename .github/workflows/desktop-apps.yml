@@ -209,6 +209,29 @@ jobs:
         working-directory: desktop
         run: node scripts/set-desktop-version.mjs "$TAG"
 
+      # Belt and braces. The step above used to be able to do NOTHING and still
+      # report success: its entry-point guard compared a URL against a raw
+      # `process.argv[1]`, which is never equal on Windows, so every Windows
+      # installer up to v0.149.2 shipped as `omadia.Setup.0.1.0.exe` while the
+      # macOS and Linux artifacts of the same release carried the real version.
+      # The guard is fixed and tested, but a version this pipeline stamps into
+      # three release-facing surfaces (Info.plist, artifact filenames, the
+      # feed electron-updater compares) is worth verifying rather than trusting
+      # — and the check costs one node invocation on every runner, including
+      # the one where the bug lived.
+      - name: Assert the version actually landed
+        working-directory: desktop
+        run: |
+          want="${TAG#v}"
+          got="$(node -p "require('./package.json').version")"
+          if [ "$got" != "$want" ]; then
+            echo "::error::desktop/package.json says '$got', release tag says '$want'." >&2
+            echo "set-desktop-version.mjs did not take effect — refusing to build" >&2
+            echo "artifacts that would be labelled '$got'." >&2
+            exit 1
+          fi
+          echo "✓ desktop/package.json version = $got"
+
       # Verify the middleware's native modules load under Electron's Node (the
       # kernel runs via ELECTRON_RUN_AS_NODE). All three are N-API → ABI-stable
       # across node/electron, so their shipped binaries already work and NONE of
