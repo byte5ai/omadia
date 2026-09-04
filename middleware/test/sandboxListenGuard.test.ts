@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import { isSandboxListenDenied, loopbackRequired } from './_helpers/listenLoopback.js';
@@ -31,7 +32,29 @@ import { isSandboxListenDenied, loopbackRequired } from './_helpers/listenLoopba
  * code used), so this file states its own blind spot and covers it.
  */
 
-/** Every `.ts` under `middleware/test`, so a new copy anywhere is in scope. */
+/**
+ * Every source file under `middleware/test`, so a new copy anywhere is in
+ * scope.
+ *
+ * #1029 — this used to collect `.ts` and `.mts` only. A rogue guard in a
+ * `.js` test helper, a `.cts` fixture or a `.tsx` file was invisible to
+ * both scans below, which is the same "the guard has an exclusion list and
+ * the exclusion list is where it goes blind" failure the doc comment warns
+ * about. Extensions are enumerated rather than "anything not a directory"
+ * because the tree also holds `.json`, `.sql` and binary fixtures whose
+ * contents would produce noise, not signal.
+ */
+const SCANNED_EXTENSIONS = [
+  '.ts',
+  '.mts',
+  '.cts',
+  '.tsx',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.jsx',
+];
+
 function testTreeFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
@@ -39,12 +62,19 @@ function testTreeFiles(dir: string, out: string[] = []): string[] {
       testTreeFiles(full, out);
       continue;
     }
-    if (entry.endsWith('.ts') || entry.endsWith('.mts')) out.push(full);
+    if (SCANNED_EXTENSIONS.some((ext) => entry.endsWith(ext))) out.push(full);
   }
   return out;
 }
 
-const TEST_ROOT = new URL('.', import.meta.url).pathname;
+/**
+ * #1029 — `new URL('.', import.meta.url).pathname` leaves percent-encoding
+ * in place, so a checkout path containing a space or any character needing
+ * escaping yields a directory that does not exist. `readdirSync` would then
+ * throw, or worse the scan would walk nothing and report zero offenders:
+ * a guard that fails OPEN. `fileURLToPath` decodes properly.
+ */
+const TEST_ROOT = fileURLToPath(new URL('.', import.meta.url));
 const HELPER = join(TEST_ROOT, '_helpers', 'listenLoopback.ts');
 
 /**
@@ -147,20 +177,100 @@ describe('sandbox loopback guard (#1024)', () => {
   });
 
   /** A bare inline `code === 'EPERM'` is the same bug without a function name. */
-  it('has no inline EPERM listener check outside the shared helper', () => {
-    const inline = /code\s*===\s*'EPERM'/;
-    const offenders = testTreeFiles(TEST_ROOT)
-      .filter((file) => !SCAN_EXEMPT.has(file))
-      .filter((file) => inline.test(readFileSync(file, 'utf8')))
-      .map((file) => file.slice(TEST_ROOT.length));
+  /**
+   * #1029 — the previous pattern was `/code\s*===\s*'EPERM'/`, which is
+   * literal-and-quote shaped. All of these slipped past it, each a plausible
+   * thing to type:
+   *
+   *   code === "EPERM"        double quotes
+   *   code == 'EPERM'         loose equality
+   *   'EPERM' === code        comparison written the other way round
+   *   ['EPERM'].includes(c)   array membership
+   *   c.includes('EPERM')     substring test
+   *   errno === -1            the numeric form of the same errno
+   *   os.constants.errno.EPERM  the named constant
+   *
+   * Detection is now behaviour-shaped rather than name-shaped, which also
+   * subsumes the sibling scan above: a rogue guard may be called anything,
+   * but it cannot avoid naming the condition it tests.
+   */
+  const ROGUE_CHECKS: ReadonlyArray<readonly [RegExp, string]> = [
+    [/===?\s*['"`]EPERM['"`]/, "compares something to 'EPERM'"],
+    [/['"`]EPERM['"`]\s*===?/, "compares 'EPERM' to something"],
+    [/\.includes\(\s*['"`]EPERM['"`]/, "tests membership of 'EPERM'"],
+    [/\[\s*['"`]EPERM['"`]\s*\]/, "indexes or lists 'EPERM'"],
+    [/errno\s*===?\s*-\s*1\b/, 'compares errno to -1 (the numeric EPERM)'],
+    [/constants\s*\.\s*errno\s*\.\s*EPERM/, 'reads os.constants.errno.EPERM'],
+  ];
+
+  it('has no inline listener check outside the shared helper, in any spelling', () => {
+    const offenders: string[] = [];
+    for (const file of testTreeFiles(TEST_ROOT)) {
+      if (SCAN_EXEMPT.has(file)) continue;
+      const source = readFileSync(file, 'utf8');
+      for (const [pattern, why] of ROGUE_CHECKS) {
+        if (pattern.test(source)) {
+          offenders.push(`${file.slice(TEST_ROOT.length)} (${why})`);
+          break;
+        }
+      }
+    }
 
     assert.deepEqual(
       offenders,
       [],
-      `These files compare an error code to 'EPERM' inline instead of calling ` +
-        `isSandboxListenDenied / loopbackRequired: ${offenders.join(', ')}. ` +
-        `An inline check cannot honour OMADIA_EXPECT_LOOPBACK (#1024).`,
+      `These files decide for themselves whether a refused listener is ` +
+        `tolerable, instead of calling isSandboxListenDenied / ` +
+        `loopbackRequired: ${offenders.join(', ')}. Such a check cannot ` +
+        `honour OMADIA_EXPECT_LOOPBACK, so the suite self-skips on a runner ` +
+        `where the listener is genuinely broken (#1024).`,
     );
+  });
+
+  /**
+   * What this guard still cannot see, stated rather than implied — a
+   * guard's blind spot belongs in the file, not in a reviewer's head.
+   *
+   *   - a literal assembled at runtime (`'EP' + 'ERM'`, `fromCharCode`);
+   *   - the code imported from a constant in a non-test file;
+   *   - a check that swallows EVERY listen error rather than naming EPERM
+   *     (`catch { return; }` around a bind) — shape-invisible, and the
+   *     reason the positive assertions above exist alongside the scans;
+   *   - source outside `middleware/test`.
+   *
+   * The first two are deliberate evasion rather than the accident this
+   * guard exists to catch; the third is why `loopbackRequired()` is
+   * exported for callers that want their own diagnostic.
+   */
+  it('proves the widened scan actually matches every spelling it claims', () => {
+    // A guard that lists patterns but never proves they fire is the exact
+    // class of decorative check this file was written to replace.
+    const rogueSpellings = [
+      "if (err.code === \"EPERM\") return;",
+      "if (err.code == 'EPERM') return;",
+      "if ('EPERM' === err.code) return;",
+      "if (['EPERM'].includes(err.code)) return;",
+      "if (String(err.code).includes('EPERM')) return;",
+      'if (err.errno === -1) return;',
+      'if (err.errno === constants.errno.EPERM) return;',
+    ];
+
+    for (const snippet of rogueSpellings) {
+      const matched = ROGUE_CHECKS.some(([pattern]) => pattern.test(snippet));
+      assert.ok(matched, `no ROGUE_CHECKS pattern matches: ${snippet}`);
+    }
+
+    // And it must not fire on the correct usage, or every honest caller
+    // becomes an offender and the guard gets deleted for crying wolf.
+    const legitimate = [
+      "import { isSandboxListenDenied } from './_helpers/listenLoopback.js';",
+      'if (isSandboxListenDenied(error)) return;',
+      'if (loopbackRequired()) throw error;',
+    ];
+    for (const snippet of legitimate) {
+      const matched = ROGUE_CHECKS.some(([pattern]) => pattern.test(snippet));
+      assert.equal(matched, false, `false positive on: ${snippet}`);
+    }
   });
 
   /** The flag has to stay discoverable, or the next author writes a local copy. */

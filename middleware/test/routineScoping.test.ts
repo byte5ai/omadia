@@ -27,6 +27,10 @@ import type {
 } from '../src/plugins/routines/routineStore.js';
 import type { RoutineRunsStore } from '../src/plugins/routines/routineRunsStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
+import {
+  getUnscopedRoutineActionMetrics,
+  resetUnscopedRoutineActionMetrics,
+} from '../src/plugins/routines/unscopedActionMetrics.js';
 
 /**
  * #1025 — `manage_routine` resolved the turn context for `create` and
@@ -387,6 +391,16 @@ describe('#1025 routineStore — the owner predicate is in the SQL, not just the
 
   const flat = (sql: string): string => sql.replace(/\s+/g, ' ');
 
+  /**
+   * Matches the standalone `id` column only. `/id = \$(\d+)/` would also
+   * match the tail of `user_id = $4`, so on a statement scoped by owner but
+   * NOT by row it reads user_id's placeholder and the assertion passes for
+   * the wrong column — measured, it even matches
+   * `WHERE tenant = $1 AND user_id = $2`, which is precisely the regression
+   * this assertion exists to catch.
+   */
+  const ID_BOUND = /(?:^|[\s(])id = \$(\d+)/;
+
   /** The value the driver substitutes for the `$n` this pattern captures. */
   function boundTo(stmt: Recorded, pattern: RegExp): unknown {
     const match = pattern.exec(flat(stmt.text));
@@ -394,24 +408,33 @@ describe('#1025 routineStore — the owner predicate is in the SQL, not just the
     return stmt.values[Number(match[1]) - 1];
   }
 
-  it('setStatus binds the owner tenant and user_id into its WHERE clause', async () => {
+  /**
+   * #1029 — asserting only tenant and user_id proves the owner predicate is
+   * PRESENT, not that the statement is still row-scoped. Measured: rewriting
+   * the scoped delete to `WHERE tenant = $1 AND user_id = $2` — which deletes
+   * every routine that user owns — left the whole file green. Binding `id`
+   * too is what makes the statement's target part of the contract.
+   */
+  it('setStatus binds id, tenant and user_id into its WHERE clause', async () => {
     const { store, stmts } = recordingStore();
 
     await store.setStatus('r1', 'paused', OWNER);
 
     const stmt = stmts[0];
     assert.ok(stmt);
+    assert.equal(boundTo(stmt, ID_BOUND), 'r1');
     assert.equal(boundTo(stmt, /tenant = \$(\d+)/), OWNER.tenant);
     assert.equal(boundTo(stmt, /user_id = \$(\d+)/), OWNER.userId);
   });
 
-  it('delete binds the owner tenant and user_id into its WHERE clause', async () => {
+  it('delete binds id, tenant and user_id into its WHERE clause', async () => {
     const { store, stmts } = recordingStore();
 
     await store.delete('r1', OWNER);
 
     const stmt = stmts[0];
     assert.ok(stmt);
+    assert.equal(boundTo(stmt, ID_BOUND), 'r1');
     assert.equal(boundTo(stmt, /tenant = \$(\d+)/), OWNER.tenant);
     assert.equal(boundTo(stmt, /user_id = \$(\d+)/), OWNER.userId);
   });
@@ -437,7 +460,7 @@ describe('#1025 smart-card actions — the second door is scoped as well', () =>
     } as unknown as RoutinesHandle);
   }
 
-  it('refuses a foreign id even though the card carries it', async () => {
+  it('scopes from the turn context when the click lands inside a captured turn', async () => {
     const h = makeHarness();
     const foreign = h.store.seed(OTHER);
     const integ = integrationFor(h);
@@ -451,21 +474,80 @@ describe('#1025 smart-card actions — the second door is scoped as well', () =>
     assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
   });
 
-  it('refuses outside a channel turn, where there is no principal to scope to', async () => {
+  /**
+   * #1029 — THE CARD PATH. Deliberately NOT wrapped in
+   * `routineTurnContext.run`: the Teams adapter dispatches card clicks
+   * out-of-band (`handleMessage` returns before `runOrchestratorTurn`, so
+   * `captureRoutineTurn` never fires), which means production always
+   * arrives here with no context and no actor. The wrapper is exactly what
+   * made the first version of this suite pass while all four buttons would
+   * have answered "routines are unavailable in this session".
+   */
+  it('proceeds UNSCOPED and records it when the card supplies neither actor nor context', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
     const integ = integrationFor(h);
+    resetUnscopedRoutineActionMetrics();
+    // Honest precondition: `enter()` uses `enterWith`, which has no scope
+    // exit, so a leaked value from another test would silently turn this
+    // into the ALS case and prove nothing.
+    assert.equal(routineTurnContext.current(), undefined);
+
+    const out = await integ.handleRoutineAction({
+      action: 'pause',
+      id: own.id,
+    });
+
+    // The action goes through — refusing here is an outage, not a default.
+    assert.match(out, /pausiert/);
+    assert.equal(h.store.rows.get(own.id)?.status, 'paused');
+    // And the hole is observable rather than silent.
+    const metrics = getUnscopedRoutineActionMetrics();
+    assert.equal(metrics.calls, 1);
+    assert.equal(metrics.byAction['pause'], 1);
+  });
+
+  it('scopes from an explicit actor, with no turn context in play', async () => {
+    const h = makeHarness();
+    const foreign = h.store.seed(OTHER);
+    const integ = integrationFor(h);
+    resetUnscopedRoutineActionMetrics();
+    assert.equal(routineTurnContext.current(), undefined);
+
+    // OWNER clicks a card carrying ANOTHER tenant's routine id.
+    await assert.rejects(
+      () =>
+        integ.handleRoutineAction({
+          action: 'pause',
+          id: foreign.id,
+          actor: { tenant: OWNER.tenant, userId: OWNER.userId },
+        }),
+      RoutineNotFoundError,
+    );
+
+    assert.equal(h.store.rows.get(foreign.id)?.status, 'active');
+    // Scoped, so nothing was recorded as unscoped.
+    assert.equal(getUnscopedRoutineActionMetrics().calls, 0);
+  });
+
+  it('lets an explicit actor act on their own routine', async () => {
+    const h = makeHarness();
+    const own = h.store.seed(OWNER);
+    const integ = integrationFor(h);
+    resetUnscopedRoutineActionMetrics();
 
     const out = await integ.handleRoutineAction({
       action: 'delete',
       id: own.id,
+      actor: { tenant: OWNER.tenant, userId: OWNER.userId },
     });
 
-    assert.equal(out, ROUTINE_NO_CONTEXT_ERROR);
-    assert.equal(h.store.rows.has(own.id), true);
+    assert.equal(out, 'Routine gelöscht.');
+    assert.equal(h.store.rows.has(own.id), false);
+    assert.equal(getUnscopedRoutineActionMetrics().calls, 0);
   });
 
-  it('still works for the turn owner', async () => {
+  it('lets the turn owner act on their own routine via the context', async () => {
     const h = makeHarness();
     const own = h.store.seed(OWNER);
     const integ = integrationFor(h);
