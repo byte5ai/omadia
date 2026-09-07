@@ -179,7 +179,7 @@ function AgentEditor({
                   : `${agent.modelPolicy.fallback.provider}:${agent.modelPolicy.fallback.model}`,
           })}{' '}
           <a
-            href={`/operator/agents/${encodeURIComponent(slug)}`}
+            href={`/operator/agents/${encodeURIComponent(slug)}?tab=model`}
             className="text-[color:var(--accent)] hover:underline"
           >
             {t('inspector.modelPolicyEdit')}

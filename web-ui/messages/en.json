@@ -2548,6 +2548,16 @@
       "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
       "slugMismatch": "That is not the bot slug of this identity.",
       "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
+    },
+    "detailTabs": {
+      "aria": "Agent settings",
+      "identity": "Identity",
+      "model": "Model",
+      "peers": "Conversations",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Tools",
+      "memory": "Memory"
     }
   },
   "builder": {
