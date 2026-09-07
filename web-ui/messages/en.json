@@ -1982,8 +1982,12 @@
       "heading": "Model",
       "hint": "Which model answers under this agent's name, and which one steps in when it is unavailable. Everything offered here comes from the providers installed on this host and the keys configured under Providers.",
       "loading": "Loading the model policy…",
-      "primary": { "label": "Primary" },
-      "fallback": { "label": "Fallback" },
+      "primary": {
+        "label": "Primary"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
       "auto": "Auto",
       "autoResolves": "What the platform resolves today: {model}",
       "autoUnknown": "What the platform resolves today (not built yet)",
@@ -2020,22 +2024,33 @@
       "loading": "Loading the peer settings…",
       "stateUnknown": "Current: unknown",
       "stateSummary": "Current: {mode} · {chats, plural, =0 {no chats enabled} one {# chat enabled} other {# chats enabled}}",
-      "modes": { "off": "Off", "on": "On" },
+      "modes": {
+        "off": "Off",
+        "on": "On"
+      },
       "modeHints": {
         "off": "The agent never talks to other agents. The default.",
         "on": "The agent may join discussions with other agents — in the chats enabled below."
       },
       "chatsHeading": "Enabled chats",
-      "chatsHint": "One row per chat. For Teams this is the group chat's conversation id (19:…@thread.skype). A row for a chat the bot is not present in is harmless — the relay only ever considers bots that are actually there.",
+      "chatsHint": "One row per chat. Only chats this agent's own bot is actually in are offered — add the bot to a Teams group chat first and it appears here. The relay only ever considers bots that are present.",
       "chatsEmpty": "No chat enabled yet.",
       "chatEnabled": "enabled",
       "chatDisabled": "disabled",
       "remove": "Remove",
       "channelTypeLabel": "Channel",
-      "channelKeyLabel": "Conversation id",
-      "channelKeyPlaceholder": "19:…@thread.skype",
       "add": "Enable chat",
-      "adding": "Adding"
+      "adding": "Adding",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Choose a chat…",
+      "chatSelectNone": "No chat available",
+      "noKnownChats": "This bot is not in any group chat that is not already listed. Add the bot to a Teams group chat; it then shows up here.",
+      "noBot": "This agent has no bot of its own yet. Provision a Teams identity first — without a bot there is no chat to enable.",
+      "chatOption": "{chat} · with {partners}",
+      "chatOptionNoPartners": "{chat} · no other bot present",
+      "chatPartners": "Bots present: {partners}",
+      "chatPartnersNone": "No other bot present — a discussion needs a second one.",
+      "chatNotPresent": "The bot is not (or no longer) in this chat; the row has no effect."
     },
     "contextMemory": {
       "heading": "Chat-context memory",

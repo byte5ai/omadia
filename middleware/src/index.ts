@@ -3492,6 +3492,16 @@ async function main(): Promise<void> {
     activeProvider: orchestratorActiveProviderId(),
   });
 
+  // #1018 — the chats an agent's bot is actually in (kernel table from graph
+  // migration 0031), so the peer-chat picker offers only those instead of a
+  // typed-in id. Same store the conductor's presence check reads; created
+  // once, no DATABASE_URL means no candidates. Named here, not inline, for
+  // the wiring-pin tests' lazy regex.
+  const peerChatDirectory = graphPool
+    ? createBotPresenceStore(graphPool, (msg) => console.log(msg))
+    : undefined;
+  const peerChatDirectoryFor = () => peerChatDirectory;
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -3509,6 +3519,7 @@ async function main(): Promise<void> {
       getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      getPeerChatDirectory: peerChatDirectoryFor,
       // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
       // is down, so the readiness banner can tell "no access at all" from
       // "access exists, orchestrator not assigned to it". Same credential

@@ -49,6 +49,7 @@ import {
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
 import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
+import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
@@ -1652,6 +1653,75 @@ export interface OperatorAgentsRouterOptions {
    *  and minimal mounts omit it and the 503 carries no `cause`. Must not
    *  throw; a rejection degrades to `unknown`. */
   readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
+  /**
+   * #1018 — where this agent's bot can actually be heard (kernel table
+   * `teams_conversation_refs`, graph migration 0031). `GET /:slug/peer-channels`
+   * lists those chats as the ONLY candidates for enabling agent-to-agent talk:
+   * a chat the bot holds no reference to would be accepted and then never
+   * used, so it is not offered. Optional: without it the list carries no
+   * candidates (tests / minimal mounts, no DATABASE_URL).
+   */
+  readonly getPeerChatDirectory?: () => BotPresenceStore | undefined;
+}
+
+/** One chat the agent's own bot is present in — a candidate for enabling. */
+export interface PeerChatCandidate {
+  readonly channelType: string;
+  readonly channelKey: string;
+  /** The chat's topic when the channel captured one; null otherwise. */
+  readonly label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  readonly kind: string | null;
+  /** The OTHER agents whose bots are present — the possible discussion
+   *  partners. Bots without a live owning agent are not listed. */
+  readonly partners: readonly { slug: string; name: string }[];
+}
+
+/** `28:<app id>` — the Teams bot identity key; the app id is what the
+ *  reference table is keyed on. */
+const TEAMS_BOT_KEY = /^28:([0-9a-f-]+)$/i;
+
+/**
+ * #1018 — the chats an operator may pick for agent-to-agent talk. Derived,
+ * never typed: the agent's own provisioned bots (channel identities) and the
+ * conversations each holds a reference in. A chat missing here is a chat the
+ * bot was never added to, and enabling it would change nothing — so the
+ * picker does not offer it. Personal (1:1) chats are skipped: a discussion
+ * needs a second bot, and a personal chat never has one.
+ */
+async function listPeerChatCandidates(
+  live: { store: ConfigStore; registry: OrchestratorRegistry },
+  agentId: string,
+  directory: BotPresenceStore | undefined,
+): Promise<{ channelTypes: string[]; available: PeerChatCandidate[] }> {
+  const identities = (await live.store.listChannelIdentities()).filter((i) => i.agentId === agentId);
+  const channelTypes = Array.from(new Set(identities.map((i) => i.channelType))).sort();
+  if (!directory) return { channelTypes, available: [] };
+  const available: PeerChatCandidate[] = [];
+  const seen = new Set<string>();
+  for (const identity of identities) {
+    const appId = TEAMS_BOT_KEY.exec(identity.channelKey)?.[1]?.toLowerCase();
+    if (identity.channelType !== 'teams' || !appId) continue;
+    for (const conv of await directory.conversationsOf(appId)) {
+      if (conv.teamsType === 'personal' || seen.has(conv.conversationId)) continue;
+      seen.add(conv.conversationId);
+      const partners: { slug: string; name: string }[] = [];
+      for (const other of conv.botAppIds) {
+        if (other === appId) continue;
+        const owner = live.registry.identityForChannel(identity.channelType, `28:${other}`);
+        if (!owner || owner.agent.id === agentId || partners.some((p) => p.slug === owner.agent.slug)) continue;
+        partners.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug });
+      }
+      available.push({
+        channelType: identity.channelType,
+        channelKey: conv.conversationId,
+        label: conv.name,
+        kind: conv.teamsType,
+        partners,
+      });
+    }
+  }
+  return { channelTypes, available };
 }
 
 export function createOperatorAgentsRouter(
@@ -2162,7 +2232,10 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      const policies = await live.store.listAgentChannelPolicies(agent.id);
+      const [policies, candidates] = await Promise.all([
+        live.store.listAgentChannelPolicies(agent.id),
+        listPeerChatCandidates(live, agent.id, options.getPeerChatDirectory?.()),
+      ]);
       res.json({
         slug: agent.slug,
         mode: parseAgentToAgentMode(agent.agentToAgent),
@@ -2172,6 +2245,11 @@ export function createOperatorAgentsRouter(
           enabled: p.agentToAgent,
           updatedAt: p.updatedAt.toISOString(),
         })),
+        // Channel kinds this agent owns a bot on — the picker's first select.
+        // Empty means "no provisioned bot": nothing can be enabled yet.
+        channel_types: candidates.channelTypes,
+        // The chats that bot is actually in — the picker's second select.
+        available: candidates.available,
       });
     } catch (err) {
       badRequest(res, err);

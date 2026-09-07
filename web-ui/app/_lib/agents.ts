@@ -367,17 +367,68 @@ export interface PeerChannelDto {
   updatedAt: string;
 }
 
+/** One chat the agent's own bot is present in — what the picker offers. */
+export interface PeerChatCandidateDto {
+  channelType: string;
+  channelKey: string;
+  /** The chat's topic when the channel captured one; null otherwise. */
+  label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  kind: string | null;
+  /** The other agents whose bots are present — possible partners. */
+  partners: { slug: string; name: string }[];
+}
+
 export interface PeerChannelsDto {
   slug: string;
   mode: AgentToAgentMode;
   channels: PeerChannelDto[];
+  /** Channel kinds this agent owns a bot on; empty = no provisioned bot. */
+  channelTypes: string[];
+  /** The chats those bots are actually in. Derived server-side, never typed. */
+  available: PeerChatCandidateDto[];
+}
+
+interface PeerChannelsWire extends Omit<PeerChannelsDto, 'channelTypes' | 'available'> {
+  channel_types?: unknown;
+  available?: unknown;
+}
+
+function parsePeerChatCandidate(raw: unknown): PeerChatCandidateDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r['channelType'] !== 'string' || typeof r['channelKey'] !== 'string') return null;
+  const partners = Array.isArray(r['partners'])
+    ? r['partners'].flatMap((p: unknown) => {
+        if (typeof p !== 'object' || p === null) return [];
+        const q = p as Record<string, unknown>;
+        return typeof q['slug'] === 'string'
+          ? [{ slug: q['slug'], name: typeof q['name'] === 'string' ? q['name'] : q['slug'] }]
+          : [];
+      })
+    : [];
+  return {
+    channelType: r['channelType'],
+    channelKey: r['channelKey'],
+    label: typeof r['label'] === 'string' && r['label'].length > 0 ? r['label'] : null,
+    kind: typeof r['kind'] === 'string' ? r['kind'] : null,
+    partners,
+  };
 }
 
 export async function getAgentPeerChannels(slug: string): Promise<PeerChannelsDto> {
-  const res = await callJson<PeerChannelsDto>(
+  const res = await callJson<PeerChannelsWire>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels`,
   );
-  return { ...res, mode: parseAgentToAgentMode(res.mode) };
+  const { channel_types: types, available, ...rest } = res;
+  return {
+    ...rest,
+    mode: parseAgentToAgentMode(res.mode),
+    channelTypes: Array.isArray(types) ? types.filter((t): t is string => typeof t === 'string') : [],
+    available: Array.isArray(available)
+      ? available.map(parsePeerChatCandidate).filter((c): c is PeerChatCandidateDto => c !== null)
+      : [],
+  };
 }
 
 export async function setAgentPeerChannel(
