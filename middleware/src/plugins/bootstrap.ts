@@ -10,7 +10,10 @@ import { parseCapabilityRef } from '@omadia/plugin-api';
 
 import type { Config } from '../config.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
-import { findCapabilityProvidersInCatalog } from './capabilityResolver.js';
+import {
+  findActiveProviderCollision,
+  findCapabilityProvidersInCatalog,
+} from './capabilityResolver.js';
 import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -19,6 +22,8 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
 const DIAGRAMS_TOOL_ID = '@omadia/diagrams';
 const OFFICE_TOOL_ID = '@omadia/plugin-office';
 const EMBEDDINGS_TOOL_ID = '@omadia/embeddings';
+/** #1041 — the keyless (in-process) embedder; the OTHER `embeddingClient@1`. */
+const EMBEDDINGS_LOCAL_ID = '@omadia/embedding-adapter-local';
 const MEMORY_TOOL_ID = '@omadia/memory';
 const MEMORY_POSTGRES_ID = '@omadia/memory-postgres';
 const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
@@ -502,6 +507,36 @@ export async function bootstrapEmbeddingsFromEnv(
 ): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
+  // Mutual exclusion for `embeddingClient@1` — the same rule memoryStore and
+  // knowledgeGraph already have, and for the same reason: the capability
+  // resolver THROWS on two active providers, and a throw there is a fatal
+  // startup error, not a degraded plugin. Before #1041 there was only one
+  // embedder; now the keyless in-process one (`@omadia/embedding-adapter-local`)
+  // is an extension built-in without a secret field, which is exactly the shape
+  // the catch-all auto-installs — next to an already-installed Ollama adapter.
+  //
+  // A both-active state is not a valid operator state, so self-heal it here,
+  // BEFORE the catch-all: keep the Ollama adapter when it is actually
+  // configured (a base URL from env or from the operator), otherwise keep the
+  // keyless one. The removed side stays installable from the admin page —
+  // `findActiveProviderCollision` refuses the install with a clear 409 while
+  // the other is active, which is the operator-facing form of this rule.
+  const ollamaEntry = deps.registry.get(EMBEDDINGS_TOOL_ID);
+  const localEntry = deps.registry.get(EMBEDDINGS_LOCAL_ID);
+  if (
+    ollamaEntry?.status === 'active' &&
+    localEntry?.status === 'active'
+  ) {
+    const ollamaConfigured =
+      Boolean(deps.config.OLLAMA_BASE_URL) ||
+      typeof ollamaEntry.config?.['ollama_base_url'] === 'string';
+    const loserId = ollamaConfigured ? EMBEDDINGS_LOCAL_ID : EMBEDDINGS_TOOL_ID;
+    await deps.registry.remove(loserId);
+    log(
+      `[bootstrap] ⚐ both ${EMBEDDINGS_TOOL_ID} and ${EMBEDDINGS_LOCAL_ID} were active — removed ${loserId} (only one embeddingClient@1 provider may be active; ${ollamaConfigured ? 'Ollama is configured' : 'Ollama has no base URL'})`,
+    );
+  }
+
   if (deps.registry.has(EMBEDDINGS_TOOL_ID)) {
     const entry = deps.registry.get(EMBEDDINGS_TOOL_ID);
     if (entry && deps.config.OLLAMA_BASE_URL) {
@@ -542,6 +577,21 @@ export async function bootstrapEmbeddingsFromEnv(
   if (!catalogEntry) {
     log(
       `[bootstrap] cannot migrate ${EMBEDDINGS_TOOL_ID}: not in plugin catalog (built-in package not picked up?)`,
+    );
+    return;
+  }
+
+  // Same rule as the catch-all below: an operator who runs on the keyless
+  // adapter must not wake up to a second, env-driven Ollama install next to
+  // it — that is the both-active state this function just learned to heal.
+  const collision = findActiveProviderCollision(
+    EMBEDDINGS_TOOL_ID,
+    deps.catalog,
+    deps.registry,
+  );
+  if (collision) {
+    log(
+      `[bootstrap] ${EMBEDDINGS_TOOL_ID} not auto-installed — '${collision.capability}' is already provided by active ${collision.ownerId}`,
     );
     return;
   }
@@ -1271,6 +1321,25 @@ export async function bootstrapBuiltInPackages(
     if (hasRequiredSecret) {
       log(
         `[bootstrap] built-in ${pkg.id} needs setup (required secret field) — skipping auto-install`,
+      );
+      continue;
+    }
+
+    // Never auto-install a SECOND provider of a capability that an active
+    // plugin already provides. The two skip-lists above are the hand-written
+    // instances of this rule for memoryStore and knowledgeGraph; this is the
+    // general one, and it is what keeps a new built-in provider (the keyless
+    // embedder of #1041 was the first to hit it) from turning a boot into a
+    // `capability … is provided by both` fatal. The operator can still install
+    // it from the admin page — that path runs the same check and answers 409.
+    const collision = findActiveProviderCollision(
+      pkg.id,
+      deps.catalog,
+      deps.registry,
+    );
+    if (collision) {
+      log(
+        `[bootstrap] built-in ${pkg.id} skipped — '${collision.capability}' is already provided by active ${collision.ownerId} (install it from the admin page after uninstalling the other)`,
       );
       continue;
     }
