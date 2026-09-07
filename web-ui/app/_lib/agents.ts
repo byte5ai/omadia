@@ -375,6 +375,8 @@ export interface PeerChatCandidateDto {
   label: string | null;
   /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
   kind: string | null;
+  /** Human participants' display names (capped server-side). */
+  members: string[];
   /** The other agents whose bots are present — possible partners. */
   partners: { slug: string; name: string }[];
 }
@@ -412,6 +414,7 @@ function parsePeerChatCandidate(raw: unknown): PeerChatCandidateDto | null {
     channelKey: r['channelKey'],
     label: typeof r['label'] === 'string' && r['label'].length > 0 ? r['label'] : null,
     kind: typeof r['kind'] === 'string' ? r['kind'] : null,
+    members: Array.isArray(r['members']) ? r['members'].filter((m): m is string => typeof m === 'string') : [],
     partners,
   };
 }
