@@ -209,6 +209,18 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
                             : t('chatPartnersNone');
                         })()}
                       </span>
+                      {(() => {
+                        const known = candidateByKey.get(`${c.channelType}|${c.channelKey}`);
+                        if (!known || known.members.length === 0) return null;
+                        return (
+                          <span className="text-xs text-[color:var(--fg-muted)]">
+                            {t('chatMembers', { members: known.members.join(', ') })}
+                          </span>
+                        );
+                      })()}
+                      {candidateByKey.get(`${c.channelType}|${c.channelKey}`)?.label && (
+                        <code className="break-all text-[10px] text-[color:var(--fg-muted)]">{c.channelKey}</code>
+                      )}
                     </span>
                     <span className="flex items-center gap-2">
                       <label className="flex cursor-pointer items-center gap-1 text-xs">

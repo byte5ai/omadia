@@ -2050,7 +2050,8 @@
       "chatOptionNoPartners": "{chat} · kein weiterer Bot anwesend",
       "chatPartners": "Anwesende Bots: {partners}",
       "chatPartnersNone": "Kein weiterer Bot anwesend — eine Diskussion braucht einen zweiten.",
-      "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht."
+      "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht.",
+      "chatMembers": "Teilnehmer: {members}"
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",

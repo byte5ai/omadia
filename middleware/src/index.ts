@@ -3520,6 +3520,10 @@ async function main(): Promise<void> {
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
       getPeerChatDirectory: peerChatDirectoryFor,
+      // …and how those chats get a name: the plugin's directory (topic /
+      // member-derived label) and the live roster as post-restart fallback.
+      getChannelDirectory: () => channelDirectoryRegistry,
+      getConversationRosters: () => conversationRosterRegistry,
       // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
       // is down, so the readiness banner can tell "no access at all" from
       // "access exists, orchestrator not assigned to it". Same credential
