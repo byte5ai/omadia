@@ -2548,6 +2548,16 @@
       "slugConfirmLabel": "Tippe zur Bestätigung den Bot-Slug „{slug}“ ein:",
       "slugMismatch": "Der eingegebene Bot-Slug stimmt nicht überein.",
       "resultCompleteIdentity": "Identität gelöscht. Der Orchestrator kann jetzt mit einem neuen Bot-Slug und Anzeigenamen angelegt werden."
+    },
+    "detailTabs": {
+      "aria": "Agent-Einstellungen",
+      "identity": "Identität",
+      "model": "Modell",
+      "peers": "Gespräche",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Werkzeuge",
+      "memory": "Memory"
     }
   },
   "builder": {

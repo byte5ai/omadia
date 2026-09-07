@@ -92,6 +92,9 @@
     "memory.promote.targetCtxKeyPlaceholder": "placeholder",
     "memory.audit.mode.copy": "diagnostic",
     "memory.audit.mode.move": "diagnostic",
-    "operatorAgents.peers.chatSelectLabel": "loanword"
+    "operatorAgents.peers.chatSelectLabel": "loanword",
+    "operatorAgents.detailTabs.teams": "brand",
+    "operatorAgents.detailTabs.plugins": "loanword",
+    "operatorAgents.detailTabs.memory": "glossary"
   }
 }
