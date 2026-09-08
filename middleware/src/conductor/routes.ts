@@ -438,10 +438,15 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
       const handle = await deps.discussionService.start({
         channelType: typeof body.channelType === 'string' ? body.channelType : 'teams',
         conversationId: body.conversationId as string,
-        agentA: body.agentA as string,
-        agentB: body.agentB as string,
+        // Two or more, in speaking order; the first opens and closes. The older
+        // agentA/agentB spelling still works so an existing caller or smoke
+        // script does not break on the widening.
+        participants: Array.isArray(body.participants)
+          ? (body.participants as string[])
+          : [body.agentA, body.agentB].filter((s): s is string => typeof s === 'string'),
         topic: body.topic as string,
         ...(typeof body.guidingQuestion === 'string' ? { guidingQuestion: body.guidingQuestion } : {}),
+        ...(typeof body.maxTurns === 'number' ? { maxTurns: body.maxTurns } : {}),
         ...(typeof body.ttlMs === 'number' ? { ttlMs: body.ttlMs } : {}),
       });
       res.status(201).json(handle);

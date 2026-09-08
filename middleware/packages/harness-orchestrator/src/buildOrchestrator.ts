@@ -21,7 +21,8 @@ import type {
   GrantStore,
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
+import type { ModelRef } from '@omadia/plugin-api';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -80,6 +81,7 @@ import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger } from './sessionLogger.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
+import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
@@ -96,6 +98,13 @@ export interface AgentRuntimeConfig {
   readonly model: string;
   /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
   readonly modelRouting?: ModelRoutingConfig;
+  /** #1033 — reasoning effort the agent's model policy pins; absent = vendor default. */
+  readonly effort?: EffortLevel;
+  /** #1033 W3 — see the matching {@link OrchestratorOptions} fields. */
+  readonly primaryRef?: ModelRef;
+  readonly fallbackRef?: ModelRef;
+  readonly identityByFamily?: Readonly<Record<string, string>>;
+  readonly fallbackVisionSupported?: boolean;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -202,6 +211,10 @@ export interface AgentRuntimeConfig {
  */
 export interface OrchestratorDeps {
   readonly provider: LlmProvider;
+  /** #1033 W3 — resolves any provider a model policy names (primary on
+   *  another provider, fallback). Absent ⇒ every agent runs on `provider`
+   *  and no policy hop is possible, the pre-W3 behaviour. */
+  readonly providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
   readonly knowledgeGraph: KnowledgeGraph;
   readonly memoryStore: MemoryStore;
   readonly entityRefBus: EntityRefBus;
@@ -251,6 +264,13 @@ export interface OrchestratorDeps {
    * plugin's tools are always available (pre-#474 behaviour).
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
+  /**
+   * #1018 — resolves the peer AGENTS the calling agent may see in the current
+   * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
+   * Kernel-published (`chatPeerAgents@1`); absent ⇒ the roster stays
+   * humans-only, the pre-#1018 behaviour.
+   */
+  readonly chatPeerAgents?: ChatPeerAgentsProvider;
   /**
    * #1016 — per-turn owner guard for the subscription-CLI runtime, published
    * by the kernel as `routineTurnOwnerGuard`.
@@ -601,7 +621,9 @@ export function buildOrchestratorForAgent(
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
-  const chatParticipantsTool = new ChatParticipantsTool();
+  const chatParticipantsTool = new ChatParticipantsTool(
+    deps.chatPeerAgents ? { peerAgents: deps.chatPeerAgents } : {},
+  );
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
   const findFreeSlotsTool = deps.microsoft365
@@ -669,6 +691,15 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.effort !== undefined ? { effort: config.effort } : {}),
+    // #1033 W3 — the policy's providers, resolved through the shared pool.
+    ...(deps.providerPool ? { providerPool: deps.providerPool } : {}),
+    ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
+    ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
+    ...(config.identityByFamily ? { identityByFamily: config.identityByFamily } : {}),
+    ...(config.fallbackVisionSupported !== undefined
+      ? { fallbackVisionSupported: config.fallbackVisionSupported }
+      : {}),
     ...(config.directLineSticky ? { directLineSticky: true } : {}),
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }

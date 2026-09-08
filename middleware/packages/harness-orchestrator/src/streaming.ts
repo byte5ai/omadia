@@ -1,4 +1,9 @@
-import type { LlmProvider } from '@omadia/llm-provider';
+import type {
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  ProviderHealth,
+} from '@omadia/llm-provider';
 import { recordUsage } from '@omadia/usage-telemetry';
 import { fromLlmResponse, toLlmRequest } from './llmProviderSeam.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
@@ -16,7 +21,73 @@ type Message = any;
  */
 export type StreamMessageEvent =
   | { type: 'text_delta'; text: string }
+  /** #1033 W3 — the stream switched to the fallback provider/model. Emitted
+   *  before any output of the fallback, once per turn at most. */
+  | { type: 'fallback'; providerId: string; model: string; reason: string }
   | { type: 'final'; message: Message };
+
+/**
+ * #1033 W3 — the second choice a turn may continue on when the primary
+ * fails before producing any output. `params` is the FULL request for the
+ * fallback (its model, effort and family-specific system prompt), built by
+ * the orchestrator alongside the primary's; the stream layer only decides
+ * WHEN to switch, never WHAT to send.
+ */
+export interface StreamFallback {
+  readonly provider: LlmProvider;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly params: any;
+  /** The circuit breaker: consulted before the first attempt, tripped on switch. */
+  readonly health?: ProviderHealth;
+}
+
+/**
+ * #1033 W3 — which failures justify switching providers.
+ *
+ * Availability failures do: rate-limited or overloaded after the retry budget
+ * is spent, an unauthorised key, an unreachable endpoint, a model the provider
+ * does not know. Content or tool errors do NOT: they would reproduce on the
+ * fallback and cost a second full request for the same failure.
+ */
+/**
+ * #1033 W3 — which fallback reasons open the PROVIDER-wide breaker. A rate
+ * limit, an overload, an unreachable endpoint and a rejected key (one key per
+ * provider on this host) affect every agent on that provider, so every turn
+ * should skip it for the cooldown. An unknown MODEL is one agent's bad ref:
+ * that turn hops, but the provider stays open for everyone else — otherwise a
+ * single typo would stampede every agent onto its fallback, including those
+ * whose fallback was withheld and now have nowhere to go.
+ */
+export function isProviderWideFailure(reason: string): boolean {
+  return reason !== 'model_not_found';
+}
+
+export function fallbackReasonFor(
+  provider: Pick<LlmProvider, 'classifyError'>,
+  err: unknown,
+  attemptsSpent: number,
+): string | undefined {
+  const kind = provider.classifyError(err).kind;
+  if (kind === 'auth') return 'auth';
+  if (kind === 'rate_limit' || kind === 'overloaded') {
+    return attemptsSpent >= MAX_STREAM_ATTEMPTS ? kind : undefined;
+  }
+  const e = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>;
+  const status = e['status'];
+  const code = e['code'];
+  const text = err instanceof Error ? err.message : String(err);
+  if (status === 404 || /not_found_error|model.*not (found|exist)/i.test(text)) return 'model_not_found';
+  if (
+    code === 'ECONNREFUSED' ||
+    code === 'ENOTFOUND' ||
+    code === 'ECONNRESET' ||
+    code === 'ETIMEDOUT' ||
+    /APIConnection(Timeout)?Error|fetch failed|ECONNREFUSED|ENOTFOUND/i.test(text)
+  ) {
+    return 'unreachable';
+  }
+  return undefined;
+}
 
 /** Max attempts for a single streamed iteration (1 initial + 4 retries). */
 const MAX_STREAM_ATTEMPTS = 5;
@@ -118,8 +189,10 @@ export async function* streamMessageEvents(args: {
   iteration: number;
   streamLabel: string;
   betas?: ReadonlyArray<string>;
+  /** #1033 W3 — see {@link StreamFallback}. Absent = today's behaviour. */
+  fallback?: StreamFallback;
 }): AsyncGenerator<StreamMessageEvent> {
-  const { provider, observer, iteration, streamLabel, betas } = args;
+  const { observer, iteration, streamLabel, betas } = args;
   const safe = (fn: () => void, hookName: string): void => {
     try {
       fn();
@@ -128,9 +201,24 @@ export async function* streamMessageEvents(args: {
     }
   };
 
+  // #1033 W3 — the provider/params pair this attempt runs on. Starts on the
+  // primary unless its circuit breaker is open, in which case the turn goes
+  // straight to the fallback without paying the primary's retry budget.
+  let provider = args.provider;
   // Last-resort guard: repair any lone UTF-16 surrogate so the request
   // body is valid JSON for the Anthropic API. See ensureWellFormedParams.
-  const params = ensureWellFormedParams(args.params);
+  let params = ensureWellFormedParams(args.params);
+  let fallback = args.fallback;
+  if (fallback && fallback.health?.inCooldown(provider.id)) {
+    const reason = 'cooldown';
+    console.warn(
+      `[${streamLabel}] provider '${provider.id}' is in cooldown — starting on fallback '${fallback.provider.id}'`,
+    );
+    provider = fallback.provider;
+    params = ensureWellFormedParams(fallback.params);
+    yield { type: 'fallback', providerId: provider.id, model: String(params.model), reason };
+    fallback = undefined;
+  }
 
   for (let attempt = 1; ; attempt++) {
     // `forwardedText` gates the retry: once a `text_delta` has been yielded
@@ -237,6 +325,27 @@ export async function* streamMessageEvents(args: {
         }
       }
     } catch (err) {
+      // #1033 W3 — ONE hop to the fallback, under the same constraint as the
+      // retry: nothing may have reached the client yet. Availability failures
+      // only (see `fallbackReasonFor`); everything else propagates as before.
+      // The primary's breaker trips so the next turns skip straight to the
+      // fallback for the cooldown instead of re-paying this retry budget.
+      if (fallback && !forwardedText) {
+        const reason = fallbackReasonFor(provider, err, attempt);
+        if (reason !== undefined) {
+          if (isProviderWideFailure(reason)) fallback.health?.markFailed(provider.id, reason);
+          console.warn(
+            `[${streamLabel}] provider '${provider.id}' failed (${reason}) before any output — falling back to '${fallback.provider.id}':`,
+            err instanceof Error ? err.message : err,
+          );
+          provider = fallback.provider;
+          params = ensureWellFormedParams(fallback.params);
+          fallback = undefined;
+          yield { type: 'fallback', providerId: provider.id, model: String(params.model), reason };
+          attempt = 0; // the fallback gets its own retry budget
+          continue;
+        }
+      }
       // Non-retryable, retries exhausted, or text already streamed to the
       // UI → propagate. The orchestrator's catch logs + surfaces it.
       if (
@@ -255,6 +364,50 @@ export async function* streamMessageEvents(args: {
       );
       await sleep(delayMs);
     }
+  }
+}
+
+/**
+ * #1033 W3 — the buffered counterpart of the stream fallback: one
+ * `complete()` on the primary (the SDK's own retries inside), and on an
+ * availability failure one `complete()` on the fallback. Nothing has reached
+ * the client on this path by construction, so the "before first output"
+ * constraint holds trivially.
+ */
+export async function completeWithFallback(args: {
+  provider: LlmProvider;
+  request: LlmRequest;
+  fallback?: { provider: LlmProvider; request: LlmRequest; health?: ProviderHealth };
+  streamLabel: string;
+}): Promise<{ response: LlmResponse; fallbackUsed?: { providerId: string; model: string; reason: string } }> {
+  const { fallback, streamLabel } = args;
+  if (fallback && fallback.health?.inCooldown(args.provider.id)) {
+    console.warn(
+      `[${streamLabel}] provider '${args.provider.id}' is in cooldown — completing on fallback '${fallback.provider.id}'`,
+    );
+    const response = await fallback.provider.complete(fallback.request);
+    return {
+      response,
+      fallbackUsed: { providerId: fallback.provider.id, model: fallback.request.model, reason: 'cooldown' },
+    };
+  }
+  try {
+    return { response: await args.provider.complete(args.request) };
+  } catch (err) {
+    // The SDK has already spent its retry budget by the time `complete`
+    // throws, so a rate-limit/overload here counts as "retries exhausted".
+    const reason = fallback ? fallbackReasonFor(args.provider, err, MAX_STREAM_ATTEMPTS) : undefined;
+    if (!fallback || reason === undefined) throw err;
+    if (isProviderWideFailure(reason)) fallback.health?.markFailed(args.provider.id, reason);
+    console.warn(
+      `[${streamLabel}] provider '${args.provider.id}' failed (${reason}) — completing on fallback '${fallback.provider.id}':`,
+      err instanceof Error ? err.message : err,
+    );
+    const response = await fallback.provider.complete(fallback.request);
+    return {
+      response,
+      fallbackUsed: { providerId: fallback.provider.id, model: fallback.request.model, reason },
+    };
   }
 }
 

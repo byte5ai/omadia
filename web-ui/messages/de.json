@@ -126,7 +126,7 @@
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
         "assignOrchestrator": "Orchestrator zuordnen"
       },
-      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer eingerichtet ist.",
+      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
       "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
@@ -359,6 +359,10 @@
         "modelDefault": "(Standard)",
         "platformDefault": "(Plattform-Standard: {model})",
         "effectiveModel": "Aktiv: {model}",
+        "modelPolicy": "Policy: {primary} · Fallback {fallback}.",
+        "modelPolicyAuto": "Auto",
+        "modelPolicyNone": "keiner",
+        "modelPolicyEdit": "Auf der Agenten-Seite bearbeiten →",
         "skillBody": "Skill-Inhalt (Markdown)",
         "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
         "transport": "Transport",
@@ -801,6 +805,9 @@
     "scopeLabel": "Scope",
     "channelLabel": "Channel",
     "modelLabel": "Modell",
+    "providerLabel": "Provider",
+    "fallbackUsedLabel": "Fallback",
+    "fallbackUsedTitle": "Dieser Turn lief auf dem Fallback-Modell des Agenten, weil das primäre Modell nicht verfügbar war.",
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} maskiert · {datasets} Datasets",
     "loadMore": "Mehr laden",
@@ -1569,7 +1576,9 @@
       "classifierTooltip": "Triage-Klassifizierer: {classifier} → {bucket} → {model}",
       "bucketSimple": "einfach",
       "bucketComplex": "komplex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback-Modell",
+      "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
     }
   },
   "privacyReceipt": {
@@ -1800,6 +1809,7 @@
       "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
       "not_found": "Diesen Orchestrator gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lad die Seite neu.",
+      "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "unknown": "Request fehlgeschlagen: {detail}"
     },
     "statusEnabled": "aktiviert",
@@ -1871,6 +1881,8 @@
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
+    "agentCardModel": "Modell: {primary}{fallback, select, none {} other { · Fallback: {fallback}}}",
+    "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sitzungen:",
     "pluginsAvailable": "Verfügbar",
     "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
@@ -1965,6 +1977,81 @@
         "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lade die Seite neu.",
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
+    },
+    "modelPolicy": {
+      "heading": "Modell",
+      "hint": "Welches Modell unter dem Namen dieses Agenten antwortet — und welches einspringt, wenn es nicht verfügbar ist. Angeboten wird nur, was auf diesem Host installiert ist und unter Provider einen Key hat.",
+      "loading": "Modell-Policy wird geladen…",
+      "primary": {
+        "label": "Primär"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
+      "auto": "Auto",
+      "autoResolves": "Was die Plattform heute auflöst: {model}",
+      "autoUnknown": "Was die Plattform heute auflöst (noch nicht gebaut)",
+      "none": "Keiner",
+      "noneHint": "Ist das primäre Modell nicht verfügbar, schlägt der Turn fehl — das heutige Verhalten.",
+      "specific": "Bestimmtes Modell",
+      "providerLabel": "Provider",
+      "modelLabel": "Modell",
+      "effortLabel": "Effort",
+      "effortDefault": "Standard-Effort",
+      "effort": {
+        "low": "niedrig",
+        "medium": "mittel",
+        "high": "hoch",
+        "xhigh": "sehr hoch"
+      },
+      "providerNoKey": "{provider} (kein Key)",
+      "configureProvider": "Unter Provider einrichten →",
+      "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
+      "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
+      "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "fallbackNoVision": "Das Fallback-Modell kann keine Bilder lesen — bei Turns mit Anhängen läuft das primäre Modell ohne Fallback.",
+      "primaryNoVision": "Das primäre Modell kann keine Bilder lesen.",
+      "summaryAuto": "Auto ({model})",
+      "summaryNoFallback": "Läuft auf {primary} · kein Fallback",
+      "summaryWithFallback": "Läuft auf {primary} · Fallback {fallback}",
+      "save": "Speichern",
+      "saving": "Speichert",
+      "unchanged": "Keine ungespeicherte Änderung."
+    },
+    "peers": {
+      "heading": "Gespräche zwischen Agenten",
+      "hint": "Ob dieser Agent mit anderen Agenten eine Themen-Diskussion führen darf — und in welchen Chats. Beide Schalter müssen an sein: der des Agenten und einer je Chat. Jeder Teilnehmer postet unter seinem eigenen Bot; ein Umschalten hier stoppt eine laufende Diskussion beim nächsten Beitrag dieses Agenten.",
+      "loading": "Peer-Einstellungen werden geladen…",
+      "stateUnknown": "Aktuell: unbekannt",
+      "stateSummary": "Aktuell: {mode} · {chats, plural, =0 {kein Chat freigeschaltet} one {# Chat freigeschaltet} other {# Chats freigeschaltet}}",
+      "modes": {
+        "off": "Aus",
+        "on": "An"
+      },
+      "modeHints": {
+        "off": "Der Agent spricht nie mit anderen Agenten. Der Standard.",
+        "on": "Der Agent darf an Diskussionen mit anderen Agenten teilnehmen — in den unten freigeschalteten Chats."
+      },
+      "chatsHeading": "Freigeschaltete Chats",
+      "chatsHint": "Eine Zeile je Chat. Angeboten werden nur Chats, in denen der eigene Bot dieses Agenten wirklich ist — den Bot zuerst in Teams zum Gruppenchat hinzufügen, dann erscheint er hier. Das Relay berücksichtigt nur Bots, die anwesend sind.",
+      "chatsEmpty": "Noch kein Chat freigeschaltet.",
+      "chatEnabled": "freigeschaltet",
+      "chatDisabled": "gesperrt",
+      "remove": "Entfernen",
+      "channelTypeLabel": "Channel",
+      "add": "Chat freischalten",
+      "adding": "Wird hinzugefügt",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Chat wählen…",
+      "chatSelectNone": "Kein Chat verfügbar",
+      "noKnownChats": "Dieser Bot ist in keinem Gruppenchat, der nicht schon gelistet ist. Den Bot in Teams zu einem Gruppenchat hinzufügen — dann taucht er hier auf.",
+      "noBot": "Dieser Agent hat noch keinen eigenen Bot. Zuerst eine Teams-Identität bereitstellen — ohne Bot gibt es keinen Chat zum Freischalten.",
+      "chatOption": "{chat} · mit {partners}",
+      "chatOptionNoPartners": "{chat} · kein weiterer Bot anwesend",
+      "chatPartners": "Anwesende Bots: {partners}",
+      "chatPartnersNone": "Kein weiterer Bot anwesend — eine Diskussion braucht einen zweiten.",
+      "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht.",
+      "chatMembers": "Teilnehmer: {members}"
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
@@ -2461,6 +2548,16 @@
       "slugConfirmLabel": "Tippe zur Bestätigung den Bot-Slug „{slug}“ ein:",
       "slugMismatch": "Der eingegebene Bot-Slug stimmt nicht überein.",
       "resultCompleteIdentity": "Identität gelöscht. Der Orchestrator kann jetzt mit einem neuen Bot-Slug und Anzeigenamen angelegt werden."
+    },
+    "detailTabs": {
+      "aria": "Agent-Einstellungen",
+      "identity": "Identität",
+      "model": "Modell",
+      "peers": "Gespräche",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Werkzeuge",
+      "memory": "Memory"
     }
   },
   "builder": {
@@ -3546,6 +3643,8 @@
     "providers": {
       "heading": "Provider",
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
+      "cooldown": "Fallback aktiv · neuer Versuch {time}",
+      "cooldownTitle": "Der Provider ist gerade eben ausgefallen ({reason}). Agenten mit Fallback-Modell laufen bis zum Ende der Abkühlphase direkt darauf, danach wird das primäre Modell erneut probiert.",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
       "unverified": "Schlüssel hinterlegt, nicht geprüft",
@@ -5190,7 +5289,15 @@
     "unknownTargetError": "Dieses Plugin ist kein installierter embeddingClient@1-Provider.",
     "alreadyActiveError": "Dieser Provider ist bereits aktiv.",
     "targetUnavailableError": "Der Ziel-Provider konnte nicht übernehmen, deshalb ist der vorherige wieder aktiv. Konfiguriere ihn erst (API-Key, Base-URL) und versuch es dann noch mal.",
-    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte."
+    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte.",
+    "localModelTitle": "Schlüsselloser Embedder: Modell noch nicht geladen",
+    "localModelBody": "Dieser Anbieter rechnet ohne API-Schlüssel und ohne eigenen Server — die Modellgewichte ({size} MB) sind aber bewusst nicht im Installer enthalten und müssen einmal geladen werden. Danach läuft alles offline.",
+    "localModelFetch": "Modell jetzt laden",
+    "localModelStarting": "Wird gestartet …",
+    "localModelProgress": "Lädt … {done} von {total} MB ({file})",
+    "localModelFailed": "Der Download ist fehlgeschlagen: {message}",
+    "localModelReady": "Die Modellgewichte liegen vollständig vor. Beim nächsten Aktivieren des Anbieters veröffentlicht er `embeddingClient@1` — Gedächtnis, semantische Suche und Dublettenerkennung laufen dann.",
+    "localModelThreshold": "Wichtig: Die Cosinus-Skala dieses Modells ist nicht die Voreinstellung des Wissensgraphen. Setze `process_dedup_threshold` auf 0.45 — beim Standardwert 0.90 greift die Dublettenerkennung nie, und zwar ohne Fehlermeldung."
   },
   "graph": {
     "page": {

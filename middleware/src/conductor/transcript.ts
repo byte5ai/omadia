@@ -81,5 +81,28 @@ export function appendTranscript(
     at: now().toISOString(),
   };
   const transcript = [...previous, entry].slice(-TRANSCRIPT_MAX_ENTRIES) as TranscriptEntry[];
-  return { ...context, transcript, transcriptText: renderTranscript(transcript) };
+  return advanceSpeaker({ ...context, transcript, transcriptText: renderTranscript(transcript) });
+}
+
+/**
+ * Hand the floor to the next participant.
+ *
+ * A conversation whose cast lives in `ctx.participants` rotates after every
+ * utterance, so ONE `say` step serves any number of voices — two, three, five —
+ * instead of the graph needing a step per participant and the pattern a slot
+ * per participant. `ctx.speaker` is what the step's `{{ctx.speaker}}` agentId
+ * resolves to on the next pass.
+ *
+ * No participant list means nothing to rotate: a single-voice workflow keeps
+ * whatever speaker it was given. An unknown current speaker restarts at the top
+ * rather than stalling.
+ */
+export function advanceSpeaker(context: JsonObject): JsonObject {
+  const participants = Array.isArray(context.participants) ? context.participants : [];
+  const slugs = participants.filter((p): p is string => typeof p === 'string' && p.length > 0);
+  if (slugs.length === 0) return context;
+  const current = typeof context.speaker === 'string' ? context.speaker : '';
+  const index = slugs.indexOf(current);
+  const next = slugs[(index + 1) % slugs.length];
+  return { ...context, speaker: next ?? slugs[0]! };
 }

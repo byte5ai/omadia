@@ -109,6 +109,30 @@ export type {
   MemoryBinderOptions,
 } from './memoryBinder.js';
 export {
+  AGENT_TO_AGENT_MODES,
+  isAgentToAgentEnabled,
+  parseAgentToAgentMode,
+} from './registry/agentToAgent.js';
+export type {
+  AgentChannelPolicyInput,
+  AgentChannelPolicyRow,
+  AgentToAgentMode,
+} from './registry/agentToAgent.js';
+export {
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  sameRef,
+  validateModelPolicy,
+} from './registry/modelPolicy.js';
+export type {
+  ModelPolicyValidation,
+  ModelPolicyValidationContext,
+  ResolvedModelPolicy,
+} from './registry/modelPolicy.js';
+export {
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
@@ -572,6 +596,7 @@ export type {
 export type {
   ChatParticipant,
   ChatParticipantsProvider,
+  ChatPeerAgentsProvider,
 } from './chatParticipants.js';
 
 // Native tools — channel-coupled UI cards + calendar + roster

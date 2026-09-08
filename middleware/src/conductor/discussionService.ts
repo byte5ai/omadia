@@ -51,15 +51,32 @@ export class DiscussionAgentHasNoIdentityError extends Error {
   }
 }
 
+/**
+ * Turn ceiling. NOT the expected length — the expected length is "as long as
+ * each turn still moves it forward", which the speakers decide by declaring
+ * convergence. This is only the answer to "what if they never do".
+ *
+ * The first cut hard-capped every discussion at seven contributions, which
+ * ended exchanges that were still getting better. Generous default, hard
+ * maximum, and the caller may ask for less.
+ */
+export const DISCUSSION_DEFAULT_MAX_TURNS = 16;
+export const DISCUSSION_MAX_TURNS_CEILING = 40;
+
 export interface StartDiscussionInput {
   channelType: string;
   conversationId: string;
-  /** Agent slugs. `a` opens and writes the closing summary, `b` answers. */
-  agentA: string;
-  agentB: string;
+  /**
+   * The agents taking part, in speaking order. Two or more. The first opens the
+   * discussion and writes the closing summary; the floor then rotates through
+   * the list.
+   */
+  participants: readonly string[];
   topic: string;
   /** The question the exchange should answer; falls back to the topic. */
   guidingQuestion?: string;
+  /** Ceiling on contributions. Clamped to [2, DISCUSSION_MAX_TURNS_CEILING]. */
+  maxTurns?: number;
   ttlMs?: number;
 }
 
@@ -90,19 +107,37 @@ export class ConductorDiscussionService {
   async start(input: StartDiscussionInput): Promise<EphemeralRunHandle> {
     const channelType = requireText(input.channelType, 'channelType', 64);
     const conversationId = requireText(input.conversationId, 'conversationId', 512);
-    const agentA = requireText(input.agentA, 'agentA', 128);
-    const agentB = requireText(input.agentB, 'agentB', 128);
     const topic = requireText(input.topic, 'topic');
-    if (agentA === agentB) {
-      throw new DiscussionInvalidInputError('agentA and agentB must be different agents — a discussion needs two voices');
+
+    const raw = Array.isArray(input.participants) ? input.participants : [];
+    const participants: string[] = [];
+    for (const [i, entry] of raw.entries()) {
+      const slug = requireText(entry, `participants[${String(i)}]`, 128);
+      // De-duplicate rather than reject: asking for the same agent twice is a
+      // clumsy request, not a wrong one, and it must not put an agent in a
+      // conversation with itself.
+      if (!participants.includes(slug)) participants.push(slug);
     }
+    if (participants.length < 2) {
+      throw new DiscussionInvalidInputError(
+        'a discussion needs at least two different agents — name the ones that should take part',
+      );
+    }
+    const agentA = participants[0]!;
+
     const guidingQuestion =
       typeof input.guidingQuestion === 'string' && input.guidingQuestion.trim().length > 0
         ? input.guidingQuestion.trim().slice(0, 2000)
         : topic;
 
-    // Both voices must be able to appear as themselves before anything starts.
-    for (const slug of [agentA, agentB]) {
+    // The ceiling exists so a discussion that never converges still ends. It is
+    // deliberately not the expected length — the speakers end it themselves the
+    // moment another round would add nothing.
+    const requested = Number.isFinite(input.maxTurns) ? Math.floor(input.maxTurns!) : DISCUSSION_DEFAULT_MAX_TURNS;
+    const maxTurns = Math.max(2, Math.min(requested, DISCUSSION_MAX_TURNS_CEILING));
+
+    // Every voice must be able to appear as itself before anything starts.
+    for (const slug of participants) {
       if (!this.deps.identityFor?.(slug, channelType)) {
         throw new DiscussionAgentHasNoIdentityError(slug, channelType);
       }
@@ -127,10 +162,22 @@ export class ConductorDiscussionService {
       agentId: agentA,
       patternId: DISCUSSION_PATTERN_ID,
       slots: {
-        agents: { a: agentA, b: agentB },
         channels: { discussion: channelType },
       },
-      payload: { topic, guidingQuestion, conversationId, channelType },
+      // `participants` is the cast the floor rotates through; `speaker` is who
+      // holds it right now, advanced by the executor after every utterance;
+      // `closer` writes the summary. The graph names none of them — that is how
+      // one pattern serves two voices or five.
+      payload: {
+        topic,
+        guidingQuestion,
+        conversationId,
+        channelType,
+        participants,
+        speaker: agentA,
+        closer: agentA,
+        maxTurns,
+      },
       ttlMs,
     });
 
@@ -155,7 +202,7 @@ export class ConductorDiscussionService {
       });
 
     this.deps.log?.(
-      `[conductor] discussion started in ${channelType}/${conversationId}: '${agentA}' × '${agentB}' on "${topic}" (run ${handle.runId})`,
+      `[conductor] discussion started in ${channelType}/${conversationId}: ${participants.join(' × ')} (max ${String(maxTurns)} turns) on "${topic}" (run ${handle.runId})`,
     );
     return handle;
   }

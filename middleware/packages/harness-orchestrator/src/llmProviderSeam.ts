@@ -28,6 +28,7 @@
 import type {
   ChatMessage,
   ContentPart,
+  EffortLevel,
   FinishReason,
   ImagePart,
   LlmRequest,
@@ -55,6 +56,9 @@ export interface AnthropicParams {
   tools?: AnthropicBlock[];
   tool_choice?: Record<string, any>;
   messages: AnthropicMessage[];
+  /** #1033 — normalized effort the policy resolved for this turn; carried
+   *  through to `LlmRequest.effort` unchanged (the adapter owns the mapping). */
+  effort?: EffortLevel;
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -203,6 +207,7 @@ export function toLlmRequest(
       ? { cacheHints: { tools: true } }
       : {}),
     ...(betas !== undefined && betas.length > 0 ? { betas } : {}),
+    ...(params.effort !== undefined ? { effort: params.effort } : {}),
   };
 }
 

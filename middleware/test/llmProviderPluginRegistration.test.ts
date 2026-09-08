@@ -98,3 +98,60 @@ test('a manifest with no llm_provider block is a safe no-op', () => {
   assert.equal(registerPluginLlmProvider(undefined, undefined, catalog), undefined);
   assert.equal(unregisterPluginLlmProvider(null, catalog), undefined);
 });
+
+// ---------------------------------------------------------------------------
+// #1033 — effort_levels / effort_default on a manifest model
+// ---------------------------------------------------------------------------
+
+function withEffort(model: Record<string, unknown>): Record<string, unknown> {
+  const base = MINIMAX_MANIFEST.llm_provider;
+  return {
+    ...MINIMAX_MANIFEST,
+    llm_provider: {
+      ...base,
+      id: 'effort-test',
+      models: [{ ...base.models[0], id: 'effort-test:MiniMax-Text-01', ...model }],
+    },
+  };
+}
+
+test('effort_levels + effort_default land on ModelInfo', () => {
+  registerPluginLlmProvider(
+    withEffort({ effort_levels: ['low', 'high'], effort_default: 'high' }),
+    undefined,
+    catalog,
+  );
+  const [m] = listModelsByProvider('effort-test');
+  assert.deepEqual(m?.effortLevels, ['low', 'high']);
+  assert.equal(m?.effortDefault, 'high');
+});
+
+test('a model without effort_levels declares no effort knob', () => {
+  registerPluginLlmProvider(withEffort({}), undefined, catalog);
+  const [m] = listModelsByProvider('effort-test');
+  assert.equal(m?.effortLevels, undefined);
+  assert.equal(m?.effortDefault, undefined);
+});
+
+test('an effort level outside the contract vocabulary is a manifest error', () => {
+  assert.throws(
+    () => registerPluginLlmProvider(withEffort({ effort_levels: ['low', 'ultra'] }), undefined, catalog),
+    /'ultra' must be one of low\|medium\|high\|xhigh/,
+  );
+});
+
+test('effort_default must be among effort_levels', () => {
+  assert.throws(
+    () =>
+      registerPluginLlmProvider(
+        withEffort({ effort_levels: ['low'], effort_default: 'high' }),
+        undefined,
+        catalog,
+      ),
+    /'effort_default' 'high' is not among 'effort_levels'/,
+  );
+  assert.throws(
+    () => registerPluginLlmProvider(withEffort({ effort_default: 'high' }), undefined, catalog),
+    /'effort_default' requires 'effort_levels'/,
+  );
+});

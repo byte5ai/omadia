@@ -3,7 +3,9 @@
  * /omadia-ui/canvas, runs the offer→select→ack handshake, and replays the
  * Walkthrough-1 recording once per incoming `turn`. No auth — local dev only.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 interface RecordedFrame {
@@ -96,9 +98,33 @@ export function startStubServer(port = 0): Promise<{ port: number; close: () => 
   });
 }
 
-// CLI entry: `npm run stub-server`
-const argv1 = process.argv[1];
-if (argv1 && import.meta.url.endsWith(argv1.split('/').pop() ?? '')) {
+/**
+ * CLI entry: `npm run stub-server`.
+ *
+ * The previous form compared only the BASENAME — `import.meta.url.endsWith(
+ * argv[1].split('/').pop())` — which is wrong twice over: it splits on `/`
+ * only, so on Windows the whole backslash path is the "basename" and the guard
+ * is never true; and any entry script that happens to share this filename would
+ * start a WebSocket server as a side effect of an unrelated import. Compare
+ * full paths instead, realpathing both sides: Node resolves `import.meta.url`
+ * through realpath while leaving `argv[1]` alone, so a symlinked checkout or a
+ * macOS `/var` → `/private/var` temp dir breaks a plain string compare. Same
+ * rule as `desktop/scripts/isEntryPoint.mjs`; kept local because these are
+ * separate packages.
+ */
+function isEntryPoint(moduleUrl: string): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return (
+      realpathSync(fileURLToPath(moduleUrl)) === realpathSync(resolve(entry))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint(import.meta.url)) {
   void startStubServer(8181).then(({ port }) =>
     console.log(`omadia-ui stub server: ws://127.0.0.1:${port}/omadia-ui/canvas`),
   );

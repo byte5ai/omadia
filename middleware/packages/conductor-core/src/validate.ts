@@ -36,6 +36,11 @@ function computeReachable(entry: string, transitions: Transition[], stepIds: Set
   return seen;
 }
 
+/** `{{ctx.path}}` — a value the run supplies, not one the graph names. */
+export function isTemplateExpression(value: string): boolean {
+  return /\{\{\s*[\w.]+\s*\}\}/.test(value);
+}
+
 /** Find a cycle reachable through transitions that carry NO guard (a cycle with no progress
  *  guard). Returns the step ids on the cycle, or null. */
 function findUnguardedCycle(transitions: Transition[], stepIds: Set<string>): string[] | null {
@@ -241,7 +246,18 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
       }
     }
 
-    if (knownRefs?.agentIds && s.kind === 'agent' && s.agentId && !knownRefs.agentIds.includes(s.agentId)) {
+    // A `{{ctx.…}}` agentId names the speaker at RUN time, not at authoring
+    // time — that is what lets one step serve a rotating cast of two, three or
+    // five participants instead of freezing the roster into the graph. There is
+    // nothing to check against the known-agent list here; the effect side
+    // resolves it and fails loudly if the resolved slug is not a live agent.
+    if (
+      knownRefs?.agentIds &&
+      s.kind === 'agent' &&
+      s.agentId &&
+      !isTemplateExpression(s.agentId) &&
+      !knownRefs.agentIds.includes(s.agentId)
+    ) {
       errors.push({ code: 'unknown_agent_ref', message: `step '${s.id}' references unknown agent '${s.agentId}'`, nodeIds: [s.id] });
     }
     if (knownRefs?.actionIds && s.kind === 'action' && s.actionId && !knownRefs.actionIds.includes(s.actionId)) {

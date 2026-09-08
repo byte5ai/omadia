@@ -38,8 +38,26 @@ export interface TurnReceiptRecordInput {
   readonly sessionScope?: string;
   /** Channel kind when the dispatcher mapped one (`channelIdentity.channelKind`). */
   readonly channel?: string;
-  /** Model id the orchestrator was configured with for this turn. */
+  /**
+   * Model id the turn ACTUALLY ran on — the routed `turnModel`, not the
+   * orchestrator's configured default (#1033 W0). Triage routing already
+   * varies this per turn; a provider fallback varies it further. A receipt
+   * naming a model the turn never used answers "what answered this?" wrongly.
+   */
   readonly model?: string;
+  /**
+   * Provider id the turn ran on (`anthropic`, `openai`, a plugin provider id),
+   * taken from the resolver — the same site that resolves `model` — so both
+   * always describe the same execution. Absent on stores that predate the
+   * column; never inferred from the model id.
+   */
+  readonly provider?: string;
+  /**
+   * TRUE when the turn ran on the agent's fallback model instead of its
+   * primary. Recorded from the first row so the meaning is stable; the
+   * fallback path itself lands in a later wave and simply starts setting it.
+   */
+  readonly fallbackUsed?: boolean;
   /** The turn's aggregated privacy receipt, verbatim. */
   readonly receipt: PrivacyReceipt;
 }

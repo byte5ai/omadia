@@ -1,5 +1,6 @@
 import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
+import type { ModelPolicy } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -8,6 +9,16 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  AGENT_TO_AGENT_MODES,
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
+  parseAgentToAgentMode,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  validateModelPolicy,
+  type AgentToAgentMode,
+  type ModelPolicyValidationContext,
   type ChatSessionStore,
   type ConfigStore,
   type ContextMemoryMode,
@@ -38,6 +49,9 @@ import {
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
 import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
+import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
+import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
@@ -179,6 +193,31 @@ void _contextMemoryModesPin;
 
 const ContextMemorySchema = z.object({
   mode: z.enum(CONTEXT_MEMORY_MODES),
+});
+
+// #1018 — the agent-to-agent switches. Same two-endpoint shape as
+// context-memory, for the same reason: a peer-talk switch must not ride along
+// on an unrelated rename.
+const AgentToAgentSchema = z.object({
+  mode: z.enum(AGENT_TO_AGENT_MODES),
+});
+const PeerChannelSchema = z.object({
+  enabled: z.boolean(),
+});
+/** `channel_key` values carry `:`/`@` (`19:…@thread.skype`) — path-segment safe
+ *  once URL-encoded, but bound it so a stray body cannot become a 64 KB key. */
+const PEER_CHANNEL_SEGMENT = z.string().trim().min(1).max(512);
+
+// #1033 — the model policy. Shape-checked here, semantically validated by
+// `validateModelPolicy` (catalogue, key, effort, fallback ≠ primary).
+const ModelRefSchema = z.object({
+  provider: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(128),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+});
+const ModelPolicySchema = z.object({
+  primary: z.union([z.literal('auto'), ModelRefSchema]),
+  fallback: z.union([z.literal('none'), z.literal('auto'), ModelRefSchema]),
 });
 
 const AgentPluginsSchema = z.object({
@@ -1495,9 +1534,51 @@ export function projectAgentIdentity(
  */
 function agentPersonaFamily(agent: {
   readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
 }): PersonaModelFamily {
+  // #1033 — an explicit primary in the model policy outranks model_routing.
+  const primary = agent.modelPolicy?.primary;
+  if (primary !== undefined && isModelRef(primary)) return inferFamilyFromModel(primary.model);
   const main = agent.modelRouting?.['main'];
   return inferFamilyFromModel(typeof main === 'string' ? main : '');
+}
+
+/**
+ * #1033 — EVERY family the agent may speak with: the primary's (see above)
+ * plus the fallback's when the policy names one. The persona is compiled for
+ * each, so a cross-family fallback never runs on a prompt whose deltas were
+ * computed against the other family. The primary's family comes first.
+ */
+function agentPersonaFamilies(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
+}): readonly PersonaModelFamily[] {
+  const primary = agentPersonaFamily(agent);
+  const fallback = agent.modelPolicy?.fallback;
+  if (fallback !== undefined && isModelRef(fallback)) {
+    const fam = inferFamilyFromModel(fallback.model);
+    if (fam !== primary) return [primary, fam];
+  }
+  return [primary];
+}
+
+/**
+ * Compile the identity prompt for every family in `families`; the FIRST
+ * family is the primary and becomes `text`/`family`, the map carries all.
+ */
+function composeForFamilies(
+  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
+  families: readonly PersonaModelFamily[],
+): { primary: ReturnType<typeof composeAgentIdentityPrompt>; family: PersonaModelFamily; byFamily: Record<string, string> } {
+  const byFamily: Record<string, string> = {};
+  let primary: ReturnType<typeof composeAgentIdentityPrompt> | undefined;
+  for (const family of families) {
+    const composed = composeAgentIdentityPrompt({ ...input, family });
+    if (!primary) primary = composed;
+    if (composed.text !== null) byFamily[family] = composed.text;
+  }
+  const first = families[0] ?? 'sonnet';
+  return { primary: primary ?? composeAgentIdentityPrompt({ ...input, family: first }), family: first, byFamily };
 }
 
 /**
@@ -1559,12 +1640,176 @@ export interface OperatorAgentsRouterOptions {
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
   readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
+  /**
+   * #1033 — what the model-policy write path validates against: the model
+   * catalogue and whether a provider is keyed, plus the orchestrator's active
+   * provider for the read-out. Late-bound like the others; the policy routes
+   * 503 while it returns undefined.
+   */
+  readonly getModelPolicyContext?: () =>
+    | (ModelPolicyValidationContext & { readonly activeProvider?: string })
+    | undefined;
   /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
    *  banner probes `GET /` and reads `cause` off the 503 so it can name the
    *  actual remedy (add access vs. assign the orchestrator). Optional: tests
    *  and minimal mounts omit it and the 503 carries no `cause`. Must not
    *  throw; a rejection degrades to `unknown`. */
   readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
+  /**
+   * #1018 — where this agent's bot can actually be heard (kernel table
+   * `teams_conversation_refs`, graph migration 0031). `GET /:slug/peer-channels`
+   * lists those chats as the ONLY candidates for enabling agent-to-agent talk:
+   * a chat the bot holds no reference to would be accepted and then never
+   * used, so it is not offered. Optional: without it the list carries no
+   * candidates (tests / minimal mounts, no DATABASE_URL).
+   */
+  readonly getPeerChatDirectory?: () => BotPresenceStore | undefined;
+  /**
+   * How a candidate chat gets a NAME instead of its id. Two sources, both
+   * owned by the channel plugin: the channel-key directory (group-chat topic
+   * via Graph, or the "A, B, +n" label the Teams plugin derives from the
+   * roster) and the live conversation roster (participant display names,
+   * backed by the persisted reference — so it answers right after a
+   * restart, when the in-memory directory is still empty). Optional: without
+   * either the picker shows the id.
+   */
+  readonly getChannelDirectory?: () => ChannelDirectoryRegistry | undefined;
+  readonly getConversationRosters?: () => ConversationRosterRegistry | undefined;
+}
+
+/** One chat the agent's own bot is present in — a candidate for enabling. */
+export interface PeerChatCandidate {
+  readonly channelType: string;
+  readonly channelKey: string;
+  /** What the operator knows the chat as: the topic, or the Teams-style
+   *  "A, B, +n" derived from its members. Null only when no source can name
+   *  it — the UI then shows the id. */
+  readonly label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  readonly kind: string | null;
+  /** Human participants' display names (capped), for the row detail. */
+  readonly members: readonly string[];
+  /** The OTHER agents whose bots are present — the possible discussion
+   *  partners. Bots without a live owning agent are not listed. */
+  readonly partners: readonly { slug: string; name: string }[];
+}
+
+/** `28:<app id>` — the Teams bot identity key; the app id is what the
+ *  reference table is keyed on. */
+const TEAMS_BOT_KEY = /^28:([0-9a-f-]+)$/i;
+
+/** Names shown per chat before the list collapses into "+n". Teams itself
+ *  names an untitled group chat after its first few members. */
+const CHAT_NAME_MEMBERS = 3;
+const CHAT_MEMBERS_CAP = 8;
+
+/** "Anna Meier, Ben Ott, +3" — the label Teams shows for an untitled group. */
+export function chatLabelFromMembers(members: readonly string[]): string | null {
+  const names = members.filter((m) => m.trim().length > 0);
+  if (names.length === 0) return null;
+  const head = names.slice(0, CHAT_NAME_MEMBERS).join(', ');
+  const rest = names.length - CHAT_NAME_MEMBERS;
+  return rest > 0 ? `${head}, +${rest}` : head;
+}
+
+interface ChatNameSources {
+  readonly directory?: ChannelDirectoryRegistry;
+  readonly rosters?: ConversationRosterRegistry;
+}
+
+/**
+ * Name one chat. Directory first — it carries the Graph topic and the
+ * plugin's own member-derived label, i.e. exactly what `/operator/channels`
+ * shows, so the two pages never disagree. The live roster is the fallback
+ * for the window after a restart in which the directory has not observed
+ * the chat yet: it reads the persisted reference and asks Teams for the
+ * members. Bots are dropped from the member list; they are the partners,
+ * listed separately.
+ */
+async function resolveChatName(
+  sources: ChatNameSources,
+  channelType: string,
+  conversationId: string,
+  directoryEntries: ReadonlyMap<string, { label: string; members?: readonly string[] }>,
+): Promise<{ label: string | null; members: readonly string[] }> {
+  const fromDirectory = directoryEntries.get(`${channelType}|${conversationId}`);
+  if (fromDirectory) {
+    return {
+      label: fromDirectory.label,
+      members: (fromDirectory.members ?? []).slice(0, CHAT_MEMBERS_CAP),
+    };
+  }
+  const roster = await sources.rosters?.getRoster(channelType, conversationId);
+  const members = (roster?.participants ?? [])
+    .filter((p) => !p.isBot)
+    .map((p) => p.userRef.displayName?.trim() ?? '')
+    .filter((n) => n.length > 0)
+    .slice(0, CHAT_MEMBERS_CAP);
+  return { label: chatLabelFromMembers(members), members };
+}
+
+/** The directory, read once per request and keyed like the candidates. */
+async function loadDirectoryEntries(
+  directory: ChannelDirectoryRegistry | undefined,
+): Promise<ReadonlyMap<string, { label: string; members?: readonly string[] }>> {
+  const out = new Map<string, { label: string; members?: readonly string[] }>();
+  if (!directory) return out;
+  for (const entry of await directory.listAll()) {
+    out.set(`${entry.channelType}|${entry.key}`, {
+      label: entry.label,
+      ...(entry.members !== undefined ? { members: entry.members } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * #1018 — the chats an operator may pick for agent-to-agent talk. Derived,
+ * never typed: the agent's own provisioned bots (channel identities) and the
+ * conversations each holds a reference in. A chat missing here is a chat the
+ * bot was never added to, and enabling it would change nothing — so the
+ * picker does not offer it. Personal (1:1) chats are skipped: a discussion
+ * needs a second bot, and a personal chat never has one.
+ */
+async function listPeerChatCandidates(
+  live: { store: ConfigStore; registry: OrchestratorRegistry },
+  agentId: string,
+  directory: BotPresenceStore | undefined,
+  names: ChatNameSources = {},
+): Promise<{ channelTypes: string[]; available: PeerChatCandidate[] }> {
+  const identities = (await live.store.listChannelIdentities()).filter((i) => i.agentId === agentId);
+  const channelTypes = Array.from(new Set(identities.map((i) => i.channelType))).sort();
+  if (!directory) return { channelTypes, available: [] };
+  const directoryEntries = await loadDirectoryEntries(names.directory);
+  const available: PeerChatCandidate[] = [];
+  const seen = new Set<string>();
+  for (const identity of identities) {
+    const appId = TEAMS_BOT_KEY.exec(identity.channelKey)?.[1]?.toLowerCase();
+    if (identity.channelType !== 'teams' || !appId) continue;
+    for (const conv of await directory.conversationsOf(appId)) {
+      if (conv.teamsType === 'personal' || seen.has(conv.conversationId)) continue;
+      seen.add(conv.conversationId);
+      const partners: { slug: string; name: string }[] = [];
+      for (const other of conv.botAppIds) {
+        if (other === appId) continue;
+        const owner = live.registry.identityForChannel(identity.channelType, `28:${other}`);
+        if (!owner || owner.agent.id === agentId || partners.some((p) => p.slug === owner.agent.slug)) continue;
+        partners.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug });
+      }
+      // The reference's own `conversation.name` is the cheapest source (a
+      // titled chat), then the plugin's directory / roster — see resolveChatName.
+      const named = await resolveChatName(names, identity.channelType, conv.conversationId, directoryEntries);
+      available.push({
+        channelType: identity.channelType,
+        channelKey: conv.conversationId,
+        label: conv.name ?? named.label,
+        kind: conv.teamsType,
+        members: named.members,
+        partners,
+      });
+    }
+  }
+  return { channelTypes, available };
 }
 
 export function createOperatorAgentsRouter(
@@ -1714,6 +1959,9 @@ export function createOperatorAgentsRouter(
           active: active.has(a.id),
           memory_scope:
             live.registry.get(a.slug)?.memoryScope.slice() ?? [],
+          // #1033 W4 — what the dashboard card shows as "runs on".
+          effective_model: live.registry.get(a.slug)?.built?.effectiveModel ?? null,
+          model_policy: parseModelPolicy(a.modelPolicy ?? DEFAULT_MODEL_POLICY),
           plugins: (pluginsByAgent.get(a.id) ?? []).map((p) => ({
             id: p.pluginId,
             config: p.config,
@@ -1894,6 +2142,289 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── agent-to-agent switches (#1018) ──────────────────────────────────
+  // Two halves, AND-combined by the relay: the agent's own switch
+  // (`agents.agent_to_agent`) and one row per chat it may converse in
+  // (`agent_channel_policies`). Both deny-default. The relay re-reads them
+  // per utterance, so a flip here stops a running discussion at its next turn.
+  router.get('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const mode: AgentToAgentMode = parseAgentToAgentMode(agent.agentToAgent);
+      res.json({ slug: agent.slug, mode, modes: AGENT_TO_AGENT_MODES });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = AgentToAgentSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const previous = parseAgentToAgentMode(agent.agentToAgent);
+      await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
+      await live.registry.reload();
+      if (previous !== body.mode) {
+        // Whether an agent may talk to peers is a reach decision an incident
+        // review wants to find — same audit prefix as context_memory.
+        console.warn(
+          `[security-audit] agent_to_agent ${previous} -> ${body.mode} for agent ${agent.slug}`,
+        );
+      }
+      res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── model policy (#1033) ─────────────────────────────────────────────
+  // Read + write as a pair like context-memory: which model answers under
+  // an agent's name is a cost / data-residency / quality decision that must
+  // not ride along on a rename.
+  router.get('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const policy = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const ctx = options.getModelPolicyContext?.();
+      const built = live.registry.get(agent.slug)?.built;
+      const resolved = resolveModelPolicyRuntime(policy, ctx?.activeProvider);
+      res.json({
+        slug: agent.slug,
+        policy,
+        // What `auto` currently resolves to, so the UI can say "Auto (Opus 4.8)".
+        effectiveModel: built?.effectiveModel ?? null,
+        activeProvider: ctx?.activeProvider ?? null,
+        // An explicit primary on another provider is honoured for its effort
+        // only until the multi-provider turn loop lands — the UI must say so.
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+        vision: {
+          ...(isModelRef(policy.primary)
+            ? { primary: ctx?.resolveModel(policy.primary.provider, policy.primary.model)?.vision ?? null }
+            : {}),
+          ...(isModelRef(policy.fallback)
+            ? { fallback: ctx?.resolveModel(policy.fallback.provider, policy.fallback.model)?.vision ?? null }
+            : {}),
+        },
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const ctx = options.getModelPolicyContext?.();
+    if (!ctx) {
+      res.status(503).json({
+        error: 'model_policy_unavailable',
+        message: 'the model catalogue is not available — the policy cannot be validated',
+      });
+      return;
+    }
+    try {
+      const raw = ModelPolicySchema.parse(req.body);
+      const policy = {
+        primary: raw.primary === 'auto' ? ('auto' as const) : parseModelRef(raw.primary)!,
+        fallback:
+          raw.fallback === 'none' || raw.fallback === 'auto'
+            ? raw.fallback
+            : parseModelRef(raw.fallback)!,
+      };
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const vision = await validateModelPolicy(policy, ctx);
+      const previous = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const updated = await live.store.updateAgent(agent.id, { modelPolicy: policy });
+      // The families the agent may speak with may have changed: recompile the
+      // persona for each of them so a fallback never runs on the wrong prompt.
+      // Deliberately does not bump the identity revision (nothing authored
+      // changed); absent identity store / row = nothing to recompose.
+      const identityDeps = options.getAgentIdentity?.();
+      if (identityDeps) {
+        const identity = await identityDeps.store.getByAgentId(agent.id);
+        if (identity) {
+          const compiled = composeForFamilies(
+            {
+              instructions: identity.instructions,
+              persona: identity.persona,
+              quality: identity.quality,
+            },
+            agentPersonaFamilies(updated),
+          );
+          await identityDeps.store.recompose(agent.id, {
+            text: compiled.primary.text,
+            family: compiled.family,
+            byFamily: compiled.byFamily,
+          });
+        }
+      }
+      await live.registry.reload();
+      if (JSON.stringify(previous) !== JSON.stringify(policy)) {
+        console.warn(
+          `[security-audit] model_policy ${JSON.stringify(previous)} -> ${JSON.stringify(policy)} for agent ${agent.slug}`,
+        );
+      }
+      const resolved = resolveModelPolicyRuntime(policy, ctx.activeProvider);
+      res.json({
+        ok: true,
+        policy,
+        vision: {
+          ...(vision.primaryVision !== undefined ? { primary: vision.primaryVision } : {}),
+          ...(vision.fallbackVision !== undefined ? { fallback: vision.fallbackVision } : {}),
+        },
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.get('/:slug/peer-channels', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [policies, candidates] = await Promise.all([
+        live.store.listAgentChannelPolicies(agent.id),
+        listPeerChatCandidates(live, agent.id, options.getPeerChatDirectory?.(), {
+          directory: options.getChannelDirectory?.(),
+          rosters: options.getConversationRosters?.(),
+        }),
+      ]);
+      res.json({
+        slug: agent.slug,
+        mode: parseAgentToAgentMode(agent.agentToAgent),
+        channels: policies.map((p) => ({
+          channelType: p.channelType,
+          channelKey: p.channelKey,
+          enabled: p.agentToAgent,
+          updatedAt: p.updatedAt.toISOString(),
+        })),
+        // Channel kinds this agent owns a bot on — the picker's first select.
+        // Empty means "no provisioned bot": nothing can be enabled yet.
+        channel_types: candidates.channelTypes,
+        // The chats that bot is actually in — the picker's second select.
+        available: candidates.available,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const body = PeerChannelSchema.parse(req.body);
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const previous = await live.store.getAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        const row = await live.store.upsertAgentChannelPolicy({
+          channelType,
+          channelKey,
+          agentId: agent.id,
+          agentToAgent: body.enabled,
+        });
+        if ((previous?.agentToAgent ?? false) !== body.enabled) {
+          console.warn(
+            `[security-audit] agent_channel_policy ${channelType}/${channelKey} ${previous?.agentToAgent ?? 'unset'} -> ${body.enabled} for agent ${agent.slug}`,
+          );
+        }
+        res.json({
+          ok: true,
+          channelType: row.channelType,
+          channelKey: row.channelKey,
+          enabled: row.agentToAgent,
+        });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const removed = await live.store.deleteAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        if (!removed) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        console.warn(
+          `[security-audit] agent_channel_policy ${channelType}/${channelKey} removed for agent ${agent.slug}`,
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
+
   // ── agent identity (#914) ───────────────────────────────────────────
   //
   // What a DEPLOYED agent is called, says about itself and looks like. Its
@@ -1948,13 +2479,13 @@ export function createOperatorAgentsRouter(
       // comes from the agent's own model routing — persona axes are deltas
       // against it, so composing against the wrong one would emit the wrong
       // traits.
-      const family = agentPersonaFamily(agent);
-      const composed = composeAgentIdentityPrompt({
-        instructions: body.instructions ?? null,
-        persona,
-        quality,
-        family,
-      });
+      // #1033 — one compile per family the policy names (primary first).
+      const compiled = composeForFamilies(
+        { instructions: body.instructions ?? null, persona, quality },
+        agentPersonaFamilies(agent),
+      );
+      const family = compiled.family;
+      const composed = compiled.primary;
       const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
@@ -1963,7 +2494,7 @@ export function createOperatorAgentsRouter(
         accentColor: body.accent_color ?? null,
         persona,
         quality,
-        composed: { text: composed.text, family },
+        composed: { text: composed.text, family, byFamily: compiled.byFamily },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
@@ -2011,6 +2542,7 @@ export function createOperatorAgentsRouter(
           : ((await deps.store.recompose(agent.id, {
               text: composed.text,
               family,
+              byFamily: compiled.byFamily,
             })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),

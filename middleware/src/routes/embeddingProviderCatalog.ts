@@ -26,6 +26,8 @@ export const EMBEDDING_CLIENT_CAPABILITY = 'embeddingClient@1';
 export const KG_NEON_ID = '@omadia/knowledge-graph-neon';
 export const OLLAMA_PROVIDER_ID = '@omadia/embeddings';
 export const OPENAI_PROVIDER_ID = '@omadia/embedding-adapter-openai';
+/** OM-84 (#1003) — the keyless adapter: no server, no key, no account. */
+export const LOCAL_PROVIDER_ID = '@omadia/embedding-adapter-local';
 /** KG setup field wired to `EmbeddingModelGateOptions.autoMigrateVectorColumns`. */
 export const AUTO_MIGRATE_CONFIG_KEY = 'auto_migrate_vector_columns';
 /**
@@ -56,6 +58,9 @@ const KNOWN_MODEL_DIMENSIONS: Readonly<Record<string, number>> = {
   'text-embedding-3-small': 1536,
   'text-embedding-3-large': 3072,
   'text-embedding-ada-002': 1536,
+  // @omadia/embedding-adapter-local — the model is pinned in the adapter, so
+  // this entry is the whole table for it rather than a menu.
+  'paraphrase-multilingual-MiniLM-L12-v2': 384,
 };
 
 interface ProviderConfigKeys {
@@ -73,6 +78,16 @@ const PROVIDER_CONFIG_KEYS: Readonly<Record<string, ProviderConfigKeys>> = {
   [OPENAI_PROVIDER_ID]: {
     modelKey: 'model',
     defaultModel: 'text-embedding-3-small',
+    dimensionsKey: 'dimensions',
+  },
+  // The local adapter exposes no model field: its model is pinned in code
+  // together with the digests its fetch script verifies, because a corpus that
+  // silently mixes two vector spaces cannot be repaired afterwards. `modelKey`
+  // therefore names a field that does not exist in its manifest, which reads
+  // back as "unset" and lands on `defaultModel` — the pinned one — every time.
+  [LOCAL_PROVIDER_ID]: {
+    modelKey: 'model',
+    defaultModel: 'paraphrase-multilingual-MiniLM-L12-v2',
     dimensionsKey: 'dimensions',
   },
 };

@@ -43,7 +43,7 @@ import {
 } from './securityScreener.js';
 import { recordScreenOutcome } from './securityScreenMetrics.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -203,7 +203,38 @@ import type {
   AnthropicParams,
   SeamMessage,
 } from './llmProviderSeam.js';
-import { streamMessageEvents } from './streaming.js';
+import { completeWithFallback, streamMessageEvents } from './streaming.js';
+import type { ModelRef } from '@omadia/plugin-api';
+import type { LlmProviderPool } from '@omadia/llm-provider';
+
+/**
+ * #1033 W3 — where a turn runs. Resolved once per turn by
+ * `Orchestrator.resolveTurnExecution`; after a hop the fallback becomes the
+ * execution (`afterFallback`) for every further iteration of the tool loop.
+ */
+interface TurnFallback {
+  readonly provider: LlmProvider;
+  readonly model: string;
+  readonly effort?: EffortLevel;
+  /** The persona prompt compiled for the fallback's family, when it differs. */
+  readonly identity?: string;
+}
+interface TurnExecution {
+  readonly provider: LlmProvider;
+  readonly model: string;
+  readonly effort?: EffortLevel;
+  readonly identity?: string;
+  readonly fallback?: TurnFallback;
+}
+
+/** #1033 W3 — does the wire history carry an image block? (vision gate) */
+function messagesCarryImages(messages: ReadonlyArray<{ content: unknown }>): boolean {
+  return messages.some(
+    (m) =>
+      Array.isArray(m.content) &&
+      m.content.some((b) => typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'image'),
+  );
+}
 import { steeringBus } from './steeringBus.js';
 import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
 import {
@@ -320,6 +351,27 @@ export interface OrchestratorOptions {
    * every turn uses `model` (routing off). See {@link routeTurnModel}.
    */
   modelRouting?: ModelRoutingConfig;
+  /**
+   * #1033 — reasoning effort pinned by the agent's model policy, sent on every
+   * request of this agent (the adapter maps it to its vendor's parameter or
+   * ignores it). Absent = the vendor's default.
+   */
+  effort?: EffortLevel;
+  /**
+   * #1033 W3 — the multi-provider turn loop. `providerPool` resolves any
+   * provider the policy names; `primaryRef` (when it names a provider other
+   * than `provider`'s) moves the whole turn there; `fallbackRef` is the one
+   * hop taken when the primary fails before producing output (or is in
+   * cooldown). `identityByFamily` supplies the persona prompt compiled for
+   * the fallback's model family, so a cross-family hop never speaks a prompt
+   * composed for the other family. `fallbackVisionSupported: false` withholds
+   * the hop on a turn that carries images.
+   */
+  providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
+  primaryRef?: ModelRef;
+  fallbackRef?: ModelRef;
+  identityByFamily?: Readonly<Record<string, string>>;
+  fallbackVisionSupported?: boolean;
   maxTokens: number;
   /**
    * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
@@ -1841,6 +1893,14 @@ export class Orchestrator {
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
+  /** #1033 — see {@link OrchestratorOptions.effort}. */
+  private readonly effort: EffortLevel | undefined;
+  /** #1033 W3 — see the matching {@link OrchestratorOptions} fields. */
+  private readonly providerPool: Pick<LlmProviderPool, 'get' | 'health'> | undefined;
+  private readonly primaryRef: ModelRef | undefined;
+  private readonly fallbackRef: ModelRef | undefined;
+  private readonly identityByFamily: Readonly<Record<string, string>> | undefined;
+  private readonly fallbackVisionSupported: boolean | undefined;
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
@@ -1904,6 +1964,21 @@ export class Orchestrator {
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
+  /**
+   * #1033 W0 — what each in-flight turn actually ran on, keyed by turn id.
+   * Written where the turn model is resolved (both the buffered and the
+   * streaming loop), read once by `persistTurnReceipt` so the receipt names
+   * the routed model and its provider — not the configured default, which is
+   * what `turn_receipts.model` used to record. The fallback path (W3) flips
+   * `fallbackUsed` on the same entry. Bounded: entries are consumed at
+   * persist, and a turn that never reaches a receipt is evicted FIFO once the
+   * map outgrows the cap, so a long-running process cannot leak turn ids.
+   */
+  private readonly turnAttribution = new Map<
+    string,
+    { model: string; provider: string; fallbackUsed: boolean }
+  >();
+  private static readonly TURN_ATTRIBUTION_CAP = 512;
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
@@ -1970,6 +2045,12 @@ export class Orchestrator {
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
+    this.effort = options.effort;
+    this.providerPool = options.providerPool;
+    this.primaryRef = options.primaryRef;
+    this.fallbackRef = options.fallbackRef;
+    this.identityByFamily = options.identityByFamily;
+    this.fallbackVisionSupported = options.fallbackVisionSupported;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
     this.visionSupported = options.visionSupported;
@@ -3640,19 +3721,120 @@ export class Orchestrator {
    * failure (`persistFailures`) and this logs it greppably — the exact
    * inversion of the RunTrace defect (#684), where the drop was invisible.
    */
+  /** #1033 W0 — see `turnAttribution`. Same entry point for both loops. */
+  private recordTurnAttribution(
+    turnId: string,
+    model: string,
+    providerId: string = this.provider.id,
+    fallbackUsed = false,
+  ): void {
+    if (!this.turnAttribution.has(turnId) && this.turnAttribution.size >= Orchestrator.TURN_ATTRIBUTION_CAP) {
+      const oldest = this.turnAttribution.keys().next().value;
+      if (oldest !== undefined) this.turnAttribution.delete(oldest);
+    }
+    this.turnAttribution.set(turnId, { model, provider: providerId, fallbackUsed });
+  }
+
+  /** #1033 W3 — the persona family a model id belongs to (mirrors the
+   *  middleware's `inferFamilyFromModel`: unknown ids read as sonnet). */
+  private static familyOf(model: string): string {
+    const m = model.toLowerCase();
+    if (m.includes('opus')) return 'opus';
+    if (m.includes('haiku')) return 'haiku';
+    return 'sonnet';
+  }
+
+  /**
+   * #1033 W3 — where THIS turn runs, and where it may hop to.
+   *
+   * Resolved once per turn, before the first model call, so every iteration
+   * of the tool loop is stable. The primary is `this.provider`/`turnModel`
+   * unless the policy pins a primary on another provider the pool can
+   * serve. The fallback is withheld when it would be the same provider+model
+   * as the primary (nothing to hop to), when the pool cannot serve it (no
+   * key), or when the turn carries images the fallback model cannot read.
+   */
+  private async resolveTurnExecution(
+    turnModel: string,
+    hasImages: boolean,
+  ): Promise<TurnExecution> {
+    let provider = this.provider;
+    let model = turnModel;
+    let effort = this.effort;
+    if (this.primaryRef && this.providerPool && this.primaryRef.provider !== this.provider.id) {
+      const resolved = await this.providerPool.get(this.primaryRef.provider).catch(() => undefined);
+      if (resolved) {
+        provider = resolved;
+        model = this.primaryRef.model;
+        effort = this.primaryRef.effort ?? effort;
+      } else {
+        console.warn(
+          `[orchestrator] agent '${this.agentId}': primary provider '${this.primaryRef.provider}' is not available (no key?) — running on '${this.provider.id}'`,
+        );
+      }
+    }
+    let fallback: TurnFallback | undefined;
+    if (this.fallbackRef && this.providerPool) {
+      if (hasImages && this.fallbackVisionSupported === false) {
+        console.warn(
+          `[orchestrator] agent '${this.agentId}': fallback model '${this.fallbackRef.model}' cannot read images — no fallback on this turn`,
+        );
+      } else {
+        const fbProvider =
+          this.fallbackRef.provider === provider.id
+            ? provider
+            : await this.providerPool.get(this.fallbackRef.provider).catch(() => undefined);
+        if (fbProvider && !(fbProvider.id === provider.id && this.fallbackRef.model === model)) {
+          const family = Orchestrator.familyOf(this.fallbackRef.model);
+          fallback = {
+            provider: fbProvider,
+            model: this.fallbackRef.model,
+            ...(this.fallbackRef.effort !== undefined ? { effort: this.fallbackRef.effort } : {}),
+            ...(family !== Orchestrator.familyOf(model) && this.identityByFamily?.[family]
+              ? { identity: this.identityByFamily[family] }
+              : {}),
+          };
+        }
+      }
+    }
+    return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /** #1033 W3 — after the hop, the fallback IS the execution for the rest of the turn. */
+  private static afterFallback(exec: TurnExecution): TurnExecution {
+    const fb = exec.fallback;
+    if (!fb) return exec;
+    return {
+      provider: fb.provider,
+      model: fb.model,
+      ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+      ...(fb.identity !== undefined ? { identity: fb.identity } : {}),
+    };
+  }
+
   private async persistTurnReceipt(
     turnId: string,
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
   ): Promise<void> {
     const store = this.turnReceiptStore?.();
+    // Consume the attribution whether or not a store is wired: the entry has
+    // no other reader and must not outlive the turn.
+    const ran = this.turnAttribution.get(turnId);
+    this.turnAttribution.delete(turnId);
     if (!store) return;
     try {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
         channel: input.channelIdentity?.channelKind,
-        model: this.model,
+        // #1033 W0 — the model the turn ran on. `this.model` is the
+        // configured default and was the wrong value for every triage-routed
+        // turn; without a recorded attribution it stays the honest fallback
+        // rather than a guess.
+        model: ran?.model ?? this.model,
+        provider: ran?.provider ?? this.provider.id,
+        fallbackUsed: ran?.fallbackUsed ?? false,
         receipt,
       });
     } catch (err) {
@@ -4496,9 +4678,12 @@ export class Orchestrator {
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
+    // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
-    traceCollector?.recordModel(turnModel, this.provider.id);
+    traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -4513,17 +4698,23 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
-        const baseParams = {
-          model: turnModel,
-          max_tokens: this.maxTokens,
-          system: buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
+        // #1033 W3 — the system prompt for a given persona: the routed
+        // persona skill outranks everything; otherwise the execution's own
+        // identity (the fallback family's compiled prompt after a hop).
+        const systemFor = (persona: string | undefined) =>
+          buildSystemBlocks(
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
             withFinalizeHint(
               effectiveExtraSystemHint,
               finalizeThisIter && !forceObligation,
             ),
-          ),
+          );
+        const baseParams = {
+          model: turnExec.model,
+          ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
+          max_tokens: this.maxTokens,
+          system: systemFor(turnPersonaBody ?? turnExec.identity),
           tools: finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
           ...(forceObligation && obligationTool
             ? { tool_choice: forceObligationFor }
@@ -4534,12 +4725,47 @@ export class Orchestrator {
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
         const safeParams = ensureWellFormedParams(baseParams);
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
 
-        const response: Message = fromLlmResponse(
-          await this.provider.complete(
-            toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
-          ),
-        );
+        const completed = await completeWithFallback({
+          provider: turnExec.provider,
+          request: toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
+          ...(fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  request: toLlmRequest(
+                    ensureWellFormedParams({
+                      ...baseParams,
+                      model: fb.model,
+                      ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+                      system: systemFor(turnPersonaBody ?? fb.identity),
+                    }),
+                    [MEMORY_BETA_HEADER],
+                  ),
+                  ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
+                },
+              }
+            : {}),
+          streamLabel: 'orchestrator',
+        });
+        if (completed.fallbackUsed) {
+          turnExec = Orchestrator.afterFallback(turnExec);
+          this.recordTurnAttribution(turnId, completed.fallbackUsed.model, completed.fallbackUsed.providerId, true);
+          traceCollector?.recordModel(completed.fallbackUsed.model, completed.fallbackUsed.providerId);
+        }
+        const response: Message = fromLlmResponse(completed.response);
 
         messages.push({ role: 'assistant', content: response.content });
         textParts.push(...collectTextBlocks(response.content));
@@ -5551,10 +5777,13 @@ export class Orchestrator {
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
+    // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
-    traceCollector?.recordModel(turnModel, this.provider.id);
+    traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -5635,26 +5864,58 @@ export class Orchestrator {
         }
 
         let finalMessage: Message | undefined;
-        for await (const ev of streamMessageEvents({
-          provider: this.provider,
-          params: {
-            model: turnModel,
-            max_tokens: this.maxTokens,
-            system: buildSystemBlocks(
-              this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
-              priorContext,
-              withFinalizeHint(
-                effectiveExtraSystemHint,
-                finalizeThisIter && !forceObligation,
-              ),
+        // #1033 W3 — see the buffered path: persona skill first, else the
+        // execution's own identity (the fallback family's prompt after a hop).
+        const systemFor = (persona: string | undefined) =>
+          buildSystemBlocks(
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            priorContext,
+            withFinalizeHint(
+              effectiveExtraSystemHint,
+              finalizeThisIter && !forceObligation,
             ),
-            tools:
-              finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-            ...(forceObligation && obligationTool
-              ? { tool_choice: forceObligationFor }
-              : {}),
-            messages,
-          },
+          );
+        const streamParams = {
+          model: turnExec.model,
+          ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
+          max_tokens: this.maxTokens,
+          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          tools:
+            finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
+          ...(forceObligation && obligationTool
+            ? { tool_choice: forceObligationFor }
+            : {}),
+          messages,
+        };
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
+        for await (const ev of streamMessageEvents({
+          provider: turnExec.provider,
+          params: streamParams,
+          ...(fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  params: {
+                    ...streamParams,
+                    model: fb.model,
+                    ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+                    system: systemFor(turnPersonaBody ?? fb.identity),
+                  },
+                  ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
+                },
+              }
+            : {}),
           observer,
           iteration,
           streamLabel: 'orchestrator',
@@ -5662,6 +5923,22 @@ export class Orchestrator {
         })) {
           if (ev.type === 'text_delta') {
             yield { type: 'text_delta', text: ev.text };
+          } else if (ev.type === 'fallback') {
+            // The hop happened before any output: the rest of this turn —
+            // every further iteration — runs on the fallback, the receipt
+            // names it, and the UI gets a distinct `provider_fallback` chip
+            // (never confused with the triage `bucket: 'fallback'`).
+            turnExec = Orchestrator.afterFallback(turnExec);
+            this.recordTurnAttribution(turnId, ev.model, ev.providerId, true);
+            traceCollector?.recordModel(ev.model, ev.providerId);
+            yield {
+              type: 'turn_routing',
+              bucket: resolved.routing?.bucket ?? 'complex',
+              classifierModel: resolved.routing?.classifierModel ?? '',
+              model: ev.model,
+              reason: 'provider_fallback',
+              provider: ev.providerId,
+            };
           } else {
             finalMessage = ev.message;
           }

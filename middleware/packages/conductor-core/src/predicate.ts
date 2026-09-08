@@ -32,12 +32,12 @@ function canonical(v: JsonValue): string {
   return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonical(obj[k]!)).join(',') + '}';
 }
 
-function deepEqual(a: JsonValue | undefined, b: JsonValue): boolean {
-  if (a === undefined) return false;
+function deepEqual(a: JsonValue | undefined, b: JsonValue | undefined): boolean {
+  if (a === undefined || b === undefined) return false;
   return canonical(a) === canonical(b);
 }
 
-function compareOrder(op: 'gt' | 'lt' | 'gte' | 'lte', left: JsonValue | undefined, right: JsonValue): boolean {
+function compareOrder(op: 'gt' | 'lt' | 'gte' | 'lte', left: JsonValue | undefined, right: JsonValue | undefined): boolean {
   if (typeof left === 'number' && typeof right === 'number') {
     switch (op) {
       case 'gt': return left > right;
@@ -57,6 +57,28 @@ function compareOrder(op: 'gt' | 'lt' | 'gte' | 'lte', left: JsonValue | undefin
   return false;
 }
 
+/**
+ * The right-hand side of a comparison: a literal, or another dot-path when the
+ * predicate carries `valuePath`. `valuePath` wins over `value` when both are
+ * set, so a graph cannot half-declare both and get the literal silently.
+ *
+ * An unresolvable `valuePath` yields `undefined`, which `compareOrder` reads as
+ * "not comparable" — so a loop guarded by a budget that is missing from the
+ * context STOPS. That direction is deliberate: the failure mode of a guard is
+ * a runaway loop, and an absent ceiling must not be read as an infinite one.
+ */
+function rightOf(
+  pred: { value?: JsonValue; valuePath?: string },
+  scope: EvalScope,
+): { comparable: boolean; value: JsonValue | undefined } {
+  if (pred.valuePath === undefined) return { comparable: true, value: pred.value };
+  const resolved = resolvePath(scope, pred.valuePath);
+  // Uniformly NOT comparable, including for `ne` — which would otherwise invert
+  // an unresolvable budget into `true` and keep a loop running on a value that
+  // does not exist. The whole comparison is false instead, whatever the op.
+  return { comparable: resolved !== undefined, value: resolved };
+}
+
 /** Evaluate a predicate against a scope. Total and deterministic: any type mismatch or
  *  missing path resolves to `false` (never throws). */
 export function evaluatePredicate(pred: Predicate, scope: EvalScope): boolean {
@@ -74,14 +96,18 @@ export function evaluatePredicate(pred: Predicate, scope: EvalScope): boolean {
     case 'exists':
       return resolvePath(scope, pred.path) !== undefined;
     case 'eq':
-      return deepEqual(resolvePath(scope, pred.path), pred.value);
     case 'ne':
-      return !deepEqual(resolvePath(scope, pred.path), pred.value);
     case 'gt':
     case 'lt':
     case 'gte':
-    case 'lte':
-      return compareOrder(pred.op, resolvePath(scope, pred.path), pred.value);
+    case 'lte': {
+      const right = rightOf(pred, scope);
+      if (!right.comparable) return false;
+      const left = resolvePath(scope, pred.path);
+      if (pred.op === 'eq') return deepEqual(left, right.value);
+      if (pred.op === 'ne') return !deepEqual(left, right.value);
+      return compareOrder(pred.op, left, right.value);
+    }
     case 'in': {
       const left = resolvePath(scope, pred.path);
       return pred.value.some((v) => deepEqual(left, v));

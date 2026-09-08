@@ -302,24 +302,41 @@ export function createBuilderRouter(deps: BuilderRouterDeps): Router {
       const connected = deps.connectedProviders
         ? await deps.connectedProviders()
         : null;
-      const models = BuilderModelRegistry.list()
+      const toWire = (m: (typeof all)[number]) => ({
+        id: m.id,
+        model_id: m.modelId,
+        label: m.label,
+        provider: m.provider,
+        model_class: m.modelClass,
+        vision: m.vision,
+        description: m.description,
+        max_tokens: m.maxTokens,
+        aliases: m.aliases,
+        ...(m.effortLevels !== undefined ? { effort_levels: m.effortLevels } : {}),
+        ...(m.effortDefault !== undefined ? { effort_default: m.effortDefault } : {}),
+      });
+      const all = BuilderModelRegistry.list();
+      const models = all
         .filter((m) =>
           active
             ? m.provider === active
             : connected === null || connected.has(m.provider),
         )
-        .map((m) => ({
-          id: m.id,
-          model_id: m.modelId,
-          label: m.label,
-          provider: m.provider,
-          model_class: m.modelClass,
-          vision: m.vision,
-          description: m.description,
-          max_tokens: m.maxTokens,
-          aliases: m.aliases,
-        }));
-      res.json({ models, default: BuilderModelRegistry.default() });
+        .map(toWire);
+      // #1033 W1 — the UNFILTERED catalog, grouped by provider and flagged
+      // with whether that provider could serve a turn right now. `models`
+      // above keeps its single-provider scope for the existing pickers; a
+      // model policy (primary on one provider, fallback on another) picks
+      // from `providers` and greys out the unusable ones instead of hiding
+      // them, so an operator sees what a key would unlock.
+      const providerIds = [...new Set(all.map((m) => m.provider))];
+      const providers = providerIds.map((id) => ({
+        id,
+        usable: connected === null ? true : connected.has(id),
+        active: active === id,
+        models: all.filter((m) => m.provider === id).map(toWire),
+      }));
+      res.json({ models, providers, default: BuilderModelRegistry.default() });
     } catch (err) {
       sendError(res, err, 'builder.models_failed');
     }

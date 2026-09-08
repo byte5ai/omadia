@@ -5,6 +5,26 @@ import {
   type OrchestratorDeps,
 } from '../buildOrchestrator.js';
 import type { OrchestratorPersonaSkill } from '../orchestrator.js';
+import { DEFAULT_MODEL_POLICY, isModelRef, resolveModelPolicyRuntime } from './modelPolicy.js';
+import type { ModelPolicy, ModelRef } from '@omadia/plugin-api';
+import { resolveModelRef } from '@omadia/llm-provider';
+
+/** #1033 W3 — the fallback as a concrete ref, or undefined for `none`. */
+function fallbackRefFor(
+  policy: ModelPolicy,
+  autoModel: string,
+  activeProvider: string,
+): ModelRef | undefined {
+  if (policy.fallback === 'none') return undefined;
+  if (policy.fallback === 'auto') return { provider: activeProvider, model: autoModel };
+  return policy.fallback;
+}
+
+/** #1033 W3 — whether the explicit fallback model can read images (catalogue). */
+function fallbackVisionFor(policy: ModelPolicy): boolean | undefined {
+  if (!isModelRef(policy.fallback)) return undefined;
+  return resolveModelRef(`${policy.fallback.provider}:${policy.fallback.model}`)?.vision;
+}
 
 import type {
   PersonaSkillRow,
@@ -223,7 +243,24 @@ export function buildForAgent(
   //      (= `orchestrator_model` install config = `ORCHESTRATOR_MODEL` env)
   //   3. `DEFAULT_ORCHESTRATOR_MODEL` — guards against an empty / whitespace
   //      platform default so the turn loop never gets an empty model id.
+  // #1033 W2 — the model POLICY sits above the routing overlay: an explicit
+  // primary pins the model (and effort) and switches triage off; `auto`
+  // leaves the three tiers below exactly as they were. An explicit primary on
+  // a provider other than the active one is deferred (effort still applies)
+  // until the turn loop can switch providers — W3 — and says so in the log
+  // rather than quietly running the auto model under the policy's name.
+  const modelPolicy = agent.modelPolicy ?? DEFAULT_MODEL_POLICY;
+  const policy = resolveModelPolicyRuntime(modelPolicy, activeProvider);
+  // #1033 W3 — with a provider pool the turn loop switches providers itself
+  // (`primaryRef` below); without one an explicit primary on another
+  // provider can only be deferred, and the log says so.
+  if (policy.deferredProvider !== undefined && !deps.providerPool) {
+    console.warn(
+      `[registry] agent '${agent.slug}': model policy names provider '${policy.deferredProvider}' but the active provider is '${activeProvider ?? 'unknown'}' and no provider pool is wired — running the auto-resolved model`,
+    );
+  }
   const model =
+    policy.model ||
     resolveOverlay(routing.model) ||
     runtime.model?.trim() ||
     DEFAULT_ORCHESTRATOR_MODEL;
@@ -231,14 +268,16 @@ export function buildForAgent(
   // Resolve the per-turn routing sub-models the same way. Any sub-model that
   // does not resolve to the active provider falls back to the resolved `model`
   // so every id the turn loop sends is a valid same-provider `modelId`.
-  const overlayRouting = routing.modelRouting
-    ? {
-        classifierModel:
-          resolveOverlay(routing.modelRouting.classifierModel) ?? model,
-        simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
-        complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
-      }
-    : undefined;
+  // A pinned primary turns triage OFF: routing is part of `auto`.
+  const overlayRouting =
+    routing.modelRouting && !policy.pinned
+      ? {
+          classifierModel:
+            resolveOverlay(routing.modelRouting.classifierModel) ?? model,
+          simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
+          complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
+        }
+      : undefined;
 
   return buildOrchestratorForAgent(
     {
@@ -250,8 +289,27 @@ export function buildForAgent(
       // (Agent Builder P5); otherwise fall back to the platform default
       // `runtime.modelRouting` so registry-managed orchestrators still emit
       // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
-      ...((overlayRouting ?? runtime.modelRouting)
+      ...((overlayRouting ?? (policy.pinned ? undefined : runtime.modelRouting))
         ? { modelRouting: overlayRouting ?? runtime.modelRouting }
+        : {}),
+      // #1033 — the policy's effort rides on every request of this agent.
+      ...(policy.effort !== undefined ? { effort: policy.effort } : {}),
+      // #1033 W3 — the policy's providers. An explicit primary is handed
+      // through as a ref (the turn loop resolves it via the pool, so a
+      // primary on another provider actually runs there); the fallback is
+      // the explicit ref, or — for `auto` — the auto-resolved model on the
+      // active provider, which only matters when the primary sits elsewhere
+      // (the orchestrator withholds a fallback identical to the primary).
+      ...(isModelRef(modelPolicy.primary) ? { primaryRef: modelPolicy.primary } : {}),
+      // `activeProvider` is undefined on hosts (and test fixtures) that build
+      // without a provider; an `auto` fallback then has no provider to name
+      // and is simply not offered — the pre-W3 behaviour.
+      ...(activeProvider !== undefined && fallbackRefFor(modelPolicy, model, activeProvider)
+        ? { fallbackRef: fallbackRefFor(modelPolicy, model, activeProvider)! }
+        : {}),
+      ...(agent.instructionsByFamily ? { identityByFamily: agent.instructionsByFamily } : {}),
+      ...(fallbackVisionFor(modelPolicy) !== undefined
+        ? { fallbackVisionSupported: fallbackVisionFor(modelPolicy)! }
         : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }

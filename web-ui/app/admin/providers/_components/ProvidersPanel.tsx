@@ -592,6 +592,20 @@ function ConnectionChip({
           })}
         </span>
       )}
+      {/* #1033 — the fallback breaker is open: turns of agents with a
+          fallback skip this provider until `until`. A distinct chip, because
+          the key may be perfectly valid — the provider was rate-limited,
+          overloaded or unreachable a moment ago. */}
+      {p.cooldown && (
+        <span
+          className="inline-flex items-center rounded-full border border-[color:var(--warning)] px-2 py-0.5 text-[11px] uppercase tracking-[0.16em] text-[color:var(--warning)]"
+          title={t('providers.cooldownTitle', { reason: p.cooldown.reason })}
+        >
+          {t('providers.cooldown', {
+            time: format.relativeTime(new Date(p.cooldown.until)),
+          })}
+        </span>
+      )}
       {/* #671 — `unverified` on its own is not actionable: it covers "your key
           is fine but your region is blocked" and "the provider was down" with
           the same chip. #599 was right to stop calling a bare 403 a bad key;

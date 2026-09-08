@@ -8,6 +8,8 @@
  * contract without importing the runtime registry.
  */
 
+import type { EffortLevel } from './types.js';
+
 /** Capability/quality tier. Maps a capability request to a concrete model per
  *  provider. Builder slugs `haiku|sonnet|opus` are legacy aliases onto these. */
 export type ModelClass = 'fast' | 'balanced' | 'frontier';
@@ -46,4 +48,13 @@ export interface ModelInfo {
    *  set on exactly one model when a provider has >1 model of a class, so
    *  `class:`/role resolution never depends on array order. */
   readonly classDefault?: boolean;
+  /**
+   * Effort levels this model honours (#1033), in the contract's normalized
+   * vocabulary. Absent = the model has no effort knob; an operator UI offers
+   * effort only where this is declared, and a policy naming an undeclared
+   * level is rejected at write time rather than silently dropped at run time.
+   */
+  readonly effortLevels?: ReadonlyArray<EffortLevel>;
+  /** The level the vendor applies when none is sent; informational for the UI. */
+  readonly effortDefault?: EffortLevel;
 }

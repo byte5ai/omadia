@@ -453,8 +453,11 @@ export function DashboardOnboarding({
       {/* OM-84 (#1003) — a default install runs with embeddings OFF: process
           memory, semantic search and dedup are all disabled, and nothing in
           setup says so. The tester found out when an agent failed mid-answer.
-          Not a fourth step (there is no keyless embedding path yet), but the
-          card must not read as "done" without naming the limitation. */}
+          Still not a fourth step: it is not something every install has to do.
+          But the copy no longer says "no provider is configured" full stop —
+          since #1041 there IS a keyless one, and naming it is the difference
+          between a limitation and a dead end for a subscription user who holds
+          no key. The link lands on the page that can install it. */}
       {embeddingsOff ? (
         <p
           data-testid="onboarding-embeddings-note"

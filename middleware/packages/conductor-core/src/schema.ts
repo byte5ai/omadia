@@ -114,6 +114,7 @@ export const conductorGraphSchema = {
         },
         path: { type: 'string' },
         value: true,
+        valuePath: { type: 'string' },
         args: { type: 'array', items: { $ref: '#/$defs/predicate' } },
         arg: { $ref: '#/$defs/predicate' },
       },

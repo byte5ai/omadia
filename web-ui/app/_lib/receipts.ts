@@ -35,7 +35,12 @@ export interface TurnReceiptDto {
   turnId: string;
   sessionScope?: string;
   channel?: string;
+  /** The model the turn actually ran on (#1033 W0). */
   model?: string;
+  /** Provider id the turn ran on; absent on rows recorded before #1033 W0. */
+  provider?: string;
+  /** Present (and `true`) only when the turn ran on the agent's fallback. */
+  fallbackUsed?: boolean;
   receipt: PrivacyReceipt;
   createdAt: string;
 }

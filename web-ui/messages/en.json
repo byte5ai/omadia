@@ -126,7 +126,7 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator"
       },
-      "embeddingsNote": "Memory is limited: no embedding provider is configured. Process memory, semantic search and duplicate detection stay off until one is set up.",
+      "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
@@ -359,6 +359,10 @@
         "modelDefault": "(default)",
         "platformDefault": "(platform default: {model})",
         "effectiveModel": "Active: {model}",
+        "modelPolicy": "Policy: {primary} · fallback {fallback}.",
+        "modelPolicyAuto": "Auto",
+        "modelPolicyNone": "none",
+        "modelPolicyEdit": "Edit on the agent page →",
         "skillBody": "Skill body (Markdown)",
         "skillFileReadOnly": "File-backed skill — read-only here.",
         "transport": "Transport",
@@ -801,6 +805,9 @@
     "scopeLabel": "Scope",
     "channelLabel": "Channel",
     "modelLabel": "Model",
+    "providerLabel": "Provider",
+    "fallbackUsedLabel": "fallback",
+    "fallbackUsedTitle": "This turn ran on the agent's fallback model because the primary was unavailable.",
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} masked · {datasets} datasets",
     "loadMore": "Load more",
@@ -1569,7 +1576,9 @@
       "classifierTooltip": "Triage classifier: {classifier} → {bucket} → {model}",
       "bucketSimple": "simple",
       "bucketComplex": "complex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback model",
+      "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
     }
   },
   "privacyReceipt": {
@@ -1800,6 +1809,7 @@
       "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
       "not_found": "This orchestrator does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
+      "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "unknown": "Request failed: {detail}"
     },
     "statusEnabled": "enabled",
@@ -1871,6 +1881,8 @@
     "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
+    "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
+    "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
     "pluginsAvailableToAttach": "Available to attach",
@@ -1965,6 +1977,81 @@
         "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
         "unknown": "Loading grants failed: {detail}"
       }
+    },
+    "modelPolicy": {
+      "heading": "Model",
+      "hint": "Which model answers under this agent's name, and which one steps in when it is unavailable. Everything offered here comes from the providers installed on this host and the keys configured under Providers.",
+      "loading": "Loading the model policy…",
+      "primary": {
+        "label": "Primary"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
+      "auto": "Auto",
+      "autoResolves": "What the platform resolves today: {model}",
+      "autoUnknown": "What the platform resolves today (not built yet)",
+      "none": "None",
+      "noneHint": "If the primary is unavailable, the turn fails — today's behaviour.",
+      "specific": "Specific model",
+      "providerLabel": "Provider",
+      "modelLabel": "Model",
+      "effortLabel": "Effort",
+      "effortDefault": "Default effort",
+      "effort": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "extra high"
+      },
+      "providerNoKey": "{provider} (no key)",
+      "configureProvider": "Configure in Providers →",
+      "sameRef": "Fallback and primary are the same model — pick a different fallback or None.",
+      "sameProvider": "Same provider as the primary — a provider outage affects both.",
+      "deferred": "The primary names {provider}, but the host currently runs {active} and has no pool for {provider} — the effort applies, the model switch does not.",
+      "fallbackNoVision": "The fallback model cannot read images — on a turn with attachments the primary is used without a fallback.",
+      "primaryNoVision": "The primary model cannot read images.",
+      "summaryAuto": "Auto ({model})",
+      "summaryNoFallback": "Runs on {primary} · no fallback",
+      "summaryWithFallback": "Runs on {primary} · falls back to {fallback}",
+      "save": "Save",
+      "saving": "Saving",
+      "unchanged": "No unsaved change."
+    },
+    "peers": {
+      "heading": "Agent-to-agent conversation",
+      "hint": "Whether this agent may hold a topic discussion with other agents, and in which chats. Both switches must be on: the agent's own, and one per chat. Every participant posts under its own bot; a flip here stops a running discussion at this agent's next turn.",
+      "loading": "Loading the peer settings…",
+      "stateUnknown": "Current: unknown",
+      "stateSummary": "Current: {mode} · {chats, plural, =0 {no chats enabled} one {# chat enabled} other {# chats enabled}}",
+      "modes": {
+        "off": "Off",
+        "on": "On"
+      },
+      "modeHints": {
+        "off": "The agent never talks to other agents. The default.",
+        "on": "The agent may join discussions with other agents — in the chats enabled below."
+      },
+      "chatsHeading": "Enabled chats",
+      "chatsHint": "One row per chat. Only chats this agent's own bot is actually in are offered — add the bot to a Teams group chat first and it appears here. The relay only ever considers bots that are present.",
+      "chatsEmpty": "No chat enabled yet.",
+      "chatEnabled": "enabled",
+      "chatDisabled": "disabled",
+      "remove": "Remove",
+      "channelTypeLabel": "Channel",
+      "add": "Enable chat",
+      "adding": "Adding",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Choose a chat…",
+      "chatSelectNone": "No chat available",
+      "noKnownChats": "This bot is not in any group chat that is not already listed. Add the bot to a Teams group chat; it then shows up here.",
+      "noBot": "This agent has no bot of its own yet. Provision a Teams identity first — without a bot there is no chat to enable.",
+      "chatOption": "{chat} · with {partners}",
+      "chatOptionNoPartners": "{chat} · no other bot present",
+      "chatPartners": "Bots present: {partners}",
+      "chatPartnersNone": "No other bot present — a discussion needs a second one.",
+      "chatNotPresent": "The bot is not (or no longer) in this chat; the row has no effect.",
+      "chatMembers": "Participants: {members}"
     },
     "contextMemory": {
       "heading": "Chat-context memory",
@@ -2461,6 +2548,16 @@
       "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
       "slugMismatch": "That is not the bot slug of this identity.",
       "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
+    },
+    "detailTabs": {
+      "aria": "Agent settings",
+      "identity": "Identity",
+      "model": "Model",
+      "peers": "Conversations",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Tools",
+      "memory": "Memory"
     }
   },
   "builder": {
@@ -3546,6 +3643,8 @@
     "providers": {
       "heading": "Providers",
       "modelCount": "{count, plural, one {# model} other {# models}}",
+      "cooldown": "Fallback active · retry {time}",
+      "cooldownTitle": "The provider failed a moment ago ({reason}). Agents with a fallback model route straight to it until the cooldown ends, then the primary is probed again.",
       "connected": "connected",
       "notConnected": "no key",
       "unverified": "key stored, not verified",
@@ -5190,7 +5289,15 @@
     "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
     "alreadyActiveError": "That provider is already the active one.",
     "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
-    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights.",
+    "localModelTitle": "Keyless embedder: model not downloaded yet",
+    "localModelBody": "This provider computes without an API key and without a separate server — but the model weights ({size} MB) are deliberately not shipped in the installer and have to be fetched once. Everything runs offline afterwards.",
+    "localModelFetch": "Download the model now",
+    "localModelStarting": "Starting …",
+    "localModelProgress": "Downloading … {done} of {total} MB ({file})",
+    "localModelFailed": "The download failed: {message}",
+    "localModelReady": "The model weights are complete. The next time this provider activates it publishes `embeddingClient@1` — memory, semantic search and duplicate detection then work.",
+    "localModelThreshold": "Important: this model’s cosine scale is not the knowledge graph default. Set `process_dedup_threshold` to 0.45 — at the 0.90 default duplicate detection never fires, and it fails silently."
   },
   "graph": {
     "page": {

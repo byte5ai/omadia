@@ -195,3 +195,19 @@ describe('openai-responses provider — errors', () => {
     await assert.rejects(() => provider.complete(REQ), /without response.completed/);
   });
 });
+
+describe('#1033 — effort', () => {
+  it('maps effort to reasoning.effort in the request body', async () => {
+    const captured: { init?: RequestInit } = {};
+    const raw =
+      'event: response.completed\ndata: {"response":{"status":"completed","output":[]}}\n\n';
+    const provider = createOpenAiResponsesProvider({
+      baseURL: 'https://x/codex',
+      bearerProvider: async () => 'live-bearer',
+      fetchImpl: sseFetch(raw, { captured }),
+    });
+    await provider.complete({ ...REQ, effort: 'medium' });
+    const body = JSON.parse(captured.init?.body as string);
+    assert.deepEqual(body.reasoning, { effort: 'medium' });
+  });
+});

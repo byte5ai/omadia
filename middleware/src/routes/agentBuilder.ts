@@ -22,6 +22,7 @@ import {
   type McpRegistryRow,
   type McpServerConfig,
   type McpServerRow,
+  DEFAULT_MODEL_POLICY,
   type OrchestratorRegistry,
   type PersonaSkillRow,
   type ScheduleRow,
@@ -2768,8 +2769,22 @@ export function agentNode(a: AgentRow, registry: OrchestratorRegistry | undefine
     status: a.status,
     modelRouting: (a.modelRouting as Record<string, unknown> | null) ?? null,
     effectiveModel: built?.effectiveModel ?? null,
+    // #1033 — the policy and what its fallback resolves to: an explicit ref
+    // as `provider:model`, `auto` as the effective model, `none` as null.
+    modelPolicy: a.modelPolicy ?? DEFAULT_MODEL_POLICY,
+    effectiveFallback: effectiveFallbackOf(a.modelPolicy, built?.effectiveModel ?? null),
     position: a.canvasPosition ?? null,
   };
+}
+
+function effectiveFallbackOf(
+  policy: AgentRow['modelPolicy'],
+  effectiveModel: string | null,
+): string | null {
+  const fallback = (policy ?? DEFAULT_MODEL_POLICY).fallback;
+  if (fallback === 'none') return null;
+  if (fallback === 'auto') return effectiveModel;
+  return `${fallback.provider}:${fallback.model}`;
 }
 
 function subAgentNode(s: SubAgentRow) {

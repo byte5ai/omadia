@@ -786,6 +786,14 @@ function extractChannelBlock(
   // omit both; absent `dispatch_service` falls back to 'chatAgent' at dispatch.
   const dispatchService = asString(rec['dispatch_service']);
   const canvasProtocolVersion = asString(rec['canvas_protocol_version']);
+  // #1018 (additive): `peer_delivery`. Only the two documented values are
+  // accepted; anything else is treated as undeclared (= 'none'), never as
+  // 'native' — the failure direction that would silently double-deliver.
+  const peerDeliveryRaw = asString(rec['peer_delivery']);
+  const peerDelivery =
+    peerDeliveryRaw === 'none' || peerDeliveryRaw === 'native'
+      ? peerDeliveryRaw
+      : undefined;
 
   return {
     transport: {
@@ -799,6 +807,7 @@ function extractChannelBlock(
     ...(canvasProtocolVersion
       ? { canvas_protocol_version: canvasProtocolVersion }
       : {}),
+    ...(peerDelivery ? { peer_delivery: peerDelivery } : {}),
   };
 }
 

@@ -68,9 +68,17 @@ export type ConductorSayOutcome =
         | 'foreign_workflow'
         | 'no_provider'
         | 'no_identity'
+        | 'peer_disabled'
         | 'channel_error';
       message: string;
     };
+
+/**
+ * How often to refresh the composing indicator. Teams dims it after roughly ten
+ * seconds of silence, and an agent turn regularly runs twenty — so a single
+ * indicator would go dark in the middle of exactly the wait it exists to cover.
+ */
+export const TYPING_REFRESH_MS = 5_000;
 
 export interface ConductorSayDeps {
   attachments: { getByConversation(channelType: string, channelKey: string): Promise<EphemeralAttachment | undefined> };
@@ -78,6 +86,14 @@ export interface ConductorSayDeps {
   /** Resolves the bot the speaking agent IS. Absent = nobody can be shown to
    *  own an identity, so nothing is posted. */
   identityFor?: AgentChannelIdentityResolver;
+  /**
+   * #1018 — re-evaluated on EVERY utterance, not only at the start of a run.
+   * A discussion that began before an operator switched an agent off would
+   * otherwise keep that agent talking until the run ended; with the check
+   * here, the flip bites at the agent's very next turn. Absent = no gate
+   * (no store wired), which is the pre-W1 behaviour.
+   */
+  peerGate?: (channelType: string, conversationId: string, agentSlug: string) => Promise<boolean>;
   log?: (msg: string) => void;
 }
 
@@ -104,6 +120,40 @@ export function formatUtterance(text: string): string {
 
 export class ConductorSayService {
   constructor(private readonly deps: ConductorSayDeps) {}
+
+  /**
+   * Show the chat that this agent is composing, until the returned stop is
+   * called. A relayed discussion leaves twenty seconds of silence per turn
+   * while an agent thinks; without this, that is indistinguishable from the
+   * feature having quietly died — which is exactly how the first live runs
+   * read to the person watching.
+   *
+   * Deliberately unguarded by the attachment check the message path makes: a
+   * composing indicator carries no content, cannot be mistaken for something
+   * the agent said, and vanishes on its own. It is also entirely best-effort —
+   * every failure is swallowed, and a provider that cannot do it simply does
+   * nothing. The one thing it does honour is IDENTITY: the dots appear next to
+   * the agent that is actually working.
+   */
+  startTyping(input: Pick<ConductorSayInput, 'agentSlug' | 'channelType' | 'conversationId'>): () => void {
+    const conversationId = typeof input.conversationId === 'string' ? input.conversationId.trim() : '';
+    if (conversationId.length === 0) return () => undefined;
+
+    const provider = this.deps.providers.get(input.channelType);
+    if (!provider?.sendTyping) return () => undefined;
+
+    const identity = this.deps.identityFor?.(input.agentSlug, input.channelType);
+    if (!identity) return () => undefined;
+
+    const tick = (): void => {
+      void provider.sendTyping?.(conversationId, { asChannelKey: identity.channelKey }).catch(() => undefined);
+    };
+    tick();
+    const handle = setInterval(tick, TYPING_REFRESH_MS);
+    // Never keep the process alive for an animation.
+    handle.unref?.();
+    return () => clearInterval(handle);
+  }
 
   /**
    * Publish one agent utterance into the run's bound conversation.
@@ -188,6 +238,23 @@ export class ConductorSayService {
         said: false,
         reason: 'no_identity',
         message: `agent '${input.agentSlug}' has no provisioned ${input.channelType} identity — it cannot speak in its own name here, and it will not speak in someone else's`,
+      };
+    }
+
+    // AN OPERATOR'S SWITCH BITES AT THE NEXT UTTERANCE. Checked after the
+    // identity so the refusal names the agent that is known and present but
+    // not enabled — a different fix than "provision a bot".
+    if (
+      this.deps.peerGate &&
+      !(await this.deps.peerGate(input.channelType, conversationId, input.agentSlug))
+    ) {
+      this.deps.log?.(
+        `[conductor] say by '${input.agentSlug}' into ${input.channelType}/${conversationId} refused: agent-to-agent disabled (run ${input.runId})`,
+      );
+      return {
+        said: false,
+        reason: 'peer_disabled',
+        message: `agent '${input.agentSlug}' is not enabled for agent-to-agent conversation in ${input.channelType}/${conversationId} — an operator switched it off for the agent or for this chat`,
       };
     }
 

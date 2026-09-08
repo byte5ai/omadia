@@ -13,7 +13,9 @@ import {
   defaultLlmAdapters,
   listModels,
   LlmProviderCatalog,
+  createLlmProviderPool,
   readProviderApiKey,
+  resolveModelRef,
   readProviderOAuthTokens,
   readProviderOAuthUpdatedAt,
   registerProviderOAuthStoreBinding,
@@ -72,6 +74,8 @@ import {
   CHANNEL_TEAMS_PLUGIN_ID,
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
+import { createBotPresenceStore } from './conductor/botPresenceStore.js';
+import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
@@ -165,7 +169,10 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
-import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import {
+  createAdminEmbeddingProviderRouter,
+  type LocalEmbeddingModelFetcher,
+} from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
@@ -1147,6 +1154,23 @@ async function main(): Promise<void> {
     log: (msg) => console.log(msg),
   });
 
+  // #1033 W1 — the kernel's own provider pool: same credentials source as the
+  // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
+  // catalog, memoised per provider id. Consumed by the dynamic sub-agent
+  // runtime today; the model-policy validation (W2) reads `usable()` from it.
+  const kernelProviderPool = createLlmProviderPool({
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    catalog: llmProviderCatalog,
+    // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
+    // the pool is shared with it from W3 on, so both sides agree.
+    maxRetries: 5,
+  });
+  // #1033 W3 — published for the orchestrator plugin (`llmProviderPool@1`,
+  // optional_requires) so the fallback circuit breaker has ONE state for the
+  // turn loop and the providers admin page. Provided here, before any plugin
+  // activates, like `llmProviderCatalog`.
+  serviceRegistry.provide('llmProviderPool', kernelProviderPool);
+
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
   // so tools are hot-registered and torn down (without middleware restart).
@@ -1172,6 +1196,7 @@ async function main(): Promise<void> {
         : 'anthropic';
     },
     hostGetSecret: (key: string) => secretVault.get('@omadia/orchestrator', key),
+    providerPool: kernelProviderPool,
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
@@ -3454,6 +3479,29 @@ async function main(): Promise<void> {
       }),
   );
 
+  // #1033 W2 — what the model-policy write path validates against: the live
+  // model catalogue (built-in adapters + manifest-installed provider plugins,
+  // via `resolveModelRef`) and the kernel provider pool (keyed = usable).
+  // Nothing about models is hard-coded here; the catalogue is the source.
+  // `orchestratorActiveProviderId` is declared further down and read lazily
+  // per request, long after boot.
+  const modelPolicyContextFor = () => ({
+    resolveModel: (provider: string, model: string) =>
+      resolveModelRef(`${provider}:${model}`),
+    usable: (provider: string) => kernelProviderPool.usable(provider),
+    activeProvider: orchestratorActiveProviderId(),
+  });
+
+  // #1018 — the chats an agent's bot is actually in (kernel table from graph
+  // migration 0031), so the peer-chat picker offers only those instead of a
+  // typed-in id. Same store the conductor's presence check reads; created
+  // once, no DATABASE_URL means no candidates. Named here, not inline, for
+  // the wiring-pin tests' lazy regex.
+  const peerChatDirectory = graphPool
+    ? createBotPresenceStore(graphPool, (msg) => console.log(msg))
+    : undefined;
+  const peerChatDirectoryFor = () => peerChatDirectory;
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -3465,11 +3513,17 @@ async function main(): Promise<void> {
     createOperatorAgentsRouter({
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      // (#1033 W2 — `getModelPolicyContext` is passed further down.)
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      getPeerChatDirectory: peerChatDirectoryFor,
+      // …and how those chats get a name: the plugin's directory (topic /
+      // member-derived label) and the live roster as post-restart fallback.
+      getChannelDirectory: () => channelDirectoryRegistry,
+      getConversationRosters: () => conversationRosterRegistry,
       // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
       // is down, so the readiness banner can tell "no access at all" from
       // "access exists, orchestrator not assigned to it". Same credential
@@ -3477,6 +3531,9 @@ async function main(): Promise<void> {
       // the closure-heavy options so the wiring-pin tests' lazy regex, which
       // ends at the first closing paren-brace pair, still sees it.
       getReadinessCause: resolveOperatorRuntimeReadinessCause,
+      // #1033 W2 — see `modelPolicyContextFor` above. Kept out of line so the
+      // wiring-pin tests' lazy regex is not cut short by an inline object.
+      getModelPolicyContext: modelPolicyContextFor,
       // W0c (#861) — the per-agent grant read model needs the graph store.
       // Same graphPool-guarded shape as the other AgentGraphStore sites; when
       // no DATABASE_URL is set the route degrades to its own 503.
@@ -4058,6 +4115,61 @@ async function main(): Promise<void> {
         }
       }
     };
+    // Which bots hold a conversation reference where — the presence signal the
+    // agent-discussion partner list is built on (graph migration 0031).
+    const botPresence = createBotPresenceStore(graphPool, (msg) => console.log(msg));
+    // Who can actually be heard in this chat: an agent needs its own bot AND
+    // that bot needs a conversation reference here. Provisioning alone is
+    // not enough — a partner whose bot was never added would have its turns
+    // generated, paid for and dropped.
+    //
+    // Presence comes from the reference table, NOT the roster: Teams'
+    // roster API returns people, never bots, so a roster-based check finds
+    // nothing in a chat full of bots (which is exactly what it did on the
+    // first live run).
+    const presentBots = async (
+      channelType: string,
+      conversationId: string,
+    ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
+      if (channelType !== 'teams') return [];
+      const registry = getRegistry();
+      if (!registry) return [];
+      const present = await botPresence.botAppIdsIn(conversationId);
+      const seen = new Set<string>();
+      const bots: { slug: string; name: string; channelKey: string }[] = [];
+      for (const appId of present) {
+        const channelKey = `28:${appId}`;
+        const owner = registry.identityForChannel(channelType, channelKey);
+        if (!owner || seen.has(owner.agent.slug)) continue;
+        seen.add(owner.agent.slug);
+        bots.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug, channelKey });
+      }
+      return bots;
+    };
+    // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
+    // row (migration 0058), evaluated in one place for the discussion start,
+    // every relayed utterance, and the roster the calling agent sees.
+    const peerGate = createPeerGate({
+      getRegistry,
+      listChannelPeerPolicies: (channelType, channelKey) => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        return store ? store.listChannelPeerPolicies(channelType, channelKey) : Promise.resolve([]);
+      },
+      log: (msg) => console.log(msg),
+    });
+    // `chatPeerAgents@1` — what `get_chat_participants` merges in as
+    // `kind: 'agent'`. Everything derives from the ambient turn; the caller
+    // supplies nothing and therefore sees no chat but its own.
+    serviceRegistry.provide(
+      'chatPeerAgents',
+      createChatPeerAgentsProvider({
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        listPresent: presentBots,
+        peerGate,
+      }),
+    );
     const conductorWiring = await wireConductor({
       pool: graphPool,
       onEphemeralReaped,
@@ -4070,6 +4182,9 @@ async function main(): Promise<void> {
       // The SAME registry the plugin-facing conversationSend uses — one owner
       // per channel type, so a discussion cannot be posted by a hijacked provider.
       conversationSendProviders: conversationSendRegistry,
+      // #1018 — re-checked on every utterance, so an operator's flip bites at
+      // the agent's next turn rather than at the end of the run.
+      peerGate,
       // #330 round 4 — the destructive terminate leaves a durable trace.
       // Closure like auditRoleChange: adminAudit is constructed further down.
       auditFacilitationTerminate: async (entry) => {
@@ -4171,6 +4286,11 @@ async function main(): Promise<void> {
         // opened it" and "who was addressed" can never be two different answers.
         resolveOpener: (channelType, botChannelKey) =>
           getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        // Presence (see `presentBots` above) — the gate below decides who of
+        // the present may actually take part.
+        listPartners: presentBots,
+        // #1018 — the opener must be enabled here, and so must every partner.
+        peerGate,
         log: (msg: string) => console.log(msg),
       }),
     );
@@ -4862,6 +4982,9 @@ async function main(): Promise<void> {
       vault: secretVault,
       reactivate: reactivateAgent,
       llmProviderCatalog,
+      // #1033 W3 — the fallback breaker's state, so the page can show a
+      // provider that is currently being skipped in favour of its fallback.
+      providerHealth: kernelProviderPool.health,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
@@ -4932,6 +5055,14 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       getEmbeddingClient: () =>
         serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // OM-84 follow-up — the keyless adapter publishes this even while its
+      // weights are missing, which is the only moment it is useful. Resolved
+      // per request: it appears the moment that adapter activates and vanishes
+      // when it is swapped out, and a captured copy would outlive both.
+      getLocalModelFetcher: () =>
+        serviceRegistry.get<LocalEmbeddingModelFetcher>(
+          'localEmbeddingModelFetcher',
+        ),
       // Resolved per request, never captured: `vectorWritesAllowed` flips
       // false→true in-process when a stale-vector clear drains, and the whole
       // point of the page is that the operator sees that without a reload.

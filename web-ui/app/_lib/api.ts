@@ -377,6 +377,10 @@ export interface AdminProvider {
   /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
    *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
+  /** #1033 — present only while the fallback circuit breaker is open for
+   *  this provider: agents with a fallback route straight to it until
+   *  `until`, when the primary is probed again. */
+  cooldown?: { until: string; since: string; reason: string };
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
@@ -4359,6 +4363,67 @@ export async function switchEmbeddingProvider(
   return postJson<SwitchEmbeddingProviderResult>(
     '/v1/admin/embedding-provider/switch',
     { pluginId, confirmDiscardVectors },
+  );
+}
+
+/** How far a keyless-embedder weight download has got. */
+export type LocalEmbeddingFetchState = 'idle' | 'running' | 'done' | 'failed';
+
+/**
+ * OM-84 follow-up — the keyless adapter's weights are deliberately not
+ * bundled (~135 MB in four installers, for a provider a keyed deployment never
+ * activates), so until they are fetched it publishes nothing. This is what the
+ * page needs to offer the download instead of printing a shell command at
+ * someone who has no terminal in the flow.
+ */
+export interface LocalEmbeddingModelState {
+  /** Where the adapter looks for the weights. */
+  modelDir: string;
+  /** Empty ⇒ the adapter can publish `embeddingClient@1`. */
+  missingFiles: string[];
+  totalBytes: number;
+  job: {
+    state: LocalEmbeddingFetchState;
+    downloadedBytes: number;
+    totalBytes: number;
+    currentFile: string | null;
+    /** Set only in `failed`, and kept until the next run. */
+    error: string | null;
+  };
+}
+
+/**
+ * `null` when the keyless adapter is not active — the middleware answers 404,
+ * which is a different fact from "its weights are missing" and the page shows
+ * neither a button nor an error for it.
+ */
+export async function getLocalEmbeddingModel(): Promise<LocalEmbeddingModelState | null> {
+  try {
+    return await getJson<LocalEmbeddingModelState>(
+      '/v1/admin/embedding-provider/local-model',
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export interface StartLocalEmbeddingFetchResult extends LocalEmbeddingModelState {
+  ok: true;
+  /** `false` with `reason: 'already-complete'` when nothing was missing. */
+  started: boolean;
+  reason?: 'already-complete';
+}
+
+/**
+ * Start the download. Returns immediately (the middleware answers 202) — poll
+ * {@link getLocalEmbeddingModel} for progress. A second call while one runs
+ * answers 409 `embeddingProvider.local_model_busy`.
+ */
+export async function startLocalEmbeddingModelFetch(): Promise<StartLocalEmbeddingFetchResult> {
+  return postJson<StartLocalEmbeddingFetchResult>(
+    '/v1/admin/embedding-provider/local-model/fetch',
+    {},
   );
 }
 

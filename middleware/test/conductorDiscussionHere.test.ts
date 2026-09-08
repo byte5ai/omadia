@@ -6,11 +6,17 @@ import {
   createDiscussionsCapability,
   DiscussionNoConversationError,
   DiscussionUnknownOpenerError,
+  DiscussionPeerDisabledError,
+  DiscussionUnknownPartnerError,
 } from '../src/conductor/discussionHere.js';
+import type { DiscussionPartner } from '../src/conductor/discussionHere.js';
 import {
+  createDiscussionPartnersHandler,
   createDiscussionStartHandler,
+  discussionPartnersToolSpec,
   discussionStartToolSpec,
 } from '@omadia/plugin-discussion';
+import type { DiscussionsCapability } from '@omadia/plugin-discussion';
 
 // Starting a discussion FROM A CHAT. The capability takes neither the
 // conversation nor the opener: both are read off the inbound turn, because a
@@ -54,7 +60,15 @@ describe('ambientTurnFrom', () => {
   });
 });
 
-function capabilityHarness(over: { turn?: unknown; opener?: string | undefined } = {}) {
+const PARTNERS: DiscussionPartner[] = [
+  { slug: 'hr', name: 'Karen' },
+  { slug: 'accounting', name: 'FiBu' },
+  { slug: 'messias', name: 'Messias' },
+];
+
+function capabilityHarness(
+  over: { turn?: unknown; opener?: string | undefined; partners?: DiscussionPartner[] } = {},
+) {
   const started: unknown[] = [];
   const capability = createDiscussionsCapability({
     discussions: {
@@ -69,10 +83,11 @@ function capabilityHarness(over: { turn?: unknown; opener?: string | undefined }
       },
     } as never,
     resolveTurn: () =>
-      over.turn === undefined
-        ? { channelType: 'teams', conversationId: '19:chat@thread.v2', botChannelKey: HR_BOT }
-        : (over.turn as never),
+      'turn' in over
+        ? (over.turn as never)
+        : { channelType: 'teams', conversationId: '19:chat@thread.v2', botChannelKey: HR_BOT },
     resolveOpener: () => ('opener' in over ? over.opener : 'hr'),
+    listPartners: async () => over.partners ?? PARTNERS,
   });
   return { capability, started };
 }
@@ -80,39 +95,79 @@ function capabilityHarness(over: { turn?: unknown; opener?: string | undefined }
 describe('conductorDiscussions.startHere', () => {
   it('derives conversation AND opener from the turn — the caller supplies neither', async () => {
     const { capability, started } = capabilityHarness();
-    const handle = await capability.startHere({ agentB: 'accounting', topic: 'Weiterbildungsbudgets' });
+    const handle = await capability.startHere({ partners: ['accounting'], topic: 'Weiterbildungsbudgets' });
     assert.equal(handle.runId, 'run-1');
     assert.deepEqual(started[0], {
       channelType: 'teams',
       conversationId: '19:chat@thread.v2',
-      agentA: 'hr',
-      agentB: 'accounting',
+      // The opener first, then the resolved partners — the cast in speaking order.
+      participants: ['hr', 'accounting'],
       topic: 'Weiterbildungsbudgets',
     });
   });
 
+  it('accepts the name people SEE in the chat and passes the resolved slug on', async () => {
+    const { capability, started } = capabilityHarness();
+    await capability.startHere({ partners: ['Messias'], topic: 'T' });
+    assert.equal((started[0] as { participants: string[] }).participants[1], 'messias');
+  });
+
+  it('matches case- and whitespace-insensitively', async () => {
+    const { capability, started } = capabilityHarness();
+    await capability.startHere({ partners: ['  FIBU '], topic: 'T' });
+    assert.equal((started[0] as { participants: string[] }).participants[1], 'accounting');
+  });
+
+  it('refuses an unknown partner WITH the real candidates attached', async () => {
+    const { capability, started } = capabilityHarness();
+    await assert.rejects(
+      () => capability.startHere({ partners: ['nonexistent'], topic: 'T' }),
+      (err: Error) => {
+        assert.equal(err.name, 'DiscussionUnknownPartnerError');
+        const candidates = (err as DiscussionUnknownPartnerError).candidates.map((c) => c.slug);
+        // The opener is not a candidate for talking to itself.
+        assert.deepEqual(candidates, ['accounting', 'messias']);
+        return true;
+      },
+    );
+    assert.deepEqual(started, [], 'nothing may start on a guessed partner');
+  });
+
+  it('refuses a partner whose bot is not in this chat', async () => {
+    const { capability } = capabilityHarness({ partners: [{ slug: 'hr', name: 'Karen' }] });
+    await assert.rejects(
+      () => capability.startHere({ partners: ['accounting'], topic: 'T' }),
+      DiscussionUnknownPartnerError,
+    );
+  });
+
+  it('lists the partners here, excluding the agent that was addressed', async () => {
+    const { capability } = capabilityHarness();
+    assert.deepEqual(await capability.partnersHere(), [
+      { slug: 'accounting', name: 'FiBu' },
+      { slug: 'messias', name: 'Messias' },
+    ]);
+  });
+
   it('passes an explicit guiding question through', async () => {
     const { capability, started } = capabilityHarness();
-    await capability.startHere({ agentB: 'accounting', topic: 'T', guidingQuestion: 'Wer zahlt?' });
+    await capability.startHere({ partners: ['accounting'], topic: 'T', guidingQuestion: 'Wer zahlt?' });
     assert.equal((started[0] as { guidingQuestion?: string }).guidingQuestion, 'Wer zahlt?');
   });
 
   it('refuses outside a channel turn — no conversation to start in', async () => {
-    const { capability, started } = capabilityHarness({ turn: undefined as never });
-    const noTurn = createDiscussionsCapability({
-      discussions: { start: async () => ({}) } as never,
-      resolveTurn: () => undefined,
-      resolveOpener: () => 'hr',
-    });
-    void capability;
-    await assert.rejects(() => noTurn.startHere({ agentB: 'accounting', topic: 'T' }), DiscussionNoConversationError);
+    const { capability, started } = capabilityHarness({ turn: undefined });
+    await assert.rejects(
+      () => capability.startHere({ partners: ['accounting'], topic: 'T' }),
+      DiscussionNoConversationError,
+    );
     assert.deepEqual(started, []);
   });
 
   it('refuses when the receiving bot maps to no agent — the opener decides whose name appears', async () => {
     const { capability, started } = capabilityHarness({ opener: undefined });
     await assert.rejects(
-      () => capability.startHere({ agentB: 'accounting', topic: 'T' }),
+      () => capability.startHere({ partners: ['accounting'], topic: 'T' }),
       DiscussionUnknownOpenerError,
     );
     assert.deepEqual(started, []);
@@ -123,19 +178,31 @@ describe('conductorDiscussions.startHere', () => {
       turn: { channelType: 'teams', conversationId: '19:chat@thread.v2' },
     });
     await assert.rejects(
-      () => capability.startHere({ agentB: 'accounting', topic: 'T' }),
+      () => capability.startHere({ partners: ['accounting'], topic: 'T' }),
       DiscussionUnknownOpenerError,
     );
   });
 });
 
-// --- the tool the model actually calls -------------------------------------
+// --- the tools the model actually calls ------------------------------------
+
+function fakeCapability(over: Partial<DiscussionsCapability> = {}): DiscussionsCapability {
+  return {
+    startHere: async () => ({
+      runId: 'run-1',
+      workflowSlug: 'eph-discussion-abc',
+      expiresAt: '1970-01-01T00:00:00.000Z',
+    }),
+    partnersHere: async () => PARTNERS,
+    ...over,
+  };
+}
 
 describe('discussion_start tool', () => {
   it('exposes with_agent + topic as the only required inputs', () => {
-    assert.deepEqual(discussionStartToolSpec.input_schema.required, ['with_agent', 'topic']);
+    assert.deepEqual(discussionStartToolSpec.input_schema.required, ['with_agents', 'topic']);
     const props = Object.keys(discussionStartToolSpec.input_schema.properties).sort();
-    assert.deepEqual(props, ['guiding_question', 'topic', 'with_agent']);
+    assert.deepEqual(props, ['guiding_question', 'max_turns', 'topic', 'with_agents']);
     // No conversation and no opener on the model-facing surface.
     assert.equal(props.includes('conversation_id'), false);
     assert.equal(props.includes('as_agent'), false);
@@ -144,55 +211,237 @@ describe('discussion_start tool', () => {
   it('starts the discussion and tells the model to stop talking', async () => {
     const calls: unknown[] = [];
     const handler = createDiscussionStartHandler({
-      discussions: {
-        startHere: async (input: unknown) => {
-          calls.push(input);
-          return { runId: 'run-1', workflowSlug: 'eph-discussion-abc', expiresAt: '1970-01-01T00:00:00.000Z' };
-        },
-      },
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async (input) => {
+            calls.push(input);
+            return { runId: 'run-1', workflowSlug: 'eph-discussion-abc', expiresAt: '1970-01-01T00:00:00.000Z' };
+          },
+        }),
     });
-    const out = await handler({ with_agent: 'accounting', topic: 'Weiterbildungsbudgets' });
-    const parsed = JSON.parse(out) as { started: boolean; with_agent: string; note: string };
+    const out = await handler({ with_agents: ['accounting'], topic: 'Weiterbildungsbudgets' });
+    const parsed = JSON.parse(out) as { started: boolean; with_agents: string[]; note: string };
     assert.equal(parsed.started, true);
-    assert.equal(parsed.with_agent, 'accounting');
+    assert.deepEqual(parsed.with_agents, ['accounting']);
     assert.match(parsed.note, /do not repeat the topic/i);
-    assert.deepEqual(calls, [{ agentB: 'accounting', topic: 'Weiterbildungsbudgets' }]);
+    assert.deepEqual(calls, [{ partners: ['accounting'], topic: 'Weiterbildungsbudgets' }]);
+  });
+
+  it('opens a THREE-way round in ONE call', async () => {
+    // The live attempt failed here: the agent reported it could couple "immer
+    // nur einen Partner pro Aufruf" and offered to add the third in a separate
+    // turn. One call, every partner named.
+    const calls: unknown[] = [];
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async (input) => {
+            calls.push(input);
+            return { runId: 'run-1', workflowSlug: 'eph-discussion-abc', expiresAt: '1970-01-01T00:00:00.000Z' };
+          },
+        }),
+    });
+    const out = await handler({ with_agents: ['accounting', 'Messias'], topic: 'T' });
+    assert.equal((JSON.parse(out) as { started: boolean }).started, true);
+    assert.deepEqual((calls[0] as { partners: string[] }).partners, ['accounting', 'Messias']);
+  });
+
+  it('accepts a single name, and the older with_agent spelling', async () => {
+    const calls: unknown[] = [];
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async (input) => {
+            calls.push(input);
+            return { runId: 'r', workflowSlug: 's', expiresAt: '1970-01-01T00:00:00.000Z' };
+          },
+        }),
+    });
+    await handler({ with_agents: 'accounting', topic: 'T' });
+    assert.deepEqual((calls[0] as { partners: string[] }).partners, ['accounting']);
+    await handler({ with_agent: 'clippy', topic: 'T' });
+    assert.deepEqual((calls[1] as { partners: string[] }).partners, ['clippy']);
+  });
+
+  it('passes an explicit turn ceiling through', async () => {
+    const calls: unknown[] = [];
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async (input) => {
+            calls.push(input);
+            return { runId: 'r', workflowSlug: 's', expiresAt: '1970-01-01T00:00:00.000Z' };
+          },
+        }),
+    });
+    await handler({ with_agents: ['accounting'], topic: 'T', max_turns: 30 });
+    assert.equal((calls[0] as { maxTurns?: number }).maxTurns, 30);
+  });
+
+  it('RESOLVES THE CAPABILITY PER CALL — one absent at activation must not freeze', async () => {
+    // The live failure: `optional_requires` creates no activation edge, so the
+    // capability was undefined when the plugin activated and the tool answered
+    // "not available" for the process's whole life. It must recover the moment
+    // the kernel publishes it.
+    let published: DiscussionsCapability | undefined;
+    const handler = createDiscussionStartHandler({ resolveDiscussions: () => published });
+
+    const before = await handler({ with_agents: ['accounting'], topic: 'T' });
+    assert.match(before, /not available on this deployment/);
+
+    published = fakeCapability();
+    const after = await handler({ with_agents: ['accounting'], topic: 'T' });
+    assert.equal((JSON.parse(after) as { started: boolean }).started, true);
+  });
+
+  it('answers an unknown partner WITH the candidate list so the model can retry', async () => {
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async () => {
+            throw new DiscussionUnknownPartnerError('messias', PARTNERS);
+          },
+        }),
+    });
+    const out = await handler({ with_agents: ['messias'], topic: 'T' });
+    assert.match(out, /^Error: /);
+    assert.match(out, /Available in this chat/);
+    assert.match(out, /messias \(Messias\)/);
+  });
+
+  it('RESOLVES THE CAPABILITY PER CALL — one absent at activation must not freeze', async () => {
+    // The live failure: `optional_requires` creates no activation edge, so the
+    // capability was undefined when the plugin activated and the tool answered
+    // "not available" for the process's whole life. It must recover the moment
+    // the kernel publishes it.
+    let published: DiscussionsCapability | undefined;
+    const handler = createDiscussionStartHandler({ resolveDiscussions: () => published });
+
+    const before = await handler({ with_agent: 'accounting', topic: 'T' });
+    assert.match(before, /not available on this deployment/);
+
+    published = fakeCapability();
+    const after = await handler({ with_agent: 'accounting', topic: 'T' });
+    assert.equal((JSON.parse(after) as { started: boolean }).started, true);
+  });
+
+  it('answers an unknown partner WITH the candidate list so the model can retry', async () => {
+    const handler = createDiscussionStartHandler({
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async () => {
+            throw new DiscussionUnknownPartnerError('messias', PARTNERS);
+          },
+        }),
+    });
+    const out = await handler({ with_agent: 'messias', topic: 'T' });
+    assert.match(out, /^Error: /);
+    assert.match(out, /Available in this chat/);
+    assert.match(out, /messias \(Messias\)/);
   });
 
   it('rejects a malformed agent slug before reaching the kernel', async () => {
     const handler = createDiscussionStartHandler({
-      discussions: {
-        startHere: async () => assert.fail('must not reach the kernel'),
-      },
+      resolveDiscussions: () =>
+        fakeCapability({
+          startHere: async () => assert.fail('must not reach the kernel'),
+        }),
     });
-    const out = await handler({ with_agent: 'NOT A SLUG', topic: 'T' });
-    assert.match(out, /^Error: /);
+    assert.match(await handler({ with_agents: [''], topic: 'T' }), /^Error: /);
   });
 
   it('requires a topic', async () => {
-    const handler = createDiscussionStartHandler({ discussions: undefined });
-    assert.match(await handler({ with_agent: 'accounting' }), /^Error: /);
+    const handler = createDiscussionStartHandler({ resolveDiscussions: () => undefined });
+    assert.match(await handler({ with_agents: ['accounting'] }), /^Error: /);
   });
 
   it('explains a missing kernel seam instead of throwing', async () => {
-    const handler = createDiscussionStartHandler({ discussions: undefined });
-    const out = await handler({ with_agent: 'accounting', topic: 'T' });
-    assert.match(out, /not available on this deployment/);
+    const handler = createDiscussionStartHandler({ resolveDiscussions: () => undefined });
+    assert.match(await handler({ with_agents: ['accounting'], topic: 'T' }), /not available on this deployment/);
+  });
+});
+
+describe('discussion_partners tool', () => {
+  it('takes no arguments and returns slug + the name people see', async () => {
+    assert.deepEqual(discussionPartnersToolSpec.input_schema.required, []);
+    const handler = createDiscussionPartnersHandler({ resolveDiscussions: () => fakeCapability() });
+    const parsed = JSON.parse(await handler({})) as { partners: DiscussionPartner[]; note: string };
+    assert.deepEqual(parsed.partners, PARTNERS);
+    assert.match(parsed.note, /slug/);
   });
 
-  it('hands a kernel refusal to the model as prose it can relay', async () => {
-    const handler = createDiscussionStartHandler({
-      discussions: {
-        startHere: async () => {
-          const err = new Error(
-            "agent 'accounting' has no provisioned teams identity — it would have to speak through another bot's name, so the discussion is refused",
-          );
-          err.name = 'DiscussionAgentHasNoIdentityError';
-          throw err;
-        },
-      },
+  it('says plainly when nobody else can be heard here', async () => {
+    const handler = createDiscussionPartnersHandler({
+      resolveDiscussions: () => fakeCapability({ partnersHere: async () => [] }),
     });
-    const out = await handler({ with_agent: 'accounting', topic: 'T' });
-    assert.match(out, /^Error: agent 'accounting' has no provisioned teams identity/);
+    const parsed = JSON.parse(await handler({})) as { partners: unknown[]; note: string };
+    assert.deepEqual(parsed.partners, []);
+    assert.match(parsed.note, /no discussion can be held here/i);
+  });
+
+  it('resolves the capability per call, like the start tool', async () => {
+    let published: DiscussionsCapability | undefined;
+    const handler = createDiscussionPartnersHandler({ resolveDiscussions: () => published });
+    assert.match(await handler({}), /not available on this deployment/);
+    published = fakeCapability();
+    assert.match(await handler({}), /"partners"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1018 W1 — the peer gate on start and roster
+// ---------------------------------------------------------------------------
+
+describe('conductorDiscussions peer gate (#1018)', () => {
+  function gated(allowed: readonly string[]) {
+    const started: unknown[] = [];
+    const capability = createDiscussionsCapability({
+      discussions: {
+        start: async (input: unknown) => {
+          started.push(input);
+          return {
+            runId: 'run-1',
+            workflowId: 'wf-1',
+            workflowSlug: 'eph-discussion-abc',
+            expiresAt: new Date(0).toISOString(),
+          };
+        },
+      } as never,
+      resolveTurn: () => ({ channelType: 'teams', conversationId: '19:chat@thread.v2', botChannelKey: HR_BOT }),
+      resolveOpener: () => 'hr',
+      listPartners: async () => PARTNERS,
+      peerGate: async (_t, _c, slug) => allowed.includes(slug),
+    });
+    return { capability, started };
+  }
+
+  it('refuses the start when the OPENER is not enabled here', async () => {
+    const { capability, started } = gated(['accounting', 'messias']);
+    await assert.rejects(
+      capability.startHere({ partners: ['accounting'], topic: 'T' }),
+      (err: unknown) =>
+        err instanceof DiscussionPeerDisabledError && err.agentSlug === 'hr',
+    );
+    assert.equal(started.length, 0);
+  });
+
+  it('drops disabled partners from the roster and from the candidates', async () => {
+    const { capability } = gated(['hr', 'accounting']);
+    const here = await capability.partnersHere();
+    assert.deepEqual(here.map((p) => p.slug), ['accounting']);
+    // Naming a present-but-disabled partner reads like an unknown one — with
+    // the ENABLED candidates attached, not the merely present ones.
+    await assert.rejects(
+      capability.startHere({ partners: ['messias'], topic: 'T' }),
+      (err: unknown) =>
+        err instanceof DiscussionUnknownPartnerError &&
+        err.candidates.map((c) => c.slug).join(',') === 'accounting',
+    );
+  });
+
+  it('starts when opener and partner are both enabled', async () => {
+    const { capability, started } = gated(['hr', 'accounting']);
+    await capability.startHere({ partners: ['accounting'], topic: 'T' });
+    assert.equal((started[0] as { participants: string[] }).participants.join(','), 'hr,accounting');
   });
 });

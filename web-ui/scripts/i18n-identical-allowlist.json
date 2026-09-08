@@ -23,6 +23,8 @@
     "                 it stops being useful for diagnosis."
   ],
   "keys": {
+    "operatorAgents.agentCardModelAuto": "loanword",
+    "operatorAgents.modelPolicy.summaryAuto": "loanword",
     "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
     "conductor.graphLabel": "loanword",
@@ -89,6 +91,10 @@
     "memory.promote.openButton": "glossary",
     "memory.promote.targetCtxKeyPlaceholder": "placeholder",
     "memory.audit.mode.copy": "diagnostic",
-    "memory.audit.mode.move": "diagnostic"
+    "memory.audit.mode.move": "diagnostic",
+    "operatorAgents.peers.chatSelectLabel": "loanword",
+    "operatorAgents.detailTabs.teams": "brand",
+    "operatorAgents.detailTabs.plugins": "loanword",
+    "operatorAgents.detailTabs.memory": "glossary"
   }
 }

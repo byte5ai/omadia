@@ -9,10 +9,7 @@ import {
   listOperatorAgents,
   type OperatorAgentsListDto,
 } from '../../../_lib/agents';
-import { AgentContextMemory } from './_components/AgentContextMemory';
 import { AgentDetail } from './_components/AgentDetail';
-import { AgentMcpServers } from './_components/AgentMcpServers';
-import { AgentToolGrants } from './_components/AgentToolGrants';
 
 /**
  * Issue #861 — per-agent capability page (epic #860).
@@ -104,18 +101,9 @@ export default async function OperatorAgentDetailPage({
               agent.id === list.fallback_agent_id
             }
           />
-          {/* Wiring (#860): the sibling per-agent surfaces — read-only
-              tool-grant list (#861) and the MCP assignment / allowlist
-              editor (#862) — mount below the plugin editor. Both are
-              client components that fetch their own data by slug. */}
-          <div className="mt-8 space-y-8">
-            <AgentToolGrants slug={agent.slug} />
-            <AgentMcpServers slug={agent.slug} />
-            {/* #899 — the W5 memory-ACL rollout switch. Sits with the other
-                per-agent capability settings rather than in a global admin
-                page: the column is per agent, and so is the blast radius. */}
-            <AgentContextMemory slug={agent.slug} />
-          </div>
+          {/* The sibling per-agent surfaces (tool grants #861, MCP #862,
+              context memory #899) moved into AgentDetail's tabs — one
+              composition point, one tab strip. */}
         </>
       )}
     </main>

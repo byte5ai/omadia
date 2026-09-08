@@ -642,3 +642,42 @@ test('complete() still sends temperature for models that honour it', async () =>
     assert.equal(captured.params?.['temperature'], 0, `${model} lost its temperature`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// #1033 — effort
+// ---------------------------------------------------------------------------
+
+test('effort maps to output_config.effort and attaches the effort beta once', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    effort: 'xhigh',
+    betas: ['context-management-2025-06-27'],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[0]?.params['output_config'], { effort: 'xhigh' });
+  // The beta rides alongside the caller's own betas, appended not replaced.
+  assert.deepEqual(calls[0]?.options, {
+    headers: { 'anthropic-beta': 'context-management-2025-06-27,effort-2025-11-24' },
+  });
+
+  // No effort → no output_config, no effort beta: the common path is untouched.
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal(calls[1]?.params['output_config'], undefined);
+  assert.equal(calls[1]?.options, undefined);
+});

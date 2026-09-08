@@ -318,9 +318,33 @@ function buildParams(
     ...(!dropToolChoice && hasTools && disablesParallel(req.toolChoice)
       ? { parallel_tool_calls: false }
       : {}),
+    // #1033 — `reasoning_effort` is a native-OpenAI reasoning-model field.
+    // OpenAI-compatible servers (Mistral / Ollama / vLLM / MiniMax) mostly
+    // reject unknown body fields, so there the effort is dropped — with a
+    // one-time note, never an error: a policy's effort must not break a turn.
+    ...(req.effort !== undefined && nativeOpenAi
+      ? { reasoning_effort: req.effort }
+      : {}),
     // Vendor-only request fields (e.g. MiniMax `reasoning_split`). Merged last.
     ...(quirks?.extraBody ?? {}),
   };
+}
+
+const effortIgnoredWarned = new Set<string>();
+
+/** Note once per model when an effort is asked of a server that has no such
+ *  knob. Goes through the provider's own `log` (the adapter has no console
+ *  lib); the Set is process-wide by design so a chatty agent notes it once. */
+function noteEffortIgnored(
+  log: (...args: unknown[]) => void,
+  req: LlmRequest,
+  nativeOpenAi: boolean,
+): void {
+  if (req.effort === undefined || nativeOpenAi || effortIgnoredWarned.has(req.model)) return;
+  effortIgnoredWarned.add(req.model);
+  log(
+    `[llm-adapter-openai] model '${req.model}' is served by an OpenAI-compatible endpoint without a reasoning-effort field — effort '${req.effort}' ignored`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -589,8 +613,10 @@ export function createOpenAiProvider(opts: OpenAiProviderOptions): LlmProvider {
     ...(opts.extraBody !== undefined ? { extraBody: opts.extraBody } : {}),
   };
 
-  const paramsFor = (req: LlmRequest): Record<string, unknown> =>
-    buildParams(req, strictTools, id === 'openai', quirks);
+  const paramsFor = (req: LlmRequest): Record<string, unknown> => {
+    noteEffortIgnored(log, req, id === 'openai');
+    return buildParams(req, strictTools, id === 'openai', quirks);
+  };
 
   return {
     id,

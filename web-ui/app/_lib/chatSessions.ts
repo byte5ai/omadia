@@ -602,6 +602,9 @@ export interface Message {
     bucket: 'simple' | 'complex' | 'fallback';
     classifierModel: string;
     model: string;
+    /** #1033 — the turn hopped to the agent's fallback model/provider. */
+    reason?: 'provider_fallback';
+    provider?: string;
   };
   /**
    * Wave 8 — per-turn direct-answer persona verdict, from the `turn_persona`

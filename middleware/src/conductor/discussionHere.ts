@@ -68,46 +68,181 @@ export class DiscussionUnknownOpenerError extends Error {
 }
 
 export interface StartDiscussionHereInput {
-  /** The agent to discuss WITH. The opener is derived from the turn. */
-  agentB: string;
+  /** The agents to discuss WITH — one or several. The opener comes from the turn. */
+  partners: readonly string[];
   topic: string;
   guidingQuestion?: string;
+  /** Ceiling on contributions; the service clamps it. Absent = its default. */
+  maxTurns?: number;
   ttlMs?: number;
 }
+
+export interface DiscussionPartner {
+  slug: string;
+  /** The bot's name as people read it in the chat. */
+  name: string;
+}
+
+/**
+ * Everyone who could take part in one conversation: agents with a provisioned
+ * identity for the channel whose bot is actually PRESENT in that chat.
+ *
+ * Presence matters, not just provisioning. A partner whose bot was never added
+ * to the chat has no conversation reference there, so its turns would be
+ * generated, charged and then dropped — the half-silent discussion this design
+ * refuses to produce.
+ */
+export type PartnerLister = (
+  channelType: string,
+  conversationId: string,
+) => Promise<readonly DiscussionPartner[]>;
 
 /** What `ctx.services.get('conductorDiscussions')` hands a granted plugin. */
 export interface ConductorDiscussionsCapability {
   startHere(input: StartDiscussionHereInput): Promise<EphemeralRunHandle>;
+  partnersHere(): Promise<readonly DiscussionPartner[]>;
+}
+
+/**
+ * #1018 — `(channelType, conversationId, agentSlug) → may this agent talk to
+ * peers in this chat?` The AND of the agent's own switch and the pair's policy
+ * row; the kernel supplies the evaluator (`conductor/peerPolicy.ts`).
+ */
+export type PeerGate = (
+  channelType: string,
+  conversationId: string,
+  agentSlug: string,
+) => Promise<boolean>;
+
+/**
+ * The agent that received the turn is not allowed to talk to peers in this
+ * chat — its own switch is off, or no operator enabled it for this
+ * conversation. Distinct from an unknown opener: the agent is known and
+ * present, the operator simply has not opened the gate.
+ */
+export class DiscussionPeerDisabledError extends Error {
+  constructor(readonly agentSlug: string) {
+    super(
+      `agent '${agentSlug}' is not enabled for agent-to-agent conversation in this chat — an operator must switch it on for the agent and for this conversation`,
+    );
+    this.name = 'DiscussionPeerDisabledError';
+  }
+}
+
+/**
+ * The named partner is not someone this chat can hear from. Carries the real
+ * candidates so the caller can correct itself in one step — the first live
+ * attempt died because the model guessed a roster, guessed wrong, and stopped.
+ */
+export class DiscussionUnknownPartnerError extends Error {
+  constructor(
+    readonly requested: string,
+    readonly candidates: readonly DiscussionPartner[],
+  ) {
+    super(
+      candidates.length > 0
+        ? `'${requested}' is not an agent with its own bot in this chat`
+        : `'${requested}' is not available here, and no other agent has its own bot in this chat`,
+    );
+    this.name = 'DiscussionUnknownPartnerError';
+  }
+}
+
+/** Match a free-text partner reference against a candidate: people name the bot
+ *  the way the chat shows it ('Messias'), models reach for the slug. Accept both,
+ *  case- and whitespace-insensitively. */
+function matchesPartner(requested: string, partner: DiscussionPartner): boolean {
+  const want = requested.trim().toLowerCase();
+  return partner.slug.toLowerCase() === want || partner.name.trim().toLowerCase() === want;
 }
 
 export function createDiscussionsCapability(deps: {
   discussions: Pick<ConductorDiscussionService, 'start'>;
   resolveTurn: AmbientTurnResolver;
   resolveOpener: OpenerResolver;
+  listPartners: PartnerLister;
+  /**
+   * #1018 — the peer gate. Applied to the opener (refuses the start) and to
+   * every candidate partner (drops them from the roster). Absent = no gate,
+   * which is the pre-W1 behaviour and what a test harness without a store
+   * gets; production always wires one.
+   */
+  peerGate?: PeerGate;
   log?: (msg: string) => void;
 }): ConductorDiscussionsCapability {
+  /** The turn's conversation + the agent that answered it, or a typed refusal. */
+  const resolveHere = async (): Promise<{ turn: AmbientTurn; opener: string }> => {
+    const turn = deps.resolveTurn();
+    if (!turn || turn.conversationId.trim().length === 0) {
+      throw new DiscussionNoConversationError();
+    }
+    const opener = turn.botChannelKey
+      ? deps.resolveOpener(turn.channelType, turn.botChannelKey)
+      : undefined;
+    if (!opener) throw new DiscussionUnknownOpenerError(turn.botChannelKey);
+    if (deps.peerGate && !(await deps.peerGate(turn.channelType, turn.conversationId, opener))) {
+      throw new DiscussionPeerDisabledError(opener);
+    }
+    return { turn, opener };
+  };
+
+  /** Who is present AND allowed — the opener excluded. */
+  const permittedPartners = async (
+    turn: AmbientTurn,
+    opener: string,
+  ): Promise<DiscussionPartner[]> => {
+    const present = (await deps.listPartners(turn.channelType, turn.conversationId)).filter(
+      (p) => p.slug !== opener,
+    );
+    if (!deps.peerGate) return present;
+    const gate = deps.peerGate;
+    const verdicts = await Promise.all(
+      present.map((p) => gate(turn.channelType, turn.conversationId, p.slug)),
+    );
+    return present.filter((_, i) => verdicts[i] === true);
+  };
+
   return {
+    async partnersHere() {
+      const { turn, opener } = await resolveHere();
+      return permittedPartners(turn, opener);
+    },
+
     async startHere(input) {
-      const here = deps.resolveTurn();
-      if (!here || here.conversationId.trim().length === 0) {
-        throw new DiscussionNoConversationError();
+      const { turn, opener } = await resolveHere();
+
+      // Resolve every named partner against who can ACTUALLY speak in this
+      // chat — present AND enabled. This is where a guessed name is caught —
+      // before a run exists, before a floor is claimed, and with the real
+      // candidates attached.
+      const candidates = await permittedPartners(turn, opener);
+      const named = Array.isArray(input.partners) ? input.partners : [];
+      if (named.length === 0) {
+        throw new DiscussionUnknownPartnerError('', candidates);
       }
-      const opener = here.botChannelKey
-        ? deps.resolveOpener(here.channelType, here.botChannelKey)
-        : undefined;
-      if (!opener) {
-        throw new DiscussionUnknownOpenerError(here.botChannelKey);
+      const resolved: string[] = [];
+      for (const wanted of named) {
+        const partner = candidates.find((p) => matchesPartner(wanted, p));
+        // One unknown name fails the whole start rather than quietly dropping a
+        // participant: a discussion missing the agent someone asked for is not
+        // the discussion they asked for.
+        if (!partner) throw new DiscussionUnknownPartnerError(wanted, candidates);
+        if (!resolved.includes(partner.slug)) resolved.push(partner.slug);
       }
+
       deps.log?.(
-        `[conductor] discussion requested: '${opener}' with '${input.agentB}' in ${here.channelType}/${here.conversationId}`,
+        `[conductor] discussion requested: '${opener}' with ${resolved.join(', ')} in ${turn.channelType}/${turn.conversationId}`,
       );
       return deps.discussions.start({
-        channelType: here.channelType,
-        conversationId: here.conversationId,
-        agentA: opener,
-        agentB: input.agentB,
+        channelType: turn.channelType,
+        conversationId: turn.conversationId,
+        // The opener speaks first and closes; then the RESOLVED slugs, never
+        // the caller's spelling — a display name must not reach the registry as
+        // if it were a slug.
+        participants: [opener, ...resolved],
         topic: input.topic,
         ...(input.guidingQuestion !== undefined ? { guidingQuestion: input.guidingQuestion } : {}),
+        ...(input.maxTurns !== undefined ? { maxTurns: input.maxTurns } : {}),
         ...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
       });
     },
