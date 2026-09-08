@@ -979,9 +979,15 @@ async function main(): Promise<void> {
   // the boot loop AND the hot-install path (InstallService.onInstalled/
   // onUninstall) so a provider plugin installed at runtime appears WITHOUT a
   // restart.
-  // Live model discovery — created further below (it needs the vault); the
-  // hot-install path refreshes a runtime-installed provider through it.
-  let modelCatalogSync: ModelCatalogSync | undefined;
+  // Live model discovery: the catalog's static model lists are only seeds.
+  // Created here (the vault exists, the catalog holds the built-ins) so the
+  // hot-install path below can refresh a runtime-installed provider through
+  // it; the boot refresh + timer start further down, once installed provider
+  // plugins are in the catalog too.
+  const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
+    catalog: llmProviderCatalog,
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+  });
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
       const descriptor = registerPluginLlmProvider(
@@ -993,7 +999,7 @@ async function main(): Promise<void> {
         console.log(
           `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
-        if (descriptor.discovery !== undefined && modelCatalogSync !== undefined) {
+        if (descriptor.discovery !== undefined) {
           void modelCatalogSync.refresh(descriptor.id);
         }
       }
@@ -1181,16 +1187,11 @@ async function main(): Promise<void> {
   // activates, like `llmProviderCatalog`.
   serviceRegistry.provide('llmProviderPool', kernelProviderPool);
 
-  // Live model discovery: the catalog's static model lists are only seeds.
-  // Every connected provider with discovery rules is asked for its current
-  // model list here at boot (fire-and-forget — boot never waits on a vendor),
-  // again after a key verifies, on the admin "refresh models" action, and on
-  // the periodic timer. Built-ins AND installed provider plugins are already
-  // in the catalog at this point.
-  modelCatalogSync = createModelCatalogSync({
-    catalog: llmProviderCatalog,
-    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
-  });
+  // Live model discovery, boot run: every connected provider with discovery
+  // rules is asked for its current model list here (fire-and-forget — boot
+  // never waits on a vendor), again after a key verifies, on the admin
+  // "refresh models" action, and on the periodic timer. Built-ins AND
+  // installed provider plugins are already in the catalog at this point.
   void modelCatalogSync.refreshAll().then((results) => {
     const summary = results
       .map((r) => `${r.providerId}=${r.status}${r.status === 'discovered' ? `(${String(r.models)})` : ''}`)
