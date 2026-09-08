@@ -1098,6 +1098,10 @@
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
       },
+      "discovery_unavailable": {
+        "what": "Live model discovery is not wired on this server, so the model list cannot be refreshed from the provider API.",
+        "next": "The provider keeps its shipped model list. Restart the middleware after updating it, or ask an administrator to enable discovery."
+      },
       "unknown_plugin": {
         "what": "That plugin is not one this page can assign a provider to.",
         "next": "Reload the page and pick a plugin from the list."
@@ -3653,6 +3657,16 @@
       "verifiedAt": "verified {time}",
       "testKey": "Test key",
       "testing": "Testing …",
+      "refreshModels": "Refresh models",
+      "refreshingModels": "Refreshing …",
+      "modelsDiscovered": "{count, plural, one {# model from the provider API} other {# models from the provider API}}",
+      "modelsRefreshNoCredentials": "No API key stored — the model list cannot be fetched.",
+      "modelsRefreshFailed": "Fetch failed: {error}",
+      "modelsRefreshFailedUnknown": "Fetch failed.",
+      "modelsRefreshEmpty": "The provider API returned no usable chat models — keeping the current list.",
+      "modelsRefreshUnsupported": "This provider does not support live discovery.",
+      "modelsSourceLive": "live · {at}",
+      "modelsSourceSeed": "seed list",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",

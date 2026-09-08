@@ -1098,6 +1098,10 @@
         "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
         "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
       },
+      "discovery_unavailable": {
+        "what": "Die Live-Modellerkennung ist auf diesem Server nicht eingerichtet, die Modell-Liste kann daher nicht aus der Provider-API aktualisiert werden.",
+        "next": "Der Provider behält seine mitgelieferte Modell-Liste. Starte die Middleware nach einem Update neu oder bitte einen Administrator, die Erkennung zu aktivieren."
+      },
       "unknown_plugin": {
         "what": "Diesem Plugin kann auf dieser Seite kein Provider zugeordnet werden.",
         "next": "Lade die Seite neu und wähle ein Plugin aus der Liste."
@@ -3653,6 +3657,16 @@
       "verifiedAt": "geprüft {time}",
       "testKey": "Schlüssel testen",
       "testing": "Wird geprüft …",
+      "refreshModels": "Modelle aktualisieren",
+      "refreshingModels": "Wird aktualisiert …",
+      "modelsDiscovered": "{count, plural, one {# Modell aus der Provider-API} other {# Modelle aus der Provider-API}}",
+      "modelsRefreshNoCredentials": "Kein API-Key hinterlegt — die Modell-Liste kann nicht abgerufen werden.",
+      "modelsRefreshFailed": "Abruf fehlgeschlagen: {error}",
+      "modelsRefreshFailedUnknown": "Abruf fehlgeschlagen.",
+      "modelsRefreshEmpty": "Die Provider-API lieferte keine passenden Chat-Modelle — bisherige Liste bleibt.",
+      "modelsRefreshUnsupported": "Dieser Provider unterstützt keine Live-Erkennung.",
+      "modelsSourceLive": "live · {at}",
+      "modelsSourceSeed": "Seed-Liste",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
