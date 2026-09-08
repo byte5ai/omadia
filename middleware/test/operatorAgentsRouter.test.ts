@@ -52,6 +52,7 @@ import {
 } from '@omadia/orchestrator';
 import {
   CONTEXT_MEMORY_MODES,
+  chatLabelFromMembers,
   createOperatorAgentsRouter,
   defaultTeamsBotSecretRef,
   projectInstalledTeams,
@@ -64,6 +65,10 @@ import {
   type OperatorTeamsInstallRecord,
 } from '../src/routes/operatorAgents.js';
 import type { TeamsProvisionerAccessor } from '../src/platform/teamsProvisionerService.js';
+import type { BotPresenceStore } from '../src/conductor/botPresenceStore.js';
+import type { ChannelDirectoryRegistry } from '../src/channels/channelDirectoryRegistry.js';
+import type { ConversationRosterRegistry } from '../src/channels/rosterRegistry.js';
+import type { ConversationParticipant, ConversationRoster } from '@omadia/channel-sdk';
 import type { TeamsTargetKind } from '../src/platform/teamsInstallTarget.js';
 import {
   armNotConfiguredDetail,
@@ -162,9 +167,15 @@ class FakeConfigStore {
   plugins = new Map<string, PluginMem>(); // key: agentId|pluginId
   bindings = new Map<string, BindingMem>(); // key: type|key
   fallbackId: string | null = null;
+  /** Provisioned bot identities (`28:<app id>` per agent) — what the
+   *  peer-chat picker derives its candidates from. */
+  identities: Array<{ channelType: string; channelKey: string; agentId: string }> = [];
 
   listAgents(): Promise<AgentMem[]> {
     return Promise.resolve(Array.from(this.agents.values()));
+  }
+  listChannelIdentities(): Promise<Array<{ channelType: string; channelKey: string; agentId: string }>> {
+    return Promise.resolve(this.identities.slice());
   }
   listAllAgentPlugins(): Promise<PluginMem[]> {
     return Promise.resolve(Array.from(this.plugins.values()));
@@ -621,9 +632,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 class FakeRegistry {
   reloadCalls = 0;
   invalidateCalls: Array<{ slug: string; mode: 'drain' | 'kill' }> = [];
+  /** Live owners of bot keys — the partner names the peer-chat picker shows. */
+  owners = new Map<string, { id: string; slug: string; name: string }>();
 
   list() {
     return [];
+  }
+  identityForChannel(channelType: string, channelKey: string) {
+    const agent = this.owners.get(`${channelType}|${channelKey}`);
+    return agent ? { agent } : undefined;
   }
   get(slug: string) {
     return { memoryScope: [`agent:fake:${slug}:*`, 'core'] };
@@ -664,6 +681,13 @@ describe('createOperatorAgentsRouter', () => {
   /** Migration 0053 — `undefined` keeps the pre-0053 response shape every
    *  existing case pins; the timeline cases bind it per test. */
   let teamsEvents: FakeTeamsEventStore | undefined;
+  /** #1018 — the presence directory the peer-chat picker reads. `undefined`
+   *  models no DATABASE_URL: the list then carries no candidates. */
+  let peerChats: BotPresenceStore | undefined;
+  /** Chat names: what the channel directory lists, and what the live roster
+   *  answers per `channelType|conversationId`. `undefined` = source absent. */
+  let chatDirectory: Array<{ channelType: string; key: string; label: string; members?: string[] }> | undefined;
+  let chatRosters: Record<string, ConversationRoster | undefined> | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -686,6 +710,17 @@ describe('createOperatorAgentsRouter', () => {
         getAgentGraphStore: () => graph as unknown as AgentGraphStore,
         // #910 — read live, like every other getter here.
         getInstalledRegistry: () => installedPlugins,
+        // #1018 — the chats each bot is in; per-test fixture, undefined = no DB.
+        getPeerChatDirectory: () => peerChats,
+        // …and their names: directory entries + live rosters, both per test.
+        getChannelDirectory: () =>
+          chatDirectory ? ({ listAll: async () => chatDirectory } as unknown as ChannelDirectoryRegistry) : undefined,
+        getConversationRosters: () =>
+          chatRosters
+            ? ({
+                getRoster: async (channelType: string, id: string) => chatRosters?.[`${channelType}|${id}`],
+              } as unknown as ConversationRosterRegistry)
+            : undefined,
         // #1033 — a two-provider catalogue; only anthropic holds a key.
         getModelPolicyContext: () => ({
           resolveModel: (provider: string, model: string) => POLICY_CATALOG[`${provider}:${model}`],
@@ -719,6 +754,10 @@ describe('createOperatorAgentsRouter', () => {
     graph = new FakeGraphStore();
     registry.reloadCalls = 0;
     registry.invalidateCalls = [];
+    registry.owners = new Map();
+    peerChats = undefined;
+    chatDirectory = undefined;
+    chatRosters = undefined;
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
@@ -897,6 +936,139 @@ describe('createOperatorAgentsRouter', () => {
       assert.equal(bad.status, 400);
       const missing = await fetch(`${baseUrl}/nope/peer-channels`);
       assert.equal(missing.status, 404);
+    });
+
+    it('peer-channels: GET offers only the chats the agent\'s own bot is in, with the partners present', async () => {
+      // Two provisioned agents. `hr` is in a group chat with `messias`, in a
+      // channel alone, and in a personal chat — the operator must be able to
+      // pick the first two and never see the third (no second bot can ever
+      // be there). A chat `hr` was never added to is not a candidate at all.
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      const messias = await store.createAgent({ slug: 'messias', name: 'Messias' });
+      store.identities = [
+        { channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id },
+        { channelType: 'teams', channelKey: '28:bbbb', agentId: messias.id },
+      ];
+      registry.owners.set('teams|28:aaaa', { id: hr.id, slug: 'hr', name: 'Karen' });
+      registry.owners.set('teams|28:bbbb', { id: messias.id, slug: 'messias', name: 'Messias' });
+      const asked: string[] = [];
+      peerChats = {
+        botAppIdsIn: async () => [],
+        conversationsOf: async (appId) => {
+          asked.push(appId);
+          if (appId !== 'aaaa') return [];
+          const at = new Date('2026-09-07T10:00:00Z');
+          return [
+            { conversationId: '19:sales@thread.skype', teamsType: 'groupChat', name: 'Sales sync', updatedAt: at, botAppIds: ['aaaa', 'bbbb', 'cccc'] },
+            { conversationId: '19:ops@thread.tacv2', teamsType: 'channel', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+            { conversationId: 'a:1', teamsType: 'personal', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          ];
+        },
+      };
+
+      const res = await fetch(`${baseUrl}/hr/peer-channels`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        channel_types: string[];
+        available: Array<{ channelType: string; channelKey: string; label: string | null; kind: string | null; members: string[]; partners: Array<{ slug: string; name: string }> }>;
+      };
+      assert.deepEqual(asked, ['aaaa'], 'only the agent\'s own bot is looked up');
+      assert.deepEqual(body.channel_types, ['teams']);
+      assert.deepEqual(body.available, [
+        // `cccc` has no live owner — an unowned bot is not a partner anyone can name.
+        { channelType: 'teams', channelKey: '19:sales@thread.skype', label: 'Sales sync', kind: 'groupChat', members: [], partners: [{ slug: 'messias', name: 'Messias' }] },
+        { channelType: 'teams', channelKey: '19:ops@thread.tacv2', label: null, kind: 'channel', members: [], partners: [] },
+      ]);
+
+      // No bot of its own → no channel kind, no candidate: the UI says so
+      // instead of offering an empty picker.
+      const none = await fetch(`${baseUrl}/messias/peer-channels`);
+      const noneBody = (await none.json()) as { channel_types: string[]; available: unknown[] };
+      assert.deepEqual(noneBody.channel_types, ['teams']);
+      assert.deepEqual(noneBody.available, []);
+      store.identities = [];
+      const noBot = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as { channel_types: string[]; available: unknown[] };
+      assert.deepEqual(noBot, { ...noBot, channel_types: [], available: [] });
+    });
+
+    it('peer-channels: an untitled chat is named from the directory, else from the live roster — never left as an id when a name exists', async () => {
+      // Marcel's field test: the picker showed `19:9cdb0cd5…@thread.skype`
+      // although /operator/channels names that chat. The name lives with
+      // the channel plugin; the picker must ask it — directory first (same
+      // label the channels page shows), roster as the post-restart fallback.
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      store.identities = [{ channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id }];
+      const at = new Date('2026-09-07T10:00:00Z');
+      peerChats = {
+        botAppIdsIn: async () => [],
+        conversationsOf: async () => [
+          { conversationId: '19:dir@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:roster@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:titled@thread.skype', teamsType: 'groupChat', name: 'Budget 2027', updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:unknown@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+        ],
+      };
+      chatDirectory = [
+        { channelType: 'teams', key: '19:dir@thread.skype', label: 'Teams · Sales sync', members: ['Anna Meier', 'Ben Ott'] },
+        // Same key on another channel type must not leak across.
+        { channelType: 'telegram', key: '19:roster@thread.skype', label: 'wrong channel' },
+      ];
+      const person = (id: string, displayName: string, isBot = false): ConversationParticipant => ({
+        userRef: { kind: 'teams' as ConversationParticipant['userRef']['kind'], id, displayName },
+        isBot,
+      });
+      chatRosters = {
+        'teams|19:roster@thread.skype': {
+          conversationType: 'group',
+          partial: false,
+          participants: [person('u1', 'Carla Diaz'), person('u2', 'Dieter Fink'), person('b1', 'Karen', true), person('u3', 'Eva Gross'), person('u4', 'Finn Hahn')],
+        },
+      };
+
+      const body = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as {
+        available: Array<{ channelKey: string; label: string | null; members: string[] }>;
+      };
+      const byKey = new Map(body.available.map((c) => [c.channelKey, c]));
+      // Directory wins and carries its members verbatim.
+      assert.deepEqual(byKey.get('19:dir@thread.skype'), { ...byKey.get('19:dir@thread.skype'), label: 'Teams · Sales sync', members: ['Anna Meier', 'Ben Ott'] });
+      // Roster fallback: humans only (the bot is a partner, not a member),
+      // Teams-style "first three, +rest" label.
+      assert.deepEqual(byKey.get('19:roster@thread.skype'), {
+        ...byKey.get('19:roster@thread.skype'),
+        label: 'Carla Diaz, Dieter Fink, Eva Gross, +1',
+        members: ['Carla Diaz', 'Dieter Fink', 'Eva Gross', 'Finn Hahn'],
+      });
+      // A titled chat keeps its own title.
+      assert.equal(byKey.get('19:titled@thread.skype')?.label, 'Budget 2027');
+      // Nothing knows this one: id it is, and the UI says so.
+      assert.deepEqual(byKey.get('19:unknown@thread.skype'), { ...byKey.get('19:unknown@thread.skype'), label: null, members: [] });
+    });
+
+    it('chatLabelFromMembers mirrors how Teams names an untitled group chat', () => {
+      assert.equal(chatLabelFromMembers([]), null);
+      assert.equal(chatLabelFromMembers(['  ']), null);
+      assert.equal(chatLabelFromMembers(['Anna']), 'Anna');
+      assert.equal(chatLabelFromMembers(['Anna', 'Ben', 'Cid']), 'Anna, Ben, Cid');
+      assert.equal(chatLabelFromMembers(['Anna', 'Ben', 'Cid', 'Dan', 'Eve']), 'Anna, Ben, Cid, +2');
+    });
+
+    it('peer-channels: GET without a presence directory still lists the enabled rows, just no candidates', async () => {
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      store.identities = [{ channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id }];
+      const key = encodeURIComponent('19:x@thread.skype');
+      await fetch(`${baseUrl}/hr/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const body = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as {
+        channels: unknown[];
+        channel_types: string[];
+        available: unknown[];
+      };
+      assert.equal(body.channels.length, 1);
+      assert.deepEqual(body.channel_types, ['teams']);
+      assert.deepEqual(body.available, []);
     });
   });
 
@@ -1462,6 +1634,22 @@ describe('createOperatorAgentsRouter', () => {
       /getReadinessCause:/,
       'index.ts must pass getReadinessCause to createOperatorAgentsRouter — without it the 503 carries no cause',
     );
+    // #1018 — without this the peer-chat picker has nothing to offer and the
+    // operator is back to typing conversation ids.
+    assert.match(
+      mount,
+      /getPeerChatDirectory:/,
+      'index.ts must pass getPeerChatDirectory to createOperatorAgentsRouter — without it GET /:slug/peer-channels lists no candidate chats',
+    );
+    assert.match(
+      indexSource,
+      /createBotPresenceStore\(graphPool/,
+      'the peer-chat directory must be the real presence store over graphPool',
+    );
+    // Without these the picker names chats by id — the very thing the field
+    // test rejected — because the names live with the channel plugin.
+    assert.match(mount, /getChannelDirectory:\s*\(\)\s*=>\s*channelDirectoryRegistry/, 'index.ts must hand the channel directory to the peer-chat picker');
+    assert.match(mount, /getConversationRosters:\s*\(\)\s*=>\s*conversationRosterRegistry/, 'index.ts must hand the roster registry to the peer-chat picker');
   });
 
   it('index.ts wires syncBotConfig into the provisioning runner (wiring pin, #910)', async () => {

@@ -13,6 +13,7 @@ import {
   setAgentPeerChannel,
   type AgentToAgentMode,
   type PeerChannelDto,
+  type PeerChatCandidateDto,
 } from '../../../../_lib/agents';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 
@@ -40,7 +41,9 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
   const tErr = useTranslations('operatorAgents');
   const [mode, setMode] = useState<AgentToAgentMode | null>(null);
   const [channels, setChannels] = useState<PeerChannelDto[]>([]);
-  const [newType, setNewType] = useState('teams');
+  const [channelTypes, setChannelTypes] = useState<string[]>([]);
+  const [available, setAvailable] = useState<PeerChatCandidateDto[]>([]);
+  const [newType, setNewType] = useState('');
   const [newKey, setNewKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,6 +65,8 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
       const res = await getAgentPeerChannels(props.slug);
       setMode(res.mode);
       setChannels(res.channels);
+      setChannelTypes(res.channelTypes);
+      setAvailable(res.available);
       setError(null);
     } catch (err: unknown) {
       setError(localizeError(err));
@@ -93,12 +98,29 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
     void run(() => setAgentAgentToAgent(props.slug, next));
   };
 
+  // The picker is derived, never typed: only channel kinds this agent owns a
+  // bot on, and only chats that bot is actually in and that are not already
+  // listed. A chat the bot was never added to could be enabled but would
+  // change nothing, so it is not offered.
+  const effectiveType = channelTypes.includes(newType) ? newType : (channelTypes[0] ?? '');
+  const enabledKeys = new Set(channels.map((c) => `${c.channelType}|${c.channelKey}`));
+  const candidates = available.filter(
+    (c) => c.channelType === effectiveType && !enabledKeys.has(`${c.channelType}|${c.channelKey}`),
+  );
+  const candidateByKey = new Map(available.map((c) => [`${c.channelType}|${c.channelKey}`, c]));
+  const selectedKey = candidates.some((c) => c.channelKey === newKey) ? newKey : '';
+
+  const describeChat = (c: PeerChatCandidateDto): string => {
+    const head = c.label ?? c.channelKey;
+    return c.partners.length > 0
+      ? t('chatOption', { chat: head, partners: c.partners.map((p) => p.name).join(', ') })
+      : t('chatOptionNoPartners', { chat: head });
+  };
+
   const addChannel = (): void => {
-    const key = newKey.trim();
-    const type = newType.trim();
-    if (!key || !type) return;
+    if (!selectedKey || !effectiveType) return;
     void run(async () => {
-      await setAgentPeerChannel(props.slug, type, key, true);
+      await setAgentPeerChannel(props.slug, effectiveType, selectedKey, true);
       setNewKey('');
     });
   };
@@ -169,9 +191,36 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
                     key={`${c.channelType}|${c.channelKey}`}
                     className="flex flex-wrap items-center justify-between gap-2 rounded border border-[color:var(--border)]/60 px-2 py-1 text-sm"
                   >
-                    <span className="flex items-center gap-2">
-                      <code className="text-xs text-[color:var(--fg-muted)]">{c.channelType}</code>
-                      <code className="break-all text-xs">{c.channelKey}</code>
+                    <span className="flex flex-col gap-0.5">
+                      <span className="flex items-center gap-2">
+                        <code className="text-xs text-[color:var(--fg-muted)]">{c.channelType}</code>
+                        <span className="text-sm">
+                          {candidateByKey.get(`${c.channelType}|${c.channelKey}`)?.label ?? (
+                            <code className="break-all text-xs">{c.channelKey}</code>
+                          )}
+                        </span>
+                      </span>
+                      <span className="text-xs text-[color:var(--fg-muted)]">
+                        {(() => {
+                          const known = candidateByKey.get(`${c.channelType}|${c.channelKey}`);
+                          if (!known) return t('chatNotPresent');
+                          return known.partners.length > 0
+                            ? t('chatPartners', { partners: known.partners.map((p) => p.name).join(', ') })
+                            : t('chatPartnersNone');
+                        })()}
+                      </span>
+                      {(() => {
+                        const known = candidateByKey.get(`${c.channelType}|${c.channelKey}`);
+                        if (!known || known.members.length === 0) return null;
+                        return (
+                          <span className="text-xs text-[color:var(--fg-muted)]">
+                            {t('chatMembers', { members: known.members.join(', ') })}
+                          </span>
+                        );
+                      })()}
+                      {candidateByKey.get(`${c.channelType}|${c.channelKey}`)?.label && (
+                        <code className="break-all text-[10px] text-[color:var(--fg-muted)]">{c.channelKey}</code>
+                      )}
                     </span>
                     <span className="flex items-center gap-2">
                       <label className="flex cursor-pointer items-center gap-1 text-xs">
@@ -201,30 +250,54 @@ export function AgentPeers(props: AgentPeersProps): React.ReactElement {
               </ul>
             )}
 
-            <div className="mt-3 flex flex-wrap items-end gap-2">
-              <label className="flex flex-col text-xs">
-                <span className="mb-1 text-[color:var(--fg-muted)]">{t('channelTypeLabel')}</span>
-                <input
-                  className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-sm"
-                  value={newType}
-                  disabled={busy}
-                  onChange={(e) => setNewType(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-1 flex-col text-xs">
-                <span className="mb-1 text-[color:var(--fg-muted)]">{t('channelKeyLabel')}</span>
-                <input
-                  className="min-w-64 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-sm"
-                  value={newKey}
-                  placeholder={t('channelKeyPlaceholder')}
-                  disabled={busy}
-                  onChange={(e) => setNewKey(e.target.value)}
-                />
-              </label>
-              <Button size="sm" busy={busy} busyLabel={t('adding')} disabled={!newKey.trim() || busy} onClick={addChannel}>
-                {t('add')}
-              </Button>
-            </div>
+            {channelTypes.length === 0 ? (
+              <p className="mt-3 text-xs text-[color:var(--fg-muted)]">{t('noBot')}</p>
+            ) : (
+              <div className="mt-3 flex flex-wrap items-end gap-2">
+                <label className="flex flex-col text-xs">
+                  <span className="mb-1 text-[color:var(--fg-muted)]">{t('channelTypeLabel')}</span>
+                  <select
+                    className="rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-sm"
+                    value={effectiveType}
+                    disabled={busy || channelTypes.length < 2}
+                    onChange={(e) => {
+                      setNewType(e.target.value);
+                      setNewKey('');
+                    }}
+                  >
+                    {channelTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-1 flex-col text-xs">
+                  <span className="mb-1 text-[color:var(--fg-muted)]">{t('chatSelectLabel')}</span>
+                  <select
+                    className="min-w-64 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1 text-sm"
+                    value={selectedKey}
+                    disabled={busy || candidates.length === 0}
+                    onChange={(e) => setNewKey(e.target.value)}
+                  >
+                    <option value="">
+                      {candidates.length === 0 ? t('chatSelectNone') : t('chatSelectPlaceholder')}
+                    </option>
+                    {candidates.map((c) => (
+                      <option key={c.channelKey} value={c.channelKey}>
+                        {describeChat(c)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button size="sm" busy={busy} busyLabel={t('adding')} disabled={!selectedKey || busy} onClick={addChannel}>
+                  {t('add')}
+                </Button>
+                {candidates.length === 0 && (
+                  <p className="basis-full text-xs text-[color:var(--fg-muted)]">{t('noKnownChats')}</p>
+                )}
+              </div>
+            )}
           </div>
         </>
       )}

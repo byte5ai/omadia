@@ -14,11 +14,15 @@ import {
 } from '../../../../_lib/agents';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import { PluginsDnd } from '../../_components/PluginsDnd';
+import { AgentContextMemory } from './AgentContextMemory';
+import { AgentDetailTabs } from './AgentDetailTabs';
 import { AgentIdentity } from './AgentIdentity';
+import { AgentMcpServers } from './AgentMcpServers';
 import { AgentModelPolicy } from './AgentModelPolicy';
 import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
+import { AgentToolGrants } from './AgentToolGrants';
 
 /**
  * #914 — the Agent Builder deep link that used to live here is GONE, along
@@ -148,44 +152,11 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
       .finally(() => setBusy(null));
   }
 
-  return (
-    <div className="space-y-8">
-      {error && (
-        <div
-          role="alert"
-          className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]"
-        >
-          {error}
-        </div>
-      )}
-      {catalogError && (
-        <div className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]">
-          {t('catalogError', { message: catalogError })}
-        </div>
-      )}
-
-      {/* #914 — identity first: who this agent is comes before what it is
-          allowed to do. Fetches its own read model by slug, so it is safe to
-          mount for an agent that has neither an identity row nor a Teams
-          bot. */}
-      <AgentIdentity slug={props.agent.slug} />
-
-      {/* #1033 — how the agent THINKS comes right after who it is: which
-          model answers under its name, and which one steps in when that is
-          unavailable. Then (#1018) with whom it may converse. Both fetch
-          their own read models by slug. */}
-      <AgentModelPolicy slug={props.agent.slug} />
-      <AgentPeers slug={props.agent.slug} />
-
-      {/* Teams sections (epic #860, wave W2a). This component is the single
-          composition point for them, so the sibling Teams units (config
-          block, installs panel) extend one file instead of racing over the
-          page shell. The assignment panel fetches its own read model by slug
-          and disables what the platform cannot do, so it is safe to mount
-          before an identity exists. */}
-      <AgentTeamsIdentity slug={props.agent.slug} />
-      <AgentTeamsInstalls slug={props.agent.slug} />
-
+  // The plugin tab: the assigned list (instant toggle) above the dnd editor
+  // (replace-set save). Built as a value so the tab host can mount it lazily
+  // like every other panel while its state stays in this component.
+  const pluginsPanel = (
+    <>
       <section className="rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-4">
         <h2 className="mb-1 text-lg font-medium">
           {t('detailAssignedHeading')}
@@ -267,6 +238,52 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
           )
         )}
       </section>
+    </>
+  );
+
+  return (
+    <div className="space-y-8">
+      {error && (
+        <div
+          role="alert"
+          className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]"
+        >
+          {error}
+        </div>
+      )}
+      {catalogError && (
+        <div className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]">
+          {t('catalogError', { message: catalogError })}
+        </div>
+      )}
+
+      {/* One tab per concern; the order follows the operator's questions:
+          who is this agent (#914), how does it think (#1033), with whom may
+          it talk (#1018), where does it live (#860 Teams), what can it do
+          (plugins, #861/#862 grants + MCP), what does it remember (#899).
+          Every section fetches its own read model by slug and is safe to
+          mount on its own — which is exactly what a tab does. */}
+      <AgentDetailTabs
+        panels={{
+          identity: () => <AgentIdentity slug={props.agent.slug} />,
+          model: () => <AgentModelPolicy slug={props.agent.slug} />,
+          peers: () => <AgentPeers slug={props.agent.slug} />,
+          teams: () => (
+            <>
+              <AgentTeamsIdentity slug={props.agent.slug} />
+              <AgentTeamsInstalls slug={props.agent.slug} />
+            </>
+          ),
+          plugins: () => pluginsPanel,
+          tools: () => (
+            <>
+              <AgentToolGrants slug={props.agent.slug} />
+              <AgentMcpServers slug={props.agent.slug} />
+            </>
+          ),
+          memory: () => <AgentContextMemory slug={props.agent.slug} />,
+        }}
+      />
     </div>
   );
 }

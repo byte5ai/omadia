@@ -1026,3 +1026,87 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
     assert.equal(cfg?.['some_operator_key'], 'keep-me', 'unrelated key survives the register spread');
   });
 });
+
+// ---------------------------------------------------------------------------
+// embeddingClient@1 mutual exclusion (#1041 follow-up — production boot fatal)
+// ---------------------------------------------------------------------------
+
+describe('embeddingClient@1 mutual exclusion — Ollama vs keyless local adapter', () => {
+  const EMB_ID = '@omadia/embeddings';
+  const LOCAL_ID = '@omadia/embedding-adapter-local';
+  const twoCatalog = makeCatalog([
+    { id: EMB_ID, kind: 'extension', provides: ['embeddingClient@1'], requires: [], depends_on: [] },
+    { id: LOCAL_ID, kind: 'extension', provides: ['embeddingClient@1'], requires: [], depends_on: [] },
+  ]);
+  const stubVault = { get: async () => undefined, setMany: async () => {} } as unknown as SecretVault;
+  const cfg = (url?: string): Config => ({ ...(url ? { OLLAMA_BASE_URL: url } : {}) }) as unknown as Config;
+  async function seed(reg: InMemoryInstalledRegistry, id: string, config: Record<string, unknown> = {}) {
+    await reg.register({ id, installed_version: '0.1.0', installed_at: '2026-09-07T00:00:00Z', status: 'active', config });
+  }
+
+  it('catch-all does NOT auto-install the local adapter next to an active Ollama adapter', async () => {
+    // The production incident: v0.154.0 booted with both, the resolver threw
+    // `capability 'embeddingClient@1' is provided by both …`, the machine died.
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, EMB_ID, { ollama_base_url: 'http://ollama:11434' });
+    const logs: string[] = [];
+    await bootstrapBuiltInPackages({
+      config: cfg('http://ollama:11434'),
+      vault: stubVault,
+      registry: reg,
+      catalog: twoCatalog,
+      builtInStore: makeBuiltInStore([
+        { id: EMB_ID, path: '/x/embeddings' },
+        { id: LOCAL_ID, path: '/x/embedding-adapter-local' },
+      ]) as unknown as Parameters<typeof bootstrapBuiltInPackages>[0]['builtInStore'],
+      log: (m: string) => logs.push(m),
+    });
+    assert.equal(reg.get(LOCAL_ID), undefined, 'second embeddingClient@1 provider must not be auto-installed');
+    assert.equal(reg.get(EMB_ID)?.status, 'active');
+    assert.ok(logs.some((l) => l.includes(LOCAL_ID) && l.includes('already provided by active')));
+  });
+
+  it('catch-all still auto-installs the local adapter when NO other embedder is installed', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await bootstrapBuiltInPackages({
+      config: cfg(),
+      vault: stubVault,
+      registry: reg,
+      catalog: twoCatalog,
+      builtInStore: makeBuiltInStore([{ id: LOCAL_ID, path: '/x/embedding-adapter-local' }]) as unknown as Parameters<typeof bootstrapBuiltInPackages>[0]['builtInStore'],
+      log: () => {},
+    });
+    assert.equal(reg.get(LOCAL_ID)?.status, 'active');
+  });
+
+  it('self-heals a persisted both-active state: keeps Ollama when it is configured', async () => {
+    // What the volume looks like after the failed v0.154.0 boot registered both.
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, EMB_ID, { ollama_base_url: 'http://ollama:11434' });
+    await seed(reg, LOCAL_ID);
+    await bootstrapEmbeddingsFromEnv({ config: cfg('http://ollama:11434'), vault: stubVault, registry: reg, catalog: twoCatalog, log: () => {} });
+    assert.equal(reg.get(LOCAL_ID), undefined, 'local adapter removed');
+    assert.equal(reg.get(EMB_ID)?.status, 'active');
+  });
+
+  it('self-heals a persisted both-active state: keeps the local adapter when Ollama has no base URL', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, EMB_ID);
+    await seed(reg, LOCAL_ID);
+    await bootstrapEmbeddingsFromEnv({ config: cfg(), vault: stubVault, registry: reg, catalog: twoCatalog, log: () => {} });
+    assert.equal(reg.get(EMB_ID), undefined, 'unconfigured Ollama adapter removed');
+    assert.equal(reg.get(LOCAL_ID)?.status, 'active');
+  });
+
+  it('leaves a single active embedder alone', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, LOCAL_ID);
+    await bootstrapEmbeddingsFromEnv({ config: cfg(), vault: stubVault, registry: reg, catalog: twoCatalog, log: () => {} });
+    assert.equal(reg.get(LOCAL_ID)?.status, 'active');
+    // and Ollama is then installed alongside? No — the catch-all's collision
+    // guard is what keeps it out; bootstrapEmbeddingsFromEnv itself installs
+    // Ollama only when nothing named `@omadia/embeddings` exists, which would
+    // now collide. Pin that the explicit installer also respects the rule.
+    assert.equal(reg.get(EMB_ID), undefined);
+  });
+});

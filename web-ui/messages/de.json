@@ -1982,8 +1982,12 @@
       "heading": "Modell",
       "hint": "Welches Modell unter dem Namen dieses Agenten antwortet — und welches einspringt, wenn es nicht verfügbar ist. Angeboten wird nur, was auf diesem Host installiert ist und unter Provider einen Key hat.",
       "loading": "Modell-Policy wird geladen…",
-      "primary": { "label": "Primär" },
-      "fallback": { "label": "Fallback" },
+      "primary": {
+        "label": "Primär"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
       "auto": "Auto",
       "autoResolves": "Was die Plattform heute auflöst: {model}",
       "autoUnknown": "Was die Plattform heute auflöst (noch nicht gebaut)",
@@ -2020,22 +2024,34 @@
       "loading": "Peer-Einstellungen werden geladen…",
       "stateUnknown": "Aktuell: unbekannt",
       "stateSummary": "Aktuell: {mode} · {chats, plural, =0 {kein Chat freigeschaltet} one {# Chat freigeschaltet} other {# Chats freigeschaltet}}",
-      "modes": { "off": "Aus", "on": "An" },
+      "modes": {
+        "off": "Aus",
+        "on": "An"
+      },
       "modeHints": {
         "off": "Der Agent spricht nie mit anderen Agenten. Der Standard.",
         "on": "Der Agent darf an Diskussionen mit anderen Agenten teilnehmen — in den unten freigeschalteten Chats."
       },
       "chatsHeading": "Freigeschaltete Chats",
-      "chatsHint": "Eine Zeile je Chat. Für Teams ist das die Conversation-ID des Gruppenchats (19:…@thread.skype). Eine Zeile für einen Chat, in dem der Bot nicht ist, schadet nicht — das Relay berücksichtigt nur Bots, die wirklich dort sind.",
+      "chatsHint": "Eine Zeile je Chat. Angeboten werden nur Chats, in denen der eigene Bot dieses Agenten wirklich ist — den Bot zuerst in Teams zum Gruppenchat hinzufügen, dann erscheint er hier. Das Relay berücksichtigt nur Bots, die anwesend sind.",
       "chatsEmpty": "Noch kein Chat freigeschaltet.",
       "chatEnabled": "freigeschaltet",
       "chatDisabled": "gesperrt",
       "remove": "Entfernen",
       "channelTypeLabel": "Channel",
-      "channelKeyLabel": "Conversation-ID",
-      "channelKeyPlaceholder": "19:…@thread.skype",
       "add": "Chat freischalten",
-      "adding": "Wird hinzugefügt"
+      "adding": "Wird hinzugefügt",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Chat wählen…",
+      "chatSelectNone": "Kein Chat verfügbar",
+      "noKnownChats": "Dieser Bot ist in keinem Gruppenchat, der nicht schon gelistet ist. Den Bot in Teams zu einem Gruppenchat hinzufügen — dann taucht er hier auf.",
+      "noBot": "Dieser Agent hat noch keinen eigenen Bot. Zuerst eine Teams-Identität bereitstellen — ohne Bot gibt es keinen Chat zum Freischalten.",
+      "chatOption": "{chat} · mit {partners}",
+      "chatOptionNoPartners": "{chat} · kein weiterer Bot anwesend",
+      "chatPartners": "Anwesende Bots: {partners}",
+      "chatPartnersNone": "Kein weiterer Bot anwesend — eine Diskussion braucht einen zweiten.",
+      "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht.",
+      "chatMembers": "Teilnehmer: {members}"
     },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
@@ -2532,6 +2548,16 @@
       "slugConfirmLabel": "Tippe zur Bestätigung den Bot-Slug „{slug}“ ein:",
       "slugMismatch": "Der eingegebene Bot-Slug stimmt nicht überein.",
       "resultCompleteIdentity": "Identität gelöscht. Der Orchestrator kann jetzt mit einem neuen Bot-Slug und Anzeigenamen angelegt werden."
+    },
+    "detailTabs": {
+      "aria": "Agent-Einstellungen",
+      "identity": "Identität",
+      "model": "Modell",
+      "peers": "Gespräche",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Werkzeuge",
+      "memory": "Memory"
     }
   },
   "builder": {

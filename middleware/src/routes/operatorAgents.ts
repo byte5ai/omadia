@@ -49,6 +49,9 @@ import {
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
 import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
+import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
+import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
@@ -1652,6 +1655,161 @@ export interface OperatorAgentsRouterOptions {
    *  and minimal mounts omit it and the 503 carries no `cause`. Must not
    *  throw; a rejection degrades to `unknown`. */
   readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
+  /**
+   * #1018 — where this agent's bot can actually be heard (kernel table
+   * `teams_conversation_refs`, graph migration 0031). `GET /:slug/peer-channels`
+   * lists those chats as the ONLY candidates for enabling agent-to-agent talk:
+   * a chat the bot holds no reference to would be accepted and then never
+   * used, so it is not offered. Optional: without it the list carries no
+   * candidates (tests / minimal mounts, no DATABASE_URL).
+   */
+  readonly getPeerChatDirectory?: () => BotPresenceStore | undefined;
+  /**
+   * How a candidate chat gets a NAME instead of its id. Two sources, both
+   * owned by the channel plugin: the channel-key directory (group-chat topic
+   * via Graph, or the "A, B, +n" label the Teams plugin derives from the
+   * roster) and the live conversation roster (participant display names,
+   * backed by the persisted reference — so it answers right after a
+   * restart, when the in-memory directory is still empty). Optional: without
+   * either the picker shows the id.
+   */
+  readonly getChannelDirectory?: () => ChannelDirectoryRegistry | undefined;
+  readonly getConversationRosters?: () => ConversationRosterRegistry | undefined;
+}
+
+/** One chat the agent's own bot is present in — a candidate for enabling. */
+export interface PeerChatCandidate {
+  readonly channelType: string;
+  readonly channelKey: string;
+  /** What the operator knows the chat as: the topic, or the Teams-style
+   *  "A, B, +n" derived from its members. Null only when no source can name
+   *  it — the UI then shows the id. */
+  readonly label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  readonly kind: string | null;
+  /** Human participants' display names (capped), for the row detail. */
+  readonly members: readonly string[];
+  /** The OTHER agents whose bots are present — the possible discussion
+   *  partners. Bots without a live owning agent are not listed. */
+  readonly partners: readonly { slug: string; name: string }[];
+}
+
+/** `28:<app id>` — the Teams bot identity key; the app id is what the
+ *  reference table is keyed on. */
+const TEAMS_BOT_KEY = /^28:([0-9a-f-]+)$/i;
+
+/** Names shown per chat before the list collapses into "+n". Teams itself
+ *  names an untitled group chat after its first few members. */
+const CHAT_NAME_MEMBERS = 3;
+const CHAT_MEMBERS_CAP = 8;
+
+/** "Anna Meier, Ben Ott, +3" — the label Teams shows for an untitled group. */
+export function chatLabelFromMembers(members: readonly string[]): string | null {
+  const names = members.filter((m) => m.trim().length > 0);
+  if (names.length === 0) return null;
+  const head = names.slice(0, CHAT_NAME_MEMBERS).join(', ');
+  const rest = names.length - CHAT_NAME_MEMBERS;
+  return rest > 0 ? `${head}, +${rest}` : head;
+}
+
+interface ChatNameSources {
+  readonly directory?: ChannelDirectoryRegistry;
+  readonly rosters?: ConversationRosterRegistry;
+}
+
+/**
+ * Name one chat. Directory first — it carries the Graph topic and the
+ * plugin's own member-derived label, i.e. exactly what `/operator/channels`
+ * shows, so the two pages never disagree. The live roster is the fallback
+ * for the window after a restart in which the directory has not observed
+ * the chat yet: it reads the persisted reference and asks Teams for the
+ * members. Bots are dropped from the member list; they are the partners,
+ * listed separately.
+ */
+async function resolveChatName(
+  sources: ChatNameSources,
+  channelType: string,
+  conversationId: string,
+  directoryEntries: ReadonlyMap<string, { label: string; members?: readonly string[] }>,
+): Promise<{ label: string | null; members: readonly string[] }> {
+  const fromDirectory = directoryEntries.get(`${channelType}|${conversationId}`);
+  if (fromDirectory) {
+    return {
+      label: fromDirectory.label,
+      members: (fromDirectory.members ?? []).slice(0, CHAT_MEMBERS_CAP),
+    };
+  }
+  const roster = await sources.rosters?.getRoster(channelType, conversationId);
+  const members = (roster?.participants ?? [])
+    .filter((p) => !p.isBot)
+    .map((p) => p.userRef.displayName?.trim() ?? '')
+    .filter((n) => n.length > 0)
+    .slice(0, CHAT_MEMBERS_CAP);
+  return { label: chatLabelFromMembers(members), members };
+}
+
+/** The directory, read once per request and keyed like the candidates. */
+async function loadDirectoryEntries(
+  directory: ChannelDirectoryRegistry | undefined,
+): Promise<ReadonlyMap<string, { label: string; members?: readonly string[] }>> {
+  const out = new Map<string, { label: string; members?: readonly string[] }>();
+  if (!directory) return out;
+  for (const entry of await directory.listAll()) {
+    out.set(`${entry.channelType}|${entry.key}`, {
+      label: entry.label,
+      ...(entry.members !== undefined ? { members: entry.members } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * #1018 — the chats an operator may pick for agent-to-agent talk. Derived,
+ * never typed: the agent's own provisioned bots (channel identities) and the
+ * conversations each holds a reference in. A chat missing here is a chat the
+ * bot was never added to, and enabling it would change nothing — so the
+ * picker does not offer it. Personal (1:1) chats are skipped: a discussion
+ * needs a second bot, and a personal chat never has one.
+ */
+async function listPeerChatCandidates(
+  live: { store: ConfigStore; registry: OrchestratorRegistry },
+  agentId: string,
+  directory: BotPresenceStore | undefined,
+  names: ChatNameSources = {},
+): Promise<{ channelTypes: string[]; available: PeerChatCandidate[] }> {
+  const identities = (await live.store.listChannelIdentities()).filter((i) => i.agentId === agentId);
+  const channelTypes = Array.from(new Set(identities.map((i) => i.channelType))).sort();
+  if (!directory) return { channelTypes, available: [] };
+  const directoryEntries = await loadDirectoryEntries(names.directory);
+  const available: PeerChatCandidate[] = [];
+  const seen = new Set<string>();
+  for (const identity of identities) {
+    const appId = TEAMS_BOT_KEY.exec(identity.channelKey)?.[1]?.toLowerCase();
+    if (identity.channelType !== 'teams' || !appId) continue;
+    for (const conv of await directory.conversationsOf(appId)) {
+      if (conv.teamsType === 'personal' || seen.has(conv.conversationId)) continue;
+      seen.add(conv.conversationId);
+      const partners: { slug: string; name: string }[] = [];
+      for (const other of conv.botAppIds) {
+        if (other === appId) continue;
+        const owner = live.registry.identityForChannel(identity.channelType, `28:${other}`);
+        if (!owner || owner.agent.id === agentId || partners.some((p) => p.slug === owner.agent.slug)) continue;
+        partners.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug });
+      }
+      // The reference's own `conversation.name` is the cheapest source (a
+      // titled chat), then the plugin's directory / roster — see resolveChatName.
+      const named = await resolveChatName(names, identity.channelType, conv.conversationId, directoryEntries);
+      available.push({
+        channelType: identity.channelType,
+        channelKey: conv.conversationId,
+        label: conv.name ?? named.label,
+        kind: conv.teamsType,
+        members: named.members,
+        partners,
+      });
+    }
+  }
+  return { channelTypes, available };
 }
 
 export function createOperatorAgentsRouter(
@@ -2162,7 +2320,13 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      const policies = await live.store.listAgentChannelPolicies(agent.id);
+      const [policies, candidates] = await Promise.all([
+        live.store.listAgentChannelPolicies(agent.id),
+        listPeerChatCandidates(live, agent.id, options.getPeerChatDirectory?.(), {
+          directory: options.getChannelDirectory?.(),
+          rosters: options.getConversationRosters?.(),
+        }),
+      ]);
       res.json({
         slug: agent.slug,
         mode: parseAgentToAgentMode(agent.agentToAgent),
@@ -2172,6 +2336,11 @@ export function createOperatorAgentsRouter(
           enabled: p.agentToAgent,
           updatedAt: p.updatedAt.toISOString(),
         })),
+        // Channel kinds this agent owns a bot on — the picker's first select.
+        // Empty means "no provisioned bot": nothing can be enabled yet.
+        channel_types: candidates.channelTypes,
+        // The chats that bot is actually in — the picker's second select.
+        available: candidates.available,
       });
     } catch (err) {
       badRequest(res, err);
