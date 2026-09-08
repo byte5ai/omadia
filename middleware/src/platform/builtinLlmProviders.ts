@@ -34,32 +34,77 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     // exactly on the stock configuration. Omitting the flag lets the
     // catalogue default (`requiresAvvDisclosure ?? true`) apply.
     policy: {},
+    // Live discovery (Anthropic `GET /v1/models`): FAMILY rules only — a new
+    // Opus/Sonnet/Haiku generation becomes the class default + alias holder
+    // the next time the catalog syncs, with no edit here. The `models` list
+    // below is the offline seed (cold boot, no key yet, API unreachable).
+    discovery: {
+      include: ['^claude-'],
+      // Fable/Mythos: different API contract (forced tool_choice → 400,
+      // refusal stop reason, retention requirements) — not until the adapter
+      // handles them. `claude-3-*` / `claude-2*`: retired families.
+      exclude: ['fable', 'mythos', '^claude-[23]([.-]|$)', '^claude-instant'],
+      classify: [
+        {
+          match: '^claude-opus-',
+          class: 'frontier',
+          aliases: ['opus'],
+          maxTokens: 32_000,
+          contextWindow: 200_000,
+          vision: true,
+          // #1033 — `output_config.effort`; the vendor list reports the real
+          // ladder, this is the fallback when it does not.
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'high',
+        },
+        {
+          match: '^claude-sonnet-',
+          class: 'balanced',
+          aliases: ['sonnet'],
+          maxTokens: 64_000,
+          contextWindow: 200_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'high',
+        },
+        {
+          match: '^claude-haiku-',
+          class: 'fast',
+          aliases: ['haiku'],
+          maxTokens: 8_192,
+          contextWindow: 200_000,
+          vision: true,
+        },
+      ],
+    },
     models: [
       {
-        id: 'anthropic:claude-opus-4-8',
+        id: 'anthropic:claude-opus-5',
         provider: 'anthropic',
-        modelId: 'claude-opus-4-8',
-        label: 'Claude Opus 4.8',
+        modelId: 'claude-opus-5',
+        label: 'Claude Opus 5',
         class: 'frontier',
         maxTokens: 32_000,
         contextWindow: 200_000,
         vision: true,
         aliases: ['opus'],
         // #1033 — `output_config.effort` (Opus 4.5+). Declared only where the
-        // vendor documents the knob; Sonnet/Haiku stay undeclared until they do.
+        // vendor documents the knob; Haiku uses `budget_tokens` instead.
         effortLevels: ['low', 'medium', 'high', 'xhigh'],
         effortDefault: 'high',
       },
       {
-        id: 'anthropic:claude-sonnet-4-6',
+        id: 'anthropic:claude-sonnet-5',
         provider: 'anthropic',
-        modelId: 'claude-sonnet-4-6',
-        label: 'Claude Sonnet 4.6',
+        modelId: 'claude-sonnet-5',
+        label: 'Claude Sonnet 5',
         class: 'balanced',
         maxTokens: 64_000,
         contextWindow: 200_000,
         vision: true,
         aliases: ['sonnet'],
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+        effortDefault: 'high',
       },
       {
         id: 'anthropic:claude-haiku-4-5-20251001',
@@ -82,6 +127,59 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     // A baseURL is set, so the adapter treats this as openai-compatible and would
     // emit the legacy `max_tokens`; GPT-5 / o-series require `max_completion_tokens`.
     quirks: { maxTokensField: 'max_completion_tokens' },
+    // Live discovery (`GET /v1/models`). OpenAI's list is id-only, so the
+    // rules carry the caps. Family rules, generation-agnostic:
+    //  - plain `gpt-N[.M]` / `-sol`: newest = frontier default, previous
+    //    generations = balanced (that is how 5.5/5.4 were tiered);
+    //  - `-astra`: premium frontier, never the default while a plain/sol
+    //    generation exists (rule order = preference);
+    //  - `-mini` / `-terra`: balanced;  `-nano` / `-luna`: fast.
+    discovery: {
+      include: ['^gpt-\\d'],
+      exclude: [
+        '(audio|realtime|transcribe|tts|whisper|image|dall-e|embedding|moderation|search|codex|instruct|computer-use|deep-research|chat-latest)',
+        '-pro$',
+      ],
+      classify: [
+        {
+          match: '^gpt-\\d+(\\.\\d+)?(-sol)?$',
+          class: 'frontier',
+          restClass: 'balanced',
+          maxTokens: 128_000,
+          contextWindow: 400_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'medium',
+        },
+        {
+          match: '-astra$',
+          class: 'frontier',
+          maxTokens: 128_000,
+          contextWindow: 1_000_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'medium',
+        },
+        {
+          match: '-(mini|terra)$',
+          class: 'balanced',
+          maxTokens: 128_000,
+          contextWindow: 400_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'medium',
+        },
+        {
+          match: '-(nano|luna)$',
+          class: 'fast',
+          maxTokens: 128_000,
+          contextWindow: 400_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'medium',
+        },
+      ],
+    },
     models: [
       {
         id: 'openai:gpt-5.5',
@@ -203,6 +301,17 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     policy: { euHosted: true },
     // No quirk: Mistral's OpenAI-compatible layer uses the legacy `max_tokens`,
     // which is exactly what the adapter emits for a non-openai id by default.
+    // Live discovery: Mistral's `-latest` aliases already roll to the newest
+    // GA generation on the vendor side, so the rules only keep those three
+    // and tier them by size; `capabilities.vision` comes from the list.
+    discovery: {
+      include: ['^mistral-(large|medium|small)-latest$'],
+      classify: [
+        { match: '^mistral-large-', class: 'frontier', label: 'Mistral Large (latest)', maxTokens: 8_192, contextWindow: 128_000, vision: true },
+        { match: '^mistral-medium-', class: 'balanced', label: 'Mistral Medium (latest)', maxTokens: 8_192, contextWindow: 128_000, vision: true },
+        { match: '^mistral-small-', class: 'fast', label: 'Mistral Small (latest)', maxTokens: 8_192, contextWindow: 128_000, vision: true },
+      ],
+    },
     models: [
       {
         id: 'mistral:mistral-large-latest',

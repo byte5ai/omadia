@@ -37,9 +37,11 @@ test('triage mode → runtime routing with classifier/simple/complex', () => {
 test('triage without explicit simple defaults simple→main; missing triage→haiku', () => {
   const r = resolveAgentModelRouting({ mode: 'triage', main: 'claude-opus-4-8' });
   assert.deepEqual(r.modelRouting, {
-    // DEFAULT_CLASSIFIER_MODEL is the dated, registry-served id (issue #296
-    // nit) so the code's default agrees with its own write-validation.
-    classifierModel: 'claude-haiku-4-5-20251001',
+    // DEFAULT_CLASSIFIER_MODEL is a CLASS ref: the registry resolves it to
+    // whatever the active provider currently serves as its fast model (live
+    // catalog), so this default never names a version. `validateModelRef`
+    // accepts class refs, so the default still agrees with write-validation.
+    classifierModel: 'class:fast',
     simpleModel: 'claude-opus-4-8',
     complexModel: 'claude-opus-4-8',
   });

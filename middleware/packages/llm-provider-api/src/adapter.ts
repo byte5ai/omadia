@@ -12,6 +12,7 @@
  * genuinely new protocol needs a new adapter package that registers itself here.
  */
 import type { ProviderQuirks, WireFormat } from './descriptor.js';
+import type { DiscoveredModel } from './models.js';
 import type { LlmProvider } from './types.js';
 
 /** Everything an adapter needs to construct a concrete provider from resolved
@@ -42,6 +43,14 @@ export interface LlmAdapter {
   readonly wireFormat: WireFormat;
   /** Build a concrete provider. Synchronous: SDK clients construct eagerly. */
   build(opts: LlmAdapterBuildOptions): LlmProvider;
+  /**
+   * Enumerate the models the vendor currently serves for these credentials
+   * via its own list-models API. Optional: wire formats without such an API
+   * (the local `claude-cli`) leave it undefined and keep their static list.
+   * Must not throw on an empty list; MUST throw (not swallow) on auth/network
+   * failure so the runtime keeps the previous catalog instead of an empty one.
+   */
+  listModels?(opts: LlmAdapterBuildOptions): Promise<ReadonlyArray<DiscoveredModel>>;
 }
 
 /** Registry of wire-format adapters. The runtime core ships a concrete

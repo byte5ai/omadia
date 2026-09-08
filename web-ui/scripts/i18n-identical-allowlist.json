@@ -23,6 +23,7 @@
     "                 it stops being useful for diagnosis."
   ],
   "keys": {
+    "adminProviders.providers.modelsSourceLive": "loanword",
     "operatorAgents.agentCardModelAuto": "loanword",
     "operatorAgents.modelPolicy.summaryAuto": "loanword",
     "adminDatasets.fields.nameOptional": "loanword",

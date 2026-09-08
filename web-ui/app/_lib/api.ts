@@ -403,6 +403,15 @@ export interface AdminProvider {
    *  ChatGPT"), so the UI renders a connect button + device-code modal instead
    *  of a vault key field. Absent on pre-#294 middleware payloads. */
   oauthConnect?: boolean;
+  /** Where this provider's model list came from. `discovered` = fetched live
+   *  from the vendor's list-models API; `seed`/absent = the static fallback
+   *  list that ships with the provider definition. Absent on pre-discovery
+   *  middleware payloads. */
+  modelsSource?: 'seed' | 'discovered';
+  /** ISO timestamp of the discovery run. Present only alongside
+   *  `modelsSource === 'discovered'`; absent on pre-discovery middleware
+   *  payloads and whenever the static seed list is active. */
+  modelsDiscoveredAt?: string;
   models: AdminProviderModel[];
 }
 
@@ -462,6 +471,33 @@ export async function verifyProvider(
 ): Promise<ProviderVerification> {
   return postJson<ProviderVerification>(
     `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
+}
+
+export interface ModelRefreshResult {
+  providerId: string;
+  status:
+    | 'discovered'
+    | 'unknown-provider'
+    | 'no-discovery-rules'
+    | 'no-adapter'
+    | 'no-credentials'
+    | 'empty'
+    | 'failed';
+  models: number;
+  dropped: Array<{ modelId: string; reason: string }>;
+  at: string;
+  error?: string;
+}
+
+/** Force a live refresh of one provider's model catalogue. The request itself
+ *  succeeds for all known-provider outcomes; callers must inspect `status`. */
+export async function refreshProviderModels(
+  providerId: string,
+): Promise<ModelRefreshResult> {
+  return postJson<ModelRefreshResult>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/refresh-models`,
     {},
   );
 }

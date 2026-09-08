@@ -86,7 +86,10 @@ import {
   sharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
-import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
+import {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveConfiguredModel,
+} from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
   OrchestratorRegistry,
@@ -708,10 +711,17 @@ export async function activate(
     (input: ChatTurnInput) => (() => void) | undefined
   >(ROUTINE_TURN_OWNER_GUARD_SERVICE);
 
-  // Setup-field config (with defaults)
-  const model =
+  // Setup-field config (with defaults). `orchestrator_model` is a REF — a
+  // class ref (`class:frontier`, the default), an alias or a vendor id — and
+  // is resolved against the live catalog for the active provider here, at
+  // build time, so the turn loop only ever sends a concrete vendor id.
+  const configuredModelRef =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
+  const model =
+    resolveConfiguredModel(configuredModelRef, providerId) ??
+    resolveConfiguredModel(DEFAULT_MODEL, providerId) ??
+    configuredModelRef;
   // Operator persona. Empty → Orchestrator falls back to its generic,
   // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
   // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.
@@ -1134,24 +1144,29 @@ export async function activate(
     (ctx.config.get<string>('orchestrator_model_routing') ?? '')
       .trim()
       .toLowerCase() === 'true';
+  // Each routing slot is a REF resolved like `orchestrator_model` above; the
+  // defaults are class refs so they follow the live catalog. A slot that
+  // cannot be resolved for the active provider falls back to the main model.
+  const resolveSlot = (ref: string | undefined, fallbackRef: string): string =>
+    resolveConfiguredModel(ref, providerId) ??
+    resolveConfiguredModel(fallbackRef, providerId) ??
+    model;
   const modelRouting = modelRoutingEnabled
     ? {
-        classifierModel:
-          (
-            ctx.config.get<string>('model_routing_classifier_model') ??
-            ctx.config.get<string>('topic_classifier_model') ??
-            'claude-haiku-4-5'
-          ).trim(),
-        simpleModel:
-          (
-            ctx.config.get<string>('model_routing_simple_model') ??
-            ctx.config.get<string>('sub_agent_model') ??
-            'claude-sonnet-4-6'
-          ).trim(),
-        complexModel:
-          (
-            ctx.config.get<string>('model_routing_complex_model') ?? model
-          ).trim(),
+        classifierModel: resolveSlot(
+          ctx.config.get<string>('model_routing_classifier_model') ??
+            ctx.config.get<string>('topic_classifier_model'),
+          'class:fast',
+        ),
+        simpleModel: resolveSlot(
+          ctx.config.get<string>('model_routing_simple_model') ??
+            ctx.config.get<string>('sub_agent_model'),
+          'class:balanced',
+        ),
+        complexModel: resolveSlot(
+          ctx.config.get<string>('model_routing_complex_model'),
+          model,
+        ),
       }
     : undefined;
   if (modelRouting) {

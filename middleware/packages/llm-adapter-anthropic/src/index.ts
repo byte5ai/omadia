@@ -20,3 +20,9 @@ export {
   type AnthropicClient,
   type AnthropicClientOptions,
 } from './anthropicClient.js';
+
+export {
+  getAnthropicModel,
+  listAnthropicModels,
+  type AnthropicModelCapabilities,
+} from './modelDiscovery.js';

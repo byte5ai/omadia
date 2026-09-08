@@ -349,6 +349,10 @@ import {
   unregisterPluginLlmProvider,
 } from './platform/llmProviderManifest.js';
 import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
+import {
+  createModelCatalogSync,
+  type ModelCatalogSync,
+} from './platform/modelCatalogSync.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -975,6 +979,15 @@ async function main(): Promise<void> {
   // the boot loop AND the hot-install path (InstallService.onInstalled/
   // onUninstall) so a provider plugin installed at runtime appears WITHOUT a
   // restart.
+  // Live model discovery: the catalog's static model lists are only seeds.
+  // Created here (the vault exists, the catalog holds the built-ins) so the
+  // hot-install path below can refresh a runtime-installed provider through
+  // it; the boot refresh + timer start further down, once installed provider
+  // plugins are in the catalog too.
+  const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
+    catalog: llmProviderCatalog,
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+  });
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
       const descriptor = registerPluginLlmProvider(
@@ -984,8 +997,11 @@ async function main(): Promise<void> {
       );
       if (descriptor !== undefined) {
         console.log(
-          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} model(s), baseURL ${descriptor.baseURL})`,
+          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
+        if (descriptor.discovery !== undefined) {
+          void modelCatalogSync.refresh(descriptor.id);
+        }
       }
     } catch (err) {
       console.warn(
@@ -1170,6 +1186,19 @@ async function main(): Promise<void> {
   // turn loop and the providers admin page. Provided here, before any plugin
   // activates, like `llmProviderCatalog`.
   serviceRegistry.provide('llmProviderPool', kernelProviderPool);
+
+  // Live model discovery, boot run: every connected provider with discovery
+  // rules is asked for its current model list here (fire-and-forget — boot
+  // never waits on a vendor), again after a key verifies, on the admin
+  // "refresh models" action, and on the periodic timer. Built-ins AND
+  // installed provider plugins are already in the catalog at this point.
+  void modelCatalogSync.refreshAll().then((results) => {
+    const summary = results
+      .map((r) => `${r.providerId}=${r.status}${r.status === 'discovered' ? `(${String(r.models)})` : ''}`)
+      .join(', ');
+    console.log(`[middleware] model discovery at boot: ${summary || 'no provider with discovery rules'}`);
+  });
+  modelCatalogSync.start(config.LLM_MODEL_DISCOVERY_INTERVAL_MS);
 
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
@@ -2681,7 +2710,9 @@ async function main(): Promise<void> {
           );
         }
       }
-      const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      // A class ref: resolved per sub-agent against the active provider's
+      // live catalog (`resolveSubAgentModel`), never sent raw.
+      const SUBAGENT_DEFAULT_MODEL = 'class:balanced';
       // Read the orchestrator provider from LIVE installed config on each
       // hydrate so a runtime switch to/from the CLI provider is picked up on
       // the next agent build without a process restart.
@@ -4985,6 +5016,7 @@ async function main(): Promise<void> {
       // #1033 W3 — the fallback breaker's state, so the page can show a
       // provider that is currently being skipped in favour of its fallback.
       providerHealth: kernelProviderPool.health,
+      modelCatalogSync,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');

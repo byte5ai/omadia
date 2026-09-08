@@ -21,11 +21,13 @@ const {
   mockAssignProvider,
   mockPatchSettings,
   mockVerifyProvider,
+  mockRefreshProviderModels,
 } = vi.hoisted(() => ({
   mockGetProviders: vi.fn(),
   mockAssignProvider: vi.fn(),
   mockPatchSettings: vi.fn(),
   mockVerifyProvider: vi.fn(),
+  mockRefreshProviderModels: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', () => ({
@@ -33,6 +35,7 @@ vi.mock('../../../../_lib/api', () => ({
   assignProvider: mockAssignProvider,
   patchSettings: mockPatchSettings,
   verifyProvider: mockVerifyProvider,
+  refreshProviderModels: mockRefreshProviderModels,
   // Mirrors the real ApiError, including the OM-09 `code` parse — the panel
   // reads `err.code`, so a mock without it would test nothing.
   ApiError: class ApiError extends Error {
@@ -78,6 +81,13 @@ describe('<ProvidersPanel />', () => {
     vi.clearAllMocks();
     vi.stubGlobal('confirm', vi.fn(() => true));
     mockVerifyProvider.mockResolvedValue({ status: 'verified' });
+    mockRefreshProviderModels.mockResolvedValue({
+      providerId: 'anthropic',
+      status: 'discovered',
+      models: 1,
+      dropped: [],
+      at: '2026-09-08T10:00:00.000Z',
+    });
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -247,6 +257,207 @@ describe('<ProvidersPanel />', () => {
 
     await screen.findByText('no key');
     expect(screen.queryByText('Test key')).toBeNull();
+  });
+
+  describe('live model discovery', () => {
+    it('offers model refresh for a connected key provider', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it('does not offer model refresh when the provider has no key', async () => {
+      mockGetProviders.mockResolvedValue(providersResponse());
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      await screen.findByText('no key');
+      expect(
+        screen.queryByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('offers model refresh for a credentialed OAuth provider without offering key verification', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({
+              id: 'openai-chatgpt',
+              label: 'ChatGPT',
+              connected: true,
+              status: 'verified',
+              oauthConnect: true,
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Test key' })).not.toBeInTheDocument();
+    });
+
+    it('refreshes the selected provider and reloads its row', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      );
+
+      await waitFor(() =>
+        expect(mockRefreshProviderModels).toHaveBeenCalledWith('anthropic'),
+      );
+      await waitFor(() => expect(mockGetProviders).toHaveBeenCalledTimes(2));
+    });
+
+    it('renders the discovered-model plural for a count greater than one', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      mockRefreshProviderModels.mockResolvedValue({
+        providerId: 'anthropic',
+        status: 'discovered',
+        models: 3,
+        dropped: [],
+        at: '2026-09-08T10:00:00.000Z',
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      );
+
+      expect(
+        await screen.findByText('3 models from the provider API'),
+      ).toBeInTheDocument();
+    });
+
+    it('renders the discovered-model singular for a count of one', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      );
+
+      expect(
+        await screen.findByText('1 model from the provider API'),
+      ).toBeInTheDocument();
+    });
+
+    it('labels a valid discovered model list as live', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({
+              connected: true,
+              status: 'verified',
+              modelsSource: 'discovered',
+              modelsDiscoveredAt: new Date(Date.now() - 60_000).toISOString(),
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(await screen.findByText(/^live · /)).toBeInTheDocument();
+      expect(screen.queryByText(en.adminProviders.providers.modelsSourceSeed)).not.toBeInTheDocument();
+    });
+
+    it('labels a provider without live provenance as a seed list', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'verified' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByText(en.adminProviders.providers.modelsSourceSeed),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^live · /)).not.toBeInTheDocument();
+    });
+
+    it('surfaces a rejected refresh request and still reloads the provider row', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      mockRefreshProviderModels.mockRejectedValue(new Error('upstream unavailable'));
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      );
+
+      expect(
+        await screen.findByText('Fetch failed: upstream unavailable'),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(mockGetProviders).toHaveBeenCalledTimes(2));
+    });
+
+    it('renders the no-credentials outcome distinctly from a failed refresh', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'unverified' })],
+        }),
+      );
+      mockRefreshProviderModels.mockResolvedValue({
+        providerId: 'anthropic',
+        status: 'no-credentials',
+        models: 0,
+        dropped: [],
+        at: '2026-09-08T10:00:00.000Z',
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: en.adminProviders.providers.refreshModels,
+        }),
+      );
+
+      expect(
+        await screen.findByText(
+          en.adminProviders.providers.modelsRefreshNoCredentials,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/^Fetch failed/)).not.toBeInTheDocument();
+    });
   });
 
   it('auto-verifies a freshly saved key so a typo surfaces here, not in chat', async () => {

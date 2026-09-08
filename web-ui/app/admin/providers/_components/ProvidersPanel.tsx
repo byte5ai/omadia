@@ -11,9 +11,11 @@ import {
   assignProvider,
   getProviders,
   patchSettings,
+  refreshProviderModels,
   verifyProvider,
   ApiError,
   type AdminProvider,
+  type ModelRefreshResult,
   type ProviderAssignment,
   type ProvidersResponse,
 } from '../../../_lib/api';
@@ -223,6 +225,19 @@ export function ProvidersPanel({
 
 type T = ReturnType<typeof useTranslations>;
 
+/** Model-discovery outcomes → localized copy. The map is closed so a status
+ *  introduced by a newer middleware renders nothing instead of leaking its
+ *  raw machine code into the operator UI. */
+const MODEL_REFRESH_STATUS_KEYS: Record<ModelRefreshResult['status'], string> = {
+  discovered: 'providers.modelsDiscovered',
+  'unknown-provider': 'providers.modelsRefreshUnsupported',
+  'no-discovery-rules': 'providers.modelsRefreshUnsupported',
+  'no-adapter': 'providers.modelsRefreshUnsupported',
+  'no-credentials': 'providers.modelsRefreshNoCredentials',
+  empty: 'providers.modelsRefreshEmpty',
+  failed: 'providers.modelsRefreshFailed',
+};
+
 function ProviderRow({
   provider: p,
   t,
@@ -236,6 +251,7 @@ function ProviderRow({
   /** Send the CLI provider to the Subscriptions tab to log in. */
   onSwitchToSubscriptions: () => void;
 }): React.ReactElement {
+  const format = useFormatter();
   // Inline API-key entry (replaces the old link out to the general Settings
   // page): reveal a password field, PATCH the provider's settings-catalog key,
   // then reload so the connection chip updates — all without leaving this tab.
@@ -246,6 +262,10 @@ function ProviderRow({
   // string the server produced per key) or the thrown ApiError itself.
   const [saveError, setSaveError] = useState<unknown>(undefined);
   const [verifying, setVerifying] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [modelRefresh, setModelRefresh] = useState<ModelRefreshResult | undefined>(
+    undefined,
+  );
   // #294 — device-flow connect modal for an OAuth provider ("Sign in with ChatGPT").
   const [oauthOpen, setOauthOpen] = useState(false);
   const envKey = providerKeyEnv(p.id);
@@ -254,6 +274,15 @@ function ProviderRow({
   // means a pre-OM-11 middleware that cannot tell us, so we assume present and
   // keep the previous behaviour rather than disabling an action that works.
   const cliMissing = p.toolLess && p.installed === false;
+  const modelsDiscoveredAt =
+    p.modelsSource === 'discovered' && p.modelsDiscoveredAt
+      ? new Date(p.modelsDiscoveredAt)
+      : undefined;
+  const hasLiveModelSource =
+    modelsDiscoveredAt !== undefined && !Number.isNaN(modelsDiscoveredAt.getTime());
+  const modelRefreshKey = modelRefresh
+    ? MODEL_REFRESH_STATUS_KEYS[modelRefresh.status]
+    : undefined;
 
   /** Probe the stored key and refresh the row. Swallowing a failure here is
    *  deliberate: an unreachable probe leaves the status at `unverified`, which
@@ -267,6 +296,32 @@ function ProviderRow({
       await onReload();
     } finally {
       setVerifying(false);
+    }
+  };
+
+  /** Refresh the provider's models and always re-read the row. Unlike a failed
+   *  key probe, a rejected refresh request is an operator-visible failure, so
+   *  preserve its detail as a synthetic result instead of swallowing it. */
+  const runRefreshModels = async (): Promise<void> => {
+    setRefreshingModels(true);
+    setModelRefresh(undefined);
+    try {
+      const result = await refreshProviderModels(p.id);
+      setModelRefresh(result);
+    } catch (err) {
+      const error =
+        err instanceof Error && err.message.trim().length > 0 ? err.message : undefined;
+      setModelRefresh({
+        providerId: p.id,
+        status: 'failed',
+        models: 0,
+        dropped: [],
+        at: new Date().toISOString(),
+        error,
+      });
+    } finally {
+      await onReload();
+      setRefreshingModels(false);
     }
   };
 
@@ -328,6 +383,13 @@ function ProviderRow({
           <span className="text-[11px] text-[color:var(--fg-muted)]">
             {t('providers.modelCount', { count: p.models.length })}
           </span>
+          <span className="text-[11px] text-[color:var(--fg-muted)]">
+            {hasLiveModelSource
+              ? t('providers.modelsSourceLive', {
+                  at: format.relativeTime(modelsDiscoveredAt),
+                })
+              : t('providers.modelsSourceSeed')}
+          </span>
         </span>
         <span className="flex items-center gap-3">
           <ConnectionChip provider={p} t={t} />
@@ -343,6 +405,19 @@ function ProviderRow({
               className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
             >
               {verifying ? t('providers.testing') : t('providers.testKey')}
+            </button>
+          )}
+          {!p.toolLess && p.status !== 'no_key' && (
+            // eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg)
+            <button
+              type="button"
+              onClick={() => void runRefreshModels()}
+              disabled={refreshingModels || saveStatus === 'saving'}
+              className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
+            >
+              {refreshingModels
+                ? t('providers.refreshingModels')
+                : t('providers.refreshModels')}
             </button>
           )}
           {p.oauthConnect ? (
@@ -430,6 +505,18 @@ function ProviderRow({
           )}
         </span>
       </div>
+
+      {modelRefresh && modelRefreshKey && (
+        <p className="text-[12px] text-[color:var(--fg-muted)]">
+          {modelRefresh.status === 'discovered'
+            ? t(modelRefreshKey, { count: modelRefresh.models })
+            : modelRefresh.status === 'failed'
+              ? modelRefresh.error
+                ? t(modelRefreshKey, { error: modelRefresh.error })
+                : t('providers.modelsRefreshFailedUnknown')
+              : t(modelRefreshKey)}
+        </p>
+      )}
 
       {!p.toolLess && editing && (
         <div className="flex flex-col gap-2">

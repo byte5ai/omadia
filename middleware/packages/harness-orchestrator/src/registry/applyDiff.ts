@@ -35,6 +35,7 @@ import type {
 import {
   DEFAULT_ORCHESTRATOR_MODEL,
   resolveAgentModelRouting,
+  resolveConfiguredModel,
   resolveModelIdForProvider,
 } from './agentRuntime.js';
 import type {
@@ -230,12 +231,15 @@ export function buildForAgent(
   // so a cross-provider ref never reaches here for a fresh write; the raw
   // fallthrough is what lets a CLI deployment's bare alias (`opus`) run. A
   // registry-UNKNOWN same-context ref is already returned raw by the resolver.
-  // The platform default (`runtime.model`, operator-set env) is not passed
-  // through here — it works raw today and resolving it would change established
-  // behaviour.
+  // The platform default (`runtime.model`, operator-set env) and the hard
+  // fallback are CLASS refs since the catalog went live-discovered — they go
+  // through `resolveConfiguredModel`, which never lets a class ref reach the
+  // wire (it falls back to the nearest served class instead).
   const activeProvider = deps.provider?.id;
   const resolveOverlay = (ref: string | undefined): string | undefined =>
     (resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined;
+  const resolveConfigured = (ref: string | undefined): string | undefined =>
+    (resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined;
 
   // Per-instance model resolution (issue #296 AC#2), three tiers:
   //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
@@ -262,7 +266,8 @@ export function buildForAgent(
   const model =
     policy.model ||
     resolveOverlay(routing.model) ||
-    runtime.model?.trim() ||
+    resolveConfigured(runtime.model) ||
+    resolveConfigured(DEFAULT_ORCHESTRATOR_MODEL) ||
     DEFAULT_ORCHESTRATOR_MODEL;
 
   // Resolve the per-turn routing sub-models the same way. Any sub-model that

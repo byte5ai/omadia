@@ -103,6 +103,22 @@ export {
   type ProviderQuirks,
   type WireFormat,
 } from './providerCatalog.js';
+export type {
+  DiscoveredModel,
+  ModelDiscoveryClassRule,
+  ModelDiscoveryRules,
+} from '@omadia/llm-provider-api';
+
+// ---- Runtime: live model discovery (vendor list → catalog entries) ----
+export {
+  applyDiscoveryRules,
+  collapseDatedSnapshots,
+  compareNewest,
+  versionTokens,
+  type DiscoveryDrop,
+  type DiscoveryDropReason,
+  type DiscoveryOutcome,
+} from './modelDiscovery.js';
 
 // ---- Runtime: model registry (+ re-exported model contract types) ----
 export {
