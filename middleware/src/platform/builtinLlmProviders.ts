@@ -36,30 +36,32 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     policy: {},
     models: [
       {
-        id: 'anthropic:claude-opus-4-8',
+        id: 'anthropic:claude-opus-5',
         provider: 'anthropic',
-        modelId: 'claude-opus-4-8',
-        label: 'Claude Opus 4.8',
+        modelId: 'claude-opus-5',
+        label: 'Claude Opus 5',
         class: 'frontier',
         maxTokens: 32_000,
         contextWindow: 200_000,
         vision: true,
         aliases: ['opus'],
         // #1033 — `output_config.effort` (Opus 4.5+). Declared only where the
-        // vendor documents the knob; Sonnet/Haiku stay undeclared until they do.
+        // vendor documents the knob; Haiku uses `budget_tokens` instead.
         effortLevels: ['low', 'medium', 'high', 'xhigh'],
         effortDefault: 'high',
       },
       {
-        id: 'anthropic:claude-sonnet-4-6',
+        id: 'anthropic:claude-sonnet-5',
         provider: 'anthropic',
-        modelId: 'claude-sonnet-4-6',
-        label: 'Claude Sonnet 4.6',
+        modelId: 'claude-sonnet-5',
+        label: 'Claude Sonnet 5',
         class: 'balanced',
         maxTokens: 64_000,
         contextWindow: 200_000,
         vision: true,
         aliases: ['sonnet'],
+        effortLevels: ['low', 'medium', 'high', 'xhigh'],
+        effortDefault: 'high',
       },
       {
         id: 'anthropic:claude-haiku-4-5-20251001',

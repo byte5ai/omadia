@@ -29,8 +29,8 @@ import { useBuiltinProviders } from './_helpers/builtinProviders.js';
 useBuiltinProviders();
 
 test('getModel resolves an exact provider-qualified id', () => {
-  const m = getModel('anthropic:claude-opus-4-8');
-  assert.equal(m?.modelId, 'claude-opus-4-8');
+  const m = getModel('anthropic:claude-opus-5');
+  assert.equal(m?.modelId, 'claude-opus-5');
   assert.equal(m?.provider, 'anthropic');
   assert.equal(m?.class, 'frontier');
   assert.equal(m?.vision, true);
@@ -38,8 +38,8 @@ test('getModel resolves an exact provider-qualified id', () => {
 });
 
 test('resolveModelRef: class refs resolve per provider (default anthropic)', () => {
-  assert.equal(resolveModelRef('class:frontier')?.id, 'anthropic:claude-opus-4-8');
-  assert.equal(resolveModelRef('class:balanced')?.id, 'anthropic:claude-sonnet-4-6');
+  assert.equal(resolveModelRef('class:frontier')?.id, 'anthropic:claude-opus-5');
+  assert.equal(resolveModelRef('class:balanced')?.id, 'anthropic:claude-sonnet-5');
   assert.equal(
     resolveModelRef('class:fast')?.id,
     'anthropic:claude-haiku-4-5-20251001',
@@ -80,11 +80,11 @@ test('resolveModelRef: class refs resolve per provider (default anthropic)', () 
 test('resolveModelRef: provider-qualified id, legacy alias, and bare vendor id', () => {
   assert.equal(resolveModelRef('openai:gpt-5.5')?.modelId, 'gpt-5.5');
   // legacy builder slugs
-  assert.equal(resolveModelRef('opus')?.modelId, 'claude-opus-4-8');
-  assert.equal(resolveModelRef('sonnet')?.modelId, 'claude-sonnet-4-6');
+  assert.equal(resolveModelRef('opus')?.modelId, 'claude-opus-5');
+  assert.equal(resolveModelRef('sonnet')?.modelId, 'claude-sonnet-5');
   assert.equal(resolveModelRef('haiku')?.modelId, 'claude-haiku-4-5-20251001');
   // bare vendor ids
-  assert.equal(resolveModelRef('claude-opus-4-8')?.id, 'anthropic:claude-opus-4-8');
+  assert.equal(resolveModelRef('claude-opus-5')?.id, 'anthropic:claude-opus-5');
   assert.equal(resolveModelRef('gpt-5.4-nano')?.id, 'openai:gpt-5.4-nano');
   // unknown
   assert.equal(resolveModelRef('totally-unknown-model'), undefined);
@@ -97,23 +97,23 @@ test('modelForClass returns the canonical model per provider', () => {
 });
 
 test('resolveRole maps role → default class → model', () => {
-  // orchestrator/subagent default to frontier (== historical Opus default)
-  assert.equal(resolveRole('orchestrator', 'anthropic')?.modelId, 'claude-opus-4-8');
-  assert.equal(resolveRole('subagent', 'anthropic')?.modelId, 'claude-opus-4-8');
+  // orchestrator/subagent remain frontier, preserving the historical Opus class.
+  assert.equal(resolveRole('orchestrator', 'anthropic')?.modelId, 'claude-opus-5');
+  assert.equal(resolveRole('subagent', 'anthropic')?.modelId, 'claude-opus-5');
   // classifier/verifier default to fast (== historical Haiku default)
   assert.equal(resolveRole('classifier', 'anthropic')?.modelId, 'claude-haiku-4-5-20251001');
   assert.equal(resolveRole('verifier', 'anthropic')?.modelId, 'claude-haiku-4-5-20251001');
   // preview is balanced
-  assert.equal(resolveRole('preview', 'anthropic')?.modelId, 'claude-sonnet-4-6');
+  assert.equal(resolveRole('preview', 'anthropic')?.modelId, 'claude-sonnet-5');
   // same roles resolve to OpenAI models when pinned to openai
   assert.equal(resolveRole('orchestrator', 'openai')?.modelId, 'gpt-5.5');
   assert.equal(resolveRole('classifier', 'openai')?.modelId, 'gpt-5.4-mini');
 });
 
 test('ROLE_DEFAULT_CLASS preserves the historical Anthropic defaults', () => {
-  // The orchestrator/subagent historical default model was claude-opus-4-8
-  // (frontier) and classifier/verifier claude-haiku (fast) — encode that so
-  // role→class→model is a no-op for the Anthropic default path.
+  // The historical Anthropic defaults mapped orchestrator/subagent to Opus
+  // (frontier) and classifier/verifier to Haiku (fast); preserve those classes
+  // so role→class→model resolves against the current catalog unchanged.
   assert.equal(ROLE_DEFAULT_CLASS.orchestrator, 'frontier');
   assert.equal(ROLE_DEFAULT_CLASS.subagent, 'frontier');
   assert.equal(ROLE_DEFAULT_CLASS.classifier, 'fast');
@@ -125,13 +125,13 @@ test('listModelsByProvider / listModelsByClass filter correctly', () => {
   assert.ok(anthropic.length >= 3);
   assert.ok(anthropic.every((m) => m.provider === 'anthropic'));
   const frontier = listModelsByClass('frontier');
-  assert.ok(frontier.some((m) => m.id === 'anthropic:claude-opus-4-8'));
+  assert.ok(frontier.some((m) => m.id === 'anthropic:claude-opus-5'));
   assert.ok(frontier.some((m) => m.id === 'openai:gpt-5.5'));
 });
 
 test('isClassRef distinguishes class refs from concrete refs', () => {
   assert.equal(isClassRef('class:frontier'), true);
-  assert.equal(isClassRef('anthropic:claude-opus-4-8'), false);
+  assert.equal(isClassRef('anthropic:claude-opus-5'), false);
   assert.equal(isClassRef('opus'), false);
 });
 
@@ -163,7 +163,7 @@ test('INVARIANT: every model has a positive contextWindow and maxTokens', () => 
 
 test('coerceModelToProvider remaps a model to the target provider by class', () => {
   // a Claude frontier/fast model running on OpenAI → OpenAI's same-class model
-  assert.equal(coerceModelToProvider('claude-opus-4-8', 'openai'), 'gpt-5.5');
+  assert.equal(coerceModelToProvider('claude-opus-5', 'openai'), 'gpt-5.5');
   assert.equal(
     coerceModelToProvider('claude-haiku-4-5-20251001', 'openai'),
     'gpt-5.4-mini',
@@ -175,8 +175,8 @@ test('coerceModelToProvider remaps a model to the target provider by class', () 
   assert.equal(coerceModelToProvider('openai:gpt-5.4', 'openai'), 'gpt-5.4');
   // anthropic stays anthropic (zero change on the default path)
   assert.equal(
-    coerceModelToProvider('claude-opus-4-8', 'anthropic'),
-    'claude-opus-4-8',
+    coerceModelToProvider('claude-opus-5', 'anthropic'),
+    'claude-opus-5',
   );
   // unknown/custom model → passed through unchanged
   assert.equal(
@@ -197,7 +197,7 @@ test('Mistral: first-class provider resolves by class, role, and cross-provider 
   assert.equal(resolveModelRef('mistral:mistral-medium-latest')?.provider, 'mistral');
   assert.equal(resolveModelRef('mistral-small-latest')?.id, 'mistral:mistral-small-latest');
   // a Claude/OpenAI model running on Mistral → Mistral's same-class model
-  assert.equal(coerceModelToProvider('claude-opus-4-8', 'mistral'), 'mistral-large-latest');
+  assert.equal(coerceModelToProvider('claude-opus-5', 'mistral'), 'mistral-large-latest');
   assert.equal(coerceModelToProvider('gpt-5.4', 'mistral'), 'mistral-medium-latest');
   // three Mistral models registered, ids well-formed
   const mistral = listModelsByProvider('mistral');

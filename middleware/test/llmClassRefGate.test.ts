@@ -243,7 +243,7 @@ describe('S4 — class-ref LLM whitelist gate', () => {
     const ctx = makeCtx(['class:fast'], 'anthropic', registry);
     await assert.rejects(
       ctx.llm!.complete({
-        model: 'claude-opus-4-8',
+        model: 'claude-opus-5',
         messages: [{ role: 'user', content: 'x' }],
       }),
       LlmModelNotAllowedError,
@@ -253,14 +253,14 @@ describe('S4 — class-ref LLM whitelist gate', () => {
 
   it('class:frontier resolves to claude-opus under the anthropic default', async () => {
     const frontier = modelForClass('frontier', 'anthropic');
-    assert.equal(frontier?.modelId, 'claude-opus-4-8');
+    assert.equal(frontier?.modelId, 'claude-opus-5');
     const ctx = makeCtx(['class:frontier'], undefined, registry); // default → anthropic
     await ctx.llm!.complete({
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
       messages: [{ role: 'user', content: 'x' }],
     });
     assert.equal(calls.count, 1);
-    assert.equal(calls.lastModel, 'claude-opus-4-8');
+    assert.equal(calls.lastModel, 'claude-opus-5');
     // frontier must not admit the fast model
     await assert.rejects(
       ctx.llm!.complete({
@@ -382,7 +382,7 @@ describe('S4 — class-ref LLM whitelist gate', () => {
       messages: [{ role: 'user', content: 'x' }],
     });
     assert.equal(calls.count, 1);
-    assert.equal(calls.lastModel, 'claude-opus-4-8');
+    assert.equal(calls.lastModel, 'claude-opus-5');
   });
 
   it('per-plugin pin to openai overrides the anthropic global default', async () => {
