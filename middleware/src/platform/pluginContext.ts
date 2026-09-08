@@ -1566,8 +1566,8 @@ function extractLlmPermissions(
  *    provider (e.g. `gpt-5.4-mini` while anthropic is active) does NOT match,
  *    so a `class:fast` lock permits the active provider's fast model and
  *    nothing else. On the Anthropic default this resolves to
- *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-4-6`
- *    (`balanced`), `claude-opus-4-8` (`frontier`) — byte-identical gating to a
+ *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-5`
+ *    (`balanced`), `claude-opus-5` (`frontier`) — byte-identical gating to a
  *    concrete Anthropic lock today.
  */
 function modelMatch(

@@ -295,6 +295,8 @@ export type { SubAgentMemoryResolver } from './registry/subAgentMemoryTool.js';
 export {
   DEFAULT_ORCHESTRATOR_MODEL,
   resolveAgentModelRouting,
+  resolveConfiguredModel,
+  resolveModelIdForProvider,
 } from './registry/agentRuntime.js';
 export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 

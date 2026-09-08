@@ -23,6 +23,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   clearExternalModels,
   registerExternalModels,
+  resolveModelRef,
   type ModelInfo,
 } from '@omadia/llm-provider';
 import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
@@ -596,14 +597,18 @@ test('issue #296 AC#2: per-instance model resolution is 3-tier (per-Agent → pl
   );
 
   // Tier 3: a blank platform default + no overlay falls to the hard fallback.
+  // That fallback is a CLASS ref (`class:frontier`) since the catalog went
+  // live-discovered, and the build path resolves it to the active provider's
+  // frontier model — a class ref must never reach the turn loop raw.
   const r2 = new OrchestratorRegistry(fakeStore(snapshot), deps(), {
     defaultRuntimeConfig: { model: '   ', maxTokens: 100, maxToolIterations: 4 },
   });
   await r2.start();
+  assert.equal(DEFAULT_ORCHESTRATOR_MODEL, 'class:frontier');
   assert.equal(
     r2.get('inherits')?.built.effectiveModel,
-    DEFAULT_ORCHESTRATOR_MODEL,
-    'tier 3: blank platform default falls to DEFAULT_ORCHESTRATOR_MODEL',
+    resolveModelRef(DEFAULT_ORCHESTRATOR_MODEL, { defaultProvider: 'anthropic' })?.modelId,
+    'tier 3: blank platform default falls to DEFAULT_ORCHESTRATOR_MODEL, resolved to the frontier model',
   );
 });
 

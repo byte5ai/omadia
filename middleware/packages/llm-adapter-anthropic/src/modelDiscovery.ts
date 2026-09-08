@@ -24,6 +24,8 @@ export interface AnthropicModelCapabilities {
    *  never sends 'max'). Empty array if the model has no effort capability
    *  (e.g. Haiku, which uses budget_tokens instead). */
   readonly effortLevels: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh'>;
+  /** Vendor `created_at` (ISO 8601) when reported — drives "newest wins". */
+  readonly createdAt?: string;
 }
 
 type AnthropicModelRecord = {
@@ -32,6 +34,7 @@ type AnthropicModelRecord = {
   readonly max_input_tokens: unknown;
   readonly max_tokens: unknown;
   readonly capabilities?: unknown;
+  readonly created_at?: unknown;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -46,6 +49,18 @@ function asRecord(value: unknown): UnknownRecord | undefined {
   return typeof value === 'object' && value !== null
     ? (value as UnknownRecord)
     : undefined;
+}
+
+/** Anthropic reports `created_at` as an ISO string; tolerate unix seconds too. */
+function toIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+  }
+  return undefined;
 }
 
 function requireFiniteNumber(
@@ -69,8 +84,10 @@ function mapAnthropicModel(
   const capabilities = asRecord(model.capabilities);
   const imageInput = asRecord(capabilities?.['image_input']);
   const effort = asRecord(capabilities?.['effort']);
+  const createdAt = toIsoTimestamp(model.created_at);
 
   return {
+    ...(createdAt !== undefined ? { createdAt } : {}),
     modelId: model.id,
     label: model.display_name,
     contextWindow: requireFiniteNumber(

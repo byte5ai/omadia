@@ -18,3 +18,8 @@ export {
   type OpenAiClient,
   type OpenAiClientOptions,
 } from './openaiClient.js';
+
+export {
+  listOpenAiCompatibleModels,
+  mapOpenAiCompatibleModel,
+} from './modelDiscovery.js';

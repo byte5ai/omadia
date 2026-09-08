@@ -51,8 +51,18 @@ const ConfigSchema = z.object({
   // register but their LLM-bound capabilities stay unpublished until the
   // operator runs /setup or PATCHes a key via /api/v1/admin/runtime/secrets.
   ANTHROPIC_API_KEY: z.string().optional(),
-  ORCHESTRATOR_MODEL: z.string().min(1).default('claude-opus-5'),
+  // A CLASS ref by default (resolved against the live model catalog at build
+  // time), so a fresh install follows the vendor's current frontier model
+  // instead of a version baked into the code. A concrete id still works.
+  ORCHESTRATOR_MODEL: z.string().min(1).default('class:frontier'),
   ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
+  // Live model discovery: how often each connected provider's list-models API
+  // is re-read into the catalog (0 = boot only, never periodically).
+  LLM_MODEL_DISCOVERY_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(6 * 60 * 60 * 1000),
 
   // Per-turn Sonnet/Opus routing (opt-in). When ON, a cheap Haiku classifier
   // picks the model per turn: simple → ROUTING_SIMPLE_MODEL, complex →
@@ -83,7 +93,7 @@ const ConfigSchema = z.object({
   // sub-agents run locally inside the middleware; skill markdown lives under
   // SKILLS_DIR. Model default matches the orchestrator; override to run
   // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
-  SUB_AGENT_MODEL: z.string().min(1).default('claude-opus-5'),
+  SUB_AGENT_MODEL: z.string().min(1).default('class:frontier'),
   SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
 

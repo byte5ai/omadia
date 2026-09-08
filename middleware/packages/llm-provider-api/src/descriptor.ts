@@ -6,7 +6,8 @@
  * the operator UI, and the models served. The runtime catalog + the resolution
  * seam that consume this live in `@omadia/llm-provider`.
  */
-import type { ModelInfo } from './models.js';
+import type { ModelClass, ModelInfo } from './models.js';
+import type { EffortLevel } from './types.js';
 
 /** The transport an adapter speaks. Most are HTTP wire protocols; the matching
  *  registered `LlmAdapter` (see ./adapter.ts) builds the concrete provider.
@@ -57,6 +58,63 @@ export interface ProviderPolicy {
   readonly subscriptionNotice?: boolean;
 }
 
+/**
+ * One classification rule of a provider's model-discovery policy. Matched in
+ * order against every id the vendor's list-models API returns; the first
+ * matching rule assigns the class tier and fills in whatever the vendor did
+ * not report. A rule names a FAMILY (`^claude-opus-`), never a specific
+ * version — that is the whole point: a new generation shows up without a
+ * code change.
+ */
+export interface ModelDiscoveryClassRule {
+  /** JS regex source, matched case-insensitively against the bare model id. */
+  readonly match: string;
+  /** Class of the SELECTED (newest) match of this rule. */
+  readonly class: ModelClass;
+  /** Class of the rule's OTHER matches (older generations). Absent = same as
+   *  `class`. Lets one family rule express "newest plain GPT is frontier, the
+   *  previous one is balanced" without naming a version. */
+  readonly restClass?: ModelClass;
+  /** Aliases granted to the SELECTED (newest) model of this rule, e.g. `opus`. */
+  readonly aliases?: ReadonlyArray<string>;
+  /** Fallbacks used only when the vendor list omits the capability. */
+  readonly maxTokens?: number;
+  readonly contextWindow?: number;
+  readonly vision?: boolean;
+  readonly effortLevels?: ReadonlyArray<EffortLevel>;
+  readonly effortDefault?: EffortLevel;
+  /** Label template when the vendor reports none; `{id}` is replaced by the
+   *  bare model id. Default: the id itself. */
+  readonly label?: string;
+}
+
+/**
+ * How to turn a vendor's live model list into catalog entries. Declared per
+ * provider (bundled built-in or plugin manifest `llm_provider.discovery`).
+ * When present, the runtime refreshes the provider's models from the API and
+ * the static `models` list is only the offline seed used until the first
+ * successful discovery (and whenever the API is unreachable).
+ */
+export interface ModelDiscoveryRules {
+  /** Regex sources; an id must match at least one to be considered. Default:
+   *  every id. Use it to keep chat models and drop embeddings/audio/etc. */
+  readonly include?: ReadonlyArray<string>;
+  /** Regex sources; an id matching any of these is dropped (dated snapshots,
+   *  previews, non-chat modalities). Applied after `include`. */
+  readonly exclude?: ReadonlyArray<string>;
+  /** Ordered class rules; the first match wins. Ids matching no rule are
+   *  dropped (they still show up in the discovery log). */
+  readonly classify: ReadonlyArray<ModelDiscoveryClassRule>;
+  /** Which model of a rule (and of a class) becomes the default + alias
+   *  holder. `newest` (default): latest `createdAt`, then the highest version
+   *  number embedded in the id, then vendor order. `first`: vendor order. */
+  readonly select?: 'newest' | 'first';
+  /** Drop a dated snapshot id (`…-20251001`, `…-2026-04-23`) when its undated
+   *  base id is also listed, so pickers show one entry per model. A dated id
+   *  WITHOUT an undated twin is kept. Default: true. */
+  readonly collapseDatedSnapshots?: boolean;
+}
+
 /** A plugin-contributed (or bundled built-in) provider. `quirks` only apply to
  *  the openai-compatible adapter. */
 export interface LlmProviderDescriptor {
@@ -75,5 +133,15 @@ export interface LlmProviderDescriptor {
    *  addition to) an API key. `device` = the device-code flow the admin
    *  connect routes drive (#294 "Sign in with ChatGPT", experimental). */
   readonly oauth?: { readonly kind: 'device' };
+  /** The models served. With `discovery` declared this is the offline SEED
+   *  (used until the first successful live discovery); without it, the
+   *  authoritative static list. */
   readonly models: ReadonlyArray<ModelInfo>;
+  /** Live model discovery policy. Absent = static `models` only. */
+  readonly discovery?: ModelDiscoveryRules;
+  /** Provenance of `models`, stamped by the runtime when it re-registers a
+   *  provider after a discovery run. Absent = the declared seed. */
+  readonly modelsSource?: 'seed' | 'discovered';
+  /** ISO timestamp of the discovery run that produced `models`. */
+  readonly modelsDiscoveredAt?: string;
 }
