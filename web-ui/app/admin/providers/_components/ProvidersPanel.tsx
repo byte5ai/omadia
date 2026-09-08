@@ -80,7 +80,12 @@ type Status = 'idle' | 'saving' | 'saved' | 'error';
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; data: ProvidersResponse }
+  // `fetchedAt` is the reference point for the relative timestamps in
+  // ConnectionChip. next-intl requires an explicit `now` for `relativeTime`,
+  // and reading the clock during render is impure — so the clock is read once
+  // here, in `load`, which is also the honest answer: "verified 3 minutes ago"
+  // means 3 minutes before this data was read.
+  | { kind: 'ready'; data: ProvidersResponse; fetchedAt: number }
   // The thrown error itself, for the same reason `errors` below keeps it: a
   // pre-flattened string is already past the point where the code is readable.
   | { kind: 'error'; error: unknown };
@@ -102,7 +107,7 @@ export function ProvidersPanel({
   const load = useCallback(async (): Promise<void> => {
     try {
       const data = await getProviders();
-      setState({ kind: 'ready', data });
+      setState({ kind: 'ready', data, fetchedAt: Date.now() });
     } catch (err) {
       setState({ kind: 'error', error: err });
     }
@@ -182,6 +187,7 @@ export function ProvidersPanel({
                 <ProviderRow
                   key={p.id}
                   provider={p}
+                  now={state.fetchedAt}
                   t={t}
                   onReload={load}
                   onSwitchToSubscriptions={onSwitchToSubscriptions}
@@ -225,11 +231,13 @@ type T = ReturnType<typeof useTranslations>;
 
 function ProviderRow({
   provider: p,
+  now,
   t,
   onReload,
   onSwitchToSubscriptions,
 }: {
   provider: AdminProvider;
+  now: number;
   t: T;
   /** Re-fetch the providers list after a key save so `connected` flips. */
   onReload: () => Promise<void>;
@@ -330,7 +338,7 @@ function ProviderRow({
           </span>
         </span>
         <span className="flex items-center gap-3">
-          <ConnectionChip provider={p} t={t} />
+          <ConnectionChip provider={p} now={now} t={t} />
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab,
               and an OAuth provider has no key to probe. */}
@@ -569,9 +577,11 @@ const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
  */
 function ConnectionChip({
   provider: p,
+  now,
   t,
 }: {
   provider: AdminProvider;
+  now: number;
   t: T;
 }): React.ReactElement {
   const format = useFormatter();
@@ -588,7 +598,7 @@ function ConnectionChip({
       {p.status === 'verified' && p.verifiedAt && (
         <span className="text-[11px] text-[color:var(--fg-muted)]">
           {t('providers.verifiedAt', {
-            time: format.relativeTime(new Date(p.verifiedAt)),
+            time: format.relativeTime(new Date(p.verifiedAt), now),
           })}
         </span>
       )}
@@ -602,7 +612,7 @@ function ConnectionChip({
           title={t('providers.cooldownTitle', { reason: p.cooldown.reason })}
         >
           {t('providers.cooldown', {
-            time: format.relativeTime(new Date(p.cooldown.until)),
+            time: format.relativeTime(new Date(p.cooldown.until), now),
           })}
         </span>
       )}
