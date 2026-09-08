@@ -190,7 +190,7 @@ describe('admin providers route — GET /', () => {
     const openai = body.providers.find((p) => p.id === 'openai');
     const mistral = body.providers.find((p) => p.id === 'mistral');
     assert.ok(anthropic && openai && mistral);
-    assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-4-8'));
+    assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-5'));
     assert.ok(openai.models.some((m) => m.modelId === 'gpt-5.5'));
     // Mistral is registry-driven too: listed with a clean label + its models.
     assert.equal(mistral.label, 'Mistral');
@@ -516,7 +516,7 @@ describe('admin providers route — POST /assignment', () => {
     const { status, json } = await assign(h, {
       pluginId: ORCH,
       provider: 'openai',
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
     });
     assert.equal(status, 400);
     assert.equal(json['code'], 'providers.model_provider_mismatch');
@@ -598,7 +598,7 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
     // legacy alias under anthropic
     await assign(h, { pluginId: ORCH, provider: 'anthropic', model: 'opus' });
-    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-4-8');
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-5');
   });
 
   it('400 for a non-LLM plugin, 404 for not-installed', async () => {
