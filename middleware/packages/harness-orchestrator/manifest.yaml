@@ -118,6 +118,11 @@ setup:
       type: "string"
       required: false
       help: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — der Orchestrator erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
+    - key: "cli_turn_seconds"
+      label: "Zeitlimit pro Turn (Sekunden)"
+      type: "string"
+      required: false
+      help: "OM-104 — Wall-Clock-Budget für EINEN Turn auf dem Abo-Weg (Provider `claude-cli`). Leer oder 0 = nicht gesetzt: dann greifen die Umgebungsvariable OMADIA_CLI_SPAWN_TIMEOUT_MS und danach der Default von 600 Sekunden. Ein gesetzter Wert gewinnt gegen beide. Betrifft nur den Abo-Weg; die In-Process-Loop begrenzt `max_turn_seconds`."
     - key: "orchestrator_model_routing"
       label: "Per-Turn Model-Routing (Haiku-Triage)"
       type: "boolean"

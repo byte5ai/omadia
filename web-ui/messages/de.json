@@ -64,6 +64,17 @@
         "summary": "{enabled} von {total} verbunden · {tools} Tools",
         "summaryPending": "{enabled} von {total} verbunden · {tools} Tools · {pending} brauchen Discover",
         "none": "Noch keine MCP-Server"
+      },
+      "lastTurn": {
+        "title": "Letzter Turn",
+        "okStatus": "Erfolgreich",
+        "unknownStatus": "Unbekannt",
+        "ok": "Der letzte Chat-Turn wurde erfolgreich beantwortet.",
+        "none": "Seit dem Start dieses Prozesses lief noch kein Turn.",
+        "cliIncompatible": "Die installierte Claude-CLI ({installed}) unterstützt eine Option nicht, die omadia braucht. Aktualisiere auf {required} oder neuer.",
+        "cliTimeout": "Der letzte Turn hat sein Zeitlimit überschritten. Erhöhe das Zeitlimit pro Turn im Abo-Bereich.",
+        "failure": "Der letzte Turn ist fehlgeschlagen: {message}",
+        "unknownVersion": "unbekannte Version"
       }
     },
     "quick": {
@@ -2844,7 +2855,8 @@
         "unknownTurn": "Unbekannter Fehler beim Builder-Turn",
         "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
         "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
-        "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
+        "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden.",
+        "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -2904,7 +2916,8 @@
         "error": {
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
-          "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut."
+          "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
+          "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
@@ -3814,6 +3827,13 @@
       "conflict": "Auf diesem Server läuft bereits eine CLI-Installation. Bitte warten, bis sie abgeschlossen ist, und dann erneut versuchen.",
       "retry": "Erneut versuchen",
       "manualSummary": "Lieber manuell installieren?"
+    },
+    "turnBudget": {
+      "label": "Zeitlimit pro Turn (Sekunden)",
+      "help": "Wie lange ein einzelner Turn auf dem Abo-Weg laufen darf. Leer lassen für den Standard von {default} Sekunden bzw. den Wert aus OMADIA_CLI_SPAWN_TIMEOUT_MS.",
+      "save": "Speichern",
+      "saved": "Gespeichert",
+      "invalid": "Bitte eine ganze Zahl zwischen {min} und {max} eingeben."
     }
   },
   "createIssue": {
@@ -4635,7 +4655,7 @@
   },
   "adminUsage": {
     "title": "Nutzung & Kosten",
-    "intro": "Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.",
+    "intro": "Erfasst jeden LLM-Call — Orchestrator, Sub-Agents und die Background-Tasks. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "ranges": {
@@ -4658,7 +4678,11 @@
     },
     "empty": "Keine Daten im Zeitraum.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
-    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache"
+    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache",
+    "subscription": {
+      "headline": "{count, plural, one {# Abo-Turn} other {# Abo-Turns}} in diesem Zeitraum",
+      "explainer": "Abo-Turns laufen über das Claude-Abo, nicht über Token-Abrechnung. Sie zählen als Calls, kosten hier aber nichts. Auf der API hätten sie {reference} gekostet."
+    }
   },
   "adminUsers": {
     "loading": "Lädt …",

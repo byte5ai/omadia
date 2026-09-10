@@ -485,6 +485,33 @@ export async function getProviders(): Promise<ProvidersResponse> {
   return getJson<ProvidersResponse>('/v1/admin/providers');
 }
 
+/**
+ * OM-100b — the outcome of the last chat turn this middleware process ran.
+ *
+ * Every other Systemstatus card answers a configuration question ("is a
+ * credential present", "is an agent configured"). All of them were green
+ * through a beta round in which every turn died in the CLI bridge, because
+ * none of them asks whether a turn actually comes back. `null` means no turn
+ * has run since the process started — an honest unknown, not a green light.
+ */
+export type LastTurnErrorCode =
+  | 'cli_incompatible'
+  | 'cli_timeout'
+  | 'orchestrator_failure';
+
+export interface LastTurnOutcome {
+  status: 'ok' | 'failed';
+  at: number;
+  errorCode?: LastTurnErrorCode;
+  errorMessage?: string;
+  cliVersion?: string;
+  minCliVersion?: string;
+}
+
+export async function getLastTurn(): Promise<{ lastTurn: LastTurnOutcome | null }> {
+  return getJson<{ lastTurn: LastTurnOutcome | null }>('/v1/admin/last-turn');
+}
+
 export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {

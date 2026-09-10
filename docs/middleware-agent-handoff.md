@@ -2984,3 +2984,109 @@ Operator-UI in Produktion zu verschlechtern.
 **Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
 persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
 Unit.
+
+## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
+
+Der Orchestrator kann seit Runde 4 rein auf dem Claude-Abo laufen (Provider `claude-cli`).
+Die Randbereiche konnten es nicht: Der Plugin-Builder rief die Anthropic-API direkt, die
+Kostenseite zeigte "0 Calls", der Systemstatus meldete grün, während jeder Turn abbrach,
+und `manage_routine` bekam den Principal nie. Diese Wave zieht die vier Ränder nach.
+Befunde OM-101, OM-103, OM-100b, OM-104, OM-82.
+
+### Builder auf dem Abo-Weg (OM-101)
+
+`resolveBuilderProvider` (`src/index.ts`) baute für jedes Anthropic-Modell unbedingt einen
+API-Client. Ohne Key endete der erste Builder-Turn mit `401 API key is invalid` — für einen
+Key, den die Installation gar nicht braucht. Jetzt gilt: Key vorhanden → API-Pfad
+unverändert; kein Key, aber angemeldete Claude-CLI → CLI-Pfad; keins von beidem →
+`BuilderLlmAccessError`.
+
+`BuilderProviderResolution` trägt dafür entweder `provider` (API, In-Process-Loop) oder
+`cliModel` (Abo, CLI besitzt die Loop). Builder- und Preview-Chat verzweigen in ihrer
+`defaultBuildSubAgent` auf `createCliSubAgent` — dieselbe Verzweigung, die die
+Dynamic-Agent-Runtime für hochgeladene Agenten seit #309 macht, aus demselben Grund: der
+Completion-Adapter lehnt jede Anfrage mit Tools ab.
+
+**Bekannte Einschränkung:** `createCliSubAgent().ask()` nimmt keinen `AskObserver` und keine
+`AskOptions` entgegen. Auf dem Abo-Weg fehlen dem Builder-UI deshalb `tool_use` /
+`tool_result` / Token-Zähler, und `expectedTurnToolUse: 'fill_slot'` wirkt nicht. Der Turn
+läuft, die Live-Anzeige bleibt beim Heartbeat. Eigene Unit.
+
+### Kosten-Ledger nimmt Abo-Turns (OM-103)
+
+Graph-Migration **0032** (`packages/harness-knowledge-graph-neon/src/migrations/`) ergänzt
+`token_usage.reference_cost_usd`. Ein Abo-Turn schreibt `cost_usd = 0` (die Pauschale ist
+kein Preis pro Call) und legt den vom CLI gemeldeten `total_cost_usd` daneben. Keine
+Summe im Dashboard fasst diese Spalte an.
+
+`UsageRecord` akzeptiert dafür ein explizites `costUsd` und ein `referenceCostUsd`.
+Erfasst wird an zwei Stellen: `cliChatAgent.ts` (Chat-Turn, Quelle `claude-cli`) und
+`platform/claudeCliAdapter.ts` (Shape-2-Completion, Quelle `claude-cli-completion`).
+`UsageTotals` bekommt `referenceCostUsd` + `subscriptionCalls`; gezählt wird über eine
+**erschöpfende Liste** dieser beiden Quellen, nicht über ein Präfix — `source` ist bei
+`withProviderUsageTracking` ein Aufrufer-Wert.
+
+⚠️ Neue Codes gegen ein Schema vor 0032 lassen **jede** Usage-Erfassung und die ganze
+Kostenseite fehlschlagen, nicht nur die Abo-Zeilen. Migration vor Deploy.
+
+### Systemstatus: "Letzter Turn" (OM-100b, §3)
+
+Neue Route **`GET /api/v1/admin/last-turn`** (auth required, `routes/adminLastTurn.ts`) →
+`{ lastTurn: { status, at, errorCode?, errorMessage?, cliVersion?, minCliVersion? } | null }`.
+Gespeist aus beiden Chat-Routen, gehalten in `platform/lastTurnOutcome.ts` — bewusst
+prozess-lokal, weil es eine Aussage über *diese* Laufzeit ist; ein Neustart ist die
+Abhilfe, kein Zustand, der ihn überleben soll. `null` heißt "seit dem Start lief kein
+Turn" und wird als *unbekannt* gerendert, nicht als grün.
+
+Fehlerklassen: `cli_incompatible` (aus `CliIncompatibleError`, mit installierter und
+geforderter CLI-Version), `cli_timeout`, `orchestrator_failure`.
+
+**Die Falle, die das Ganze fast unbrauchbar gemacht hätte:** Keine der beiden Runtimes
+*wirft* bei einem gescheiterten Turn. `CliChatAgent.chatStream` und
+`Orchestrator.chatStream` melden den Fehler als `error`-Event und laufen dann normal aus.
+Wer im Streaming-Handler nach dem Drain "Erfolg" schreibt, protokolliert genau die tote
+Beta-Runde als lauter Erfolge. Der Handler liest das Ergebnis deshalb vom Draht.
+`cli_timeout` wird über den Wortlaut *"CLI timed out after &lt;n&gt;ms"* erkannt — der
+Produzent in `cliChatAgent.ts` trägt einen Kommentar, dass das ein Vertrag ist.
+
+Das Dashboard zeigt eine eigene Karte und setzt zusätzlich LLM-Provider und
+Orchestratoren auf "Aufmerksamkeit nötig", wenn der letzte Turn scheiterte — beide Karten
+beantworten Konfigurationsfragen und waren wahrheitsgemäß grün, während der Chat tot war.
+
+### Turn-Budget als Setup-Feld (OM-104, §10)
+
+Orchestrator-Setup-Feld **`cli_turn_seconds`** → `spawnTimeoutMs` des `CliChatAgent`.
+Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0 heißt
+"nicht gesetzt", damit ein leeres Feld die ENV nicht überschreibt. UI auf der
+LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
+Plugin reaktiviert, kein Neustart.
+
+### `manage_routine` bekommt den Principal (OM-82)
+
+Root Cause war nicht der Transport. `#993` (Kontext über die Prozessgrenze restaurieren)
+und `#1016` (stale Kontext hart ablehnen) haben den Transport eines Wertes gehärtet, den
+auf dem Web-Chat **nie jemand gesetzt hat**: einziger Schreiber von `routineTurnContext`
+ist `RoutinesIntegration.captureRoutineTurn`, und das ruft nur der Teams-Adapter.
+`routineTurnContext.current()` war den ganzen Turn `undefined`, also lehnte das Tool ab.
+
+`routes/chat.ts` installiert den Kontext jetzt selbst, außen um den Turn (die
+CLI-Bridge snapshottet den Async-Kontext am öffentlichen Einstieg, erwischt also beide
+Stores). Drei Entscheidungen, die dazugehören:
+
+- **Identität nur aus der Session** (`req.session.omadia_user_id`), nie aus
+  `resolveUserId()`. Das fällt auf den Client-Header `x-user-id` zurück, und
+  `manage_routine` scopet `pause`/`resume`/`delete` auf `(tenant, userId)` (#1025) — ein
+  gefälschter Header wäre fremde Routinen verwalten. Der `#1016`-Guard fängt das nicht:
+  beide Seiten seines Vergleichs kämen aus derselben Fälschung.
+- **Anonym ⇒ gar kein Kontext.** Der Guard *lehnt ab*, wenn ein Kontext da ist, der Turn
+  aber keine `userId` zum Vergleichen hat. Ein anonymer Kontext würde die freundliche
+  Tool-Absage in einen harten Guard-Fehler verwandeln.
+- **`run`, nicht `enter`,** auf beiden Routen. Der Generator wird hier erzeugt *und*
+  ausgelesen, also deckt ein normaler Scope jedes `.next()` ab und endet sauber;
+  `enterWith` hätte den Principal ohne Scope-Ende auf der Request-Kette liegen lassen, und
+  die In-Process-Runtime hat keinen Owner-Guard, der so etwas abfinge.
+
+Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `create`
+scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
+die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
+**Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
