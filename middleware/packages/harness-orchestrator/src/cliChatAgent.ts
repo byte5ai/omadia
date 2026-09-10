@@ -18,6 +18,7 @@ import type {
 } from './toolDispatchService.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
+import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import {
   OMADIA_MCP_TOOL_PREFIX,
   buildCliToolGateArgv,
@@ -149,6 +150,27 @@ export interface CliUsage {
   readonly cacheCreationInputTokens: number;
   readonly costUsd: number;
   readonly numTurns: number;
+}
+
+/**
+ * OM-103 — one subscription turn, in the ledger's vocabulary.
+ *
+ * `recordUsage` is fire-and-forget and no-ops until a pool is wired, so this
+ * is safe on every host (in-memory KG boots, unit tests) and can never fail a
+ * turn. Kept a free function so the parser stays a pure NDJSON reader.
+ */
+function recordCliTurnUsage(model: string, usage: CliUsage): void {
+  recordUsage({
+    source: CLI_CHAT_USAGE_SOURCE,
+    model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadInputTokens,
+    cacheCreationTokens: usage.cacheCreationInputTokens,
+    // The subscription is a flat fee; nothing is billed per call.
+    costUsd: 0,
+    referenceCostUsd: usage.costUsd,
+  });
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -858,6 +880,10 @@ export class CliChatAgent implements ChatAgent {
         logger.warn('claude CLI turn timed out', { spawnTimeoutMs, stderr: firstLine(stderr) });
         failRuntime(
           new Error(
+            // OM-100b — `lastTurnOutcome.classifyTurnError` matches this
+            // wording to tell a budget overrun apart from a generic failure.
+            // Changing "CLI timed out after <n>ms" degrades that card to a
+            // nameless error; change both together.
             `CLI timed out after ${spawnTimeoutMs}ms ` +
               `(raise ${CLI_SPAWN_TIMEOUT_ENV_KEY} for turns that run several tools)`,
           ),
@@ -930,6 +956,15 @@ export class CliChatAgent implements ChatAgent {
       if (!parser.sawTerminalResult()) {
         throw new Error('claude-cli exited without a terminal result line');
       }
+
+      // OM-103 — the CLI has reported its token usage on every terminal result
+      // line since the parser was written, and nothing ever read it. That is
+      // why ADMIN → Nutzung & Kosten showed "0 Calls" after a dozen
+      // subscription turns: the ledger only had capture points on the metered
+      // API path. `costUsd: 0` is not a placeholder — a subscription turn
+      // genuinely costs nothing per call — and the CLI's own `total_cost_usd`
+      // is kept beside it as the informational reference.
+      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage());
 
       return parser;
     } finally {

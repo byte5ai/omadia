@@ -792,6 +792,14 @@ export async function activate(
     ctx.config.get<unknown>('max_turn_seconds'),
     DEFAULT_MAX_TURN_SECONDS,
   );
+  // OM-104 — operator-set wall-clock budget for one CLI-owned turn, in
+  // seconds. `0` (the default) means "not set": the ENV override and then the
+  // 600 s built-in stay in charge. Not floored — an operator on a slow box may
+  // legitimately want a much larger budget, and a small one is their call too.
+  const cliTurnSeconds = parseNumberOrDefault(
+    ctx.config.get<unknown>('cli_turn_seconds'),
+    0,
+  );
   // Round-loop guard thresholds (omit → LoopGuard defaults 3 / 5). `0` or an
   // unparseable value falls back to the default rather than disabling the guard.
   const loopRepeatSoft = parseNumberOrDefault(
@@ -1198,6 +1206,7 @@ export async function activate(
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+      ...(cliTurnSeconds > 0 ? { cliTurnSeconds } : {}),
       ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
       ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
     },
@@ -1272,6 +1281,7 @@ export async function activate(
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+          ...(cliTurnSeconds > 0 ? { cliTurnSeconds } : {}),
           ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
           ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
         },

@@ -175,12 +175,18 @@ import {
 } from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
+import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
-import { autoAssignSubscriptionCli } from './platform/providerAssignment.js';
+import {
+  autoAssignSubscriptionCli,
+  SUBSCRIPTION_CLI_PROVIDER,
+} from './platform/providerAssignment.js';
+import { detectCliBackends } from './platform/cliBackendDetector.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import {
   memoizeRuntimeReadinessCause,
   resolvePluginLlmReadiness,
+  resolveProviderVerification,
   resolveRuntimeReadinessCause,
   type RuntimeReadinessCause,
 } from './platform/pluginLlmReadiness.js';
@@ -205,6 +211,7 @@ import {
   BuilderAgent,
   type BuilderProviderResolver,
 } from './plugins/builder/builderAgent.js';
+import { BuilderLlmAccessError } from './plugins/builder/builderLlmAccess.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
@@ -5140,6 +5147,9 @@ async function main(): Promise<void> {
   // Read-only host-capability probe; never triggers a login or consumes quota.
   app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
+  // OM-100b — the runtime half of the Systemstatus panel: whether the last
+  // chat turn actually came back. Process-scoped and read-only.
+  app.use('/api/v1/admin/last-turn', requireAuth, createAdminLastTurnRouter());
   // OM-79 (#994) — the hand-off the subscription path was missing. A successful
   // in-app login used to end with "signed in" while the orchestrator kept
   // asking the vault for an Anthropic key and never published chatAgent@1.
@@ -5377,14 +5387,75 @@ async function main(): Promise<void> {
     `[middleware] bootstrap profile endpoints ready at /api/v1/profiles (auth: required, live-storage: ${liveProfileStorage ? 'on' : 'off'}, snapshots: ${snapshotService ? 'on' : 'off'})`,
   );
 
+  /**
+   * OM-101 — is a Claude subscription usable right now? Same verdict the
+   * providers-admin page computes (a CLI-backed provider is keyless: its probe
+   * is the login check, not a credential probe), just reached from here.
+   * Never throws — detection failure means "no subscription", not an error.
+   */
+  const subscriptionCliLoggedIn = async (): Promise<boolean> => {
+    const snapshot = await detectCliBackends().catch(() => undefined);
+    const verification = await resolveProviderVerification(
+      SUBSCRIPTION_CLI_PROVIDER,
+      { llmProviderCatalog, ...(snapshot ? { cliSnapshot: snapshot } : {}) },
+    );
+    return verification.status === 'verified';
+  };
+
+  /**
+   * OM-101 — map an Anthropic model id onto the CLI's alias vocabulary. The
+   * CLI takes `opus` / `sonnet` / `haiku`, not `claude-opus-5`; the registry's
+   * own CLI models carry a `-cli` suffix that has to come off either way.
+   */
+  const cliAliasFor = (modelId: string): string => {
+    const bare = modelId.replace(/-cli$/, '');
+    if (bare.includes('opus')) return 'opus';
+    if (bare.includes('haiku')) return 'haiku';
+    if (bare.includes('sonnet')) return 'sonnet';
+    return bare || 'sonnet';
+  };
+
   const resolveBuilderProvider: BuilderProviderResolver = async (modelRef) => {
     const { provider: providerId, modelId } =
       BuilderModelRegistry.resolve(modelRef);
+    // A model the operator picked from the subscription section of the model
+    // catalog. The in-process loop cannot serve it (the completion adapter
+    // rejects tool-carrying requests), so it always takes the CLI path.
+    if (providerId === SUBSCRIPTION_CLI_PROVIDER) {
+      if (!(await subscriptionCliLoggedIn())) {
+        throw new BuilderLlmAccessError(
+          `Builder-Modell '${modelRef}' läuft über das Claude-Abo, aber die ` +
+            `Claude-CLI ist nicht angemeldet. Verbinde das Abo unter ADMIN → ` +
+            `LLM-Zugang.`,
+        );
+      }
+      return { cliModel: cliAliasFor(modelId), modelId };
+    }
     if (providerId === 'anthropic') {
-      return {
-        provider: createAnthropicProvider({ client: currentAnthropicClient() }),
-        modelId,
-      };
+      // OM-101 — the 401 the round-5 tester saw came from right here: the
+      // builder built a metered API client unconditionally, so an install with
+      // no Anthropic key (subscription-only, which the orchestrator has
+      // supported since round 4) failed on a credential it never needed. Only
+      // fall through to the subscription when there is genuinely no key —
+      // an operator who configured one keeps the API path and its tool loop.
+      const anthropicKey =
+        (await readProviderApiKey(
+          (k) => secretVault.get(ORCHESTRATOR_SECRET_SOURCE, k),
+          'anthropic',
+        )) ?? (config.ANTHROPIC_API_KEY ?? '').trim();
+      if (anthropicKey) {
+        return {
+          provider: createAnthropicProvider({ client: currentAnthropicClient() }),
+          modelId,
+        };
+      }
+      if (await subscriptionCliLoggedIn()) {
+        return { cliModel: cliAliasFor(modelId), modelId };
+      }
+      throw new BuilderLlmAccessError(
+        `Builder-Modell '${modelRef}' braucht einen LLM-Zugang: entweder einen ` +
+          `Anthropic-API-Key oder ein verbundenes Claude-Abo. Beides fehlt.`,
+      );
     }
     const provider = await resolveLlmProvider({
       providerId,

@@ -24,6 +24,7 @@ import {
   type CliBackendStatus,
 } from '../../../_lib/api';
 import { InstallBox, ManualInstallSteps } from './InstallBox';
+import { TurnBudgetField } from './TurnBudgetField';
 
 type T = ReturnType<typeof useTranslations>;
 
@@ -197,6 +198,9 @@ export function SubscriptionClisPanel({
           </ul>
         </section>
       )}
+
+      {/* OM-104 — the turn budget belongs next to the subscription it bounds. */}
+      <TurnBudgetField />
     </div>
   );
 }

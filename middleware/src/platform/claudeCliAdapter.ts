@@ -32,6 +32,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { CLI_COMPLETION_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import type {
   LlmAdapter,
   LlmAdapterBuildOptions,
@@ -107,7 +108,15 @@ function buildPrompt(messages: ReadonlyArray<ChatMessage>): string {
 interface CliResultJson {
   result?: string;
   is_error?: boolean;
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    /** OM-103 — the CLI reports it; the ledger now has a column for it. */
+    cache_creation_input_tokens?: number;
+  };
+  /** OM-103 — what the same call would have cost on the metered API. */
+  total_cost_usd?: number;
 }
 
 /** Parse the first top-level JSON object in the CLI output (tolerates a stray
@@ -297,6 +306,20 @@ function spawnClaude(
           ? { cacheReadTokens: parsed.usage.cache_read_input_tokens }
           : {}),
       };
+      // OM-103 — Shape-2 completions are subscription calls too (session
+      // summary, fact extraction, classifiers, the verifier judge). They were
+      // absent from the cost ledger for the same reason the chat turns were:
+      // the only capture points sat on the metered API path.
+      recordUsage({
+        source: CLI_COMPLETION_USAGE_SOURCE,
+        model: req.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens ?? 0,
+        cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? 0,
+        costUsd: 0,
+        referenceCostUsd: parsed.total_cost_usd ?? 0,
+      });
       if (forced) {
         const argsObj = parseFirstJsonObject(text);
         if (!argsObj) {

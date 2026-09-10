@@ -19,6 +19,7 @@ import {
   type BuilderProviderResolver,
   type BuilderSubAgentBuildOptions,
 } from '../../src/plugins/builder/builderAgent.js';
+import { BuilderLlmAccessError } from '../../src/plugins/builder/builderLlmAccess.js';
 import {
   patchSpecTool,
   fillSlotTool,
@@ -235,7 +236,9 @@ describe('BuilderAgent.runTurn', () => {
     const agent = harness.agentFor({
       resolveProvider: async () => ({ provider: current, modelId: FAKE_MODEL_ID }),
       buildSubAgent: (opts) => {
-        seenProviders.push(opts.provider);
+        // OM-101 made `provider` optional (absent on the subscription path);
+        // this test only ever resolves API-path providers.
+        if (opts.provider) seenProviders.push(opts.provider);
         return inner(opts);
       },
     });
@@ -261,6 +264,62 @@ describe('BuilderAgent.runTurn', () => {
     assert.equal(seenProviders.length, 2);
     assert.equal(seenProviders[0], bootProvider);
     assert.equal(seenProviders[1], vaultProvider);
+  });
+
+  // OM-101 — a subscription-only install (no API key anywhere) used to fail the
+  // very first builder turn with `401 API key is invalid`, for a key it never
+  // needed: the resolver built a metered Anthropic client unconditionally. The
+  // resolver now hands back a CLI model instead, and the sub-agent factory has
+  // to receive it WITHOUT a provider — that absence is what proves nothing
+  // reaches the Anthropic API on this path.
+  it('builds the sub-agent from a CLI model and no provider on the subscription path', async () => {
+    const seen: Array<{ provider: unknown; cliModel: unknown }> = [];
+    const inner = makeFakeBuildSubAgent({ finalText: 'ok' });
+    const agent = harness.agentFor({
+      resolveProvider: async () => ({ cliModel: 'opus', modelId: FAKE_MODEL_ID }),
+      buildSubAgent: (opts) => {
+        seen.push({ provider: opts.provider, cliModel: opts.cliModel });
+        return inner(opts);
+      },
+    });
+
+    await collect(
+      agent.runTurn({
+        draftId: harness.draftId,
+        userEmail: harness.userEmail,
+        userMessage: 'Build me a weather agent.',
+        modelChoice: 'opus',
+      }),
+    );
+
+    assert.deepEqual(seen, [{ provider: undefined, cliModel: 'opus' }]);
+  });
+
+  // OM-101 — with neither an API key nor a connected subscription the failure
+  // has to be legible. It used to arrive as a vendor 401 about a credential
+  // the operator was never asked for; it now carries its own code so the UI
+  // can say what is actually missing.
+  it('yields a coded llm_access_missing error when no LLM access exists', async () => {
+    const agent = harness.agentFor({
+      resolveProvider: async () => {
+        throw new BuilderLlmAccessError('no key and no subscription');
+      },
+    });
+
+    const events = await collect(
+      agent.runTurn({
+        draftId: harness.draftId,
+        userEmail: harness.userEmail,
+        userMessage: 'Build me a weather agent.',
+        modelChoice: 'opus',
+      }),
+    );
+
+    const errorEv = events.find((e) => e.type === 'error');
+    assert.ok(errorEv, 'stream carries an error event');
+    if (errorEv.type === 'error') {
+      assert.equal(errorEv.code, 'builder.llm_access_missing');
+    }
   });
 
   it('reuses an explicit turnId in turn_started + turn_done when caller passes opts.turnId', async () => {

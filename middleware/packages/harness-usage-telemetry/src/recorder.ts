@@ -32,10 +32,24 @@ export interface UsageRecord extends UsageTokens {
   readonly sessionId?: string | undefined;
   /** Turn id, when known. */
   readonly turnId?: string | undefined;
+  /**
+   * OM-103 — billed cost, when the CALLER knows it and the price table does
+   * not. Set to `0` by the subscription (`claude-cli`) seams: the operator
+   * pays a flat fee, so per-token pricing would invent money nobody spent.
+   * Omitted (the ordinary case) means "derive it from the price table".
+   */
+  readonly costUsd?: number | undefined;
+  /**
+   * OM-103 — what this call would have cost on the metered API, as reported
+   * by the vendor. Informational only: it lands in its own column and is
+   * never summed into a billed total.
+   */
+  readonly referenceCostUsd?: number | undefined;
 }
 
 interface BufferedRow extends UsageRecord {
   readonly costUsd: number;
+  readonly referenceCostUsd: number;
 }
 
 const FLUSH_INTERVAL_MS = 5_000;
@@ -94,7 +108,13 @@ export function recordUsage(record: UsageRecord): void {
     }
     return;
   }
-  buffer.push({ ...record, costUsd: computeCostUsd(record.model, record) });
+  // OM-103: an explicit `costUsd` from the caller wins over the price table.
+  // `?? ` and not `||` — `0` is the whole point on the subscription path.
+  buffer.push({
+    ...record,
+    costUsd: record.costUsd ?? computeCostUsd(record.model, record),
+    referenceCostUsd: record.referenceCostUsd ?? 0,
+  });
   if (buffer.length >= FLUSH_MAX_BATCH) void flush();
 }
 
@@ -107,12 +127,14 @@ export async function flush(): Promise<void> {
   if (!pool || buffer.length === 0) return;
   const rows = buffer.splice(0, FLUSH_MAX_BATCH);
 
-  // Build a single parameterised multi-row INSERT: 9 columns per row.
-  const cols = 9;
+  // Build a single parameterised multi-row INSERT: 10 columns per row
+  // (OM-103 added `reference_cost_usd`; graph migration 0032).
+  const cols = 10;
   const valuesSql = rows
     .map((_, i) => {
       const b = i * cols;
-      return `($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9})`;
+      const placeholders = Array.from({ length: cols }, (_unused, c) => `$${b + c + 1}`);
+      return `(${placeholders.join(',')})`;
     })
     .join(',');
   const params: unknown[] = [];
@@ -127,6 +149,7 @@ export async function flush(): Promise<void> {
       r.costUsd,
       r.tenantId ?? null,
       r.sessionId ?? null,
+      r.referenceCostUsd,
     );
   }
 
@@ -134,7 +157,8 @@ export async function flush(): Promise<void> {
     await pool.query(
       `INSERT INTO token_usage
          (source, model, input_tokens, output_tokens,
-          cache_read_tokens, cache_creation_tokens, cost_usd, tenant_id, session_id)
+          cache_read_tokens, cache_creation_tokens, cost_usd, tenant_id, session_id,
+          reference_cost_usd)
        VALUES ${valuesSql}`,
       params,
     );
@@ -143,7 +167,7 @@ export async function flush(): Promise<void> {
     if (!warnedFlushError) {
       warnedFlushError = true;
       console.warn(
-        '[usage-telemetry] flush failed — dropping batch (has graph migration 0028 run?):',
+        '[usage-telemetry] flush failed — dropping batch (have graph migrations 0028 + 0032 run?):',
         err instanceof Error ? err.message : err,
       );
     }
