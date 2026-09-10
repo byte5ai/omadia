@@ -22,7 +22,19 @@ export interface UsageTotals {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheCreationTokens: number;
+  /** BILLED money only. A subscription row contributes 0 (OM-103). */
   readonly costUsd: number;
+  /**
+   * OM-103 — what the subscription turns in this window would have cost on
+   * the metered API. Never added to {@link costUsd}: nobody paid it.
+   */
+  readonly referenceCostUsd: number;
+  /**
+   * OM-103 — how many of {@link calls} ran through the subscription CLI. The
+   * dashboard used to read "0 Calls" after a dozen subscription turns, which
+   * was indistinguishable from "the telemetry is broken".
+   */
+  readonly subscriptionCalls: number;
   /** cacheRead / (cacheRead + input), 0..1 — how much input was served warm. */
   readonly cacheHitRatio: number;
 }
@@ -31,6 +43,8 @@ export interface UsageByKey {
   readonly key: string;
   readonly calls: number;
   readonly costUsd: number;
+  /** OM-103 — informational subscription cost for this key; see UsageTotals. */
+  readonly referenceCostUsd: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
@@ -48,6 +62,20 @@ export interface UsageDashboard {
   readonly bySource: readonly UsageByKey[];
   readonly timeSeries: readonly UsageBucket[];
 }
+
+/**
+ * OM-103 — the exact `source` values the subscription seams record under: the
+ * CLI-owned chat turn and the Shape-2 completion.
+ *
+ * An exhaustive list rather than a `claude-cli%` prefix match, because
+ * `withProviderUsageTracking` takes a caller-supplied `source`: a future
+ * provider named `claude-cli-something-metered` would be folded into the
+ * subscription count by a prefix and never noticed. Interpolated into SQL
+ * rather than parameterised because these are module constants that never see
+ * caller input; the window bounds stay parameterised.
+ */
+export const SUBSCRIPTION_SOURCES = ['claude-cli', 'claude-cli-completion'] as const;
+const SUBSCRIPTION_SOURCE_LIST = SUBSCRIPTION_SOURCES.map((s) => `'${s}'`).join(',');
 
 function windowClause(w: UsageWindow, params: unknown[]): string {
   const clauses: string[] = [];
@@ -77,7 +105,9 @@ async function fetchTotals(pool: Pool, w: UsageWindow): Promise<UsageTotals> {
        COALESCE(SUM(output_tokens),0)    AS output_tokens,
        COALESCE(SUM(cache_read_tokens),0)     AS cache_read_tokens,
        COALESCE(SUM(cache_creation_tokens),0) AS cache_creation_tokens,
-       COALESCE(SUM(cost_usd),0)         AS cost_usd
+       COALESCE(SUM(cost_usd),0)         AS cost_usd,
+       COALESCE(SUM(reference_cost_usd),0) AS reference_cost_usd,
+       COUNT(*) FILTER (WHERE source IN (${SUBSCRIPTION_SOURCE_LIST})) AS subscription_calls
      FROM token_usage ${where}`,
     params,
   );
@@ -92,6 +122,8 @@ async function fetchTotals(pool: Pool, w: UsageWindow): Promise<UsageTotals> {
     cacheReadTokens,
     cacheCreationTokens: num(r.cache_creation_tokens),
     costUsd: num(r.cost_usd),
+    referenceCostUsd: num(r.reference_cost_usd),
+    subscriptionCalls: num(r.subscription_calls),
     cacheHitRatio: warmDenom > 0 ? cacheReadTokens / warmDenom : 0,
   };
 }
@@ -108,6 +140,7 @@ async function fetchByKey(
        ${column}                          AS key,
        COUNT(*)                           AS calls,
        COALESCE(SUM(cost_usd),0)          AS cost_usd,
+       COALESCE(SUM(reference_cost_usd),0) AS reference_cost_usd,
        COALESCE(SUM(input_tokens),0)      AS input_tokens,
        COALESCE(SUM(output_tokens),0)     AS output_tokens,
        COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens
@@ -120,6 +153,7 @@ async function fetchByKey(
     key: String(r.key ?? 'unknown'),
     calls: num(r.calls),
     costUsd: num(r.cost_usd),
+    referenceCostUsd: num(r.reference_cost_usd),
     inputTokens: num(r.input_tokens),
     outputTokens: num(r.output_tokens),
     cacheReadTokens: num(r.cache_read_tokens),

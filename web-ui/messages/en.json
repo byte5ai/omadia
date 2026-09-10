@@ -64,6 +64,17 @@
         "summary": "{enabled} of {total} connected · {tools} tools",
         "summaryPending": "{enabled} of {total} connected · {tools} tools · {pending} need Discover",
         "none": "No MCP servers yet"
+      },
+      "lastTurn": {
+        "title": "Last turn",
+        "okStatus": "Succeeded",
+        "unknownStatus": "Unknown",
+        "ok": "The last chat turn was answered successfully.",
+        "none": "No turn has run since this process started.",
+        "cliIncompatible": "The installed Claude CLI ({installed}) does not support an option omadia requires. Update to {required} or newer.",
+        "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
+        "failure": "The last turn failed: {message}",
+        "unknownVersion": "unknown version"
       }
     },
     "quick": {
@@ -2843,7 +2854,8 @@
         "unknownTurn": "Unknown error during builder turn",
         "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
-        "choiceSaveFailed": "Could not save selection."
+        "choiceSaveFailed": "Could not save selection.",
+        "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -2903,7 +2915,8 @@
         "error": {
           "connectionLost": "Connection lost: {message}",
           "unknownTurn": "Unknown error during the preview turn",
-          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again."
+          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
+          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
@@ -3813,6 +3826,13 @@
       "conflict": "Another CLI install is already running on this server. Wait for it to finish, then try again.",
       "retry": "Try again",
       "manualSummary": "Prefer to install manually?"
+    },
+    "turnBudget": {
+      "label": "Time limit per turn (seconds)",
+      "help": "How long a single turn may run on the subscription path. Leave empty for the {default}-second default, or the value from OMADIA_CLI_SPAWN_TIMEOUT_MS.",
+      "save": "Save",
+      "saved": "Saved",
+      "invalid": "Enter a whole number between {min} and {max}."
     }
   },
   "createIssue": {
@@ -4634,7 +4654,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
+    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4657,7 +4677,11 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache"
+    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "subscription": {
+      "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
+      "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
+    }
   },
   "adminUsers": {
     "loading": "Loading …",

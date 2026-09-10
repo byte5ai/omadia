@@ -13,6 +13,12 @@ import type {
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
 import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
+import {
+  recordTurnFailure,
+  recordTurnSuccess,
+} from '../platform/lastTurnOutcome.js';
+import type { ManageRoutineContext } from '../plugins/routines/manageRoutineTool.js';
+import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -150,6 +156,69 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
     turnDate: today(),
     ...(identity ? { mcpUserKey: identity } : {}),
   };
+}
+
+/**
+ * OM-82 — the HTTP chat channel identifier for routines.
+ *
+ * No proactive sender is registered for it (senders come from channel plugins
+ * such as Teams), so `manage_routine`'s `create` still refuses here — but with
+ * "no proactive sender registered for channel 'web'", which names the actual
+ * limitation, instead of the runtime-wiring error the tester saw. `list`,
+ * `pause`, `resume` and `delete` work from the web chat once the principal
+ * arrives, which is the bulk of what the tool is asked for.
+ */
+const HTTP_ROUTINE_CHANNEL = 'web';
+
+/**
+ * OM-82 (#993, #1016) — the missing PRODUCER of the routines principal.
+ *
+ * `#993` taught the loopback dispatch to restore the caller's async context
+ * across the CLI process boundary and `#1016` taught it to refuse a stale one.
+ * Both hardened the transport of a value the HTTP chat route never installed:
+ * the only writer of `routineTurnContext` in the whole tree is
+ * `RoutinesIntegration.captureRoutineTurn`, which only the out-of-tree Teams
+ * adapter calls. So on the web chat `routineTurnContext.current()` was
+ * `undefined` for the entire turn and `manage_routine` refused every action.
+ *
+ * Returns `undefined` when no principal resolved. That is deliberate: the
+ * `#1016` owner guard REFUSES a dispatch whose restored context has a userId
+ * the turn does not, so installing an anonymous context would turn a graceful
+ * "no user context" into a hard guard failure.
+ *
+ * The identity is the SESSION's, never `resolveUserId(req)` — for the reason
+ * `chatTurnContext` already documents above. `resolveUserId` falls through to
+ * the client-sent `x-user-id` header, and `manage_routine` scopes `pause` /
+ * `resume` / `delete` to the context's `(tenant, userId)` (#1025), so keying
+ * the principal on that header would let any caller name a victim and manage
+ * their routines. The `#1016` guard cannot catch it either: both sides of its
+ * comparison would come from the same forged header and would match.
+ */
+function httpRoutineContext(
+  req: Request,
+  sessionScope: string,
+): ManageRoutineContext | undefined {
+  const userId = req.session?.omadia_user_id;
+  if (!userId || !USER_ID_RE.test(userId)) return undefined;
+  return {
+    tenant: process.env['GRAPH_TENANT_ID'] ?? 'default',
+    userId,
+    channel: HTTP_ROUTINE_CHANNEL,
+    // The web chat has no channel-native delivery handle; the session scope is
+    // the closest stable correlation id a later sender could key on.
+    conversationRef: { kind: 'http-chat', sessionScope },
+    // Cold-start outreach to OTHER people is a channel-governance decision; the
+    // web chat has no such governance source, so it stays closed.
+    canTargetOthers: false,
+  };
+}
+
+/** Run `fn` under the routines principal when one resolved, unchanged otherwise. */
+function withRoutinePrincipal<T>(
+  ctx: ManageRoutineContext | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return ctx ? routineTurnContext.run(ctx, fn) : fn();
 }
 
 /**
@@ -305,15 +374,21 @@ export function createChatRouter(
       const sessionScope = resolveScope(parsed.data);
       // W4-1: the whole turn runs inside the identity scope. `run` (not
       // `enter`) because a plain async call's own async chain bounds it.
-      const result = await turnContext.run(
-        chatTurnContext(req, sessionScope),
+      // OM-82: the routines principal wraps it on the OUTSIDE, so the CLI
+      // bridge's `AsyncLocalStorage.snapshot()` captures both.
+      const result = await withRoutinePrincipal(
+        httpRoutineContext(req, sessionScope),
         () =>
-          chat.chat({
-            userMessage: parsed.data.message,
-            sessionScope,
-            ...(userId ? { userId } : {}),
-          }),
+          turnContext.run(chatTurnContext(req, sessionScope), () =>
+            chat.chat({
+              userMessage: parsed.data.message,
+              sessionScope,
+              ...(userId ? { userId } : {}),
+            }),
+          ),
       );
+      // OM-100b: a turn that came back is the only proof the runtime works.
+      recordTurnSuccess();
       // Snapshot capture (Phase A) — first turn pins the session to the
       // resolved Agent. Subsequent turns use the pinned snapshot via
       // resolveAgentForRequest above; this is a no-op then.
@@ -356,7 +431,12 @@ export function createChatRouter(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chat] orchestrator failure:', err);
-      res.status(500).json({ error: 'orchestrator_failure', message });
+      // OM-100b: classify before responding so the status card can name the
+      // remedy (e.g. `cli_incompatible` → update the CLI) instead of echoing.
+      const outcome = recordTurnFailure(err);
+      res
+        .status(500)
+        .json({ error: 'orchestrator_failure', code: outcome.errorCode, message });
     }
   });
 
@@ -513,6 +593,18 @@ export function createChatRouter(
       // before the first token lands.
       safeWrite({ type: 'agent_bound', slug: effectiveSlug });
 
+      // OM-82: `run`, not `enter`. `turnContext` needs `runGenerator` because
+      // ITS generator is created inside the orchestrator and resumed by
+      // whoever calls `.next()`; this one is created AND drained right here,
+      // inside the scope below, so a plain `run` covers every `.next()` and
+      // still exits cleanly. `enterWith` would leave the principal on this
+      // request's async chain with no scope exit — a leak the in-process
+      // runtime has no owner guard to catch (#1016 guards the CLI agent only).
+      const routinePrincipal = httpRoutineContext(req, resolveScope(parsed.data));
+      // OM-100b: an error EVENT ends the stream normally — neither runtime
+      // throws for a failed turn — so the outcome has to be read off the wire.
+      let streamError: string | undefined;
+      await withRoutinePrincipal(routinePrincipal, async () => {
       // W4-1: `runGenerator`, NOT `run`/`enter`. `enterWith` binds the store to
       // the async resource executing at that instant, and an async generator is
       // resumed in the async context of whoever called `.next()` — so the
@@ -571,13 +663,28 @@ export function createChatRouter(
         } else if (event.type === 'text_delta') {
           lastActivityAt = Date.now();
         }
+        if (event.type === 'error') {
+          streamError = event.message;
+        }
         safeWrite(event);
+      }
+      });
+      // OM-100b: "the generator drained" is not the same as "the turn worked".
+      // Both runtimes report a failed turn by yielding an `error` event and
+      // then completing, so a bare drain would have recorded every dead turn
+      // in the round-5 beta as a success — the exact false green this signal
+      // exists to remove.
+      if (streamError === undefined) {
+        recordTurnSuccess();
+      } else {
+        recordTurnFailure(new Error(streamError));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chat/stream] orchestrator failure:', err);
+      const outcome = recordTurnFailure(err);
       if (!clientGone) {
-        writeEvent(res, { type: 'error', message });
+        writeEvent(res, { type: 'error', code: outcome.errorCode, message });
       }
     } finally {
       clearInterval(heartbeatTimer);

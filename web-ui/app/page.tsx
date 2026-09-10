@@ -15,6 +15,7 @@ import {
   ApiError,
   getCliBackends,
   getEmbeddingProviderStatus,
+  getLastTurn,
   getProviders,
   listStorePlugins,
 } from './_lib/api';
@@ -47,7 +48,7 @@ type Tone = 'ok' | 'warn' | 'down' | 'neutral';
 export default async function DashboardPage(): Promise<React.ReactElement> {
   const t = await getTranslations('dashboard');
 
-  const [provP, plugP, agentP, mcpP, cliP, embP] = await Promise.allSettled([
+  const [provP, plugP, agentP, mcpP, cliP, embP, turnP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
     listOperatorAgents(),
@@ -59,10 +60,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     // OM-84 (#1003) — is `embeddingClient@1` published? The cheap status
     // route, not the corpus-counting page snapshot.
     getEmbeddingProviderStatus(),
+    // OM-100b — the runtime question none of the other cards asks: did the
+    // last turn come back?
+    getLastTurn(),
   ]);
 
   // 401 anywhere → re-login (redirect throws and escapes before render).
-  for (const r of [provP, plugP, agentP, mcpP, cliP, embP]) {
+  for (const r of [provP, plugP, agentP, mcpP, cliP, embP, turnP]) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
 
@@ -71,6 +75,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const agents = agentP.status === 'fulfilled' ? agentP.value : null;
   const mcp = mcpP.status === 'fulfilled' ? mcpP.value : null;
   const embeddings = embP.status === 'fulfilled' ? embP.value : null;
+  const lastTurn = turnP.status === 'fulfilled' ? turnP.value.lastTurn : null;
+  const lastTurnFailed = lastTurn?.status === 'failed';
+  // OM-100b — a failed last turn is evidence ABOUT the two cards above it, not
+  // only a card of its own: the credential is present and the agent exists,
+  // and neither fact survived contact with a real turn. Both drop to "needs
+  // attention" so the panel stops reading all-green while chat is dead.
+  const turnTone: Tone = lastTurnFailed ? 'warn' : 'ok';
   const cliLoggedIn =
     cliP.status === 'fulfilled'
       ? cliP.value.backends.some((b) => b.loggedIn === 'yes')
@@ -197,6 +208,26 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const installedCount = installedPlugins.length;
   const readyCount = installedPlugins.filter(isReady).length;
 
+  // OM-100b — one line per error class. `cli_incompatible` gets the version
+  // numbers because the remedy (update the CLI) is only actionable with them;
+  // everything else falls back to the error's own first line, which is more
+  // useful than a generic "something failed".
+  const lastTurnDetail =
+    lastTurn === null
+      ? t('health.lastTurn.none')
+      : lastTurn.status === 'ok'
+        ? t('health.lastTurn.ok')
+        : lastTurn.errorCode === 'cli_incompatible'
+          ? t('health.lastTurn.cliIncompatible', {
+              installed: lastTurn.cliVersion ?? t('health.lastTurn.unknownVersion'),
+              required: lastTurn.minCliVersion ?? '',
+            })
+          : lastTurn.errorCode === 'cli_timeout'
+            ? t('health.lastTurn.cliTimeout')
+            : t('health.lastTurn.failure', {
+                message: lastTurn.errorMessage ?? '',
+              });
+
   const cards: HealthCardProps[] = [
     {
       title: t('health.middleware.title'),
@@ -210,16 +241,23 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     },
     {
       title: t('health.llm.title'),
-      tone: !middlewareOk ? 'down' : llmTone,
-      status: llmTone === 'ok' ? t('health.ok') : t('health.warn'),
+      tone: !middlewareOk ? 'down' : lastTurnFailed ? 'warn' : llmTone,
+      status:
+        llmTone === 'ok' && !lastTurnFailed ? t('health.ok') : t('health.warn'),
       detail: llmDetail,
       href: '/admin/providers',
       manage: t('health.manage'),
     },
     {
       title: t('health.orchestrators.title'),
-      tone: !middlewareOk ? 'down' : orchestratorCount > 0 ? 'ok' : 'warn',
-      status: orchestratorCount > 0 ? t('health.ok') : t('health.warn'),
+      tone:
+        !middlewareOk
+          ? 'down'
+          : orchestratorCount > 0 && !lastTurnFailed
+            ? 'ok'
+            : 'warn',
+      status:
+        orchestratorCount > 0 && !lastTurnFailed ? t('health.ok') : t('health.warn'),
       detail:
         orchestratorCount > 0
           ? t('health.orchestrators.available', { count: orchestratorCount })
@@ -323,6 +361,27 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
               })
           : t('health.mcp.none'),
       href: '/admin/mcp',
+      manage: t('health.manage'),
+    },
+    {
+      // OM-100b — the runtime card. `null` stays neutral on purpose: "no turn
+      // has run yet" is genuinely unknown, and a green tick there would be the
+      // same false comfort this card exists to remove.
+      title: t('health.lastTurn.title'),
+      tone: !middlewareOk ? 'down' : lastTurn === null ? 'neutral' : turnTone,
+      status:
+        lastTurn === null
+          ? t('health.lastTurn.unknownStatus')
+          : lastTurnFailed
+            ? t('health.warn')
+            : t('health.lastTurn.okStatus'),
+      detail: lastTurnDetail,
+      // A timeout is fixed on the subscription tab (the turn budget lives
+      // there); everything else starts at the provider list.
+      href:
+        lastTurn?.errorCode === 'cli_timeout'
+          ? '/admin/providers?tab=subscriptions'
+          : '/admin/providers',
       manage: t('health.manage'),
     },
   ];
