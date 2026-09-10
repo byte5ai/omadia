@@ -32,7 +32,26 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable"
+        "unknown": "Status unavailable",
+        "memory": {
+          "allActive": "Memory features active",
+          "allActiveWithProvider": "Memory features active (LLM: {provider})",
+          "off": "Off: {features}",
+          "featureWithReason": "{feature} ({reason})",
+          "feature": {
+            "factExtractor": "fact extraction",
+            "topicDetector": "topic detection",
+            "scratchReaper": "scratch reaper"
+          },
+          "reason": {
+            "no_llm_provider": "no LLM provider assigned",
+            "no_embedding_provider": "no embedding provider",
+            "no_graph_pool": "no graph storage",
+            "disabled_by_config": "disabled by configuration",
+            "plugin_inactive": "plugin not active",
+            "unknown": "reason unknown"
+          }
+        }
       },
       "plugins": {
         "title": "Plugins",
