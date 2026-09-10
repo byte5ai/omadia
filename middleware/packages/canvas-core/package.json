@@ -31,9 +31,9 @@
     "ajv": "^8.20.0"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.0",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11",
     "ws": "^8.21.3",
