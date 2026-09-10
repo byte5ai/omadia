@@ -579,6 +579,12 @@ function defaultVersionExec(
  * to `undefined`, which {@link supportsRestrictedFlag} treats as "do not pass
  * the flag". The spawn that follows then fails (or succeeds) on its own
  * terms, with its own error message — the probe must not add a failure mode.
+ *
+ * A failed probe is cached like a successful one: a CLI installed inside the
+ * TTL window runs flag-less (still behind `--tools ""`, the deny list,
+ * `dontAsk` and the env twin) for at most five minutes. That is the cheaper
+ * side of the trade — re-probing a missing binary on every turn would spawn a
+ * failing process per message for as long as the CLI stays absent.
  */
 export async function resolveCliVersion(
   binary: string,

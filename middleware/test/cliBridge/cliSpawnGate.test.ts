@@ -187,6 +187,33 @@ describe('cliSpawnGate', () => {
       assert.equal(calls, 2);
     });
 
+    it('takes the first version triple, so a banner line before it does not matter', () => {
+      assert.equal(parseCliVersion('Claude Code CLI\n2.1.259 (Claude Code)\n'), '2.1.259');
+      assert.equal(parseCliVersion('v2.1.248 build 2026.08.27'), '2.1.248', 'first triple wins');
+    });
+
+    it('caches a failed probe for the TTL as well, then re-probes', async () => {
+      clearCliVersionCache();
+      let calls = 0;
+      let clock = 1_000;
+      const exec: CliVersionExec = (_bin, _args, cb) => {
+        calls += 1;
+        if (calls === 1) {
+          cb(new Error('spawn ENOENT'), '');
+        } else {
+          cb(null, '2.1.267');
+        }
+        return undefined;
+      };
+      const now = (): number => clock;
+      assert.equal(await resolveCliVersion('claude-later', { exec, now }), undefined);
+      assert.equal(await resolveCliVersion('claude-later', { exec, now }), undefined);
+      assert.equal(calls, 1, 'a missing binary is not re-probed on every turn');
+      clock += 6 * 60_000;
+      assert.equal(await resolveCliVersion('claude-later', { exec, now }), '2.1.267');
+      assert.equal(calls, 2, 'after the TTL the freshly installed CLI is seen');
+    });
+
     it('resolves to undefined — never throws — when the probe fails', async () => {
       clearCliVersionCache();
       const failing: CliVersionExec = (_bin, _args, cb) => {
