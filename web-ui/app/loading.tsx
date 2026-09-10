@@ -31,7 +31,7 @@ export default async function Loading(): Promise<React.ReactElement> {
       role="status"
       aria-busy="true"
       aria-live="polite"
-      className="mx-auto w-full max-w-[1600px] px-6 py-12 lg:px-8 lg:py-16"
+      className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16"
     >
       <span className="sr-only">{t('loading')}</span>
       <div className="animate-pulse space-y-6" aria-hidden>

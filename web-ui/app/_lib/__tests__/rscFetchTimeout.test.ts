@@ -60,11 +60,32 @@ describe('rscTimeoutSignal (OM-96)', () => {
 
     expect(quick.aborted).toBe(true);
     expect(quick.reason).toBeInstanceOf(Error);
-    // A fetch given that signal rejects rather than hanging — which is what
-    // lets `page.tsx`'s `allSettled` degrade one card and render the rest.
-    await expect(
-      fetch('http://127.0.0.1:1/never', { signal: quick }),
-    ).rejects.toThrow();
+  });
+
+  it('settles an operation that would otherwise never resolve', async () => {
+    // The property the fix actually rests on, exercised end to end: something
+    // that NEVER settles on its own still terminates, because the signal does.
+    //
+    // Deliberately NOT a real socket. An earlier version raced a fetch to
+    // 127.0.0.1:1, but that port refuses the connection immediately — the
+    // rejection arrived from ECONNREFUSED, long before the 10ms timer, so the
+    // abort path was never taken and the test would have passed even with the
+    // timeout removed. A promise that provably cannot settle by itself is the
+    // only honest stand-in for the hung endpoint OM-96 was reported against.
+    asServer();
+    const signal = AbortSignal.timeout(10);
+    const neverSettles = new Promise<never>(() => {
+      /* no resolve, no reject — the hung upstream */
+    });
+
+    const aborted = new Promise<'aborted'>((resolve) => {
+      signal.addEventListener('abort', () => resolve('aborted'), { once: true });
+    });
+
+    // If the signal did not fire, this race would hang and the test would time
+    // out rather than pass — the failure mode is loud.
+    await expect(Promise.race([neverSettles, aborted])).resolves.toBe('aborted');
+    expect(signal.aborted).toBe(true);
   });
 
   it('leaves browser-side fetches unbounded', () => {
