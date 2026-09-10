@@ -386,7 +386,7 @@ type RegistryDecision =
   | { kind: 'blocked'; outcome: EmbeddingModelGateOutcome };
 
 /** What one evaluation is permitted to do about a width mismatch. */
-interface ColumnMigrationPermission {
+export interface ColumnMigrationPermission {
   /** May `tryAutoMigrateColumns` run at all? */
   readonly allowed: boolean;
   /** Would running it lose stored vectors? Drives the log wording only. */
@@ -409,8 +409,14 @@ interface ColumnMigrationPermission {
  *     function verifies are empty, right now, against the database. An
  *     unanswerable count is treated as "not empty": a probe that timed out is
  *     not evidence of an empty corpus.
+ *
+ * Exported for the unit test alone — nothing outside this module calls it.
+ * The alternative was covering the four branches only through
+ * `evaluateEmbeddingModelGate`, which needs a scripted pool for the whole
+ * registry transaction and would test the fail-closed rule through five layers
+ * that can each mask it.
  */
-async function resolveColumnMigrationPermission(args: {
+export async function resolveColumnMigrationPermission(args: {
   pool: Pool;
   tenantId: string;
   mismatches: readonly GovernedVectorColumn[];

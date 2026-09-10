@@ -155,6 +155,11 @@ export type VectorColumnMigrationFailure =
   | 'budget-exhausted'
   /** A DDL transaction failed; that table is untouched. */
   | 'ddl-failed'
+  /**
+   * OM-98 — the run was handed `requireEmpty` and a target turned out to hold
+   * vectors (or its count could not be established). Nothing was dropped.
+   */
+  | 'corpus-not-empty'
   /** Columns are migrated but the registry would not take the new identity. */
   | 'registry-flip-failed';
 
@@ -201,6 +206,27 @@ export interface VectorColumnMigrationOptions {
   lockTimeoutMs?: number;
   /** Cap on rows the attempt reset touches per table. Default 5000. */
   attemptResetMaxRows?: number;
+  /**
+   * OM-98 — refuse to drop a column that still holds vectors.
+   *
+   * TIME-OF-CHECK / TIME-OF-USE. The non-destructive reactivation path
+   * establishes emptiness in `resolveColumnMigrationPermission`, which runs
+   * BEFORE this function takes the advisory lock. Between those two moments a
+   * backfill tick or an ingest can embed rows, and the pre-lock verdict then
+   * authorises a rewrite that silently discards them — the counts this run
+   * takes under the lock used only to be LOGGED. With this flag set, that same
+   * in-lock count becomes the decision: a non-zero (or unknown) count aborts
+   * with `corpus-not-empty` before any DDL runs, so the only check that can be
+   * raced is no longer the only check there is.
+   *
+   * Unknown counts abort too. The permission half is fail-closed for exactly
+   * the same reason — a probe that timed out is not evidence of an empty
+   * corpus — and the two halves have to agree or the guard has a hole.
+   *
+   * Never set on the operator-confirmed destructive switch: there the discard
+   * is the point.
+   */
+  requireEmpty?: boolean;
   log: (msg: string) => void;
   /** Injectable clock, for tests. */
   now?: () => number;
@@ -292,6 +318,20 @@ export async function migrateVectorColumns(
           opts.tenantId,
           statementTimeoutMs,
         );
+        // OM-98 — the in-lock half of the emptiness guard. See `requireEmpty`.
+        // Placed after `countVectors` and before `captureIndexDefs` so the
+        // refusal costs one SELECT and touches no schema at all.
+        if (opts.requireEmpty === true && discardedVectors !== 0) {
+          return {
+            ok: false,
+            reason: 'corpus-not-empty',
+            detail:
+              discardedVectors === undefined
+                ? `${target.table}.${target.column}: whether it still holds vectors could not be established under the lock (the count failed or timed out) — refusing the non-destructive rebuild. An unanswerable count is not evidence of an empty corpus.`
+                : `${target.table}.${target.column}: ${String(discardedVectors)} vector(s) were written between the pre-lock emptiness check and this lock — refusing the non-destructive rebuild rather than discarding them. Use the provider switch with confirmDiscardVectors, which is the path that carries the discard confirmation.`,
+            migrated,
+          };
+        }
         const indexes = await captureIndexDefs(client, target);
         let reset: AttemptResetOutcome;
         try {

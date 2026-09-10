@@ -1556,6 +1556,57 @@ Wahrheit lesen (OM-74/75/78/84):
   (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
   `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
 
+### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
+
+**`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
+Routers, kein Body). Beendet drei Sackgassen, die zusammen die Normalform einer
+Subscription-Installation sind: der keylose Adapter aktivierte vor dem
+Weights-Download und publizierte nichts; die Vektorspalten sind 768 breit und
+**leer**, während das Modell 384d liefert, und der einzige Pfad, der eine
+Spaltenbreite ändern durfte, war ein operator-bestätigter Provider-**Switch** —
+den #1053 unmöglich macht, weil es nach dem Boot keinen zweiten Provider mehr
+gibt, zu dem man wechseln könnte.
+
+Ablauf: aktiven Provider `deactivate` → `activate` (dabei liest der Adapter die
+Weights neu), dann Gate-Re-Evaluierung mit `allowEmptyColumnMigration: true`
+und `allowDestructiveMigration: false`. **Diese Route zerstört nie etwas.**
+
+| Code | HTTP | Wann |
+|---|---|---|
+| `embeddingProvider.corpus_not_empty` | 409 | Die Vektorspalten halten noch Embeddings. `details: { vectorsToDiscard, columnDimensions }`. Verweist auf `/switch` mit `confirmDiscardVectors` — den Pfad, der die Verwerfen-Bestätigung trägt. |
+| `embeddingProvider.no_active_provider` | 409 | Kein `embeddingClient@1`-Provider aktiv — es gibt nichts zu reaktivieren. |
+| `embeddingProvider.switch_in_progress` | 409 | `switchInFlight` — `/switch` und `/reactivate` teilen sich dieselbe Serialisierung. |
+| `embeddingProvider.reactivate_failed` | 500 | `activate` warf nach erfolgreichem `deactivate`. Ein **zweiter** `activate`-Versuch läuft automatisch (analog zu `restorePrevious` im `/switch`-Pfad); `details.capabilityPublished` sagt, ob er den Provider zurückgeholt hat. Das Gate lief in keinem Fall — `details.gateReevaluated: false`. |
+| `embeddingProvider.gate_reevaluation_failed` | 500 | Provider ist wieder live, aber die Gate-Re-Evaluierung warf. Der Graph läuft unter dem **vorherigen** Verdikt weiter. `details: { pluginId, capabilityPublished, gateReevaluated: false }`. |
+
+Erfolgs-Response (200): `{ ok: true, reactivated, capabilityPublished,
+gateReevaluated, gateWarning?, dedupThreshold }` plus das komplette
+`GET /`-Snapshot. `dedupThreshold` ist `null`, solange nichts publiziert wird,
+sonst `{ applied, value, previous, reason }` — der Adapter-eigene
+`process_dedup_threshold` wird nur in die *Abwesenheit* eines Werts
+geschrieben, nie über eine Operator-Entscheidung, und greift erst beim nächsten
+Start des Knowledge-Graph-Plugins.
+
+Zwei Ergänzungen im `GET /`-Snapshot: `capabilityGap`
+(`no-active-provider` | `missing-credentials` | `missing-weights` |
+`not-published`) sagt **warum** kein Client publiziert ist, statt jedem
+Adapter „API-Key fehlt“ zu unterstellen; `widthCollision`
+(`{ providerDimensions, columnDimensions, columnsEmpty }`) trennt die
+Breitenkollision von der Capability-Lücke — sie verhindert die *Writes*, nicht
+die Publikation. `columnsEmpty: null` heißt „nicht feststellbar“ und die UI
+bietet den Rebuild dann **nicht** an.
+
+Emptiness wird zweimal geprüft: hier für eine schnelle, spezifische Absage, und
+noch einmal **innerhalb** des Advisory-Locks von `migrateVectorColumns`
+(`requireEmpty`) — die Vorab-Prüfung liegt vor dem Lock, ein Backfill-Tick im
+Fenster dazwischen würde sonst still verworfen. Ein nicht ermittelbarer Count
+gilt an beiden Stellen als „nicht leer“ (fail closed).
+
+Tests: `test/adminEmbeddingProviderReactivate.test.ts` (Route inkl.
+Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
+Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
+`web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1986,6 +2037,34 @@ OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=180000 # absolute Decke inkl. Retry (W0-2)
 OMADIA_MCP_TOOLLIST_TTL_MS=60000            # Default-TTL Tool-List-Cache (#545,
                                             # ADR-0009); 0 = spec-strikt aus
 ```
+
+`@omadia/embedding-adapter-local` (keyloser Embedder) liest ebenfalls ohne zod:
+
+```
+OMADIA_EMBEDDING_MODEL_DIR=/data/embedding-models   # Modellgewichte (~129 MB)
+```
+
+**Auflösungsreihenfolge (OM-97), explizitester zuerst:** das `model_dir`-Setup-
+Feld des Plugins → `OMADIA_EMBEDDING_MODEL_DIR` → `PLATFORM_DATA_DIR/embedding-models`
+→ legacy `var/embedding-models`.
+
+**Warum es diese Variable gibt.** Der alte Default `var/embedding-models` ist
+*relativ* und löst gegen das Arbeitsverzeichnis der Middleware auf — in der
+Desktop-App ist das `<app bundle>/Resources/omadia/middleware`, also **innerhalb
+der signierten Anwendung**. Der Download von ~129 MB dorthin gelingt und
+invalidiert dabei die Code-Signatur; Gatekeeper verweigert dann den nächsten
+Start, und die einzige Rettung ist eine Neuinstallation. Gewichte sind mutabler
+Per-User-State und gehören zum Rest davon (Vault, eingebettete DB,
+Plugin-Uploads), nie in die read-only Anwendung. Die Desktop-Shell setzt die
+Variable auf Electrons `userData`; Docker/Fly kommen über `PLATFORM_DATA_DIR`
+auf das gemountete Datenvolume. Nur der Legacy-Zweig kann im Bundle landen, und
+er ist in jedem paketierten Deployment unerreichbar, weil dort mindestens eine
+der beiden anderen Variablen gesetzt ist.
+
+Ein älterer Build, der schon ins Bundle geladen hat, wird beim nächsten
+`activate()` einmalig übernommen (`adoptLegacyModelDir`, async — die
+Fallback-Kopie darf den 10-s-Deckel des Activate nicht blockieren). `npm run
+fetch-model` benutzt dieselbe Auflösung, statt sie nachzubauen.
 
 ### Wichtige Gotchas
 

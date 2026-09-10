@@ -80,8 +80,12 @@ export async function activate(
     (ctx.config.get<string>('model_dir') ?? '').trim() || defaultModelDir();
   // One-time carry-over for installs that already downloaded into the bundle.
   // Runs before the missing-files probe below, so an adopted model is picked
-  // up on this very activation rather than the next one.
-  adoptLegacyModelDir({ targetDir: modelDir, log: (msg) => ctx.log(msg) });
+  // up on this very activation rather than the next one. Awaited rather than
+  // fired-and-forgotten for that reason — but ASYNC, so the ~129 MB fallback
+  // copy cannot block the event loop out from under this activation's 10s cap
+  // (`toolPluginRuntime.ts`). See `modelDir.ts` on why an interrupted copy is
+  // recoverable.
+  await adoptLegacyModelDir({ targetDir: modelDir, log: (msg) => ctx.log(msg) });
   const maxInputChars = parsePositiveInt(
     ctx.config.get<unknown>('max_input_chars'),
     DEFAULT_MAX_INPUT_CHARS,

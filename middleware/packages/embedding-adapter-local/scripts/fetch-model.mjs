@@ -10,8 +10,12 @@
  *
  * Usage:
  *   npm run build --workspace @omadia/embedding-adapter-local
- *   node scripts/fetch-model.mjs [targetDir]      # default: var/embedding-models
+ *   node scripts/fetch-model.mjs [targetDir]      # default: see modelDir.ts
  *   OMADIA_EMBEDDING_MODEL_DIR=/data/models node scripts/fetch-model.mjs
+ *
+ * Without an argument the target is `defaultModelDir()` — the SAME resolution
+ * order the plugin uses (OM-97): `OMADIA_EMBEDDING_MODEL_DIR`, then
+ * `PLATFORM_DATA_DIR/embedding-models`, then the legacy `var/embedding-models`.
  */
 
 import { existsSync } from 'node:fs';
@@ -30,12 +34,18 @@ if (!existsSync(built)) {
 }
 
 const { PINNED_MODEL_TOTAL_BYTES, fetchLocalEmbeddingModel } = await import(built);
+// OM-97 — imported rather than re-spelled. This script used to hard-code
+// `OMADIA_EMBEDDING_MODEL_DIR ?? 'var/embedding-models'`, which silently
+// skipped the `PLATFORM_DATA_DIR` branch: on a Docker or Fly deployment the
+// download landed in `var/` while the plugin looked in the mounted data
+// volume, and the adapter reported missing weights that had just been fetched.
+// `index.ts` claims the three consumers agree on "one resolution order"; this
+// is what makes that true instead of aspirational.
+const { defaultModelDir } = await import(path.join(here, '..', 'dist', 'modelDir.js'));
 
-const DEFAULT_DIR = 'var/embedding-models';
 const mb = (bytes) => (bytes / 1024 / 1024).toFixed(1);
 
-const target =
-  process.argv[2] ?? process.env['OMADIA_EMBEDDING_MODEL_DIR'] ?? DEFAULT_DIR;
+const target = process.argv[2] ?? defaultModelDir(process.env);
 
 console.log(
   `[fetch-model] ${mb(PINNED_MODEL_TOTAL_BYTES)} MB → ${path.resolve(target)}`,
