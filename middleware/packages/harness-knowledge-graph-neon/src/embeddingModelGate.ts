@@ -9,6 +9,7 @@ import {
   type StaleVectorClearResult,
 } from './staleVectorClear.js';
 import { tryAutoMigrateColumns } from './gateAutoMigration.js';
+import { areGovernedColumnsEmpty } from './vectorCorpusEmptiness.js';
 import {
   // Advisory-lock namespace (first key of the two-int form). It lives in the
   // migration module because the runtime width migration takes a SESSION-level
@@ -183,6 +184,26 @@ export interface EmbeddingModelGateOptions {
    *     `auto_migrate_vector_columns` master switch is not 'false'.
    */
   allowDestructiveColumnMigration?: boolean;
+  /**
+   * OM-98 — may THIS evaluation rewrite the governed vector columns when they
+   * turn out to be EMPTY?
+   *
+   * A separate capability from the one above, because it is a separate act.
+   * The destructive flag says "discard the corpus"; this one says "there is no
+   * corpus, so rebuild the columns at the active provider's width". The
+   * emptiness is verified HERE, against the database, not taken from the
+   * caller — the caller's own count is a page-load-old preview and the corpus
+   * can grow between reading it and acting on it.
+   *
+   * It exists because the destructive path was the ONLY way to change the
+   * column width, and it is reachable only from an operator-confirmed provider
+   * SWITCH. A deployment with one installed adapter (the normal state since
+   * #1053 drops the surplus provider at boot) has nothing to switch to, so a
+   * fresh 768-wide/empty install could not adopt the keyless 384-wide adapter
+   * at all. Defaults to false: only the admin "reactivate provider" action
+   * hands it over, never activation.
+   */
+  allowEmptyColumnMigration?: boolean;
   /** Wall-clock cap for that migration. `activate()` is killed at 10s, and a
    *  migration that cannot finish degrades to `blocked` rather than failing
    *  activation. Default 5000. */
@@ -269,6 +290,16 @@ export type EmbeddingModelGateOutcome =
        *  Surfaced so `/health` names the split instead of reporting a width
        *  complaint that no longer describes the schema. */
       migrationHazard?: string;
+      /**
+       * OM-98 — were the mismatching columns EMPTY when this evaluation ran?
+       *
+       * Only present when the evaluation actually asked (i.e. the admin
+       * "reactivate" action), and `undefined` when it could not be
+       * established. `true` here means the width can be corrected without
+       * losing anything, which is what turns this block into an offer rather
+       * than a dead end.
+       */
+      mismatchesEmpty?: boolean;
     }
   /** Another instance owns the registry row and disagrees about the model.
    *  Switching would destroy the corpus it is busy re-embedding. */
@@ -354,6 +385,67 @@ type RegistryDecision =
   | { kind: 'switched'; previousModelId: string }
   | { kind: 'blocked'; outcome: EmbeddingModelGateOutcome };
 
+/** What one evaluation is permitted to do about a width mismatch. */
+interface ColumnMigrationPermission {
+  /** May `tryAutoMigrateColumns` run at all? */
+  readonly allowed: boolean;
+  /** Would running it lose stored vectors? Drives the log wording only. */
+  readonly destructive: boolean;
+  /** Emptiness as established here, or `undefined` when it was not asked
+   *  (no `allowEmptyColumnMigration`) or could not be answered. */
+  readonly empty: boolean | undefined;
+}
+
+/**
+ * OM-98 — decide whether this evaluation may rewrite the mismatching columns.
+ *
+ * Two independent capabilities, checked in order of how much they can cost:
+ *
+ *  1. `destructiveAllowed` — the operator confirmed a discard on a provider
+ *     switch. It wins outright and stays destructive even if the columns turn
+ *     out to be empty, because that is the capability that was handed over.
+ *  2. `emptyAllowed` — the operator asked to reactivate a provider that is
+ *     stuck behind a width mismatch. Permitted ONLY against columns this
+ *     function verifies are empty, right now, against the database. An
+ *     unanswerable count is treated as "not empty": a probe that timed out is
+ *     not evidence of an empty corpus.
+ */
+async function resolveColumnMigrationPermission(args: {
+  pool: Pool;
+  tenantId: string;
+  mismatches: readonly GovernedVectorColumn[];
+  destructiveAllowed: boolean;
+  emptyAllowed: boolean;
+  statementTimeoutMs: number;
+  log: (msg: string) => void;
+}): Promise<ColumnMigrationPermission> {
+  if (args.destructiveAllowed) {
+    return { allowed: true, destructive: true, empty: undefined };
+  }
+  if (!args.emptyAllowed) {
+    return { allowed: false, destructive: true, empty: undefined };
+  }
+
+  const empty = await areGovernedColumnsEmpty(
+    args.pool,
+    args.mismatches,
+    args.tenantId,
+    args.statementTimeoutMs,
+  );
+  if (empty === true) {
+    args.log(
+      `[graph-embedding-gate] OM-98: every mismatching vector column is EMPTY for tenant '${args.tenantId}' — rewriting them at the active provider's width discards nothing, so the operator-requested reactivation may proceed without a provider switch and without a discard confirmation.`,
+    );
+    return { allowed: true, destructive: false, empty: true };
+  }
+  args.log(
+    empty === false
+      ? '[graph-embedding-gate] OM-98: the reactivation asked to rebuild the vector columns, but they still hold vectors — refusing. Use Admin → Embedding provider and confirm the discard, which is the path that is allowed to destroy a corpus.'
+      : '[graph-embedding-gate] OM-98: the reactivation asked to rebuild the vector columns, but whether they are empty could not be established (the probe failed or timed out) — refusing. An unanswerable count is not evidence of an empty corpus.',
+  );
+  return { allowed: false, destructive: true, empty };
+}
+
 export async function evaluateEmbeddingModelGate(
   opts: EmbeddingModelGateOptions,
 ): Promise<EmbeddingModelGateOutcome> {
@@ -413,14 +505,25 @@ export async function evaluateEmbeddingModelGate(
     // columns rewritten rather than dead-ending on a hand-written migration;
     // everyone else — every boot, every unconfirmed call — falls through to
     // the historical `blocked` outcome below, with the registry untouched.
+    const permission = await resolveColumnMigrationPermission({
+      pool,
+      tenantId,
+      mismatches,
+      destructiveAllowed: opts.allowDestructiveColumnMigration ?? false,
+      emptyAllowed: opts.allowEmptyColumnMigration ?? false,
+      statementTimeoutMs:
+        opts.clearStatementTimeoutMs ?? DEFAULT_CLEAR_STATEMENT_TIMEOUT_MS,
+      log,
+    });
     const attempt = await tryAutoMigrateColumns({
       pool,
       tenantId,
       provider,
       mismatches,
-      // Fail closed. The boot path omits the flag, so it lands here as false
+      // Fail closed. The boot path omits both flags, so it lands here as false
       // and falls through to `blocked/column-width-mismatch` below.
-      allowed: opts.allowDestructiveColumnMigration ?? false,
+      allowed: permission.allowed,
+      destructive: permission.destructive,
       switchCooldownMs: opts.switchCooldownMs ?? DEFAULT_SWITCH_COOLDOWN_MS,
       budgetMs: opts.autoMigrateBudgetMs ?? DEFAULT_AUTO_MIGRATE_BUDGET_MS,
       log,
@@ -444,6 +547,7 @@ export async function evaluateEmbeddingModelGate(
       dimensions: provider.dimensions,
       mismatches,
       ...(attempt.hazard !== undefined ? { migrationHazard: attempt.hazard } : {}),
+      ...(permission.empty !== undefined ? { mismatchesEmpty: permission.empty } : {}),
     };
   }
 

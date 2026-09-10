@@ -4,6 +4,7 @@ import {
   type PluginContext,
 } from '@omadia/plugin-api';
 
+import { adoptLegacyModelDir, defaultModelDir } from './modelDir.js';
 import { createLocalEmbeddingModelFetcher } from './modelFetcherService.js';
 import {
   LOCAL_EMBEDDING_DIMENSIONS,
@@ -55,9 +56,6 @@ import {
 const EMBEDDING_CLIENT_SERVICE = 'embeddingClient';
 /** Published even without weights — see `modelFetcherService.ts`. */
 const MODEL_FETCHER_SERVICE = 'localEmbeddingModelFetcher';
-/** Under the middleware's own tree, so a container bind-mount or a desktop
- *  data dir can redirect it with one config field. */
-const DEFAULT_MODEL_DIR = 'var/embedding-models';
 const DEFAULT_MAX_INPUT_CHARS = 8_000;
 const DEFAULT_MAX_CONCURRENT = 1;
 
@@ -75,8 +73,15 @@ export async function activate(
   ctx: PluginContext,
   overrides: LocalEmbeddingsActivateOverrides = {},
 ): Promise<LocalEmbeddingsPluginHandle> {
+  // OM-97 — the default no longer resolves inside the signed application
+  // bundle. See `modelDir.ts` for the resolution order and what writing into
+  // the bundle did to the macOS code signature.
   const modelDir =
-    (ctx.config.get<string>('model_dir') ?? '').trim() || DEFAULT_MODEL_DIR;
+    (ctx.config.get<string>('model_dir') ?? '').trim() || defaultModelDir();
+  // One-time carry-over for installs that already downloaded into the bundle.
+  // Runs before the missing-files probe below, so an adopted model is picked
+  // up on this very activation rather than the next one.
+  adoptLegacyModelDir({ targetDir: modelDir, log: (msg) => ctx.log(msg) });
   const maxInputChars = parsePositiveInt(
     ctx.config.get<unknown>('max_input_chars'),
     DEFAULT_MAX_INPUT_CHARS,
