@@ -7,6 +7,7 @@ import { probePgTest } from './_helpers/pgTestDb.js';
 
 import { activate } from '@omadia/knowledge-graph-neon/dist/plugin.js';
 import { InstallService } from '../src/plugins/installService.js';
+import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 
 /**
  * Issue #665 — the knowledge-graph plugin must not end the pg pool the whole
@@ -148,6 +149,14 @@ describe('#665 — KG plugin close() must not end the shared pg pool', () => {
     // funnel is ever rewired.
     let reactivations = 0;
     const statusWrites = { cleared: 0, succeeded: 0, failed: 0 };
+    const installed = new InMemoryInstalledRegistry();
+    await installed.register({
+      id: KG_ID,
+      installed_version: '1.0.0',
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: {},
+    });
     const service = new InstallService({
       catalog: { list: () => [], get: () => undefined } as never,
       // `reactivate` records the outcome truthfully since #470 C16, so the
@@ -158,14 +167,15 @@ describe('#665 — KG plugin close() must not end the shared pg pool', () => {
       // re-activation rather than a swallowed one.
       registry: {
         has: (id: string) => id === KG_ID,
-        get: (id: string) =>
-          id === KG_ID ? { id, status: 'active' } : undefined,
+        get: (id: string) => installed.get(id),
         clearActivationError: async (): Promise<void> => {
           statusWrites.cleared += 1;
         },
         markActivationSucceeded: async (): Promise<void> => {
           statusWrites.succeeded += 1;
         },
+        markActivationBlocked: (id: string, error: string) =>
+          installed.markActivationBlocked(id, error),
         markActivationFailed: async (): Promise<void> => {
           statusWrites.failed += 1;
         },

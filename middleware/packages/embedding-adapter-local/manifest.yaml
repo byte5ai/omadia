@@ -30,7 +30,7 @@ setup:
     - key: "model_dir"
       type: "string"
       label: "Modell-Verzeichnis"
-      help: "Verzeichnis, in dem die Modellgewichte liegen. Leer lassen → `var/embedding-models` unterhalb der Middleware. Fehlen die Gewichte, aktiviert sich das Plugin, veröffentlicht aber keine Capability — Konsumenten laufen dann ohne Embeddings weiter."
+      help: "Verzeichnis, in dem die Modellgewichte liegen. Leer lassen → automatisch (OM-97): `OMADIA_EMBEDDING_MODEL_DIR`, sonst `<PLATFORM_DATA_DIR>/embedding-models`, sonst `var/embedding-models` unterhalb der Middleware. Die Desktop-App setzt die Env-Variable auf ihr Nutzerdaten-Verzeichnis — die Gewichte dürfen NICHT ins signierte App-Bundle geschrieben werden, das macht die Code-Signatur ungültig. Liegen Gewichte noch am alten Bundle-Pfad, übernimmt das Plugin sie beim Start einmalig ins neue Verzeichnis. Fehlen die Gewichte, aktiviert sich das Plugin, veröffentlicht aber keine Capability — Konsumenten laufen dann ohne Embeddings weiter."
       required: false
       default: ""
     - key: "max_input_chars"
@@ -66,7 +66,13 @@ setup:
       das Plugin und sagt im Log, welche Datei fehlt — veröffentlicht aber
       keine Capability, damit Konsumenten sauber ohne Embeddings weiterlaufen.
 
-      **Wichtig: Dedup-Schwelle anpassen.** Die Cosinus-Skala dieses Modells
+      **Dedup-Schwelle wird automatisch gesetzt.** Seit OM-98 trägt
+      "Anbieter neu aktivieren" unter Admin → Embedding-Provider den unten
+      genannten Wert selbst in den Wissensgraphen ein — aber nur, wenn dort
+      noch nichts steht. Ein selbst gesetzter Wert bleibt unangetastet. Wirksam
+      wird er beim nächsten Start des Wissensgraph-Plugins.
+
+      **Warum 0.45:** Die Cosinus-Skala dieses Modells
       ist nicht die, auf die der Wissensgraph voreingestellt ist. Deutsche
       Paraphrasen landen hier bei 0,58–0,73, unzusammenhängende Sätze unter
       0,24 — der Standardwert `process_dedup_threshold=0.90` würde also

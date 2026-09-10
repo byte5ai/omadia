@@ -185,6 +185,17 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
         "[graph-embedding-gate] the switch confirmed a vector discard, but auto_migrate_vector_columns is 'false' — the columns stay as they are and a width mismatch stays blocked",
       );
     }
+    // OM-98 — the reactivation path. Gated on the SAME master switch: an
+    // operator who set `auto_migrate_vector_columns: false` asked for their
+    // vector columns never to be rewritten automatically, and "the columns
+    // were empty anyway" is not a reason to overrule that.
+    const wantedEmpty = request?.allowEmptyColumnMigration === true;
+    const allowedEmpty = wantedEmpty && deps.autoMigrateVectorColumns;
+    if (wantedEmpty && !allowedEmpty) {
+      deps.log(
+        "[graph-embedding-gate] OM-98: the reactivation asked to rebuild empty vector columns, but auto_migrate_vector_columns is 'false' — the columns stay as they are and the width mismatch stays blocked",
+      );
+    }
 
     let next: EmbeddingModelGateOutcome;
     try {
@@ -193,6 +204,7 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
         tenantId: deps.tenantId,
         provider: readEmbeddingProviderMetadata(nextClient),
         allowDestructiveColumnMigration: allowed,
+        allowEmptyColumnMigration: allowedEmpty,
         log: deps.log,
       });
     } catch (err) {
@@ -247,7 +259,7 @@ export async function startGateRunner(deps: GateRunnerDeps): Promise<GateRunner>
         writesAllowed ? 'ON' : 'OFF'
       } epoch=${String(epoch)} client=${readEmbeddingProviderMetadata(nextClient)?.modelId ?? '(none)'} destructiveMigration=${
         allowed ? 'permitted' : 'not permitted'
-      } — the knowledge-graph plugin and its pool were NOT restarted`,
+      } emptyColumnRebuild=${allowedEmpty ? 'permitted' : 'not permitted'} — the knowledge-graph plugin and its pool were NOT restarted`,
     );
     return { ...publication.status };
   };

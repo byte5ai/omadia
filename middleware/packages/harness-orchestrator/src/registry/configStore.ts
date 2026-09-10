@@ -781,6 +781,18 @@ export class ConfigStore {
     );
   }
 
+  /**
+   * Uninstall revokes the plugin's bindings across every agent, including
+   * disabled grants. Reinstalling the same id must require fresh consent.
+   */
+  async deleteAgentPluginsForPlugin(pluginId: string): Promise<number> {
+    const result = await this.pool.query(
+      'DELETE FROM agent_plugins WHERE plugin_id = $1',
+      [pluginId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   // ── channel_bindings ──────────────────────────────────────────────────
   async listChannelBindings(): Promise<readonly ChannelBindingRow[]> {
     const { rows } = await this.pool.query<ChannelBindingDbRow>(

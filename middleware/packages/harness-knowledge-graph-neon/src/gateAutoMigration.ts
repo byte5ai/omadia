@@ -60,6 +60,24 @@ export async function tryAutoMigrateColumns(args: {
    * `EmbeddingModelGateOptions.allowDestructiveColumnMigration`.
    */
   allowed: boolean;
+  /**
+   * OM-98 — does running this rewrite actually LOSE anything?
+   *
+   * False only for the empty-column path, where the gate verified against the
+   * database that every mismatching column holds no vectors.
+   *
+   * It changes BOTH the narration and one mechanic. The narration, because
+   * calling an empty-column rebuild "DESTRUCTIVE … EVERY stored embedding is
+   * discarded" in the operator's log is how a safe action gets abandoned
+   * halfway through. The mechanic, because the gate's emptiness check runs
+   * BEFORE `migrateVectorColumns` takes the advisory lock, so a concurrent
+   * backfill tick could embed rows into the window between them: `false` is
+   * therefore forwarded as `requireEmpty`, which re-checks under the lock and
+   * aborts with `corpus-not-empty` instead of dropping the column. Without
+   * that the promise this flag makes — "no stored embedding is lost, because
+   * there is none" — would hold only when nothing raced it.
+   */
+  destructive: boolean;
   switchCooldownMs: number;
   budgetMs: number;
   log: (msg: string) => void;
@@ -78,7 +96,9 @@ export async function tryAutoMigrateColumns(args: {
   }
 
   args.log(
-    `[graph-embedding-gate] WARNING: DESTRUCTIVE auto-migration starting — ${named} will be dropped and re-added as vector(${String(args.provider.dimensions)}) for provider '${args.provider.modelId}'. EVERY stored embedding in those columns is discarded and has to be re-embedded by the backfill sweep, which costs one provider call per row.`,
+    args.destructive
+      ? `[graph-embedding-gate] WARNING: DESTRUCTIVE auto-migration starting — ${named} will be dropped and re-added as vector(${String(args.provider.dimensions)}) for provider '${args.provider.modelId}'. EVERY stored embedding in those columns is discarded and has to be re-embedded by the backfill sweep, which costs one provider call per row.`
+      : `[graph-embedding-gate] OM-98: non-destructive column rebuild starting — ${named} are EMPTY and will be re-added as vector(${String(args.provider.dimensions)}) for provider '${args.provider.modelId}'. No stored embedding is lost, because there is none.`,
   );
 
   let result;
@@ -91,6 +111,9 @@ export async function tryAutoMigrateColumns(args: {
       targetDimensions: args.provider.dimensions,
       switchCooldownMs: args.switchCooldownMs,
       budgetMs: args.budgetMs,
+      // OM-98 — see `destructive` above: the non-destructive path re-verifies
+      // emptiness INSIDE the lock, because the gate's check ran outside it.
+      requireEmpty: !args.destructive,
       log: args.log,
     });
   } catch (err) {

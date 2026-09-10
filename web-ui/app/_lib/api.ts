@@ -4341,6 +4341,28 @@ export interface EmbeddingProviderDrift {
   gateModelId: string;
 }
 
+/**
+ * Why no `embeddingClient@1` is published (OM-99).
+ *
+ * `no-active-provider` — nothing is activated at all.
+ * `missing-credentials` — a KEYED adapter is active without a key/base URL.
+ * `missing-weights` — the keyless adapter is active, its model is not on disk.
+ * `not-published` — weights are there, yet nothing was published: the adapter
+ *   stood down because a sibling already held the service, or activation failed.
+ */
+export type EmbeddingCapabilityGap =
+  | 'no-active-provider'
+  | 'missing-credentials'
+  | 'missing-weights'
+  | 'not-published';
+
+export interface EmbeddingWidthCollision {
+  providerDimensions: number | null;
+  columnDimensions: number | null;
+  /** `null` when the corpus could not be counted — treat as "cannot tell". */
+  columnsEmpty: boolean | null;
+}
+
 export interface EmbeddingProviderState {
   providers: EmbeddingProviderOption[];
   activeProviderId: string | null;
@@ -4348,6 +4370,25 @@ export interface EmbeddingProviderState {
   /** Optional so older middleware builds still satisfy this type. */
   providerDrift?: EmbeddingProviderDrift | null;
   capabilityPublished: boolean;
+  /**
+   * OM-99 — WHY `embeddingClient@1` is missing, in terms of the adapter that
+   * is actually installed. `null` when nothing is missing; optional so older
+   * middleware builds still satisfy this type.
+   *
+   * The page used to word every case as "running but not configured (API key
+   * or base URL missing)", which is plainly false for the KEYLESS adapter —
+   * it has neither by design, and its real states are "model weights missing"
+   * and "another adapter already owns the capability".
+   */
+  capabilityGap?: EmbeddingCapabilityGap | null;
+  /**
+   * OM-98 — the gate refuses vector writes because the provider's width and
+   * the columns' width disagree. Distinct from `capabilityGap`: the adapter IS
+   * publishing, it is the WRITES that are blocked. `columnsEmpty: true` means
+   * the columns can be rebuilt at the right width without losing anything,
+   * which is what `reactivateEmbeddingProvider` does.
+   */
+  widthCollision?: EmbeddingWidthCollision | null;
   /** `graph_embedding_model` — what the stored vectors were produced with. */
   corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
   columns: EmbeddingVectorColumn[];
@@ -4398,6 +4439,43 @@ export interface EmbeddingProviderStatus {
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
   installedProviderIds: string[];
+  /**
+   * OM-102 — the three LLM-backed memory features. They hang off the extras
+   * plugin's LLM provider, NOT off the embedding client, so the card could
+   * previously read "OK" while fact extraction and topic detection were both
+   * silently off (the abo-install case from beta round 5).
+   *
+   * Optional: a middleware that predates OM-102 simply omits the field.
+   */
+  memoryFeatures?: MemoryFeatureStatus;
+}
+
+export type MemoryFeatureState = 'active' | 'disabled';
+
+export type MemoryFeatureName =
+  | 'factExtractor'
+  | 'topicDetector'
+  | 'scratchReaper';
+
+/** Closed cause set. Each code has a translated label in `messages/*.json`;
+ *  backend free text never becomes primary UI copy (web-ui i18n rule). */
+export type MemoryFeatureReason =
+  | 'no_llm_provider'
+  | 'no_embedding_provider'
+  | 'no_graph_pool'
+  | 'disabled_by_config'
+  | 'plugin_inactive';
+
+export interface MemoryFeatureStatus {
+  factExtractor: MemoryFeatureState;
+  topicDetector: MemoryFeatureState;
+  scratchReaper: MemoryFeatureState;
+  /** The LLM provider the features resolved to, when any did. */
+  providerId?: string;
+  /** Cause per disabled feature; an active feature has no entry. */
+  reasons?: Partial<Record<MemoryFeatureName, MemoryFeatureReason>>;
+  /** English diagnostics (the provider chain that was tried). Secondary only. */
+  detail?: string;
 }
 
 export async function getEmbeddingProviderStatus(): Promise<EmbeddingProviderStatus> {
@@ -4433,6 +4511,49 @@ export async function switchEmbeddingProvider(
   return postJson<SwitchEmbeddingProviderResult>(
     '/v1/admin/embedding-provider/switch',
     { pluginId, confirmDiscardVectors },
+  );
+}
+
+/** What the reactivation did about the provider-relative dedup threshold. */
+export interface EmbeddingDedupThresholdResult {
+  applied: boolean;
+  value: number | null;
+  previous: string | null;
+  reason: 'applied' | 'operator-set' | 'no-recommendation' | 'no-knowledge-graph';
+}
+
+export interface ReactivateEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  reactivated: string;
+  gateReevaluated?: boolean;
+  gateWarning?: string;
+  /** `null` when nothing was published, so nothing was configured either. */
+  dedupThreshold?: EmbeddingDedupThresholdResult | null;
+}
+
+/**
+ * OM-98 — re-activate the ACTIVE provider and re-gate it, without a switch.
+ *
+ * This is the button for the two states a subscription install actually
+ * reaches: the keyless adapter finished downloading its weights and needs to
+ * be re-activated to publish `embeddingClient@1`, and/or the governed vector
+ * columns are the wrong width but EMPTY, which the gate may rebuild because it
+ * loses nothing. Both used to require a provider SWITCH, and #1053 removes the
+ * second provider at boot — so there was nothing to switch to.
+ *
+ * NEVER destructive. A populated corpus answers 409
+ * `embeddingProvider.corpus_not_empty` and points at
+ * {@link switchEmbeddingProvider}, which is the path that carries the discard
+ * confirmation. Other inline-surfaceable failures: 409
+ * `embeddingProvider.no_active_provider`, 409
+ * `embeddingProvider.switch_in_progress`, 500
+ * `embeddingProvider.reactivate_failed`, 500
+ * `embeddingProvider.gate_reevaluation_failed`.
+ */
+export async function reactivateEmbeddingProvider(): Promise<ReactivateEmbeddingProviderResult> {
+  return postJson<ReactivateEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/reactivate',
+    {},
   );
 }
 

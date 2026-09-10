@@ -1,0 +1,74 @@
+// Tests for the staged-tree mode normalisation (OM-86, beta round 5).
+//
+// One 0444 file out of 25,895 was enough to make every macOS self-update fail
+// in Squirrel's quarantine strip. These tests pin the two halves of the guard:
+// the pass that adds the owner-write bit, and the scan that must find nothing
+// afterwards. Symlinks are deliberately left alone — chmod follows them, and
+// the Postgres engine's relative dylib chain must survive staging untouched.
+//
+// Run: node --test desktop/scripts/*.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { ensureOwnerWritable, findReadOnlyEntries } from './normalize-file-modes.mjs';
+
+const OWNER_WRITE = 0o200;
+
+function makeTree() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omadia-modes-'));
+  const libDir = path.join(root, 'omadia-pg', 'lib', 'postgresql');
+  fs.mkdirSync(libDir, { recursive: true });
+  const dylib = path.join(libDir, 'vector.dylib');
+  fs.writeFileSync(dylib, 'not really a dylib');
+  fs.chmodSync(dylib, 0o444);
+  const normal = path.join(root, 'omadia-pg', 'lib', 'libpq.dylib');
+  fs.writeFileSync(normal, 'writable');
+  fs.chmodSync(normal, 0o644);
+  return { root, dylib, normal, libDir };
+}
+
+test('finds the one read-only file the release archive shipped', () => {
+  const { root } = makeTree();
+  assert.deepEqual(findReadOnlyEntries(root), [
+    path.join('omadia-pg', 'lib', 'postgresql', 'vector.dylib'),
+  ]);
+});
+
+test('adds the owner-write bit and keeps every other permission bit', () => {
+  const { root, dylib, normal } = makeTree();
+  const { fixed } = ensureOwnerWritable(root);
+
+  assert.deepEqual(fixed, [path.join('omadia-pg', 'lib', 'postgresql', 'vector.dylib')]);
+  assert.equal(fs.statSync(dylib).mode & 0o777, 0o644, 'r--r--r-- becomes rw-r--r--');
+  assert.equal(fs.statSync(normal).mode & 0o777, 0o644, 'already-writable files are untouched');
+  assert.deepEqual(findReadOnlyEntries(root), [], 'the scan finds nothing afterwards');
+});
+
+test('fixes a read-only directory as well as a file', () => {
+  const { root } = makeTree();
+  const dir = path.join(root, 'share');
+  fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'x');
+  fs.chmodSync(dir, 0o555);
+
+  const { fixed } = ensureOwnerWritable(root);
+  assert.ok(fixed.includes('share'), `expected 'share' in ${JSON.stringify(fixed)}`);
+  assert.ok((fs.statSync(dir).mode & OWNER_WRITE) !== 0);
+});
+
+test('never follows or touches a symlink', { skip: process.platform === 'win32' }, () => {
+  const { root, libDir } = makeTree();
+  const target = path.join(libDir, 'libicudata.68.2.dylib');
+  fs.writeFileSync(target, 'icu');
+  fs.chmodSync(target, 0o444);
+  const link = path.join(libDir, 'libicudata.68.dylib');
+  fs.symlinkSync('libicudata.68.2.dylib', link);
+
+  const { fixed } = ensureOwnerWritable(root);
+  assert.ok(fs.lstatSync(link).isSymbolicLink(), 'the link survives');
+  assert.ok(!fixed.includes(path.relative(root, link)), 'the link is not reported');
+  assert.ok(fixed.includes(path.relative(root, target)), 'the target is fixed via its own entry');
+});

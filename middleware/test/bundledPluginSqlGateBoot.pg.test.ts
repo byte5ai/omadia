@@ -61,6 +61,7 @@ import { newTestRouteRegistry } from './_helpers/routeRegistry.js';
 
 import { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { BuiltInPackageStore } from '../src/plugins/builtInPackageStore.js';
+import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import {
   ToolPluginRuntime,
   type ToolPluginRuntimeDeps,
@@ -254,6 +255,14 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
     serviceRegistry.provide('graphPool', pool);
 
     const nativeTools: string[] = [];
+    const installed = new InMemoryInstalledRegistry();
+    await installed.register({
+      id: MEMORY_PG,
+      installed_version: '1.0.0',
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: { seed_mode: 'skip' },
+    });
     const deps = {
       catalog,
       builtInStore,
@@ -264,8 +273,10 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
         // The plugin reads `seed_dir` / `seed_mode` / the dev-endpoint flag
         // from here. Seeding is turned OFF so the suite asserts the gate, not
         // the seeder.
-        get: () => ({ id: MEMORY_PG, config: { seed_mode: 'skip' } }),
+        get: (id: string) => installed.get(id),
         updateConfig: async () => undefined,
+        markActivationBlocked: (id: string, error: string) =>
+          installed.markActivationBlocked(id, error),
         markActivationFailed: async () => undefined,
       },
       vault: {
@@ -341,6 +352,14 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
     const pool = new Pool({ connectionString: PG_URL, max: 2 });
     serviceRegistry.provide('graphPool', pool);
 
+    const installed = new InMemoryInstalledRegistry();
+    await installed.register({
+      id: MEMORY_PG,
+      installed_version: '1.0.0',
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: { seed_mode: 'skip' },
+    });
     const deps = {
       catalog,
       builtInStore,
@@ -348,8 +367,10 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
       registry: {
         has: () => true,
         list: () => [],
-        get: () => ({ id: MEMORY_PG, config: { seed_mode: 'skip' } }),
+        get: (id: string) => installed.get(id),
         updateConfig: async () => undefined,
+        markActivationBlocked: (id: string, error: string) =>
+          installed.markActivationBlocked(id, error),
         markActivationFailed: async () => undefined,
       },
       vault: { get: async () => undefined, listKeys: async () => [] },

@@ -5,11 +5,17 @@ import { PassThrough } from 'node:stream';
 
 import {
   CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_SPAWN_TIMEOUT_ENV_KEY,
   CliChatAgent,
   StreamJsonParser,
   composeCliSystemPrompt,
+  resolveCliSpawnTimeoutMs,
 } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
-import type { CliChatAgentDeps } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
+import type {
+  CliChatAgentDeps,
+  CliSpawnLogger,
+} from '../../packages/harness-orchestrator/src/cliChatAgent.js';
+import { CliIncompatibleError } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
 
 // Unit tests for the M2 stream-json → omadia mapping. The `claude -p
 // --output-format stream-json` terminal `result` line is the authoritative
@@ -130,13 +136,27 @@ describe('StreamJsonParser (M2 stream-json mapping)', () => {
  */
 describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
   /** Spawn a fake child that exits cleanly with a terminal result, capturing argv. */
-  function makeAgent(opts: { readonly systemPrompt?: string } = {}): {
+  function makeAgent(
+    opts: {
+      readonly systemPrompt?: string;
+      /** OM-85 — what the fake `claude --version` probe reports. */
+      readonly cliVersion?: string | undefined;
+      /** Exit the child with this code and stderr instead of a clean result. */
+      readonly fail?: { readonly code: number; readonly stderr: string };
+    } = {},
+  ): {
     readonly agent: CliChatAgent;
     readonly argv: () => readonly string[];
     readonly spawnOptions: () => { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv };
+    readonly logged: readonly { level: 'info' | 'warn'; message: string; meta?: Record<string, unknown> }[];
   } {
     let captured: readonly string[] = [];
     let capturedOptions: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv } = {};
+    const logged: { level: 'info' | 'warn'; message: string; meta?: Record<string, unknown> }[] = [];
+    const logger: CliSpawnLogger = {
+      info: (message, meta) => logged.push({ level: 'info', message, ...(meta ? { meta: { ...meta } } : {}) }),
+      warn: (message, meta) => logged.push({ level: 'warn', message, ...(meta ? { meta: { ...meta } } : {}) }),
+    };
     const agent = new CliChatAgent({
       dispatch: {
         listDispatchableToolSpecs: () => [],
@@ -150,6 +170,10 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
           }),
           stop: async () => {},
         }) as never,
+      // Default to a CLI that knows `--restricted`, so the pre-OM-85 assertions
+      // below keep testing the full gate.
+      resolveCliVersion: async () => ('cliVersion' in opts ? opts.cliVersion : '2.1.259'),
+      logger,
       ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
       buildEnv: () => ({
         PATH: '/usr/bin',
@@ -178,6 +202,13 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
           kill: () => true,
         });
         stdin.on('finish', () => {
+          if (opts.fail !== undefined) {
+            stderr.end(opts.fail.stderr);
+            stdout.end();
+            child.exitCode = opts.fail.code;
+            child.emit('close', opts.fail.code, null);
+            return;
+          }
           stdout.end(
             JSON.stringify({ type: 'result', is_error: false, result: 'ok', num_turns: 1 }) + '\n',
           );
@@ -187,7 +218,7 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
         return child;
       }) as unknown as CliChatAgentDeps['spawnFn'],
     });
-    return { agent, argv: () => captured, spawnOptions: () => capturedOptions };
+    return { agent, argv: () => captured, spawnOptions: () => capturedOptions, logged };
   }
 
   function valueAfter(argv: readonly string[], flag: string): string | undefined {
@@ -415,6 +446,86 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     assert.ok(composed.startsWith('Persona text.'));
     assert.equal(composed.split('mcp__omadia__').length, 2);
     assert.equal(composeCliSystemPrompt(undefined), composeCliSystemPrompt(''));
+  });
+
+/**
+ * Beta round 5. OM-85: a 2.1.246 CLI killed every turn with `unknown option
+ * '--restricted'`. OM-94: that failure never reached the log file. OM-104: the
+ * 120 s wall clock was shorter than two of omadia's own sub-agent calls and
+ * could not be raised.
+ */
+describe('CliChatAgent CLI version gate, spawn log and turn budget (OM-85, OM-94, OM-104)', () => {
+  it('passes --restricted to a CLI that knows it', async () => {
+    const { agent, argv, spawnOptions } = makeAgent({ cliVersion: '2.1.259' });
+    await agent.chat({ userMessage: 'hi' });
+    assert.ok(argv().includes('--restricted'));
+    assert.equal(spawnOptions().env?.CLAUDE_CODE_RESTRICTED, '1');
+  });
+
+  it('leaves --restricted off a 2.1.246 CLI and relies on the env twin', async () => {
+    const { agent, argv, spawnOptions } = makeAgent({ cliVersion: '2.1.246' });
+    await agent.chat({ userMessage: 'hi' });
+    assert.equal(argv().includes('--restricted'), false);
+    // Every other layer of the gate is still there.
+    assert.ok(argv().includes('--disallowedTools'));
+    assert.equal(valueAfter(argv(), '--tools'), '');
+    assert.equal(valueAfter(argv(), '--permission-mode'), 'dontAsk');
+    assert.equal(spawnOptions().env?.CLAUDE_CODE_RESTRICTED, '1');
+  });
+
+  it('leaves --restricted off when the version probe fails', async () => {
+    const { agent, argv } = makeAgent({ cliVersion: undefined });
+    await agent.chat({ userMessage: 'hi' });
+    assert.equal(argv().includes('--restricted'), false);
+  });
+
+  it('turns `unknown option` into a config error that names the fix', async () => {
+    const { agent, logged } = makeAgent({
+      cliVersion: '2.1.246',
+      fail: { code: 1, stderr: "error: unknown option '--setting-sources'\n" },
+    });
+    await assert.rejects(agent.chat({ userMessage: 'hi' }), (error: unknown) => {
+      assert.ok(error instanceof CliIncompatibleError);
+      assert.equal(error.code, 'cli_incompatible');
+      assert.match(error.message, /2\.1\.246/);
+      assert.match(error.message, /claude update/);
+      return true;
+    });
+    const exit = logged.find((entry) => entry.message === 'claude CLI exited with non-zero code');
+    assert.ok(exit, 'the non-zero exit is logged (OM-94)');
+    assert.equal(exit.level, 'warn');
+    assert.equal(exit.meta?.code, 1);
+    assert.equal(exit.meta?.stderr, "error: unknown option '--setting-sources'");
+  });
+
+  it('logs the spawn without the prompt and the exit code of an ordinary failure', async () => {
+    const { agent, logged } = makeAgent({ fail: { code: 2, stderr: 'Not logged in\nsecond line' } });
+    await assert.rejects(agent.chat({ userMessage: 'SECRET PROMPT TEXT' }), /CLI exited with code 2: Not logged in/);
+
+    const spawned = logged.find((entry) => entry.message === 'spawning claude CLI');
+    assert.ok(spawned, 'the spawn is logged');
+    assert.equal(spawned.level, 'info');
+    assert.equal(spawned.meta?.cliVersion, '2.1.259');
+    assert.equal(spawned.meta?.restrictedFlag, true);
+    assert.equal(typeof spawned.meta?.spawnTimeoutMs, 'number');
+    assert.equal(JSON.stringify(logged).includes('SECRET PROMPT TEXT'), false, 'never the prompt');
+
+    const exit = logged.find((entry) => entry.message === 'claude CLI exited with non-zero code');
+    assert.ok(exit);
+    assert.equal(exit.meta?.code, 2);
+    assert.equal(exit.meta?.stderr, 'Not logged in', 'first stderr line only');
+  });
+
+  it('reads the turn budget from the environment, with a sane default', () => {
+    assert.equal(CLI_SPAWN_TIMEOUT_ENV_KEY, 'OMADIA_CLI_SPAWN_TIMEOUT_MS');
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, {}), 600_000, 'default fits several 70 s tool calls');
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, { OMADIA_CLI_SPAWN_TIMEOUT_MS: '900000' }), 900_000);
+    assert.equal(resolveCliSpawnTimeoutMs(5_000, { OMADIA_CLI_SPAWN_TIMEOUT_MS: '900000' }), 5_000, 'explicit wins');
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, { OMADIA_CLI_SPAWN_TIMEOUT_MS: '0' }), 600_000);
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, { OMADIA_CLI_SPAWN_TIMEOUT_MS: '-5' }), 600_000);
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, { OMADIA_CLI_SPAWN_TIMEOUT_MS: 'soon' }), 600_000);
+    assert.equal(resolveCliSpawnTimeoutMs(undefined, { OMADIA_CLI_SPAWN_TIMEOUT_MS: '' }), 600_000);
+  });
   });
 });
 

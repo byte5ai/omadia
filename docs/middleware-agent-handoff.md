@@ -1556,6 +1556,136 @@ Wahrheit lesen (OM-74/75/78/84):
   (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
   `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
 
+### Gedächtnis-Funktionen auf dem Abo-Weg (Beta-Runde 5, OM-102)
+
+Faktenextraktion, Themenerkennung und der Scratch-Promotion-Reaper hingen am
+Config-Key `anthropic_api_key` von `@omadia/orchestrator-extras` statt am
+LLM-Provider, der dem Orchestrator zugewiesen ist. Auf einer reinen
+Abo-Installation (`llm_provider: claude-cli`, kein Anthropic-Key) blieben alle
+drei aus, und das Dashboard sprach nur über Embeddings — meldete also „OK“,
+während die halbe Gedächtnis-Pipeline still lag.
+
+**Provider-Kandidatenkette** (`packages/harness-orchestrator-extras/src/llmProviderResolution.ts`,
+verdrahtet in dessen `plugin.ts`). Kandidaten in Absichts-Reihenfolge, der
+erste, der sich bauen lässt, gewinnt:
+
+1. explizites `llm_provider` auf **diesem** Plugin — der Operator fragt direkt;
+2. `anthropic`, **aber nur** wenn der Key im eigenen Vault-Scope liegt
+   (`ownScopeAnthropic`). Ohne diese Stufe würde eine Installation, die einen
+   Key bezahlt, stillschweigend auf das persönliche Abo-Kontingent migrieren —
+   eine Kosten-/Quota-Änderung, die ein Bugfix nicht nebenbei machen darf;
+3. die Zuordnung des **Orchestrators**, gelesen über den Kernel-Service
+   `installedPluginConfigReader`. Dieses Plugin aktiviert **vor** dem
+   Orchestrator (der `contextRetriever@^1` + `factExtractor@^1` `requires:`),
+   deshalb ist der Config-Reader der einzige Weg — ein Service des
+   Orchestrators wäre zur Aktivierungszeit noch nicht da. Das ist die Stufe,
+   die den Abo-Fall repariert;
+4. `anthropic` als historischer Default.
+
+Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
+dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
+dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
+scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
+stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
+übersprungen, nicht durchgereicht. Modell-Refs laufen durch
+`coerceModelToProvider` (Default still, ein explizit gesetztes
+`fact_extractor_model` laut). Alle drei Aufrufer nutzen ein reines
+`complete()` ohne `tools` und bleiben damit im Rahmen des Shape-2-Adapters,
+der nur Completions und forced single-tool structured output kann.
+
+**Capability + Manifest.** Das Plugin published zusätzlich
+`memoryFeatureStatus@1` (Service-Key `memoryFeatureStatus`, Kontrakt in
+`src/memoryFeatureStatus.ts`) und deklariert
+`optional_requires: ["llmProviderCatalog@1", "llmProviderPool@1",
+"installedPluginConfigReader@1"]`. `optional_requires` ist der dokumentierte
+Retirement-Pfad des Service-Grant-Gates (`src/platform/pluginServiceGrants.ts`)
+— es gewährt `get`/`getOptional`, ohne eine Aktivierungskante zu erzeugen, was
+hier zwingend ist: der Orchestrator muss downstream bleiben. Alle drei Services
+stellt der Kernel beim Boot bereit, vor jeder Plugin-Aktivierung, deshalb ist
+das eager `getOptional` in `activate()` zulässig.
+
+**`memoryFeatures` auf `GET /api/v1/admin/embedding-provider/status`.** Neben
+den vier bestehenden Feldern:
+
+```
+memoryFeatures: {
+  factExtractor: 'active' | 'disabled',
+  topicDetector: 'active' | 'disabled',
+  scratchReaper: 'active' | 'disabled',
+  providerId?: string,                       // aufgelöster Provider
+  reasons?: { <feature>: <reason-code> },    // nur für disabled-Features
+  detail?: string                            // englische Diagnose, sekundär
+}
+```
+
+Reason-Codes (geschlossenes Enum): `no_llm_provider`, `no_embedding_provider`,
+`no_graph_pool`, `disabled_by_config`, `plugin_inactive`. Geschlossen, weil die
+UI je Code eine Übersetzung führt — Backend-Englisch darf nie der primäre
+deutsche Satz werden (`web-ui/CLAUDE.md`); Freitext reist ausschließlich in
+`detail`. Die Ursache steht **pro Feature**, weil die drei aus verschiedenen
+Gründen ausfallen: ein In-Memory-Graph legt nur den Reaper still, ein fehlender
+Embedding-Anbieter nur die Themenerkennung. Publiziert das Plugin nichts,
+antwortet die Route mit dreimal `plugin_inactive`.
+
+Auf der Dashboard-Karte färbt **nur** `no_llm_provider` den Status auf WARN —
+ein bewusst abgeschalteter Reaper (`disabled_by_config`) oder ein
+In-Memory-Graph (`no_graph_pool`) sind normale Zustände; sie als Warnung zu
+rendern hätte OM-84s falsches OK nur gegen ein ebenso nutzloses falsches WARN
+getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
+`test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
+
+### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
+
+**`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
+Routers, kein Body). Beendet drei Sackgassen, die zusammen die Normalform einer
+Subscription-Installation sind: der keylose Adapter aktivierte vor dem
+Weights-Download und publizierte nichts; die Vektorspalten sind 768 breit und
+**leer**, während das Modell 384d liefert, und der einzige Pfad, der eine
+Spaltenbreite ändern durfte, war ein operator-bestätigter Provider-**Switch** —
+den #1053 unmöglich macht, weil es nach dem Boot keinen zweiten Provider mehr
+gibt, zu dem man wechseln könnte.
+
+Ablauf: aktiven Provider `deactivate` → `activate` (dabei liest der Adapter die
+Weights neu), dann Gate-Re-Evaluierung mit `allowEmptyColumnMigration: true`
+und `allowDestructiveMigration: false`. **Diese Route zerstört nie etwas.**
+
+| Code | HTTP | Wann |
+|---|---|---|
+| `embeddingProvider.corpus_not_empty` | 409 | Die Vektorspalten halten noch Embeddings. `details: { vectorsToDiscard, columnDimensions }`. Verweist auf `/switch` mit `confirmDiscardVectors` — den Pfad, der die Verwerfen-Bestätigung trägt. |
+| `embeddingProvider.no_active_provider` | 409 | Kein `embeddingClient@1`-Provider aktiv — es gibt nichts zu reaktivieren. |
+| `embeddingProvider.switch_in_progress` | 409 | `switchInFlight` — `/switch` und `/reactivate` teilen sich dieselbe Serialisierung. |
+| `embeddingProvider.reactivate_failed` | 500 | `activate` warf nach erfolgreichem `deactivate`. Ein **zweiter** `activate`-Versuch läuft automatisch (analog zu `restorePrevious` im `/switch`-Pfad); `details.capabilityPublished` sagt, ob er den Provider zurückgeholt hat. Das Gate lief in keinem Fall — `details.gateReevaluated: false`. |
+| `embeddingProvider.gate_reevaluation_failed` | 500 | Provider ist wieder live, aber die Gate-Re-Evaluierung warf. Der Graph läuft unter dem **vorherigen** Verdikt weiter. `details: { pluginId, capabilityPublished, gateReevaluated: false }`. |
+
+Erfolgs-Response (200): `{ ok: true, reactivated, capabilityPublished,
+gateReevaluated, gateWarning?, dedupThreshold }` plus das komplette
+`GET /`-Snapshot. `dedupThreshold` ist `null`, solange nichts publiziert wird,
+sonst `{ applied, value, previous, reason }` — der Adapter-eigene
+`process_dedup_threshold` wird nur in die *Abwesenheit* eines Werts
+geschrieben, nie über eine Operator-Entscheidung, und greift erst beim nächsten
+Start des Knowledge-Graph-Plugins.
+
+Zwei Ergänzungen im `GET /`-Snapshot: `capabilityGap`
+(`no-active-provider` | `missing-credentials` | `missing-weights` |
+`not-published`) sagt **warum** kein Client publiziert ist, statt jedem
+Adapter „API-Key fehlt“ zu unterstellen; `widthCollision`
+(`{ providerDimensions, columnDimensions, columnsEmpty }`) trennt die
+Breitenkollision von der Capability-Lücke — sie verhindert die *Writes*, nicht
+die Publikation. `columnsEmpty: null` heißt „nicht feststellbar“ und die UI
+bietet den Rebuild dann **nicht** an.
+
+Emptiness wird zweimal geprüft: hier für eine schnelle, spezifische Absage, und
+noch einmal **innerhalb** des Advisory-Locks von `migrateVectorColumns`
+(`requireEmpty`) — die Vorab-Prüfung liegt vor dem Lock, ein Backfill-Tick im
+Fenster dazwischen würde sonst still verworfen. Ein nicht ermittelbarer Count
+gilt an beiden Stellen als „nicht leer“ (fail closed).
+
+Tests: `test/adminEmbeddingProviderReactivate.test.ts` (Route inkl.
+Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
+Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
+`web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1903,6 +2033,16 @@ AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 | `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
 | `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
 
+### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
+
+Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
+`cliChatAgent.ts`), nicht über `config.ts`, weil das Package die Middleware-Config
+nicht importieren kann.
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -1986,6 +2126,34 @@ OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=180000 # absolute Decke inkl. Retry (W0-2)
 OMADIA_MCP_TOOLLIST_TTL_MS=60000            # Default-TTL Tool-List-Cache (#545,
                                             # ADR-0009); 0 = spec-strikt aus
 ```
+
+`@omadia/embedding-adapter-local` (keyloser Embedder) liest ebenfalls ohne zod:
+
+```
+OMADIA_EMBEDDING_MODEL_DIR=/data/embedding-models   # Modellgewichte (~129 MB)
+```
+
+**Auflösungsreihenfolge (OM-97), explizitester zuerst:** das `model_dir`-Setup-
+Feld des Plugins → `OMADIA_EMBEDDING_MODEL_DIR` → `PLATFORM_DATA_DIR/embedding-models`
+→ legacy `var/embedding-models`.
+
+**Warum es diese Variable gibt.** Der alte Default `var/embedding-models` ist
+*relativ* und löst gegen das Arbeitsverzeichnis der Middleware auf — in der
+Desktop-App ist das `<app bundle>/Resources/omadia/middleware`, also **innerhalb
+der signierten Anwendung**. Der Download von ~129 MB dorthin gelingt und
+invalidiert dabei die Code-Signatur; Gatekeeper verweigert dann den nächsten
+Start, und die einzige Rettung ist eine Neuinstallation. Gewichte sind mutabler
+Per-User-State und gehören zum Rest davon (Vault, eingebettete DB,
+Plugin-Uploads), nie in die read-only Anwendung. Die Desktop-Shell setzt die
+Variable auf Electrons `userData`; Docker/Fly kommen über `PLATFORM_DATA_DIR`
+auf das gemountete Datenvolume. Nur der Legacy-Zweig kann im Bundle landen, und
+er ist in jedem paketierten Deployment unerreichbar, weil dort mindestens eine
+der beiden anderen Variablen gesetzt ist.
+
+Ein älterer Build, der schon ins Bundle geladen hat, wird beim nächsten
+`activate()` einmalig übernommen (`adoptLegacyModelDir`, async — die
+Fallback-Kopie darf den 10-s-Deckel des Activate nicht blockieren). `npm run
+fetch-model` benutzt dieselbe Auflösung, statt sie nachzubauen.
 
 ### Wichtige Gotchas
 
@@ -2193,6 +2361,26 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
+
+`TODO(OM-102 follow-up)` in
+`packages/harness-orchestrator-extras/src/plugin.ts`. Die Provider-Kette wird
+**einmal je `activate()`** aufgelöst. Ändert ein Operator danach das
+`llm_provider` des Orchestrators, wird `@omadia/orchestrator-extras` nicht neu
+gebaut — Faktenextraktion, Themenerkennung und Reaper laufen bis zum nächsten
+Rebuild weiter auf dem alten Provider, ohne dass irgendeine Fläche das sagt.
+Dieselbe Klasse wie #989 (`agent_plugins`-Änderung war ein `update` statt eines
+`rebuild` und wirkte deshalb erst nach Neustart). Die Reparatur gehört auf die
+Zuweisungsseite — Rebuild von extras auslösen, wenn sich der Provider des
+Orchestrators ändert — nicht in ein weiteres Lazy-Lookup im Plugin.
+
+Nebenbei aufgefallen und offen: `@omadia/orchestrator` bezieht
+`llmProviderCatalog` und `installedPluginConfigReader` weiterhin aus der
+Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
+konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
+Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
+benutzt hat.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 

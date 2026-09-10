@@ -12,7 +12,7 @@ import crypto from 'node:crypto';
 
 import { adaptManifestV1 } from '../../src/plugins/manifestLoader.js';
 import type { PluginCatalog } from '../../src/plugins/manifestLoader.js';
-import type { InstalledRegistry } from '../../src/plugins/installedRegistry.js';
+import { InMemoryInstalledRegistry, type InstalledRegistry } from '../../src/plugins/installedRegistry.js';
 import type { SecretVault } from '../../src/secrets/vault.js';
 import {
   OAuthBrokerService,
@@ -99,14 +99,19 @@ function makeHarness(opts: {
   const catalog = {
     get: (id: string) => (id === PLUGIN_ID ? { plugin } : undefined),
   } as unknown as PluginCatalog;
-  const registry = {
-    get: (id: string) => (id === PLUGIN_ID ? { id: PLUGIN_ID, config } : undefined),
-  } as unknown as InstalledRegistry;
+  const registry: InstalledRegistry = new InMemoryInstalledRegistry();
+  void registry.register({
+    id: PLUGIN_ID,
+    installed_version: '1.0.0',
+    installed_at: '2026-09-10T00:00:00Z',
+    status: 'active',
+    config,
+  });
   const signingKey = new Uint8Array(crypto.randomBytes(64));
   const pendingFlows = new PendingFlowStore();
   let lastBody = '';
   const fetchImpl: typeof fetch = async (_url, init) => {
-    lastBody = String((init as { body?: BodyInit }).body);
+    lastBody = String(init?.body);
     return new Response(
       JSON.stringify({
         access_token: 'AT',

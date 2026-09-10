@@ -407,4 +407,89 @@ describe('dashboard — embeddings health card', () => {
     expect(text).toContain('health.embeddings.unknown');
     expect(screen.getByTestId('onboarding').dataset['embeddingsOff']).toBe('false');
   });
+
+  // OM-102 — embeddings are only half this card's subject. On the abo install
+  // from beta round 5 the embedding client was published and the tile read a
+  // confident "OK" while fact extraction and topic detection were both off.
+  it('names the LLM provider when all three memory features are active', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+      memoryFeatures: {
+        factExtractor: 'active',
+        topicDetector: 'active',
+        scratchReaper: 'active',
+        providerId: 'claude-cli',
+      },
+    });
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.ok');
+    expect(text).toContain(
+      'health.embeddings.memory.allActiveWithProvider:{"provider":"claude-cli"}',
+    );
+  });
+
+  it('reads WARN and names the disabled features with their reason', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+      memoryFeatures: {
+        factExtractor: 'disabled',
+        topicDetector: 'disabled',
+        scratchReaper: 'disabled',
+        reasons: {
+          factExtractor: 'no_llm_provider',
+          topicDetector: 'no_llm_provider',
+          scratchReaper: 'no_llm_provider',
+        },
+        detail: 'tried: anthropic',
+      },
+    });
+    const text = await renderEmbeddingsCard();
+    // The embedding client IS published — the warning is purely about the
+    // LLM-backed half, which is the distinction the old card could not make.
+    expect(text).toContain('health.warn');
+    expect(text).toContain('health.embeddings.memory.off');
+    // The cause is rendered from a TRANSLATED code, never from backend English.
+    expect(text).toContain('health.embeddings.memory.reason.no_llm_provider');
+    expect(text).not.toContain('tried: anthropic');
+  });
+
+  // OM-102 — the reaper is legitimately off on an in-memory knowledge graph
+  // and whenever the operator switched it off. Warning on those would swap
+  // OM-84's false OK for an equally useless false WARN.
+  it('stays OK when only non-LLM causes disabled a feature', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+      memoryFeatures: {
+        factExtractor: 'active',
+        topicDetector: 'active',
+        scratchReaper: 'disabled',
+        providerId: 'claude-cli',
+        reasons: { scratchReaper: 'no_graph_pool' },
+      },
+    });
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.ok');
+    expect(text).toContain('health.embeddings.memory.reason.no_graph_pool');
+  });
+
+  it('stays silent about memory features when the middleware predates OM-102', async () => {
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+    });
+    const text = await renderEmbeddingsCard();
+    expect(text).toContain('health.ok');
+    expect(text).not.toContain('health.embeddings.memory');
+  });
 });

@@ -16,6 +16,7 @@ import {
   hostTriple,
   pruneUnloadableOnnxPayloads,
 } from './prune-onnx-payloads.mjs';
+import { ensureOwnerWritable, findReadOnlyEntries } from './normalize-file-modes.mjs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -281,6 +282,29 @@ if (stillDangling !== 0) {
   console.error(
     `[stage-runtime] FATAL: ${stillDangling} escaping symlink(s) survived the prune — ` +
       'refusing to stage a tree that macOS codesign cannot walk.',
+  );
+  process.exit(1);
+}
+
+// --- no read-only entries may ship (OM-86) ------------------------------
+// Squirrel strips the quarantine xattr from every file of a downloaded update;
+// on a 0444 file that write fails with EACCES and the WHOLE update is aborted.
+// One such file (Homebrew's pgvector dylib, copied mode-preserving) blocked
+// every macOS self-update from 0.152.0 on. Add the owner-write bit wherever it
+// is missing, then gate on a clean re-scan — the same shape as the symlink
+// gate above, for the same reason: a guard that only fixes cannot notice when
+// the fix stopped working.
+const { fixed } = ensureOwnerWritable(runtime);
+if (fixed.length > 0) {
+  console.log(`[stage-runtime] made ${fixed.length} read-only entr${fixed.length === 1 ? 'y' : 'ies'} owner-writable:`);
+  for (const rel of fixed) console.log(`  ${rel}`);
+}
+const stillReadOnly = findReadOnlyEntries(runtime);
+if (stillReadOnly.length !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${stillReadOnly.length} read-only entr${stillReadOnly.length === 1 ? 'y' : 'ies'} ` +
+      `survived normalisation (${stillReadOnly.slice(0, 5).join(', ')}) — refusing to stage a tree ` +
+      'the macOS updater cannot install.',
   );
   process.exit(1);
 }

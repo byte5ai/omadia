@@ -172,6 +172,7 @@ import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import {
   createAdminEmbeddingProviderRouter,
   type LocalEmbeddingModelFetcher,
+  type MemoryFeatureStatusView,
 } from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
@@ -1554,6 +1555,8 @@ async function main(): Promise<void> {
     // previous package's database and unauthenticated routes.
     publicPathGrantStore,
     sqlGrantStore,
+    agentPluginBindingStore: () =>
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1590,7 +1593,7 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId);
       }
     },
-    onUninstall: async (agentId) => {
+    onUninstall: async (agentId, reason) => {
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -1614,7 +1617,12 @@ async function main(): Promise<void> {
           const removedToolName =
             dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
-          await propagatePluginUninstall(agentId, removedToolName);
+          if (reason === 'uninstall') {
+            await propagatePluginUninstall(agentId, removedToolName);
+          } else {
+            // Reactivation tears down the runtime, but retains operator grants.
+            reconcileRuntimeDomainTool(agentId, removedToolName);
+          }
         }
       }
     },
@@ -2309,8 +2317,13 @@ async function main(): Promise<void> {
       `[middleware] fact extractor ready (model=${config.TOPIC_CLASSIFIER_MODEL})`,
     );
   } else {
+    // OM-102 — the old text named `anthropic_api_key` as the only cause, which
+    // sent abo-only operators hunting for a key they deliberately do not have.
+    // The extractor now runs on ANY provider the extras plugin can resolve
+    // (its own assignment, the orchestrator's, then an Anthropic key), so the
+    // honest remaining causes are "plugin missing" or "no provider at all".
     console.log(
-      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing or anthropic_api_key not set)',
+      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing, or no LLM provider assigned to the orchestrator / this plugin and no anthropic_api_key)',
     );
   }
 
@@ -5116,6 +5129,11 @@ async function main(): Promise<void> {
       getGateStatus: () =>
         serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
       getGraphPool: () => graphPool,
+      // OM-102 — resolved per request for the same reason as the gate above:
+      // the extras plugin can be (de)activated without a restart, and the
+      // dashboard card must not render a captured state.
+      getMemoryFeatureStatus: () =>
+        serviceRegistry.get<MemoryFeatureStatusView>('memoryFeatureStatus'),
       // Env-derived fallback. The router prefers the KG plugin's own
       // `graph_tenant_id` setup field when one is set.
       tenantId: graphTenantId,
