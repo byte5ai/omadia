@@ -49,6 +49,11 @@ interface InFlightOp {
   readonly survivors: string[];
 }
 
+interface ChildErrorOutput {
+  readonly child: ChildProcess;
+  lastErrorLine: string;
+}
+
 /**
  * What a shutdown actually achieved.
  *
@@ -73,6 +78,7 @@ export class Supervisor extends EventEmitter {
   private kernel: ChildProcess | null = null;
   private ui: ChildProcess | null = null;
   private uiUrl: string | null = null;
+  private readonly childErrorOutput = new Map<string, ChildErrorOutput>();
   /** Single-flight guard: only one start/restart/stop runs at a time. */
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   /**
@@ -242,14 +248,14 @@ export class Supervisor extends EventEmitter {
       this.kernel = ownKernel;
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
-      await this.waitForKernel(kernelPort, gen);
+      await this.waitForKernel(kernelPort, gen, ownKernel);
 
       this.assertLiveGeneration(gen);
       this.progress('starting-ui', 'Starting the admin interface…');
       ownUi = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
       this.ui = ownUi;
       this.uiUrl = `http://127.0.0.1:${uiPort}`;
-      await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen);
+      await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen, ownUi);
 
       // Nothing checks the generation between that poll resolving and the state
       // flip, and a stop() landing there would otherwise be overwritten.
@@ -428,8 +434,21 @@ export class Supervisor extends EventEmitter {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout?.on('data', (d: Buffer) => log.info(`[${label}] ${d.toString().trimEnd()}`));
-    child.stderr?.on('data', (d: Buffer) => log.warn(`[${label}] ${d.toString().trimEnd()}`));
+    // OM-88: replace the record at spawn, not at wait time. A fast crash may
+    // already have printed its cause before the wait starts; conversely, late
+    // output from a replaced child must only update that child's old record.
+    const output: ChildErrorOutput = { child, lastErrorLine: '' };
+    this.childErrorOutput.set(label, output);
+    const captureStdout = captureErrorLines(output);
+    const captureStderr = captureErrorLines(output);
+    child.stdout?.on('data', (d: Buffer) => {
+      captureStdout(d);
+      log.info(`[${label}] ${d.toString().trimEnd()}`);
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      captureStderr(d);
+      log.warn(`[${label}] ${d.toString().trimEnd()}`);
+    });
     child.on('exit', (code, signal) => {
       log.warn(`[${label}] exited code=${code} signal=${signal}`);
       // Only a crash if this child belongs to the live generation AND we believed
@@ -444,12 +463,12 @@ export class Supervisor extends EventEmitter {
     return child;
   }
 
-  private async waitForKernel(port: number, gen: number): Promise<void> {
+  private async waitForKernel(port: number, gen: number, child: ChildProcess): Promise<void> {
     // Cold Windows boots / AV scanning / large migration sets can exceed the
     // default 90s; allow an override without a rebuild.
     const timeout =
       Number(process.env['OMADIA_BOOT_TIMEOUT_MS']) || Supervisor.KERNEL_BOOT_TIMEOUT_MS;
-    await this.waitForHttp(`http://127.0.0.1:${port}/health`, timeout, 'kernel', gen);
+    await this.waitForHttp(`http://127.0.0.1:${port}/health`, timeout, 'kernel', gen, child);
   }
 
   private async waitForHttp(
@@ -457,20 +476,92 @@ export class Supervisor extends EventEmitter {
     timeoutMs: number,
     label: string,
     gen: number,
+    child: ChildProcess,
+  ): Promise<void> {
+    // OM-88: boot owns this listener, not forkNode's running-state handler.
+    // That handler deliberately ignores exits while starting; broadening it
+    // would publish runtime crashes for intentional teardown. Race the whole
+    // poll outside its fetch catch, or the boot failure becomes a retryable
+    // network error and the spinner still lasts the full deadline.
+    const death = this.watchBootExit(child, label, gen);
+    const polling = new AbortController();
+    try {
+      await Promise.race([
+        death.exited,
+        this.pollForHttp(url, timeoutMs, label, gen, polling.signal),
+      ]);
+      this.assertLiveGeneration(gen);
+    } finally {
+      // OM-88: a race does not cancel its loser. Release the exit listener on
+      // EVERY outcome and abort the outstanding fetch/sleep so a failed boot
+      // cannot leave a poll running behind the next generation for 90 seconds.
+      death.dispose();
+      polling.abort();
+    }
+  }
+
+  private watchBootExit(
+    child: ChildProcess,
+    label: string,
+    gen: number,
+  ): { exited: Promise<never>; dispose: () => void } {
+    let onExit!: (code: number | null, signal: NodeJS.Signals | null) => void;
+    const exited = new Promise<never>((_resolve, reject) => {
+      onExit = (code, signal): void => {
+        // OM-88: generation wins even over a non-zero exit or SIGKILL. Teardown
+        // invalidates it BEFORE killing; treating that kill as a boot crash
+        // would turn every ordinary restart into a false failure dialog.
+        if (gen !== this.generation) {
+          reject(new Error('boot superseded'));
+        } else if (signal !== null || (code !== null && code !== 0)) {
+          const reason = signal !== null ? `signal ${signal}` : `code ${code}`;
+          const output = this.childErrorOutput.get(label);
+          const detail = output?.child === child ? output.lastErrorLine : '';
+          reject(new Error(
+            `${label} exited with ${reason} before becoming healthy: ` +
+              (detail || 'no error output captured'),
+          ));
+        }
+      };
+      child.on('exit', onExit);
+      // OM-88: subscribing alone misses a child that died before we got here.
+      // Subscribe first, then inspect the sticky exit fields; a clean exit
+      // intentionally leaves the health poll (and its deadline) in charge.
+      onExit(child.exitCode, child.signalCode);
+    });
+    return { exited, dispose: () => child.removeListener('exit', onExit) };
+  }
+
+  private async pollForHttp(
+    url: string,
+    timeoutMs: number,
+    label: string,
+    gen: number,
+    signal: AbortSignal,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let lastErr = '';
     while (Date.now() < deadline) {
-      if (gen !== this.generation) throw new Error('boot superseded');
+      this.assertLiveGeneration(gen);
+      let res: Response | undefined;
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(4_000) });
-        if (res.ok) return;
-        lastErr = `HTTP ${res.status}`;
+        res = await fetch(url, {
+          signal: AbortSignal.any([
+            signal,
+            AbortSignal.timeout(Math.max(1, Math.min(4_000, deadline - Date.now()))),
+          ]),
+        });
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
       }
-      await delay(750);
+      signal.throwIfAborted();
+      this.assertLiveGeneration(gen);
+      if (res?.ok) return;
+      if (res) lastErr = `HTTP ${res.status}`;
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await delay(Math.min(750, remaining), undefined, { signal });
     }
+    this.assertLiveGeneration(gen);
     throw new Error(`${label} did not become healthy within ${timeoutMs}ms (${lastErr})`);
   }
 
@@ -613,6 +704,23 @@ export class Supervisor extends EventEmitter {
       return ['embedded-postgres'];
     }
   }
+}
+
+/**
+ * OM-88: pipes deliver chunks, not lines. Keep each stream's unfinished line
+ * separately, including a fatal message without a trailing newline, while
+ * sharing only the latest matching line across stdout and stderr. This extends
+ * the existing readers without changing the logger's chunk/level behaviour.
+ */
+function captureErrorLines(output: ChildErrorOutput): (data: Buffer) => void {
+  let pending = '';
+  return (data): void => {
+    const lines = (pending + data.toString()).split(/\r?\n/);
+    pending = lines.pop() ?? '';
+    for (const line of [...lines, pending]) {
+      if (/fatal|error/i.test(line)) output.lastErrorLine = line.trimEnd();
+    }
+  };
 }
 
 /** A rejected stop attempt counts as "did not stop", never as success. */

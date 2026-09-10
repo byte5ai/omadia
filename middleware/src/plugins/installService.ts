@@ -40,6 +40,48 @@ import {
 } from './setupFieldPattern.js';
 import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
+export interface AgentPluginBindingStore {
+  deleteAgentPluginsForPlugin(pluginId: string): Promise<number>;
+}
+
+/**
+ * OM-95 — agent bindings are operator consent and leave with the plugin.
+ * Runtime reactivation must NOT invoke it: `onUninstall` fires on that path
+ * too, and purging there would destroy grants the operator never revoked.
+ *
+ * Exported and store-injected so it can also be called from the bootstrap
+ * auto-removals (`bootstrap.ts` drops a losing provider at four `registry.remove`
+ * sites — the memory self-heal, the #1053 embeddings conflict, the legacy-KG
+ * migration and the KG conflict). Those sites are NOT wired yet, so a
+ * bootstrap-side removal still leaves its `agent_plugins` rows behind: the
+ * reconciler no longer re-logs them every minute, but the row survives until
+ * the operator uninstalls the plugin through `installService`. Wiring them
+ * needs a `BootstrapDeps.onPluginRemoved` hook plus a place to defer the purge
+ * until the orchestrator store exists, which is why it is deliberately a
+ * follow-up rather than a silent half-fix here.
+ * Resolve the store lazily because the orchestrator can become available after
+ * this service is constructed. Hosts without it have no binding store to clean;
+ * lookup/query failures are best-effort and must never abort plugin removal.
+ */
+export async function purgePluginAgentBindings(
+  pluginId: string,
+  getStore?: () => AgentPluginBindingStore | undefined,
+): Promise<void> {
+  try {
+    const removed = await getStore?.()?.deleteAgentPluginsForPlugin(pluginId);
+    if (removed) {
+      console.log(
+        `[install] removed ${String(removed)} agent-plugin binding(s) for ${pluginId}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[install] agent-plugin binding purge failed for ${pluginId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 export interface InstallServiceDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
@@ -50,9 +92,12 @@ export interface InstallServiceDeps {
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */
   onInstalled?: (agentId: string) => Promise<void>;
-  /** Counterpart to `onInstalled`: called in the uninstall path BEFORE the
-   *  removal from registry/vault, so the runtime can deactivate cleanly. */
-  onUninstall?: (agentId: string) => Promise<void>;
+  /** Runtime teardown before uninstall or reactivation. The reason keeps
+   *  consent-removal hooks from deleting grants during a runtime restart. */
+  onUninstall?: (
+    agentId: string,
+    reason: 'uninstall' | 'reactivate',
+  ) => Promise<void>;
   /** #478 — plugin-borne workflow templates. Resolves the conductor's
    *  composite-catalog registrar LAZILY: the conductor wires long after this
    *  service is constructed (same late-binding pattern as channelRegistryRef
@@ -83,6 +128,9 @@ export interface InstallServiceDeps {
    */
   publicPathGrantStore?: PublicPathGrantStore;
   sqlGrantStore?: PluginSqlGrantStore;
+  /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
+   *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
+  agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
 }
 
 /**
@@ -544,9 +592,10 @@ export class InstallService {
 
   // -------------------------------------------------------------------------
   // Uninstall — reverses `configure()`:
-  //   1) onUninstall hook (runtime: close handle, unregister domain tool)
-  //   2) vault.purge (namespace deleted)
-  //   3) registry.remove (installed → available)
+  //   1) purge agent-plugin bindings while the orchestrator store is available
+  //   2) onUninstall hook (runtime: close handle, unregister domain tool)
+  //   3) vault.purge (namespace deleted), then purge operator grants
+  //   4) registry.remove (installed → available)
   //
   // Dependents check: if another installed agent points at this one via
   // `depends_on`, the call is rejected with 409. The caller (UI) must
@@ -593,7 +642,7 @@ export class InstallService {
     if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {
-        await this.deps.onUninstall(agentId);
+        await this.deps.onUninstall(agentId, 'reactivate');
       } catch (err) {
         console.error(
           `[install] reactivate.onUninstall hook failed for ${agentId}:`,
@@ -673,9 +722,13 @@ export class InstallService {
       }
     }
 
+    // The removed plugin may own the orchestrator store. Clean its bindings
+    // before runtime teardown makes that store unavailable.
+    await purgePluginAgentBindings(agentId, this.deps.agentPluginBindingStore);
+
     if (this.deps.onUninstall) {
       try {
-        await this.deps.onUninstall(agentId);
+        await this.deps.onUninstall(agentId, 'uninstall');
       } catch (err) {
         console.error(
           `[install] onUninstall hook failed for ${agentId}:`,

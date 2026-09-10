@@ -53,9 +53,10 @@ import {
   resolveEligiblePlugins,
   walkCapabilityInstallChain,
 } from '../src/plugins/capabilityResolver.js';
-import type {
-  InstalledAgent,
-  InstalledRegistry,
+import {
+  blockActivation,
+  type InstalledAgent,
+  type InstalledRegistry,
 } from '../src/plugins/installedRegistry.js';
 import { InstallError, InstallService } from '../src/plugins/installService.js';
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
@@ -160,6 +161,12 @@ function installedRegistry(active: readonly string[] = []): InstalledRegistry {
     },
     remove: async () => {
       /* no-op */
+    },
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = map.get(id);
+      if (current) {
+        map.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
     },
     markActivationFailed: async () => {
       /* no-op */

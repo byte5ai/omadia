@@ -2,15 +2,18 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { Plugin } from '../src/api/admin-v1.js';
-import type {
-  InstalledAgent,
-  InstalledRegistry,
+import {
+  blockActivation,
+  type InstalledAgent,
+  type InstalledRegistry,
 } from '../src/plugins/installedRegistry.js';
 import {
   extractSetupSchema,
   InstallError,
   InstallService,
+  purgePluginAgentBindings,
 } from '../src/plugins/installService.js';
+import type { AgentPluginBindingStore } from '../src/plugins/installService.js';
 import type {
   PluginCatalog,
   PluginCatalogEntry,
@@ -43,6 +46,8 @@ function makePlugin(p: Partial_Plugin): Plugin {
   return {
     id: p.id,
     kind: p.kind ?? 'tool',
+    multi_instance: false,
+    privacy_class: 'default',
     name: p.name ?? p.id,
     version: '0.1.0',
     latest_version: '0.1.0',
@@ -113,10 +118,19 @@ function makeRegistry(active: InstalledAgent[] = []): InstalledRegistry {
     remove: async (id) => {
       map.delete(id);
     },
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = map.get(id);
+      if (current) {
+        map.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
+    },
     markActivationFailed: async () => {
       /* no-op */
     },
     markActivationSucceeded: async () => {
+      /* no-op */
+    },
+    clearActivationError: async () => {
       /* no-op */
     },
     updateConfig: async () => {
@@ -148,6 +162,252 @@ const noopVault: SecretVault = {
   },
   list: async () => [],
 } as unknown as SecretVault;
+
+describe('InstallService — agent-plugin binding cleanup (OM-95)', () => {
+  it('uninstall deletes every binding for the plugin and preserves other plugins', async (t) => {
+    const registry = makeRegistry([makeActive('removed'), makeActive('kept')]);
+    let bindings = [
+      { agentId: 'one', pluginId: 'removed', enabled: true },
+      { agentId: 'two', pluginId: 'removed', enabled: false },
+      { agentId: 'one', pluginId: 'kept', enabled: true },
+    ];
+    const calls: string[] = [];
+    const teardownObservations: Array<{
+      pluginId: string;
+      reason: string;
+      bindingCount: number;
+    }> = [];
+    const store: AgentPluginBindingStore = {
+      deleteAgentPluginsForPlugin: async (pluginId) => {
+        calls.push(pluginId);
+        const before = bindings.length;
+        bindings = bindings.filter((row) => row.pluginId !== pluginId);
+        return before - bindings.length;
+      },
+    };
+    const log = t.mock.method(console, 'log', () => {});
+    // The registry wires later than the install service during a real boot.
+    let wiredStore: AgentPluginBindingStore | undefined;
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      agentPluginBindingStore: () => wiredStore,
+      onUninstall: async (pluginId, reason) => {
+        teardownObservations.push({
+          pluginId,
+          reason,
+          bindingCount: bindings.length,
+        });
+        wiredStore = undefined;
+      },
+    });
+    wiredStore = store;
+
+    await service.uninstall('removed');
+
+    assert.deepEqual(calls, ['removed']);
+    assert.deepEqual(bindings, [
+      { agentId: 'one', pluginId: 'kept', enabled: true },
+    ]);
+    assert.equal(registry.has('removed'), false);
+    assert.equal(registry.has('kept'), true);
+    assert.deepEqual(teardownObservations, [
+      { pluginId: 'removed', reason: 'uninstall', bindingCount: 1 },
+    ]);
+    assert.equal(wiredStore, undefined, 'runtime teardown removed the store');
+    assert.deepEqual(log.mock.calls.map((call) => call.arguments), [
+      ['[install] removed 2 agent-plugin binding(s) for removed'],
+    ]);
+  });
+
+  it('uninstall completes silently when the plugin has no bindings', async (t) => {
+    const registry = makeRegistry([makeActive('unbound')]);
+    const calls: string[] = [];
+    const log = t.mock.method(console, 'log', () => {});
+    const error = t.mock.method(console, 'error', () => {});
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      agentPluginBindingStore: () => ({
+        deleteAgentPluginsForPlugin: async (pluginId) => {
+          calls.push(pluginId);
+          return 0;
+        },
+      }),
+    });
+
+    await service.uninstall('unbound');
+
+    assert.deepEqual(calls, ['unbound']);
+    assert.equal(registry.has('unbound'), false);
+    assert.equal(log.mock.callCount(), 0);
+    assert.equal(error.mock.callCount(), 0);
+  });
+
+  it('uninstall works when no orchestrator getter is wired', async (t) => {
+    const registry = makeRegistry([makeActive('standalone')]);
+    const log = t.mock.method(console, 'log', () => {});
+    const error = t.mock.method(console, 'error', () => {});
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+    });
+
+    await service.uninstall('standalone');
+
+    assert.equal(registry.has('standalone'), false);
+    assert.equal(log.mock.callCount(), 0);
+    assert.equal(error.mock.callCount(), 0);
+  });
+
+  it('uninstall works when the orchestrator getter has no store yet', async (t) => {
+    const registry = makeRegistry([makeActive('standalone')]);
+    const log = t.mock.method(console, 'log', () => {});
+    const error = t.mock.method(console, 'error', () => {});
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      agentPluginBindingStore: () => undefined,
+    });
+
+    await service.uninstall('standalone');
+
+    assert.equal(registry.has('standalone'), false);
+    assert.equal(log.mock.callCount(), 0);
+    assert.equal(error.mock.callCount(), 0);
+  });
+
+  it('uninstall logs a database failure with plugin context and still removes the plugin', async (t) => {
+    const registry = makeRegistry([makeActive('db-down')]);
+    const error = t.mock.method(console, 'error', () => {});
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      agentPluginBindingStore: () => ({
+        deleteAgentPluginsForPlugin: async () => {
+          throw new Error('database unavailable');
+        },
+      }),
+    });
+
+    await assert.doesNotReject(service.uninstall('db-down'));
+
+    assert.equal(registry.has('db-down'), false);
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [
+      [
+        '[install] agent-plugin binding purge failed for db-down:',
+        'database unavailable',
+      ],
+    ]);
+  });
+
+  it('uninstall also contains a failure resolving the binding store', async (t) => {
+    const registry = makeRegistry([makeActive('lookup-down')]);
+    const error = t.mock.method(console, 'error', () => {});
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      agentPluginBindingStore: () => {
+        throw new Error('service lookup unavailable');
+      },
+    });
+
+    await assert.doesNotReject(service.uninstall('lookup-down'));
+
+    assert.equal(registry.has('lookup-down'), false);
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [
+      [
+        '[install] agent-plugin binding purge failed for lookup-down:',
+        'service lookup unavailable',
+      ],
+    ]);
+  });
+
+  it('reactivate tears down and restarts the plugin without deleting bindings', async () => {
+    const registry = makeRegistry([makeActive('configured')]);
+    let bindings = [{ agentId: 'one', pluginId: 'configured', enabled: true }];
+    const hooks: string[] = [];
+    let storeLookups = 0;
+    const service = new InstallService({
+      catalog: makeCatalog([]),
+      registry,
+      vault: noopVault,
+      onUninstall: async (pluginId, reason) => {
+        hooks.push(`teardown:${pluginId}:${reason}`);
+      },
+      onInstalled: async (pluginId) => {
+        hooks.push(`activate:${pluginId}`);
+      },
+      agentPluginBindingStore: () => {
+        storeLookups++;
+        return {
+          deleteAgentPluginsForPlugin: async () => {
+            const removed = bindings.length;
+            bindings = [];
+            return removed;
+          },
+        };
+      },
+    });
+
+    const status = await service.reactivate('configured');
+
+    assert.deepEqual(hooks, [
+      'teardown:configured:reactivate',
+      'activate:configured',
+    ]);
+    assert.equal(status, 'active');
+    assert.equal(registry.has('configured'), true);
+    assert.equal(storeLookups, 0);
+    assert.deepEqual(bindings, [
+      { agentId: 'one', pluginId: 'configured', enabled: true },
+    ]);
+  });
+
+  it('exposes cleanup independently for bootstrap removal and repeated calls are silent', async (t) => {
+    let bindings = [{ agentId: 'one', pluginId: 'auto-removed' }];
+    const store: AgentPluginBindingStore = {
+      deleteAgentPluginsForPlugin: async (pluginId) => {
+        const before = bindings.length;
+        bindings = bindings.filter((row) => row.pluginId !== pluginId);
+        return before - bindings.length;
+      },
+    };
+    const log = t.mock.method(console, 'log', () => {});
+
+    await purgePluginAgentBindings('auto-removed', () => store);
+    await purgePluginAgentBindings('auto-removed', () => store);
+
+    assert.deepEqual(bindings, []);
+    assert.deepEqual(log.mock.calls.map((call) => call.arguments), [
+      ['[install] removed 1 agent-plugin binding(s) for auto-removed'],
+    ]);
+  });
+
+  it('independent cleanup logs non-Error rejections without throwing', async (t) => {
+    const error = t.mock.method(console, 'error', () => {});
+    const store: AgentPluginBindingStore = {
+      deleteAgentPluginsForPlugin: () => Promise.reject('connection closed'),
+    };
+
+    await assert.doesNotReject(
+      purgePluginAgentBindings('auto-removed', () => store),
+    );
+
+    assert.deepEqual(error.mock.calls.map((call) => call.arguments), [
+      [
+        '[install] agent-plugin binding purge failed for auto-removed:',
+        'connection closed',
+      ],
+    ]);
+  });
+});
 
 describe('InstallService.create — capability gate', () => {
   it('allows install when target has no requires', () => {
