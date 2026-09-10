@@ -291,6 +291,7 @@ import {
   ProviderRegistry,
   parseAuthProvidersEnv,
   resolveActiveProviderIds,
+  shouldWarnEmptyAdminAllowlist,
 } from './auth/providerRegistry.js';
 import { LocalPasswordProvider } from './auth/providers/LocalPasswordProvider.js';
 import {
@@ -1760,11 +1761,25 @@ async function main(): Promise<void> {
   // after the vault loads) so the plugin runtimes can also use them —
   // `sessionSigningKey` for `ctx.flows` state signing, both together for
   // `ctx.operatorAuth` (issue #438 follow-up).
-  if (emailWhitelist.isEmpty()) {
+  // OM-92 — the empty-allowlist warning is scoped to the provider that
+  // actually reads the allowlist (entra). On a local-password-only install it
+  // used to claim "every sign-in will 403" while the very next boot line
+  // reported a healthy `1 active: local` registry.
+  if (
+    shouldWarnEmptyAdminAllowlist({
+      authProviders: config.AUTH_PROVIDERS,
+      hasMicrosoftCredentials: Boolean(
+        config.MICROSOFT_APP_ID &&
+          config.MICROSOFT_APP_PASSWORD &&
+          config.MICROSOFT_APP_TENANT_ID,
+      ),
+      whitelistIsEmpty: emailWhitelist.isEmpty(),
+    })
+  ) {
     console.warn(
-      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
+      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every Entra sign-in will 403 until the secret is set',
     );
-  } else {
+  } else if (!emailWhitelist.isEmpty()) {
     console.log(
       `[middleware] admin whitelist ready (${emailWhitelist.size()} email(s))`,
     );

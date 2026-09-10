@@ -93,6 +93,55 @@ const DE: Dictionary = {
   'menu.window': 'Fenster',
   'menu.help': 'Hilfe',
   'menu.checkForUpdates': 'Nach Updates suchen…',
+
+  // --- Updater dialogs (OM-91) -------------------------------------------
+  // `updater.ts` was the one dialog surface OM-59 did not reach: it builds its
+  // `MessageBoxOptions` inline instead of going through `shellDialogs.ts`, so
+  // a German user was told in English that an update is ready to install — and,
+  // worse, was given English recovery instructions at the exact moment an
+  // update had failed and the app was sitting in a half-stopped state.
+  'updater.checkFailed.title': 'Update-Suche fehlgeschlagen',
+  'updater.checkFailed.message': 'omadia konnte nicht nach Updates suchen.',
+  'updater.unreachable.title': 'Updates kommen nicht durch',
+  'updater.unreachable.message':
+    'omadia konnte bei den letzten {count} Starts kein Update laden.',
+  'updater.unreachable.detail':
+    'Du verwendest weiterhin {version}. omadia versucht es im Hintergrund weiter. Hält das an, lade die aktuelle Version hier herunter:\n{releasesUrl}\n\nLetzter Fehler: {error}',
+  'updater.available.title': 'Update gefunden',
+  'updater.available.message': 'omadia {version} wird jetzt geladen.',
+  'updater.available.detail':
+    'Der Download läuft im Hintergrund. Sobald er fertig ist, wirst du nach einem Neustart gefragt.',
+  'updater.upToDate.title': 'Kein Update verfügbar',
+  'updater.upToDate.message': 'Du verwendest bereits die neueste Version von omadia.',
+  'updater.upToDate.detail': 'Aktuelle Version: {version}',
+  'updater.installFailed.title': 'Update konnte nicht angewendet werden',
+  'updater.installFailed.message': 'omadia konnte {version} nicht installieren.',
+  'updater.installFailed.detail':
+    'Das Update wurde {attempts}-mal geladen und angewendet, omadia läuft aber weiterhin als {current}. Etwas hindert das Ersetzen der installierten Anwendung.\n\nBitte installiere {version} manuell von der omadia-Releases-Seite und hänge dieses Log an, wenn du den Fehler meldest:\n{logFile}',
+  'updater.ready.title': 'Update bereit',
+  'updater.ready.message': 'omadia {version} kann installiert werden.',
+  'updater.ready.detail':
+    'omadia wird beendet, sichert deine lokalen Daten und startet neu, um das Update anzuwenden.',
+  'updater.ready.restartNow': 'Jetzt neu starten',
+  'updater.ready.later': 'Später',
+  'updater.unpackaged.title': 'Update-Suche nicht verfügbar',
+  'updater.unpackaged.message':
+    'Update-Suchen sind nur in installierten Versionen verfügbar.',
+  'updater.unpackaged.detail':
+    'Dieser Entwicklungslauf hat keinen veröffentlichten Release-Feed, den er abfragen könnte.',
+  'updater.notApplied.title': 'Update nicht angewendet',
+  // Both abort paths leave the stack DOWN, so both have to say how to get back
+  // to a working app — "deine Daten wurden nicht verändert" on its own left the
+  // user looking at a dead window.
+  'updater.notApplied.relaunch':
+    'Deine Daten wurden nicht verändert. Beende omadia vollständig, starte es neu und versuche das Update danach erneut.',
+  'updater.notApplied.uncleanMessage':
+    'omadia konnte nicht sauber beendet werden, daher wurde {version} nicht installiert.',
+  'updater.notApplied.uncleanDetail':
+    'Diese Teile von omadia haben sich nicht beendet: {survivors}.\n\n{relaunch}\n\nWenn das wiederholt passiert, hänge dieses Log an:\n{logFile}',
+  'updater.notApplied.prepareMessage':
+    'omadia konnte das Update nicht vorbereiten, daher wurde {version} nicht installiert.',
+  'updater.notApplied.prepareDetail': '{error}\n\n{relaunch}\n\nLog:\n{logFile}',
 };
 
 const DICTIONARIES: Readonly<Record<string, Dictionary>> = { de: DE };

@@ -115,6 +115,39 @@ function maybeNavigateToLogin(status: number): void {
   window.location.assign(`/login?return=${encodeURIComponent(returnPath)}`);
 }
 
+/**
+ * Ceiling for a SERVER-rendered `getJson` (OM-96).
+ *
+ * A beta tester reported that the DASHBOARD nav item "does not navigate": the
+ * page stayed, the active marker stayed. The nav was innocent. `app/page.tsx`
+ * is `force-dynamic` and awaits six of these calls, and there was no root
+ * `loading.tsx` — so with one middleware endpoint accepting the connection and
+ * never answering, the RSC payload for `/` never arrived, the soft navigation
+ * never committed, and the old page simply stayed on screen forever. Verified
+ * by pointing MIDDLEWARE_URL at a TCP stub that accepts and never replies.
+ *
+ * An unbounded server fetch is the part that turns a slow endpoint into a dead
+ * app, so bound it. Ten seconds is an order of magnitude above a healthy
+ * loopback call and well under "the user has given up": past it, the page is
+ * already broken and a rejected promise is strictly more useful than a hang —
+ * `page.tsx` collects these with `allSettled`, so one dead endpoint costs one
+ * dashboard card instead of the whole render.
+ *
+ * Browser-side calls are deliberately left alone: they do not gate a
+ * navigation, and some of them legitimately outlive this budget.
+ */
+export const RSC_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * The abort signal a server-side fetch should carry. A caller that passed its
+ * own signal owns the lifetime and keeps it — never silently override it.
+ */
+export function rscTimeoutSignal(init?: RequestInit): AbortSignal | undefined {
+  if (init?.signal) return init.signal;
+  if (typeof window !== 'undefined') return undefined;
+  return AbortSignal.timeout(RSC_FETCH_TIMEOUT_MS);
+}
+
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(botApi(path), {
@@ -124,6 +157,7 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...forwarded,
       ...(init?.headers ?? {}),
     },
+    signal: rscTimeoutSignal(init),
     cache: 'no-store',
     credentials: 'include',
   });

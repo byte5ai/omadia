@@ -861,6 +861,7 @@
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
+    "loading": "Loading page…",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Admin UI for the omadia agent platform (local).",
     "tagline": "an Agentic OS"

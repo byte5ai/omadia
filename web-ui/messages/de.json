@@ -861,6 +861,7 @@
   },
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
+    "loading": "Seite wird geladen…",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal).",
     "tagline": "an Agentic OS"
@@ -5559,7 +5560,7 @@
       "metaTitle": "Routinen · omadia",
       "kicker": "Routinen",
       "title": "Cronjobs & Routinen.",
-      "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
+      "intro": "Eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
       "summaryTotal": "Total",
       "summaryActive": "Aktiv",
       "summaryPaused": "Pausiert",

@@ -15,6 +15,33 @@ import { SNAPSHOTS_TO_KEEP } from './snapshotRetention';
 import { takeDbSnapshot, type SnapshotIo } from './dbSnapshot';
 import { prepareInstall } from './installPreflight';
 import { recordCheckFailed, recordCheckReachedFeed } from './updaterCheckHealth';
+import {
+  createShellTranslate,
+  fillPlaceholders,
+  type ShellTranslate,
+} from './shellStrings';
+
+/** Where a user is sent when the automatic path has given up. */
+const RELEASES_URL = 'https://github.com/byte5ai/omadia/releases';
+
+/**
+ * The shell's translator (OM-91).
+ *
+ * Resolved per dialog rather than once at module load: `app.getLocale()` is
+ * only meaningful after the ready event, and this module is imported before
+ * it. Lookup is a plain dictionary hit, so the repetition costs nothing, and
+ * a per-call resolve cannot go stale — which matters here more than elsewhere,
+ * because several of these dialogs fire on error paths where a second failure
+ * would be its own bug.
+ *
+ * Locale source is `app.getLocale()`, the same one `main.ts`, `menu.ts` and
+ * every dialog in `shellDialogs.ts` use, so the shell speaks one language.
+ * NOTE: the web-ui's own `NEXT_LOCALE` switcher is deliberately NOT consulted
+ * — see the OM-91 note in the Wave 4 handover.
+ */
+function shellT(): ShellTranslate {
+  return createShellTranslate(app.getLocale());
+}
 
 let installing = false;
 // This flag is only safe because electron-updater's own checkForUpdates()
@@ -72,10 +99,11 @@ export function initUpdater(): void {
     const manual = takeManualCheckPending();
     const { consecutiveFailures, shouldNotify } = recordCheckFailed(manual);
     if (manual) {
+      const t = shellT();
       void showUpdaterDialog({
         type: 'error',
-        title: 'Update check failed',
-        message: 'omadia could not check for updates.',
+        title: t('updater.checkFailed.title', 'Update check failed'),
+        message: t('updater.checkFailed.message', 'omadia could not check for updates.'),
         detail: String(err),
       });
       return;
@@ -84,36 +112,63 @@ export function initUpdater(): void {
     // update channel look exactly like "already up to date" (#928/OM-69), so
     // break the silence — once per streak, so it can never become a nag.
     if (!shouldNotify) return;
+    const t = shellT();
     void showUpdaterDialog({
       type: 'warning',
-      title: 'Updates are not getting through',
-      message: `omadia could not fetch an update on the last ${consecutiveFailures} starts.`,
-      detail:
-        `You are still running ${app.getVersion()}. omadia will keep trying in the background. ` +
-        'If this persists, download the current version from ' +
-        'https://github.com/byte5ai/omadia/releases.\n\n' +
-        `Last error: ${String(err)}`,
+      title: t('updater.unreachable.title', 'Updates are not getting through'),
+      message: fillPlaceholders(
+        t(
+          'updater.unreachable.message',
+          'omadia could not fetch an update on the last {count} starts.',
+        ),
+        { count: String(consecutiveFailures) },
+      ),
+      detail: fillPlaceholders(
+        t(
+          'updater.unreachable.detail',
+          'You are still running {version}. omadia will keep trying in the background. If this persists, download the current version from:\n{releasesUrl}\n\nLast error: {error}',
+        ),
+        {
+          version: app.getVersion(),
+          releasesUrl: RELEASES_URL,
+          error: String(err),
+        },
+      ),
     });
   });
   autoUpdater.on('update-available', (info) => {
     log.info(`[updater] update available: ${info.version}`);
     if (!takeManualCheckPending()) return;
+    const t = shellT();
     void showUpdaterDialog({
       type: 'info',
-      title: 'Update found',
-      message: `omadia ${info.version} is downloading now.`,
-      detail: 'The download is running in the background. You will be prompted to restart once it is ready to install.',
+      title: t('updater.available.title', 'Update found'),
+      message: fillPlaceholders(
+        t('updater.available.message', 'omadia {version} is downloading now.'),
+        { version: info.version },
+      ),
+      detail: t(
+        'updater.available.detail',
+        'The download is running in the background. You will be prompted to restart once it is ready to install.',
+      ),
     });
   });
   autoUpdater.on('update-not-available', (info) => {
     log.info(`[updater] up to date: ${info.version}`);
     recordCheckReachedFeed();
     if (!takeManualCheckPending()) return;
+    const t = shellT();
     void showUpdaterDialog({
       type: 'info',
-      title: 'No update available',
-      message: "You're already on the latest version of omadia.",
-      detail: `Current version: ${info.version}`,
+      title: t('updater.upToDate.title', 'No update available'),
+      message: t(
+        'updater.upToDate.message',
+        "You're already on the latest version of omadia.",
+      ),
+      detail: fillPlaceholders(
+        t('updater.upToDate.detail', 'Current version: {version}'),
+        { version: info.version },
+      ),
     });
   });
   autoUpdater.on('update-downloaded', async (info) => {
@@ -139,30 +194,50 @@ export function initUpdater(): void {
         `[updater] ${info.version} was handed to the installer ${history?.attempts ?? 0}x ` +
           `and we are still on ${app.getVersion()}; not offering it again`,
       );
+      const t = shellT();
       await showUpdaterDialog({
         type: 'warning',
-        title: 'Update could not be applied',
-        message: `omadia could not install ${info.version}.`,
-        detail:
-          `The update was downloaded and applied ${history?.attempts ?? 0} times, but omadia is ` +
-          `still running ${app.getVersion()}. Something is preventing the installed ` +
-          'application from being replaced.\n\n' +
-          `Please install ${info.version} manually from the omadia releases page, and attach ` +
-          `this log if you report it:\n${logFile()}`,
+        title: t('updater.installFailed.title', 'Update could not be applied'),
+        message: fillPlaceholders(
+          t('updater.installFailed.message', 'omadia could not install {version}.'),
+          { version: info.version },
+        ),
+        detail: fillPlaceholders(
+          t(
+            'updater.installFailed.detail',
+            'The update was downloaded and applied {attempts} times, but omadia is still running {current}. Something is preventing the installed application from being replaced.\n\nPlease install {version} manually from the omadia releases page, and attach this log if you report it:\n{logFile}',
+          ),
+          {
+            attempts: String(history?.attempts ?? 0),
+            current: app.getVersion(),
+            version: info.version,
+            logFile: logFile(),
+          },
+        ),
       });
       return;
     }
 
     // This restart decision is intentionally unbounded: installing an update
     // without explicit user consent would be worse than waiting for it here.
+    const t = shellT();
     const { response } = await dialog.showMessageBox({
       type: 'info',
-      buttons: ['Restart now', 'Later'],
+      buttons: [
+        t('updater.ready.restartNow', 'Restart now'),
+        t('updater.ready.later', 'Later'),
+      ],
       defaultId: 0,
       cancelId: 1,
-      title: 'Update ready',
-      message: `omadia ${info.version} is ready to install.`,
-      detail: 'omadia will close, back up your local data, and restart to apply the update.',
+      title: t('updater.ready.title', 'Update ready'),
+      message: fillPlaceholders(
+        t('updater.ready.message', 'omadia {version} is ready to install.'),
+        { version: info.version },
+      ),
+      detail: t(
+        'updater.ready.detail',
+        'omadia will close, back up your local data, and restart to apply the update.',
+      ),
     });
     if (response !== 0) return;
 
@@ -199,11 +274,18 @@ export function initUpdater(): void {
 
 export async function checkForUpdatesManually(): Promise<void> {
   if (!app.isPackaged) {
+    const t = shellT();
     await showUpdaterDialog({
       type: 'info',
-      title: 'Update check unavailable',
-      message: 'Update checks are only available in packaged builds.',
-      detail: 'This development run does not have a published release feed to query.',
+      title: t('updater.unpackaged.title', 'Update check unavailable'),
+      message: t(
+        'updater.unpackaged.message',
+        'Update checks are only available in packaged builds.',
+      ),
+      detail: t(
+        'updater.unpackaged.detail',
+        'This development run does not have a published release feed to query.',
+      ),
     });
     return;
   }
@@ -215,10 +297,11 @@ export async function checkForUpdatesManually(): Promise<void> {
     await autoUpdater.checkForUpdates();
   } catch (err) {
     if (!takeManualCheckPending()) return;
+    const t = shellT();
     await showUpdaterDialog({
       type: 'error',
-      title: 'Update check failed',
-      message: 'omadia could not check for updates.',
+      title: t('updater.checkFailed.title', 'Update check failed'),
+      message: t('updater.checkFailed.message', 'omadia could not check for updates.'),
       detail: String(err),
     });
   }
@@ -257,11 +340,15 @@ async function quiesceForInstall(version: string): Promise<boolean> {
   );
   if (result.ok) return true;
 
+  const t = shellT();
   // Both branches leave the stack down, so both have to tell the user how to
   // get back to a working app. Saying only "your data was not changed" left
   // them looking at a dead window.
-  const relaunch =
-    'Your data was not changed. Quit omadia completely and start it again, then retry the update.';
+  const relaunch = t(
+    'updater.notApplied.relaunch',
+    'Your data was not changed. Quit omadia completely and start it again, then retry the update.',
+  );
+  const title = t('updater.notApplied.title', 'Update not applied');
 
   if (result.reason === 'unclean') {
     log.error(
@@ -269,11 +356,21 @@ async function quiesceForInstall(version: string): Promise<boolean> {
     );
     await showUpdaterDialog({
       type: 'error',
-      title: 'Update not applied',
-      message: `omadia could not shut down cleanly, so ${version} was not installed.`,
-      detail:
-        `These parts of omadia did not stop: ${result.survivors.join(', ')}.\n\n` +
-        `${relaunch}\n\nIf it keeps happening, attach this log:\n${logFile()}`,
+      title,
+      message: fillPlaceholders(
+        t(
+          'updater.notApplied.uncleanMessage',
+          'omadia could not shut down cleanly, so {version} was not installed.',
+        ),
+        { version },
+      ),
+      detail: fillPlaceholders(
+        t(
+          'updater.notApplied.uncleanDetail',
+          'These parts of omadia did not stop: {survivors}.\n\n{relaunch}\n\nIf it keeps happening, attach this log:\n{logFile}',
+        ),
+        { survivors: result.survivors.join(', '), relaunch, logFile: logFile() },
+      ),
     });
     return false;
   }
@@ -281,9 +378,18 @@ async function quiesceForInstall(version: string): Promise<boolean> {
   log.error(`[updater] pre-install stop/snapshot failed for ${version}: ${result.error}`);
   await showUpdaterDialog({
     type: 'error',
-    title: 'Update not applied',
-    message: `omadia could not prepare for the update, so ${version} was not installed.`,
-    detail: `${result.error}\n\n${relaunch}\n\nLog:\n${logFile()}`,
+    title,
+    message: fillPlaceholders(
+      t(
+        'updater.notApplied.prepareMessage',
+        'omadia could not prepare for the update, so {version} was not installed.',
+      ),
+      { version },
+    ),
+    detail: fillPlaceholders(
+      t('updater.notApplied.prepareDetail', '{error}\n\n{relaunch}\n\nLog:\n{logFile}'),
+      { error: result.error, relaunch, logFile: logFile() },
+    ),
   });
   return false;
 }
