@@ -18,7 +18,7 @@
  * reason stated there (they are file-private in `_lib/api.ts`).
  */
 
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 import type { QualityConfig } from './builderTypes';
 import type { PersonaConfig } from './personaTypes';
 
@@ -154,6 +154,12 @@ async function callJson<T>(
       ...forwarded,
       ...(init?.headers ?? {}),
     },
+    // OM-96 — a server-side GET read gates the RSC payload of the page that
+    // awaits it. Without a deadline, a middleware endpoint that accepts the
+    // connection and never answers parks the navigation instead of failing a
+    // single card. Mutations are left unbounded on purpose: only the caller
+    // knows whether abandoning a half-applied write is safe.
+    signal: (init?.method ?? 'GET') === 'GET' ? rscTimeoutSignal(init) : init?.signal,
     cache: 'no-store',
     credentials: 'include',
   });

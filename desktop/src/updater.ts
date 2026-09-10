@@ -36,8 +36,17 @@ const RELEASES_URL = 'https://github.com/byte5ai/omadia/releases';
  *
  * Locale source is `app.getLocale()`, the same one `main.ts`, `menu.ts` and
  * every dialog in `shellDialogs.ts` use, so the shell speaks one language.
- * NOTE: the web-ui's own `NEXT_LOCALE` switcher is deliberately NOT consulted
- * — see the OM-91 note in the Wave 4 handover.
+ *
+ * The web-ui's own `NEXT_LOCALE` cookie is deliberately NOT consulted (OM-91).
+ * It lives on the other side of a process boundary — the shell would have to
+ * ask the renderer's session for it, which is async, and these dialogs fire on
+ * error paths where a second failure source is the last thing wanted. The OS
+ * locale is synchronous, always available, and never fails.
+ *
+ * Known gap that buys: a user on an English OS who switched the web-ui to
+ * German still gets English shell dialogs. Tracked separately rather than
+ * papered over here — fixing it properly means the renderer pushing its locale
+ * to the main process on change, not the shell reaching across to read it.
  */
 function shellT(): ShellTranslate {
   return createShellTranslate(app.getLocale());

@@ -420,6 +420,18 @@ export class Supervisor extends EventEmitter {
       // and keep the two concerns apart instead of trading one dead URL for
       // another.
       AUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/v1/auth/login/entra/cb`,
+      // OM-90, third reader of `PUBLIC_BASE_URL`: the kernel derives the MCP
+      // OAuth callback from it as `{base}/api/v1/operator/mcp-oauth/callback`.
+      // Since the base is now the UI port, that default lands on a Next route
+      // that does not exist — the web-ui proxies `/bot-api/*`, never
+      // `/api/v1/*` — so the callback would 404 and every MCP OAuth connect
+      // would die on the last hop. Unlike the Entra callback, this one CAN be
+      // served over the UI origin, so keep it there and prefix it so the
+      // rewrite forwards it (pattern from `middleware/.env.example`).
+      MCP_OAUTH_REDIRECT_URI: `http://127.0.0.1:${uiPort}/bot-api/v1/operator/mcp-oauth/callback`,
+      // Follow-up, same class of bug, deliberately NOT fixed here: the
+      // Conductor webhook base and the Teams reader also derive from
+      // `PUBLIC_BASE_URL` and want their own audit. Out of scope for OM-90.
       // Desktop-only overrides of kernel defaults that assume a LAN self-host
       // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
       ...desktopKernelEnvDefaults(process.env),

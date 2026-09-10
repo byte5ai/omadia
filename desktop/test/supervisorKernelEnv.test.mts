@@ -90,9 +90,35 @@ describe('Supervisor.kernelEnv login-redirect base (OM-90)', () => {
     );
   });
 
+  it('keeps the MCP OAuth callback on a route that exists', () => {
+    // The third reader of `PUBLIC_BASE_URL`. Its default derives
+    // `{base}/api/v1/operator/mcp-oauth/callback`, which now points at the UI
+    // port — and the web-ui proxies `/bot-api/*`, never `/api/v1/*`, so the
+    // undecorated default 404s and MCP OAuth dies on its last hop. Unlike the
+    // Entra callback this one belongs on the UI origin; it just needs the
+    // prefix the rewrite actually forwards.
+    assert.equal(
+      kernelEnv()['MCP_OAUTH_REDIRECT_URI'],
+      `http://127.0.0.1:${UI_PORT}/bot-api/v1/operator/mcp-oauth/callback`,
+    );
+  });
+
+  it('sends the MCP callback to the UI, and Entra to the kernel', () => {
+    // The two callbacks resolve to DIFFERENT origins on purpose; collapsing
+    // them onto one host breaks whichever one loses.
+    const env = kernelEnv();
+    assert.ok(env['MCP_OAUTH_REDIRECT_URI']?.includes(`:${UI_PORT}`));
+    assert.ok(env['AUTH_REDIRECT_URI']?.includes(':8769'));
+  });
+
   it('follows the port it is given, launch to launch', () => {
     assert.equal(kernelEnv(40_001)['PUBLIC_BASE_URL'], 'http://127.0.0.1:40001');
     assert.equal(kernelEnv(40_002)['PUBLIC_BASE_URL'], 'http://127.0.0.1:40002');
+    // The MCP callback is per-launch too — a stale port here is the same bug.
+    assert.equal(
+      kernelEnv(40_001)['MCP_OAUTH_REDIRECT_URI'],
+      'http://127.0.0.1:40001/bot-api/v1/operator/mcp-oauth/callback',
+    );
   });
 
   it('wins over a stale inherited PUBLIC_BASE_URL', () => {

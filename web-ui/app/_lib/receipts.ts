@@ -1,4 +1,4 @@
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 import type { PrivacyReceipt } from './chatSessions';
 
 /**
@@ -62,6 +62,8 @@ export async function listReceipts(opts?: {
   const qs = params.size > 0 ? `?${params.toString()}` : '';
   const res = await fetch(botApi(`/v1/operator/receipts${qs}`), {
     headers: { ...(await forwardCookieHeader()) },
+    // OM-96 — server-side read, so it needs a deadline; see `rscTimeoutSignal`.
+    signal: rscTimeoutSignal(),
     cache: 'no-store',
   });
   if (!res.ok) {

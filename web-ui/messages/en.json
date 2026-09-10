@@ -5560,7 +5560,7 @@
       "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
-      "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
+      "intro": "Your own recurring agent runs. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
       "summaryTotal": "Total",
       "summaryActive": "Active",
       "summaryPaused": "Paused",
