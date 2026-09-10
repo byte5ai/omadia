@@ -22,12 +22,69 @@ import {
   OMADIA_MCP_TOOL_PREFIX,
   buildCliToolGateArgv,
   buildGatedCliEnv,
+  classifyUnknownOptionFailure,
+  resolveCliVersion,
 } from './cliSpawnGate.js';
 
 const DEFAULT_CLI_BINARY = 'claude';
 const DEFAULT_MODEL = 'sonnet';
-const DEFAULT_SPAWN_TIMEOUT_MS = 120_000;
+/**
+ * OM-104 — the wall-clock budget of one CLI-owned turn. It used to be a
+ * hard-coded 120 s with no way to raise it, while a single call to omadia's
+ * own `query_seo_analyst` sub-agent takes 69–75 s: two of those and the turn
+ * was guaranteed dead, on an agent loop configured for up to 100 iterations.
+ * 10 minutes is a budget the platform's own tools fit into; the idle timeout
+ * below still catches a CLI that stopped producing output.
+ */
+const DEFAULT_SPAWN_TIMEOUT_MS = 600_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
+/** Environment override for {@link DEFAULT_SPAWN_TIMEOUT_MS}, in milliseconds. */
+export const CLI_SPAWN_TIMEOUT_ENV_KEY = 'OMADIA_CLI_SPAWN_TIMEOUT_MS';
+
+/**
+ * The turn timeout to use: an explicit dependency wins, then a positive
+ * integer in {@link CLI_SPAWN_TIMEOUT_ENV_KEY}, then the default. Anything
+ * else in the variable (empty, `0`, `abc`) is ignored rather than turned
+ * into a zero-second budget.
+ */
+export function resolveCliSpawnTimeoutMs(
+  explicit: number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+
+  const raw = env[CLI_SPAWN_TIMEOUT_ENV_KEY];
+  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SPAWN_TIMEOUT_MS;
+}
+
+/**
+ * OM-94 — the sink for the three facts a failed turn used to keep to itself:
+ * that a CLI was spawned (argv shape, never the prompt), how it exited, and
+ * the first line it wrote to stderr. The reporter attached the log file the
+ * update dialog asks for, and it contained none of them.
+ */
+export interface CliSpawnLogger {
+  info(message: string, meta?: Readonly<Record<string, unknown>>): void;
+  warn(message: string, meta?: Readonly<Record<string, unknown>>): void;
+}
+
+const consoleSpawnLogger: CliSpawnLogger = {
+  info: (message, meta) =>
+    console.info(`[cli-chat-agent] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}`),
+  warn: (message, meta) =>
+    console.warn(`[cli-chat-agent] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}`),
+};
+
+/** First non-empty stderr line, for a log entry that stays one line. */
+function firstLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+}
 const FORCE_KILL_DELAY_MS = 2_000;
 const DEFAULT_MAX_CONCURRENT_TURNS = 3;
 
@@ -447,9 +504,18 @@ export interface CliChatAgentDeps {
   readonly systemPrompt?: string;
   readonly buildEnv?: () => NodeJS.ProcessEnv;
   readonly spawnFn?: typeof nodeSpawn;
+  /** Overrides {@link CLI_SPAWN_TIMEOUT_ENV_KEY} and the default (OM-104). */
   readonly spawnTimeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly maxConcurrentTurns?: number;
+  /**
+   * OM-85 — resolves the installed CLI's version before each spawn so the
+   * gate can leave `--restricted` off a CLI that would reject it. Defaults to
+   * a cached `claude --version` probe; a test injects a constant.
+   */
+  readonly resolveCliVersion?: (binary: string) => Promise<string | undefined>;
+  /** OM-94 — where spawn, exit code and first stderr line are recorded. */
+  readonly logger?: CliSpawnLogger;
 }
 
 /**
@@ -691,6 +757,12 @@ export class CliChatAgent implements ChatAgent {
       const configPath = join(tempDir, 'mcp-config.json');
       await writeFile(configPath, this.buildMcpConfig(handle.url, bearer), { mode: 0o600 });
 
+      const cliBinary = this.deps.cliBinary ?? DEFAULT_CLI_BINARY;
+      // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
+      const cliVersion = await (this.deps.resolveCliVersion ?? resolveCliVersion)(cliBinary);
+      const spawnTimeoutMs = resolveCliSpawnTimeoutMs(this.deps.spawnTimeoutMs);
+      const logger = this.deps.logger ?? consoleSpawnLogger;
+
       const argv = [
         '-p',
         '--output-format',
@@ -704,6 +776,7 @@ export class CliChatAgent implements ChatAgent {
         ...buildCliToolGateArgv({
           mcpConfigPath: configPath,
           allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*`,
+          ...(cliVersion !== undefined ? { cliVersion } : {}),
         }),
         '--model',
         this.deps.model ?? DEFAULT_MODEL,
@@ -715,8 +788,20 @@ export class CliChatAgent implements ChatAgent {
         composeCliSystemPrompt(this.deps.systemPrompt),
       ];
 
+      // OM-94 — the argv shape without the prompt (which travels on stdin) and
+      // without the deny list (104 names that never change between turns).
+      logger.info('spawning claude CLI', {
+        binary: cliBinary,
+        cliVersion: cliVersion ?? 'unknown',
+        restrictedFlag: argv.includes('--restricted'),
+        model: this.deps.model ?? DEFAULT_MODEL,
+        spawnTimeoutMs,
+        idleTimeoutMs: this.deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+        tools: tools.length,
+      });
+
       child = (this.deps.spawnFn ?? nodeSpawn)(
-        this.deps.cliBinary ?? DEFAULT_CLI_BINARY,
+        cliBinary,
         argv,
         {
           env: this.buildEnv(),
@@ -770,10 +855,14 @@ export class CliChatAgent implements ChatAgent {
       });
 
       overallTimer = setTimeout(() => {
+        logger.warn('claude CLI turn timed out', { spawnTimeoutMs, stderr: firstLine(stderr) });
         failRuntime(
-          new Error(`CLI timed out after ${this.deps.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS}ms`),
+          new Error(
+            `CLI timed out after ${spawnTimeoutMs}ms ` +
+              `(raise ${CLI_SPAWN_TIMEOUT_ENV_KEY} for turns that run several tools)`,
+          ),
         );
-      }, this.deps.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
+      }, spawnTimeoutMs);
 
       resetIdleTimer();
 
@@ -815,10 +904,25 @@ export class CliChatAgent implements ChatAgent {
       }
 
       if (closeInfo?.signal !== null && closeInfo?.signal !== undefined) {
+        logger.warn('claude CLI exited with signal', {
+          signal: closeInfo.signal,
+          stderr: firstLine(stderr),
+        });
         throw new Error(`CLI exited with signal ${closeInfo.signal}`);
       }
 
       if ((closeInfo?.code ?? 0) !== 0) {
+        // OM-94 — this is the line the log file never had.
+        logger.warn('claude CLI exited with non-zero code', {
+          code: closeInfo?.code,
+          cliVersion: cliVersion ?? 'unknown',
+          stderr: firstLine(stderr),
+        });
+        // OM-85 — say what to do, not just what happened.
+        const incompatible = classifyUnknownOptionFailure(stderr, cliVersion);
+        if (incompatible !== undefined) {
+          throw incompatible;
+        }
         const stderrSuffix = stderr.trim().length > 0 ? `: ${stderr.trim()}` : '';
         throw new Error(`CLI exited with code ${String(closeInfo?.code)}${stderrSuffix}`);
       }

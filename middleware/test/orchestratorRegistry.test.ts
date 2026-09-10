@@ -374,6 +374,10 @@ test('US4-4d: registry.start() quarantines an uninstalled plugin instead of abor
   // every `/operator/*` route then returned `multi_orchestrator_unavailable`
   // (503). The registry must instead disable just the offending binding and
   // come up with the rest.
+  const snapshot: ConfigSnapshot = Object.freeze({
+    ...twoAgentSnapshot,
+    agentPlugins: Object.freeze(twoAgentSnapshot.agentPlugins.map((row) => Object.freeze({ ...row }))),
+  });
   const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
   const lookup: PluginCapabilityLookup = {
     isMultiInstance: () => true,
@@ -381,7 +385,7 @@ test('US4-4d: registry.start() quarantines an uninstalled plugin instead of abor
     isInstalled: (id) => (id === '@omadia/agent-odoo-hr' ? false : true),
   };
   const registry = new OrchestratorRegistry(
-    fakeStore(twoAgentSnapshot),
+    fakeStore(snapshot),
     deps(),
     {
       defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
@@ -398,6 +402,9 @@ test('US4-4d: registry.start() quarantines an uninstalled plugin instead of abor
   assert.ok(registry.get('public'), 'public agent present');
   const general = registry.get('general');
   assert.ok(general, 'general agent still present despite its missing plugin');
+  assert.equal(snapshot.agentPlugins[1]!.enabled, true, 'the input binding is never mutated');
+  assert.notEqual(general.plugins[0], snapshot.agentPlugins[1], 'quarantine creates a new row');
+  assert.equal(registry.get('public')!.plugins[0], snapshot.agentPlugins[0], 'healthy rows retain their identity');
   assert.deepEqual(
     general.plugins.filter((p) => p.enabled).map((p) => p.pluginId),
     [],
@@ -413,6 +420,34 @@ test('US4-4d: registry.start() quarantines an uninstalled plugin instead of abor
     ),
     'a per-binding warning is logged',
   );
+});
+
+test('OM-95: unknown or absent installation lookups leave bindings untouched without quarantine logs', async () => {
+  const lookups: Array<PluginCapabilityLookup | undefined> = [
+    { isMultiInstance: () => true, isInstalled: () => undefined },
+    { isMultiInstance: () => true },
+    undefined,
+  ];
+  for (const lookup of lookups) {
+    const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+    const registry = new OrchestratorRegistry(fakeStore(twoAgentSnapshot), deps(), {
+      defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+      ...(lookup ? { pluginLookup: lookup } : {}),
+      log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+    });
+
+    await registry.start();
+    const plan = await registry.reload();
+
+    assert.equal(registry.size(), 2);
+    assert.equal(plan.actions.length, 0);
+    assert.equal(registry.get('public')!.plugins[0], twoAgentSnapshot.agentPlugins[0]);
+    assert.equal(registry.get('general')!.plugins[0], twoAgentSnapshot.agentPlugins[1]);
+    assert.deepEqual(
+      logged.filter((entry) => entry.msg.includes('quarantined') || entry.msg.includes('plugin not installed')),
+      [],
+    );
+  }
 });
 
 test('SC-007 / T018: a build-time failure for Agent B does NOT prevent Agent A', async () => {

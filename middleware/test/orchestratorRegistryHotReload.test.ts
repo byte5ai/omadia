@@ -34,7 +34,10 @@ import {
   type ConfigSnapshot,
   type ConfigStore,
 } from '../packages/harness-orchestrator/src/registry/configStore.js';
-import { OrchestratorRegistry } from '../packages/harness-orchestrator/src/registry/index.js';
+import {
+  OrchestratorRegistry,
+  type PluginCapabilityLookup,
+} from '../packages/harness-orchestrator/src/registry/index.js';
 
 function fakeNativeToolRegistry(): NativeToolRegistry {
   const names = new Set<string>();
@@ -327,6 +330,212 @@ test('T020: an idempotent reload (no DB change) emits zero actions', async () =>
   const plan = await registry.reload();
   assert.equal(plan.actions.length, 0);
   assert.equal(plan.platformChanged, false);
+});
+
+test('OM-95: consecutive reconciles quarantine the same dead binding only once', async () => {
+  const binding = Object.freeze(pluginRow(baseSnapshot.agents[0]!.id, SEO_PLUGIN));
+  const snapshot: ConfigSnapshot = Object.freeze({
+    ...baseSnapshot,
+    agentPlugins: Object.freeze([binding]),
+  });
+  const store = new MutableFakeStore(snapshot);
+  const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    pluginLookup: { isMultiInstance: () => true, isInstalled: () => false },
+    log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  await registry.reload();
+  const publicBefore = registry.get('public')!.built.orchestrator;
+  const logCount = logged.length;
+  const plan = await registry.reload();
+
+  assert.equal(plan.actions.length, 0);
+  assert.equal(logged.length, logCount, 'an unchanged quarantine emits no log lines');
+  assert.equal(registry.get('public')!.built.orchestrator, publicBefore);
+  assert.equal(binding.enabled, true, 'even repeated quarantine never mutates the DB snapshot');
+  assert.equal(registry.get('public')!.plugins[0]!.enabled, false);
+  assert.deepEqual(
+    logged.filter((entry) => entry.msg === 'registry: plugin not installed — disabling binding'),
+    [{ msg: 'registry: plugin not installed — disabling binding', fields: { agentId: binding.agentId, pluginId: SEO_PLUGIN } }],
+  );
+  assert.deepEqual(
+    logged.filter((entry) => entry.msg === 'registry: quarantined unsatisfiable plugin binding(s)').map((entry) => entry.fields),
+    [{ newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 }],
+  );
+});
+
+test('OM-95: a recovered plugin clears quarantine memory and a later disappearance logs again', async () => {
+  const snapshot: ConfigSnapshot = {
+    ...baseSnapshot,
+    agentPlugins: [pluginRow(baseSnapshot.agents[0]!.id, SEO_PLUGIN)],
+  };
+  const store = new MutableFakeStore(snapshot);
+  const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  let installed = false;
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    pluginLookup: { isMultiInstance: () => true, isInstalled: () => installed },
+    log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  await registry.start();
+  installed = true;
+  await registry.reload();
+  assert.equal(registry.get('public')!.plugins[0], snapshot.agentPlugins[0], 'recovery restores the untouched enabled row');
+  const recoveredLogCount = logged.length;
+  await registry.reload();
+  assert.equal(logged.length, recoveredLogCount, 'stable recovery is silent too');
+  installed = false;
+  await registry.reload();
+
+  assert.equal(registry.get('public')!.plugins[0]!.enabled, false);
+  assert.equal(logged.filter((entry) => entry.msg === 'registry: plugin not installed — disabling binding').length, 2);
+  assert.deepEqual(
+    logged.filter((entry) => entry.msg === 'registry: quarantined unsatisfiable plugin binding(s)').map((entry) => entry.fields),
+    [
+      { newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 },
+      { newlyQuarantined: 0, noLongerQuarantined: 1, totalQuarantined: 0 },
+      { newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 },
+    ],
+  );
+});
+
+test('OM-95: removed and explicitly disabled bindings leave quarantine memory', async () => {
+  for (const removed of [true, false]) {
+    const binding = pluginRow(baseSnapshot.agents[0]!.id, SEO_PLUGIN);
+    const snapshot: ConfigSnapshot = { ...baseSnapshot, agentPlugins: [binding] };
+    const store = new MutableFakeStore(snapshot);
+    const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+    const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+      defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+      pluginLookup: { isMultiInstance: () => true, isInstalled: () => false },
+      log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+    });
+
+    await registry.start();
+    store.set({ ...snapshot, agentPlugins: removed ? [] : [{ ...binding, enabled: false }] });
+    await registry.reload();
+    const clearedLogCount = logged.length;
+    await registry.reload();
+    assert.equal(logged.length, clearedLogCount, 'empty quarantine remains silent');
+    store.set(snapshot);
+    await registry.reload();
+
+    assert.equal(logged.filter((entry) => entry.msg === 'registry: plugin not installed — disabling binding').length, 2);
+    assert.deepEqual(
+      logged.filter((entry) => entry.msg === 'registry: quarantined unsatisfiable plugin binding(s)').map((entry) => entry.fields),
+      [
+        { newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 },
+        { newlyQuarantined: 0, noLongerQuarantined: 1, totalQuarantined: 0 },
+        { newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 },
+      ],
+    );
+  }
+});
+
+test('OM-95: losing the installation lookup clears quarantine memory without altering the snapshot', async () => {
+  for (const missingPluginLookup of [true, false]) {
+    const snapshot: ConfigSnapshot = {
+      ...baseSnapshot,
+      agentPlugins: [pluginRow(baseSnapshot.agents[0]!.id, SEO_PLUGIN)],
+    };
+    const store = new MutableFakeStore(snapshot);
+    const logged: string[] = [];
+    let lookup: PluginCapabilityLookup | undefined = {
+      isMultiInstance: () => true,
+      isInstalled: () => false,
+    };
+    const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+      defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+      get pluginLookup() { return lookup; },
+      log: (msg) => logged.push(msg),
+    });
+
+    await registry.start();
+    lookup = missingPluginLookup ? undefined : { isMultiInstance: () => true };
+    const quarantineLogCount = logged.filter((msg) => msg.includes('quarantined') || msg.includes('plugin not installed')).length;
+    await registry.reload();
+    assert.equal(registry.get('public')!.plugins[0], snapshot.agentPlugins[0]);
+    assert.equal(
+      logged.filter((msg) => msg.includes('quarantined') || msg.includes('plugin not installed')).length,
+      quarantineLogCount,
+      'missing lookup emits no quarantine logs',
+    );
+    lookup = { isMultiInstance: () => true, isInstalled: () => false };
+    await registry.reload();
+    assert.equal(logged.filter((msg) => msg === 'registry: plugin not installed — disabling binding').length, 2);
+  }
+});
+
+test('OM-95: tuple keys cannot collide and replacing quarantine members logs a change at the same total', async () => {
+  // These pairs collide with a NUL-delimited key despite being distinct bindings.
+  const first = pluginRow('a\0b', 'c');
+  const second = pluginRow('a', 'b\0c');
+  const snapshot: ConfigSnapshot = {
+    ...baseSnapshot,
+    agents: [agent('public', first.agentId), agent('general', second.agentId)],
+    agentPlugins: [first],
+  };
+  const store = new MutableFakeStore(snapshot);
+  const logged: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const registry = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    pluginLookup: { isMultiInstance: () => true, isInstalled: () => false },
+    log: (msg, fields) => logged.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  await registry.start();
+  store.set({ ...snapshot, agentPlugins: [second] });
+  await registry.reload();
+
+  assert.deepEqual(
+    logged.filter((entry) => entry.msg === 'registry: plugin not installed — disabling binding').map((entry) => entry.fields),
+    [
+      { agentId: first.agentId, pluginId: first.pluginId },
+      { agentId: second.agentId, pluginId: second.pluginId },
+    ],
+  );
+  assert.deepEqual(
+    logged.filter((entry) => entry.msg === 'registry: quarantined unsatisfiable plugin binding(s)').map((entry) => entry.fields),
+    [
+      { newlyQuarantined: 1, noLongerQuarantined: 0, totalQuarantined: 1 },
+      { newlyQuarantined: 1, noLongerQuarantined: 1, totalQuarantined: 1 },
+    ],
+  );
+});
+
+test('OM-95: quarantine tracking belongs to each registry instance', async () => {
+  const snapshot: ConfigSnapshot = {
+    ...baseSnapshot,
+    agentPlugins: [pluginRow(baseSnapshot.agents[0]!.id, SEO_PLUGIN)],
+  };
+  const store = new MutableFakeStore(snapshot);
+  const firstLogs: string[] = [];
+  const secondLogs: string[] = [];
+  const options = {
+    defaultRuntimeConfig: { model: 'm', maxTokens: 100, maxToolIterations: 4 },
+    pluginLookup: { isMultiInstance: () => true, isInstalled: () => false },
+  };
+  const first = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    ...options,
+    log: (msg) => firstLogs.push(msg),
+  });
+  const second = new OrchestratorRegistry(store as unknown as ConfigStore, deps(), {
+    ...options,
+    log: (msg) => secondLogs.push(msg),
+  });
+
+  await first.start();
+  await second.start();
+  await first.reload();
+  await second.reload();
+
+  for (const logged of [firstLogs, secondLogs]) {
+    assert.equal(logged.filter((msg) => msg === 'registry: plugin not installed — disabling binding').length, 1);
+    assert.equal(logged.filter((msg) => msg === 'registry: quarantined unsatisfiable plugin binding(s)').length, 1);
+  }
 });
 
 test('T022: a throw inside one Agent\'s rebuild does NOT abort the rest of the diff', async () => {

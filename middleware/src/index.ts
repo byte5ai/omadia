@@ -1553,6 +1553,8 @@ async function main(): Promise<void> {
     // previous package's database and unauthenticated routes.
     publicPathGrantStore,
     sqlGrantStore,
+    agentPluginBindingStore: () =>
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1589,7 +1591,7 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId);
       }
     },
-    onUninstall: async (agentId) => {
+    onUninstall: async (agentId, reason) => {
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -1613,7 +1615,12 @@ async function main(): Promise<void> {
           const removedToolName =
             dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
-          await propagatePluginUninstall(agentId, removedToolName);
+          if (reason === 'uninstall') {
+            await propagatePluginUninstall(agentId, removedToolName);
+          } else {
+            // Reactivation tears down the runtime, but retains operator grants.
+            reconcileRuntimeDomainTool(agentId, removedToolName);
+          }
         }
       }
     },

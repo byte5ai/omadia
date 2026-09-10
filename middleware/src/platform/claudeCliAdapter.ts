@@ -47,7 +47,12 @@ import type {
   ToolSpec,
 } from '@omadia/llm-provider';
 
-import { buildCompletionCliArgv, buildGatedCliEnv } from '@omadia/orchestrator';
+import {
+  buildCompletionCliArgv,
+  buildGatedCliEnv,
+  classifyUnknownOptionFailure,
+  resolveCliVersion,
+} from '@omadia/orchestrator';
 
 
 const CLI_BIN = 'claude';
@@ -187,7 +192,11 @@ async function runClaude(req: LlmRequest): Promise<LlmResponse> {
   try {
     const mcpConfigPath = join(workDir, 'mcp-config.json');
     await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
-    return await spawnClaude(req, forced, mcpConfigPath, workDir);
+    // OM-85 — same version gate as the chat path: `--restricted` only where
+    // the installed CLI accepts it. The probe is cached, so this is one
+    // `claude --version` per five minutes, not one per completion.
+    const cliVersion = await resolveCliVersion(CLI_BIN);
+    return await spawnClaude(req, forced, mcpConfigPath, workDir, cliVersion);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
@@ -198,6 +207,7 @@ function spawnClaude(
   forced: ToolSpec | undefined,
   mcpConfigPath: string,
   workDir: string,
+  cliVersion: string | undefined,
 ): Promise<LlmResponse> {
   // #1007 — argv and gate come from the orchestrator package, the same source
   // the chat path uses, so a flag cannot be present on one spawn site and
@@ -207,6 +217,7 @@ function spawnClaude(
     model: toCliModel(req.model),
     mcpConfigPath,
     ...(systemText(req.system) ? { systemPrompt: systemText(req.system) } : {}),
+    ...(cliVersion !== undefined ? { cliVersion } : {}),
   });
   const prompt = forced
     ? `${buildPrompt(req.messages)}\n${structuredSuffix(forced)}`
@@ -253,7 +264,20 @@ function spawnClaude(
         return;
       }
       if (code !== 0) {
-        reject(new Error(`claude-cli exited ${code}: ${(stderr || stdout).slice(0, 500).trim()}`));
+        // OM-94 — record the exit here too; the completion path serves the
+        // summariser, fact extractor and verifier judge, whose failures reach
+        // no chat bubble at all. stderr ONLY: on this path stdout is the
+        // model's answer, i.e. conversation-derived text, and the log must not
+        // become a second copy of it.
+        console.warn(
+          `[claude-cli] completion exited ${code} (cli ${cliVersion ?? 'unknown'}): ` +
+            `${stderr.split('\n')[0]?.trim() ?? ''}`,
+        );
+        // OM-85 — a CLI that rejects the gate's own flags is a config error.
+        reject(
+          classifyUnknownOptionFailure(stderr, cliVersion) ??
+            new Error(`claude-cli exited ${code}: ${(stderr || stdout).slice(0, 500).trim()}`),
+        );
         return;
       }
       // Be tolerant of a stray progress/warning line on stdout: parse the first

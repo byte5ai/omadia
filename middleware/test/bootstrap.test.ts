@@ -1027,6 +1027,98 @@ describe('bootstrapEmbeddingsFromEnv — env→config reconcile (overlay-on-exis
   });
 });
 
+describe('bootstrapBuiltInPackages — generic capability collision policy (OM-87)', () => {
+  const firstId = '@test/foo-first';
+  const secondId = '@test/foo-second';
+  const catalog = makeCatalog([
+    { id: firstId, provides: ['fooClient@1'], requires: [], depends_on: [] },
+    { id: secondId, provides: ['fooClient@1'], requires: [], depends_on: [] },
+  ]);
+  const builtInStore = makeBuiltInStore([
+    { id: firstId, path: '/x/foo-first' },
+    { id: secondId, path: '/x/foo-second' },
+  ]) as unknown as Parameters<typeof bootstrapBuiltInPackages>[0]['builtInStore'];
+  const config = {} as Config;
+  const vault = { get: async () => undefined, setMany: async () => {} } as unknown as SecretVault;
+
+  it('skips an arbitrary built-in capability already provided by an active plugin and logs its owner', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    await registry.register(activeAgent(secondId));
+    const logs: string[] = [];
+
+    await bootstrapBuiltInPackages({
+      config,
+      vault,
+      registry,
+      catalog,
+      builtInStore,
+      log: (message: string) => logs.push(message),
+    });
+
+    assert.equal(registry.get(firstId), undefined);
+    assert.equal(registry.get(secondId)?.status, 'active');
+    assert.deepEqual(logs, [
+      `[bootstrap] built-in ${firstId} skipped — 'fooClient@1' is already provided by active ${secondId} (install it from the admin page after uninstalling the other)`,
+    ]);
+  });
+
+  it('auto-installs the same built-in when neither provider is active', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    const logs: string[] = [];
+
+    await bootstrapBuiltInPackages({
+      config,
+      vault,
+      registry,
+      catalog,
+      builtInStore,
+      log: (message: string) => logs.push(message),
+    });
+
+    assert.equal(registry.get(firstId)?.status, 'active');
+    assert.equal(registry.get(secondId), undefined);
+    assert.deepEqual(logs, [
+      `[bootstrap] ⚐ auto-installed built-in ${firstId} v0.1.0`,
+      `[bootstrap] built-in ${secondId} skipped — 'fooClient@1' is already provided by active ${firstId} (install it from the admin page after uninstalling the other)`,
+    ]);
+  });
+
+  it('keeps the KG and memory opt-in lists effective even without an active provider', async () => {
+    const policyIds = [
+      'de.byte5.tool.knowledge-graph',
+      '@omadia/knowledge-graph-inmemory',
+      '@omadia/knowledge-graph-neon',
+      '@omadia/memory',
+      '@omadia/memory-postgres',
+    ];
+    const registry = new InMemoryInstalledRegistry();
+    const logs: string[] = [];
+
+    await bootstrapBuiltInPackages({
+      config,
+      vault,
+      registry,
+      catalog: makeCatalog(policyIds.map((id) => ({
+        id,
+        provides: [],
+        requires: [],
+        depends_on: [],
+      }))),
+      builtInStore: makeBuiltInStore(policyIds.map((id) => ({
+        id,
+        path: `/x/${id}`,
+      }))) as unknown as Parameters<typeof bootstrapBuiltInPackages>[0]['builtInStore'],
+      log: (message: string) => logs.push(message),
+    });
+
+    assert.deepEqual(registry.list(), []);
+    assert.equal(logs.length, policyIds.length);
+    for (const id of policyIds) {
+      assert.ok(logs.some((message) => message.includes(`built-in ${id} skipped`)));
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // embeddingClient@1 mutual exclusion (#1041 follow-up — production boot fatal)
 // ---------------------------------------------------------------------------
