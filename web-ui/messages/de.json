@@ -32,7 +32,26 @@
         "title": "Gedächtnis / Embeddings",
         "active": "Aktiv: {model}",
         "none": "Kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung sind aus.",
-        "unknown": "Status nicht abrufbar"
+        "unknown": "Status nicht abrufbar",
+        "memory": {
+          "allActive": "Gedächtnis-Funktionen aktiv",
+          "allActiveWithProvider": "Gedächtnis-Funktionen aktiv (LLM: {provider})",
+          "off": "Aus: {features}",
+          "featureWithReason": "{feature} ({reason})",
+          "feature": {
+            "factExtractor": "Faktenextraktion",
+            "topicDetector": "Themenerkennung",
+            "scratchReaper": "Scratch-Aufräumer"
+          },
+          "reason": {
+            "no_llm_provider": "kein LLM-Provider zugewiesen",
+            "no_embedding_provider": "kein Embedding-Anbieter",
+            "no_graph_pool": "kein Graph-Speicher",
+            "disabled_by_config": "per Konfiguration deaktiviert",
+            "plugin_inactive": "Plugin nicht aktiv",
+            "unknown": "Grund unbekannt"
+          }
+        }
       },
       "plugins": {
         "title": "Plugins",

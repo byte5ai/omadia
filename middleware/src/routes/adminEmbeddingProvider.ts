@@ -122,6 +122,53 @@ export interface LocalEmbeddingModelFetcher {
   start(): boolean;
 }
 
+/**
+ * OM-102 — the three LLM-backed memory features, as the extras plugin states
+ * them (`memoryFeatureStatus@1`).
+ *
+ * Duck-typed rather than imported, for the same reason `EmbeddingGateStatus`
+ * and `LocalEmbeddingModelFetcher` are: the plugin may be uninstalled, and the
+ * kernel takes no build dependency on it. `undefined` from the getter means
+ * the plugin published nothing — which is itself the answer "not installed".
+ */
+export type MemoryFeatureName =
+  | 'factExtractor'
+  | 'topicDetector'
+  | 'scratchReaper';
+
+/** Closed cause set — the dashboard owns a translated label per code, so the
+ *  UI never renders backend English as its primary sentence (web-ui i18n
+ *  rule). Free-text diagnostics travel in `detail` instead. */
+export type MemoryFeatureReason =
+  | 'no_llm_provider'
+  | 'no_embedding_provider'
+  | 'no_graph_pool'
+  | 'disabled_by_config'
+  | 'plugin_inactive';
+
+export interface MemoryFeatureStatusView {
+  readonly factExtractor: 'active' | 'disabled';
+  readonly topicDetector: 'active' | 'disabled';
+  readonly scratchReaper: 'active' | 'disabled';
+  readonly providerId?: string;
+  readonly reasons?: Readonly<
+    Partial<Record<MemoryFeatureName, MemoryFeatureReason>>
+  >;
+  readonly detail?: string;
+}
+
+/** What `/status` reports when the extras plugin published no status at all. */
+const MEMORY_FEATURES_UNAVAILABLE: MemoryFeatureStatusView = Object.freeze({
+  factExtractor: 'disabled',
+  topicDetector: 'disabled',
+  scratchReaper: 'disabled',
+  reasons: Object.freeze({
+    factExtractor: 'plugin_inactive',
+    topicDetector: 'plugin_inactive',
+    scratchReaper: 'plugin_inactive',
+  }),
+} as const);
+
 export interface AdminEmbeddingProviderDeps {
   readonly installedRegistry: InstalledRegistry;
   /** Manifest catalog — the source of truth for who provides the capability. */
@@ -156,6 +203,13 @@ export interface AdminEmbeddingProviderDeps {
    * field wins over it — see `resolveGraphTenantId`.
    */
   readonly tenantId: string;
+  /**
+   * OM-102 — live `memoryFeatureStatus@1`. Resolved per request (the plugin
+   * can be activated or deactivated without a restart), never cached.
+   * Optional so every existing caller and test harness keeps compiling; absent
+   * reads the same as "plugin not active".
+   */
+  readonly getMemoryFeatureStatus?: () => MemoryFeatureStatusView | undefined;
   /** Runtime activation of a tool/extension plugin (ToolPluginRuntime). */
   readonly activate: (pluginId: string) => Promise<void>;
   readonly deactivate: (pluginId: string) => Promise<boolean>;
@@ -642,6 +696,10 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       activeProviderId: activeId,
       activeModel: readActiveMetadata(deps),
       installedProviderIds: providerIds,
+      // OM-102 — the card used to speak only about embeddings, so an install
+      // whose fact-extraction and topic-detection were off looked healthy.
+      memoryFeatures:
+        deps.getMemoryFeatureStatus?.() ?? MEMORY_FEATURES_UNAVAILABLE,
     });
   });
 

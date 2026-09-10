@@ -4405,6 +4405,43 @@ export interface EmbeddingProviderStatus {
   activeProviderId: string | null;
   activeModel: { modelId: string; dimensions: number } | null;
   installedProviderIds: string[];
+  /**
+   * OM-102 — the three LLM-backed memory features. They hang off the extras
+   * plugin's LLM provider, NOT off the embedding client, so the card could
+   * previously read "OK" while fact extraction and topic detection were both
+   * silently off (the abo-install case from beta round 5).
+   *
+   * Optional: a middleware that predates OM-102 simply omits the field.
+   */
+  memoryFeatures?: MemoryFeatureStatus;
+}
+
+export type MemoryFeatureState = 'active' | 'disabled';
+
+export type MemoryFeatureName =
+  | 'factExtractor'
+  | 'topicDetector'
+  | 'scratchReaper';
+
+/** Closed cause set. Each code has a translated label in `messages/*.json`;
+ *  backend free text never becomes primary UI copy (web-ui i18n rule). */
+export type MemoryFeatureReason =
+  | 'no_llm_provider'
+  | 'no_embedding_provider'
+  | 'no_graph_pool'
+  | 'disabled_by_config'
+  | 'plugin_inactive';
+
+export interface MemoryFeatureStatus {
+  factExtractor: MemoryFeatureState;
+  topicDetector: MemoryFeatureState;
+  scratchReaper: MemoryFeatureState;
+  /** The LLM provider the features resolved to, when any did. */
+  providerId?: string;
+  /** Cause per disabled feature; an active feature has no entry. */
+  reasons?: Partial<Record<MemoryFeatureName, MemoryFeatureReason>>;
+  /** English diagnostics (the provider chain that was tried). Secondary only. */
+  detail?: string;
 }
 
 export async function getEmbeddingProviderStatus(): Promise<EmbeddingProviderStatus> {
