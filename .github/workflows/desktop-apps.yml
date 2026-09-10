@@ -284,6 +284,17 @@ jobs:
           cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
           cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
           cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          # OM-86 (beta round 5): Homebrew keeps its keg read-only and `cp`
+          # preserves the mode, so vector.dylib shipped as 0444 — the ONE file
+          # out of 25,895 in the update archive without owner-write. Squirrel
+          # strips the quarantine xattr from every file before swapping an
+          # update in; on a read-only file that write fails with EACCES and the
+          # whole install is aborted, so no macOS install could self-update
+          # from 0.152.0 on. stage-runtime normalises the whole tree as a
+          # second layer; this keeps the fix next to its cause.
+          chmod u+w "$NATIVE/lib/postgresql/vector.dylib" \
+            "$NATIVE/share/postgresql/extension/vector.control" \
+            "$NATIVE"/share/postgresql/extension/vector--*.sql
           # Prove the dylib really is this runner's architecture — a silently
           # mismatched vector.dylib would only fail at CREATE EXTENSION, inside
           # the shipped app, on a user's machine.
@@ -465,6 +476,42 @@ jobs:
           # cause. Re-run this step with `DEBUG=electron-builder` to see the
           # actual command and its stderr.
           npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+
+      # OM-86 (beta round 5): the update archive is what Squirrel installs, and
+      # Squirrel strips the quarantine xattr from EVERY entry before swapping
+      # the app in. One entry without owner-write (0444) fails that write with
+      # EACCES and aborts the whole update — which is how every macOS install
+      # lost self-update from 0.152.0 on, with the CI green throughout. The
+      # arch check above already argues "a fault that only fails on a user's
+      # machine must fail here instead"; this is the same argument for mode
+      # bits. Reads the archive's own central directory, not the staged tree,
+      # so a packaging step that re-introduces the bit is caught too.
+      - name: Verify no read-only entries in the macOS update archives (OM-86)
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        working-directory: desktop
+        run: |
+          set -e
+          shopt -s nullglob
+          zips=(release/*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "FAIL: no update .zip produced under release/ — nothing to verify" >&2
+            exit 1
+          fi
+          status=0
+          for z in "${zips[@]}"; do
+            # zipinfo's first column is the unix mode string (-rw-r--r--); the
+            # third character is the owner-write bit. Header/trailer lines do
+            # not start with a mode string and are skipped by the regex.
+            offenders="$(zipinfo "$z" | awk '$1 ~ /^[-dl][-r][-w]/ && substr($1,3,1) != "w" { print $NF " (" $1 ")" }')"
+            if [ -n "$offenders" ]; then
+              echo "FAIL: $z carries entries without owner-write — Squirrel cannot install it:" >&2
+              echo "$offenders" >&2
+              status=1
+            else
+              echo "✓ $z: every entry is owner-writable ($(zipinfo -1 "$z" | wc -l | tr -d ' ') entries)"
+            fi
+          done
+          exit $status
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that

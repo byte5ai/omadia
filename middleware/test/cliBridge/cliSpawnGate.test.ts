@@ -8,11 +8,20 @@ import {
   CLI_BUILTIN_TOOL_DENYLIST,
   CLI_ENV_ALLOWLIST_KEYS,
   CLI_ENV_SCRUB_KEYS,
+  CLI_RESTRICTED_ENV_KEY,
+  CliIncompatibleError,
+  RESTRICTED_FLAG_MIN_CLI_VERSION,
   buildCliToolGateArgv,
   buildCompletionCliArgv,
   buildGatedCliEnv,
+  classifyUnknownOptionFailure,
+  clearCliVersionCache,
   cliEnvAllowlistFor,
+  parseCliVersion,
+  resolveCliVersion,
+  supportsRestrictedFlag,
 } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
+import type { CliVersionExec } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
 
 /**
  * The gate that keeps a spawned `claude` CLI away from its own built-in tools
@@ -51,6 +60,7 @@ describe('cliSpawnGate', () => {
     const argv = buildCliToolGateArgv({
       mcpConfigPath: '/tmp/x/mcp-config.json',
       allowedTools: 'mcp__omadia__*',
+      cliVersion: '2.1.259',
     });
 
     assert.deepEqual(argv, [
@@ -72,7 +82,7 @@ describe('cliSpawnGate', () => {
   });
 
   it('pre-approves nothing when the caller serves no tools', () => {
-    const argv = buildCliToolGateArgv({ mcpConfigPath: '/tmp/x/mcp-config.json' });
+    const argv = buildCliToolGateArgv({ mcpConfigPath: '/tmp/x/mcp-config.json', cliVersion: '2.1.259' });
     assert.equal(argv.includes('--allowedTools'), false);
     // The rest of the gate is unchanged: a tool-less spawn is not a laxer one.
     assert.equal(valueAfter(argv, '--tools'), '');
@@ -80,6 +90,133 @@ describe('cliSpawnGate', () => {
     assert.equal(valueAfter(argv, '--setting-sources'), '');
     assert.ok(argv.includes('--restricted'));
     assert.ok(argv.includes('--strict-mcp-config'));
+  });
+
+  /**
+   * OM-85 (beta round 5). `--restricted` exists from CLI 2.1.248; the reporter
+   * ran 2.1.246, which answers an unknown flag with `error: unknown option`
+   * and exit code 1 — every turn on the subscription path died in 0.1 s. The
+   * flag is the third protective layer, not the first, so an older CLI gets
+   * the gate without it (plus the env twin) rather than no gate at all.
+   */
+  describe('OM-85 — `--restricted` only where the CLI knows it', () => {
+    it('parses the version triple out of `claude --version` output', () => {
+      assert.equal(parseCliVersion('2.1.246 (Claude Code)'), '2.1.246');
+      assert.equal(parseCliVersion('2.1.267\n'), '2.1.267');
+      assert.equal(parseCliVersion(''), undefined);
+      assert.equal(parseCliVersion(undefined), undefined);
+      assert.equal(parseCliVersion('command not found'), undefined);
+    });
+
+    it('draws the line at 2.1.248, numerically, not lexically', () => {
+      assert.equal(RESTRICTED_FLAG_MIN_CLI_VERSION, '2.1.248');
+      assert.equal(supportsRestrictedFlag('2.1.246'), false);
+      assert.equal(supportsRestrictedFlag('2.1.247'), false);
+      assert.equal(supportsRestrictedFlag('2.1.248'), true);
+      assert.equal(supportsRestrictedFlag('2.1.259'), true);
+      assert.equal(supportsRestrictedFlag('2.1.1000'), true, 'not a string compare');
+      assert.equal(supportsRestrictedFlag('2.2.0'), true);
+      assert.equal(supportsRestrictedFlag('3.0.0'), true);
+      assert.equal(supportsRestrictedFlag('1.9.999'), false);
+      assert.equal(supportsRestrictedFlag(undefined), false, 'unknown means leave it out');
+      assert.equal(supportsRestrictedFlag('garbage'), false);
+    });
+
+    it('leaves the flag out for 2.1.246 and keeps every other layer', () => {
+      const argv = buildCliToolGateArgv({ mcpConfigPath: '/tmp/x.json', cliVersion: '2.1.246' });
+      assert.equal(argv.includes('--restricted'), false);
+      assert.equal(valueAfter(argv, '--tools'), '');
+      assert.equal(valueAfter(argv, '--permission-mode'), 'dontAsk');
+      assert.equal(valueAfter(argv, '--setting-sources'), '');
+      assert.ok(argv.includes('--strict-mcp-config'));
+      assert.deepEqual(deniedNames(argv), [...CLI_BUILTIN_TOOL_DENYLIST]);
+    });
+
+    it('leaves the flag out when the version is unknown', () => {
+      const argv = buildCliToolGateArgv({ mcpConfigPath: '/tmp/x.json' });
+      assert.equal(argv.includes('--restricted'), false);
+    });
+
+    it('passes the flag from 2.1.248 on, in its stable position', () => {
+      const argv = buildCliToolGateArgv({ mcpConfigPath: '/tmp/x.json', cliVersion: '2.1.248' });
+      assert.deepEqual(argv.slice(0, 4), ['--strict-mcp-config', '--mcp-config', '/tmp/x.json', '--restricted']);
+    });
+
+    it('threads the version through the completion argv too', () => {
+      const old = buildCompletionCliArgv({ model: 'haiku', mcpConfigPath: '/tmp/n.json', cliVersion: '2.1.246' });
+      const fresh = buildCompletionCliArgv({ model: 'haiku', mcpConfigPath: '/tmp/n.json', cliVersion: '2.1.259' });
+      assert.equal(old.includes('--restricted'), false);
+      assert.equal(fresh.includes('--restricted'), true);
+    });
+
+    it('sets the environment twin on every spawn', () => {
+      assert.equal(CLI_RESTRICTED_ENV_KEY, 'CLAUDE_CODE_RESTRICTED');
+      const env = buildGatedCliEnv({ PATH: '/usr/bin' });
+      assert.equal(env.CLAUDE_CODE_RESTRICTED, '1');
+      // The scrub list must never take it back out.
+      assert.equal(CLI_ENV_SCRUB_KEYS.includes(CLI_RESTRICTED_ENV_KEY), false);
+    });
+
+    it('resolves the version through an injected probe and caches it', async () => {
+      clearCliVersionCache();
+      let calls = 0;
+      const exec: CliVersionExec = (_bin, args, cb) => {
+        calls += 1;
+        assert.deepEqual(args, ['--version']);
+        cb(null, '2.1.246 (Claude Code)\n');
+        return undefined;
+      };
+      assert.equal(await resolveCliVersion('claude-test', { exec }), '2.1.246');
+      assert.equal(await resolveCliVersion('claude-test', { exec }), '2.1.246');
+      assert.equal(calls, 1, 'second call is served from the cache');
+    });
+
+    it('re-probes once the cache entry is older than its TTL', async () => {
+      clearCliVersionCache();
+      let calls = 0;
+      let clock = 1_000;
+      const exec: CliVersionExec = (_bin, _args, cb) => {
+        calls += 1;
+        cb(null, calls === 1 ? '2.1.246' : '2.1.267');
+        return undefined;
+      };
+      const now = (): number => clock;
+      assert.equal(await resolveCliVersion('claude-ttl', { exec, now }), '2.1.246');
+      clock += 6 * 60_000;
+      assert.equal(await resolveCliVersion('claude-ttl', { exec, now }), '2.1.267');
+      assert.equal(calls, 2);
+    });
+
+    it('resolves to undefined — never throws — when the probe fails', async () => {
+      clearCliVersionCache();
+      const failing: CliVersionExec = (_bin, _args, cb) => {
+        cb(new Error('spawn ENOENT'), '');
+        return undefined;
+      };
+      assert.equal(await resolveCliVersion('claude-missing', { exec: failing }), undefined);
+      const throwing: CliVersionExec = () => {
+        throw new Error('sync boom');
+      };
+      clearCliVersionCache();
+      assert.equal(await resolveCliVersion('claude-throwing', { exec: throwing }), undefined);
+    });
+
+    it('turns `unknown option` into a config error that says what to do', () => {
+      const error = classifyUnknownOptionFailure("error: unknown option '--restricted'\n", '2.1.246');
+      assert.ok(error instanceof CliIncompatibleError);
+      assert.equal(error.code, 'cli_incompatible');
+      assert.equal(error.flag, '--restricted');
+      assert.equal(error.cliVersion, '2.1.246');
+      assert.match(error.message, /2\.1\.246/);
+      assert.match(error.message, /2\.1\.248/);
+      assert.match(error.message, /claude update/);
+      assert.match(error.message, /unknown option '--restricted'/, 'keeps the CLI line for the log');
+    });
+
+    it('does not classify unrelated failures as incompatibility', () => {
+      assert.equal(classifyUnknownOptionFailure('Error: not logged in', '2.1.259'), undefined);
+      assert.equal(classifyUnknownOptionFailure('', undefined), undefined);
+    });
   });
 
   it('carries the deny list into argv in full', () => {
@@ -195,6 +332,7 @@ describe('cliSpawnGate', () => {
         model: 'sonnet',
         mcpConfigPath: '/tmp/none.json',
         systemPrompt: 'Extract facts.',
+        cliVersion: '2.1.259',
       });
 
       assert.deepEqual(argv.slice(0, 5), ['-p', '--output-format', 'json', '--model', 'sonnet']);

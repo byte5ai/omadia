@@ -43,6 +43,18 @@
  *                          touch authentication (unlike `--bare`, which reads
  *                          neither OAuth nor keychain and would break the
  *                          keyless subscription login outright).
+ *                          OM-85: the flag only exists from CLI 2.1.248
+ *                          (2026-08-27). An older CLI does not ignore an
+ *                          unknown flag — it prints `error: unknown option`
+ *                          and exits 1, which killed EVERY turn on a 2.1.246
+ *                          install. The flag is therefore passed only when
+ *                          the resolved CLI version supports it
+ *                          ({@link supportsRestrictedFlag}); on every version
+ *                          its environment twin `CLAUDE_CODE_RESTRICTED=1`
+ *                          is set as well, because an unknown environment
+ *                          key IS ignored by an older CLI. The other flags
+ *                          hold the boundary on their own — `--restricted` is
+ *                          the third layer, not the first.
  *   --strict-mcp-config    Only the MCP servers in `--mcp-config` — never the
  *                          operator's own.
  *
@@ -59,6 +71,7 @@
  * with the built-ins gone that is instruction injection rather than code
  * execution, but it is a residual, not a solved problem.
  */
+import { execFile } from 'node:child_process';
 
 /**
  * The CLI's built-in tool inventory, denied by name at spawn time.
@@ -335,6 +348,62 @@ export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
   'NODE_OPTIONS',
 ];
 
+/**
+ * The first Claude CLI release that understands `--restricted` (its changelog
+ * entry for 2.1.248: "Added `--restricted` (or `CLAUDE_CODE_RESTRICTED=1`)").
+ * OM-85: 2.1.246 — two days older — rejects it with exit code 1.
+ */
+export const RESTRICTED_FLAG_MIN_CLI_VERSION = '2.1.248';
+
+/**
+ * The environment form of `--restricted`, documented in the same 2.1.248
+ * changelog entry. Set on every spawn: a CLI that predates it ignores the key,
+ * one that knows it gets the same boundary the flag would give.
+ */
+export const CLI_RESTRICTED_ENV_KEY = 'CLAUDE_CODE_RESTRICTED';
+
+const VERSION_TRIPLE = /(\d+)\.(\d+)\.(\d+)/;
+
+/**
+ * The `x.y.z` triple out of `claude --version` output (`2.1.246 (Claude Code)`),
+ * or undefined when there is none. Pure, so a test can feed it any string.
+ */
+export function parseCliVersion(output: string | undefined): string | undefined {
+  if (output === undefined) {
+    return undefined;
+  }
+
+  const match = VERSION_TRIPLE.exec(output);
+  return match === null ? undefined : `${match[1]}.${match[2]}.${match[3]}`;
+}
+
+/** Numeric compare of two `x.y.z` strings; non-numeric input sorts lowest. */
+function compareVersions(a: string, b: string): number {
+  const left = a.split('.').map(Number);
+  const right = b.split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Whether a CLI of the given version accepts `--restricted`.
+ *
+ * Unknown (undefined or unparsable) means NO: the failure mode of passing the
+ * flag to a CLI that lacks it is a dead subscription path, while the failure
+ * mode of leaving it out is one protective layer fewer behind `--tools ""`,
+ * the deny list and `dontAsk` — and {@link CLI_RESTRICTED_ENV_KEY} still
+ * reaches a CLI that knows it.
+ */
+export function supportsRestrictedFlag(cliVersion: string | undefined): boolean {
+  const parsed = parseCliVersion(cliVersion);
+  return parsed !== undefined && compareVersions(parsed, RESTRICTED_FLAG_MIN_CLI_VERSION) >= 0;
+}
+
 export interface CliToolGateOptions {
   /**
    * Path to the mcp-config this spawn should use. Both call sites pass one:
@@ -347,6 +416,12 @@ export interface CliToolGateOptions {
    * serves no tools, so nothing is pre-approved.
    */
   readonly allowedTools?: string;
+  /**
+   * The installed CLI's version (`2.1.259`), as resolved by
+   * {@link resolveCliVersion}. Decides whether `--restricted` is passed
+   * (OM-85). Omit or pass undefined when unknown — the flag is then left out.
+   */
+  readonly cliVersion?: string;
 }
 
 /**
@@ -361,7 +436,8 @@ export function buildCliToolGateArgv(options: CliToolGateOptions): string[] {
     '--strict-mcp-config',
     '--mcp-config',
     options.mcpConfigPath,
-    '--restricted',
+    // OM-85 — only where the CLI knows the flag; see the module comment.
+    ...(supportsRestrictedFlag(options.cliVersion) ? ['--restricted'] : []),
     '--tools',
     '',
     '--permission-mode',
@@ -386,6 +462,8 @@ export interface CompletionCliArgvOptions {
   readonly mcpConfigPath: string;
   /** System prompt, or undefined to leave the CLI's default in place. */
   readonly systemPrompt?: string;
+  /** See {@link CliToolGateOptions.cliVersion}. */
+  readonly cliVersion?: string;
 }
 
 /**
@@ -404,7 +482,10 @@ export function buildCompletionCliArgv(options: CompletionCliArgvOptions): strin
     'json',
     '--model',
     options.model,
-    ...buildCliToolGateArgv({ mcpConfigPath: options.mcpConfigPath }),
+    ...buildCliToolGateArgv({
+      mcpConfigPath: options.mcpConfigPath,
+      ...(options.cliVersion !== undefined ? { cliVersion: options.cliVersion } : {}),
+    }),
   ];
 
   // Replace rather than append, for the same reason as OM-83 (#992) on the
@@ -440,5 +521,135 @@ export function buildGatedCliEnv(
     delete env[key];
   }
 
+  // OM-85 — the environment twin of `--restricted`, set unconditionally: a
+  // CLI older than 2.1.248 ignores the key, a newer one honours it, and the
+  // flag itself is only passed where the version is known to accept it.
+  env[CLI_RESTRICTED_ENV_KEY] = '1';
+
   return env;
+}
+
+/** The `execFile` shape {@link resolveCliVersion} needs; a test injects a fake. */
+export type CliVersionExec = (
+  binary: string,
+  args: readonly string[],
+  callback: (error: Error | null, stdout: string) => void,
+) => unknown;
+
+interface CliVersionCacheEntry {
+  readonly version: string | undefined;
+  readonly resolvedAt: number;
+}
+
+/**
+ * How long a resolved version is trusted. Short on purpose: the CLI updates
+ * itself independently of omadia (the OM-85 reporter ran `claude update` with
+ * the kernel still running), and a stale "2.1.246" would keep the flag off
+ * one turn longer — harmless — while a stale "2.1.259" after a downgrade
+ * would break turns until restart, so we re-probe every few minutes.
+ */
+const CLI_VERSION_CACHE_TTL_MS = 5 * 60_000;
+const CLI_VERSION_PROBE_TIMEOUT_MS = 10_000;
+
+const cliVersionCache = new Map<string, CliVersionCacheEntry>();
+
+/** Test seam: forget every cached probe. */
+export function clearCliVersionCache(): void {
+  cliVersionCache.clear();
+}
+
+function defaultVersionExec(
+  binary: string,
+  args: readonly string[],
+  callback: (error: Error | null, stdout: string) => void,
+): unknown {
+  return execFile(
+    binary,
+    [...args],
+    { timeout: CLI_VERSION_PROBE_TIMEOUT_MS, env: buildGatedCliEnv(), windowsHide: true },
+    (error, stdout) => callback(error, typeof stdout === 'string' ? stdout : String(stdout)),
+  );
+}
+
+/**
+ * The installed CLI's version, read once from `<binary> --version` and cached
+ * per binary for {@link CLI_VERSION_CACHE_TTL_MS}.
+ *
+ * Never throws: a missing binary, a timeout or unparsable output all resolve
+ * to `undefined`, which {@link supportsRestrictedFlag} treats as "do not pass
+ * the flag". The spawn that follows then fails (or succeeds) on its own
+ * terms, with its own error message — the probe must not add a failure mode.
+ */
+export async function resolveCliVersion(
+  binary: string,
+  options: { readonly exec?: CliVersionExec; readonly now?: () => number } = {},
+): Promise<string | undefined> {
+  const now = options.now ?? Date.now;
+  const cached = cliVersionCache.get(binary);
+  if (cached !== undefined && now() - cached.resolvedAt < CLI_VERSION_CACHE_TTL_MS) {
+    return cached.version;
+  }
+
+  const exec = options.exec ?? defaultVersionExec;
+  const version = await new Promise<string | undefined>((resolve) => {
+    try {
+      exec(binary, ['--version'], (error, stdout) => {
+        resolve(error === null ? parseCliVersion(stdout) : undefined);
+      });
+    } catch {
+      resolve(undefined);
+    }
+  });
+
+  cliVersionCache.set(binary, { version, resolvedAt: now() });
+  return version;
+}
+
+const UNKNOWN_OPTION = /unknown option '([^']+)'/;
+
+/**
+ * Raised when the spawned CLI rejected the gate's own argv — an installed CLI
+ * older than the flags omadia passes. Carries a stable `code` so a route can
+ * present it as a configuration problem (update the CLI) rather than as a
+ * failed answer.
+ */
+export class CliIncompatibleError extends Error {
+  readonly code = 'cli_incompatible' as const;
+
+  constructor(
+    message: string,
+    readonly flag: string,
+    readonly cliVersion: string | undefined,
+  ) {
+    super(message);
+    this.name = 'CliIncompatibleError';
+  }
+}
+
+/**
+ * Turn a non-zero CLI exit into a {@link CliIncompatibleError} when stderr
+ * shows the CLI did not understand one of OUR flags; undefined otherwise.
+ *
+ * OM-85: the reporter's chat showed the raw `error: unknown option
+ * '--restricted'` and nothing about what to do. This is the sentence that was
+ * missing.
+ */
+export function classifyUnknownOptionFailure(
+  stderr: string,
+  cliVersion: string | undefined,
+): CliIncompatibleError | undefined {
+  const match = UNKNOWN_OPTION.exec(stderr);
+  if (match === null || match[1] === undefined) {
+    return undefined;
+  }
+
+  const flag = match[1];
+  const installed = cliVersion === undefined ? 'an unknown version' : `version ${cliVersion}`;
+  return new CliIncompatibleError(
+    `The installed Claude CLI (${installed}) does not support ${flag}, which omadia's ` +
+      `security gate requires. Update the CLI to ${RESTRICTED_FLAG_MIN_CLI_VERSION} or ` +
+      `newer (\`claude update\`, or ADMIN → LLM access) and try again. CLI said: ${stderr.trim()}`,
+    flag,
+    cliVersion,
+  );
 }
