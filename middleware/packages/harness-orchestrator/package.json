@@ -37,7 +37,7 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "csv-parse": "^7.0.2",
     "exceljs": "^4.4.0",
-    "mammoth": "^1.12.1",
+    "mammoth": "^1.12.2",
     "pdf-parse": "^2.4.5"
   },
   "devDependencies": {
