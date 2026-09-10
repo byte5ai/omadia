@@ -31,10 +31,23 @@ provides:
   - "topicDetector@1"
   - "captureFilter@1"
   - "sessionBriefing@1"
+  # OM-102 — the three LLM-backed memory features state themselves for the
+  # dashboard card. The scratch-promotion reaper is a background job that
+  # publishes nothing else, so its state has no other reader.
+  - "memoryFeatureStatus@1"
 
 requires:
   - "knowledgeGraph@^1"
   - "embeddingClient@^1"
+
+# OM-102 — kernel services the provider chain reads. All three are published
+# by the kernel at boot (before any plugin activates) and all three are
+# genuinely optional: without them the chain degrades to the pre-OM-102
+# behaviour (this plugin's own vault scope, `anthropic` only).
+optional_requires:
+  - "llmProviderCatalog@1"
+  - "llmProviderPool@1"
+  - "installedPluginConfigReader@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.
@@ -69,7 +82,7 @@ setup:
       label: "Anthropic API Key"
       type: "secret"
       required: false
-      help: "Erforderlich für FactExtractor + TopicDetector (Haiku-Klassifikator). Ohne Key konstruiert das Plugin nur den ContextRetriever — Orchestrator-Fact-Ingest und Teams-Topic-Routing degradieren auf no-op. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+      help: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die des Orchestrators (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "capture_level"
       label: "Capture-Level"
       type: "string"

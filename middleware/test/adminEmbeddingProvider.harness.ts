@@ -20,7 +20,10 @@ import type { Express } from 'express';
 import type { Pool, PoolClient, QueryResult } from 'pg';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 
-import { createAdminEmbeddingProviderRouter } from '../src/routes/adminEmbeddingProvider.js';
+import {
+  createAdminEmbeddingProviderRouter,
+  type MemoryFeatureStatusView,
+} from '../src/routes/adminEmbeddingProvider.js';
 import type { EmbeddingGateStatus } from '../src/health/kgHealth.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 
@@ -178,7 +181,13 @@ export async function makeHarness(
     status?: 'active' | 'inactive';
     config?: Record<string, unknown>;
   }>,
-  wiring: { graphPool?: Pool; activateDelayMs?: number } = {},
+  wiring: {
+    graphPool?: Pool;
+    activateDelayMs?: number;
+    /** OM-102 — what `memoryFeatureStatus@1` publishes, or `undefined` for a
+     *  host where the extras plugin is not active. */
+    memoryFeatures?: MemoryFeatureStatusView;
+  } = {},
 ): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   for (const p of installed) {
@@ -270,6 +279,7 @@ export async function makeHarness(
         state.publishedBy === null ? undefined : CLIENTS[state.publishedBy],
       getGateStatus: publishedGate,
       getGraphPool: () => wiring.graphPool,
+      getMemoryFeatureStatus: () => wiring.memoryFeatures,
       tenantId: 'default',
       activate: async (id: string) => {
         state.calls.push(`activate:${id}`);

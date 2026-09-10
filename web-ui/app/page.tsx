@@ -138,6 +138,46 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const assignedProviderLabel = assignedProvider?.label ?? null;
   // OM-84 (#1003) — only claim "off" when the status route actually said so.
   const embeddingsOff = embeddings !== null && !embeddings.capabilityPublished;
+  // OM-102 — the LLM-backed half of the memory card. `undefined` means a
+  // middleware older than OM-102 answered: say nothing rather than guess, so
+  // an upgrade-lagging deployment does not sprout a permanent warning.
+  const memoryFeatures = embeddings?.memoryFeatures ?? null;
+  const memoryFeaturesOff =
+    memoryFeatures === null
+      ? []
+      : (['factExtractor', 'topicDetector', 'scratchReaper'] as const).filter(
+          (feature) => memoryFeatures[feature] === 'disabled',
+        );
+  // Only a MISSING LLM PROVIDER degrades the tile. The reaper is legitimately
+  // off on every in-memory-KG install and whenever the operator switched it
+  // off — turning those into a standing warning would just swap OM-84's false
+  // OK for a false WARN, which is the same disease.
+  const memoryFeaturesDegraded = memoryFeaturesOff.some(
+    (feature) => memoryFeatures?.reasons?.[feature] === 'no_llm_provider',
+  );
+  const memoryFeaturesDetail: string | null =
+    memoryFeatures === null
+      ? null
+      : memoryFeaturesOff.length === 0
+        ? memoryFeatures.providerId === undefined
+          ? t('health.embeddings.memory.allActive')
+          : t('health.embeddings.memory.allActiveWithProvider', {
+              provider: memoryFeatures.providerId,
+            })
+        : t('health.embeddings.memory.off', {
+            features: memoryFeaturesOff
+              .map((feature) =>
+                t('health.embeddings.memory.featureWithReason', {
+                  feature: t(`health.embeddings.memory.feature.${feature}`),
+                  reason: t(
+                    `health.embeddings.memory.reason.${
+                      memoryFeatures.reasons?.[feature] ?? 'unknown'
+                    }`,
+                  ),
+                }),
+              )
+              .join(', '),
+          });
   // A rejected key is the most actionable signal, so it wins the detail line.
   const llmDetail = ((): string => {
     if (rejected.length > 0) return t('health.llm.invalid');
@@ -229,29 +269,41 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
       // OM-84 (#1003) — memory, semantic search and dedup all hang off
       // `embeddingClient@1`. A default install has none, and until now no
       // surface said so: the tester learned it from an agent failing mid-answer.
+      //
+      // OM-102 — embeddings are only HALF the card's subject. Fact extraction,
+      // topic detection and the scratch reaper hang off the extras plugin's
+      // LLM provider instead, and on an abo-only install all three were off
+      // while this tile still read a confident "OK".
       title: t('health.embeddings.title'),
       tone: !middlewareOk
         ? 'down'
         : embeddings === null
           ? 'neutral'
-          : embeddings.capabilityPublished
+          : embeddings.capabilityPublished && !memoryFeaturesDegraded
             ? 'ok'
             : 'warn',
       status:
-        embeddings !== null && embeddings.capabilityPublished
+        embeddings !== null &&
+        embeddings.capabilityPublished &&
+        !memoryFeaturesDegraded
           ? t('health.ok')
           : t('health.warn'),
       detail:
         embeddings === null
           ? t('health.embeddings.unknown')
-          : embeddings.capabilityPublished
-            ? t('health.embeddings.active', {
-                model:
-                  embeddings.activeModel?.modelId ??
-                  embeddings.activeProviderId ??
-                  '',
-              })
-            : t('health.embeddings.none'),
+          : [
+              embeddings.capabilityPublished
+                ? t('health.embeddings.active', {
+                    model:
+                      embeddings.activeModel?.modelId ??
+                      embeddings.activeProviderId ??
+                      '',
+                  })
+                : t('health.embeddings.none'),
+              memoryFeaturesDetail,
+            ]
+              .filter((part): part is string => part !== null)
+              .join(' · '),
       href: '/admin/embedding-provider',
       manage: t('health.manage'),
     },

@@ -1,5 +1,14 @@
-import type { LlmProvider, ProviderId } from '@omadia/llm-provider';
-import { resolveLlmProvider, resolveModelRef } from '@omadia/llm-provider';
+import type {
+  LlmProvider,
+  LlmProviderCatalog,
+  LlmProviderPool,
+  ProviderId,
+} from '@omadia/llm-provider';
+import {
+  coerceModelToProvider,
+  createLlmProviderPool,
+  resolveModelRef,
+} from '@omadia/llm-provider';
 import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
@@ -53,6 +62,18 @@ import { createHaikuSignificanceScorer } from './significanceScorer.js';
 import { createScratchPromotionReaper } from './scratchPromotionReaper.js';
 import { TopicDetector } from './topicDetector.js';
 import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
+import {
+  buildProviderCandidates,
+  resolveExtrasLlmProvider,
+  DEFAULT_EXTRAS_PROVIDER_ID,
+  type ProviderSource,
+} from './llmProviderResolution.js';
+import {
+  MEMORY_FEATURE_STATUS_SERVICE,
+  type MemoryFeature,
+  type MemoryFeatureReasonCode,
+  type MemoryFeatureStatus,
+} from './memoryFeatureStatus.js';
 
 /**
  * @omadia/orchestrator-extras — plugin entry point.
@@ -67,8 +88,12 @@ import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
  *
  * Config (via ctx.config, seeded by `bootstrapOrchestratorExtrasFromEnv`
  * from the legacy ANTHROPIC_API_KEY / TOPIC_* .env vars):
- *   - `anthropic_api_key`        optional → FactExtractor + TopicDetector
- *                                only constructed when set
+ *   - `llm_provider`             optional → explicit provider assignment for
+ *                                the background features (OM-102). Unset ⇒
+ *                                inherit the orchestrator's, then `anthropic`.
+ *   - `anthropic_api_key`        optional → LAST credential in the OM-102
+ *                                chain; no longer the on/off switch for
+ *                                FactExtractor + TopicDetector
  *   - `fact_extractor_model`     default 'claude-haiku-4-5-20251001'
  *   - `topic_classifier_model`   default 'claude-haiku-4-5-20251001'
  *   - `topic_upper_threshold`    default 0.55
@@ -77,8 +102,8 @@ import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
  * Graceful degradation rules:
  *   - Missing knowledgeGraph capability → plugin activates but publishes
  *     nothing; consumers degrade.
- *   - Missing Anthropic key → ContextRetriever still published;
- *     FactExtractor + TopicDetector skipped.
+ *   - No usable LLM provider in the whole OM-102 candidate chain →
+ *     ContextRetriever still published; FactExtractor + TopicDetector skipped.
  *
  * Note: `graphBackfill` lives in this package's barrel export (it's the
  * historical session-transcript replay) but the kernel still calls it
@@ -86,6 +111,11 @@ import { ProcessPromoteProvider } from './nudgeProviders/processPromote.js';
  * plugin-activation one (the 88-turn replay routinely exceeds the 10s
  * activate-timeout).
  */
+
+// OM-102 — whose `llm_provider` assignment this plugin inherits when it has
+// none of its own. The operator assigns "the assistant", not "the background
+// scorer", so the orchestrator's choice is the honest second candidate.
+const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
 
 const CONTEXT_RETRIEVER_SERVICE = 'contextRetriever';
 const FACT_EXTRACTOR_SERVICE = 'factExtractor';
@@ -133,20 +163,131 @@ export async function activate(
     };
   }
 
-  // Build the configured LLM provider (default Anthropic) from the vault.
-  // undefined → no key for the chosen provider; the Haiku scorers stay off.
-  const providerId =
-    (ctx.config.get<string>('llm_provider') ?? '').trim() || 'anthropic';
-  const baseProvider = await resolveLlmProvider({
-    providerId,
-    getSecret: (k) => ctx.secrets.get(k),
+  // OM-102 — build the LLM the background memory features run on. NOT just
+  // `llm_provider` on this plugin any more: an abo-only install assigns the
+  // ORCHESTRATOR a provider (typically `claude-cli`) and never touches this
+  // plugin, which used to leave FactExtractor, TopicDetector and the
+  // scratch-promotion reaper off with a misleading "anthropic_api_key
+  // missing" log. See `llmProviderResolution.ts` for the candidate chain.
+  //
+  // The catalog is what makes a non-Anthropic candidate resolvable at all —
+  // it carries `claude-cli`'s wireFormat and its `requiresApiKey: false`.
+  // Absent only on legacy hosts / unit tests, where the chain degrades to the
+  // built-in Anthropic default exactly as before.
+  const llmProviderCatalog = ctx.services.getOptional<LlmProviderCatalog>(
+    'llmProviderCatalog',
+  );
+  // Cross-plugin config reader, published by the kernel at boot. This plugin
+  // activates BEFORE the orchestrator (the orchestrator `requires:` the
+  // services published here), so the orchestrator's assignment can only be
+  // read from the installed registry, never from a service it publishes.
+  const pluginConfigGet = ctx.services.getOptional<
+    (agentId: string, configKey: string) => unknown
+  >('installedPluginConfigReader');
+  const orchestratorProviderRaw = pluginConfigGet?.(
+    ORCHESTRATOR_PLUGIN_ID,
+    'llm_provider',
+  );
+  // Credential sources, in order. This plugin's OWN vault scope first — that
+  // is where `anthropic_api_key` has always lived. The kernel pool (reading
+  // the orchestrator's scope, sharing its circuit breaker) is the fallback
+  // that makes the orchestrator's assignment actually usable here.
+  const ownProviderPool = createLlmProviderPool({
+    getSecret: (k: string) => ctx.secrets.get(k),
+    ...(llmProviderCatalog !== undefined
+      ? { catalog: llmProviderCatalog }
+      : {}),
   });
-  const factModel =
-    (ctx.config.get<string>('fact_extractor_model') ?? '').trim() ||
-    DEFAULT_HAIKU_MODEL;
-  const classifierModel =
-    (ctx.config.get<string>('topic_classifier_model') ?? '').trim() ||
-    DEFAULT_HAIKU_MODEL;
+  // Does THIS plugin still hold its own Anthropic key? If so it outranks the
+  // inherited assignment (see `ProviderCandidateInput.ownScopeAnthropic`):
+  // migrating an install that pays for a key onto the operator's personal
+  // subscription quota is not a change a bugfix gets to make silently.
+  // `usable()` memoises inside the pool, so the later `get` is free.
+  const ownScopeAnthropic = await ownProviderPool
+    .usable(DEFAULT_EXTRAS_PROVIDER_ID)
+    .catch(() => false);
+  const providerCandidates = buildProviderCandidates({
+    configured: ctx.config.get<string>('llm_provider'),
+    ownScopeAnthropic,
+    ...(typeof orchestratorProviderRaw === 'string'
+      ? { orchestrator: orchestratorProviderRaw }
+      : {}),
+  });
+  // Eager resolution is safe for all three optional services above despite the
+  // `getOptional` ordering caveat (an optional dependency creates no
+  // activation edge, so a PLUGIN-provided one may not have activated yet):
+  // these are provided by the KERNEL at boot, before any plugin activates —
+  // the same justification the orchestrator records for `llmProviderPool`.
+  const kernelProviderPool =
+    ctx.services.getOptional<LlmProviderPool>('llmProviderPool');
+  const providerSources: readonly ProviderSource[] = [
+    { label: 'plugin-scope', get: (id) => ownProviderPool.get(id) },
+    ...(kernelProviderPool
+      ? [
+          {
+            label: 'kernel-pool',
+            get: (id: string) => kernelProviderPool.get(id),
+          },
+        ]
+      : []),
+  ];
+  // TODO(OM-102 follow-up): this resolves ONCE per activate. Re-assigning the
+  // orchestrator's `llm_provider` does not rebuild this plugin, so the memory
+  // features keep the old provider until the next rebuild — the same shape as
+  // #989 (an `agent_plugins` change that was an `update`, not a `rebuild`).
+  // The fix belongs on the assignment side (rebuild extras when the
+  // orchestrator's provider changes), not in another lazy lookup here.
+  const resolvedProvider = await resolveExtrasLlmProvider({
+    candidates: providerCandidates,
+    sources: providerSources,
+    log: ctx.log,
+  });
+  const baseProvider = resolvedProvider?.provider;
+  // Nothing resolved ⇒ nothing calls an LLM, but `providerId` still steers the
+  // model refs below, so it names the FIRST candidate (what the operator
+  // intended) rather than a silent Anthropic fallback. `buildProviderCandidates`
+  // never returns an empty list; the `??` only satisfies noUncheckedIndexedAccess.
+  const providerId =
+    resolvedProvider?.providerId ??
+    providerCandidates[0] ??
+    DEFAULT_EXTRAS_PROVIDER_ID;
+  // The configured/default model refs are Anthropic ids. On another provider
+  // they must be coerced to that provider's same-CLASS model, or the request
+  // carries a model the backend has never heard of (`claude-cli` wants
+  // `haiku-cli`, not `claude-haiku-4-5-20251001`). An id the registry does not
+  // know at all is passed through unchanged — a custom openai-compatible
+  // deployment names its own models.
+  //
+  // Coercion is silent by design for the DEFAULT ref, and loud for anything
+  // else: an operator who typed a model into `fact_extractor_model` deserves
+  // to know it was rewritten. The second log covers the failure mode
+  // `coerceModelToProvider` cannot fix — when the target provider has no model
+  // of that class it returns the ref UNCHANGED, which then reaches a backend
+  // that never heard of it and fails at first background call, not at boot.
+  const coerceModel = (configKey: string, fallbackRef: string): string => {
+    const configured = (ctx.config.get<string>(configKey) ?? '').trim();
+    const requested = configured || fallbackRef;
+    const coerced = coerceModelToProvider(requested, providerId as ProviderId);
+    if (configured && coerced !== requested) {
+      ctx.log(
+        `[harness-orchestrator-extras] ${configKey}='${requested}' is not served by provider '${providerId}' — using its same-class model '${coerced}'`,
+      );
+    }
+    const servedBy = resolveModelRef(coerced, {
+      defaultProvider: providerId as ProviderId,
+    })?.provider;
+    if (servedBy !== undefined && servedBy !== providerId) {
+      ctx.log(
+        `[harness-orchestrator-extras] WARNING ${configKey} resolved to '${coerced}' (served by '${servedBy}') while the provider is '${providerId}' — background calls using it will fail`,
+      );
+    }
+    return coerced;
+  };
+  const factModel = coerceModel('fact_extractor_model', DEFAULT_HAIKU_MODEL);
+  const classifierModel = coerceModel(
+    'topic_classifier_model',
+    DEFAULT_HAIKU_MODEL,
+  );
   const upperThreshold = parseNumberOrDefault(
     ctx.config.get<unknown>('topic_upper_threshold'),
     DEFAULT_TOPIC_UPPER,
@@ -615,14 +756,25 @@ export async function activate(
   const scratchPromotionDropUnpromoted = parseBoolDefaultFalse(
     ctx.config.get<unknown>('scratch_promotion_drop_unpromoted'),
   );
+  // OM-102 — the reaper's cause, as a code the dashboard can translate. Kept
+  // beside the human log message rather than derived from it: three genuinely
+  // different causes disable this job, and the card must tell "the operator
+  // switched it off" apart from "no LLM provider is assigned".
+  let scratchReaperReason: MemoryFeatureReasonCode | undefined;
   {
     let disabledReason: string | undefined;
     if (!scratchPromotionEnabled) {
       disabledReason = 'config scratch_promotion_enabled=false';
+      scratchReaperReason = 'disabled_by_config';
     } else if (!bulkPromotionPool) {
       disabledReason = 'graphPool capability not published';
+      scratchReaperReason = 'no_graph_pool';
     } else if (!significanceScorer) {
-      disabledReason = 'no significance scorer (Anthropic key missing)';
+      // OM-102 — the scorer is off because NO provider in the candidate chain
+      // could be built, which is a different (and much rarer) statement than
+      // the old "Anthropic key missing": a subscription CLI now satisfies it.
+      disabledReason = `no significance scorer (no usable LLM provider: tried ${providerCandidates.join(', ')})`;
+      scratchReaperReason = 'no_llm_provider';
     }
 
     if (disabledReason) {
@@ -804,10 +956,50 @@ export async function activate(
       );
     }
   } else {
+    // OM-102 — name the whole chain that was tried. The old wording blamed a
+    // missing `anthropic_api_key`, which sent abo-only operators looking for a
+    // key they deliberately do not have instead of at their assignment.
     ctx.log(
-      '[harness-orchestrator-extras] no anthropic_api_key configured — FactExtractor + TopicDetector skipped (ContextRetriever still active)',
+      `[harness-orchestrator-extras] no usable LLM provider (tried ${providerCandidates.join(', ')}) — FactExtractor + TopicDetector skipped (ContextRetriever still active)`,
     );
   }
+
+  // OM-102 — state the three LLM-backed memory features for the dashboard's
+  // "memory / embeddings" card. Published unconditionally: "all three off, and
+  // here is why" is exactly the answer the card needs on an abo install.
+  // Each feature reports the guard that actually disabled IT — no positional
+  // fallback chain, which previously blamed a missing embedding provider for a
+  // topic detector that was really waiting on an LLM.
+  const memoryFeatureReasons: Partial<
+    Record<MemoryFeature, MemoryFeatureReasonCode>
+  > = {
+    ...(disposeFactExtractor ? {} : { factExtractor: 'no_llm_provider' }),
+    ...(disposeTopicDetector
+      ? {}
+      : {
+          topicDetector: llm
+            ? ('no_embedding_provider' as const)
+            : ('no_llm_provider' as const),
+        }),
+    ...(scratchReaperReason ? { scratchReaper: scratchReaperReason } : {}),
+  };
+  const memoryFeatureStatus: MemoryFeatureStatus = {
+    factExtractor: disposeFactExtractor ? 'active' : 'disabled',
+    topicDetector: disposeTopicDetector ? 'active' : 'disabled',
+    scratchReaper: scratchReaperReason ? 'disabled' : 'active',
+    ...(resolvedProvider ? { providerId: resolvedProvider.providerId } : {}),
+    ...(Object.keys(memoryFeatureReasons).length > 0
+      ? { reasons: Object.freeze(memoryFeatureReasons) }
+      : {}),
+    // Diagnostics only — English, rendered secondary, never the UI sentence.
+    ...(resolvedProvider
+      ? {}
+      : { detail: `tried: ${providerCandidates.join(', ')}` }),
+  };
+  const disposeMemoryFeatureStatus = ctx.services.provide(
+    MEMORY_FEATURE_STATUS_SERVICE,
+    memoryFeatureStatus,
+  );
 
   // OB-77 (Palaia Phase 8) — publish the lead heuristic into the
   // `nudgeProviders@1` side-channel. The orchestrator pulls this list
@@ -831,7 +1023,7 @@ export async function activate(
   );
 
   ctx.log(
-    `[harness-orchestrator-extras] ready (contextRetriever=on, factExtractor=${llm ? 'on' : 'off'}, topicDetector=${llm && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
+    `[harness-orchestrator-extras] ready (llmProvider=${resolvedProvider ? `${resolvedProvider.providerId} via ${resolvedProvider.source}` : 'none'}, contextRetriever=on, factExtractor=${llm ? 'on' : 'off'}, topicDetector=${llm && embeddingClient ? 'on' : 'off'}, sessionBriefing=${disposeSessionBriefing ? 'on' : 'off'}, palaiaExcerpt=${disposePalaiaExcerpt ? 'on' : 'off'}, nudgeProviders=on)`,
   );
 
   return {
@@ -843,6 +1035,7 @@ export async function activate(
       // hot-uninstall of an already-registered provider is best-effort
       // until OB-78's curate-cron introduces a proper retire API.
       disposeNudgeProviders();
+      disposeMemoryFeatureStatus();
       disposePalaiaExcerpt?.();
       disposeSessionBriefing?.();
       disposeTopicDetector?.();

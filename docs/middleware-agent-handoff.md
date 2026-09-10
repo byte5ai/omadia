@@ -1556,6 +1556,85 @@ Wahrheit lesen (OM-74/75/78/84):
   (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
   `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
 
+### Gedächtnis-Funktionen auf dem Abo-Weg (Beta-Runde 5, OM-102)
+
+Faktenextraktion, Themenerkennung und der Scratch-Promotion-Reaper hingen am
+Config-Key `anthropic_api_key` von `@omadia/orchestrator-extras` statt am
+LLM-Provider, der dem Orchestrator zugewiesen ist. Auf einer reinen
+Abo-Installation (`llm_provider: claude-cli`, kein Anthropic-Key) blieben alle
+drei aus, und das Dashboard sprach nur über Embeddings — meldete also „OK“,
+während die halbe Gedächtnis-Pipeline still lag.
+
+**Provider-Kandidatenkette** (`packages/harness-orchestrator-extras/src/llmProviderResolution.ts`,
+verdrahtet in dessen `plugin.ts`). Kandidaten in Absichts-Reihenfolge, der
+erste, der sich bauen lässt, gewinnt:
+
+1. explizites `llm_provider` auf **diesem** Plugin — der Operator fragt direkt;
+2. `anthropic`, **aber nur** wenn der Key im eigenen Vault-Scope liegt
+   (`ownScopeAnthropic`). Ohne diese Stufe würde eine Installation, die einen
+   Key bezahlt, stillschweigend auf das persönliche Abo-Kontingent migrieren —
+   eine Kosten-/Quota-Änderung, die ein Bugfix nicht nebenbei machen darf;
+3. die Zuordnung des **Orchestrators**, gelesen über den Kernel-Service
+   `installedPluginConfigReader`. Dieses Plugin aktiviert **vor** dem
+   Orchestrator (der `contextRetriever@^1` + `factExtractor@^1` `requires:`),
+   deshalb ist der Config-Reader der einzige Weg — ein Service des
+   Orchestrators wäre zur Aktivierungszeit noch nicht da. Das ist die Stufe,
+   die den Abo-Fall repariert;
+4. `anthropic` als historischer Default.
+
+Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
+dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
+dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
+scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
+stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
+übersprungen, nicht durchgereicht. Modell-Refs laufen durch
+`coerceModelToProvider` (Default still, ein explizit gesetztes
+`fact_extractor_model` laut). Alle drei Aufrufer nutzen ein reines
+`complete()` ohne `tools` und bleiben damit im Rahmen des Shape-2-Adapters,
+der nur Completions und forced single-tool structured output kann.
+
+**Capability + Manifest.** Das Plugin published zusätzlich
+`memoryFeatureStatus@1` (Service-Key `memoryFeatureStatus`, Kontrakt in
+`src/memoryFeatureStatus.ts`) und deklariert
+`optional_requires: ["llmProviderCatalog@1", "llmProviderPool@1",
+"installedPluginConfigReader@1"]`. `optional_requires` ist der dokumentierte
+Retirement-Pfad des Service-Grant-Gates (`src/platform/pluginServiceGrants.ts`)
+— es gewährt `get`/`getOptional`, ohne eine Aktivierungskante zu erzeugen, was
+hier zwingend ist: der Orchestrator muss downstream bleiben. Alle drei Services
+stellt der Kernel beim Boot bereit, vor jeder Plugin-Aktivierung, deshalb ist
+das eager `getOptional` in `activate()` zulässig.
+
+**`memoryFeatures` auf `GET /api/v1/admin/embedding-provider/status`.** Neben
+den vier bestehenden Feldern:
+
+```
+memoryFeatures: {
+  factExtractor: 'active' | 'disabled',
+  topicDetector: 'active' | 'disabled',
+  scratchReaper: 'active' | 'disabled',
+  providerId?: string,                       // aufgelöster Provider
+  reasons?: { <feature>: <reason-code> },    // nur für disabled-Features
+  detail?: string                            // englische Diagnose, sekundär
+}
+```
+
+Reason-Codes (geschlossenes Enum): `no_llm_provider`, `no_embedding_provider`,
+`no_graph_pool`, `disabled_by_config`, `plugin_inactive`. Geschlossen, weil die
+UI je Code eine Übersetzung führt — Backend-Englisch darf nie der primäre
+deutsche Satz werden (`web-ui/CLAUDE.md`); Freitext reist ausschließlich in
+`detail`. Die Ursache steht **pro Feature**, weil die drei aus verschiedenen
+Gründen ausfallen: ein In-Memory-Graph legt nur den Reaper still, ein fehlender
+Embedding-Anbieter nur die Themenerkennung. Publiziert das Plugin nichts,
+antwortet die Route mit dreimal `plugin_inactive`.
+
+Auf der Dashboard-Karte färbt **nur** `no_llm_provider` den Status auf WARN —
+ein bewusst abgeschalteter Reaper (`disabled_by_config`) oder ein
+In-Memory-Graph (`no_graph_pool`) sind normale Zustände; sie als Warnung zu
+rendern hätte OM-84s falsches OK nur gegen ein ebenso nutzloses falsches WARN
+getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
+`test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
+
 ### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
 
 **`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
@@ -2282,6 +2361,26 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
+
+`TODO(OM-102 follow-up)` in
+`packages/harness-orchestrator-extras/src/plugin.ts`. Die Provider-Kette wird
+**einmal je `activate()`** aufgelöst. Ändert ein Operator danach das
+`llm_provider` des Orchestrators, wird `@omadia/orchestrator-extras` nicht neu
+gebaut — Faktenextraktion, Themenerkennung und Reaper laufen bis zum nächsten
+Rebuild weiter auf dem alten Provider, ohne dass irgendeine Fläche das sagt.
+Dieselbe Klasse wie #989 (`agent_plugins`-Änderung war ein `update` statt eines
+`rebuild` und wirkte deshalb erst nach Neustart). Die Reparatur gehört auf die
+Zuweisungsseite — Rebuild von extras auslösen, wenn sich der Provider des
+Orchestrators ändert — nicht in ein weiteres Lazy-Lookup im Plugin.
+
+Nebenbei aufgefallen und offen: `@omadia/orchestrator` bezieht
+`llmProviderCatalog` und `installedPluginConfigReader` weiterhin aus der
+Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
+konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
+Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
+benutzt hat.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
