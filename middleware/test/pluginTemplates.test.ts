@@ -8,7 +8,11 @@ import type { TemplateManifest } from '@omadia/conductor-core';
 
 import type { Plugin } from '../src/api/admin-v1.js';
 import { InstallService } from '../src/plugins/installService.js';
-import type { InstalledAgent, InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import {
+  blockActivation,
+  type InstalledAgent,
+  type InstalledRegistry,
+} from '../src/plugins/installedRegistry.js';
 import { extractTemplateDeclarations } from '../src/plugins/manifestLoader.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { loadPluginTemplates, registerInstalledPluginTemplates } from '../src/plugins/pluginTemplates.js';
@@ -109,9 +113,9 @@ describe('loadPluginTemplates — the strict install gate', () => {
     const result = await loadPluginTemplates(PLUGIN_ID, root, ['templates/bad.json']);
     assert.equal(result.manifests.length, 0);
     assert.equal(result.errors.length, 1);
-    assert.ok(result.errors[0]!.includes('template_concrete_ref_in_strict_mode'), result.errors[0]);
+    assert.ok(result.errors[0]!.includes('template_concrete_ref_in_strict_mode'), result.errors[0]!);
     // the now-unused declared slot is flagged too (bidirectional coverage)
-    assert.ok(result.errors[0]!.includes('template_unused_slot'), result.errors[0]);
+    assert.ok(result.errors[0]!.includes('template_unused_slot'), result.errors[0]!);
   });
 
   it("rejects ids that are not namespaced 'plugin:<pluginId>:<name>' (no shadowing of bundled/user ids)", async () => {
@@ -132,13 +136,13 @@ describe('loadPluginTemplates — the strict install gate', () => {
     await writeFile(path.join(root, '..', 'outside.json'), JSON.stringify(strictManifest()), 'utf8');
     const traversal = await loadPluginTemplates(PLUGIN_ID, root, ['../outside.json']);
     assert.equal(traversal.manifests.length, 0);
-    assert.ok(traversal.errors[0]!.includes('outside the package root'), traversal.errors[0]);
+    assert.ok(traversal.errors[0]!.includes('outside the package root'), traversal.errors[0]!);
 
     // A confined-LOOKING declared path whose file is a symlink pointing outside.
     await symlink(path.join(root, '..', 'outside.json'), path.join(root, 'templates', 'sneaky.json'));
     const sneaky = await loadPluginTemplates(PLUGIN_ID, root, ['templates/sneaky.json']);
     assert.equal(sneaky.manifests.length, 0);
-    assert.ok(sneaky.errors[0]!.includes('outside the package root'), sneaky.errors[0]);
+    assert.ok(sneaky.errors[0]!.includes('outside the package root'), sneaky.errors[0]!);
   });
 
   it('rejects non-.json declarations, unreadable files, invalid JSON, and duplicate ids', async () => {
@@ -169,7 +173,7 @@ describe('loadPluginTemplates — the strict install gate', () => {
     const root = await makePackage({ 'templates/cron.json': JSON.stringify(manifest) });
     const result = await loadPluginTemplates(PLUGIN_ID, root, ['templates/cron.json']);
     assert.equal(result.manifests.length, 0);
-    assert.ok(result.errors[0]!.includes('invalid cron expression'), result.errors[0]);
+    assert.ok(result.errors[0]!.includes('invalid cron expression'), result.errors[0]!);
   });
 });
 
@@ -181,6 +185,8 @@ function makePlugin(id: string): Plugin {
   return {
     id,
     kind: 'tool',
+    multi_instance: false,
+    privacy_class: 'default',
     name: id,
     version: '0.1.0',
     latest_version: '0.1.0',
@@ -227,13 +233,19 @@ function makeRegistry(): InstalledRegistry {
   const map = new Map<string, InstalledAgent>();
   return {
     list: () => Array.from(map.values()),
-    get: (id) => map.get(id),
-    has: (id) => map.has(id),
-    register: async (entry) => {
+    get: (id: string) => map.get(id),
+    has: (id: string) => map.has(id),
+    register: async (entry: InstalledAgent) => {
       map.set(entry.id, entry);
     },
-    remove: async (id) => {
+    remove: async (id: string) => {
       map.delete(id);
+    },
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = map.get(id);
+      if (current) {
+        map.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
     },
     markActivationFailed: async () => undefined,
     markActivationSucceeded: async () => undefined,

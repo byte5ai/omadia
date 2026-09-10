@@ -16,17 +16,16 @@ import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
  * picks the activation order. Two layers, two failure modes:
  *
  *   1. {@link resolveCapabilities} — single-pass over the eligible set.
- *      Returns `{ edges, unresolved }` instead of throwing on a missing
- *      provider; the caller decides whether boot-time soft-fail
+ *      Returns `{ edges, unresolved, duplicateProviders }` instead of
+ *      throwing on a missing provider; the caller decides whether boot-time soft-fail
  *      (mark errored, keep middleware up) or install-time hard-block
  *      (HTTP 409, surface available providers from the wider catalog) is
- *      the right response. Provider-collision (two eligible plugins
- *      claiming the same `<name>@<major>` slot) still throws — there is
- *      no policy for the kernel to pick a winner.
+ *      the right response. OM-87 / #1053 keeps provider collisions strict
+ *      by default; boot opts into reporting the younger provider instead.
  *
  *   2. {@link resolveEligiblePlugins} — iterative wrapper around (1) used
- *      by the runtime. Drops every unresolved consumer, re-runs the
- *      single-pass, and repeats until the eligible set stabilises. This
+ *      by the runtime. Drops duplicate providers and unresolved consumers,
+ *      re-runs the single-pass until the eligible set stabilises. This
  *      handles the cascade where consumer A requires cap X provided only
  *      by plugin B, B itself unresolved → A also unresolvable.
  *
@@ -71,6 +70,25 @@ export interface UnresolvedRequire {
   requires: string[];
 }
 
+export interface DuplicateProvider {
+  readonly droppedId: string;
+  /** OM-87: winner of this collision, not a promise of activation. It may
+   *  later lose a different slot or fail its own requires; the diagnostic
+   *  still names the installed manifest that caused this exclusion. */
+  readonly keptId: string;
+  /** Raw manifest `provides` entry at the collision, for the operator. */
+  readonly capability: string;
+  readonly message: string;
+}
+
+export interface CapabilityResolutionOptions {
+  readonly onDuplicate?: 'throw' | 'errored';
+  /** OM-87 keeps the pure resolver independent of registry storage. The
+   *  boot caller supplies the timestamps it already reads for eligibility;
+   *  callers without registry state retain deterministic input-order ties. */
+  readonly installedAtById?: ReadonlyMap<string, string>;
+}
+
 export interface CapabilityResolution {
   /** Implicit provider→consumer ordering edges, suitable for passing to
    *  {@link topoSortByDependsOn} as `extraEdges`. */
@@ -79,6 +97,9 @@ export interface CapabilityResolution {
    *  eligible set. The caller decides what to do (mark errored, throw,
    *  drop and retry). */
   unresolved: UnresolvedRequire[];
+  /** OM-87: provided capabilities must never enter `unresolved.requires`,
+   *  which bootstrap persists as a re-checkable dependency list (S+8.5). */
+  duplicateProviders: DuplicateProvider[];
 }
 
 /**
@@ -86,20 +107,29 @@ export interface CapabilityResolution {
  * matches against the rest's `provides`, and aggregates unresolved
  * entries instead of throwing.
  *
- * Throws on provider-collision (two plugins claim the same
- * `<name>@<major>` slot) — that is a kernel-level invariant the operator
- * must resolve by uninstalling one provider; there is no automatic
- * winner.
+ * OM-87 / #1053 leaves the single-pass default at `throw`: existing strict
+ * callers keep their contract without call-site churn. The boot wrapper
+ * defaults to `errored`, retaining the older provider and reporting the
+ * younger one separately from missing dependencies.
  */
 export function resolveCapabilities(
   eligibleIds: readonly string[],
   catalog: PluginCatalog,
+  options: CapabilityResolutionOptions = {},
 ): CapabilityResolution {
   const edges: CapabilityEdge[] = [];
   const unresolved: UnresolvedRequire[] = [];
-  const providerIndex = buildProviderIndex(eligibleIds, catalog);
+  const { index: providerIndex, duplicateProviders } = buildProviderIndex(
+    eligibleIds,
+    catalog,
+    options,
+  );
+  const dropped = new Set(duplicateProviders.map((d) => d.droppedId));
 
   for (const consumerId of eligibleIds) {
+    // OM-87: a duplicate is excluded as a whole plugin, including its
+    // requires. Reporting it twice would corrupt the dependency retry path.
+    if (dropped.has(consumerId)) continue;
     const consumer = catalog.get(consumerId);
     // `requires` ONLY. `optional_requires` (#795) is deliberately not read
     // here, and the omission is the whole feature: an optional capability
@@ -147,7 +177,7 @@ export function resolveCapabilities(
     }
   }
 
-  return { edges, unresolved };
+  return { edges, unresolved, duplicateProviders };
 }
 
 export interface EligibleResolution {
@@ -162,12 +192,14 @@ export interface EligibleResolution {
    *  plugin in the cascade was dropped — the array reflects the final
    *  state, suitable for `markActivationFailed`. */
   unresolved: UnresolvedRequire[];
+  /** Every duplicate provider dropped before resolving dependencies. */
+  duplicateProviders: DuplicateProvider[];
 }
 
 /**
  * Iterative wrapper around {@link resolveCapabilities}. Drops every
- * unresolved consumer, re-runs the single-pass on the smaller set, and
- * repeats until the result stabilises. Cascade-safe: if A requires X
+ * duplicate provider or unresolved consumer, re-runs the single-pass on the
+ * smaller set, and repeats until it stabilises. Cascade-safe: if A requires X
  * provided only by B, and B itself unresolved, the second pass drops A.
  *
  * Boot-time runtime callers should prefer this over the single-pass —
@@ -176,12 +208,14 @@ export interface EligibleResolution {
 export function resolveEligiblePlugins(
   eligibleIds: readonly string[],
   catalog: PluginCatalog,
+  options: CapabilityResolutionOptions = {},
 ): EligibleResolution {
   // Track the "final" unresolved entry per consumer — if a consumer is
   // dropped in pass N, that pass's `requires` list is the authoritative
   // one (it reflects what was missing once the eligible set already
   // shrank). We map by id to dedupe across passes.
   const finalUnresolved = new Map<string, string[]>();
+  const finalDuplicates: DuplicateProvider[] = [];
 
   let current: readonly string[] = [...eligibleIds];
   let lastEdges: CapabilityEdge[] = [];
@@ -190,20 +224,28 @@ export function resolveEligiblePlugins(
   // length+1 iterations is the worst case. Guards against any future
   // edge case where stabilisation isn't monotone.
   for (let i = 0; i <= eligibleIds.length; i++) {
-    const { edges, unresolved } = resolveCapabilities(current, catalog);
-    if (unresolved.length === 0) {
+    const { edges, unresolved, duplicateProviders } = resolveCapabilities(current, catalog, {
+      ...options,
+      onDuplicate: options.onDuplicate ?? 'errored',
+    });
+    if (unresolved.length === 0 && duplicateProviders.length === 0) {
       return {
         resolved: [...current],
         edges,
         unresolved: Array.from(finalUnresolved.entries()).map(
           ([consumerId, requires]) => ({ consumerId, requires }),
         ),
+        duplicateProviders: finalDuplicates,
       };
     }
     for (const u of unresolved) {
       finalUnresolved.set(u.consumerId, u.requires);
     }
-    const drop = new Set(unresolved.map((u) => u.consumerId));
+    finalDuplicates.push(...duplicateProviders);
+    const drop = new Set([
+      ...unresolved.map((u) => u.consumerId),
+      ...duplicateProviders.map((d) => d.droppedId),
+    ]);
     current = current.filter((id) => !drop.has(id));
     lastEdges = edges;
   }
@@ -217,6 +259,7 @@ export function resolveEligiblePlugins(
     unresolved: Array.from(finalUnresolved.entries()).map(
       ([consumerId, requires]) => ({ consumerId, requires }),
     ),
+    duplicateProviders: finalDuplicates,
   };
 }
 
@@ -392,13 +435,71 @@ export function walkCapabilityInstallChain(
 // Internals
 // ---------------------------------------------------------------------------
 
-/** Map `<name>@<major>` → pluginId. Within one eligible set, two plugins
- *  must not provide the same (name, major) — the kernel cannot pick a
- *  winner without operator intent. Throws on collision. */
+interface ProviderCollision {
+  readonly firstId: string;
+  readonly secondId: string;
+  readonly capability: string;
+}
+
+interface ProviderIndexScan {
+  readonly index: Map<string, string>;
+  readonly collision?: ProviderCollision;
+}
+
+/** OM-87 removes a losing plugin before rebuilding ALL provider slots.
+ *  Keeping its other capabilities would let consumers activate against a
+ *  plugin that never starts. Each collision removes one id, so this loop
+ *  terminates after at most eligibleIds.length removals. */
 function buildProviderIndex(
   eligibleIds: readonly string[],
   catalog: PluginCatalog,
-): Map<string, string> {
+  options: CapabilityResolutionOptions,
+): { index: Map<string, string>; duplicateProviders: DuplicateProvider[] } {
+  let current = eligibleIds;
+  const duplicateProviders: DuplicateProvider[] = [];
+  for (;;) {
+    const { index, collision } = scanProviderIndex(current, catalog);
+    if (!collision) return { index, duplicateProviders };
+    const { firstId, secondId, capability } = collision;
+    if ((options.onDuplicate ?? 'throw') === 'throw') {
+      throw new Error(
+        `capability '${capability}' is provided by both '${firstId}' and '${secondId}' — uninstall one`,
+      );
+    }
+    const droppedId = pickDuplicateLoser(collision, options.installedAtById);
+    const keptId = droppedId === firstId ? secondId : firstId;
+    duplicateProviders.push({
+      droppedId,
+      keptId,
+      capability,
+      message: `capability '${capability}' is also provided by '${keptId}' — uninstall one`,
+    });
+    current = current.filter((id) => id !== droppedId);
+  }
+}
+
+/** OM-87 compares actual instants, including ISO offsets. If either date
+ *  is absent/invalid or both are equal, the first eligible id wins. Scan
+ *  order survives filtering, making that fallback stable across boots.
+ *  Pairwise scanning also avoids a non-transitive sort comparator when
+ *  dated and undated entries are mixed. */
+function pickDuplicateLoser(
+  collision: ProviderCollision,
+  installedAtById: ReadonlyMap<string, string> | undefined,
+): string {
+  const first = Date.parse(installedAtById?.get(collision.firstId) ?? '');
+  const second = Date.parse(installedAtById?.get(collision.secondId) ?? '');
+  return Number.isFinite(first) && Number.isFinite(second) && first > second
+    ? collision.firstId
+    : collision.secondId;
+}
+
+/** Scan in eligible and manifest order so strict collisions retain their
+ *  existing message and boot has a deterministic first conflict to resolve. */
+function scanProviderIndex(
+  eligibleIds: readonly string[],
+  catalog: PluginCatalog,
+): ProviderIndexScan {
   const index = new Map<string, string>();
   for (const id of eligibleIds) {
     const entry = catalog.get(id);
@@ -408,19 +509,19 @@ function buildProviderIndex(
       try {
         ref = parseCapabilityRef(rawProv);
       } catch {
+        // OM-87 preserves manifestLoader's malformed-provides policy:
+        // it already warned, and an invalid declaration owns no slot.
         continue;
       }
       const key = capabilityKey(ref);
       const existing = index.get(key);
       if (existing && existing !== id) {
-        throw new Error(
-          `capability '${rawProv}' is provided by both '${existing}' and '${id}' — uninstall one`,
-        );
+        return { index, collision: { firstId: existing, secondId: id, capability: rawProv } };
       }
       index.set(key, id);
     }
   }
-  return index;
+  return { index };
 }
 
 function findProvider(
@@ -441,8 +542,8 @@ function capabilityKey(ref: CapabilityRef): string {
  * would not introduce a duplicate provider.
  *
  * Server-side install-time check: prevents the persisted registry from
- * drifting into a state where `buildProviderIndex` throws at the next
- * boot. Symmetric to the `requires`-chain walk in
+ * drifting into a state where boot must drop a duplicate provider
+ * (OM-87 / #1053). Symmetric to the `requires`-chain walk in
  * {@link walkCapabilityInstallChain} — that one rejects on missing
  * providers; this one rejects on duplicate providers.
  */

@@ -201,6 +201,7 @@ export class ToolPluginRuntime {
     // runtime deps (agent→tool) are handled by the outer boot order in
     // index.ts — this runtime runs before the agent runtime.
     const eligible: string[] = [];
+    const installedAtById = new Map<string, string>();
     for (const id of ids) {
       const catalogEntry = this.deps.catalog.get(id);
       if (!catalogEntry) continue;
@@ -214,9 +215,10 @@ export class ToolPluginRuntime {
       const reg = this.deps.registry.get(id);
       if (!reg || reg.status !== 'active') continue;
       eligible.push(id);
+      installedAtById.set(id, reg.installed_at);
     }
 
-    // Resolve capabilities BEFORE topo-sorting. Two guarantees land here:
+    // Resolve capabilities BEFORE topo-sorting. Three guarantees land here:
     //   (1) implicit provider→consumer edges flow into topoSort so that
     //       `ctx.services.get(<cap>)` inside a consumer's activate() sees
     //       the provider's service already registered;
@@ -224,8 +226,35 @@ export class ToolPluginRuntime {
     //       eligible set are dropped and marked errored — the boot does
     //       not abort, the unresolved plugin surfaces in the UI with an
     //       actionable message, and the operator can install the
-    //       missing provider via the wizard.
-    const resolution = resolveEligiblePlugins(eligible, this.deps.catalog);
+    //       missing provider via the wizard;
+    //   (3) OM-87 / #1053 — a younger duplicate provider is reported and
+    //       excluded without aborting boot. Pass installation timestamps as
+    //       plain data because this runtime already owns the registry, while
+    //       capability resolution should not depend on its storage contract.
+    const resolution = resolveEligiblePlugins(eligible, this.deps.catalog, {
+      installedAtById,
+    });
+
+    for (const duplicate of resolution.duplicateProviders) {
+      log(`[tool-runtime] ${duplicate.droppedId} not activated — ${duplicate.message}`);
+      try {
+        // OM-87 — this is a conflicting `provides`, not an unresolved
+        // `requires`. Persisting it as a requires-list would let the S+8.5
+        // retry loop mistake the surviving provider for a repaired dependency.
+        // Block immediately: retries cannot fix the configuration conflict.
+        // A manifest-mtime reset in retryErroredPlugins is self-correcting:
+        // the next resolution drops and blocks the duplicate again, with a
+        // fresh error timestamp, without aborting boot or looping here.
+        await this.deps.registry.markActivationBlocked(
+          duplicate.droppedId,
+          duplicate.message,
+        );
+      } catch (regErr) {
+        log(
+          `[tool-runtime] registry markActivationBlocked FAILED for ${duplicate.droppedId}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
+        );
+      }
+    }
 
     for (const u of resolution.unresolved) {
       const msg = `unresolved capability requires: ${u.requires.join(', ')}`;
