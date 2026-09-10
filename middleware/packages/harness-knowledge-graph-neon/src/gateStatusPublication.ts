@@ -77,6 +77,16 @@ export interface GateReevaluateRequest {
    * note in `gateReevaluation.ts`.
    */
   allowDestructiveMigration?: boolean;
+  /**
+   * OM-98 — may this evaluation rebuild the governed `vector(n)` columns when
+   * it finds them EMPTY?
+   *
+   * Distinct from the flag above and much weaker: the gate verifies the
+   * emptiness itself before acting, so the worst case is a column rebuilt at
+   * the right width with nothing lost. Handed over only by the admin
+   * "reactivate provider" action; activation never passes it.
+   */
+  allowEmptyColumnMigration?: boolean;
 }
 
 export interface EmbeddingGateStatusPublication {

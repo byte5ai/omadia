@@ -9,6 +9,7 @@ import {
   webUiEntry,
   webUiCwd,
   platformDataDir,
+  embeddingModelsDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
 import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
@@ -396,6 +397,11 @@ export class Supervisor extends EventEmitter {
       // The explicit override removes the guesswork entirely.
       MULTI_ORCH_MIGRATIONS_DIR: path.join(kernelCwd(), 'migrations'),
       PLATFORM_DATA_DIR: platformDataDir(),
+      // OM-97: the keyless embedding adapter's weights. Explicit rather than
+      // left to the adapter's `PLATFORM_DATA_DIR` fallback, because the thing
+      // being prevented is severe and silent — the old default resolved into
+      // the signed app bundle and a download there breaks the code signature.
+      OMADIA_EMBEDDING_MODEL_DIR: embeddingModelsDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       // Desktop-only overrides of kernel defaults that assume a LAN self-host
