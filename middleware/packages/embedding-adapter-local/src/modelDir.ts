@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { REQUIRED_MODEL_FILES, missingModelFiles, modelPath } from './localEmbeddingClient.js';
@@ -86,12 +86,22 @@ export interface LegacyAdoption {
  * frequently on the same volume, but on a Docker deployment with the data
  * volume mounted from elsewhere they are not, and `EXDEV` must not abort this.
  * A failed adoption is never fatal — the weights remain downloadable.
+ *
+ * WHY IT IS ASYNC. The fallback copies ~129 MB, and the caller is a plugin
+ * `activate()` that `toolPluginRuntime.ts` hard-caps at 10s. With `cpSync`
+ * that cap was decorative: a synchronous copy blocks the event loop, so the
+ * timer meant to kill the activation cannot even fire, and the whole kernel
+ * boot stalls behind a disk copy on a slow or network-mounted volume. Async fs
+ * makes the cap real. A copy the cap interrupts is recoverable rather than
+ * lossy — the source is only removed after the copy completes, so the next
+ * activation finds an incomplete target, retries, and `force: true` overwrites
+ * the partial files.
  */
-export function adoptLegacyModelDir(args: {
+export async function adoptLegacyModelDir(args: {
   targetDir: string;
   legacyDir?: string;
   log: (msg: string) => void;
-}): LegacyAdoption {
+}): Promise<LegacyAdoption> {
   const legacyDir = args.legacyDir ?? LEGACY_MODEL_DIR;
   const from = path.resolve(legacyDir);
   const to = path.resolve(args.targetDir);
@@ -110,21 +120,38 @@ export function adoptLegacyModelDir(args: {
     return unchanged('the legacy directory holds no complete model');
   }
 
+  let copied = false;
   try {
-    fs.mkdirSync(path.dirname(modelPath(to)), { recursive: true });
+    await fsp.mkdir(path.dirname(modelPath(to)), { recursive: true });
     try {
-      fs.renameSync(modelPath(from), modelPath(to));
+      await fsp.rename(modelPath(from), modelPath(to));
     } catch {
       // EXDEV (separate volumes) and a non-empty destination both land here.
-      // `cpSync` handles the first and overwrites into the second, which is
-      // safe: the target was established as incomplete above.
-      fs.cpSync(modelPath(from), modelPath(to), { recursive: true, force: true });
-      fs.rmSync(modelPath(from), { recursive: true, force: true });
+      // `cp` handles the first and overwrites into the second, which is safe:
+      // the target was established as incomplete above.
+      await fsp.cp(modelPath(from), modelPath(to), { recursive: true, force: true });
+      copied = true;
     }
   } catch (err) {
     return unchanged(
       `adoption failed (${err instanceof Error ? err.message : String(err)}) — the weights can still be downloaded into the new directory`,
     );
+  }
+
+  if (copied) {
+    // ITS OWN TRY, DELIBERATELY. The weights are at the new location by this
+    // line — the adoption SUCCEEDED. Removing the now-redundant source is
+    // tidy-up, and it is the step most likely to fail on its own (a read-only
+    // application bundle is exactly the environment OM-97 is about). Folded
+    // into the block above, an EPERM here reported "adoption failed" and sent
+    // the operator off to re-download 129 MB they already have.
+    try {
+      await fsp.rm(modelPath(from), { recursive: true, force: true });
+    } catch (err) {
+      args.log(
+        `[embedding-adapter-local] OM-97: the weights were copied to ${modelPath(to)}, but the legacy copy at ${modelPath(from)} could not be removed (${err instanceof Error ? err.message : String(err)}). Harmless — it is dead weight, not a fault; delete it by hand to reclaim the space.`,
+      );
+    }
   }
 
   const stillMissing = missingModelFiles(to);

@@ -110,6 +110,15 @@ async function makeHarness(opts: {
   /** Weights still missing, as the fetcher reports them. */
   missingFiles?: string[];
   gateReason?: string;
+  /**
+   * Make `activate()` throw. `'always'` is a provider that will not come back;
+   * `'once'` is the transient case the route's retry is there for. Both start
+   * from the same place — the `deactivate` already happened, so this
+   * deployment has NO live embedding provider at the moment of the throw.
+   */
+  activateThrows?: 'always' | 'once';
+  /** Make the gate re-evaluation throw, AFTER the provider is back up. */
+  regateThrows?: boolean;
 }): Promise<ReactivateHarness> {
   const registry = new InMemoryInstalledRegistry();
   for (const p of opts.installed ?? [{ id: LOCAL }, { id: KG_NEON }]) {
@@ -139,6 +148,9 @@ async function makeHarness(opts: {
       enumerable: false,
       value: async (request: Record<string, unknown>) => {
         state.regateRequests.push(request);
+        if (opts.regateThrows === true) {
+          throw new Error('graph_embedding_model is locked by another instance');
+        }
         return undefined;
       },
     });
@@ -176,6 +188,13 @@ async function makeHarness(opts: {
       tenantId: 'default',
       activate: async (id: string) => {
         state.calls.push(`activate:${id}`);
+        const attempt = state.calls.filter((c) => c === `activate:${id}`).length;
+        if (
+          opts.activateThrows === 'always' ||
+          (opts.activateThrows === 'once' && attempt === 1)
+        ) {
+          throw new Error('onnxruntime failed to load the model');
+        }
         if (opts.publishesOnActivate ?? true) state.published = true;
       },
       deactivate: async (id: string) => {
@@ -310,6 +329,79 @@ describe('OM-98 POST /reactivate', () => {
       assert.equal(res.body['capabilityPublished'], false);
       assert.equal(res.body['dedupThreshold'], null);
       assert.equal(res.body['capabilityGap'], 'missing-weights');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('retries a failed activation and reports the recovery honestly', async () => {
+    // The hole this closes: `deactivate` succeeded, `activate` threw, and the
+    // route returned 500 leaving the deployment with NO embedding provider —
+    // the same state `/switch`'s `restorePrevious` refuses to leave behind.
+    // One retry recovers the common transient cause.
+    const h = await makeHarness({ vectors: 0, activateThrows: 'once' });
+    try {
+      const res = await h.post();
+      // Still a 500: the gate was NOT re-evaluated, so this is not `ok: true`
+      // however well the retry went. Honest beats reassuring.
+      assert.equal(res.status, 500);
+      assert.equal(res.body['code'], 'embeddingProvider.reactivate_failed');
+      const details = res.body['details'] as Record<string, unknown>;
+      assert.equal(details['capabilityPublished'], true);
+      assert.equal(details['gateReevaluated'], false);
+      assert.match(String(res.body['message']), /a retry brought the provider back/);
+      assert.deepEqual(h.calls, [
+        `deactivate:${LOCAL}`,
+        `activate:${LOCAL}`,
+        `activate:${LOCAL}`,
+      ]);
+      // No gate ran, so no threshold was written either.
+      assert.equal(h.regateRequests.length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('says so plainly when the retry does not bring the provider back', async () => {
+    const h = await makeHarness({ vectors: 0, activateThrows: 'always' });
+    try {
+      const res = await h.post();
+      assert.equal(res.status, 500);
+      assert.equal(res.body['code'], 'embeddingProvider.reactivate_failed');
+      const details = res.body['details'] as Record<string, unknown>;
+      assert.equal(details['capabilityPublished'], false);
+      // The operator has to learn from this response that nothing is serving —
+      // a vaguer "may now be inactive" is what sent people looking in the
+      // wrong place.
+      assert.match(String(res.body['message']), /NO active embedding provider/);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('reports a failed gate re-evaluation as 500, never as a silent success', async () => {
+    // The provider IS live here and the registry is consistent; what failed is
+    // the re-gate. Reporting `ok: true` would leave the graph governed by a
+    // verdict about the PREVIOUS client while the page said everything was
+    // fine — the provider-drift state this route exists to end.
+    const h = await makeHarness({ vectors: 0, regateThrows: true });
+    try {
+      const res = await h.post();
+      assert.equal(res.status, 500);
+      assert.equal(res.body['code'], 'embeddingProvider.gate_reevaluation_failed');
+      const details = res.body['details'] as Record<string, unknown>;
+      assert.equal(details['pluginId'], LOCAL);
+      assert.equal(details['capabilityPublished'], true);
+      assert.equal(details['gateReevaluated'], false);
+      // The reactivation itself DID happen and is not rolled back — saying so
+      // is what stops the operator from cycling the provider a second time.
+      assert.deepEqual(h.calls, [`deactivate:${LOCAL}`, `activate:${LOCAL}`]);
+      assert.match(String(res.body['message']), /IS publishing embeddingClient@1/);
+      // And the dedup threshold is never written off a failed gate run.
+      assert.equal(
+        h.registry.get(KG_NEON)?.config?.['process_dedup_threshold'],
+        undefined,
+      );
     } finally {
       await h.close();
     }

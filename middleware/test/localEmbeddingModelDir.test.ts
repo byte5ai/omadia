@@ -99,13 +99,13 @@ describe('OM-97 default model directory', () => {
 });
 
 describe('OM-97 legacy weight adoption', () => {
-  it('moves a complete model out of the old location exactly once', () => {
+  it('moves a complete model out of the old location exactly once', async () => {
     const root = tempRoot();
     const legacy = path.join(root, 'bundle', 'var', 'embedding-models');
     const target = path.join(root, 'userData', 'embedding-models');
     seedModel(legacy);
 
-    const first = adoptLegacyModelDir({
+    const first = await adoptLegacyModelDir({
       targetDir: target,
       legacyDir: legacy,
       log: () => undefined,
@@ -116,7 +116,7 @@ describe('OM-97 legacy weight adoption', () => {
     }
     // The source is gone, so a second activation has nothing left to adopt and
     // must not report a move it did not make.
-    const second = adoptLegacyModelDir({
+    const second = await adoptLegacyModelDir({
       targetDir: target,
       legacyDir: legacy,
       log: () => undefined,
@@ -124,7 +124,7 @@ describe('OM-97 legacy weight adoption', () => {
     assert.equal(second.moved, false);
   });
 
-  it('leaves a target that already holds a model untouched', () => {
+  it('leaves a target that already holds a model untouched', async () => {
     const root = tempRoot();
     const legacy = path.join(root, 'legacy');
     const target = path.join(root, 'target');
@@ -132,7 +132,7 @@ describe('OM-97 legacy weight adoption', () => {
     seedModel(target);
     fs.writeFileSync(path.join(modelPath(target), 'config.json'), 'mine');
 
-    const result = adoptLegacyModelDir({
+    const result = await adoptLegacyModelDir({
       targetDir: target,
       legacyDir: legacy,
       log: () => undefined,
@@ -144,7 +144,7 @@ describe('OM-97 legacy weight adoption', () => {
     );
   });
 
-  it('refuses to adopt a half-finished download', () => {
+  it('refuses to adopt a half-finished download', async () => {
     const root = tempRoot();
     const legacy = path.join(root, 'legacy');
     const target = path.join(root, 'target');
@@ -152,12 +152,52 @@ describe('OM-97 legacy weight adoption', () => {
     // An interrupted fetch: the directory exists, one required file does not.
     fs.rmSync(path.join(modelPath(legacy), 'tokenizer.json'));
 
-    const result = adoptLegacyModelDir({
+    const result = await adoptLegacyModelDir({
       targetDir: target,
       legacyDir: legacy,
       log: () => undefined,
     });
     assert.equal(result.moved, false);
     assert.ok(!fs.existsSync(modelPath(target)));
+  });
+
+  it('still reports success when the copy lands but the source cannot be deleted', async () => {
+    // THE REGRESSION. Removing the legacy copy is tidy-up that runs AFTER the
+    // weights are safely at the new location — and it is the step most likely
+    // to fail on its own, because the legacy location is a read-only
+    // application bundle, which is the entire premise of OM-97. Sharing a
+    // `try` with the copy turned that EPERM into "adoption failed" and sent
+    // the operator off to re-download 129 MB they already had.
+    const root = tempRoot();
+    const legacy = path.join(root, 'legacy');
+    const target = path.join(root, 'target');
+    seedModel(legacy);
+    // Force the cpSync fallback rather than the rename: a non-empty
+    // destination makes `rename` fail exactly as a cross-volume move does.
+    // The target stays INCOMPLETE, so the adoption is not skipped.
+    fs.mkdirSync(modelPath(target), { recursive: true });
+    fs.writeFileSync(path.join(modelPath(target), 'config.json'), 'stale');
+    // Read-only parent: the copy can still read out of it, the unlink cannot.
+    const legacyParent = path.dirname(modelPath(legacy));
+    fs.chmodSync(legacyParent, 0o555);
+
+    try {
+      const logged: string[] = [];
+      const result = await adoptLegacyModelDir({
+        targetDir: target,
+        legacyDir: legacy,
+        log: (msg) => logged.push(msg),
+      });
+
+      assert.equal(result.moved, true, 'the weights ARE at the new location');
+      for (const file of REQUIRED) {
+        assert.ok(fs.existsSync(path.join(modelPath(target), file)), file);
+      }
+      // Said out loud rather than swallowed — it is dead disk space, and the
+      // operator is the only one who can reclaim it.
+      assert.ok(logged.some((m) => /could not be removed/.test(m)));
+    } finally {
+      fs.chmodSync(legacyParent, 0o755);
+    }
   });
 });

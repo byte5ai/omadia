@@ -801,9 +801,27 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       await deps.deactivate(pluginId);
       await deps.activate(pluginId);
     } catch (err) {
+      // ONE MORE ATTEMPT, THEN THE TRUTH. The deactivate already happened, so
+      // a throw out of `activate` leaves this deployment with NO live
+      // embedding provider — the same hole `/switch`'s `restorePrevious`
+      // closes, reached by a shorter path. A second activate costs one call
+      // and recovers the common cause (a transient read of the weights that
+      // the adapter retries successfully).
+      //
+      // The response stays honest either way: `getEmbeddingClient()` is the
+      // same evidence the forward path is held to, so a recovered provider is
+      // reported as recovered and a dead one is still a 500. Never a rollback
+      // claim the runtime does not support.
+      await deps.activate(pluginId).catch(() => undefined);
+      const recovered = deps.getEmbeddingClient() !== undefined;
       res.status(500).json({
         code: 'embeddingProvider.reactivate_failed',
-        message: `reactivating '${pluginId}' failed (${err instanceof Error ? err.message : String(err)}); the provider may now be inactive — check the middleware log`,
+        message: `reactivating '${pluginId}' failed (${err instanceof Error ? err.message : String(err)}); ${
+          recovered
+            ? 'a retry brought the provider back and embeddingClient@1 IS published again, but the gate was NOT re-evaluated — retry the reactivation'
+            : 'the retry did not bring it back either, so this deployment currently has NO active embedding provider — check the middleware log'
+        }`,
+        details: { pluginId, capabilityPublished: recovered, gateReevaluated: false },
       });
       return;
     }
