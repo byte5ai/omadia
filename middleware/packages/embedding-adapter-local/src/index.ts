@@ -51,3 +51,16 @@ export type {
   ModelFetcherOptions,
 } from './modelFetcherService.js';
 export { createLocalEmbeddingModelFetcher } from './modelFetcherService.js';
+
+// OM-97 — where the weights live. Exported so the fetch script, the desktop
+// shell and the plugin all agree on one resolution order instead of three
+// copies of a relative path that resolves inside the signed app bundle.
+export type { LegacyAdoption } from './modelDir.js';
+export {
+  LEGACY_MODEL_DIR,
+  MODEL_DIR_ENV,
+  MODEL_DIR_LEAF,
+  PLATFORM_DATA_DIR_ENV,
+  adoptLegacyModelDir,
+  defaultModelDir,
+} from './modelDir.js';

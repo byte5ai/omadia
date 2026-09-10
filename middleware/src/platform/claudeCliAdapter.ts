@@ -275,10 +275,12 @@ function spawnClaude(
       if (code !== 0) {
         // OM-94 — record the exit here too; the completion path serves the
         // summariser, fact extractor and verifier judge, whose failures reach
-        // no chat bubble at all.
+        // no chat bubble at all. stderr ONLY: on this path stdout is the
+        // model's answer, i.e. conversation-derived text, and the log must not
+        // become a second copy of it.
         console.warn(
           `[claude-cli] completion exited ${code} (cli ${cliVersion ?? 'unknown'}): ` +
-            `${(stderr || stdout).split('\n')[0]?.trim() ?? ''}`,
+            `${stderr.split('\n')[0]?.trim() ?? ''}`,
         );
         // OM-85 — a CLI that rejects the gate's own flags is a config error.
         reject(

@@ -18,7 +18,11 @@ import {
 } from '../src/plugins/capabilityResolver.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { topoSortByDependsOn } from '../src/plugins/topoSort.js';
-import type { InstalledAgent, InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import {
+  blockActivation,
+  type InstalledAgent,
+  type InstalledRegistry,
+} from '../src/plugins/installedRegistry.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 
 /**
@@ -37,12 +41,14 @@ type Partial_Plugin = Pick<
 };
 
 function makeCatalog(plugins: Partial_Plugin[]): PluginCatalog {
-  const map = new Map<string, { plugin: Plugin; manifest: unknown; source_path: string; source_kind: 'manifest-v1' }>();
+  const map = new Map<string, { plugin: Plugin; manifest: unknown; source_path: string; source_kind: 'manifest-v1'; origin: 'installed' }>();
   for (const p of plugins) {
     map.set(p.id, {
       plugin: {
         id: p.id,
         kind: p.kind ?? 'tool',
+        multi_instance: false,
+        privacy_class: 'default',
         name: p.name ?? p.id,
         version: '0.1.0',
         latest_version: '0.1.0',
@@ -99,11 +105,20 @@ function makeRegistry(active: InstalledAgent[] = []): InstalledRegistry {
     remove: async (id) => {
       map.delete(id);
     },
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = map.get(id);
+      if (current) {
+        map.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
+    },
     markActivationFailed: async () => {
       /* no-op for tests */
     },
     markActivationSucceeded: async () => {
       /* no-op for tests */
+    },
+    clearActivationError: async () => {
+      /* no-op */
     },
     updateConfig: async () => {
       /* no-op */
@@ -212,6 +227,7 @@ describe('resolveCapabilities (single-pass, soft-fail)', () => {
     assert.deepEqual(resolveCapabilities(['a'], cat), {
       edges: [],
       unresolved: [],
+      duplicateProviders: [],
     });
   });
 
@@ -256,6 +272,14 @@ describe('resolveCapabilities (single-pass, soft-fail)', () => {
       () => resolveCapabilities(['p1', 'p2'], cat),
       /provided by both/,
     );
+    assert.throws(
+      () => resolveCapabilities(['p1', 'p2'], cat, { onDuplicate: 'throw' }),
+      { message: "capability 'memoryStore@1' is provided by both 'p1' and 'p2' — uninstall one" },
+    );
+    assert.throws(
+      () => resolveEligiblePlugins(['p1', 'p2'], cat, { onDuplicate: 'throw' }),
+      /provided by both/,
+    );
   });
 
   it('allows a plugin to self-require its own provides (no edge generated, no unresolved)', () => {
@@ -265,6 +289,7 @@ describe('resolveCapabilities (single-pass, soft-fail)', () => {
     assert.deepEqual(resolveCapabilities(['self'], cat), {
       edges: [],
       unresolved: [],
+      duplicateProviders: [],
     });
   });
 
@@ -328,6 +353,201 @@ describe('resolveEligiblePlugins (iterative cascade)', () => {
     const result = resolveEligiblePlugins(['p', 'c'], cat);
     assert.deepEqual(result.resolved, ['p', 'c']);
     assert.deepEqual(result.unresolved, []);
+  });
+});
+
+describe('OM-87 duplicate providers', () => {
+  const cat = makeCatalog([
+    { id: 'A', provides: ['X@1'], requires: [], depends_on: [] },
+    { id: 'B', provides: ['X@1'], requires: [], depends_on: [] },
+    { id: 'consumer', provides: [], requires: ['X@^1'], depends_on: [] },
+  ]);
+  const installedAtById: ReadonlyMap<string, string> = new Map([
+    ['A', '2026-09-01T00:00:00Z'],
+    ['B', '2026-09-02T00:00:00Z'],
+  ]);
+  const duplicate = {
+    droppedId: 'B',
+    keptId: 'A',
+    capability: 'X@1',
+    message: "capability 'X@1' is also provided by 'A' — uninstall one",
+  };
+
+  for (const providers of [['A', 'B'], ['B', 'A']]) {
+    it(`keeps the older provider with discovery order ${providers.join(', ')}`, () => {
+      const eligible = Object.freeze(['consumer', ...providers]);
+      const timestampsBefore = [...installedAtById];
+      const result = resolveEligiblePlugins(eligible, cat, { installedAtById });
+      assert.deepEqual(result, {
+        resolved: ['consumer', 'A'],
+        edges: [{ from: 'A', to: 'consumer' }],
+        unresolved: [],
+        duplicateProviders: [duplicate],
+      });
+      assert.deepEqual(eligible, ['consumer', ...providers]);
+      assert.deepEqual([...installedAtById], timestampsBefore);
+      assert.deepEqual(topoSortByDependsOn(result.resolved, cat, result.edges), ['A', 'consumer']);
+    });
+  }
+
+  const tieCases: ReadonlyArray<{
+    readonly name: string;
+    readonly dates?: ReadonlyMap<string, string>;
+  }> = [
+    { name: 'no age map' },
+    { name: 'both absent', dates: new Map() },
+    { name: 'first absent', dates: new Map([['A', '2026-09-01T00:00:00Z']]) },
+    { name: 'second absent', dates: new Map([['B', '2026-09-02T00:00:00Z']]) },
+    { name: 'identical', dates: new Map([['A', '2026-09-01T00:00:00Z'], ['B', '2026-09-01T00:00:00Z']]) },
+    { name: 'equal instants with offsets', dates: new Map([['A', '2026-09-01T00:00:00Z'], ['B', '2026-09-01T02:00:00+02:00']]) },
+    { name: 'first invalid', dates: new Map([['A', '2026-09-01T00:00:00Z'], ['B', 'invalid']]) },
+    { name: 'second invalid', dates: new Map([['A', 'invalid'], ['B', '2026-09-02T00:00:00Z']]) },
+  ];
+  for (const { name, dates } of tieCases) {
+    it(`uses stable input order when timestamps are ${name}`, () => {
+      const resolve = () => resolveEligiblePlugins(['B', 'A', 'consumer'], cat, { installedAtById: dates });
+      const first = resolve();
+      assert.deepEqual(first, resolve());
+      assert.deepEqual(first.resolved, ['B', 'consumer']);
+      assert.deepEqual(first.duplicateProviders, [{
+        droppedId: 'A', keptId: 'B', capability: 'X@1',
+        message: "capability 'X@1' is also provided by 'B' — uninstall one",
+      }]);
+    });
+  }
+
+  it('orders ISO timestamps by instant instead of lexical representation', () => {
+    const result = resolveEligiblePlugins(['B', 'A', 'consumer'], cat, {
+      installedAtById: new Map([
+        ['A', '2026-09-01T02:00:00+03:00'],
+        ['B', '2026-09-01T00:00:00Z'],
+      ]),
+    });
+    assert.deepEqual(result.resolved, ['A', 'consumer']);
+    assert.deepEqual(result.duplicateProviders, [duplicate]);
+  });
+
+  it('single-pass errored mode removes all loser slots and never reports its requires', () => {
+    const multi = makeCatalog([
+      { id: 'B', provides: ['unique@1', 'X@1'], requires: ['missing@1'], depends_on: [] },
+      { id: 'A', provides: ['X@1', 'X@^1'], requires: ['X@^1'], depends_on: [] },
+      { id: 'consumer', provides: [], requires: ['unique@1'], depends_on: [] },
+    ]);
+    const result = resolveCapabilities(['B', 'A', 'consumer'], multi, {
+      onDuplicate: 'errored', installedAtById,
+    });
+    assert.deepEqual(result, {
+      edges: [],
+      unresolved: [{ consumerId: 'consumer', requires: ['unique@1'] }],
+      duplicateProviders: [duplicate],
+    });
+    const iterative = resolveEligiblePlugins(['B', 'A', 'consumer'], multi, { installedAtById });
+    assert.deepEqual(iterative.resolved, ['A']);
+    assert.deepEqual(iterative.duplicateProviders, [duplicate]);
+    assert.deepEqual(iterative.unresolved, result.unresolved);
+  });
+
+  it('keeps the raw colliding provides entry in the operator message', () => {
+    const raw = makeCatalog([
+      { id: 'A', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'B', provides: [' X@^1 '], requires: [], depends_on: [] },
+    ]);
+    assert.deepEqual(resolveEligiblePlugins(['A', 'B'], raw).duplicateProviders, [{
+      ...duplicate,
+      capability: ' X@^1 ',
+      message: "capability ' X@^1 ' is also provided by 'A' — uninstall one",
+    }]);
+  });
+
+  it('skips malformed provides without inventing a duplicate or satisfying a consumer', () => {
+    const malformed = makeCatalog([
+      { id: 'A', provides: ['invalid', 'X@1'], requires: [], depends_on: [] },
+      { id: 'B', provides: ['invalid', 'X@2'], requires: [], depends_on: [] },
+      { id: 'consumer', provides: [], requires: ['invalid@1'], depends_on: [] },
+    ]);
+    const result = resolveEligiblePlugins(['A', 'B', 'consumer', 'unknown'], malformed);
+    assert.deepEqual(result, {
+      resolved: ['A', 'B', 'unknown'],
+      edges: [],
+      unresolved: [{ consumerId: 'consumer', requires: ['invalid@1'] }],
+      duplicateProviders: [],
+    });
+  });
+
+  it('reports every dropped provider across three installations and dependency cascades', () => {
+    const cascade = makeCatalog([
+      { id: 'B', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'C', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'A', provides: ['X@1'], requires: ['missing@1'], depends_on: [] },
+      { id: 'consumer', provides: [], requires: ['X@1'], depends_on: [] },
+    ]);
+    const result = resolveEligiblePlugins(['A', 'B', 'C', 'consumer'], cascade, {
+      installedAtById: new Map([...installedAtById, ['C', '2026-09-03T00:00:00Z']]),
+    });
+    assert.deepEqual(result.resolved, []);
+    assert.deepEqual(result.edges, []);
+    assert.deepEqual(result.duplicateProviders, [duplicate, { ...duplicate, droppedId: 'C' }]);
+    assert.deepEqual(result.unresolved, [
+      { consumerId: 'A', requires: ['missing@1'] },
+      { consumerId: 'consumer', requires: ['X@1'] },
+    ]);
+  });
+
+  it('resolves an empty eligible set in both modes', () => {
+    assert.deepEqual(resolveEligiblePlugins([], cat), {
+      resolved: [], edges: [], unresolved: [], duplicateProviders: [],
+    });
+    assert.deepEqual(resolveCapabilities([], cat, { onDuplicate: 'errored' }), {
+      edges: [], unresolved: [], duplicateProviders: [],
+    });
+  });
+
+  it('rebuilds after a collision winner loses another slot and retains both diagnostics', () => {
+    const overlapping = makeCatalog([
+      { id: 'A', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'B', provides: ['X@1', 'Y@1'], requires: [], depends_on: [] },
+      { id: 'C', provides: ['Y@1'], requires: [], depends_on: [] },
+      { id: 'consumer', provides: [], requires: ['X@1'], depends_on: [] },
+    ]);
+    const result = resolveEligiblePlugins(['A', 'B', 'C', 'consumer'], overlapping, {
+      installedAtById: new Map([
+        ['A', '2026-09-03T00:00:00Z'],
+        ['B', '2026-09-02T00:00:00Z'],
+        ['C', '2026-09-01T00:00:00Z'],
+      ]),
+    });
+    assert.deepEqual(result, {
+      resolved: ['C'],
+      edges: [],
+      unresolved: [{ consumerId: 'consumer', requires: ['X@1'] }],
+      duplicateProviders: [
+        { droppedId: 'A', keptId: 'B', capability: 'X@1',
+          message: "capability 'X@1' is also provided by 'B' — uninstall one" },
+        { droppedId: 'B', keptId: 'C', capability: 'Y@1',
+          message: "capability 'Y@1' is also provided by 'C' — uninstall one" },
+      ],
+    });
+  });
+
+  it('uses deterministic pairwise fallback with mixed dated and undated providers', () => {
+    const mixed = makeCatalog([
+      { id: 'A', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'B', provides: ['X@1'], requires: [], depends_on: [] },
+      { id: 'C', provides: ['X@1'], requires: [], depends_on: [] },
+    ]);
+    const resolve = () => resolveEligiblePlugins(['A', 'B', 'C'], mixed, {
+      installedAtById: new Map([
+        ['A', '2026-09-03T00:00:00Z'], ['C', '2026-09-01T00:00:00Z'],
+      ]),
+    });
+    const result = resolve();
+    assert.deepEqual(result, resolve());
+    assert.deepEqual(result.resolved, ['C']);
+    assert.deepEqual(result.duplicateProviders, [
+      duplicate,
+      { droppedId: 'A', keptId: 'C', capability: 'X@1',
+        message: "capability 'X@1' is also provided by 'C' — uninstall one" },
+    ]);
   });
 });
 

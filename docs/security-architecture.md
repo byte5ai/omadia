@@ -98,7 +98,7 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | `--strict-mcp-config --mcp-config <0600 file>` | Only omadia's loopback server; no MCP servers from the user's own config. |
 | `--allowedTools mcp__omadia__*` | Pre-approves omadia's tools so the turn does not stall on a prompt. |
 | `--system-prompt <omadia prompt>` | Replaces the CLI's default prompt. With `--append-system-prompt` the model kept Claude Code's identity, treated the CLI toolbox as its own and told users in the omadia chat to "go to omadia" (#992). `composeCliSystemPrompt()` always states the runtime and the only toolset the model has. |
-| `--restricted` (#1014) | Removes the code-running built-ins and WebFetch unless `--tools` names them, ignores user/project/local settings files, and confines the file tools. Additive belt over `--tools ""`. Chosen over `--bare`, which also skips `CLAUDE.md` discovery but reads neither OAuth nor the keychain — it would break the keyless subscription login outright. |
+| `--restricted` (#1014, version-gated since OM-85) | Removes the code-running built-ins and WebFetch unless `--tools` names them, ignores user/project/local settings files, and confines the file tools. Additive belt over `--tools ""`. Chosen over `--bare`, which also skips `CLAUDE.md` discovery but reads neither OAuth nor the keychain — it would break the keyless subscription login outright. **Passed only when the installed CLI is ≥ 2.1.248** (`resolveCliVersion()` probes `claude --version`, cached 5 min; `supportsRestrictedFlag()`): older CLIs do not ignore an unknown flag, they exit 1 with `unknown option`, which killed every turn on a 2.1.246 install (OM-85). On every spawn, regardless of version, the env twin `CLAUDE_CODE_RESTRICTED=1` is set — a CLI that knows it gets the same boundary, one that does not ignores the key. **Deliberate trade-off:** an unknown or unparsable version means the flag is left out, i.e. one protective layer fewer (the three layers `--tools ""`, `--disallowedTools`, `dontAsk` still hold), rather than a dead subscription path. A CLI that rejects one of *our* flags surfaces as `CliIncompatibleError` (`code: cli_incompatible`) with the update instruction, not as a failed answer. |
 | `cwd` = empty temp dir (#1014) | The CLI **hardcodes** `CLAUDE.md` / `AGENTS.md` discovery and only `--bare` skips it, so no flag closes this. Without a `cwd` the child inherited the middleware process's directory and any `CLAUDE.md` at or above it joined a prompt built from user content. Both sites now spawn in a per-turn temp dir holding nothing but the mcp-config. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
@@ -846,10 +846,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new sub-agent tool is scope-locked at construction time.
 - [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
       `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
-      `--restricted`, `--strict-mcp-config`, `--system-prompt`), the empty
-      `cwd`, the env allowlist, and their tests (§3a). Both sites build argv
-      from `cliSpawnGate.ts` — a new spawn site must use it too, not copy the
-      flags.
+      `--restricted` where the CLI version allows it plus the
+      `CLAUDE_CODE_RESTRICTED=1` env twin, `--strict-mcp-config`,
+      `--system-prompt`), the empty `cwd`, the env allowlist, and their tests
+      (§3a). Both sites build argv from `cliSpawnGate.ts` — a new spawn site
+      must use it too, not copy the flags — and pass the resolved CLI version
+      into it (OM-85): a new flag that an older CLI may not know needs the same
+      version gate, never an unconditional argv entry.
 - [ ] A new CLI version has been run against the deny-list drift guard
       (`cliSpawnGate.test.ts`) **on a machine where that version is installed**,
       and ideally the live probe (`OMADIA_CLI_LIVE_PROBE=1`), before the

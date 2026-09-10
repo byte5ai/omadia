@@ -16,7 +16,7 @@ import type {
   PluginCatalogEntry,
 } from '../src/plugins/manifestLoader.js';
 import { InstallService } from '../src/plugins/installService.js';
-import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { blockActivation, type InstalledAgent, type InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { SecretVault } from '../src/secrets/vault.js';
 
 const MANIFEST = {
@@ -76,17 +76,25 @@ function makeDeps() {
   } as unknown as PluginCatalog;
 
   const config = new Map<string, Record<string, unknown>>();
-  const installed = new Set<string>();
+  const installed = new Map<string, InstalledAgent>();
   const registry = {
     list: () => [],
-    get: (id: string) =>
-      installed.has(id) ? { id, config: config.get(id) ?? {} } : undefined,
+    get: (id: string) => {
+      const entry = installed.get(id);
+      return entry ? { ...entry, config: config.get(id) ?? {} } : undefined;
+    },
     has: (id: string) => installed.has(id),
-    register: async (e: { id: string; config?: Record<string, unknown> }) => {
-      installed.add(e.id);
+    register: async (e: InstalledAgent) => {
+      installed.set(e.id, e);
       config.set(e.id, e.config ?? {});
     },
     remove: async () => {},
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = installed.get(id);
+      if (current) {
+        installed.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
+    },
     markActivationFailed: async () => {},
     markActivationSucceeded: async () => {},
     updateConfig: async (id: string, c: Record<string, unknown>) => {

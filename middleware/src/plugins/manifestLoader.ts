@@ -49,13 +49,22 @@ import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
  */
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-// `PLUGIN_MANIFEST_DIR` is set in the Docker image so the loader does not
-// depend on the compiled-JS path resolving to the repo root (which it does in
-// dev, but not in the production container where `middleware/` has been
-// flattened into `/app/`). Falls back to the repo-root-relative path for dev.
-const DEFAULT_MANIFEST_DIR =
-  process.env['PLUGIN_MANIFEST_DIR'] ??
-  path.join(REPO_ROOT, 'docs', 'harness-platform', 'examples');
+// OM-93 — this gitignored, local-only source is optional. Keep the fallback
+// separate from PLUGIN_MANIFEST_DIR: the Docker image explicitly configures
+// its source because its compiled layout differs, and a missing configured
+// directory is an operator error worth warning about, not an optional source.
+const DEFAULT_MANIFEST_DIR = path.join(
+  REPO_ROOT, 'docs', 'harness-platform', 'examples',
+);
+
+export interface UnknownPermissionKeys {
+  readonly pluginId: string;
+  readonly keys: readonly string[];
+}
+
+export type UnknownPermissionReporter = (
+  diagnostics: readonly UnknownPermissionKeys[],
+) => void;
 
 /**
  * Where a catalog entry came from — issue #794.
@@ -79,6 +88,8 @@ export type PluginOrigin = 'bundled' | 'installed';
 
 export interface PluginCatalogOptions {
   manifestDir?: string;
+  /** OM-89 — receives one batch per build with unknown keys; absent means warn. */
+  reportUnknownPermissions?: UnknownPermissionReporter;
   /** Additional manifest sources (e.g. extracted zip uploads). Each entry
    *  points at a package-root directory that contains a `manifest.yaml`.
    *  On ID collision with the built-in catalog the uploaded version wins.
@@ -125,8 +136,20 @@ export class PluginCatalog {
   constructor(private readonly options: PluginCatalogOptions = {}) {}
 
   async load(): Promise<void> {
-    const manifestDir = this.options.manifestDir ?? DEFAULT_MANIFEST_DIR;
-    const manifestEntries = await loadManifestV1Entries(manifestDir);
+    const configuredDir =
+      this.options.manifestDir ?? process.env['PLUGIN_MANIFEST_DIR'];
+    const manifestDir = configuredDir ?? DEFAULT_MANIFEST_DIR;
+    // OM-89 — a build owns its diagnostics. A field or module-level accumulator
+    // would carry stale keys across reloads (and mix concurrent catalog builds).
+    const unknownPermissions: UnknownPermissionKeys[] = [];
+    const collectUnknownPermissions: UnknownPermissionReporter = (diagnostics) => {
+      unknownPermissions.push(...diagnostics);
+    };
+    const manifestEntries = await loadManifestV1Entries(
+      manifestDir,
+      { optional: configuredDir === undefined },
+      collectUnknownPermissions,
+    );
     const next = new Map<string, PluginCatalogEntry>();
     for (const entry of manifestEntries) next.set(entry.plugin.id, entry);
 
@@ -134,7 +157,9 @@ export class PluginCatalog {
     const nextBundled = new Set<string>();
     for (const src of extras) {
       const manifestPath = path.join(src.packageRoot, 'manifest.yaml');
-      const entry = await loadManifestFromPath(manifestPath);
+      const entry = await loadManifestFromPath(
+        manifestPath, collectUnknownPermissions,
+      );
       if (entry) {
         // #794 — the origin the CALLER asserted, not one the package claimed.
         const origin = src.origin ?? 'installed';
@@ -150,6 +175,11 @@ export class PluginCatalog {
     }
     this.entries = next;
     this.bundled = nextBundled;
+    if (unknownPermissions.length > 0) {
+      (this.options.reportUnknownPermissions ?? reportUnknownPermissionKeys)(
+        unknownPermissions,
+      );
+    }
   }
 
   list(): PluginCatalogEntry[] {
@@ -187,11 +217,12 @@ export class PluginCatalog {
  */
 export async function loadManifestFromPath(
   absPath: string,
+  reportUnknownPermissions: UnknownPermissionReporter = reportUnknownPermissionKeys,
 ): Promise<PluginCatalogEntry | null> {
   try {
     const raw = await fs.readFile(absPath, 'utf-8');
     const doc = parseYaml(raw) as Record<string, unknown>;
-    const plugin = adaptManifestV1(doc);
+    const plugin = adaptManifestV1(doc, reportUnknownPermissions);
     if (!plugin) return null;
     return {
       plugin,
@@ -215,8 +246,10 @@ export async function loadManifestFromPath(
 
 async function loadManifestV1Entries(
   dir: string,
+  source: { readonly optional: boolean },
+  reportUnknownPermissions: UnknownPermissionReporter,
 ): Promise<PluginCatalogEntry[]> {
-  const files = await safeReadDir(dir);
+  const files = await safeReadDir(dir, source);
   const manifestFiles = files.filter((f) => f.endsWith('.manifest.yaml'));
   const entries: PluginCatalogEntry[] = [];
   for (const name of manifestFiles) {
@@ -224,7 +257,7 @@ async function loadManifestV1Entries(
     try {
       const raw = await fs.readFile(fullPath, 'utf-8');
       const doc = parseYaml(raw) as Record<string, unknown>;
-      const plugin = adaptManifestV1(doc);
+      const plugin = adaptManifestV1(doc, reportUnknownPermissions);
       if (plugin) {
         entries.push({
           plugin,
@@ -264,7 +297,10 @@ const PLUGIN_ID_MAX_LENGTH = 214;
 const PLUGIN_VERSION_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
-export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
+export function adaptManifestV1(
+  doc: Record<string, unknown>,
+  reportUnknownPermissions: UnknownPermissionReporter = reportUnknownPermissionKeys,
+): Plugin | null {
   if (doc['schema_version'] !== '1') return null;
 
   const identity = asRecord(doc['identity']);
@@ -300,6 +336,12 @@ export function adaptManifestV1(doc: Record<string, unknown>): Plugin | null {
   const setup = asRecord(doc['setup']);
   const permissions = asRecord(doc['permissions']);
   const integrations = asArray(doc['integrations']);
+  // OM-89 — direct callers (including upload validation) have no catalog to
+  // flush diagnostics for them. Default to reporting immediately; catalog
+  // builds pass a collector instead, so detection stays data and only the
+  // build boundary reports. Unknown keys still never reject the manifest.
+  const unknownPermissions = collectUnknownPermissionKeys(permissions, id);
+  if (unknownPermissions) reportUnknownPermissions([unknownPermissions]);
 
   const setupFields: PluginSetupField[] = [];
   const setupFieldsRaw = asArray(setup?.['fields']);
@@ -815,7 +857,6 @@ function extractPermissions(
   permissions: Record<string, unknown> | undefined,
   pluginId: string,
 ): PluginPermissionsSummary {
-  warnOnUnknownPermissionKeys(permissions, pluginId);
   const memory = asRecord(permissions?.['memory']);
   const graph = asRecord(permissions?.['graph']);
   const network = asRecord(permissions?.['network']);
@@ -911,7 +952,7 @@ function extractPermissions(
 }
 
 /**
- * Keys this loader understands under `permissions:`. Anything else is a typo,
+ * Keys this core understands under `permissions:`. Anything else is a typo,
  * a key from a newer core, or a key from a core that dropped it — all three of
  * which used to be silently ignored (recorded in `implementation.md` §2.5 as
  * the reason a plugin could declare a permission against an unpatched core and
@@ -923,6 +964,9 @@ function extractPermissions(
  */
 const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
   'events',
+  // OM-89 — a live ctx.scratch gate, read from the raw manifest at activation;
+  // absence from permissions_summary does not make this a retired permission.
+  'filesystem',
   'flows',
   'graph',
   'llm',
@@ -944,19 +988,26 @@ const KNOWN_PERMISSION_KEYS: ReadonlySet<string> = new Set([
  * plugin author needs, and it is the same signal a typo gets.
  */
 
-function warnOnUnknownPermissionKeys(
+function collectUnknownPermissionKeys(
   permissions: Record<string, unknown> | undefined,
   pluginId: string,
+): UnknownPermissionKeys | undefined {
+  if (!permissions) return undefined;
+  const unknown = Object.keys(permissions)
+    .filter((key) => !KNOWN_PERMISSION_KEYS.has(key))
+    .sort();
+  return unknown.length > 0 ? { pluginId, keys: unknown } : undefined;
+}
+
+function reportUnknownPermissionKeys(
+  diagnostics: readonly UnknownPermissionKeys[],
 ): void {
-  if (!permissions) return;
-  const unknown = Object.keys(permissions).filter(
-    (key) => !KNOWN_PERMISSION_KEYS.has(key),
-  );
-  if (unknown.length === 0) return;
+  const pluginIds = [...new Set(diagnostics.map(({ pluginId }) => pluginId))].sort();
+  const keys = [...new Set(diagnostics.flatMap(({ keys }) => keys))].sort();
   console.warn(
-    `[catalog] plugin '${pluginId}' declares unknown permission key(s) ${unknown
+    `[catalog] ${pluginIds.length} plugin(s) declare unknown permission key(s) ${keys
       .map((k) => `permissions.${k}`)
-      .join(', ')} — ignored. Check the spelling, or the core version this ` +
+      .join(', ')}: ${pluginIds.join(', ')} — ignored. Check the spelling, or the core version this ` +
       'manifest was written against.',
   );
 }
@@ -1120,13 +1171,23 @@ function extractIntegrationTargets(integrations: unknown[]): string[] {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-async function safeReadDir(dir: string): Promise<string[]> {
+async function safeReadDir(
+  dir: string,
+  source: { readonly optional: boolean },
+): Promise<string[]> {
   try {
     return await fs.readdir(dir);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
-      console.warn(`[catalog] directory does not exist, skipping: ${dir}`);
+      const message = `[catalog] directory does not exist, skipping: ${dir}`;
+      if (source.optional) {
+        // OM-93 — no debug logger exists in this loader; a missing gitignored
+        // dev source is expected on fresh checkouts, CI and desktop bundles.
+        console.debug(message);
+      } else {
+        console.warn(message);
+      }
       return [];
     }
     throw err;
