@@ -10,8 +10,11 @@ import {
   ApiError,
   getEmbeddingProvider,
   getLocalEmbeddingModel,
+  reactivateEmbeddingProvider,
   startLocalEmbeddingModelFetch,
   switchEmbeddingProvider,
+  type EmbeddingCapabilityGap,
+  type EmbeddingDedupThresholdResult,
   type EmbeddingGateState,
   type EmbeddingProviderOption,
   type EmbeddingProviderState,
@@ -77,6 +80,54 @@ function gateTone(gate: EmbeddingGateState): Tone {
   return gate.vectorWritesAllowed ? 'ok' : 'error';
 }
 
+/**
+ * OM-99 — the message key for a missing capability.
+ *
+ * An older middleware sends no `capabilityGap` at all; that falls back to the
+ * historical wording, which is still the right answer for the keyed adapters
+ * that were the only ones when it was written.
+ */
+function capabilityGapKey(gap: EmbeddingCapabilityGap | null | undefined): string {
+  switch (gap) {
+    case 'missing-weights':
+      return 'capabilityMissingWeights';
+    case 'missing-credentials':
+      return 'capabilityMissingCredentials';
+    case 'no-active-provider':
+      return 'capabilityMissingNoProvider';
+    case 'not-published':
+      return 'capabilityMissingNotPublished';
+    default:
+      return 'capabilityMissing';
+  }
+}
+
+/** The reactivate button plus its busy label. Rendered from two different
+ *  cards, which is why it is not inlined into either. */
+function ReactivateControl({
+  onReactivate,
+  busy,
+  label,
+}: {
+  onReactivate: () => Promise<void>;
+  busy: boolean;
+  label?: string;
+}): React.ReactElement {
+  const t = useTranslations('adminEmbeddingProvider');
+  return (
+    <div className="mt-3">
+      <Button
+        type="button"
+        onClick={() => void onReactivate()}
+        disabled={busy}
+        data-testid="reactivate-provider"
+      >
+        {busy ? t('reactivating') : (label ?? t('reactivateButton'))}
+      </Button>
+    </div>
+  );
+}
+
 /** The middleware's inline error code, when it sent one. */
 function errorCodeOf(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
@@ -112,6 +163,17 @@ export default function EmbeddingProviderPage(): React.ReactElement {
   );
   const [fetchStarting, setFetchStarting] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  /**
+   * OM-98 — "reactivate provider". One button behind two different dead ends
+   * (weights arrived after activation; empty columns at the wrong width), so
+   * its result is reported in full rather than as a spinner that stops.
+   */
+  const [reactivating, setReactivating] = useState(false);
+  const [reactivateError, setReactivateError] = useState<string | null>(null);
+  const [dedupResult, setDedupResult] =
+    useState<EmbeddingDedupThresholdResult | null>(null);
+  const [reactivated, setReactivated] = useState(false);
 
   /** Silent re-read used by both the mount fetch and the poll. Never toggles
    *  `loading`, so a poll cannot make the page flash. */
@@ -168,6 +230,38 @@ export default function EmbeddingProviderPage(): React.ReactElement {
       setFetchStarting(false);
     }
   }, [refresh]);
+
+  const onReactivate = useCallback(async (): Promise<void> => {
+    setReactivating(true);
+    setReactivateError(null);
+    setReactivated(false);
+    setDedupResult(null);
+    try {
+      const result = await reactivateEmbeddingProvider();
+      setState(result);
+      setReactivated(true);
+      setDedupResult(result.dedupThreshold ?? null);
+      // The adapter republishes its fetcher on activation, so the weights card
+      // has to be re-read from the NEW service instance, not the stale one.
+      await refresh();
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === 'embeddingProvider.corpus_not_empty') {
+        setReactivateError(t('reactivateCorpusNotEmpty'));
+      } else if (code === 'embeddingProvider.no_active_provider') {
+        setReactivateError(t('reactivateNoProvider'));
+      } else if (code === 'embeddingProvider.switch_in_progress') {
+        setReactivateError(t('reactivateInProgress'));
+      } else if (err instanceof ApiError && err.status === 403) {
+        setReactivateError(t('forbiddenError'));
+      } else {
+        setReactivateError(err instanceof Error ? err.message : String(err));
+      }
+      await refresh();
+    } finally {
+      setReactivating(false);
+    }
+  }, [refresh, t]);
 
   const candidates = useMemo(
     () => state?.providers.filter((p) => !p.active) ?? [],
@@ -360,9 +454,10 @@ export default function EmbeddingProviderPage(): React.ReactElement {
             </section>
           )}
 
-          {/* Weights arrived while the page was open. The adapter picks them up
-              on its next activation, not retroactively, so say so rather than
-              letting the operator wait for a state that will not change. */}
+          {/* Weights arrived while the page was open. The adapter reads them in
+              its `activate()`, not retroactively — so this used to end on
+              "published on the next activation" with no way to cause one short
+              of a restart. OM-98 gives it the button. */}
           {localModel !== null &&
             localModel.missingFiles.length === 0 &&
             localModel.job.state === 'done' && (
@@ -370,13 +465,99 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                 data-testid="local-model-ready"
                 className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.ok}`}
               >
-                {t('localModelReady')}
+                <p>{t('localModelReady')}</p>
+                {!state.capabilityPublished && (
+                  <ReactivateControl
+                    onReactivate={onReactivate}
+                    busy={reactivating}
+                  />
+                )}
               </section>
             )}
 
+          {/* OM-99 — one box per REASON. The single "no API key or base URL"
+              sentence is true for the keyed adapters and false for the keyless
+              one, which is the adapter that exists so nobody needs a key. */}
           {state.activeProviderId !== null && !state.capabilityPublished && (
-            <section className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}>
-              {t('capabilityMissing')}
+            <section
+              data-testid="capability-missing"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}
+            >
+              {t(capabilityGapKey(state.capabilityGap))}
+            </section>
+          )}
+
+          {/* OM-98 — the width collision, as its own fact. The adapter IS
+              publishing here; the gate is refusing the WRITES. When the
+              columns are empty the fix costs nothing, so it is offered rather
+              than described. */}
+          {state.widthCollision != null && (
+            <section
+              data-testid="width-collision"
+              className={`mb-6 rounded-lg border p-4 text-sm ${
+                state.widthCollision.columnsEmpty === true
+                  ? TONE_CLASS.warn
+                  : TONE_CLASS.error
+              }`}
+            >
+              <p className="font-semibold">{t('widthCollisionTitle')}</p>
+              <p className="mt-1">
+                {t('widthCollisionBody', {
+                  provider: state.widthCollision.providerDimensions ?? 0,
+                  columns: state.widthCollision.columnDimensions ?? 0,
+                })}
+              </p>
+              {state.widthCollision.columnsEmpty === true ? (
+                <>
+                  <p className="mt-1">{t('widthCollisionEmpty')}</p>
+                  <ReactivateControl
+                    onReactivate={onReactivate}
+                    busy={reactivating}
+                    label={t('rebuildColumns')}
+                  />
+                </>
+              ) : (
+                <p className="mt-1">
+                  {state.widthCollision.columnsEmpty === false
+                    ? t('widthCollisionPopulated')
+                    : t('widthCollisionUnknown')}
+                </p>
+              )}
+            </section>
+          )}
+
+          {reactivateError !== null && (
+            <section
+              data-testid="reactivate-error"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}
+            >
+              {reactivateError}
+            </section>
+          )}
+
+          {reactivated && reactivateError === null && (
+            <section
+              data-testid="reactivate-result"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.info}`}
+            >
+              <p>
+                {state.capabilityPublished
+                  ? t('reactivatePublished')
+                  : t('reactivateNotPublished')}
+              </p>
+              {dedupResult !== null && dedupResult.applied && (
+                <p className="mt-1" data-testid="reactivate-dedup">
+                  {t('dedupApplied', { value: dedupResult.value ?? 0 })}
+                </p>
+              )}
+              {dedupResult !== null && dedupResult.reason === 'operator-set' && (
+                <p className="mt-1" data-testid="reactivate-dedup">
+                  {t('dedupOperatorSet', {
+                    current: dedupResult.previous ?? '',
+                    recommended: dedupResult.value ?? 0,
+                  })}
+                </p>
+              )}
             </section>
           )}
 

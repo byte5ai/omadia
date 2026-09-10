@@ -485,9 +485,23 @@ export {
   buildCompletionCliArgv,
   buildGatedCliEnv,
   cliEnvAllowlistFor,
+  // OM-85 — version-gated `--restricted` and the "CLI too old" classification.
+  CLI_RESTRICTED_ENV_KEY,
+  CliIncompatibleError,
+  RESTRICTED_FLAG_MIN_CLI_VERSION,
+  classifyUnknownOptionFailure,
+  clearCliVersionCache,
+  parseCliVersion,
+  resolveCliVersion,
+  supportsRestrictedFlag,
 } from './cliSpawnGate.js';
-export type { CliToolGateOptions, CompletionCliArgvOptions } from './cliSpawnGate.js';
-export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
+export type {
+  CliToolGateOptions,
+  CliVersionExec,
+  CompletionCliArgvOptions,
+} from './cliSpawnGate.js';
+export type { CliChatAgentDeps, CliSpawnLogger, CliUsage } from './cliChatAgent.js';
+export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
 

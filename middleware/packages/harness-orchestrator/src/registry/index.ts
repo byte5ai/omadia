@@ -167,6 +167,9 @@ export interface ActiveAgent {
 
 export class OrchestratorRegistry {
   private readonly active = new Map<string, ActiveAgent>();
+  // JSON encodes the string tuple unambiguously, even when an id contains
+  // a separator, quote, or NUL. Replace per snapshot so recovery re-arms logs.
+  private quarantinedPluginBindings = new Set<string>();
   private platformSettings: PlatformSettingsRow = {
     fallbackAgentId: null,
     updatedAt: new Date(0),
@@ -248,10 +251,10 @@ export class OrchestratorRegistry {
    * (`multi_orchestrator_unavailable` 503) down with it.
    *
    * Instead we demote only the offending binding to `enabled: false` and log
-   * it loudly; the rest of the snapshot validates and publishes, and the
-   * Agent keeps all of its still-installed plugins. This mirrors the
-   * per-Agent build isolation (T022) one layer earlier — at the validation
-   * gate that runs before the diff.
+   * its transition into quarantine; the rest of the snapshot validates and
+   * publishes, and the Agent keeps all of its still-installed plugins. This
+   * mirrors the per-Agent build isolation (T022) one layer earlier — at the
+   * validation gate that runs before the diff.
    *
    * Only a definite `isInstalled === false` is quarantined. `undefined`
    * ("the platform has no opinion") and a missing `pluginLookup` are left
@@ -264,24 +267,45 @@ export class OrchestratorRegistry {
   ): ConfigSnapshot {
     const lookup = this.options.pluginLookup;
     const isInstalled = lookup?.isInstalled?.bind(lookup);
-    if (!isInstalled) return snap;
+    if (!isInstalled) {
+      this.quarantinedPluginBindings.clear();
+      return snap;
+    }
 
-    let demoted = 0;
+    const previous = this.quarantinedPluginBindings;
+    const quarantined = new Set<string>();
+    let newlyQuarantined = 0;
     const agentPlugins = snap.agentPlugins.map((row) => {
       if (!row.enabled) return row;
       if (isInstalled(row.pluginId) !== false) return row;
-      demoted += 1;
-      this.log(`registry: plugin not installed — disabling binding`, {
-        agentId: row.agentId,
-        pluginId: row.pluginId,
-      });
+      const key = JSON.stringify([row.agentId, row.pluginId]);
+      if (!previous.has(key) && !quarantined.has(key)) {
+        newlyQuarantined += 1;
+        this.log(`registry: plugin not installed — disabling binding`, {
+          agentId: row.agentId,
+          pluginId: row.pluginId,
+        });
+      }
+      quarantined.add(key);
       return { ...row, enabled: false };
     });
 
-    if (demoted === 0) return snap;
-    this.log(`registry: quarantined unsatisfiable plugin binding(s)`, {
-      count: demoted,
-    });
+    let noLongerQuarantined = 0;
+    for (const key of previous) {
+      if (!quarantined.has(key)) noLongerQuarantined += 1;
+    }
+    this.quarantinedPluginBindings = quarantined;
+    if (newlyQuarantined > 0 || noLongerQuarantined > 0) {
+      // "No longer" also covers removed/disabled bindings, not just plugins
+      // that recovered. A changed set can have the same total as before.
+      this.log(`registry: quarantined unsatisfiable plugin binding(s)`, {
+        newlyQuarantined,
+        noLongerQuarantined,
+        totalQuarantined: quarantined.size,
+      });
+    }
+
+    if (quarantined.size === 0) return snap;
     return { ...snap, agentPlugins };
   }
 
