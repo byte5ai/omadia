@@ -129,6 +129,7 @@ export type ChannelUserKind =
   | 'discord-user'
   | 'whatsapp-phone'
   | 'telegram-chat'
+  | 'imessage-handle' // Apple iMessage (phone/email handle via provider)
   | 'custom';
 
 export interface IncomingAttachment {

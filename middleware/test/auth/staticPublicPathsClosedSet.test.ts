@@ -74,6 +74,15 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
     why: 'Bot Framework webhook — the adapter validates the Bot-issued JWT in the handler',
   },
   {
+    path: '/api/imessage/webhook/token',
+    why:
+      'Sendblue iMessage webhook + answer links (#410) — the plugin verifies its ' +
+      'shared secret / capability token in the handler. One row per entry, so ' +
+      'this row names ONE of the three route families the entry admits ' +
+      '(webhook|a|answers); the other two, and the siblings that must stay ' +
+      'gated, are pinned in channelImessage/publicPathsExemption.test.ts',
+  },
+  {
     // Built from the shared builder, for the reason stated above this array:
     // this path exists in exactly one place (platform/teamsMessagingPath.ts),
     // which is what keeps the provisioned URL and the exemption in step.
