@@ -294,12 +294,27 @@ if (stillDangling !== 0) {
 // is missing, then gate on a clean re-scan — the same shape as the symlink
 // gate above, for the same reason: a guard that only fixes cannot notice when
 // the fix stopped working.
-const { fixed } = ensureOwnerWritable(runtime);
+const { fixed, unreadable: fixUnreadable } = ensureOwnerWritable(runtime);
 if (fixed.length > 0) {
   console.log(`[stage-runtime] made ${fixed.length} read-only entr${fixed.length === 1 ? 'y' : 'ies'} owner-writable:`);
   for (const rel of fixed) console.log(`  ${rel}`);
 }
-const stillReadOnly = findReadOnlyEntries(runtime);
+const { offenders: stillReadOnly, unreadable: scanUnreadable } = findReadOnlyEntries(runtime);
+// Cato-Audit Runde 5 / OM-86 follow-up: a path the walk could not read is NOT
+// a path it found clean. Both walks used to swallow those errors and return an
+// empty list, so an unreadable directory produced a green gate over an
+// uninspected subtree — the same silent pass, one level up. Checked before the
+// offender list because an incomplete scan makes that list meaningless.
+const unreadable = [...new Set([...fixUnreadable, ...scanUnreadable])];
+if (unreadable.length !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${unreadable.length} path${unreadable.length === 1 ? '' : 's'} under the staged ` +
+      'tree could not be inspected for the owner-write bit — refusing to stage a tree the OM-86 gate ' +
+      'could not fully scan:',
+  );
+  for (const rel of unreadable) console.error(`  ${rel}`);
+  process.exit(1);
+}
 if (stillReadOnly.length !== 0) {
   console.error(
     `[stage-runtime] FATAL: ${stillReadOnly.length} read-only entr${stillReadOnly.length === 1 ? 'y' : 'ies'} ` +

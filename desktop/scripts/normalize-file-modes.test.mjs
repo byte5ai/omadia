@@ -32,9 +32,10 @@ function makeTree() {
 
 test('finds the one read-only file the release archive shipped', () => {
   const { root } = makeTree();
-  assert.deepEqual(findReadOnlyEntries(root), [
-    path.join('omadia-pg', 'lib', 'postgresql', 'vector.dylib'),
-  ]);
+  assert.deepEqual(findReadOnlyEntries(root), {
+    offenders: [path.join('omadia-pg', 'lib', 'postgresql', 'vector.dylib')],
+    unreadable: [],
+  });
 });
 
 test('adds the owner-write bit and keeps every other permission bit', () => {
@@ -44,7 +45,11 @@ test('adds the owner-write bit and keeps every other permission bit', () => {
   assert.deepEqual(fixed, [path.join('omadia-pg', 'lib', 'postgresql', 'vector.dylib')]);
   assert.equal(fs.statSync(dylib).mode & 0o777, 0o644, 'r--r--r-- becomes rw-r--r--');
   assert.equal(fs.statSync(normal).mode & 0o777, 0o644, 'already-writable files are untouched');
-  assert.deepEqual(findReadOnlyEntries(root), [], 'the scan finds nothing afterwards');
+  assert.deepEqual(
+    findReadOnlyEntries(root),
+    { offenders: [], unreadable: [] },
+    'the scan finds nothing afterwards',
+  );
 });
 
 test('fixes a read-only directory as well as a file', () => {
@@ -72,3 +77,45 @@ test('never follows or touches a symlink', { skip: process.platform === 'win32' 
   assert.ok(!fixed.includes(path.relative(root, link)), 'the link is not reported');
   assert.ok(fixed.includes(path.relative(root, target)), 'the target is fixed via its own entry');
 });
+
+// Cato-Audit Runde 5 / OM-86 follow-up — an unreadable directory used to make
+// both walks return an EMPTY list, which stage-runtime.mjs reads as "clean".
+// A guard that reports success over a subtree it never opened is worse than no
+// guard, because it is believed. Skipped as root (who can read a 0000
+// directory) and on win32 (no POSIX directory permissions).
+const skipUnreadable =
+  process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0);
+
+test(
+  'reports a directory it cannot traverse instead of calling it clean',
+  { skip: skipUnreadable },
+  () => {
+    const { root } = makeTree();
+    const locked = path.join(root, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'hidden.dylib'), 'x');
+    fs.chmodSync(path.join(locked, 'hidden.dylib'), 0o444);
+    fs.chmodSync(locked, 0o000);
+
+    try {
+      const scan = findReadOnlyEntries(root);
+      assert.equal(
+        scan.unreadable.length,
+        1,
+        `expected one unreadable path, got ${JSON.stringify(scan.unreadable)}`,
+      );
+      assert.ok(scan.unreadable[0].startsWith('locked'), scan.unreadable[0]);
+      // The read-only file inside it is invisible — which is exactly why an
+      // empty offender list must not be read as a pass.
+      assert.ok(!scan.offenders.some((o) => o.includes('hidden.dylib')));
+
+      const fix = ensureOwnerWritable(root);
+      assert.ok(
+        fix.unreadable.some((u) => u.startsWith('locked')),
+        `expected 'locked' in ${JSON.stringify(fix.unreadable)}`,
+      );
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  },
+);

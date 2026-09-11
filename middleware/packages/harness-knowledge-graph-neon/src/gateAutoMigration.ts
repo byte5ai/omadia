@@ -72,10 +72,13 @@ export async function tryAutoMigrateColumns(args: {
    * halfway through. The mechanic, because the gate's emptiness check runs
    * BEFORE `migrateVectorColumns` takes the advisory lock, so a concurrent
    * backfill tick could embed rows into the window between them: `false` is
-   * therefore forwarded as `requireEmpty`, which re-checks under the lock and
-   * aborts with `corpus-not-empty` instead of dropping the column. Without
-   * that the promise this flag makes — "no stored embedding is lost, because
-   * there is none" — would hold only when nothing raced it.
+   * therefore forwarded as `requireEmpty`, which re-checks TABLE-WIDE inside
+   * the DDL transaction behind `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` and
+   * aborts with `corpus-not-empty` (or `emptiness-unknown`, when the probe
+   * itself could not be taken) instead of dropping the column. Without that
+   * the promise this flag makes — "no stored embedding is lost, because there
+   * is none" — would hold only when nothing raced it, and only for the tenant
+   * that asked (Cato-Audit Runde 5 / OM-98: the columns are shared).
    */
   destructive: boolean;
   switchCooldownMs: number;

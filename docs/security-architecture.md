@@ -832,6 +832,48 @@ source and requires the suite to go red.
 
 ---
 
+## 10a. A tenant-scoped check may not authorise a table-wide statement (OM-98, Cato-Audit Runde 5)
+
+The knowledge graph keeps every tenant in the SAME physical tables —
+`graph_nodes` and `processes` carry a `tenant_id` **column**, not a schema or a
+database per tenant (`middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql`).
+Any `ALTER TABLE … DROP COLUMN` on them is therefore a cross-tenant statement,
+whoever triggered it.
+
+The non-destructive vector-column rebuild (the OM-98 "reactivate a provider
+stuck behind a width mismatch" path) checked its precondition with
+`WHERE tenant_id = $1` and executed without one. A tenant that had never
+embedded anything read as *empty*, and that verdict authorised dropping every
+other tenant's embeddings. Two properties now hold instead, and both are the
+general rule, not a one-off patch:
+
+1. **The precondition is scoped like the statement it guards.** The emptiness
+   probe is table-wide, with no `tenant_id` predicate
+   (`vectorCorpusEmptiness.ts`, `vectorColumnCatalog.ts::hasAnyVectorTableWide`).
+2. **The precondition is re-taken where the statement runs.** It is evaluated
+   inside the DDL transaction, after
+   `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` — the advisory lock the run holds
+   does not exclude `embeddingBackfill`, which writes vectors without taking it,
+   so a check in its own transaction was a second race rather than a fix for
+   the first. A probe that cannot be taken refuses as `emptiness-unknown`,
+   which is deliberately NOT `corpus-not-empty`: a lock timeout must not read
+   as "your corpus is populated, confirm the discard".
+
+Serialisation follows the same scoping rule. The rebuild holds a **global**
+advisory lock (`LOCK_NS_COLUMN_REBUILD`, key `vector-column-migration`) in
+addition to the tenant-scoped registry lock, because two tenants holding two
+different tenant keys could otherwise rewrite the same physical column at once.
+A hand-written migration in the `0005_turn_embeddings_768.sql` style takes
+neither lock — run it with the middleware stopped.
+
+Tests: `middleware/test/embeddingColumnMigrationGuard.test.ts` (fake driver:
+the scoped and table-wide probes answer differently on purpose, so a regression
+changes the verdict rather than staying green) and
+`middleware/test/embeddingModelGateMigrationGuards.pg.test.ts` (real Postgres:
+an empty tenant beside a populated neighbour, and the global lock).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

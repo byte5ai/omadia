@@ -194,7 +194,7 @@ async function tryAcquireMigrationLock(client: PoolClient): Promise<boolean> {
   );
   // A fake/limited driver that does not model advisory locks returns no row;
   // treat that as acquired so unit tests still exercise the migrations. Mirrors
-  // `tryAcquireRegistryLock` in @omadia/knowledge-graph-neon.
+  // `tryAcquireLock` in @omadia/knowledge-graph-neon.
   const row = result.rows[0];
   return row === undefined || row.locked !== false;
 }

@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 
-import { hasAnyVector } from './vectorColumnCatalog.js';
+import { hasAnyVectorTableWide } from './vectorColumnCatalog.js';
 import type { GovernedVectorColumn } from './embeddingModelGate.js';
 
 /**
@@ -24,11 +24,19 @@ import type { GovernedVectorColumn } from './embeddingModelGate.js';
  * place, but only one of them is a fact — folding them together would have the
  * log tell an operator their corpus is non-empty when the truth is that the
  * count timed out.
+ *
+ * WHY THERE IS NO `tenantId` PARAMETER — Cato-Audit Runde 5 / OM-98. It used
+ * to take one and count `WHERE tenant_id = $1`. The operation this authorises
+ * is `ALTER TABLE graph_nodes DROP COLUMN embedding` on a table every tenant
+ * SHARES (`migrations/0001_graph_init.sql` — one physical table, `tenant_id`
+ * as a column), so a per-tenant answer authorised a table-wide destruction:
+ * any tenant that had never embedded anything read as "empty" and licensed the
+ * deletion of every other tenant's vectors. The precondition has to be scoped
+ * like the DDL it guards, which is table-wide.
  */
 export async function areGovernedColumnsEmpty(
   pool: Pool,
   columns: readonly GovernedVectorColumn[],
-  tenantId: string,
   statementTimeoutMs: number,
 ): Promise<boolean | undefined> {
   if (columns.length === 0) return true;
@@ -42,7 +50,7 @@ export async function areGovernedColumnsEmpty(
     await client.query(
       `SET LOCAL statement_timeout = ${String(Math.max(1, Math.floor(statementTimeoutMs)))}`,
     );
-    const has = await hasAnyVector(client, targets, tenantId);
+    const has = await hasAnyVectorTableWide(client, targets);
     await client.query('COMMIT');
     return !has;
   } catch {

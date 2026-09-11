@@ -5356,6 +5356,7 @@
     "discardTitle": "Damit ist der gespeicherte Korpus weg",
     "discardCount": "{count, plural, =0 {Aktuell ist nichts gespeichert, es gehen also keine Vektoren verloren.} one {# gespeicherter Vektor wird verworfen und neu berechnet.} other {# gespeicherte Vektoren werden verworfen und neu berechnet.}}",
     "discardUnknown": "Die Zahl der gespeicherten Vektoren war nicht lesbar. Geh davon aus, dass der komplette Korpus verworfen und neu berechnet wird.",
+    "discardAllTenants": "Der Umbau droppt die Vektorspalte selbst und legt sie neu an — und diese Spalte ist geteilt: Der Knowledge Graph hält alle Mandanten in denselben physischen Tabellen. Es fallen die Embeddings aller Mandanten weg, nicht nur die oben gezählten, und jedes davon holt der Backfill-Sweep neu ein.",
     "costWarning": "Für jede Zeile geht ein Provider-Call raus. Bei einer kostenpflichtigen API kostet das echtes Geld.",
     "confirmLabel": "Mir ist klar, dass die gespeicherten Vektoren verworfen und neu berechnet werden.",
     "switchButton": "Provider wechseln",

@@ -5356,6 +5356,7 @@
     "discardTitle": "This discards the stored corpus",
     "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
     "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "discardAllTenants": "The rebuild drops and re-adds the vector column itself, and that column is shared: the knowledge graph keeps every tenant in the same physical tables. Every tenant's embeddings go, not only the ones counted above, and every one of them is re-earned by the backfill sweep.",
     "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
     "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
     "switchButton": "Switch provider",

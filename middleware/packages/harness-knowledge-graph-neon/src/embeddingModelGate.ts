@@ -432,21 +432,23 @@ export async function resolveColumnMigrationPermission(args: {
     return { allowed: false, destructive: true, empty: undefined };
   }
 
+  // Cato-Audit Runde 5 / OM-98: TABLE-WIDE, deliberately not scoped to
+  // `args.tenantId`. The rewrite it permits is a `DROP COLUMN` on a table all
+  // tenants share, so an empty tenant must not be able to authorise it.
   const empty = await areGovernedColumnsEmpty(
     args.pool,
     args.mismatches,
-    args.tenantId,
     args.statementTimeoutMs,
   );
   if (empty === true) {
     args.log(
-      `[graph-embedding-gate] OM-98: every mismatching vector column is EMPTY for tenant '${args.tenantId}' — rewriting them at the active provider's width discards nothing, so the operator-requested reactivation may proceed without a provider switch and without a discard confirmation.`,
+      `[graph-embedding-gate] OM-98: every mismatching vector column is EMPTY across the whole table (all tenants) — rewriting them at the active provider's width discards nothing, so the reactivation requested by tenant '${args.tenantId}' may proceed without a provider switch and without a discard confirmation.`,
     );
     return { allowed: true, destructive: false, empty: true };
   }
   args.log(
     empty === false
-      ? '[graph-embedding-gate] OM-98: the reactivation asked to rebuild the vector columns, but they still hold vectors — refusing. Use Admin → Embedding provider and confirm the discard, which is the path that is allowed to destroy a corpus.'
+      ? '[graph-embedding-gate] OM-98: the reactivation asked to rebuild the vector columns, but they still hold vectors somewhere in the table (the columns are shared by every tenant, so this may be another tenant\'s corpus) — refusing. Use Admin → Embedding provider and confirm the discard, which is the path that is allowed to destroy a corpus.'
       : '[graph-embedding-gate] OM-98: the reactivation asked to rebuild the vector columns, but whether they are empty could not be established (the probe failed or timed out) — refusing. An unanswerable count is not evidence of an empty corpus.',
   );
   return { allowed: false, destructive: true, empty };
