@@ -55,6 +55,12 @@ interface ProbePool {
  * A pool whose only interesting statement is the emptiness probe.
  * `hasVectors: undefined` makes it throw, which is what a `statement_timeout`
  * on the probe looks like from here.
+ *
+ * Cato-Audit Runde 5 / OM-98: the fake answers a TENANT-SCOPED probe and a
+ * TABLE-WIDE probe differently, so a regression back to `WHERE tenant_id = $1`
+ * shows up as a wrong verdict rather than as an identical green test. The
+ * scoped answer is always "this tenant owns nothing" — the empty-tenant case
+ * that used to authorise dropping every other tenant's embeddings.
  */
 function makeProbePool(hasVectors: boolean | undefined): ProbePool {
   const state: ProbePool = { pool: undefined as unknown as Pool, sql: [], released: 0 };
@@ -66,6 +72,7 @@ function makeProbePool(hasVectors: boolean | undefined): ProbePool {
         (err as Error & { code?: string }).code = '57014';
         throw err;
       }
+      if (/tenant_id/i.test(text)) return rows([{ has_vectors: false }]);
       return rows([{ has_vectors: hasVectors }]);
     }
     return rows([]);
@@ -87,7 +94,7 @@ describe('OM-98 areGovernedColumnsEmpty', () => {
   it('answers true without touching the database for an empty target list', async () => {
     const probe = makeProbePool(false);
 
-    assert.equal(await areGovernedColumnsEmpty(probe.pool, [], 't1', 1_000), true);
+    assert.equal(await areGovernedColumnsEmpty(probe.pool, [], 1_000), true);
     // Nothing to probe is not a reason to open a connection.
     assert.equal(probe.sql.length, 0);
   });
@@ -95,7 +102,7 @@ describe('OM-98 areGovernedColumnsEmpty', () => {
   it('reports an empty corpus as empty, in its own transaction', async () => {
     const probe = makeProbePool(false);
 
-    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 't1', 1_000), true);
+    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 1_000), true);
     // Own BEGIN + SET LOCAL: a probe run for a decision must never be able to
     // wedge the evaluation it informs.
     assert.ok(probe.sql.some((s) => /^BEGIN$/.test(s)));
@@ -107,7 +114,23 @@ describe('OM-98 areGovernedColumnsEmpty', () => {
   it('reports a populated corpus as not empty', async () => {
     const probe = makeProbePool(true);
 
-    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 't1', 1_000), false);
+    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 1_000), false);
+  });
+
+  it('refuses when ANOTHER tenant holds the vectors — Cato-Audit Runde 5 / OM-98', async () => {
+    // The bug, pinned. `graph_nodes` is ONE physical table for every tenant, so
+    // `DROP COLUMN` is table-wide whoever triggers it. The fake answers a
+    // tenant-scoped probe with "nothing here" and a table-wide probe with
+    // "vectors present": tenant A is empty, tenant B is not. A scoped check
+    // returns `true` and licenses the destruction of B's corpus.
+    const probe = makeProbePool(true);
+
+    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 1_000), false);
+    const emptinessProbe = probe.sql.find((s) => /AS has_vectors/i.test(s)) ?? '';
+    assert.ok(
+      !/tenant_id/i.test(emptinessProbe),
+      `the emptiness probe must not be tenant-scoped: ${emptinessProbe}`,
+    );
   });
 
   it('answers undefined — never false — when the probe fails', async () => {
@@ -116,10 +139,7 @@ describe('OM-98 areGovernedColumnsEmpty', () => {
     // out. Both refuse; only one of them is a fact.
     const probe = makeProbePool(undefined);
 
-    assert.equal(
-      await areGovernedColumnsEmpty(probe.pool, MISMATCH, 't1', 1_000),
-      undefined,
-    );
+    assert.equal(await areGovernedColumnsEmpty(probe.pool, MISMATCH, 1_000), undefined);
     assert.ok(probe.sql.some((s) => /^ROLLBACK$/.test(s)));
     assert.equal(probe.released, 1);
   });
@@ -338,14 +358,25 @@ describe('OM-98 master switch over the reactivation path', () => {
  * already been dropped. `requireEmpty` turns the in-lock count into the
  * decision.
  */
-function makeMigrationPool(vectorCount: number | 'timeout'): {
+function makeMigrationPool(
+  vectorCount: number | 'timeout',
+  /** Cato-Audit Runde 5 / OM-98: what a TENANT-SCOPED count would answer. It
+   *  defaults to 0 — the empty-tenant case — so every table-wide expectation
+   *  below fails loudly if the production code ever re-adds the tenant filter. */
+  tenantVectorCount = 0,
+): {
   pool: Pool;
   sql: string[];
+  lockKeys: string[];
 } {
   const sql: string[] = [];
-  const query = async (text: string): Promise<QueryResult> => {
+  const lockKeys: string[] = [];
+  const query = async (text: string, params?: unknown[]): Promise<QueryResult> => {
     sql.push(text);
-    if (/pg_try_advisory_lock/i.test(text)) return rows([{ locked: true }]);
+    if (/pg_try_advisory_lock/i.test(text)) {
+      lockKeys.push(String(params?.[1] ?? ''));
+      return rows([{ locked: true }]);
+    }
     if (/pg_advisory_unlock/i.test(text)) return rows([{ unlocked: true }]);
     if (/FROM pg_attribute/i.test(text)) {
       return rows([
@@ -357,13 +388,18 @@ function makeMigrationPool(vectorCount: number | 'timeout'): {
         },
       ]);
     }
-    if (/count\(\*\) AS n/i.test(text)) {
+    // The tenant-scoped count survives only as the best-effort log line.
+    if (/count\(\*\) AS n/i.test(text)) return rows([{ n: String(tenantVectorCount) }]);
+    // The GATE is the table-wide EXISTS probe; the two answer differently on
+    // purpose, so a regression back to a tenant filter changes the verdict.
+    if (/AS has_vectors/i.test(text)) {
       if (vectorCount === 'timeout') {
         const err = new Error('canceling statement due to statement timeout');
         (err as Error & { code?: string }).code = '57014';
         throw err;
       }
-      return rows([{ n: String(vectorCount) }]);
+      if (/tenant_id/i.test(text)) return rows([{ has_vectors: false }]);
+      return rows([{ has_vectors: vectorCount > 0 }]);
     }
     if (/FROM graph_embedding_model/i.test(text)) {
       return rows([
@@ -386,8 +422,12 @@ function makeMigrationPool(vectorCount: number | 'timeout'): {
       } as unknown as PoolClient;
     },
   } as unknown as Pool;
-  return { pool, sql };
+  return { pool, sql, lockKeys };
 }
+
+/** Index of the first statement matching `re`, or -1. */
+const at = (sql: readonly string[], re: RegExp): number =>
+  sql.findIndex((s) => re.test(s));
 
 const MIGRATION_OPTS = {
   tenantId: 't1',
@@ -410,12 +450,51 @@ describe('OM-98 migrateVectorColumns requireEmpty', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.ok === false && result.reason, 'corpus-not-empty');
-    assert.ok(result.ok === false && /17 vector\(s\)/.test(result.detail));
+    assert.ok(result.ok === false && /still holds vectors/.test(result.detail));
     assert.deepEqual(result.migrated, []);
     // The column is the point: nothing may be dropped on this path, ever.
     assert.ok(!sql.some((s) => /DROP COLUMN/i.test(s)));
-    // …and the refusal costs one SELECT, not an index capture.
-    assert.ok(!sql.some((s) => /pg_get_indexdef/i.test(s)));
+    assert.ok(!sql.some((s) => /DROP INDEX/i.test(s)));
+    // Cato-Audit Runde 5 / OM-98: the deciding count runs INSIDE the DDL
+    // transaction and behind a table lock, because the advisory lock this run
+    // holds does not exclude the backfill writer. Out of that transaction it
+    // was just a second racy check.
+    const begin = at(sql, /^BEGIN$/);
+    const lock = at(sql, /LOCK TABLE .* IN SHARE ROW EXCLUSIVE MODE/i);
+    const count = sql.findIndex((s) => /AS has_vectors/i.test(s) && !/tenant_id/i.test(s));
+    assert.ok(begin >= 0 && lock > begin, 'the table lock belongs inside the transaction');
+    assert.ok(count > lock, 'the deciding probe must be taken after the table lock');
+    assert.ok(sql.some((s) => /^ROLLBACK$/.test(s)), 'the refusal rolls its transaction back');
+  });
+
+  it('refuses when the vectors belong to ANOTHER tenant — Cato-Audit Runde 5 / OM-98', async () => {
+    // This tenant owns nothing (`tenantVectorCount` 0); the shared table holds
+    // 9 vectors for somebody else. The old guard counted `WHERE tenant_id = $1`,
+    // read 0, and dropped the column for everyone.
+    const { pool, sql } = makeMigrationPool(9, 0);
+
+    const result = await migrateVectorColumns({
+      ...MIGRATION_OPTS,
+      pool,
+      requireEmpty: true,
+    });
+
+    assert.equal(result.ok === false && result.reason, 'corpus-not-empty');
+    assert.ok(result.ok === false && /every tenant/i.test(result.detail));
+    assert.ok(!sql.some((s) => /DROP COLUMN/i.test(s)), 'no tenant may lose another tenant\'s corpus');
+  });
+
+  it('serialises the rebuild on a key no tenant owns', async () => {
+    // Two tenants hold two different registry keys, so the tenant-scoped lock
+    // alone cannot keep them from rewriting the SAME physical column at the
+    // same time. A second, constant key does.
+    const { pool, lockKeys } = makeMigrationPool(0);
+
+    await migrateVectorColumns({ ...MIGRATION_OPTS, pool, requireEmpty: true });
+
+    assert.equal(lockKeys.length, 2, `expected two advisory locks, got ${JSON.stringify(lockKeys)}`);
+    assert.equal(lockKeys[0], 'vector-column-migration', 'the global rebuild lock is taken first');
+    assert.equal(lockKeys[1], 't1', 'the tenant registry lock still contends with decideRegistry');
   });
 
   it('aborts when the in-lock count itself could not be established', async () => {
@@ -429,10 +508,13 @@ describe('OM-98 migrateVectorColumns requireEmpty', () => {
       requireEmpty: true,
     });
 
-    assert.equal(result.ok === false && result.reason, 'corpus-not-empty');
+    // A DIFFERENT reason from `corpus-not-empty`: both refuse, but only one of
+    // them is a claim about the corpus, and only one of them should point an
+    // operator at the discard confirmation.
+    assert.equal(result.ok === false && result.reason, 'emptiness-unknown');
     assert.ok(
       result.ok === false && /could not be established/.test(result.detail),
-      'an unanswerable count must not be reported as a count of zero',
+      'an unanswerable probe must not be reported as a probe that said zero',
     );
     assert.ok(!sql.some((s) => /DROP COLUMN/i.test(s)));
   });
@@ -448,11 +530,13 @@ describe('OM-98 migrateVectorColumns requireEmpty', () => {
 
   it('never fires on the operator-confirmed destructive switch', async () => {
     // A confirmed discard is supposed to destroy vectors. Applying the guard
-    // there would break the one path that is allowed to.
-    const { pool, sql } = makeMigrationPool(4_200);
+    // there would break the one path that is allowed to — and it must not take
+    // the extra table lock either, which is the non-destructive path's cost.
+    const { pool, sql } = makeMigrationPool(4_200, 4_200);
 
     await migrateVectorColumns({ ...MIGRATION_OPTS, pool, requireEmpty: false });
 
     assert.ok(sql.some((s) => /DROP COLUMN/i.test(s)));
+    assert.ok(!sql.some((s) => /LOCK TABLE/i.test(s)));
   });
 });

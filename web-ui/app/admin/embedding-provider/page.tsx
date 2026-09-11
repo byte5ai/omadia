@@ -689,6 +689,11 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                         ? t('discardUnknown')
                         : t('discardCount', { count: state.storedVectorTotal })}
                     </p>
+                    {/* Cato-Audit Runde 5 / OM-98: the count above is scoped to
+                        this tenant, but DROP COLUMN is not — the governed
+                        vector columns live on tables every tenant shares. Say
+                        so before the confirmation checkbox, not after. */}
+                    <p className="mt-1">{t('discardAllTenants')}</p>
                     <p className="mt-1">{t('costWarning')}</p>
                     <label className="mt-3 flex items-start gap-2">
                       <input

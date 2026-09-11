@@ -189,7 +189,7 @@ async function tryAcquireMigrationLock(client: PoolClient): Promise<boolean> {
   );
   // A fake/limited driver that does not model advisory locks returns no row;
   // treat that as acquired so unit tests still exercise the migrations. Mirrors
-  // `tryAcquireRegistryLock` in `vectorColumnMigration.ts`.
+  // `tryAcquireLock` in `vectorColumnMigration.ts`.
   const row = result.rows[0];
   return row === undefined || row.locked !== false;
 }

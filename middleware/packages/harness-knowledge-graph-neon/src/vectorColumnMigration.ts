@@ -4,6 +4,7 @@ import { ATTEMPT_RESETS } from './staleVectorClear.js';
 import {
   captureIndexDefs,
   countVectors,
+  hasAnyVectorTableWide,
   indexNameOf,
   quoteIdent,
   readColumnInfo,
@@ -60,7 +61,15 @@ export type { VectorColumnTarget } from './vectorColumnCatalog.js';
  *     the columns are being rewritten. `try` rather than a blocking acquire:
  *     `activate()` is hard-capped at 10s (toolPluginRuntime.ts:286-290) and
  *     waiting out another instance's migration would spend that budget on
- *     nothing;
+ *     nothing. Cato-Audit Runde 5 / OM-98 added a SECOND, GLOBAL key in the
+ *     same namespace (`LOCK_KEY_COLUMN_REBUILD`), taken first: the tenant key
+ *     serialises DECISIONS per tenant, but the rewrite acts on tables every
+ *     tenant shares, so two tenants holding two different tenant keys could
+ *     otherwise `DROP COLUMN` the same physical column at once;
+ *   - the emptiness precondition of the non-destructive path is TABLE-WIDE and
+ *     is re-taken inside the DDL transaction behind
+ *     `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE`. See `requireEmpty` and
+ *     `assertTableWideEmpty`;
  *   - the anti-oscillation cooldown is armed by REGISTRY WRITE RECENCY ALONE.
  *     Registry row written inside `switchCooldownMs` → refused, full stop. It
  *     used to also require "and the corpus still holds vectors", which made the
@@ -123,6 +132,30 @@ export type { VectorColumnTarget } from './vectorColumnCatalog.js';
 /** Advisory-lock namespace shared with the gate's registry transaction. */
 export const LOCK_NS_REGISTRY = 4_400;
 
+/**
+ * Cato-Audit Runde 5 / OM-98 — the advisory lock for the COLUMN REBUILD, held
+ * in addition to the tenant-scoped registry lock below.
+ *
+ * The registry lock is `hashtext(tenantId)` in `LOCK_NS_REGISTRY` and has to
+ * stay that way: it is the key `decideRegistry` takes, so it is what keeps a
+ * model decision from racing a rewrite FOR THE SAME TENANT. But the rewrite
+ * itself is not a tenant-scoped operation at all — `graph_nodes` is one
+ * physical table shared by every tenant, and two tenants holding two different
+ * tenant keys could therefore run `DROP COLUMN` against it concurrently. This
+ * second key is constant, so exactly one column rebuild runs at a time
+ * DATABASE-wide (advisory locks span every session and every process on the
+ * database, which is what makes this hold across a rolling deploy, not just
+ * within one instance) regardless of which tenant triggered it.
+ *
+ * Its OWN namespace, deliberately: it never needs to contend with
+ * `decideRegistry`, and sharing 4400 would mean a tenant id whose `hashtext`
+ * happened to collide with this constant's could block `decideRegistry`'s
+ * BLOCKING `pg_advisory_xact_lock` for the length of a rebuild. Cheap class of
+ * bug to delete outright.
+ */
+export const LOCK_NS_COLUMN_REBUILD = 4_401;
+const LOCK_KEY_COLUMN_REBUILD = 'vector-column-migration';
+
 const DEFAULT_BUDGET_MS = 5_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 4_000;
 /** Kept short on purpose: `DROP COLUMN` needs an AccessExclusiveLock, and
@@ -157,9 +190,17 @@ export type VectorColumnMigrationFailure =
   | 'ddl-failed'
   /**
    * OM-98 — the run was handed `requireEmpty` and a target turned out to hold
-   * vectors (or its count could not be established). Nothing was dropped.
+   * vectors, table-wide. Nothing was dropped.
    */
   | 'corpus-not-empty'
+  /**
+   * Cato-Audit Runde 5 / OM-98 — the run was handed `requireEmpty` and the
+   * table-wide probe could not be taken at all (the table lock or the probe
+   * timed out). Nothing was dropped, and unlike `corpus-not-empty` this says
+   * nothing about whether a corpus exists: it is transient and retryable, and
+   * must NOT be presented as a reason to confirm a discard.
+   */
+  | 'emptiness-unknown'
   /** Columns are migrated but the registry would not take the new identity. */
   | 'registry-flip-failed';
 
@@ -213,11 +254,20 @@ export interface VectorColumnMigrationOptions {
    * establishes emptiness in `resolveColumnMigrationPermission`, which runs
    * BEFORE this function takes the advisory lock. Between those two moments a
    * backfill tick or an ingest can embed rows, and the pre-lock verdict then
-   * authorises a rewrite that silently discards them — the counts this run
-   * takes under the lock used only to be LOGGED. With this flag set, that same
-   * in-lock count becomes the decision: a non-zero (or unknown) count aborts
-   * with `corpus-not-empty` before any DDL runs, so the only check that can be
-   * raced is no longer the only check there is.
+   * authorises a rewrite that silently discards them. With this flag set the
+   * check is re-run as the LAST thing before the DDL — see
+   * `assertTableWideEmpty`.
+   *
+   * Cato-Audit Runde 5 / OM-98 — two properties make that re-check binding
+   * rather than decorative, and it had neither before:
+   *   - it runs in the SAME TRANSACTION as the `DROP COLUMN`, behind
+   *     `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE`. The advisory lock does not
+   *     exclude `embeddingBackfill`, which never takes it, so a re-check in its
+   *     own transaction was just a second racy check rather than a fix for the
+   *     first;
+   *   - it counts TABLE-WIDE. The governed columns live on tables every tenant
+   *     shares, so a `WHERE tenant_id = $1` count let an empty tenant authorise
+   *     dropping every other tenant's embeddings.
    *
    * Unknown counts abort too. The permission half is fail-closed for exactly
    * the same reason — a probe that timed out is not evidence of an empty
@@ -253,14 +303,44 @@ export async function migrateVectorColumns(
 
   const client = await opts.pool.connect();
   let poisoned = false;
-  // Tracks whether the SESSION-scoped advisory lock may still be held on this
-  // connection. It is the only thing that decides pooling vs destruction on
-  // the way out — see the `finally` at the bottom.
+  // Tracks whether either SESSION-scoped advisory lock may still be held on
+  // this connection. Together they are the only thing that decides pooling vs
+  // destruction on the way out — see the `finally` at the bottom.
   let lockHeld = false;
+  let rebuildLockHeld = false;
   try {
+    // Cato-Audit Runde 5 / OM-98 — the GLOBAL rebuild lock comes first, and
+    // outside the tenant lock, because the thing it serialises is global: the
+    // governed columns live on tables every tenant shares. Two tenants each
+    // holding their own registry lock would otherwise be free to drop the same
+    // physical column at the same time. Acquired before the tenant key by
+    // every caller, so the ordering cannot deadlock; both are `try`, so a
+    // loser fails fast instead of eating the activate() budget.
+    let acquiredRebuild: boolean;
+    try {
+      acquiredRebuild = await tryAcquireLock(
+        client,
+        LOCK_NS_COLUMN_REBUILD,
+        LOCK_KEY_COLUMN_REBUILD,
+      );
+    } catch (err) {
+      poisoned = true;
+      throw err;
+    }
+    if (!acquiredRebuild) {
+      return {
+        ok: false,
+        reason: 'lock-held',
+        detail:
+          'another instance holds the vector-column rebuild lock — a column rewrite is already running (possibly on behalf of a different tenant; the governed columns are shared)',
+        migrated,
+      };
+    }
+    rebuildLockHeld = true;
+
     let acquired: boolean;
     try {
-      acquired = await tryAcquireRegistryLock(client, opts.tenantId);
+      acquired = await tryAcquireLock(client, LOCK_NS_REGISTRY, opts.tenantId);
     } catch (err) {
       // The acquire statement itself failed, so whether the lock was granted
       // is unknowable. Assume the worst and destroy the connection.
@@ -318,32 +398,33 @@ export async function migrateVectorColumns(
           opts.tenantId,
           statementTimeoutMs,
         );
-        // OM-98 — the in-lock half of the emptiness guard. See `requireEmpty`.
-        // Placed after `countVectors` and before `captureIndexDefs` so the
-        // refusal costs one SELECT and touches no schema at all.
-        if (opts.requireEmpty === true && discardedVectors !== 0) {
-          return {
-            ok: false,
-            reason: 'corpus-not-empty',
-            detail:
-              discardedVectors === undefined
-                ? `${target.table}.${target.column}: whether it still holds vectors could not be established under the lock (the count failed or timed out) — refusing the non-destructive rebuild. An unanswerable count is not evidence of an empty corpus.`
-                : `${target.table}.${target.column}: ${String(discardedVectors)} vector(s) were written between the pre-lock emptiness check and this lock — refusing the non-destructive rebuild rather than discarding them. Use the provider switch with confirmDiscardVectors, which is the path that carries the discard confirmation.`,
-            migrated,
-          };
-        }
         const indexes = await captureIndexDefs(client, target);
         let reset: AttemptResetOutcome;
         try {
+          // Cato-Audit Runde 5 / OM-98 — `requireEmpty` is now enforced INSIDE
+          // the DDL transaction (see `migrateOneColumn`), not out here. Out
+          // here it was a second time-of-check/time-of-use hole rather than
+          // the fix for the first one: the count ran in its own transaction,
+          // took no table lock, and `embeddingBackfill.ts` writes vectors
+          // without ever touching the advisory lock this run holds — so rows
+          // embedded between this SELECT and the `DROP COLUMN` were still
+          // destroyed by a check that had already said "empty".
           reset = await migrateOneColumn(client, target, info, indexes, {
             targetDimensions: opts.targetDimensions,
             tenantId: opts.tenantId,
             statementTimeoutMs,
             lockTimeoutMs,
             attemptResetMaxRows,
+            requireEmpty: opts.requireEmpty === true,
           });
         } catch (err) {
           if (await isConnectionAborted(client)) poisoned = true;
+          if (err instanceof CorpusNotEmptyError) {
+            return { ok: false, reason: 'corpus-not-empty', detail: err.message, migrated };
+          }
+          if (err instanceof EmptinessUnknownError) {
+            return { ok: false, reason: 'emptiness-unknown', detail: err.message, migrated };
+          }
           return {
             ok: false,
             reason: 'ddl-failed',
@@ -405,14 +486,25 @@ export async function migrateVectorColumns(
       // pooled. Not released (query threw, connection sits in an aborted
       // transaction, driver says the lock was not held) ⇒ the connection is
       // destroyed below, which releases the session lock with it.
-      if (await releaseRegistryLock(client, opts.tenantId)) lockHeld = false;
+      if (await releaseLock(client, LOCK_NS_REGISTRY, opts.tenantId)) lockHeld = false;
     }
   } finally {
+    // The rebuild lock is released here rather than in its own nested
+    // `finally` so that the early `lock-held` return above — which happens
+    // AFTER the rebuild lock was taken — cannot leak it. Released in the
+    // reverse of the acquisition order: the tenant lock has already gone in
+    // the inner `finally` above by the time this runs.
+    if (
+      rebuildLockHeld &&
+      (await releaseLock(client, LOCK_NS_COLUMN_REBUILD, LOCK_KEY_COLUMN_REBUILD))
+    ) {
+      rebuildLockHeld = false;
+    }
     // Same reasoning as the stale-vector clear: a connection that could not
     // provably release its SESSION-level lock is destroyed rather than pooled
     // — otherwise every later migration and every `decideRegistry` on this
     // tenant blocks for the connection's lifetime.
-    client.release(poisoned || lockHeld);
+    client.release(poisoned || lockHeld || rebuildLockHeld);
   }
 }
 
@@ -431,6 +523,25 @@ function isWithinCooldown(row: StoredRegistryRow, cooldownMs: number): boolean {
   const ageMs = Number(row.age_ms);
   return Number.isFinite(ageMs) && ageMs < cooldownMs;
 }
+
+/**
+ * Cato-Audit Runde 5 / OM-98 — thrown from inside the DDL transaction when the
+ * table-wide, table-locked emptiness check refuses the rebuild. A distinct
+ * class rather than a flag because it has to travel out through the same
+ * `catch` that maps everything else to `ddl-failed`, and the two mean opposite
+ * things to an operator: `ddl-failed` is "something broke", this is "the guard
+ * did its job".
+ */
+class CorpusNotEmptyError extends Error {}
+
+/**
+ * Cato-Audit Runde 5 / OM-98 — the guard could not ANSWER, which is not the
+ * same claim as "there are vectors" and must not be reported as one. Kept
+ * separate all the way out to `VectorColumnMigrationFailure` so an operator
+ * reading `blocked/…` is not nudged toward the discard confirmation by a lock
+ * timeout.
+ */
+class EmptinessUnknownError extends Error {}
 
 /** What the bounded attempt reset did for one table. */
 interface AttemptResetOutcome {
@@ -454,6 +565,8 @@ async function migrateOneColumn(
     statementTimeoutMs: number;
     lockTimeoutMs: number;
     attemptResetMaxRows: number;
+    /** Refuse the swap unless the column is empty ACROSS THE WHOLE TABLE. */
+    requireEmpty: boolean;
   },
 ): Promise<AttemptResetOutcome> {
   const table = quoteIdent(target.table);
@@ -466,6 +579,7 @@ async function migrateOneColumn(
     await client.query(
       `SET LOCAL statement_timeout = ${String(Math.max(1, Math.floor(opts.statementTimeoutMs)))}`,
     );
+    if (opts.requireEmpty) await assertTableWideEmpty(client, target, table);
     // `DROP COLUMN` would cascade to these anyway; dropping them explicitly
     // keeps the operation legible in the Postgres log and makes the
     // capture/replay pairing obvious to the next reader.
@@ -521,6 +635,55 @@ async function migrateOneColumn(
       // connection so the session-level advisory lock goes with it.
     }
     throw err;
+  }
+}
+
+/**
+ * Cato-Audit Runde 5 / OM-98 — the emptiness gate, where it actually holds.
+ *
+ * Runs inside the caller's DDL transaction and does two things the old
+ * pre-lock check could not:
+ *
+ *  1. `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` first. The advisory lock this
+ *     run holds does NOT exclude the writers that matter — `embeddingBackfill`
+ *     (`embeddingBackfill.ts:220-258`) updates `embedding` without taking it at
+ *     all — so without a real table lock a backfill tick can land between the
+ *     count and the `DROP COLUMN`. SHARE ROW EXCLUSIVE blocks concurrent
+ *     INSERT/UPDATE/DELETE while still allowing readers, and it is a lock the
+ *     following `ALTER TABLE` only ever escalates from, never contends with.
+ *     `SET LOCAL lock_timeout` is already in force, so a table held by a long
+ *     writer fails fast instead of eating the activate() budget.
+ *  2. Counts TABLE-WIDE, with no `tenant_id` predicate. `graph_nodes` is one
+ *     physical table shared by all tenants (`0001_graph_init.sql`), so a
+ *     tenant-scoped count let an empty tenant authorise the destruction of
+ *     every other tenant's embeddings. That was the bug.
+ *
+ * Fail-closed: a count that cannot be taken is refused as well, because an
+ * unanswerable count is not evidence of an empty corpus.
+ */
+async function assertTableWideEmpty(
+  client: PoolClient,
+  target: VectorColumnTarget,
+  quotedTable: string,
+): Promise<void> {
+  let hasVectors: boolean;
+  try {
+    await client.query(`LOCK TABLE ${quotedTable} IN SHARE ROW EXCLUSIVE MODE`);
+    hasVectors = await hasAnyVectorTableWide(client, [target]);
+  } catch (err) {
+    // A DIFFERENT reason from `corpus-not-empty`, on purpose. Both are
+    // fail-closed refusals, but `corpus-not-empty` tells the operator their
+    // corpus is populated and points at the discard confirmation — i.e. at
+    // DESTRUCTION. A `lock_timeout` behind a long writer must not read as
+    // that; it is a "try again", not a "now delete it all".
+    throw new EmptinessUnknownError(
+      `${target.table}.${target.column}: whether the table still holds vectors could not be established under the table lock (${err instanceof Error ? err.message : String(err)}) — refusing the non-destructive rebuild. An unanswerable probe is not evidence of an empty corpus. This is transient: retry the reactivation when the table is not held by a long-running writer.`,
+    );
+  }
+  if (hasVectors) {
+    throw new CorpusNotEmptyError(
+      `${target.table}.${target.column}: the table still holds vectors — refusing the non-destructive rebuild rather than discarding them. The probe is table-wide on purpose: DROP COLUMN removes the column for EVERY tenant, so these vectors may belong to a tenant other than the one that triggered this run. Use the provider switch with confirmDiscardVectors, which is the path that carries the discard confirmation.`,
+    );
   }
 }
 
@@ -625,13 +788,17 @@ async function adoptIfAlreadyOurs(
   return true;
 }
 
-async function tryAcquireRegistryLock(
+/** Take one session-scoped advisory lock. `(ns, key)` is either
+ *  `(LOCK_NS_REGISTRY, tenantId)` — the lock `decideRegistry` contends with —
+ *  or `(LOCK_NS_COLUMN_REBUILD, LOCK_KEY_COLUMN_REBUILD)`, the global one. */
+async function tryAcquireLock(
   client: PoolClient,
-  tenantId: string,
+  ns: number,
+  key: string,
 ): Promise<boolean> {
   const result = await client.query<{ locked: boolean }>(
     'SELECT pg_try_advisory_lock($1::int, hashtext($2)::int) AS locked',
-    [LOCK_NS_REGISTRY, tenantId],
+    [ns, key],
   );
   // A fake/limited driver that does not model advisory locks returns no row;
   // treat that as "acquired" so unit tests exercise the migration itself.
@@ -648,18 +815,19 @@ async function tryAcquireRegistryLock(
  * to do) leaked the lock on every failure path except one, and a leaked lock
  * in this namespace hangs `decideRegistry` forever rather than degrading it.
  */
-async function releaseRegistryLock(
+async function releaseLock(
   client: PoolClient,
-  tenantId: string,
+  ns: number,
+  key: string,
 ): Promise<boolean> {
   try {
     const result = await client.query<{ unlocked: boolean }>(
       'SELECT pg_advisory_unlock($1::int, hashtext($2)::int) AS unlocked',
-      [LOCK_NS_REGISTRY, tenantId],
+      [ns, key],
     );
     // A fake/limited driver that does not model advisory locks returns no row.
     // It never took a lock either, so "no row" is a clean release — the same
-    // symmetry `tryAcquireRegistryLock` uses.
+    // symmetry `tryAcquireLock` uses.
     const row = result.rows[0];
     return row === undefined || row.unlocked !== false;
   } catch {

@@ -486,7 +486,7 @@ jobs:
       # machine must fail here instead"; this is the same argument for mode
       # bits. Reads the archive's own central directory, not the staged tree,
       # so a packaging step that re-introduces the bit is caught too.
-      - name: Verify no read-only entries in the macOS update archives (OM-86)
+      - name: Verify no read-only entries in the macOS update archives and staged app (OM-86)
         if: ${{ startsWith(matrix.os, 'macos') }}
         working-directory: desktop
         run: |
@@ -521,6 +521,42 @@ jobs:
               status=1
             else
               echo "✓ $z: every entry is owner-writable ($entries entries)"
+            fi
+          done
+          # Cato-Audit Runde 5 / OM-86: the loop above covers `release/*.zip`
+          # only, and that is half the delivery. Squirrel installs from the ZIP,
+          # but a FIRST install comes from the DMG — and electron-builder builds
+          # BOTH from the same staged `release/mac*/*.app` tree. A read-only file
+          # that reached that tree therefore ships in the DMG whether or not the
+          # ZIP gate is green, and a DMG-only regression would sail straight
+          # through. Gate the source both artifacts are cut from, not just one
+          # of them. `-print` on the negated permission test: `! -perm -u=w` is
+          # "the owner-write bit is not set"; symlinks are excluded because
+          # their own mode is meaningless (chmod follows them) — the same
+          # exclusion normalize-file-modes.mjs makes.
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no staged .app under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            # `set -e` + `pipefail` already abort the step if `find` itself
+            # fails, so this only catches the other silent-pass shape: a
+            # directory that exists but stages nothing, which would otherwise
+            # print a green tick over an empty bundle.
+            total="$(find "$app" ! -type l | wc -l | tr -d ' ')"
+            if [ "$total" -eq 0 ]; then
+              echo "FAIL: $app stages no entries — empty bundle" >&2
+              status=1
+              continue
+            fi
+            app_offenders="$(find "$app" ! -perm -u=w ! -type l -print)"
+            if [ -n "$app_offenders" ]; then
+              echo "FAIL: $app carries files without owner-write — the DMG built from it cannot be updated:" >&2
+              echo "$app_offenders" >&2
+              status=1
+            else
+              echo "✓ $app: every file/dir is owner-writable ($total entries)"
             fi
           done
           exit $status
