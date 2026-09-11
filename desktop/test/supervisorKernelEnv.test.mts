@@ -26,10 +26,15 @@ before(() => {
   );
 });
 
-type WithKernelEnv = { kernelEnv(port: number): NodeJS.ProcessEnv };
+type WithKernelEnv = {
+  kernelEnv(port: number, uiPort: number): NodeJS.ProcessEnv;
+};
 
-function kernelEnv(): NodeJS.ProcessEnv {
-  return (new Supervisor() as unknown as WithKernelEnv).kernelEnv(8769);
+/** The web-ui port is allocated per launch; any value proves the wiring. */
+const UI_PORT = 51_234;
+
+function kernelEnv(uiPort = UI_PORT): NodeJS.ProcessEnv {
+  return (new Supervisor() as unknown as WithKernelEnv).kernelEnv(8769, uiPort);
 }
 
 const saved = process.env['OMADIA_UI_MDNS_ENABLED'];
@@ -51,5 +56,81 @@ describe('Supervisor.kernelEnv mDNS wiring (OM-70)', () => {
   it("keeps the user's explicit opt-in", () => {
     process.env['OMADIA_UI_MDNS_ENABLED'] = 'true';
     assert.equal(kernelEnv()['OMADIA_UI_MDNS_ENABLED'], 'true');
+  });
+});
+
+/**
+ * OM-90 — `/api/v1/auth/login` redirected to `http://localhost:3979/login`,
+ * the kernel config's default `PUBLIC_BASE_URL`. Nothing in the desktop app
+ * listens on 3979: the kernel binds 8769 and the web-ui gets a fresh port on
+ * every launch, so the login redirect landed on a dead port.
+ */
+describe('Supervisor.kernelEnv login-redirect base (OM-90)', () => {
+  it('points PUBLIC_BASE_URL at the web-ui port, not the kernel port', () => {
+    const env = kernelEnv();
+    assert.equal(env['PUBLIC_BASE_URL'], `http://127.0.0.1:${UI_PORT}`);
+    // The distinction is the whole point: a redirect to the kernel's own port
+    // reaches a live server that serves no login page.
+    assert.notEqual(env['PUBLIC_BASE_URL'], env['DIAGRAM_PUBLIC_BASE_URL']);
+    assert.equal(env['DIAGRAM_PUBLIC_BASE_URL'], 'http://127.0.0.1:8769');
+  });
+
+  it('never leaves the kernel on its 3979 default', () => {
+    assert.ok(!kernelEnv()['PUBLIC_BASE_URL']?.includes('3979'));
+  });
+
+  it('keeps the Entra OAuth callback on the kernel', () => {
+    // `PUBLIC_BASE_URL` has a second reader: the kernel derives the callback
+    // from it. `/api/v1/*` is NOT proxied by the web-ui, so without this
+    // override the fix above would trade a dead login redirect for a dead
+    // OAuth callback.
+    assert.equal(
+      kernelEnv()['AUTH_REDIRECT_URI'],
+      'http://127.0.0.1:8769/api/v1/auth/login/entra/cb',
+    );
+  });
+
+  it('keeps the MCP OAuth callback on a route that exists', () => {
+    // The third reader of `PUBLIC_BASE_URL`. Its default derives
+    // `{base}/api/v1/operator/mcp-oauth/callback`, which now points at the UI
+    // port — and the web-ui proxies `/bot-api/*`, never `/api/v1/*`, so the
+    // undecorated default 404s and MCP OAuth dies on its last hop. Unlike the
+    // Entra callback this one belongs on the UI origin; it just needs the
+    // prefix the rewrite actually forwards.
+    assert.equal(
+      kernelEnv()['MCP_OAUTH_REDIRECT_URI'],
+      `http://127.0.0.1:${UI_PORT}/bot-api/v1/operator/mcp-oauth/callback`,
+    );
+  });
+
+  it('sends the MCP callback to the UI, and Entra to the kernel', () => {
+    // The two callbacks resolve to DIFFERENT origins on purpose; collapsing
+    // them onto one host breaks whichever one loses.
+    const env = kernelEnv();
+    assert.ok(env['MCP_OAUTH_REDIRECT_URI']?.includes(`:${UI_PORT}`));
+    assert.ok(env['AUTH_REDIRECT_URI']?.includes(':8769'));
+  });
+
+  it('follows the port it is given, launch to launch', () => {
+    assert.equal(kernelEnv(40_001)['PUBLIC_BASE_URL'], 'http://127.0.0.1:40001');
+    assert.equal(kernelEnv(40_002)['PUBLIC_BASE_URL'], 'http://127.0.0.1:40002');
+    // The MCP callback is per-launch too — a stale port here is the same bug.
+    assert.equal(
+      kernelEnv(40_001)['MCP_OAUTH_REDIRECT_URI'],
+      'http://127.0.0.1:40001/bot-api/v1/operator/mcp-oauth/callback',
+    );
+  });
+
+  it('wins over a stale inherited PUBLIC_BASE_URL', () => {
+    // `...process.env` is spread first; a value left over from a previous run
+    // or a user shell must not survive into this launch.
+    const saved = process.env['PUBLIC_BASE_URL'];
+    process.env['PUBLIC_BASE_URL'] = 'http://localhost:3979';
+    try {
+      assert.equal(kernelEnv()['PUBLIC_BASE_URL'], `http://127.0.0.1:${UI_PORT}`);
+    } finally {
+      if (saved === undefined) delete process.env['PUBLIC_BASE_URL'];
+      else process.env['PUBLIC_BASE_URL'] = saved;
+    }
   });
 });

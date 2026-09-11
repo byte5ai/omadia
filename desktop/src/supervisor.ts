@@ -245,7 +245,13 @@ export class Supervisor extends EventEmitter {
 
       this.assertLiveGeneration(gen);
       this.progress('starting-kernel', 'Starting omadia kernel…');
-      ownKernel = this.forkNode(kernelEntry(), kernelCwd(), this.kernelEnv(kernelPort), 'kernel', gen);
+      ownKernel = this.forkNode(
+        kernelEntry(),
+        kernelCwd(),
+        this.kernelEnv(kernelPort, uiPort),
+        'kernel',
+        gen,
+      );
       this.kernel = ownKernel;
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
@@ -368,7 +374,11 @@ export class Supervisor extends EventEmitter {
     return survivors;
   }
 
-  private kernelEnv(port: number): NodeJS.ProcessEnv {
+  /**
+   * `port` is the kernel's own (fixed) port; `uiPort` is the web-ui's, which is
+   * allocated per launch and therefore only knowable at runtime (OM-90).
+   */
+  private kernelEnv(port: number, uiPort: number): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: augmentedPath,
@@ -404,6 +414,36 @@ export class Supervisor extends EventEmitter {
       OMADIA_EMBEDDING_MODEL_DIR: embeddingModelsDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      // OM-90 — the browser-facing origin every auth redirect lands on. The
+      // kernel's default is `http://localhost:3979`, its OWN dev port, so
+      // `/api/v1/auth/login` sent the desktop browser to a port nothing is
+      // listening on: the shell never binds 3979, and the surface the user has
+      // to end up on is the web-ui, not the kernel. Note this is deliberately
+      // the UI port and not `port` — a redirect to the kernel would render no
+      // login page either. Set after `...process.env` on purpose: the port is
+      // decided per launch, so a stale inherited value must not win.
+      PUBLIC_BASE_URL: `http://127.0.0.1:${uiPort}`,
+      // …but `PUBLIC_BASE_URL` has a second reader: the kernel derives the
+      // Entra OAuth callback from it as `{base}/api/v1/auth/login/entra/cb`.
+      // That is a KERNEL route, and the web-ui proxies only `/bot-api/*` and
+      // `/p/*` — never `/api/v1/*` — so repointing the base at the UI would
+      // send the callback somewhere that 404s. `AUTH_REDIRECT_URI` is the
+      // config's own override for exactly this split, so pin it to the kernel
+      // and keep the two concerns apart instead of trading one dead URL for
+      // another.
+      AUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/v1/auth/login/entra/cb`,
+      // OM-90, third reader of `PUBLIC_BASE_URL`: the kernel derives the MCP
+      // OAuth callback from it as `{base}/api/v1/operator/mcp-oauth/callback`.
+      // Since the base is now the UI port, that default lands on a Next route
+      // that does not exist — the web-ui proxies `/bot-api/*`, never
+      // `/api/v1/*` — so the callback would 404 and every MCP OAuth connect
+      // would die on the last hop. Unlike the Entra callback, this one CAN be
+      // served over the UI origin, so keep it there and prefix it so the
+      // rewrite forwards it (pattern from `middleware/.env.example`).
+      MCP_OAUTH_REDIRECT_URI: `http://127.0.0.1:${uiPort}/bot-api/v1/operator/mcp-oauth/callback`,
+      // Follow-up, same class of bug, deliberately NOT fixed here: the
+      // Conductor webhook base and the Teams reader also derive from
+      // `PUBLIC_BASE_URL` and want their own audit. Out of scope for OM-90.
       // Desktop-only overrides of kernel defaults that assume a LAN self-host
       // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
       ...desktopKernelEnvDefaults(process.env),

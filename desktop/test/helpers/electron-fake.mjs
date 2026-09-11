@@ -22,9 +22,19 @@ export const app = {
     return dir;
   },
   getName: () => 'omadia',
+  getLocale: () => locale,
   on: () => app,
   quit: () => {},
 };
+
+/**
+ * The shell resolves its language from `app.getLocale()` (OM-59, OM-91), so a
+ * test that asserts on dialog copy has to be able to move it.
+ */
+let locale = 'en-US';
+export function __setLocale(next) {
+  locale = next;
+}
 
 export const safeStorage = {
   isEncryptionAvailable: () => false,

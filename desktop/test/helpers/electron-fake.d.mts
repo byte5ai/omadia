@@ -14,3 +14,6 @@ export function __setDialogHandler(handler: DialogHandler | null): void;
 
 /** The last text written through `clipboard.writeText`, or null. */
 export function __lastClipboardText(): string | null;
+
+/** Set what `app.getLocale()` returns, so dialog copy can be asserted on. */
+export function __setLocale(locale: string): void;
