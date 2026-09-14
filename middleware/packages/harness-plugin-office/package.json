@@ -14,7 +14,7 @@
   "dependencies": {
     "docx": "^9.5.1",
     "exceljs": "^4.4.0",
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.2"
   },
   "peerDependencies": {
     "@omadia/diagrams": "*",
