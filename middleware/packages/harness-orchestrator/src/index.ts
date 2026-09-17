@@ -679,6 +679,18 @@ export {
   MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
 } from './datasetImport.js';
+export type { BuildDatasetOptions, LinkKeyReport } from './datasetImport.js';
+export {
+  createDatasetLinkKeyer,
+  isLinkKeyColumn,
+  linkKeyColumnName,
+  normalizeLinkValue,
+  resolveDatasetLinkKeySecret,
+  LINK_KEY_COLUMN_PREFIX,
+  LINK_KEY_LENGTH,
+  LINK_KEY_SECRET_ENV,
+} from './datasetLinkKey.js';
+export type { DatasetLinkKeyer } from './datasetLinkKey.js';
 export {
   parseXlsx,
   parseXlsxFirstSheet,

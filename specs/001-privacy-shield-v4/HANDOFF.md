@@ -54,7 +54,7 @@ JSON shape + value statistics — zero per-tool annotation.
 | `c330030` | Spec-Kit specs + `.specify` toolkit; US1 Dataset Store; US2 Shape Classifier |
 | `8169134` | US3 — Digest builder + tool-dispatch wiring |
 | `e71cbc8` | US4 — on-the-wire confidentiality harness |
-| `42a6036` | US5 — Verb API engine (predicate grammar + 8 verbs) |
+| `42a6036` | US5 — Verb API engine (predicate grammar + 8 verbs; `union` + `distinct` added later for cross-file dedup) |
 | `0a93def` | US6 — Materializer |
 | `eb29497` | US5 — verb tool surface (tool specs + dispatch) |
 | `cadbaef` | US5/US6 — orchestrator integration (verb tools + render swap) |
@@ -79,7 +79,7 @@ All v4 logic lives in `middleware/packages/harness-plugin-privacy-guard/src/v4/`
 | `digest.ts` | US3 | `buildDigest` (identity-free; invariant I1 — masked fields carry only a placeholder + count) + `digestToToolResultText` |
 | `onTheWire.ts` | US4 | `findIdentityLeaks` / `assertNoIdentityOnWire` — confidentiality assertion over any LLM-bound payload |
 | `verbs/predicate.ts` | US5 | Bounded `filter` predicate grammar; `validatePredicate` (P1/P4) + `evaluatePredicate`; `VerbError` |
-| `verbs/index.ts` | US5 | `createVerbEngine` — the 8 verbs: filter, sort, top_n, group, aggregate, select, count, join |
+| `verbs/index.ts` | US5 | `createVerbEngine` — the 10 verbs: filter, sort, top_n, group, aggregate, select, count, join, union, distinct |
 | `materializer.ts` | US6 | `materialize` — renders a `RenderDirective` (table/list/scalar) from real rows |
 | `pseudonym.ts` | US7 | `createPseudonymMap`, `projectDataset`, `resolvePseudonyms` — gated individual-prose layer |
 | `toolDefs.ts` | US5 | `VERB_TOOL_SPECS` + `RENDER_TOOL_SPEC` (LLM tool specs); `dispatchVerbCall`; `parseRenderDirective` |

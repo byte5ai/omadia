@@ -21,11 +21,17 @@ import type { DatasetColumnSchema, KnowledgeGraph } from '@omadia/plugin-api';
 import {
   buildDatasetFromTable,
   parseCsv,
+  type LinkKeyReport,
   type PrivacyScanStats,
   type TableParse,
   type TableTruncationStats,
 } from './datasetImport.js';
 import { parseXlsx } from './datasetImportXlsx.js';
+import {
+  createDatasetLinkKeyer,
+  resolveDatasetLinkKeySecret,
+  type DatasetLinkKeyer,
+} from './datasetLinkKey.js';
 import type { DatasetIngestResult } from '@omadia/plugin-api';
 
 export type TabularFormat = 'csv' | 'xlsx';
@@ -39,14 +45,37 @@ export interface ImportTabularDatasetInput {
   ownerOmadiaUserId: string;
   sourceStorageKey?: string;
   format: TabularFormat;
+  /**
+   * Secret for the per-column `__k_*` link keys (see `datasetLinkKey.ts`).
+   * `undefined` (the production default) resolves it from the environment;
+   * `null` disables link keys outright; a `Buffer` is used as given (tests).
+   */
+  linkKeySecret?: Buffer | null;
 }
 
 export interface ImportedTable {
   result: DatasetIngestResult;
   privacyScan: PrivacyScanStats;
   truncation: TableTruncationStats;
+  /** Which `__k_*` columns this table carries (empty ⇒ none). */
+  linkKeys: LinkKeyReport;
   /** Present only for multi-sheet workbooks. */
   sheetName?: string;
+}
+
+/** The keyer for this import, or `undefined` when no secret is available. */
+function resolveLinkKeyer(
+  input: ImportTabularDatasetInput,
+): DatasetLinkKeyer | undefined {
+  const secret =
+    input.linkKeySecret === undefined
+      ? resolveDatasetLinkKeySecret()
+      : input.linkKeySecret;
+  if (secret === null || secret === undefined) return undefined;
+  return createDatasetLinkKeyer({
+    secret,
+    ownerOmadiaUserId: input.ownerOmadiaUserId,
+  });
 }
 
 export type ImportTabularDatasetResult =
@@ -112,10 +141,15 @@ export async function importTabularDataset(
     rows: Array<Record<string, unknown>>;
     privacyScan: PrivacyScanStats;
     truncation: TableTruncationStats;
+    linkKeys: LinkKeyReport;
   }
+  const linkKey = resolveLinkKeyer(input);
   const built: BuiltTable[] = [];
   for (const named of parsed.tables) {
-    const dataset = await buildDatasetFromTable(named.table);
+    const dataset = await buildDatasetFromTable(
+      named.table,
+      linkKey ? { linkKey } : {},
+    );
     if (!dataset.ok) {
       const where = named.sheetName ? ` (sheet '${named.sheetName}')` : '';
       return { ok: false, reason: `${dataset.reason}${where}` };
@@ -126,6 +160,7 @@ export async function importTabularDataset(
       rows: dataset.rows,
       privacyScan: dataset.privacyScan,
       truncation: dataset.truncation,
+      linkKeys: dataset.linkKeys,
     });
   }
 
@@ -145,6 +180,7 @@ export async function importTabularDataset(
       result,
       privacyScan: dataset.privacyScan,
       truncation: dataset.truncation,
+      linkKeys: dataset.linkKeys,
       ...(named.sheetName ? { sheetName: named.sheetName } : {}),
     });
   }

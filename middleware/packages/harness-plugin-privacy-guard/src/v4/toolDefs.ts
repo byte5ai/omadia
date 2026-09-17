@@ -1,7 +1,7 @@
 /**
  * Privacy Shield v4 — LLM-facing tool surface (US5 exposure / US6 directive).
  *
- * The 8 verbs are offered to the LLM as individual tool calls (research D7).
+ * The 10 verbs are offered to the LLM as individual tool calls (research D7).
  * This module is the verification-friendly core of that exposure: the tool
  * specs (name + description + JSON input schema), a robust dispatcher that
  * parses LLM-provided input and routes to the Verb engine, and the parser for
@@ -23,6 +23,8 @@ import type {
 import {
   VerbError,
   type AggregateParams,
+  type DistinctKeep,
+  type UnionOptions,
   type VerbEngine,
 } from './verbs/index.js';
 
@@ -42,7 +44,7 @@ const DATASET_ID = {
   description: 'A datasetId from a tool digest or an earlier verb result.',
 };
 
-/** The 8 verb tools. Every verb returns a new datasetId + digest, so verbs
+/** The 10 verb tools. Every verb returns a new datasetId + digest, so verbs
  *  compose. The LLM never receives row data — only digests. */
 export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
   {
@@ -156,6 +158,47 @@ export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
         rightKey: { type: 'string' },
       },
       required: ['leftDatasetId', 'rightDatasetId', 'leftKey', 'rightKey'],
+    },
+  },
+  {
+    name: 'v4_union',
+    description:
+      'Concatenate the rows of two datasets into one (schemas may differ; ' +
+      'each row keeps its own fields). Use it to treat two uploaded files — ' +
+      'or two pages of one query — as one list, then v4_distinct to ' +
+      'de-duplicate. renameRight maps right-side column names onto the ' +
+      'left-side spelling, e.g. {"Phone":"Telefon"}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        leftDatasetId: DATASET_ID,
+        rightDatasetId: DATASET_ID,
+        renameRight: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'Optional {rightColumn: newName} renames applied to the right dataset.',
+        },
+      },
+      required: ['leftDatasetId', 'rightDatasetId'],
+    },
+  },
+  {
+    name: 'v4_distinct',
+    description:
+      'Remove duplicate rows: rows sharing the same value(s) in the safe key ' +
+      'field(s) `by` collapse to one (keep "first" or "last"). String keys ' +
+      'compare case-/whitespace-insensitively. For people, use the dataset\'s ' +
+      '`__k_<column>` link-key columns as `by` — they are stable per person ' +
+      'across a user\'s files, so cross-file de-duplication works without ' +
+      'exposing the name itself. Rows with an empty key are always kept.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        datasetId: DATASET_ID,
+        by: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        keep: { enum: ['first', 'last'] },
+      },
+      required: ['datasetId', 'by'],
     },
   },
 ];
@@ -272,6 +315,28 @@ function optDirection(value: unknown): SortDirection | undefined {
   throw new VerbError('"direction" must be "asc" or "desc"');
 }
 
+function optKeep(value: unknown): DistinctKeep | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'first' || value === 'last') return value;
+  throw new VerbError('"keep" must be "first" or "last"');
+}
+
+/** `renameRight` is a flat string→string map; the engine validates the
+ *  names against the right schema, this only checks the JSON shape. */
+function optUnionOptions(o: Record<string, unknown>): UnionOptions {
+  const raw = o.renameRight;
+  if (raw === undefined) return {};
+  const map = asObject(raw, '"renameRight"');
+  const renameRight: Record<string, string> = {};
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v !== 'string' || v.length === 0) {
+      throw new VerbError(`"renameRight": value for "${k}" must be a non-empty string`);
+    }
+    renameRight[k] = v;
+  }
+  return { renameRight };
+}
+
 function reqAggregateOps(value: unknown): AggregateOp[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new VerbError('"ops" must be a non-empty array');
@@ -352,6 +417,18 @@ export function dispatchVerbCall(
         reqString(o, 'leftDatasetId'),
         reqString(o, 'rightDatasetId'),
         { left: reqString(o, 'leftKey'), right: reqString(o, 'rightKey') },
+      );
+    case 'v4_union':
+      return engine.union(
+        reqString(o, 'leftDatasetId'),
+        reqString(o, 'rightDatasetId'),
+        optUnionOptions(o),
+      );
+    case 'v4_distinct':
+      return engine.distinct(
+        reqString(o, 'datasetId'),
+        reqStringArray(o, 'by'),
+        optKeep(o.keep),
       );
     default:
       throw new VerbError(`unknown verb tool "${toolName}"`);

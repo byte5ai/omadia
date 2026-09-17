@@ -146,6 +146,9 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
             dataset: t.result,
             privacyScan: t.privacyScan,
             truncation: t.truncation,
+            // Which `__k_*` link-key columns were written (empty when the
+            // install has no link-key secret) — see `datasetLinkKey.ts`.
+            linkKeys: t.linkKeys,
             ...(t.sheetName ? { sheetName: t.sheetName } : {}),
           })),
         });

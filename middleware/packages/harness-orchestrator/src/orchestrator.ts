@@ -1505,6 +1505,13 @@ c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
    3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
    4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 `
     : '';
 
@@ -7818,6 +7825,7 @@ export class Orchestrator {
 
     let scannedCells = 0;
     let maskedCells = 0;
+    let linkKeyColumns = 0;
     const lines = imported.imported.map((t) => {
       const { truncatedCellCount, truncatedColumns } = t.truncation;
       // Only claim "not truncated" when that is actually true for this table
@@ -7829,7 +7837,16 @@ export class Orchestrator {
       const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
       scannedCells += t.privacyScan.scannedCells;
       maskedCells += t.privacyScan.maskedCells;
-      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
+      linkKeyColumns += t.linkKeys.columns.length;
+      // Name the key columns per table: the model must not guess them from
+      // the source headers (a header can be skipped, see
+      // `selectLinkKeyColumns`), and rule d) tells it to say plainly when a
+      // file has none.
+      const keysNote =
+        t.linkKeys.columns.length > 0
+          ? ` Link-key columns: [${t.linkKeys.columns.join(', ')}].`
+          : ' Link-key columns: none.';
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}${keysNote}`;
     });
 
     // Observability: a successful import used to log nothing at all, so the
@@ -7838,7 +7855,8 @@ export class Orchestrator {
     console.log(
       `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
         `datasets=${String(imported.imported.length)} ` +
-        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)} ` +
+        `linkKeyColumns=${String(linkKeyColumns)}`,
     );
 
     // #976 — state the privacy FACTS for this file in the prompt.
@@ -7856,7 +7874,18 @@ export class Orchestrator {
       `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
       `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
       `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
-      `boundary as any other tool result.`;
+      `boundary as any other tool result.` +
+      // Link keys are a fact about the file too: with them, cross-file dedup
+      // is possible; without them it is not, and the model should say so
+      // instead of offering the user a manual workaround.
+      (linkKeyColumns > 0
+        ? ` Its text columns carry \`__k_<column>\` link keys — stable, identity-free ` +
+          `per-person keys that are the same across all of this user's uploads; use ` +
+          `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
+          `match across files, and never display them.`
+        : ` No link-key columns were generated for this file (the install has no ` +
+          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+          `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +

@@ -210,4 +210,32 @@ describe('QueryDatasetTool', () => {
     );
     assert.match(out, /Error:.*unknown_filter_column/);
   });
+
+  it('refuses a filter on a __k_ link-key column before touching the graph', async () => {
+    const graph = new InMemoryKnowledgeGraph();
+    const { datasetId } = await graph.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [
+        { name: 'Name', type: 'string' },
+        { name: '__k_Name', type: 'string' },
+      ],
+      rows: [{ Name: 'Ada', __k_Name: 'a1b2c3d4e5f60001' }],
+    });
+    const tool = new QueryDatasetTool(graph);
+    const out = await asUser('user-1', () =>
+      tool.handle({
+        query: 'query_rows',
+        dataset_id: datasetId,
+        filters: [{ column: '__k_Name', op: 'eq', value: 'a1b2c3d4e5f60001' }],
+      }),
+    );
+    assert.match(out, /Error: link_key_filter/);
+    // The key itself may be read — only filtering on it is refused.
+    const rows = await asUser('user-1', () =>
+      tool.handle({ query: 'query_rows', dataset_id: datasetId }),
+    );
+    assert.match(rows, /a1b2c3d4e5f60001/);
+  });
 });

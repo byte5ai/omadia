@@ -23,12 +23,13 @@ verb's input. The LLM sees only Digests throughout (FR-011/FR-012).
 ```ts
 type VerbName =
   | 'filter' | 'sort' | 'group' | 'aggregate'
-  | 'top_n' | 'select' | 'count' | 'join';
+  | 'top_n' | 'select' | 'count' | 'join'
+  | 'union' | 'distinct';
 
 interface VerbResult { datasetId: string; digest: Digest; }
 ```
 
-## 2. The eight verbs
+## 2. The ten verbs
 
 | Verb | Input | Params | Output dataset |
 |---|---|---|---|
@@ -40,6 +41,20 @@ interface VerbResult { datasetId: string; digest: Digest; }
 | `select` | 1 | `columns` (field paths / handles) | projection to those columns |
 | `count` | 1 | — | a scalar dataset: one row, one `safe-cleartext` number |
 | `join` | 2 | `on` (`safe-cleartext` field/handle pair) | the joined dataset |
+| `union` | 2 | `renameRight?` (`{rightField: newName}`, validated against the right schema) | left rows then right rows; schemas may differ, each row keeps its own fields |
+| `distinct` | 1 | `by` (one or more `safe-cleartext` field paths), `keep: 'first'\|'last'` | one row per distinct normalised key; rows with an empty key part are always kept |
+
+`union` + `distinct` are the cross-file building blocks: two uploads (or two
+pages of one `query_dataset` result) become one dataset, then collapse on a
+key. The key for *people* is the import-time **link key** column
+`__k_<column>` (`datasetLinkKey.ts`): an HMAC of the normalised raw value,
+keyed per user, that the shape classifier clears as an `id` — so rule 3 below
+holds unchanged while a de-duplication by name or e-mail still works. String
+keys in `distinct` compare after NFKC + trim + whitespace-collapse + lower-case.
+Only `string`-typed import columns get a link key: a column inferred `number`
+in one file and `string` in another (prefixed ids, leading zeros) has a key on
+one side only, and `distinct` then keeps the key-less rows — the per-table key
+list in `[dataset-imported]` is what the model must read before choosing `by`.
 
 Rules:
 
@@ -48,8 +63,9 @@ Rules:
 2. `aggregate` numeric functions (`sum`, `min`, `max`, `avg`) operate only on
    `safe-cleartext` numeric fields. `count` operates on any field (it counts
    rows / non-nulls, never reads a value).
-3. `group` / `join` keys MUST be `safe-cleartext` fields or row handles — never
-   `sensitive-masked` fields (a join on a name would reconstruct identity).
+3. `group` / `join` / `distinct` keys MUST be `safe-cleartext` fields or row
+   handles — never `sensitive-masked` fields (a join on a name would
+   reconstruct identity). Link-key columns satisfy this by construction.
 4. Every verb output carries provenance (`derivedFrom` = input `datasetId`).
 
 ## 3. Predicate grammar (`filter`)
@@ -131,4 +147,8 @@ Projection of a dataset (D8) before the LLM composes prose:
    no invented rows.
 4. Predicate validation P1–P4: a predicate over a `sensitive-masked` field is
    rejected; a closed-set violation is rejected; type mismatch is rejected.
-5. `group`/`join` on a `sensitive-masked` key is rejected.
+5. `group`/`join`/`distinct` on a `sensitive-masked` key is rejected.
+6. `union` of two uploads followed by `distinct` on a `__k_*` link key
+   collapses the same person from both files to one row, while the name
+   column itself stays `sensitive-masked`; a `renameRight` that would collide
+   or reference an unknown right field is rejected.
