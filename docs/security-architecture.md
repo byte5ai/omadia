@@ -406,6 +406,41 @@ history are convenience layers, not security layers. They:
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
 
+## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
+
+Uploaded CSV/XLSX rows are PII-masked irreversibly at import, and the surrogate a
+value receives depends on that file's value set. Two uploads of the same people
+therefore share no identity, and the C0 baseline does not detect names at all —
+a `Name` column is clear at rest yet masked downstream by the v4 shape
+classifier, which then refuses it as a verb key. Cross-file de-duplication was
+impossible without letting the model see names.
+
+The resolution is `datasetLinkKey.ts`: every string column gets a companion
+`__k_<column>` = `HMAC-SHA256(secret, ownerOmadiaUserId ‖ "\n" ‖ normalize(raw))`,
+truncated to 16 hex chars with a guaranteed digit. The model **does** see this
+handle in clear — that is the point, and it is a deliberate weakening relative to
+"irreversible per file". What keeps it inside the shield:
+
+- **Not invertible, not guess-testable.** Without the process-held secret a key
+  neither reveals nor confirms a value. Filters on `__k_*` in `query_dataset`
+  are refused server-side, so the model cannot pair a chosen value with its key.
+- **Keyed per user, not per tenant.** Datasets are owner-scoped everywhere
+  (`queryDatasetRows(datasetId, ownerId)`, route session id, orchestrator
+  `resolvedOmadiaUserId` — one id space). A per-user key adds no linkability the
+  owner did not already have; a tenant-wide key would. Consequence to keep in
+  mind: the user-id string is part of the MAC input, so an identity merge or a
+  future dataset-sharing feature de-links older uploads — by design, not by bug.
+- **Classification rules untouched.** The key clears as `safe-cleartext` via the
+  existing S5 `id` rule; `requireSafe` in the verb engine is unchanged. Masked
+  columns are still never keys.
+- **Secret lifecycle.** `DATASET_LINK_KEY_SECRET`, or HKDF from `VAULT_KEY`
+  (`omadia/dataset-link-key/v1`) when unset. Rotating either re-keys every
+  future import; older datasets stop linking with newer ones. No key material
+  is ever written to a dataset.
+- **Residual.** A pre-existing `query_rows` filter oracle on clear-at-rest
+  columns (`contains` on `Name`) can, in principle, associate a probed row with
+  its now-stable handle. The handle is worthless outside this user's datasets.
+
 ## 7. Conductor generic webhooks (#437)
 
 Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions

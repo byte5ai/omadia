@@ -396,6 +396,11 @@ const ConfigSchema = z.object({
   // disable the feature cleanly — the rest of the middleware is unaffected.
   KROKI_BASE_URL: optionalNonEmpty(z.string().url()),
   DIAGRAM_URL_SECRET: optionalNonEmpty(z.string().min(32)),
+  // Dataset link keys (`datasetLinkKey.ts`): explicit HMAC secret for the
+  // per-column `__k_*` keys. Optional — absent, the key is HKDF-derived from
+  // VAULT_KEY. Validated here so a too-short value fails at boot, not on the
+  // first upload.
+  DATASET_LINK_KEY_SECRET: optionalNonEmpty(z.string().min(16)),
   DIAGRAM_PUBLIC_BASE_URL: optionalNonEmpty(z.string().url()),
   DIAGRAM_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(900),
   // Source-spec cap. Must accommodate base64-inlined brand assets (a 150 kB

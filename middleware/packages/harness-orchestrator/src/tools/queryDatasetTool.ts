@@ -4,6 +4,7 @@ import {
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
 
+import { isLinkKeyColumn } from '../datasetLinkKey.js';
 import { turnContext } from '../turnContext.js';
 
 /**
@@ -68,7 +69,8 @@ export const queryDatasetToolSpec = {
     '- `list_datasets`: list the caller\'s datasets (id, name, row count, column names+types). Call this FIRST when you don\'t already know the `dataset_id`.\n' +
     '- `get_schema`: full column schema (name, inferred type, sample value) for one dataset — pass `dataset_id`.\n' +
     '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. ' +
-    'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned.',
+    'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned. ' +
+    'Columns named `__k_<column>` are LINK KEYS: a stable, identity-free key of `<column>` (same value in any of this user\'s uploads ⇒ same key, case/whitespace-insensitive). They are safe verb keys — use them as `by`/join keys in `v4_distinct`/`v4_join` to de-duplicate or match people across files or pages; never show them to the user and never filter on them with a guessed value.',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -164,6 +166,14 @@ export class QueryDatasetTool {
       case 'query_rows': {
         if (!args.dataset_id) {
           return 'Error: query_rows requires `dataset_id`.';
+        }
+        // A `__k_*` link key is safe to SEE but must never be a filter
+        // target: `eq`/`contains` with a model-chosen value would let the
+        // model test guesses against a stable per-person handle. The prompt
+        // says so too, but the prompt is advice — this is the gate.
+        const keyFilter = args.filters?.find((f) => isLinkKeyColumn(f.column));
+        if (keyFilter) {
+          return `Error: link_key_filter — column "${keyFilter.column}" is a link key; link keys can be join/distinct keys in v4 verbs but never filter targets.`;
         }
         try {
           const result = await this.graph.queryDatasetRows(

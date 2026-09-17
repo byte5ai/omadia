@@ -66,10 +66,10 @@ function datasetIdOf(text: string): string {
 }
 
 describe('PrivacyGuardService.v4ToolSpecs', () => {
-  it('returns the 8 verb tools + the render tool', () => {
+  it('returns the 10 verb tools + the render tool', () => {
     const svc = createPrivacyGuardService();
     const specs = svc.v4ToolSpecs();
-    assert.equal(specs.length, 9);
+    assert.equal(specs.length, 11);
     for (const s of specs) {
       assert.ok(s.name.startsWith('v4_'));
       assert.equal((s.input_schema as { type: string }).type, 'object');

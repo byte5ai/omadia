@@ -829,6 +829,22 @@ registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
 Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
 server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
 
+**Link-Keys + Cross-File-Dedup** (`datasetLinkKey.ts`): der Import maskiert
+irreversibel und dateiabhängig, und der C0-Detektor erkennt keine Namen — zwei
+Uploads derselben Personen hatten also kein gemeinsames Identitätsmerkmal mehr.
+Deshalb bekommt jede `string`-Spalte eine Schlüsselspalte `__k_<Spalte>` =
+`HMAC-SHA256(secret, ownerOmadiaUserId ‖ "\n" ‖ normalize(raw))`, 16 Hex-Zeichen
+mit garantierter Ziffer, damit der v4-Shape-Classifier sie über die S5-`id`-Regel
+als `safe-cleartext` freigibt. Der Rohwert verlässt `buildDatasetFromTable` nie.
+Secret: `DATASET_LINK_KEY_SECRET`, sonst HKDF aus `VAULT_KEY`; fehlt beides,
+gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
+`__k_`-Namensraum werden beim Import abgewiesen; `query_rows`-`filters` auf
+`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Die Privacy-Shield-Verben
+`v4_union` (mit `renameRight`) und `v4_distinct` (`by`, `keep`) vereinen zwei
+`query_rows`-Seiten oder Dateien und kollabieren auf den Link-Key; Prompt-Regel
+d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
+Tabelle `linkKeys.columns`.
+
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
 die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
@@ -2084,6 +2100,10 @@ DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#66
 # Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
+# Dataset-Link-Keys (`__k_*`-Spalten beim CSV/XLSX-Import, siehe §3 Dataset-Routen).
+# Optional: leer ⇒ HKDF aus VAULT_KEY (Rotation von VAULT_KEY re-keyt dann auch
+# die Link-Keys); gesetzt (>= 16 Zeichen) entkoppelt beides. Fehlt beides: keine Keys.
+DATASET_LINK_KEY_SECRET                    # openssl rand -hex 32
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
 KROKI_BASE_URL=http://localhost:8765       # Kroki-Gateway (lokal aus compose.yml)
 DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch
