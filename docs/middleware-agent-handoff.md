@@ -127,6 +127,8 @@ src/
     signierte Proxy-URL zurück, Teams-Adapter + Web-Dev-UI hängen Bild
     automatisch an die Card an. Vega-Lite = Chart-Engine für quantitative
     Daten: Balken/Line/Pie/Scatter aus einem JSON-Spec.)
+  - `get_chat_participants` (unser eigenes Tool, **nur auf Turns mit
+    Roster-Provider** — seit #1108, siehe Unterabschnitt unten)
   - Eine DomainTool-Instanz pro Sub-Agent (`query_odoo_accounting`,
     `query_odoo_hr`, `query_confluence_playbook`)
 - **Methoden:** `chat()` blockierend, `chatStream()` als Async-Generator
@@ -135,6 +137,32 @@ src/
 - **System-Prompt:** Spricht Deutsch, liest zu Turn-Start `/memories/_rules`,
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
+
+### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
+
+- **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
+- **Rolle:** Liefert dem Modell die Teilnehmer des aktuellen Chats für
+  `<at>…</at>`-Mentions. Der Roster-Provider wird **pro Turn** vom Channel
+  verdrahtet (nur Teams / Telegram-Gruppen mit Admin-Rechten führen einen).
+- **Gating (der Kern von #1108):** Die Tool-Instanz wird einmalig gebaut und
+  ist kanal-unabhängig — daher wird das Tool **nicht** an der Instanz, sondern
+  am Live-Provider gegatet. `Orchestrator.turnHasChatRoster()` prüft
+  `turnContext.current()?.chatParticipants` und wird an **beiden** Advertise-
+  Stellen konsultiert: `buildToolsList()` (Tool-Specs) und der
+  `buildSystemPrompt`-Aufruf (`hasChatParticipants`-Roster). Ein Kanal ohne
+  Roster zeigt das Tool nirgends. Vorher wurde es auf jedem Kanal angeboten und
+  gab bei Fehltreffern einen englischen `Error:`-String zurück, den der Privacy
+  Shield (#1097) internierte und das Modell als Roster rendern ließ.
+- **Miss-Kontrakt:** Jeder "kein Roster"-Zweig des Handlers liefert ein
+  strukturiertes, deutsches Nicht-Fehler-Ergebnis der Form
+  `{ participants: [], reason, note }` — nie einen `Error:`-String. Die drei
+  `reason`-Codes sind exportierte Konstanten: `no_roster_on_this_channel`
+  (kein Provider), `roster_empty` (Provider vorhanden, leer — der
+  Telegram-Admin-Only-Fall) und `roster_fetch_failed` (Provider warf; der rohe
+  Fehler wird geloggt, aber **nicht** ins kanal-sichtbare Ergebnis gehängt).
+- **Verwandt:** das generische Readiness-Gate (#474, Unterabschnitt unten)
+  gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
+  kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
@@ -1993,6 +2021,15 @@ AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
 eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
 in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
 ("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
+
+### Cross-Referenz: `get_chat_participants` (#1108) ist kein Skill
+
+Ebenfalls ein natives Orchestrator-Tool ohne eigenen
+`skills/<name>/SKILL.md`-Ordner. Volle Doku in §3
+("`get_chat_participants` — per-Turn-Roster-Gating"): das Tool wird nur auf
+Turns angeboten, die einen Roster-Provider führen, und liefert bei
+Fehltreffern ein strukturiertes deutsches Ergebnis statt eines
+`Error:`-Strings.
 
 ---
 
