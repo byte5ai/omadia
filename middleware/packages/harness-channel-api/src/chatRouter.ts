@@ -35,6 +35,8 @@ import {
 import type { ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
 import { CHAT_WRITE_SCOPE, requireApiKey } from '@omadia/api-key-auth';
 
+import { channelKeyOf } from './channelKey.js';
+
 /** Relative to the router's mount prefix (`/api/public/v1`). */
 export const CHAT_ROUTE = '/chat';
 
@@ -189,6 +191,17 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         // something to inherit by accident.
         const turn: IncomingTurn = {
           channelId: deps.channelId,
+          // #1106 — routing selector. Stable per API key and NEVER
+          // caller-controlled, so an operator can bind an agent to
+          // `(channel_type:"@omadia/channel-api", channel_key:"key:<uuid>")`
+          // and every turn made with that key resolves to it. This is a
+          // SEPARATE concern from `conversationId` below: that value stays the
+          // per-conversation `internalConversationId` hash (the memory scope),
+          // which is deliberately different for every thread and must not be
+          // reused as the binding selector. Format matches `userRef.id` so the
+          // key reads identically in logs, bindings, and the key directory
+          // (single-sourced via `channelKeyOf`, same value as `userRef.id`).
+          channelKey: channelKeyOf(key.keyId),
           // Namespaced by key identity: CoreApi derives its scope as
           // `${channelId}::${conversationId}` (same channelId for every key
           // hitting this plugin), and same-scope recall does NOT check
@@ -236,7 +249,7 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
           // alignment with an established one.
           userRef: {
             kind: 'custom',
-            id: `key:${key.keyId}`,
+            id: channelKeyOf(key.keyId),
             ...(key.label ? { displayName: key.label } : {}),
           },
           text: parsed.data.message,

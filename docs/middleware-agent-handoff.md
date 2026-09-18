@@ -1014,6 +1014,50 @@ Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
 (`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
 (`publicPathsExemption.test.ts`).
 
+#### Agent-Bindung pro API-Key (issue #1106)
+
+Bis #1106 landete **jeder** API-Turn beim Fallback-Orchestrator: der Channel
+setzte keinen `channelKey`, also fiel `coreApi.ts` auf `turn.conversationId`
+zurück — und das ist der pro-Conversation-`internalConversationId`-Hash, für
+jede Conversation anders. Ein Operator konnte den Public-API-Channel weder in
+`/operator/channels` sehen noch binden. **Direction A** (aus dem Issue) macht
+den API-Key zur Bindungs-Einheit:
+
+- **Router setzt einen stabilen, nie caller-kontrollierten `channelKey`**
+  (`chatRouter.ts`): `IncomingTurn.channelKey = key:<keyId>`. Getrennt vom
+  `conversationId` — der bleibt der Hash (der Memory-Scope, absichtlich pro
+  Thread verschieden). So löst der Dispatcher (`orchestratorDispatcher.ts`,
+  US7-Pfad) die Bindung über `(channelType, channelKey)` auf: zwei Turns
+  desselben Keys mit unterschiedlichen `conversationId` treffen **dieselbe**
+  Bindung, behalten aber **getrennte** Memory-Scopes.
+- **Format single-sourced** in `channelKey.ts` (`channelKeyOf(keyId)`,
+  `CHANNEL_KEY_PREFIX`): derselbe String ist `channelKey`, `userRef.id` und der
+  im Directory gelistete Key — identisch in Logs, `channel_bindings`-Zeile und
+  Dashboard.
+- **`ChannelKeyDirectory`-Beitrag** (`apiChannelDirectory.ts`): listet eine
+  Zeile pro **aktivem** (nicht widerrufenem) Key, `key:<uuid>` + Label
+  (Fallback `API key <id8>`). Der Channel holt die Kernel-Registry über
+  `ctx.services.getOptional('channelDirectoryRegistry')` (Manifest:
+  `optional_requires: ["channelDirectoryRegistry@1"]` — der Kernel stellt sie
+  bereit, also **kein** hartes `requires`; fehlt sie, aktiviert der Channel
+  trotzdem, nur die Dashboard-Liste entfällt) und meldet sie beim Aktivieren
+  an, `close()` meldet sie symmetrisch wieder ab.
+- **`channelType`-Konsistenz:** das Directory annonciert `channelType =
+  ctx.agentId` (`@omadia/channel-api`), Routing leitet den Typ via
+  `deriveChannelType(channelId)` ab — für diese id (kein Punkt, schon
+  lowercase) derselbe String, also matcht eine gebundene Zeile echte Turns.
+  Fragil, falls je ein `channel_type:` ins Manifest käme; das
+  Binding-Routing-Integrationstest pinnt die Gleichheit.
+- **Direction B** (per-Request-`agent`-Feld + Allowlist) ist bewusst ein
+  Folge-Issue, hier nicht enthalten.
+
+Tests: `apiChannelDirectory.test.ts` (aktiv/widerrufen/Label-Fallback),
+`chatRouter.test.ts` (#1106-Block: stabiler `channelKey`, getrennte Scopes),
+`apiChannelBindingRouting.test.ts` (echter Router→CoreApi→Dispatcher-Pfad:
+`bound` bei Bindung, `fallback` ohne — die vom Issue vorgeschlagenen
+Regressionstests 2–4), `plugin.test.ts` (Directory register/unregister +
+Degradieren ohne Registry).
+
 ---
 
 ### API-Keys als eigenständige Auth-Methode (issue #439)

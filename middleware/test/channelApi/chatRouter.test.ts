@@ -126,6 +126,15 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
       capturedTurns[0]?.conversationId,
       internalConversationId(created.record.id, 'conv-1'),
     );
+    // #1106 — routing selector: stable per key, `key:<uuid>`, and DISTINCT
+    // from the per-conversation `conversationId` hash above so an operator can
+    // bind an agent to this key and every turn with it resolves to that agent.
+    assert.equal(capturedTurns[0]?.channelKey, `key:${created.record.id}`);
+    assert.notEqual(
+      capturedTurns[0]?.channelKey,
+      capturedTurns[0]?.conversationId,
+      'binding selector must not be the memory-scope hash',
+    );
     assert.equal(capturedTurns[0]?.text, 'ping');
     // Design decision (issue #438): the key IS its own identity.
     assert.deepEqual(capturedTurns[0]?.userRef, {
@@ -246,6 +255,51 @@ describe('channelApi/chatRouter — cross-key conversationId isolation (finding 
     assert.equal(
       capturedTurns[1]?.conversationId,
       internalConversationId(keyB.record.id, 'shared-thread'),
+    );
+  });
+});
+
+describe('channelApi/chatRouter — stable per-key routing selector (#1106)', () => {
+  it('two turns with different conversationIds but the same key resolve to the same binding, while keeping separate memory scopes', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+
+    const key = await harness.apiKeys.create({ label: 'stable' });
+
+    await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'one', conversationId: 'thread-1' }),
+    });
+    await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key.token}` },
+      body: JSON.stringify({ message: 'two', conversationId: 'thread-2' }),
+    });
+
+    assert.equal(capturedTurns.length, 2);
+    // Same binding selector for both turns → an operator's single binding
+    // covers the whole key, not one conversation.
+    assert.equal(capturedTurns[0]?.channelKey, `key:${key.record.id}`);
+    assert.equal(capturedTurns[1]?.channelKey, capturedTurns[0]?.channelKey);
+    // ...but separate memory scopes: the conversationId hash still differs.
+    assert.notEqual(
+      capturedTurns[0]?.conversationId,
+      capturedTurns[1]?.conversationId,
+      'distinct conversations must keep distinct memory scopes',
+    );
+    assert.equal(
+      capturedTurns[0]?.conversationId,
+      internalConversationId(key.record.id, 'thread-1'),
+    );
+    assert.equal(
+      capturedTurns[1]?.conversationId,
+      internalConversationId(key.record.id, 'thread-2'),
     );
   });
 });
