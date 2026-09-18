@@ -475,7 +475,7 @@ export function createPrivacyGuardService(deps?: {
           console.log(
             `[privacy-guard v4] render turn=${request.turnId} ` +
               `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
-              `format=${directive.format}`,
+              `rendered=${String(rendered.renderedRowCount)} format=${directive.format}`,
           );
           return {
             resultText:
