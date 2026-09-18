@@ -23,5 +23,12 @@ export type { C1HttpDetectorOptions } from './c1Detector.js';
 // ingestion paths that need the SAME PII-masking pipeline free-text prompts
 // get (not just the turn-scoped `maskUserPrompt` service) can call it
 // directly. #430 (dataset import) is the first such caller.
-export { createBaselineDetector, maskPrompt, dedupSpans } from './promptMask.js';
+export {
+  baselineHasIdentityPii,
+  baselineHasPii,
+  createBaselineDetector,
+  detectBaselineSync,
+  maskPrompt,
+  dedupSpans,
+} from './promptMask.js';
 export type { MaskPromptResult, ResolvedSpan } from './promptMask.js';
