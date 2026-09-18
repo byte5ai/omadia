@@ -158,6 +158,19 @@ event means the turn failed, not the credential.
 | `message` | string | yes | Non-empty. |
 | `conversationId` | string | no | 1–200 chars. Omit it to start a fresh conversation on every call. When set, reusing the same value on later calls continues the same conversation *for that key* — conversation scope is always namespaced per API key, so two different keys can never collide on the same `conversationId`. |
 
+`message` and `conversationId` are the **only** accepted fields. The body is
+validated strictly: any other key (for example `stream`, `userId`, `locale`,
+or a `conversationID` casing typo) is **rejected** with `400 invalid_request`
+naming the offending field — it is never silently ignored. This keeps the
+contract honest and leaves room to add real fields such as `stream` or
+`locale` later without changing the behaviour for callers already sending
+them.
+
+The request must be sent with `Content-Type: application/json`. A body sent
+without that header (or with any other content type) is **not** parsed and
+returns `415 Unsupported Media Type` naming `application/json`, rather than a
+misleading body-shape error.
+
 A body that fails validation returns `400 Bad Request` with an `issues`
 array (Zod's validation error shape). This still counts as an authenticated
 call — the key must be valid to reach validation at all.
@@ -228,7 +241,8 @@ replica count`. This is a known, accepted v1 trade-off (see
 |---|---|---|
 | `401` | `unauthorized` | Missing/malformed `Authorization` header, or an unknown/revoked key. |
 | `403` | `forbidden` | Valid key, but it is not scoped for this route. |
-| `400` | `invalid_request` | Body fails schema validation (e.g. empty `message`). |
+| `400` | `invalid_request` | Body fails schema validation (e.g. empty `message`, or an unknown field). |
+| `415` | `unsupported_media_type` | Body sent without `Content-Type: application/json`. |
 | `429` | `rate_limited` | Key is over its per-minute budget. |
 | `200` + `error` NDJSON event | `error` | Key and request were valid, but the turn itself failed mid-stream. |
 

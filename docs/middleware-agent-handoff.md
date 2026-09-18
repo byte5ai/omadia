@@ -984,6 +984,19 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
+- **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
+  Zod-Schema ist `.strict()` — unbekannte Felder (`stream`, `userId`, `locale`,
+  ein `conversationID`-Casing-Typo) werden **nicht** stillschweigend gestrippt,
+  sondern mit `400 invalid_request` abgelehnt; die Response trägt ein
+  Top-Level-`message`, das die abgelehnten Feldnamen nennt. Nur `message` +
+  `conversationId` sind akzeptiert. Das hält den Weg offen, später ein echtes
+  `stream`/`locale`-Feld zu ergänzen, ohne bereits-ignorierte Caller zu brechen.
+  Zusätzlich: ein Request ohne `Content-Type: application/json` wird vom
+  globalen `express.json` nie geparst (`req.body` bliebe `undefined`); der Router
+  fängt das **vor** dem Schema-Parse mit `415 unsupported_media_type` ab und
+  nennt den erforderlichen Content-Type — statt der irreführenden
+  "expected object, received undefined"-Meldung. Beide Ausgänge auditieren als
+  `invalid_request`.
 
 Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
 Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt

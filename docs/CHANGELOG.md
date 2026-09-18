@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — public chat API validates its request contract strictly (#1109)
+
+2026-09-18 — two defects in `POST /api/public/v1/chat`
+(`packages/harness-channel-api/src/chatRouter.ts`) made the public contract
+unreliable. The request schema was a plain `z.object({ message, conversationId })`
+with no `.strict()`, so Zod silently stripped any other field: a caller sending
+`stream: false`, `userId`, `locale`, or a `conversationID` casing typo got a 200
+with the field discarded and no signal it was unsupported. And a valid JSON body
+sent with no `Content-Type` was never parsed by the global `express.json`, so it
+reached `safeParse` as `undefined` and answered `400 invalid_request` with
+"expected object, received undefined" — an error about the payload for what was
+really a missing header.
+
+The schema is now `.strict()`: unknown fields are rejected with `400
+invalid_request` and a top-level `message` naming the offending field(s), rather
+than stripped — which also keeps the door open to add a real `stream`/`locale`
+field later without breaking callers already sending it. And a request whose
+`Content-Type` is not `application/json` is rejected up front with `415
+unsupported_media_type` naming the required content type, before schema parsing.
+Both outcomes audit as `invalid_request`. Regression tests and the plugin README
+cover the new contract.
+
 ### Fixed — routine card buttons keep working, and say when they run unscoped (#1029)
 
 2026-09-04 — follow-up to #1025, which scoped the routine smart-card handler
