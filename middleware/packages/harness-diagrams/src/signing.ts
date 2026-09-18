@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 /**
  * HMAC-SHA256 signing for diagram proxy URLs.
  *
- * Scheme:  `/diagrams/<encoded-key>?exp=<unix-seconds>&sig=<hex>`
+ * Scheme:  `/diagrams/dl/<encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * Payload: `<key>.<exp>` (prevents replay for a different key)
  *
  * The secret lives in DIAGRAM_URL_SECRET and never leaves the process. Rotate
@@ -27,7 +27,7 @@ export function signUrl(params: SignUrlParams): string {
     .digest('hex');
   const encKey = encodeURIComponent(params.key);
   const base = params.publicBaseUrl.replace(/\/+$/, '');
-  return `${base}/diagrams/${encKey}?exp=${String(exp)}&sig=${sig}`;
+  return `${base}/diagrams/dl/${encKey}?exp=${String(exp)}&sig=${sig}`;
 }
 
 export interface VerifySigParams {
