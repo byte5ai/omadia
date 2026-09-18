@@ -44,12 +44,13 @@ import type { AiDisclosureSetup } from './orchestrator.js';
  * that omits a channel the parser accepts.
  *
  * NOTE, and it is the honest caveat this whole feature has to carry: only
- * `teams` / `slack` / `telegram` are ever produced as a per-turn `channelKind`
- * (`orchestratorDispatcher.toChannelKind` is the sole setter). `email` and
- * `web` turns carry none yet, as do discord / whatsapp / canvas-custom / the
- * HTTP dev path — those all resolve to the global level regardless of what an
- * override says. {@link ChannelPosture.effective} says so per row rather than
- * letting a dashboard imply an override is doing something it is not.
+ * `teams` / `slack` / `telegram` / `api` are ever produced as a per-turn
+ * `channelKind` (`orchestratorDispatcher.toChannelKind` is the sole setter).
+ * `email` and `web` turns carry none yet, as do discord / whatsapp /
+ * canvas-custom / the HTTP dev path — those all resolve to the global level
+ * regardless of what an override says. {@link ChannelPosture.effective} says so
+ * per row rather than letting a dashboard imply an override is doing something
+ * it is not.
  */
 export const AI_DISCLOSURE_CHANNEL_KINDS = [
   'teams',
@@ -57,6 +58,7 @@ export const AI_DISCLOSURE_CHANNEL_KINDS = [
   'slack',
   'email',
   'web',
+  'api',
 ] as const;
 
 export type AiDisclosureChannelKind =
@@ -71,6 +73,9 @@ const DISPATCHED_CHANNEL_KINDS: ReadonlySet<string> = new Set([
   'teams',
   'telegram',
   'slack',
+  // #1107 — API turns now carry a `channelKind` too (the `key:`-ref producer
+  // in `orchestratorDispatcher.toChannelKind`), so an `api=` override fires.
+  'api',
 ]);
 
 /**

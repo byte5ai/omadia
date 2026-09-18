@@ -1307,6 +1307,25 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
 
+#### API-Turn-Attribution + Korrelations-Id (#1107)
+
+Turns über `POST /api/public/v1/chat` trugen `channel = NULL` und der Caller
+bekam keine Id, die auf seine Receipt-Zeile zeigt. Zwei Nähte gefixt:
+- **`channel`-Label:** Der Public-API-Channel authentifiziert den Caller ALS
+  seinen Key (`userRef = { kind:'custom', id:'key:<uuid>' }`, #438). Da Canvas
+  denselben `custom`-Kind nutzt, diskriminiert `orchestratorDispatcher.toChannelKind`
+  jetzt am `key:`-Präfix und liefert die neue `ChannelKind` `'api'`
+  (`@omadia/plugin-api`, 1.14.0). `'api'` ist damit auch gültiges Ziel für
+  `ai_disclosure_level_overrides` und erscheint unter `/health`
+  `disclosure.channels` (in `AI_DISCLOSURE_CHANNEL_KINDS` **und**
+  `DISPATCHED_CHANNEL_KINDS`, sonst parst der Override, greift aber nie).
+- **Korrelations-Id:** Das `done`-Event trägt jetzt `receiptId` == der
+  Receipt-Store-Key (`turn_receipts.turn_id`, das per-Turn-`randomUUID`) — NICHT
+  die KG-Turn-Node-Id (`turnId`, `turn:<scope>:<time>`). Nur gesetzt, wenn ein
+  Receipt geschrieben wurde (Privacy-Shield-Aktivität). Löst über das
+  bestehende **`GET /api/v1/operator/receipts/:turnId`** auf. Dokumentiert im
+  Public-API-README ("Correlating a turn with its privacy receipt").
+
 ### Receipt-Hash-Kette + signierte Checkpoints (#758)
 
 `turn_receipts` ist seit Migration `0041` hash-verkettet: `entry_hash =

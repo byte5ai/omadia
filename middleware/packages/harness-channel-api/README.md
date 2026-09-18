@@ -179,7 +179,7 @@ relevant to a plain chat integration:
 | `type` | Meaning |
 |---|---|
 | `text_delta` | Incremental chunk of the assistant's answer text. Concatenate these to reconstruct the streamed answer as it's produced. |
-| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. |
+| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
 
@@ -200,6 +200,35 @@ will ever appear on the stream afterward.
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
 gone.
+
+## Correlating a turn with its privacy receipt
+
+When the omadia instance runs on the Postgres backend and the privacy shield
+recorded activity during a turn, the turn's `done` event carries a `receiptId`:
+
+```
+{"type":"done","answer":"…","toolCalls":1,"iterations":2,"receiptId":"3f2a…-uuid"}
+```
+
+`receiptId` is the key of the persisted privacy-receipt row
+(`turn_receipts.turn_id`). An operator can resolve it directly:
+
+```bash
+curl -H "cookie: omadia_session=<operator-token>" \
+  https://<your-omadia-host>/api/v1/operator/receipts/<receiptId>
+```
+
+Notes:
+
+- `receiptId` is **only** present when a receipt was actually written. A row
+  is written solely when the privacy shield masked or otherwise processed
+  something this turn, so a tool-free turn produces no receipt and no
+  `receiptId`. Treat its absence as "nothing to correlate", not an error.
+- It is **distinct** from any `turnId` on the event (the knowledge-graph turn
+  node id, `turn:<scope>:<time>`). Only `receiptId` resolves through the
+  operator receipts route.
+- Receipts written for this channel carry `channel = "api"`, so operators can
+  tell external-integration traffic apart from every other channel.
 
 ## Rate limiting
 
