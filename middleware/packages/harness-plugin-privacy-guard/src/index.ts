@@ -24,6 +24,7 @@ export type { C1HttpDetectorOptions } from './c1Detector.js';
 // get (not just the turn-scoped `maskUserPrompt` service) can call it
 // directly. #430 (dataset import) is the first such caller.
 export {
+  baselineHasIdentityPii,
   baselineHasPii,
   createBaselineDetector,
   detectBaselineSync,

@@ -53,7 +53,7 @@ import {
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
 import {
-  baselineHasPii,
+  baselineHasIdentityPii,
   createBaselineDetector,
   createCustomTermsDetector,
   maskPrompt,
@@ -328,12 +328,13 @@ export function createPrivacyGuardService(deps?: {
     let s = stores.get(turnId);
     if (s === undefined) {
       s = createDatasetStore({
-        // The C0 baseline as one-way booster: a column of bare phone numbers
-        // or IBANs is all digits/letters and would clear as an `id` handle —
-        // and a small dataset's digest inlines every value of a safe column.
-        // Uploaded tables now deliver real values into this store, so that
-        // column must be masked. A miss never promotes (D4).
-        classify: createShapeClassifier({ detector: baselineHasPii }),
+        // The C0 baseline's IDENTITY types as one-way booster: a column of
+        // bare phone numbers or IBANs is all digits/letters and would clear as
+        // an `id` handle — and a small dataset's digest inlines every value of
+        // a safe column. Uploaded tables now deliver real values into this
+        // store, so that column must be masked. Dates and amounts are NOT in
+        // the booster: they must stay filterable. A miss never promotes (D4).
+        classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
         buildDigest,
         turnId,
       });
@@ -496,7 +497,7 @@ export function createPrivacyGuardService(deps?: {
         }
         const engine = createVerbEngine({
           store,
-          classify: createShapeClassifier({ detector: baselineHasPii }),
+          classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
         });
         const result = dispatchVerbCall(engine, request.toolName, request.input);
         receiptFor(request.turnId).verbsExecuted.push(

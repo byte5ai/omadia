@@ -481,10 +481,17 @@ Two things this rests on: (1) `query_dataset` is **not** intern-exempt
 (`privacyInternPolicy.ts`) — the day it becomes exempt, the "behind the shield"
 branch above is a leak; the test `datasetCellCrypto.test.ts` pins the reveal
 condition to the presence of the turn's privacy handle, which is the same
-signal the orchestrator uses to intern. (2) The v4 shape classifier now runs
-the C0 baseline as its one-way `detector` booster: a digits-only phone column
+signal the orchestrator uses to intern — and when that interning THROWS, the
+orchestrator withholds this tool's rows instead of falling open to the raw
+result as it does for other tools (`dispatchTool`, `QUERY_DATASET_TOOL_NAME`
+branch): the rows carry cleartext precisely because interning was expected.
+(2) The v4 shape classifier now runs the C0 baseline's identity types (e-mail,
+IBAN, phone, address, id number — deliberately not `date`/`amount`, which must
+stay filterable) as its one-way `detector` booster: a digits-only phone column
 would otherwise clear as an `id` handle, and a small dataset's digest inlines
-every value of a safe column.
+every value of a safe column. (3) The `[dataset-imported]` fact promises real
+values in render/export only when a privacy handle is active in the turn;
+without one it says plainly that exports show surrogates.
 
 Unchanged: names (C0 does not detect them) are stored in clear as before;
 rows imported before this change hold irreversible surrogates and pass through

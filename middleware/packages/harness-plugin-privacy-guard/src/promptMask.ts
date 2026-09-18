@@ -199,6 +199,41 @@ export function baselineHasPii(value: string): boolean {
   return detectBaselineSync(value).length > 0;
 }
 
+/** The C0 types that identify a PERSON. `date` and `amount` are deliberately
+ *  not here: an ISO-date or a money column is exactly what the verb engine
+ *  must keep filterable/sortable — masking it would kill "Rechnungen der
+ *  letzten 3 Monate" server-side for every plugin. */
+const IDENTITY_PII_TYPES: ReadonlySet<string> = new Set([
+  'email',
+  'iban',
+  'phone',
+  'address',
+  'idnum',
+]);
+
+/**
+ * `baselineHasPii` narrowed to identity types — the booster the v4 shape
+ * classifier actually wants. A digits-only phone column is caught; a date or
+ * amount column keeps its `safe-cleartext` verdict and its predicates.
+ */
+export function baselineHasIdentityPii(value: string): boolean {
+  // Fast path: a bare ISO date/datetime is never an identity, however many
+  // digit runs the phone pattern finds in it ("01-10" starts with `\b0`).
+  if (ISO_DATE_VALUE.test(value.trim())) return false;
+  const spans = detectBaselineSync(value);
+  const dates = spans.filter((s) => s.type === 'date');
+  return spans.some(
+    (s) =>
+      IDENTITY_PII_TYPES.has(s.type) &&
+      // A phone/idnum hit that lies entirely inside a date span IS the date.
+      !dates.some((d) => d.start <= s.start && d.end >= s.end),
+  );
+}
+
+/** Same shape the v4 classifier's S3 rule accepts as a `date`. */
+const ISO_DATE_VALUE =
+  /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
 export function createBaselineDetector(): PromptPiiDetector {
   return {
     id: 'c0-regex',

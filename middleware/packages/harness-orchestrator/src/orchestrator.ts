@@ -7031,6 +7031,17 @@ export class Orchestrator {
         });
         return v4.digestText;
       } catch (err) {
+        // `query_dataset` returned REAL cell values precisely because this
+        // interning was about to happen (see QueryDatasetTool). If it did
+        // not, those values must not fall through to the model: fail closed
+        // for this one tool. Every other tool keeps the historical fail-open.
+        if (name === QUERY_DATASET_TOOL_NAME) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
+            err,
+          );
+          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
+        }
         console.warn(
           `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
@@ -7876,12 +7887,21 @@ export class Orchestrator {
     // old irreversible masking applies and the model must not promise real
     // values in an export.
     const allEncrypted = encryptedTables === imported.imported.length;
-    const piiCellsFact = allEncrypted
-      ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
-        `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
-        `so the user sees and exports real data while you never receive it`
-      : `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
-        `secret configured) — exports show surrogates, not real values`;
+    // Real values reach render/export ONLY behind an active Privacy Shield —
+    // without a guard `query_dataset` re-masks on read. Promising real data
+    // on an install that cannot deliver it is exactly the wrong fact #976
+    // exists to prevent, so the promise depends on both conditions.
+    const shieldActive = turnContext.current()?.privacyHandle !== undefined;
+    const piiCellsFact = !allEncrypted
+      ? `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
+        `secret configured) — exports show surrogates, not real values`
+      : shieldActive
+        ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
+          `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
+          `so the user sees and exports real data while you never receive it`
+        : `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest, but no ` +
+          `Privacy Shield is active in this turn, so they are re-masked on read — exports ` +
+          `show surrogates, not real values`;
     const privacyFact =
       `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
       `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +

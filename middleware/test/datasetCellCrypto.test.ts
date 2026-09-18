@@ -21,7 +21,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { baselineHasPii } from '@omadia/plugin-privacy-guard';
+import { baselineHasIdentityPii } from '@omadia/plugin-privacy-guard';
 import { createDatasetStore } from '@omadia/plugin-privacy-guard/dist/v4/datasetStore.js';
 import { createShapeClassifier } from '@omadia/plugin-privacy-guard/dist/v4/shapeClassifier.js';
 import { buildDigest } from '@omadia/plugin-privacy-guard/dist/v4/digest.js';
@@ -227,7 +227,7 @@ describe('read paths', () => {
       tool.handle({ query: 'query_rows', dataset_id: datasetId, limit: 10 }),
     );
     // Exactly the service's store configuration since this change.
-    const classify = createShapeClassifier({ detector: baselineHasPii });
+    const classify = createShapeClassifier({ detector: baselineHasIdentityPii });
     const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
     const { datasetId: v4Id, digest } = store.internToolResult('query_dataset', out);
 
@@ -249,5 +249,29 @@ describe('read paths', () => {
     assert.ok(rendered.text.includes('anna@example.com'), 'the entitled user sees the real value');
     assert.ok(rendered.text.includes('bernd@example.com'));
     assert.ok(!rendered.text.includes('lukas.becker@example.net'), 'no identical decoy surrogates');
+  });
+
+  it('the identity booster leaves date and amount columns safe (they must stay filterable), masks phones', () => {
+    const classify = createShapeClassifier({ detector: baselineHasIdentityPii });
+    const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      invoice_date: `2026-0${String((i % 9) + 1)}-1${String(i % 9)}`,
+      amount_text: `${String(100 + i)},00 €`,
+      phone: `0170${String(1000000 + i)}`,
+      id: String(4000 + i),
+    }));
+    const { datasetId } = store.internToolResult('odoo.invoices', rows);
+    const f = (p: string) => store.get(datasetId)!.schema.fields.find((x) => x.path === p)!;
+    assert.equal(f('invoice_date').classification, 'safe-cleartext');
+    assert.equal(f('invoice_date').type, 'date');
+    assert.equal(f('id').classification, 'safe-cleartext', 'a short numeric id keeps its handle role');
+    assert.equal(f('phone').classification, 'sensitive-masked');
+    // `amount_text` carries `€` and a comma — not token-shaped anyway; the
+    // point is that the booster's `amount` type does not force-mask a column
+    // the shape classifier would otherwise clear.
+    assert.equal(baselineHasIdentityPii('2026-03-14'), false);
+    assert.equal(baselineHasIdentityPii('1.234,56 €'), false);
+    assert.equal(baselineHasIdentityPii('01701234567'), true);
+    assert.equal(baselineHasIdentityPii('anna@example.com'), true);
   });
 });
