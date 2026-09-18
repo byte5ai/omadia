@@ -397,6 +397,21 @@ in object storage and served via HMAC-signed URLs with a short TTL
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
 
+**No operator session is required to open one — by design.** The people who
+click these links are channel users (Teams, Telegram) who are never logged into
+the middleware. Since Epic #470 C6 every plugin route sits behind the kernel's
+session gate by default, which made every `/documents/…` and `/diagrams/…`
+download answer `auth.missing`. Both routers therefore register with
+`auth: 'custom'` — they authenticate each request themselves via the HMAC
+signature and expiry, exactly like a presigned S3 URL — beneath the prefixes
+`/documents/dl` and `/diagrams/dl`, declared in their manifests'
+`permissions.public_paths` (a claim must be at least two segments deep, hence
+`/dl`). The prefix is only served session-less once the operator has granted
+it (`PUT /api/v1/admin/runtime/installed/:id/public-paths`); until then the
+kernel keeps the session gate in front, fail-closed. What the link buys is
+what it always bought: whoever holds it can fetch that one object until it
+expires; there is no per-tenant or per-session authorisation on top.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation

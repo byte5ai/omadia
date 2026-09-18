@@ -57,7 +57,7 @@ describe('/diagrams router', () => {
   before(async () => {
     store.seed('byte5/abc.png', fakePng);
     const app = express();
-    app.use('/diagrams', createDiagramsRouter({ store, secret: SECRET }));
+    app.use('/diagrams/dl', createDiagramsRouter({ store, secret: SECRET }));
     server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
@@ -82,7 +82,7 @@ describe('/diagrams router', () => {
   });
 
   it('returns 403 when the signature is missing', async () => {
-    const res = await fetch(`${baseUrl}/diagrams/${encodeURIComponent('byte5/abc.png')}?exp=9999999999`);
+    const res = await fetch(`${baseUrl}/diagrams/dl/${encodeURIComponent('byte5/abc.png')}?exp=9999999999`);
     assert.equal(res.status, 403);
   });
 
