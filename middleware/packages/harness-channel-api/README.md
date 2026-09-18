@@ -137,12 +137,18 @@ while (! $body->eof()) {
 }
 ```
 
-Retry advice: `429` is the only status worth retrying automatically (back off
-until the 60-second window resets). `401`/`403` mean the credential itself is
-wrong and retrying will not fix it. A `200` whose stream ends in an `error`
-event means the turn failed, not the credential.
+Retry advice: `429` is the only status worth retrying automatically. **No
+`Retry-After` header is sent** — there is no machine-readable signal for when
+the window resets. The window is a fixed 60 seconds (see "Rate limiting"), so a
+client waits a hardcoded 60 seconds rather than reading a header. `401`/`403`
+mean the credential itself is wrong and retrying will not fix it. A `200` whose
+stream ends in an `error` event means the turn failed, not the credential.
 
 ## `POST /api/public/v1/chat`
+
+The route is **POST-only**. `GET /api/public/v1/chat` — or any non-POST
+method — returns `404 Not Found`; the router registers `POST` only. If a `GET`
+returns 404, that is the method, not a missing route or a bad key.
 
 ### Request
 
@@ -197,6 +203,50 @@ informational and skip it rather than treating it as an error. `done` and
 row above: a `done` or `error` event is not a guarantee that nothing else
 will ever appear on the stream afterward.
 
+#### `done` event fields
+
+The `done` event carries more than the `answer` / `toolCalls` / `iterations`
+shown in the minimal example below. All fields beyond `answer` are optional and
+additive — a client that does not know a field ignores it — but two of them,
+`provenance` and `aiDisclosure`, are exactly what a compliance-relevant
+integration needs, so read them from the structured fields rather than parsing
+the answer text.
+
+| Field | Type | Notes |
+|---|---|---|
+| `answer` | string | The full assistant answer. On the first turn of a conversation scope it also contains the folded AI-disclosure paragraph — see below. |
+| `toolCalls` | number | Tool invocations this turn. |
+| `iterations` | number | Agentic iterations this turn. |
+| `provenance` | object | AI-Act Art. 50 machine-readable marker: `{"aiGenerated": true}`. Always stamped on this route (the plugin owns the NDJSON envelope). The literal `true` is the only state — there is no `aiGenerated: false`. |
+| `aiDisclosure` | object | Structured AI disclosure — `{ text, level: "standard"\|"concise", locale, source: "default"\|"operator", operatorNote? }`. **This is the stable carrier: read the disclosure from here on every turn.** Present on every turn the disclosure is active; absent only when an operator turned it `off`. |
+| `runTrace` | object | Agentic run trace for the turn (verifier evidence, dev UIs). Ignore if you don't need it. |
+| `palaiaExcerpt` | object | Verbatim source snippet, present only when the instance runs the excerpt extractor. Ignore if you don't need it. |
+
+The full event union carries still more internal fields (`model`, `turnId`,
+`privacyReceipt`, `agentsConsulted`, and others) that a plain chat integration
+can ignore.
+
+**The AI-disclosure paragraph in `done.answer` is folded once per conversation
+scope, not on every turn.** On the first turn of a scope the disclosure line
+(e.g. `Diese Antwort wurde von einem KI-System erzeugt.`) is appended to
+`done.answer` as its own paragraph; on later turns with the same
+`conversationId` it is not. The structured `aiDisclosure` field, by contrast,
+rides **every** turn. Consequences to design for:
+
+- **Do not depend on the paragraph being present in `done.answer`.** Read the
+  disclosure from the `aiDisclosure` field — that is the stable carrier.
+- Sending the same request twice within a scope yields answer text that differs
+  by that whole paragraph. That is the fold-once rule, not nondeterminism.
+- Without a `conversationId` every call is its own scope, so every call folds
+  the paragraph in again.
+- The seen-store is in-memory and per-process, so a server restart (or a second
+  replica) makes the next turn in an existing conversation fold the paragraph in
+  once more. This is the fail-safe direction — on any doubt the marking repeats
+  rather than being skipped.
+
+An `X-AI-Generated: true` response header is also set on every response to this
+route, at envelope-open, so it is present regardless of how the turn ends.
+
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
 gone.
@@ -211,9 +261,24 @@ returns `429 Too Many Requests`:
 { "error": "rate_limited", "message": "this key is limited to 60 requests/minute" }
 ```
 
-This is a fixed 60-second window, counted per key, in-memory on the server —
-back off and retry after the window resets. A rate-limited call is
-authenticated (the key was valid) but never reaches the orchestrator.
+This is a fixed 60-second window, in-memory on the server — wait for the window
+to reset and retry. **No `Retry-After` header is sent**, so the 60 seconds is a
+fixed value to hardcode, not something to read off the response. A rate-limited
+call is authenticated (the key was valid) but never reaches the orchestrator.
+
+**Each key's budget is counted separately per limiter, not pooled across
+routes.** The limit is always keyed by API key — `rateLimitPerMinute` is a
+per-key value — but the *counter* is not shared between routes. The same key is
+also valid for the public MCP route (`POST /api/v1/mcp`), and each route runs
+its own independent limiter instance, so a key with `rateLimitPerMinute = 60`
+gets 60/min on `/api/public/v1/chat` **and** a separate 60/min on
+`/api/v1/mcp`, rather than one shared 60/min across both. The MCP route
+splits further into independent read and write limiters, so a write-capable MCP
+key gets yet another separate budget. A key's effective ceiling is therefore at
+least `rateLimitPerMinute` and, across every limiter it can reach, a multiple
+of it. Size a key with this in mind: an operator sizing purely by "requests per
+minute for this customer" will under-count if the customer reaches more than
+one limiter.
 
 **This limiter is in-memory and per-process.** It resets on every restart
 and does not share state across multiple replicas/instances of this app —
@@ -248,8 +313,13 @@ sequence of lines like:
 ```
 {"type":"text_delta","text":"Your "}
 {"type":"text_delta","text":"current MRR is..."}
-{"type":"done","answer":"Your current MRR is...","toolCalls":0,"iterations":1}
+{"type":"done","answer":"Your current MRR is...\n\nDiese Antwort wurde von einem KI-System erzeugt.","toolCalls":0,"iterations":1,"provenance":{"aiGenerated":true},"aiDisclosure":{"text":"Diese Antwort wurde von einem KI-System erzeugt.","level":"standard","locale":"de","source":"default"}}
 ```
+
+The `done` line above is abbreviated for readability — the wire also carries
+`runTrace` and, on instances that run the excerpt extractor, `palaiaExcerpt`.
+See "`done` event fields" above for the full shape and the fold-once rule that
+governs the disclosure paragraph inside `answer`.
 
 ## Layout
 
