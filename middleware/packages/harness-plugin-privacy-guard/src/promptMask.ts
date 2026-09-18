@@ -166,25 +166,44 @@ const C0_PATTERNS: readonly C0Pattern[] = [
 
 /** The deterministic C0 regex baseline (#361). Confidence is always 1 —
  *  every match is a hard pattern hit. Never throws. */
+/** The C0 baseline as a synchronous scan — the same patterns `createBaselineDetector`
+ *  runs, without the async detector envelope. */
+export function detectBaselineSync(text: string): PromptPiiSpan[] {
+  const spans: PromptPiiSpan[] = [];
+  for (const { type, re } of C0_PATTERNS) {
+    // Fresh regex state per call (global flag carries lastIndex).
+    const pattern = new RegExp(re.source, re.flags);
+    for (const match of text.matchAll(pattern)) {
+      if (match.index === undefined || match[0].length === 0) continue;
+      spans.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        type,
+        confidence: 1,
+      });
+    }
+  }
+  return spans;
+}
+
+/**
+ * True when the C0 baseline finds any PII shape (e-mail, IBAN, phone, address,
+ * amount, date, id number) in `value`. Built for the v4 shape classifier's
+ * one-way `detector` booster: a column of bare phone numbers is all digits and
+ * would otherwise clear as an `id` handle — and a small dataset's digest
+ * inlines every value of a safe column. With real values now flowing from
+ * uploaded tables into the turn store, that is exactly the column that must
+ * not clear.
+ */
+export function baselineHasPii(value: string): boolean {
+  return detectBaselineSync(value).length > 0;
+}
+
 export function createBaselineDetector(): PromptPiiDetector {
   return {
     id: 'c0-regex',
     async detect(text: string): Promise<readonly PromptPiiSpan[]> {
-      const spans: PromptPiiSpan[] = [];
-      for (const { type, re } of C0_PATTERNS) {
-        // Fresh regex state per call (global flag carries lastIndex).
-        const pattern = new RegExp(re.source, re.flags);
-        for (const match of text.matchAll(pattern)) {
-          if (match.index === undefined || match[0].length === 0) continue;
-          spans.push({
-            start: match.index,
-            end: match.index + match[0].length,
-            type,
-            confidence: 1,
-          });
-        }
-      }
-      return spans;
+      return detectBaselineSync(text);
     },
   };
 }

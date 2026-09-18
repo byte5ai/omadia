@@ -4,6 +4,14 @@ import {
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
 
+import { createBaselineDetector, maskPrompt } from '@omadia/plugin-privacy-guard';
+
+import {
+  decryptRows,
+  isEncryptedCell,
+  resolveDatasetCellKey,
+  type DatasetCellKey,
+} from '../datasetCellCrypto.js';
 import { isLinkKeyColumn } from '../datasetLinkKey.js';
 import { turnContext } from '../turnContext.js';
 
@@ -110,6 +118,47 @@ export const queryDatasetToolSpec = {
   },
 };
 
+/**
+ * Turn stored `enc1:` cells into what THIS caller may see.
+ *
+ * - Behind the Privacy Shield (the turn carries a `privacyHandle`, so the
+ *   result is about to be interned and the model gets a digest): the REAL
+ *   values — that is what the materializer and `create_xlsx` need, and the
+ *   model never receives them.
+ * - Without a guard the result goes to the model in clear, so every
+ *   decrypted cell is re-masked on read, with ONE pseudonym map across the
+ *   page so different people get different surrogates.
+ * - No key: cells stay `[verschlüsselt — …]` markers; nothing is guessed.
+ */
+async function revealOrMaskCells(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  ownerOmadiaUserId: string,
+  reveal: boolean,
+): Promise<Array<Record<string, unknown>>> {
+  if (!rows.some((r) => Object.values(r).some(isEncryptedCell))) return [...rows];
+  const key = resolveDatasetCellKey();
+  const cellKey: DatasetCellKey | undefined =
+    key === undefined ? undefined : { key, ownerOmadiaUserId };
+  const decrypted = decryptRows(cellKey, rows);
+  if (reveal || cellKey === undefined) return decrypted;
+
+  const detectors = [createBaselineDetector()];
+  let map: Awaited<ReturnType<typeof maskPrompt>>['map'] | undefined;
+  const out: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < decrypted.length; i++) {
+    const original = rows[i]!;
+    const row = { ...decrypted[i]! };
+    for (const [column, value] of Object.entries(original)) {
+      if (!isEncryptedCell(value) || typeof row[column] !== 'string') continue;
+      const masked = await maskPrompt(row[column], detectors, map);
+      map = masked.map;
+      row[column] = masked.maskedText;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
 export class QueryDatasetTool {
   constructor(private readonly graph: KnowledgeGraph) {}
 
@@ -190,7 +239,14 @@ export class QueryDatasetTool {
           if (!result) {
             return JSON.stringify({ error: 'not_found_or_not_owned' });
           }
-          return JSON.stringify(result);
+          if (result.rows === undefined) return JSON.stringify(result);
+          // Real values only when this result is about to be interned behind
+          // the Privacy Shield — the turn's privacy handle is the signal the
+          // orchestrator itself uses to decide interning. No handle ⇒ the
+          // model would read this string, so cells are re-masked instead.
+          const reveal = turnContext.current()?.privacyHandle !== undefined;
+          const rows = await revealOrMaskCells(result.rows, viewerOmadiaUserId, reveal);
+          return JSON.stringify({ ...result, rows });
         } catch (err) {
           if (err instanceof DatasetQueryValidationError) {
             return `Error: ${err.code} — ${err.message}. Call \`get_schema\` to see the real column names/types.`;

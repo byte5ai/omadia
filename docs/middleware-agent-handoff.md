@@ -845,6 +845,19 @@ gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
 d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
 Tabelle `linkKeys.columns`.
 
+**PII-Zellen verschlüsselt at rest** (`datasetCellCrypto.ts`): geflaggte
+Zellen werden nicht mehr irreversibel maskiert, sondern als `enc1:…`
+(AES-256-GCM, Schlüssel = HKDF aus demselben Dataset-Secret, AAD = Owner +
+Spalte) gespeichert. `query_dataset` entschlüsselt **nur**, wenn der Turn ein
+`privacyHandle` trägt (⇒ Ergebnis wird interniert, Modell bekommt Digest,
+Render/Excel liefern echte Werte); ohne Guard wird auf dem Lesepfad neu
+maskiert (ein Pseudonym-Map pro Seite). Owner-Rows-Route entschlüsselt.
+Schema-`sample` bleibt der Surrogat. Ohne Secret: altes irreversibles Masking,
+Fakt im `[dataset-imported]`-Block sagt es. Secret-Rotation macht Alt-Zellen
+unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Classifier
+läuft seitdem mit dem C0-Baseline als `detector`-Booster (Telefonnummern-Spalte
+wäre sonst ein safe `id`-Handle). `privacyScan.encryptedAtRest` je Tabelle.
+
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
 die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`

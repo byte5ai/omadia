@@ -7826,7 +7826,9 @@ export class Orchestrator {
     let scannedCells = 0;
     let maskedCells = 0;
     let linkKeyColumns = 0;
+    let encryptedTables = 0;
     const lines = imported.imported.map((t) => {
+      if (t.privacyScan.encryptedAtRest) encryptedTables += 1;
       const { truncatedCellCount, truncatedColumns } = t.truncation;
       // Only claim "not truncated" when that is actually true for this table
       // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
@@ -7868,11 +7870,23 @@ export class Orchestrator {
     // reassurance is bad; a wrong ALARM is worse, because the user acts on
     // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
     // the fact — so ship the fact.
+    // Encrypted at rest (the default with a dataset secret) means the REAL
+    // values survive for the entitled user — render and Excel show them —
+    // while the model still only ever gets a digest. Without a secret the
+    // old irreversible masking applies and the model must not promise real
+    // values in an export.
+    const allEncrypted = encryptedTables === imported.imported.length;
+    const piiCellsFact = allEncrypted
+      ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
+        `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
+        `so the user sees and exports real data while you never receive it`
+      : `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
+        `secret configured) — exports show surrogates, not real values`;
     const privacyFact =
       `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
       `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
       `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
-      `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
+      `${piiCellsFact}). You do not have this file's raw contents; ` +
       `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
       `boundary as any other tool result.` +
       // Link keys are a fact about the file too: with them, cross-file dedup

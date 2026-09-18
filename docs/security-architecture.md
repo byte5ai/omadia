@@ -456,6 +456,44 @@ handle in clear — that is the point, and it is a deliberate weakening relative
   columns (`contains` on `Name`) can, in principle, associate a probed row with
   its now-stable handle. The handle is worthless outside this user's datasets.
 
+### 6b. Uploaded PII cells: encrypted at rest, cleartext only server-side
+
+Until this change a cell the import scan flagged was **masked irreversibly**
+(#430/#727): the surrogate was persisted, the real value gone. That made every
+downstream use wrong for the person entitled to the data — a merged contact
+list showed `lukas.becker@example.net` in every row (each cell got the first
+pseudonym candidate) and the Excel export of it was worthless.
+
+The shield's boundary is the **model**, not the server. Flagged cells are now
+stored as `enc1:<base64url(iv ‖ tag ‖ ciphertext)>` — AES-256-GCM under
+`HKDF(dataset secret, "omadia/dataset-cell-encryption/v1")`, with the owner id
+and column name as AAD, so a ciphertext cannot be replayed into another user's
+dataset or another column. Who gets cleartext:
+
+| Reader | Sees |
+|---|---|
+| `query_dataset` **behind** the Privacy Shield (turn carries a privacy handle ⇒ result is interned) | real values — into the turn store; the model gets a digest, `v4_render_answer`/`create_xlsx` resolve them server-side |
+| `query_dataset` **without** a guard (result would reach the model in clear) | re-masked on read, one pseudonym map per page |
+| owner's `GET /api/v1/datasets/:id/rows` | real values (it is their data) |
+| any reader without the key | `[verschlüsselt — Schlüssel nicht verfügbar]`, never garbage, never a throw |
+
+Two things this rests on: (1) `query_dataset` is **not** intern-exempt
+(`privacyInternPolicy.ts`) — the day it becomes exempt, the "behind the shield"
+branch above is a leak; the test `datasetCellCrypto.test.ts` pins the reveal
+condition to the presence of the turn's privacy handle, which is the same
+signal the orchestrator uses to intern. (2) The v4 shape classifier now runs
+the C0 baseline as its one-way `detector` booster: a digits-only phone column
+would otherwise clear as an `id` handle, and a small dataset's digest inlines
+every value of a safe column.
+
+Unchanged: names (C0 does not detect them) are stored in clear as before;
+rows imported before this change hold irreversible surrogates and pass through
+untouched. Rotating the secret (or `VAULT_KEY` when no explicit secret is set)
+makes existing ciphertexts unreadable — an operational decision to announce, not
+a silent `fly secrets set`. Without any secret the import falls back to the old
+irreversible masking and says so in the `[dataset-imported]` fact, so the model
+does not promise real values in an export it cannot deliver.
+
 ## 7. Conductor generic webhooks (#437)
 
 Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions

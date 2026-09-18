@@ -52,7 +52,12 @@ import {
   type LlmComplete,
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
-import { createBaselineDetector, createCustomTermsDetector, maskPrompt } from './promptMask.js';
+import {
+  baselineHasPii,
+  createBaselineDetector,
+  createCustomTermsDetector,
+  maskPrompt,
+} from './promptMask.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { resolvePseudonyms } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -323,7 +328,12 @@ export function createPrivacyGuardService(deps?: {
     let s = stores.get(turnId);
     if (s === undefined) {
       s = createDatasetStore({
-        classify: createShapeClassifier(),
+        // The C0 baseline as one-way booster: a column of bare phone numbers
+        // or IBANs is all digits/letters and would clear as an `id` handle —
+        // and a small dataset's digest inlines every value of a safe column.
+        // Uploaded tables now deliver real values into this store, so that
+        // column must be masked. A miss never promotes (D4).
+        classify: createShapeClassifier({ detector: baselineHasPii }),
         buildDigest,
         turnId,
       });
@@ -486,7 +496,7 @@ export function createPrivacyGuardService(deps?: {
         }
         const engine = createVerbEngine({
           store,
-          classify: createShapeClassifier(),
+          classify: createShapeClassifier({ detector: baselineHasPii }),
         });
         const result = dispatchVerbCall(engine, request.toolName, request.input);
         receiptFor(request.turnId).verbsExecuted.push(
