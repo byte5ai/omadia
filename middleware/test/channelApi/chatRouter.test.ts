@@ -321,6 +321,103 @@ describe('channelApi/chatRouter — same-key conversationId collision via lossy 
   });
 });
 
+describe('channelApi/chatRouter — request-contract strictness (issue #1109)', () => {
+  it('400s and names the offending field when the body carries an unknown key', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'strict' });
+
+    const res = await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi', stream: false, userId: 'admin', locale: 'en' }),
+    });
+    assert.equal(res.status, 400);
+    const payload = (await res.json()) as { error: string; message?: string; issues: unknown[] };
+    assert.equal(payload.error, 'invalid_request');
+    // The unknown field name has to reach the caller in a readable top-level
+    // message — silent stripping is the exact defect (issue #1109 defect 1).
+    assert.ok(payload.message, 'the 400 must carry a top-level message');
+    assert.match(payload.message ?? '', /unknown field/);
+    assert.ok(payload.message?.includes('stream'), 'the message must name the unknown field');
+    // ...and the turn must never have run.
+    assert.equal(capturedTurns.length, 0, 'a rejected request must not dispatch a turn');
+
+    // Audited as a rejected request, not as "ok".
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.status, 'invalid_request');
+  });
+
+  it('still accepts a well-formed body with only the known fields', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'strict-ok' });
+
+    const res = await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi', conversationId: 'conv-1' }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  it('415s and names application/json when a JSON body arrives with no Content-Type', async () => {
+    const capturedTurns: IncomingTurn[] = [];
+    const harness = startTestServer({
+      async *handleTurnStream(turn) {
+        capturedTurns.push(turn);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'no-content-type' });
+
+    // A valid JSON body, but no Content-Type — so the global express.json parser
+    // never runs and req.body is undefined. The old behaviour was a misleading
+    // 400 "expected object, received undefined" (issue #1109 defect 2).
+    const res = await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.equal(res.status, 415);
+    const body = await res.text();
+    assert.match(body, /unsupported_media_type/);
+    // The message has to point the integrator at the header, not the payload.
+    assert.ok(body.includes('application/json'), 'the 415 must name the required content type');
+    assert.equal(capturedTurns.length, 0, 'a 415 must not dispatch a turn');
+
+    const entries = await harness.auditLog.list();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.status, 'invalid_request');
+  });
+
+  it('415s when the Content-Type is present but not application/json', async () => {
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'text-plain' });
+
+    const res = await harness.client.fetch('/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain', authorization: `Bearer ${created.token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.equal(res.status, 415);
+    assert.ok((await res.text()).includes('application/json'));
+  });
+});
+
 describe('channelApi/chatRouter — audit-log accuracy for every authenticated outcome (finding #2)', () => {
   it('does NOT audit an unauthenticated call (missing key)', async () => {
     const harness = startTestServer({
