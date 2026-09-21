@@ -27,6 +27,7 @@ import {
   type TableTruncationStats,
 } from './datasetImport.js';
 import { parseXlsx } from './datasetImportXlsx.js';
+import { resolveDatasetCellKey, type DatasetCellKey } from './datasetCellCrypto.js';
 import {
   createDatasetLinkKeyer,
   resolveDatasetLinkKeySecret,
@@ -76,6 +77,19 @@ function resolveLinkKeyer(
     secret,
     ownerOmadiaUserId: input.ownerOmadiaUserId,
   });
+}
+
+/** The cell-encryption key for this import — same secret source as the link
+ *  keys (`linkKeySecret` semantics apply), separate HKDF label. `undefined`
+ *  ⇒ flagged cells are masked irreversibly, as before. */
+function resolveCellKey(input: ImportTabularDatasetInput): DatasetCellKey | undefined {
+  if (input.linkKeySecret === null) return undefined;
+  const key =
+    input.linkKeySecret === undefined
+      ? resolveDatasetCellKey()
+      : resolveDatasetCellKey({ DATASET_LINK_KEY_SECRET: input.linkKeySecret.toString('utf8') });
+  if (key === undefined) return undefined;
+  return { key, ownerOmadiaUserId: input.ownerOmadiaUserId };
 }
 
 export type ImportTabularDatasetResult =
@@ -144,12 +158,13 @@ export async function importTabularDataset(
     linkKeys: LinkKeyReport;
   }
   const linkKey = resolveLinkKeyer(input);
+  const cellKey = resolveCellKey(input);
   const built: BuiltTable[] = [];
   for (const named of parsed.tables) {
-    const dataset = await buildDatasetFromTable(
-      named.table,
-      linkKey ? { linkKey } : {},
-    );
+    const dataset = await buildDatasetFromTable(named.table, {
+      ...(linkKey ? { linkKey } : {}),
+      ...(cellKey ? { cellKey } : {}),
+    });
     if (!dataset.ok) {
       const where = named.sheetName ? ` (sheet '${named.sheetName}')` : '';
       return { ok: false, reason: `${dataset.reason}${where}` };

@@ -873,6 +873,27 @@ gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
 d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
 Tabelle `linkKeys.columns`.
 
+**PII-Zellen verschlüsselt at rest** (`datasetCellCrypto.ts`): geflaggte
+Zellen werden nicht mehr irreversibel maskiert, sondern als `enc1:…`
+(AES-256-GCM, Schlüssel = HKDF aus demselben Dataset-Secret, AAD = Owner +
+Spalte) gespeichert. `query_dataset` entschlüsselt **nur**, wenn der Turn ein
+`privacyHandle` trägt (⇒ Ergebnis wird interniert, Modell bekommt Digest,
+Render/Excel liefern echte Werte); ohne Guard wird auf dem Lesepfad neu
+maskiert (ein Pseudonym-Map pro Seite). Owner-Rows-Route entschlüsselt.
+Schema-`sample` bleibt der Surrogat. Ohne Secret: altes irreversibles Masking,
+Fakt im `[dataset-imported]`-Block sagt es. Secret-Rotation macht Alt-Zellen
+unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Classifier
+läuft seitdem mit den **Identitäts**-Typen des C0-Baseline (E-Mail, IBAN,
+Telefon, Adresse, ID-Nummer — nicht `date`/`amount`) als `detector`-Booster
+(Telefonnummern-Spalte wäre sonst ein safe `id`-Handle; Datums-/Betragsspalten
+bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
+`query_rows`-DSL (`eq`/`contains`/`group_by`) arbeitet auf verschlüsselten
+Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
+nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
+Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
+Orchestrator die Zeilen **zurück** (fail-closed nur für dieses Tool), weil sie
+Klartext tragen.
+
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
 die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
@@ -1012,6 +1033,19 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
+- **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
+  Zod-Schema ist `.strict()` — unbekannte Felder (`stream`, `userId`, `locale`,
+  ein `conversationID`-Casing-Typo) werden **nicht** stillschweigend gestrippt,
+  sondern mit `400 invalid_request` abgelehnt; die Response trägt ein
+  Top-Level-`message`, das die abgelehnten Feldnamen nennt. Nur `message` +
+  `conversationId` sind akzeptiert. Das hält den Weg offen, später ein echtes
+  `stream`/`locale`-Feld zu ergänzen, ohne bereits-ignorierte Caller zu brechen.
+  Zusätzlich: ein Request ohne `Content-Type: application/json` wird vom
+  globalen `express.json` nie geparst (`req.body` bliebe `undefined`); der Router
+  fängt das **vor** dem Schema-Parse mit `415 unsupported_media_type` ab und
+  nennt den erforderlichen Content-Type — statt der irreführenden
+  "expected object, received undefined"-Meldung. Beide Ausgänge auditieren als
+  `invalid_request`.
 
 Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
 Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt

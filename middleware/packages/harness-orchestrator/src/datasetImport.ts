@@ -60,6 +60,7 @@ import type {
   KnowledgeGraph,
 } from '@omadia/plugin-api';
 
+import { encryptCell, type DatasetCellKey } from './datasetCellCrypto.js';
 import {
   isLinkKeyColumn,
   linkKeyColumnName,
@@ -211,8 +212,13 @@ export interface PrivacyScanStats {
   /** Total cells (across every row) that were passed through the baseline
    *  detector — string-typed columns only, see module doc. */
   scannedCells: number;
-  /** Cells where at least one span was masked. */
+  /** Cells where the scan found at least one PII span. With a cell key these
+   *  are stored ENCRYPTED (real value, server-side readable); without one
+   *  they are masked irreversibly as before. */
   maskedCells: number;
+  /** True when flagged cells were encrypted rather than masked — i.e. the
+   *  real values are recoverable server-side for rendering and export. */
+  encryptedAtRest: boolean;
 }
 
 /**
@@ -238,6 +244,10 @@ export interface BuildDatasetOptions {
    *  before masking. Absent ⇒ no key columns, byte-identical pre-link-key
    *  output. */
   linkKey?: DatasetLinkKeyer;
+  /** When set, a cell the PII scan flags is stored as its REAL value under
+   *  AES-256-GCM (`enc1:…`, see `datasetCellCrypto.ts`) instead of the
+   *  irreversible surrogate. Absent ⇒ masking as before. */
+  cellKey?: DatasetCellKey;
 }
 
 export interface LinkKeyReport {
@@ -324,21 +334,29 @@ export async function buildDatasetFromTable(
     : new Set<string>();
 
   const detectors = [createBaselineDetector()];
+  const cellKey = opts.cellKey;
   let scannedCells = 0;
   let maskedCells = 0;
+  // Display-safe value of every column in the FIRST row — the schema sample.
+  // A flagged cell's stored value is now a ciphertext, which tells a human
+  // nothing; the sample keeps showing the masked surrogate instead.
+  const firstRowDisplay: Record<string, unknown> = {};
 
   const scrubbedRows: Array<Record<string, unknown>> = [];
   for (const rawRow of parsed.rows) {
+    const isFirstRow = scrubbedRows.length === 0;
     const outRow: Record<string, unknown> = {};
     for (const header of parsed.headers) {
       const type = columnTypes.get(header) ?? 'string';
       const raw = rawRow[header] ?? '';
       if (type === 'number') {
         outRow[header] = raw.trim() === '' ? null : Number(raw);
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       if (type === 'boolean') {
         outRow[header] = raw.trim() === '' ? null : /^true$/i.test(raw.trim());
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       if (type === 'date') {
@@ -346,18 +364,29 @@ export async function buildDatasetFromTable(
         // persisted date is irreversible + contradicts the declared type
         // (#727). Store the real date so the schema and the data agree.
         outRow[header] = raw.trim() === '' ? null : raw;
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       // 'string' — the only cells that can carry free text, so the only ones
       // that go through the privacy scan (see module doc).
       scannedCells += 1;
+      let display = raw;
       if (raw.length === 0) {
         outRow[header] = raw;
       } else {
         const scanned = await maskPrompt(raw, detectors);
-        if (scanned.maskedText !== raw) maskedCells += 1;
-        outRow[header] = scanned.maskedText;
+        if (scanned.maskedText !== raw) {
+          maskedCells += 1;
+          display = scanned.maskedText;
+          // A flagged cell keeps its REAL value — encrypted, readable only
+          // server-side for the entitled user (render, Excel). Without a key
+          // the irreversible surrogate is stored, exactly as before.
+          outRow[header] = cellKey ? encryptCell(cellKey, header, raw) : scanned.maskedText;
+        } else {
+          outRow[header] = raw;
+        }
       }
+      if (isFirstRow) firstRowDisplay[header] = display;
       // The link key is computed from the RAW value — that is the whole
       // point: it must be the same for the same person in every file, and
       // the masked surrogate is not. The raw value never leaves this
@@ -375,8 +404,7 @@ export async function buildDatasetFromTable(
     name: string,
     type: DatasetColumnType,
   ): DatasetColumnSchema => {
-    const firstRow = scrubbedRows[0];
-    const sampleValue = firstRow ? firstRow[name] : undefined;
+    const sampleValue = firstRowDisplay[name];
     const sample =
       sampleValue === null || sampleValue === undefined
         ? undefined
@@ -402,7 +430,7 @@ export async function buildDatasetFromTable(
     ok: true,
     columns,
     rows: scrubbedRows,
-    privacyScan: { scannedCells, maskedCells },
+    privacyScan: { scannedCells, maskedCells, encryptedAtRest: cellKey !== undefined },
     truncation: parsed.truncation,
     linkKeys: { columns: linkKeyColumns },
   };

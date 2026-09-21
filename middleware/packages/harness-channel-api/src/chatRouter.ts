@@ -38,11 +38,22 @@ import { CHAT_WRITE_SCOPE, requireApiKey } from '@omadia/api-key-auth';
 /** Relative to the router's mount prefix (`/api/public/v1`). */
 export const CHAT_ROUTE = '/chat';
 
-const ChatRequestSchema = z.object({
-  message: z.string().min(1, 'message must be a non-empty string'),
-  /** Caller-supplied thread id. Omitted → a fresh conversation per call. */
-  conversationId: z.string().min(1).max(200).optional(),
-});
+const ChatRequestSchema = z
+  .object({
+    message: z.string().min(1, 'message must be a non-empty string'),
+    /** Caller-supplied thread id. Omitted → a fresh conversation per call. */
+    conversationId: z.string().min(1).max(200).optional(),
+  })
+  // #1109 defect 1 — reject rather than silently strip unknown fields. Zod
+  // drops unrecognized keys by default, so a caller sending `stream`, `locale`
+  // or a `conversationID` typo got a 200 with those fields quietly ignored and
+  // no way to learn they were unsupported. `.strict()` turns each unknown key
+  // into an `unrecognized_keys` issue that names the field, and the existing
+  // 400 path below already forwards `parsed.error.issues` verbatim — so the
+  // offending field reaches the caller with no extra handling. Rejecting (not
+  // documenting-and-ignoring) also keeps the door open to add a real `stream`
+  // or `locale` field later without breaking callers who already send it.
+  .strict();
 
 /** NDJSON framing — see `src/routes/chat.ts`'s `writeEvent` (same shape). */
 function writeEvent(res: Response, event: unknown): void {
@@ -141,10 +152,41 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         return;
       }
 
+      // #1109 defect 2 — the global `express.json` parser only runs for an
+      // `application/json` Content-Type. Without that header a well-formed JSON
+      // body is never parsed, so `req.body` reaches `safeParse` as `undefined`
+      // and the schema failure read "expected object, received undefined" — an
+      // error about the payload for what is actually a missing header. Guard
+      // explicitly so the caller is pointed at the header, not the (valid)
+      // body. Audited as `invalid_request` (the closest AuditStatus; the key
+      // authenticated but the request was malformed).
+      if (!req.is('application/json')) {
+        key.audit('invalid_request');
+        res.status(415).json({
+          error: 'unsupported_media_type',
+          message: 'Content-Type must be application/json',
+        });
+        return;
+      }
+
       const parsed = ChatRequestSchema.safeParse(req.body);
       if (!parsed.success) {
         key.audit('invalid_request');
-        res.status(400).json({ error: 'invalid_request', issues: parsed.error.issues });
+        // #1109 defect 1 — a `.strict()` rejection carries the offending field
+        // names only in the issue's `keys` array, not its `message` ("Unrecognized
+        // key(s) in object"). Lift them into a top-level `message` so the caller
+        // reads *which* field was refused without having to dig through `issues`
+        // — the whole point of rejecting rather than silently stripping.
+        const unknownKeys = parsed.error.issues.flatMap((issue) =>
+          issue.code === 'unrecognized_keys' ? issue.keys : [],
+        );
+        const message =
+          unknownKeys.length > 0 ? `unknown field(s): ${unknownKeys.join(', ')}` : undefined;
+        res.status(400).json({
+          error: 'invalid_request',
+          ...(message ? { message } : {}),
+          issues: parsed.error.issues,
+        });
         return;
       }
 
