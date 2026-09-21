@@ -178,10 +178,28 @@ relevant to a plain chat integration:
 
 | `type` | Meaning |
 |---|---|
-| `text_delta` | Incremental chunk of the assistant's answer text. Concatenate these to reconstruct the streamed answer as it's produced. |
-| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. |
+| `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the server MAY replace the answer before `done` (see `done.answerSource`), in which case the concatenated deltas are stale and do not match `done.answer`. |
+| `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
+
+### `text_delta` vs `done.answer` — which one wins
+
+They are **not** interchangeable. `done.answer` is authoritative; the
+concatenated `text_delta` chunks are a live preview of the model's text and
+may be superseded server-side before the turn ends. The `done` event carries
+an optional `answerSource` field to tell the two apart:
+
+- absent or `"model"` — `answer` is the model's own streamed text; it equals
+  the concatenated deltas.
+- `"privacy-render"` — Privacy Shield materialized the final `answer`
+  server-side from ground truth (the model never saw those values). The
+  earlier deltas are stale and will not match; render `done.answer`.
+
+A client that reconstructs the answer from deltas should overwrite it with
+`done.answer` whenever `answerSource` is present and not `"model"`. The field
+is additive and optional — a client that ignores it and always renders
+`done.answer` is already correct.
 
 Note: `agent_bound` — an event some other omadia channel routes emit — is
 **not** emitted on this route. `CoreApi.handleTurnStream` (what this plugin

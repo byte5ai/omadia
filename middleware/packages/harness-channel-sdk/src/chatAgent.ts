@@ -2,6 +2,7 @@ import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugi
 import type {
   AgentConsultation,
   AiDisclosure,
+  AnswerSource,
   DelegatedAnswer,
   DirectLineSessionState,
   FollowUpOption,
@@ -535,6 +536,13 @@ export interface ChatTurnResult {
    */
   maskedValues?: readonly string[];
   /**
+   * #1105 — set to `'privacy-render'` when this turn's `answer` was swapped
+   * in from a Privacy-Shield v4 server-side render (i.e. it may diverge from
+   * the streamed `text_delta` preview). Omitted / `'model'` for the ordinary
+   * case where `answer` is the model's own streamed text. See `AnswerSource`.
+   */
+  answerSource?: AnswerSource;
+  /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
    * canvas-aware turn produced an initial primitive tree; `toSemanticAnswer`
    * forwards it to `SemanticAnswer.surface`. Channels not declaring the
@@ -831,6 +839,15 @@ export type ChatStreamEvent =
       /** Privacy Shield v4 — real values in `answer` the LLM never saw;
        *  clients MAY highlight their occurrences. */
       maskedValues?: readonly string[];
+      /**
+       * #1105 — `'privacy-render'` when `answer` was materialized server-side
+       * by Privacy-Shield v4 this turn, meaning it can diverge from the
+       * concatenated `text_delta` preview; `answer` is then authoritative.
+       * Omitted / `'model'` for the ordinary streamed-text case. Additive and
+       * optional — a client that ignores it keeps today's behaviour. See
+       * `AnswerSource`.
+       */
+      answerSource?: AnswerSource;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;

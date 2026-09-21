@@ -3678,6 +3678,10 @@ export class Orchestrator {
             result = {
               ...result,
               answer: v4Rendered.text,
+              // #1105 — see the streaming twin: mark the server-rendered
+              // answer so `toSemanticAnswer` / clients can tell it apart from
+              // the model's own text.
+              answerSource: 'privacy-render',
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -5552,6 +5556,9 @@ export class Orchestrator {
               ? {
                   ...event,
                   answer: v4Rendered.text,
+                  // #1105 — mark the answer as server-rendered so a streaming
+                  // client knows it supersedes the `text_delta` preview.
+                  answerSource: 'privacy-render' as const,
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -7021,6 +7028,19 @@ export class Orchestrator {
         } catch (err) {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
+      }
+      // #1105 — a guarded tool that returned a prose error string (the
+      // orchestrator's `Error:` tool-error convention — the same prefix the
+      // tool-result assembly reads to stamp `is_error`) must reach the model
+      // AS an error, not be interned. Interning it would (a) hide the failure
+      // behind a masked digest so the model never learns the call failed, and
+      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
+      // materializes as if the error were data — the divergence reported in
+      // #1105. Pass it through verbatim: the chat path already forwards tool
+      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
+      // `is_error` flag is derived from this very prefix.
+      if (result.startsWith('Error:')) {
+        return result;
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
