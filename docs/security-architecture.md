@@ -98,7 +98,7 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | `--strict-mcp-config --mcp-config <0600 file>` | Only omadia's loopback server; no MCP servers from the user's own config. |
 | `--allowedTools mcp__omadia__*` | Pre-approves omadia's tools so the turn does not stall on a prompt. |
 | `--system-prompt <omadia prompt>` | Replaces the CLI's default prompt. With `--append-system-prompt` the model kept Claude Code's identity, treated the CLI toolbox as its own and told users in the omadia chat to "go to omadia" (#992). `composeCliSystemPrompt()` always states the runtime and the only toolset the model has. |
-| `--restricted` (#1014) | Removes the code-running built-ins and WebFetch unless `--tools` names them, ignores user/project/local settings files, and confines the file tools. Additive belt over `--tools ""`. Chosen over `--bare`, which also skips `CLAUDE.md` discovery but reads neither OAuth nor the keychain — it would break the keyless subscription login outright. |
+| `--restricted` (#1014, version-gated since OM-85) | Removes the code-running built-ins and WebFetch unless `--tools` names them, ignores user/project/local settings files, and confines the file tools. Additive belt over `--tools ""`. Chosen over `--bare`, which also skips `CLAUDE.md` discovery but reads neither OAuth nor the keychain — it would break the keyless subscription login outright. **Passed only when the installed CLI is ≥ 2.1.248** (`resolveCliVersion()` probes `claude --version`, cached 5 min; `supportsRestrictedFlag()`): older CLIs do not ignore an unknown flag, they exit 1 with `unknown option`, which killed every turn on a 2.1.246 install (OM-85). On every spawn, regardless of version, the env twin `CLAUDE_CODE_RESTRICTED=1` is set — a CLI that knows it gets the same boundary, one that does not ignores the key. **Deliberate trade-off:** an unknown or unparsable version means the flag is left out, i.e. one protective layer fewer (the three layers `--tools ""`, `--disallowedTools`, `dontAsk` still hold), rather than a dead subscription path. A CLI that rejects one of *our* flags surfaces as `CliIncompatibleError` (`code: cli_incompatible`) with the update instruction, not as a failed answer. |
 | `cwd` = empty temp dir (#1014) | The CLI **hardcodes** `CLAUDE.md` / `AGENTS.md` discovery and only `--bare` skips it, so no flag closes this. Without a `cwd` the child inherited the middleware process's directory and any `CLAUDE.md` at or above it joined a prompt built from user content. Both sites now spawn in a per-turn temp dir holding nothing but the mcp-config. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
@@ -397,6 +397,21 @@ in object storage and served via HMAC-signed URLs with a short TTL
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
 
+**No operator session is required to open one — by design.** The people who
+click these links are channel users (Teams, Telegram) who are never logged into
+the middleware. Since Epic #470 C6 every plugin route sits behind the kernel's
+session gate by default, which made every `/documents/…` and `/diagrams/…`
+download answer `auth.missing`. Both routers therefore register with
+`auth: 'custom'` — they authenticate each request themselves via the HMAC
+signature and expiry, exactly like a presigned S3 URL — beneath the prefixes
+`/documents/dl` and `/diagrams/dl`, declared in their manifests'
+`permissions.public_paths` (a claim must be at least two segments deep, hence
+`/dl`). The prefix is only served session-less once the operator has granted
+it (`PUT /api/v1/admin/runtime/installed/:id/public-paths`); until then the
+kernel keeps the session gate in front, fail-closed. What the link buys is
+what it always bought: whoever holds it can fetch that one object until it
+expires; there is no per-tenant or per-session authorisation on top.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -405,6 +420,86 @@ history are convenience layers, not security layers. They:
 - Honour the same scope filters as the underlying graph queries.
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
+
+## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
+
+Uploaded CSV/XLSX rows are PII-masked irreversibly at import, and the surrogate a
+value receives depends on that file's value set. Two uploads of the same people
+therefore share no identity, and the C0 baseline does not detect names at all —
+a `Name` column is clear at rest yet masked downstream by the v4 shape
+classifier, which then refuses it as a verb key. Cross-file de-duplication was
+impossible without letting the model see names.
+
+The resolution is `datasetLinkKey.ts`: every string column gets a companion
+`__k_<column>` = `HMAC-SHA256(secret, ownerOmadiaUserId ‖ "\n" ‖ normalize(raw))`,
+truncated to 16 hex chars with a guaranteed digit. The model **does** see this
+handle in clear — that is the point, and it is a deliberate weakening relative to
+"irreversible per file". What keeps it inside the shield:
+
+- **Not invertible, not guess-testable.** Without the process-held secret a key
+  neither reveals nor confirms a value. Filters on `__k_*` in `query_dataset`
+  are refused server-side, so the model cannot pair a chosen value with its key.
+- **Keyed per user, not per tenant.** Datasets are owner-scoped everywhere
+  (`queryDatasetRows(datasetId, ownerId)`, route session id, orchestrator
+  `resolvedOmadiaUserId` — one id space). A per-user key adds no linkability the
+  owner did not already have; a tenant-wide key would. Consequence to keep in
+  mind: the user-id string is part of the MAC input, so an identity merge or a
+  future dataset-sharing feature de-links older uploads — by design, not by bug.
+- **Classification rules untouched.** The key clears as `safe-cleartext` via the
+  existing S5 `id` rule; `requireSafe` in the verb engine is unchanged. Masked
+  columns are still never keys.
+- **Secret lifecycle.** `DATASET_LINK_KEY_SECRET`, or HKDF from `VAULT_KEY`
+  (`omadia/dataset-link-key/v1`) when unset. Rotating either re-keys every
+  future import; older datasets stop linking with newer ones. No key material
+  is ever written to a dataset.
+- **Residual.** A pre-existing `query_rows` filter oracle on clear-at-rest
+  columns (`contains` on `Name`) can, in principle, associate a probed row with
+  its now-stable handle. The handle is worthless outside this user's datasets.
+
+### 6b. Uploaded PII cells: encrypted at rest, cleartext only server-side
+
+Until this change a cell the import scan flagged was **masked irreversibly**
+(#430/#727): the surrogate was persisted, the real value gone. That made every
+downstream use wrong for the person entitled to the data — a merged contact
+list showed `lukas.becker@example.net` in every row (each cell got the first
+pseudonym candidate) and the Excel export of it was worthless.
+
+The shield's boundary is the **model**, not the server. Flagged cells are now
+stored as `enc1:<base64url(iv ‖ tag ‖ ciphertext)>` — AES-256-GCM under
+`HKDF(dataset secret, "omadia/dataset-cell-encryption/v1")`, with the owner id
+and column name as AAD, so a ciphertext cannot be replayed into another user's
+dataset or another column. Who gets cleartext:
+
+| Reader | Sees |
+|---|---|
+| `query_dataset` **behind** the Privacy Shield (turn carries a privacy handle ⇒ result is interned) | real values — into the turn store; the model gets a digest, `v4_render_answer`/`create_xlsx` resolve them server-side |
+| `query_dataset` **without** a guard (result would reach the model in clear) | re-masked on read, one pseudonym map per page |
+| owner's `GET /api/v1/datasets/:id/rows` | real values (it is their data) |
+| any reader without the key | `[verschlüsselt — Schlüssel nicht verfügbar]`, never garbage, never a throw |
+
+Two things this rests on: (1) `query_dataset` is **not** intern-exempt
+(`privacyInternPolicy.ts`) — the day it becomes exempt, the "behind the shield"
+branch above is a leak; the test `datasetCellCrypto.test.ts` pins the reveal
+condition to the presence of the turn's privacy handle, which is the same
+signal the orchestrator uses to intern — and when that interning THROWS, the
+orchestrator withholds this tool's rows instead of falling open to the raw
+result as it does for other tools (`dispatchTool`, `QUERY_DATASET_TOOL_NAME`
+branch): the rows carry cleartext precisely because interning was expected.
+(2) The v4 shape classifier now runs the C0 baseline's identity types (e-mail,
+IBAN, phone, address, id number — deliberately not `date`/`amount`, which must
+stay filterable) as its one-way `detector` booster: a digits-only phone column
+would otherwise clear as an `id` handle, and a small dataset's digest inlines
+every value of a safe column. (3) The `[dataset-imported]` fact promises real
+values in render/export only when a privacy handle is active in the turn;
+without one it says plainly that exports show surrogates.
+
+Unchanged: names (C0 does not detect them) are stored in clear as before;
+rows imported before this change hold irreversible surrogates and pass through
+untouched. Rotating the secret (or `VAULT_KEY` when no explicit secret is set)
+makes existing ciphertexts unreadable — an operational decision to announce, not
+a silent `fly secrets set`. Without any secret the import falls back to the old
+irreversible masking and says so in the `[dataset-imported]` fact, so the model
+does not promise real values in an export it cannot deliver.
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -832,6 +927,48 @@ source and requires the suite to go red.
 
 ---
 
+## 10a. A tenant-scoped check may not authorise a table-wide statement (OM-98, Cato-Audit Runde 5)
+
+The knowledge graph keeps every tenant in the SAME physical tables —
+`graph_nodes` and `processes` carry a `tenant_id` **column**, not a schema or a
+database per tenant (`middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql`).
+Any `ALTER TABLE … DROP COLUMN` on them is therefore a cross-tenant statement,
+whoever triggered it.
+
+The non-destructive vector-column rebuild (the OM-98 "reactivate a provider
+stuck behind a width mismatch" path) checked its precondition with
+`WHERE tenant_id = $1` and executed without one. A tenant that had never
+embedded anything read as *empty*, and that verdict authorised dropping every
+other tenant's embeddings. Two properties now hold instead, and both are the
+general rule, not a one-off patch:
+
+1. **The precondition is scoped like the statement it guards.** The emptiness
+   probe is table-wide, with no `tenant_id` predicate
+   (`vectorCorpusEmptiness.ts`, `vectorColumnCatalog.ts::hasAnyVectorTableWide`).
+2. **The precondition is re-taken where the statement runs.** It is evaluated
+   inside the DDL transaction, after
+   `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` — the advisory lock the run holds
+   does not exclude `embeddingBackfill`, which writes vectors without taking it,
+   so a check in its own transaction was a second race rather than a fix for
+   the first. A probe that cannot be taken refuses as `emptiness-unknown`,
+   which is deliberately NOT `corpus-not-empty`: a lock timeout must not read
+   as "your corpus is populated, confirm the discard".
+
+Serialisation follows the same scoping rule. The rebuild holds a **global**
+advisory lock (`LOCK_NS_COLUMN_REBUILD`, key `vector-column-migration`) in
+addition to the tenant-scoped registry lock, because two tenants holding two
+different tenant keys could otherwise rewrite the same physical column at once.
+A hand-written migration in the `0005_turn_embeddings_768.sql` style takes
+neither lock — run it with the middleware stopped.
+
+Tests: `middleware/test/embeddingColumnMigrationGuard.test.ts` (fake driver:
+the scoped and table-wide probes answer differently on purpose, so a regression
+changes the verdict rather than staying green) and
+`middleware/test/embeddingModelGateMigrationGuards.pg.test.ts` (real Postgres:
+an empty tenant beside a populated neighbour, and the global lock).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -846,10 +983,13 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new sub-agent tool is scope-locked at construction time.
 - [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
       `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
-      `--restricted`, `--strict-mcp-config`, `--system-prompt`), the empty
-      `cwd`, the env allowlist, and their tests (§3a). Both sites build argv
-      from `cliSpawnGate.ts` — a new spawn site must use it too, not copy the
-      flags.
+      `--restricted` where the CLI version allows it plus the
+      `CLAUDE_CODE_RESTRICTED=1` env twin, `--strict-mcp-config`,
+      `--system-prompt`), the empty `cwd`, the env allowlist, and their tests
+      (§3a). Both sites build argv from `cliSpawnGate.ts` — a new spawn site
+      must use it too, not copy the flags — and pass the resolved CLI version
+      into it (OM-85): a new flag that an older CLI may not know needs the same
+      version gate, never an unconditional argv entry.
 - [ ] A new CLI version has been run against the deny-list drift guard
       (`cliSpawnGate.test.ts`) **on a machine where that version is installed**,
       and ideally the live probe (`OMADIA_CLI_LIVE_PROBE=1`), before the

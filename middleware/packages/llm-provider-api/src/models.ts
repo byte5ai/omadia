@@ -27,6 +27,37 @@ export type ModelRole =
 /** Provider id — matches the `LlmProvider.id` of the adapter that serves it. */
 export type ProviderId = 'anthropic' | 'openai' | 'openai-compatible' | string;
 
+/**
+ * A model as reported LIVE by a provider's own list-models API (Anthropic
+ * `GET /v1/models`, OpenAI-compatible `GET /v1/models`, …). This is what an
+ * adapter's `listModels()` returns; the runtime turns it into `ModelInfo` by
+ * applying the provider's `ModelDiscoveryRules` (class tier, aliases, caps the
+ * vendor does not report). Every field except `modelId` is optional because
+ * vendors differ wildly in what their list endpoint exposes — OpenAI returns
+ * little more than the id, Anthropic reports context/output caps and a
+ * capability tree.
+ */
+export interface DiscoveredModel {
+  /** Bare vendor id exactly as the API accepts it (`claude-opus-5`, `gpt-5.5`). */
+  readonly modelId: string;
+  /** Vendor display name when reported (Anthropic `display_name`). */
+  readonly label?: string;
+  /** Context window (input) in tokens when reported. */
+  readonly contextWindow?: number;
+  /** Max output tokens when reported. */
+  readonly maxTokens?: number;
+  /** Image input support when the vendor reports it. */
+  readonly vision?: boolean;
+  /** Effort levels the vendor reports, already intersected with `EFFORT_LEVELS`. */
+  readonly effortLevels?: ReadonlyArray<EffortLevel>;
+  /** Vendor creation timestamp (ISO 8601) when reported. Drives the
+   *  "newest model of a family wins" default/alias selection. */
+  readonly createdAt?: string;
+  /** Vendor-announced retirement date (ISO 8601) when reported (OpenAI
+   *  `shutdown_date`). A discovered model with a past shutdown date is dropped. */
+  readonly shutdownAt?: string;
+}
+
 export interface ModelInfo {
   /** Provider-qualified id, the registry's primary key: `anthropic:claude-opus-4-8`. */
   readonly id: string;

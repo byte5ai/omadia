@@ -10,7 +10,7 @@ import { createStoreRouter } from '../src/routes/store.js';
 import { createRegistryInstallRouter } from '../src/routes/registryInstall.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
-import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { InMemoryInstalledRegistry, type InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type {
   PackageUploadService,
   IngestInput,
@@ -110,6 +110,8 @@ function fakeCatalog(plugins: Plugin[]): PluginCatalog {
 }
 
 const fakeRegistry = {
+  // Empty fixture: every id is absent, so blocking is a no-op.
+  markActivationBlocked: async () => undefined,
   has: () => false,
   get: () => undefined,
   // `list()` is not optional on InstalledRegistry — the `as unknown as` cast
@@ -358,21 +360,17 @@ describe('store router · setup_guide flows from the registry manifest_summary',
 // --- C6: update detection --------------------------------------------------
 
 function fakeInstalled(map: Record<string, string>): InstalledRegistry {
-  return {
-    has: (id: string) => id in map,
-    get: (id: string) =>
-      id in map ? { id, installed_version: map[id]! } : undefined,
-    // See the note on `fakeRegistry` above: `list()` is required by the
-    // interface, and the store's already-provided check (#671) calls it.
-    // These entries are `status: 'active'` so the projection matches what a
-    // real registry would report for an installed plugin.
-    list: () =>
-      Object.entries(map).map(([id, version]) => ({
-        id,
-        installed_version: version,
-        status: 'active',
-      })),
-  } as unknown as InstalledRegistry;
+  const registry = new InMemoryInstalledRegistry();
+  for (const [id, installed_version] of Object.entries(map)) {
+    void registry.register({
+      id,
+      installed_version,
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: {},
+    });
+  }
+  return registry;
 }
 
 function indexWith(id: string, latest: string): string {

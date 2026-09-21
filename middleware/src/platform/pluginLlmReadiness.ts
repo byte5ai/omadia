@@ -83,6 +83,9 @@ export interface LlmProviderDescriptorView {
     readonly subscriptionNotice?: boolean;
   };
   readonly oauth?: { readonly kind: 'device' };
+  /** Provenance of the provider's model list (live discovery vs. seed). */
+  readonly modelsSource?: 'seed' | 'discovered';
+  readonly modelsDiscoveredAt?: string;
 }
 
 export interface LlmProviderCatalogView {

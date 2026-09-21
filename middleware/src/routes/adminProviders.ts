@@ -65,6 +65,7 @@ import {
   resolveProviderVerification,
   type LlmProviderCatalogView,
 } from '../platform/pluginLlmReadiness.js';
+import type { ModelCatalogSync } from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
 
 export interface AdminProvidersDeps {
@@ -83,6 +84,10 @@ export interface AdminProvidersDeps {
   readonly providerHealth?: { snapshot(): readonly { providerId: string; cooldownUntil: number; reason: string; failedAt: number }[] };
   /** Injected fetch for the device-flow HTTP calls (test seam). */
   readonly oauthFetch?: typeof fetch;
+  /** Live model discovery: `POST /:id/refresh-models` re-reads the provider's
+   *  list-models API into the catalog; a successful key verification triggers
+   *  the same refresh. Optional (tests, or discovery switched off). */
+  readonly modelCatalogSync?: ModelCatalogSync;
 }
 
 function providerLabel(id: ProviderId): string {
@@ -252,6 +257,15 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
                 },
               }
             : {}),
+          // Provenance of the model list: `discovered` = read from the
+          // provider's own list-models API; absent/`seed` = the static list
+          // the provider shipped with (no key yet, or the API was unreachable).
+          ...(descriptor?.modelsSource !== undefined
+            ? { modelsSource: descriptor.modelsSource }
+            : {}),
+          ...(descriptor?.modelsDiscoveredAt !== undefined
+            ? { modelsDiscoveredAt: descriptor.modelsDiscoveredAt }
+            : {}),
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,
@@ -375,6 +389,13 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         }
       }
 
+      // A key that just proved itself is the moment the vendor's live model
+      // list becomes readable — refresh in the background, never on the
+      // response path (the verdict must not wait on a second network call).
+      if (verification.status === 'verified' && deps.modelCatalogSync !== undefined) {
+        void deps.modelCatalogSync.refresh(providerId);
+      }
+
       res.json(verification);
     } catch (err) {
       res.status(500).json({
@@ -382,6 +403,36 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  });
+
+  /**
+   * Re-read a provider's model list from its own API into the catalog. The
+   * ONLY other network path in this router besides `verify`, and likewise
+   * operator-triggered. Always 200 with the outcome in `status` (a provider
+   * without credentials or rules is a normal answer, not an error); 404 only
+   * for an id the registry has never heard of; 503 when discovery is off.
+   */
+  router.post('/:providerId/refresh-models', async (req: Request, res: Response) => {
+    const raw = (req.params as Record<string, string | string[] | undefined>)[
+      'providerId'
+    ];
+    const providerId = typeof raw === 'string' ? raw : '';
+    const known = new Set(listModels().map((m) => m.provider));
+    if (!known.has(providerId as ProviderId)) {
+      res.status(404).json({
+        code: 'providers.unknown_provider',
+        message: `'${providerId}' is not a registered provider`,
+      });
+      return;
+    }
+    if (deps.modelCatalogSync === undefined) {
+      res.status(503).json({
+        code: 'providers.discovery_unavailable',
+        message: 'live model discovery is not wired on this instance',
+      });
+      return;
+    }
+    res.json(await deps.modelCatalogSync.refresh(providerId));
   });
 
   router.post('/assignment', async (req: Request, res: Response) => {

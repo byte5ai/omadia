@@ -52,7 +52,12 @@ import {
   type LlmComplete,
   type PiiSchemaClassifier,
 } from './v4/piiClassifier.js';
-import { createBaselineDetector, createCustomTermsDetector, maskPrompt } from './promptMask.js';
+import {
+  baselineHasIdentityPii,
+  createBaselineDetector,
+  createCustomTermsDetector,
+  maskPrompt,
+} from './promptMask.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { resolvePseudonyms } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -323,7 +328,13 @@ export function createPrivacyGuardService(deps?: {
     let s = stores.get(turnId);
     if (s === undefined) {
       s = createDatasetStore({
-        classify: createShapeClassifier(),
+        // The C0 baseline's IDENTITY types as one-way booster: a column of
+        // bare phone numbers or IBANs is all digits/letters and would clear as
+        // an `id` handle — and a small dataset's digest inlines every value of
+        // a safe column. Uploaded tables now deliver real values into this
+        // store, so that column must be masked. Dates and amounts are NOT in
+        // the booster: they must stay filterable. A miss never promotes (D4).
+        classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
         buildDigest,
         turnId,
       });
@@ -475,7 +486,7 @@ export function createPrivacyGuardService(deps?: {
           console.log(
             `[privacy-guard v4] render turn=${request.turnId} ` +
               `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
-              `format=${directive.format}`,
+              `rendered=${String(rendered.renderedRowCount)} format=${directive.format}`,
           );
           return {
             resultText:
@@ -486,7 +497,7 @@ export function createPrivacyGuardService(deps?: {
         }
         const engine = createVerbEngine({
           store,
-          classify: createShapeClassifier(),
+          classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
         });
         const result = dispatchVerbCall(engine, request.toolName, request.input);
         receiptFor(request.turnId).verbsExecuted.push(

@@ -32,7 +32,26 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable"
+        "unknown": "Status unavailable",
+        "memory": {
+          "allActive": "Memory features active",
+          "allActiveWithProvider": "Memory features active (LLM: {provider})",
+          "off": "Off: {features}",
+          "featureWithReason": "{feature} ({reason})",
+          "feature": {
+            "factExtractor": "fact extraction",
+            "topicDetector": "topic detection",
+            "scratchReaper": "scratch reaper"
+          },
+          "reason": {
+            "no_llm_provider": "no LLM provider assigned",
+            "no_embedding_provider": "no embedding provider",
+            "no_graph_pool": "no graph storage",
+            "disabled_by_config": "disabled by configuration",
+            "plugin_inactive": "plugin not active",
+            "unknown": "reason unknown"
+          }
+        }
       },
       "plugins": {
         "title": "Plugins",
@@ -45,6 +64,17 @@
         "summary": "{enabled} of {total} connected · {tools} tools",
         "summaryPending": "{enabled} of {total} connected · {tools} tools · {pending} need Discover",
         "none": "No MCP servers yet"
+      },
+      "lastTurn": {
+        "title": "Last turn",
+        "okStatus": "Succeeded",
+        "unknownStatus": "Unknown",
+        "ok": "The last chat turn was answered successfully.",
+        "none": "No turn has run since this process started.",
+        "cliIncompatible": "The installed Claude CLI ({installed}) does not support an option omadia requires. Update to {required} or newer.",
+        "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
+        "failure": "The last turn failed: {message}",
+        "unknownVersion": "unknown version"
       }
     },
     "quick": {
@@ -861,6 +891,7 @@
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
+    "loading": "Loading page…",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Admin UI for the omadia agent platform (local).",
     "tagline": "an Agentic OS"
@@ -1097,6 +1128,10 @@
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
+      },
+      "discovery_unavailable": {
+        "what": "Live model discovery is not wired on this server, so the model list cannot be refreshed from the provider API.",
+        "next": "The provider keeps its shipped model list. Restart the middleware after updating it, or ask an administrator to enable discovery."
       },
       "unknown_plugin": {
         "what": "That plugin is not one this page can assign a provider to.",
@@ -2820,7 +2855,8 @@
         "unknownTurn": "Unknown error during builder turn",
         "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
-        "choiceSaveFailed": "Could not save selection."
+        "choiceSaveFailed": "Could not save selection.",
+        "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -2880,7 +2916,8 @@
         "error": {
           "connectionLost": "Connection lost: {message}",
           "unknownTurn": "Unknown error during the preview turn",
-          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again."
+          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
+          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
@@ -3653,6 +3690,16 @@
       "verifiedAt": "verified {time}",
       "testKey": "Test key",
       "testing": "Testing …",
+      "refreshModels": "Refresh models",
+      "refreshingModels": "Refreshing …",
+      "modelsDiscovered": "{count, plural, one {# model from the provider API} other {# models from the provider API}}",
+      "modelsRefreshNoCredentials": "No API key stored — the model list cannot be fetched.",
+      "modelsRefreshFailed": "Fetch failed: {error}",
+      "modelsRefreshFailedUnknown": "Fetch failed.",
+      "modelsRefreshEmpty": "The provider API returned no usable chat models — keeping the current list.",
+      "modelsRefreshUnsupported": "This provider does not support live discovery.",
+      "modelsSourceLive": "live · {at}",
+      "modelsSourceSeed": "seed list",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",
@@ -3780,6 +3827,13 @@
       "conflict": "Another CLI install is already running on this server. Wait for it to finish, then try again.",
       "retry": "Try again",
       "manualSummary": "Prefer to install manually?"
+    },
+    "turnBudget": {
+      "label": "Time limit per turn (seconds)",
+      "help": "How long a single turn may run on the subscription path. Leave empty for the {default}-second default, or the value from OMADIA_CLI_SPAWN_TIMEOUT_MS.",
+      "save": "Save",
+      "saved": "Saved",
+      "invalid": "Enter a whole number between {min} and {max}."
     }
   },
   "createIssue": {
@@ -4601,7 +4655,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
+    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4624,7 +4678,11 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache"
+    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "subscription": {
+      "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
+      "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
+    }
   },
   "adminUsers": {
     "loading": "Loading …",
@@ -5246,6 +5304,25 @@
     "providerDriftTitle": "Provider drift",
     "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
     "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "capabilityMissingCredentials": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "capabilityMissingWeights": "The active adapter is the keyless one — it needs neither an API key nor a base URL. What is missing are the model weights on this machine. Download them above, then reactivate the provider.",
+    "capabilityMissingNoProvider": "No embedding provider is active. Without one there is no process memory, no semantic search and no duplicate detection.",
+    "capabilityMissingNotPublished": "The active adapter stood down: its model weights are complete, but it published no client. Usually a second adapter already holds the capability — uninstall it or blank its credentials, then reactivate here.",
+    "widthCollisionTitle": "Width collision with the vector columns",
+    "widthCollisionBody": "The active model emits {provider}-dimensional vectors while the vector columns are {columns} wide. The knowledge graph refuses vector writes while that is true — full-text search keeps working.",
+    "widthCollisionEmpty": "The columns are empty. Rebuilding them at the matching width therefore discards nothing and needs no provider switch.",
+    "widthCollisionPopulated": "The columns hold stored vectors. A rebuild would discard them — use the provider switch below, which asks for that confirmation.",
+    "widthCollisionUnknown": "Whether the columns are empty could not be established. Nothing is rebuilt without that answer.",
+    "rebuildColumns": "Rebuild vector columns",
+    "reactivateButton": "Reactivate provider",
+    "reactivating": "Reactivating …",
+    "reactivatePublished": "Provider reactivated. It now publishes an embedding client — memory, semantic search and duplicate detection are running.",
+    "reactivateNotPublished": "Provider reactivated, but it still publishes no embedding client. The reasons are above.",
+    "reactivateCorpusNotEmpty": "The vector columns still hold embeddings. This action never discards anything — use the provider switch below, which asks for the discard confirmation.",
+    "reactivateNoProvider": "No embedding provider is active, so there is nothing to reactivate.",
+    "reactivateInProgress": "An embedding-provider change is already running. Wait for it to finish, then reload the page.",
+    "dedupApplied": "Set the knowledge graph's duplicate-detection threshold to {value} — the value this model needs. Effective the next time the knowledge-graph plugin starts.",
+    "dedupOperatorSet": "Left the duplicate-detection threshold at {current}, because it is set. {recommended} would fit this model.",
     "corpusTitle": "Stored corpus",
     "corpusModel": "Recorded model",
     "corpusDimensions": "Recorded width",
@@ -5279,6 +5356,7 @@
     "discardTitle": "This discards the stored corpus",
     "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
     "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "discardAllTenants": "The rebuild drops and re-adds the vector column itself, and that column is shared: the knowledge graph keeps every tenant in the same physical tables. Every tenant's embeddings go, not only the ones counted above, and every one of them is re-earned by the backfill sweep.",
     "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
     "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
     "switchButton": "Switch provider",
@@ -5545,7 +5623,7 @@
       "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
-      "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
+      "intro": "Your own recurring agent runs. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
       "summaryTotal": "Total",
       "summaryActive": "Active",
       "summaryPaused": "Paused",

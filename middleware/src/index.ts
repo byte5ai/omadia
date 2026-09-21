@@ -172,15 +172,22 @@ import { createAdminProvidersRouter } from './routes/adminProviders.js';
 import {
   createAdminEmbeddingProviderRouter,
   type LocalEmbeddingModelFetcher,
+  type MemoryFeatureStatusView,
 } from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
+import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
-import { autoAssignSubscriptionCli } from './platform/providerAssignment.js';
+import {
+  autoAssignSubscriptionCli,
+  SUBSCRIPTION_CLI_PROVIDER,
+} from './platform/providerAssignment.js';
+import { detectCliBackends } from './platform/cliBackendDetector.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
 import {
   memoizeRuntimeReadinessCause,
   resolvePluginLlmReadiness,
+  resolveProviderVerification,
   resolveRuntimeReadinessCause,
   type RuntimeReadinessCause,
 } from './platform/pluginLlmReadiness.js';
@@ -205,6 +212,7 @@ import {
   BuilderAgent,
   type BuilderProviderResolver,
 } from './plugins/builder/builderAgent.js';
+import { BuilderLlmAccessError } from './plugins/builder/builderLlmAccess.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
@@ -291,6 +299,7 @@ import {
   ProviderRegistry,
   parseAuthProvidersEnv,
   resolveActiveProviderIds,
+  shouldWarnEmptyAdminAllowlist,
 } from './auth/providerRegistry.js';
 import { LocalPasswordProvider } from './auth/providers/LocalPasswordProvider.js';
 import {
@@ -349,6 +358,10 @@ import {
   unregisterPluginLlmProvider,
 } from './platform/llmProviderManifest.js';
 import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
+import {
+  createModelCatalogSync,
+  type ModelCatalogSync,
+} from './platform/modelCatalogSync.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -975,6 +988,15 @@ async function main(): Promise<void> {
   // the boot loop AND the hot-install path (InstallService.onInstalled/
   // onUninstall) so a provider plugin installed at runtime appears WITHOUT a
   // restart.
+  // Live model discovery: the catalog's static model lists are only seeds.
+  // Created here (the vault exists, the catalog holds the built-ins) so the
+  // hot-install path below can refresh a runtime-installed provider through
+  // it; the boot refresh + timer start further down, once installed provider
+  // plugins are in the catalog too.
+  const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
+    catalog: llmProviderCatalog,
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+  });
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
       const descriptor = registerPluginLlmProvider(
@@ -984,8 +1006,11 @@ async function main(): Promise<void> {
       );
       if (descriptor !== undefined) {
         console.log(
-          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} model(s), baseURL ${descriptor.baseURL})`,
+          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
+        if (descriptor.discovery !== undefined) {
+          void modelCatalogSync.refresh(descriptor.id);
+        }
       }
     } catch (err) {
       console.warn(
@@ -1170,6 +1195,19 @@ async function main(): Promise<void> {
   // turn loop and the providers admin page. Provided here, before any plugin
   // activates, like `llmProviderCatalog`.
   serviceRegistry.provide('llmProviderPool', kernelProviderPool);
+
+  // Live model discovery, boot run: every connected provider with discovery
+  // rules is asked for its current model list here (fire-and-forget — boot
+  // never waits on a vendor), again after a key verifies, on the admin
+  // "refresh models" action, and on the periodic timer. Built-ins AND
+  // installed provider plugins are already in the catalog at this point.
+  void modelCatalogSync.refreshAll().then((results) => {
+    const summary = results
+      .map((r) => `${r.providerId}=${r.status}${r.status === 'discovered' ? `(${String(r.models)})` : ''}`)
+      .join(', ');
+    console.log(`[middleware] model discovery at boot: ${summary || 'no provider with discovery rules'}`);
+  });
+  modelCatalogSync.start(config.LLM_MODEL_DISCOVERY_INTERVAL_MS);
 
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
@@ -1524,6 +1562,8 @@ async function main(): Promise<void> {
     // previous package's database and unauthenticated routes.
     publicPathGrantStore,
     sqlGrantStore,
+    agentPluginBindingStore: () =>
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1560,7 +1600,7 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId);
       }
     },
-    onUninstall: async (agentId) => {
+    onUninstall: async (agentId, reason) => {
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -1584,7 +1624,12 @@ async function main(): Promise<void> {
           const removedToolName =
             dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
-          await propagatePluginUninstall(agentId, removedToolName);
+          if (reason === 'uninstall') {
+            await propagatePluginUninstall(agentId, removedToolName);
+          } else {
+            // Reactivation tears down the runtime, but retains operator grants.
+            reconcileRuntimeDomainTool(agentId, removedToolName);
+          }
         }
       }
     },
@@ -1731,11 +1776,25 @@ async function main(): Promise<void> {
   // after the vault loads) so the plugin runtimes can also use them —
   // `sessionSigningKey` for `ctx.flows` state signing, both together for
   // `ctx.operatorAuth` (issue #438 follow-up).
-  if (emailWhitelist.isEmpty()) {
+  // OM-92 — the empty-allowlist warning is scoped to the provider that
+  // actually reads the allowlist (entra). On a local-password-only install it
+  // used to claim "every sign-in will 403" while the very next boot line
+  // reported a healthy `1 active: local` registry.
+  if (
+    shouldWarnEmptyAdminAllowlist({
+      authProviders: config.AUTH_PROVIDERS,
+      hasMicrosoftCredentials: Boolean(
+        config.MICROSOFT_APP_ID &&
+          config.MICROSOFT_APP_PASSWORD &&
+          config.MICROSOFT_APP_TENANT_ID,
+      ),
+      whitelistIsEmpty: emailWhitelist.isEmpty(),
+    })
+  ) {
     console.warn(
-      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
+      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every Entra sign-in will 403 until the secret is set',
     );
-  } else {
+  } else if (!emailWhitelist.isEmpty()) {
     console.log(
       `[middleware] admin whitelist ready (${emailWhitelist.size()} email(s))`,
     );
@@ -2265,8 +2324,13 @@ async function main(): Promise<void> {
       `[middleware] fact extractor ready (model=${config.TOPIC_CLASSIFIER_MODEL})`,
     );
   } else {
+    // OM-102 — the old text named `anthropic_api_key` as the only cause, which
+    // sent abo-only operators hunting for a key they deliberately do not have.
+    // The extractor now runs on ANY provider the extras plugin can resolve
+    // (its own assignment, the orchestrator's, then an Anthropic key), so the
+    // honest remaining causes are "plugin missing" or "no provider at all".
     console.log(
-      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing or anthropic_api_key not set)',
+      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing, or no LLM provider assigned to the orchestrator / this plugin and no anthropic_api_key)',
     );
   }
 
@@ -2681,7 +2745,9 @@ async function main(): Promise<void> {
           );
         }
       }
-      const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      // A class ref: resolved per sub-agent against the active provider's
+      // live catalog (`resolveSubAgentModel`), never sent raw.
+      const SUBAGENT_DEFAULT_MODEL = 'class:balanced';
       // Read the orchestrator provider from LIVE installed config on each
       // hydrate so a runtime switch to/from the CLI provider is picked up on
       // the next agent build without a process restart.
@@ -4985,6 +5051,7 @@ async function main(): Promise<void> {
       // #1033 W3 — the fallback breaker's state, so the page can show a
       // provider that is currently being skipped in favour of its fallback.
       providerHealth: kernelProviderPool.health,
+      modelCatalogSync,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
@@ -5069,6 +5136,11 @@ async function main(): Promise<void> {
       getGateStatus: () =>
         serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
       getGraphPool: () => graphPool,
+      // OM-102 — resolved per request for the same reason as the gate above:
+      // the extras plugin can be (de)activated without a restart, and the
+      // dashboard card must not render a captured state.
+      getMemoryFeatureStatus: () =>
+        serviceRegistry.get<MemoryFeatureStatusView>('memoryFeatureStatus'),
       // Env-derived fallback. The router prefers the KG plugin's own
       // `graph_tenant_id` setup field when one is set.
       tenantId: graphTenantId,
@@ -5108,6 +5180,9 @@ async function main(): Promise<void> {
   // Read-only host-capability probe; never triggers a login or consumes quota.
   app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
+  // OM-100b — the runtime half of the Systemstatus panel: whether the last
+  // chat turn actually came back. Process-scoped and read-only.
+  app.use('/api/v1/admin/last-turn', requireAuth, createAdminLastTurnRouter());
   // OM-79 (#994) — the hand-off the subscription path was missing. A successful
   // in-app login used to end with "signed in" while the orchestrator kept
   // asking the vault for an Anthropic key and never published chatAgent@1.
@@ -5345,14 +5420,75 @@ async function main(): Promise<void> {
     `[middleware] bootstrap profile endpoints ready at /api/v1/profiles (auth: required, live-storage: ${liveProfileStorage ? 'on' : 'off'}, snapshots: ${snapshotService ? 'on' : 'off'})`,
   );
 
+  /**
+   * OM-101 — is a Claude subscription usable right now? Same verdict the
+   * providers-admin page computes (a CLI-backed provider is keyless: its probe
+   * is the login check, not a credential probe), just reached from here.
+   * Never throws — detection failure means "no subscription", not an error.
+   */
+  const subscriptionCliLoggedIn = async (): Promise<boolean> => {
+    const snapshot = await detectCliBackends().catch(() => undefined);
+    const verification = await resolveProviderVerification(
+      SUBSCRIPTION_CLI_PROVIDER,
+      { llmProviderCatalog, ...(snapshot ? { cliSnapshot: snapshot } : {}) },
+    );
+    return verification.status === 'verified';
+  };
+
+  /**
+   * OM-101 — map an Anthropic model id onto the CLI's alias vocabulary. The
+   * CLI takes `opus` / `sonnet` / `haiku`, not `claude-opus-5`; the registry's
+   * own CLI models carry a `-cli` suffix that has to come off either way.
+   */
+  const cliAliasFor = (modelId: string): string => {
+    const bare = modelId.replace(/-cli$/, '');
+    if (bare.includes('opus')) return 'opus';
+    if (bare.includes('haiku')) return 'haiku';
+    if (bare.includes('sonnet')) return 'sonnet';
+    return bare || 'sonnet';
+  };
+
   const resolveBuilderProvider: BuilderProviderResolver = async (modelRef) => {
     const { provider: providerId, modelId } =
       BuilderModelRegistry.resolve(modelRef);
+    // A model the operator picked from the subscription section of the model
+    // catalog. The in-process loop cannot serve it (the completion adapter
+    // rejects tool-carrying requests), so it always takes the CLI path.
+    if (providerId === SUBSCRIPTION_CLI_PROVIDER) {
+      if (!(await subscriptionCliLoggedIn())) {
+        throw new BuilderLlmAccessError(
+          `Builder-Modell '${modelRef}' läuft über das Claude-Abo, aber die ` +
+            `Claude-CLI ist nicht angemeldet. Verbinde das Abo unter ADMIN → ` +
+            `LLM-Zugang.`,
+        );
+      }
+      return { cliModel: cliAliasFor(modelId), modelId };
+    }
     if (providerId === 'anthropic') {
-      return {
-        provider: createAnthropicProvider({ client: currentAnthropicClient() }),
-        modelId,
-      };
+      // OM-101 — the 401 the round-5 tester saw came from right here: the
+      // builder built a metered API client unconditionally, so an install with
+      // no Anthropic key (subscription-only, which the orchestrator has
+      // supported since round 4) failed on a credential it never needed. Only
+      // fall through to the subscription when there is genuinely no key —
+      // an operator who configured one keeps the API path and its tool loop.
+      const anthropicKey =
+        (await readProviderApiKey(
+          (k) => secretVault.get(ORCHESTRATOR_SECRET_SOURCE, k),
+          'anthropic',
+        )) ?? (config.ANTHROPIC_API_KEY ?? '').trim();
+      if (anthropicKey) {
+        return {
+          provider: createAnthropicProvider({ client: currentAnthropicClient() }),
+          modelId,
+        };
+      }
+      if (await subscriptionCliLoggedIn()) {
+        return { cliModel: cliAliasFor(modelId), modelId };
+      }
+      throw new BuilderLlmAccessError(
+        `Builder-Modell '${modelRef}' braucht einen LLM-Zugang: entweder einen ` +
+          `Anthropic-API-Key oder ein verbundenes Claude-Abo. Beides fehlt.`,
+      );
     }
     const provider = await resolveLlmProvider({
       providerId,

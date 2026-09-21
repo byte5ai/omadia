@@ -20,6 +20,10 @@ import {
   registerBuiltinLlmProviders,
 } from '../src/platform/builtinLlmProviders.js';
 import { __clearVerificationCache } from '../src/platform/providerCredentialVerifier.js';
+import type {
+  ModelCatalogSync,
+  ModelCatalogSyncResult,
+} from '../src/platform/modelCatalogSync.js';
 
 // The registry ships no static models now; makeHarness registers the bundled
 // built-ins (anthropic/openai/mistral) into a catalog passed to the route, so it
@@ -42,6 +46,7 @@ interface Harness {
   baseUrl: string;
   vault: InMemorySecretVault;
   registry: InMemoryInstalledRegistry;
+  catalog: LlmProviderCatalog;
   reactivated: string[];
   /** Outbound vendor-API probes the route made. MUST stay empty for GET /. */
   probeCalls: string[];
@@ -50,7 +55,7 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { probeStatus?: number } = {},
+  opts: { probeStatus?: number; modelCatalogSync?: ModelCatalogSync } = {},
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -80,6 +85,9 @@ async function makeHarness(
         reactivated.push(id);
       },
       llmProviderCatalog,
+      ...(opts.modelCatalogSync !== undefined
+        ? { modelCatalogSync: opts.modelCatalogSync }
+        : {}),
     }),
   );
   const server: Server = await new Promise((resolve) => {
@@ -119,6 +127,7 @@ async function makeHarness(
     baseUrl: `http://127.0.0.1:${String(port)}`,
     vault,
     registry,
+    catalog: llmProviderCatalog,
     reactivated,
     probeCalls,
     async close() {
@@ -190,7 +199,7 @@ describe('admin providers route — GET /', () => {
     const openai = body.providers.find((p) => p.id === 'openai');
     const mistral = body.providers.find((p) => p.id === 'mistral');
     assert.ok(anthropic && openai && mistral);
-    assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-4-8'));
+    assert.ok(anthropic.models.some((m) => m.modelId === 'claude-opus-5'));
     assert.ok(openai.models.some((m) => m.modelId === 'gpt-5.5'));
     // Mistral is registry-driven too: listed with a clean label + its models.
     assert.equal(mistral.label, 'Mistral');
@@ -516,7 +525,7 @@ describe('admin providers route — POST /assignment', () => {
     const { status, json } = await assign(h, {
       pluginId: ORCH,
       provider: 'openai',
-      model: 'claude-opus-4-8',
+      model: 'claude-opus-5',
     });
     assert.equal(status, 400);
     assert.equal(json['code'], 'providers.model_provider_mismatch');
@@ -598,7 +607,7 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
     // legacy alias under anthropic
     await assign(h, { pluginId: ORCH, provider: 'anthropic', model: 'opus' });
-    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-4-8');
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-5');
   });
 
   it('400 for a non-LLM plugin, 404 for not-installed', async () => {
@@ -609,5 +618,120 @@ describe('admin providers route — POST /assignment', () => {
     const notInstalled = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' });
     assert.equal(notInstalled.status, 404);
     assert.equal(notInstalled.json['code'], 'providers.not_installed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live model discovery: POST /:id/refresh-models + provenance on GET /
+// ---------------------------------------------------------------------------
+
+function fakeSync(
+  outcome: (providerId: string) => ModelCatalogSyncResult,
+): ModelCatalogSync & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    async refresh(providerId: string) {
+      calls.push(providerId);
+      return outcome(providerId);
+    },
+    async refreshAll() {
+      return [];
+    },
+    lastResult: () => undefined,
+    start() {},
+    stop() {},
+  };
+}
+
+async function refreshModels(
+  h: Harness,
+  providerId: string,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const res = await fetch(
+    `${h.baseUrl}/api/v1/admin/providers/${encodeURIComponent(providerId)}/refresh-models`,
+    { method: 'POST' },
+  );
+  return { status: res.status, json: (await res.json()) as Record<string, unknown> };
+}
+
+describe('admin providers route — live model discovery', () => {
+  let h: Harness;
+  afterEach(async () => {
+    await h.close();
+    clearExternalModels();
+    __clearVerificationCache();
+  });
+
+  it('POST /:id/refresh-models runs the sync and returns its outcome as-is', async () => {
+    const sync = fakeSync((providerId) => ({
+      providerId,
+      status: 'discovered',
+      models: 3,
+      dropped: [{ modelId: 'claude-embed-1', reason: 'unclassified' }],
+      at: '2026-09-08T12:00:00.000Z',
+    }));
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
+    const { status, json } = await refreshModels(h, 'anthropic');
+    assert.equal(status, 200);
+    assert.equal(json['status'], 'discovered');
+    assert.equal(json['models'], 3);
+    assert.deepEqual(json['dropped'], [{ modelId: 'claude-embed-1', reason: 'unclassified' }]);
+    assert.deepEqual(sync.calls, ['anthropic']);
+  });
+
+  it('a normal non-success outcome (no credentials) is still 200 — the status carries it', async () => {
+    const sync = fakeSync((providerId) => ({
+      providerId,
+      status: 'no-credentials',
+      models: 3,
+      dropped: [],
+      at: '2026-09-08T12:00:00.000Z',
+    }));
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
+    const { status, json } = await refreshModels(h, 'openai');
+    assert.equal(status, 200);
+    assert.equal(json['status'], 'no-credentials');
+  });
+
+  it('404 for an unknown provider, 503 when discovery is not wired', async () => {
+    const sync = fakeSync((providerId) => ({ providerId, status: 'discovered', models: 1, dropped: [], at: 'x' }));
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
+    const unknown = await refreshModels(h, 'nope');
+    assert.equal(unknown.status, 404);
+    assert.equal(unknown.json['code'], 'providers.unknown_provider');
+    assert.deepEqual(sync.calls, []);
+    await h.close();
+
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const off = await refreshModels(h, 'anthropic');
+    assert.equal(off.status, 503);
+    assert.equal(off.json['code'], 'providers.discovery_unavailable');
+  });
+
+  it('GET / reports the provenance of a discovered model list', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const before = await getProviders(h);
+    const seedRow = before.providers.find((p) => p.id === 'anthropic') as Record<string, unknown> | undefined;
+    assert.equal(seedRow?.['modelsSource'], undefined, 'seed list carries no provenance');
+
+    const desc = h.catalog.get('anthropic')!;
+    h.catalog.register({ ...desc, modelsSource: 'discovered', modelsDiscoveredAt: '2026-09-08T12:00:00.000Z' });
+    const after = await getProviders(h);
+    const liveRow = after.providers.find((p) => p.id === 'anthropic') as Record<string, unknown> | undefined;
+    assert.equal(liveRow?.['modelsSource'], 'discovered');
+    assert.equal(liveRow?.['modelsDiscoveredAt'], '2026-09-08T12:00:00.000Z');
+  });
+
+  it('a verified key kicks off a background refresh for that provider', async () => {
+    const sync = fakeSync((providerId) => ({ providerId, status: 'discovered', models: 1, dropped: [], at: 'x' }));
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
+    await h.vault.setMany(ORCH, { 'provider:openai/api_key': 'sk-test' });
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/openai/verify`, { method: 'POST' });
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { status: string }).status, 'verified');
+    // fire-and-forget: give the microtask a tick
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(sync.calls, ['openai']);
   });
 });

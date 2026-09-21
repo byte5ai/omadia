@@ -3,7 +3,7 @@ import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
-import { resolveModelIdForProvider } from './agentRuntime.js';
+import { resolveConfiguredModel, resolveModelIdForProvider } from './agentRuntime.js';
 import { sortBySpecName } from '../toolOrdering.js';
 import type {
   McpManager} from '../mcp/mcpClient.js';
@@ -148,9 +148,13 @@ export function resolveSubAgentModel(
   ref: string | null | undefined,
   deps: Pick<SubAgentToolDeps, 'provider' | 'defaultModel'>,
 ): string {
-  return (
-    resolveModelIdForProvider(ref, deps.provider?.id) ?? deps.defaultModel
-  );
+  const providerId = deps.provider?.id;
+  const picked = resolveConfiguredModel(ref, providerId);
+  if (picked !== undefined) return picked;
+  // The parent's default is itself a ref (a class ref since the catalog went
+  // live-discovered) — resolve it the same way; a raw class ref must never
+  // reach the wire.
+  return resolveConfiguredModel(deps.defaultModel, providerId) ?? deps.defaultModel;
 }
 
 /**

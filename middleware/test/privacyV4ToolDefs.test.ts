@@ -37,8 +37,8 @@ function harness() {
 }
 
 describe('v4 tool specs', () => {
-  it('exposes 8 verb tools, all v4_-prefixed', () => {
-    assert.equal(VERB_TOOL_SPECS.length, 8);
+  it('exposes 10 verb tools, all v4_-prefixed', () => {
+    assert.equal(VERB_TOOL_SPECS.length, 10);
     for (const spec of VERB_TOOL_SPECS) {
       assert.ok(spec.name.startsWith('v4_'));
       assert.ok(spec.description.length > 0);
@@ -95,6 +95,60 @@ describe('dispatchVerbCall — routing', () => {
       predicate: { op: 'gte', field: 'days', value: 3 },
     });
     assert.equal(store.get(r.datasetId)?.rows.length, 4);
+  });
+});
+
+describe('dispatchVerbCall — union / distinct', () => {
+  it('routes v4_union with renameRight', () => {
+    const { store, engine, src } = harness();
+    const { datasetId: other } = store.internToolResult('hr.leave', [
+      { emp: '2000', days: 9 },
+    ]);
+    const r = dispatchVerbCall(engine, 'v4_union', {
+      leftDatasetId: src,
+      rightDatasetId: other,
+      renameRight: { emp: 'employee_id' },
+    });
+    const rows = store.get(r.datasetId)!.rows;
+    assert.equal(rows.length, 13);
+    assert.equal(rows.at(-1)!.employee_id, '2000');
+  });
+
+  it('rejects a non-string renameRight value', () => {
+    const { engine, src } = harness();
+    assert.throws(
+      () =>
+        dispatchVerbCall(engine, 'v4_union', {
+          leftDatasetId: src,
+          rightDatasetId: src,
+          renameRight: { employee_id: 7 },
+        }),
+      VerbError,
+    );
+  });
+
+  it('routes v4_distinct with keep', () => {
+    const { store, engine, src } = harness();
+    const r = dispatchVerbCall(engine, 'v4_distinct', {
+      datasetId: src,
+      by: ['employee_id'],
+      keep: 'last',
+    });
+    // 12 rows over 3 employee ids → 3 distinct rows.
+    assert.equal(store.get(r.datasetId)!.rows.length, 3);
+  });
+
+  it('rejects an invalid keep value', () => {
+    const { engine, src } = harness();
+    assert.throws(
+      () =>
+        dispatchVerbCall(engine, 'v4_distinct', {
+          datasetId: src,
+          by: ['employee_id'],
+          keep: 'middle',
+        }),
+      VerbError,
+    );
   });
 });
 

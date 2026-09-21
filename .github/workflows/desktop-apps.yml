@@ -284,6 +284,17 @@ jobs:
           cp "$PV/lib/postgresql@17/vector.dylib" "$NATIVE/lib/postgresql/vector.dylib"
           cp "$PV/share/postgresql@17/extension/vector.control" "$NATIVE/share/postgresql/extension/"
           cp "$PV"/share/postgresql@17/extension/vector--*.sql "$NATIVE/share/postgresql/extension/"
+          # OM-86 (beta round 5): Homebrew keeps its keg read-only and `cp`
+          # preserves the mode, so vector.dylib shipped as 0444 — the ONE file
+          # out of 25,895 in the update archive without owner-write. Squirrel
+          # strips the quarantine xattr from every file before swapping an
+          # update in; on a read-only file that write fails with EACCES and the
+          # whole install is aborted, so no macOS install could self-update
+          # from 0.152.0 on. stage-runtime normalises the whole tree as a
+          # second layer; this keeps the fix next to its cause.
+          chmod u+w "$NATIVE/lib/postgresql/vector.dylib" \
+            "$NATIVE/share/postgresql/extension/vector.control" \
+            "$NATIVE"/share/postgresql/extension/vector--*.sql
           # Prove the dylib really is this runner's architecture — a silently
           # mismatched vector.dylib would only fail at CREATE EXTENSION, inside
           # the shipped app, on a user's machine.
@@ -465,6 +476,90 @@ jobs:
           # cause. Re-run this step with `DEBUG=electron-builder` to see the
           # actual command and its stderr.
           npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} --publish never
+
+      # OM-86 (beta round 5): the update archive is what Squirrel installs, and
+      # Squirrel strips the quarantine xattr from EVERY entry before swapping
+      # the app in. One entry without owner-write (0444) fails that write with
+      # EACCES and aborts the whole update — which is how every macOS install
+      # lost self-update from 0.152.0 on, with the CI green throughout. The
+      # arch check above already argues "a fault that only fails on a user's
+      # machine must fail here instead"; this is the same argument for mode
+      # bits. Reads the archive's own central directory, not the staged tree,
+      # so a packaging step that re-introduces the bit is caught too.
+      - name: Verify no read-only entries in the macOS update archives and staged app (OM-86)
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        working-directory: desktop
+        run: |
+          # pipefail matters here: without it a missing or corrupt archive makes
+          # `zipinfo | awk` exit 0 with empty output, and the gate would print a
+          # green tick over nothing — the silent-pass shape this step exists to
+          # remove. The entry count is asserted for the same reason.
+          set -eo pipefail
+          shopt -s nullglob
+          zips=(release/*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "FAIL: no update .zip produced under release/ — nothing to verify" >&2
+            exit 1
+          fi
+          status=0
+          for z in "${zips[@]}"; do
+            entries="$(zipinfo -1 "$z" | wc -l | tr -d ' ')"
+            if [ "$entries" -eq 0 ]; then
+              echo "FAIL: $z lists no entries — corrupt archive or zipinfo failure" >&2
+              status=1
+              continue
+            fi
+            # zipinfo's first column is the unix mode string (-rw-r--r--); the
+            # third character is the owner-write bit. Header/trailer lines do
+            # not start with a mode string and are skipped by the regex. The
+            # path is everything from the 9th field on, so names with spaces
+            # ("Omadia Helper (GPU).app/…") are printed whole.
+            offenders="$(zipinfo "$z" | awk '$1 ~ /^[-dl][-r][-w]/ && substr($1,3,1) != "w" { mode=$1; $1=$2=$3=$4=$5=$6=$7=$8=""; sub(/^ +/, ""); print $0 " (" mode ")" }')"
+            if [ -n "$offenders" ]; then
+              echo "FAIL: $z carries entries without owner-write — Squirrel cannot install it:" >&2
+              echo "$offenders" >&2
+              status=1
+            else
+              echo "✓ $z: every entry is owner-writable ($entries entries)"
+            fi
+          done
+          # Cato-Audit Runde 5 / OM-86: the loop above covers `release/*.zip`
+          # only, and that is half the delivery. Squirrel installs from the ZIP,
+          # but a FIRST install comes from the DMG — and electron-builder builds
+          # BOTH from the same staged `release/mac*/*.app` tree. A read-only file
+          # that reached that tree therefore ships in the DMG whether or not the
+          # ZIP gate is green, and a DMG-only regression would sail straight
+          # through. Gate the source both artifacts are cut from, not just one
+          # of them. `-print` on the negated permission test: `! -perm -u=w` is
+          # "the owner-write bit is not set"; symlinks are excluded because
+          # their own mode is meaningless (chmod follows them) — the same
+          # exclusion normalize-file-modes.mjs makes.
+          apps=(release/mac*/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then
+            echo "FAIL: no staged .app under release/mac*/ — nothing to verify" >&2
+            exit 1
+          fi
+          for app in "${apps[@]}"; do
+            # `set -e` + `pipefail` already abort the step if `find` itself
+            # fails, so this only catches the other silent-pass shape: a
+            # directory that exists but stages nothing, which would otherwise
+            # print a green tick over an empty bundle.
+            total="$(find "$app" ! -type l | wc -l | tr -d ' ')"
+            if [ "$total" -eq 0 ]; then
+              echo "FAIL: $app stages no entries — empty bundle" >&2
+              status=1
+              continue
+            fi
+            app_offenders="$(find "$app" ! -perm -u=w ! -type l -print)"
+            if [ -n "$app_offenders" ]; then
+              echo "FAIL: $app carries files without owner-write — the DMG built from it cannot be updated:" >&2
+              echo "$app_offenders" >&2
+              status=1
+            else
+              echo "✓ $app: every file/dir is owner-writable ($total entries)"
+            fi
+          done
+          exit $status
 
       # ALWAYS runs on macOS — signed or not. Without it, a build whose signature
       # macOS considers corrupt sails through CI green and ships an app that

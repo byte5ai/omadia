@@ -1488,7 +1488,7 @@ function buildSystemPrompt(
 
 Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf.
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit \`create_xlsx\` und derselben \`datasetId\`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
 
@@ -1505,6 +1505,13 @@ c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
    3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
    4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 `
     : '';
 
@@ -7024,6 +7031,17 @@ export class Orchestrator {
         });
         return v4.digestText;
       } catch (err) {
+        // `query_dataset` returned REAL cell values precisely because this
+        // interning was about to happen (see QueryDatasetTool). If it did
+        // not, those values must not fall through to the model: fail closed
+        // for this one tool. Every other tool keeps the historical fail-open.
+        if (name === QUERY_DATASET_TOOL_NAME) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
+            err,
+          );
+          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
+        }
         console.warn(
           `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
@@ -7818,7 +7836,10 @@ export class Orchestrator {
 
     let scannedCells = 0;
     let maskedCells = 0;
+    let linkKeyColumns = 0;
+    let encryptedTables = 0;
     const lines = imported.imported.map((t) => {
+      if (t.privacyScan.encryptedAtRest) encryptedTables += 1;
       const { truncatedCellCount, truncatedColumns } = t.truncation;
       // Only claim "not truncated" when that is actually true for this table
       // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
@@ -7829,7 +7850,16 @@ export class Orchestrator {
       const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
       scannedCells += t.privacyScan.scannedCells;
       maskedCells += t.privacyScan.maskedCells;
-      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
+      linkKeyColumns += t.linkKeys.columns.length;
+      // Name the key columns per table: the model must not guess them from
+      // the source headers (a header can be skipped, see
+      // `selectLinkKeyColumns`), and rule d) tells it to say plainly when a
+      // file has none.
+      const keysNote =
+        t.linkKeys.columns.length > 0
+          ? ` Link-key columns: [${t.linkKeys.columns.join(', ')}].`
+          : ' Link-key columns: none.';
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}${keysNote}`;
     });
 
     // Observability: a successful import used to log nothing at all, so the
@@ -7838,7 +7868,8 @@ export class Orchestrator {
     console.log(
       `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
         `datasets=${String(imported.imported.length)} ` +
-        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)} ` +
+        `linkKeyColumns=${String(linkKeyColumns)}`,
     );
 
     // #976 — state the privacy FACTS for this file in the prompt.
@@ -7850,13 +7881,45 @@ export class Orchestrator {
     // reassurance is bad; a wrong ALARM is worse, because the user acts on
     // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
     // the fact — so ship the fact.
+    // Encrypted at rest (the default with a dataset secret) means the REAL
+    // values survive for the entitled user — render and Excel show them —
+    // while the model still only ever gets a digest. Without a secret the
+    // old irreversible masking applies and the model must not promise real
+    // values in an export.
+    const allEncrypted = encryptedTables === imported.imported.length;
+    // Real values reach render/export ONLY behind an active Privacy Shield —
+    // without a guard `query_dataset` re-masks on read. Promising real data
+    // on an install that cannot deliver it is exactly the wrong fact #976
+    // exists to prevent, so the promise depends on both conditions.
+    const shieldActive = turnContext.current()?.privacyHandle !== undefined;
+    const piiCellsFact = !allEncrypted
+      ? `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
+        `secret configured) — exports show surrogates, not real values`
+      : shieldActive
+        ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
+          `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
+          `so the user sees and exports real data while you never receive it`
+        : `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest, but no ` +
+          `Privacy Shield is active in this turn, so they are re-masked on read — exports ` +
+          `show surrogates, not real values`;
     const privacyFact =
       `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
       `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
       `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
-      `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
+      `${piiCellsFact}). You do not have this file's raw contents; ` +
       `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
-      `boundary as any other tool result.`;
+      `boundary as any other tool result.` +
+      // Link keys are a fact about the file too: with them, cross-file dedup
+      // is possible; without them it is not, and the model should say so
+      // instead of offering the user a manual workaround.
+      (linkKeyColumns > 0
+        ? ` Its text columns carry \`__k_<column>\` link keys — stable, identity-free ` +
+          `per-person keys that are the same across all of this user's uploads; use ` +
+          `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
+          `match across files, and never display them.`
+        : ` No link-key columns were generated for this file (the install has no ` +
+          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+          `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +

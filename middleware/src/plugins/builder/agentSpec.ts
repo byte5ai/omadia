@@ -262,8 +262,8 @@ const LlmPermissionSchema = z
      *  (`'class:fast' | 'class:balanced' | 'class:frontier'`) so the agent
      *  runs on whichever provider the operator has active — a class ref
      *  resolves to that provider's model for the class at runtime (Anthropic
-     *  default: fast→claude-haiku-4-5, balanced→claude-sonnet-4-6,
-     *  frontier→claude-opus-4-8). Concrete vendor ids and `*`-suffix wildcards
+     *  default: fast→claude-haiku-4-5, balanced→claude-sonnet-5,
+     *  frontier→claude-opus-5). Concrete vendor ids and `*`-suffix wildcards
      *  (`'claude-haiku-4-5*'`) are still accepted for back-compat but lock the
      *  agent to one vendor. Empty list = no LLM access at runtime (ctx.llm
      *  stays undefined). */

@@ -112,6 +112,16 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /**
+   * OM-104 — wall-clock budget of one CLI-owned turn, in seconds. Only the
+   * subscription (`claude-cli`) runtime reads it; the in-process runtime is
+   * bounded by {@link maxTurnSeconds} instead. Omitted / 0 means "not set by
+   * the operator", which leaves the `OMADIA_CLI_SPAWN_TIMEOUT_MS` environment
+   * override and then the 600 s default in charge. Setting beats environment
+   * beats default, so an operator who raises it on the LLM-access page is not
+   * silently overruled by a stale deployment variable.
+   */
+  readonly cliTurnSeconds?: number;
   /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
   readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
@@ -856,6 +866,11 @@ export function buildOrchestratorForAgent(
           // principal instead of being refused.
           ...(deps.turnOwnerGuard
             ? { turnOwnerGuard: deps.turnOwnerGuard }
+            : {}),
+          // OM-104 — operator-set turn budget. Only forwarded when actually
+          // configured, so an unset field leaves the ENV override reachable.
+          ...(config.cliTurnSeconds !== undefined && config.cliTurnSeconds > 0
+            ? { spawnTimeoutMs: Math.trunc(config.cliTurnSeconds * 1000) }
             : {}),
         }),
         raw: orchestrator,

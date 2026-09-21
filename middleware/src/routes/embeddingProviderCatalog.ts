@@ -37,6 +37,55 @@ export const AUTO_MIGRATE_CONFIG_KEY = 'auto_migrate_vector_columns';
  * var — see `resolveGraphTenantId` in `adminEmbeddingProvider.ts`.
  */
 export const GRAPH_TENANT_ID_CONFIG_KEY = 'graph_tenant_id';
+/** KG setup field the process-memory store's duplicate detection compares
+ *  cosine scores against. Provider-relative — see
+ *  {@link RECOMMENDED_DEDUP_THRESHOLDS}. */
+export const DEDUP_THRESHOLD_CONFIG_KEY = 'process_dedup_threshold';
+
+/**
+ * OM-98 / beta round 5 — the `process_dedup_threshold` each adapter's cosine
+ * scale actually needs.
+ *
+ * A cosine threshold is NOT a property of the knowledge graph, it is a
+ * property of the model whose vector space it is scoring. The KG default is
+ * 0.90, which fits the 1536-d OpenAI space; the keyless multilingual MiniLM
+ * lands German paraphrases at 0.58-0.73, so at 0.90 its duplicate detection
+ * never fires — and fires nothing SILENTLY, which is the exact failure class
+ * OM-84 was about. The adapter has always named its number
+ * (`RECOMMENDED_DEDUP_THRESHOLD` in
+ * `packages/embedding-adapter-local/src/localEmbeddingClient.ts`, and its
+ * manifest guide); until now a human had to carry it across to the KG's
+ * config by hand, after reading a paragraph nobody reads.
+ *
+ * Mirrored here rather than imported for the same reason
+ * {@link KNOWN_MODEL_DIMENSIONS} is: the kernel names the adapters by id and
+ * never takes a build dependency on packages the operator may uninstall. A
+ * stale entry costs a slightly wrong suggestion, never a wrong migration —
+ * and the operator's own value always wins over it.
+ */
+export const RECOMMENDED_DEDUP_THRESHOLDS: Readonly<Record<string, number>> = {
+  [LOCAL_PROVIDER_ID]: 0.45,
+};
+
+/**
+ * The adapter's recommended `process_dedup_threshold`, or `null` when it makes
+ * no recommendation (the KG default then stands).
+ */
+export function recommendedDedupThreshold(pluginId: string): number | null {
+  return RECOMMENDED_DEDUP_THRESHOLDS[pluginId] ?? null;
+}
+
+/**
+ * Does this adapter run without a credential?
+ *
+ * Read only to word a failure: an adapter that publishes no client is
+ * "missing an API key or base URL" for the keyed adapters and something else
+ * entirely — missing model weights, or a width collision — for the keyless
+ * one (OM-99).
+ */
+export function isKeylessProvider(pluginId: string): boolean {
+  return pluginId === LOCAL_PROVIDER_ID;
+}
 
 /** Structural view of `PluginCatalog` — only what this router reads, so tests
  *  can pass a two-entry stub instead of loading manifests off disk. */

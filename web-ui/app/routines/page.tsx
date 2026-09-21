@@ -44,8 +44,11 @@ export default async function RoutinesPage(): Promise<React.ReactElement> {
           {t('title')}
         </h1>
 
+        {/* OM-100a — the decorative accent colon used to sit here. It reads as
+            a brand motif next to a label, but in front of a bare sentence a
+            beta tester read it as a rendering artifact ("orphaned colon"), so
+            the lead paragraph now starts with its own first word. */}
         <p className="mt-6 max-w-2xl text-[18px] font-semibold leading-[1.55] text-[color:var(--fg-muted)]">
-          <span className="text-[color:var(--highlight)] font-[900]">:</span>{' '}
           {t('intro')}
         </p>
 

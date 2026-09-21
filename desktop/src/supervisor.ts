@@ -9,6 +9,7 @@ import {
   webUiEntry,
   webUiCwd,
   platformDataDir,
+  embeddingModelsDir,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
 import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
@@ -49,6 +50,11 @@ interface InFlightOp {
   readonly survivors: string[];
 }
 
+interface ChildErrorOutput {
+  readonly child: ChildProcess;
+  lastErrorLine: string;
+}
+
 /**
  * What a shutdown actually achieved.
  *
@@ -73,6 +79,7 @@ export class Supervisor extends EventEmitter {
   private kernel: ChildProcess | null = null;
   private ui: ChildProcess | null = null;
   private uiUrl: string | null = null;
+  private readonly childErrorOutput = new Map<string, ChildErrorOutput>();
   /** Single-flight guard: only one start/restart/stop runs at a time. */
   private state: 'idle' | 'starting' | 'running' | 'stopping' = 'idle';
   /**
@@ -238,18 +245,24 @@ export class Supervisor extends EventEmitter {
 
       this.assertLiveGeneration(gen);
       this.progress('starting-kernel', 'Starting omadia kernel…');
-      ownKernel = this.forkNode(kernelEntry(), kernelCwd(), this.kernelEnv(kernelPort), 'kernel', gen);
+      ownKernel = this.forkNode(
+        kernelEntry(),
+        kernelCwd(),
+        this.kernelEnv(kernelPort, uiPort),
+        'kernel',
+        gen,
+      );
       this.kernel = ownKernel;
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
-      await this.waitForKernel(kernelPort, gen);
+      await this.waitForKernel(kernelPort, gen, ownKernel);
 
       this.assertLiveGeneration(gen);
       this.progress('starting-ui', 'Starting the admin interface…');
       ownUi = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
       this.ui = ownUi;
       this.uiUrl = `http://127.0.0.1:${uiPort}`;
-      await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen);
+      await this.waitForHttp(`${this.uiUrl}/`, 30_000, 'web-ui', gen, ownUi);
 
       // Nothing checks the generation between that poll resolving and the state
       // flip, and a stop() landing there would otherwise be overwritten.
@@ -361,7 +374,11 @@ export class Supervisor extends EventEmitter {
     return survivors;
   }
 
-  private kernelEnv(port: number): NodeJS.ProcessEnv {
+  /**
+   * `port` is the kernel's own (fixed) port; `uiPort` is the web-ui's, which is
+   * allocated per launch and therefore only knowable at runtime (OM-90).
+   */
+  private kernelEnv(port: number, uiPort: number): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: augmentedPath,
@@ -390,8 +407,43 @@ export class Supervisor extends EventEmitter {
       // The explicit override removes the guesswork entirely.
       MULTI_ORCH_MIGRATIONS_DIR: path.join(kernelCwd(), 'migrations'),
       PLATFORM_DATA_DIR: platformDataDir(),
+      // OM-97: the keyless embedding adapter's weights. Explicit rather than
+      // left to the adapter's `PLATFORM_DATA_DIR` fallback, because the thing
+      // being prevented is severe and silent — the old default resolved into
+      // the signed app bundle and a download there breaks the code signature.
+      OMADIA_EMBEDDING_MODEL_DIR: embeddingModelsDir(),
       // The browser opens signed diagram URLs against this host base.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      // OM-90 — the browser-facing origin every auth redirect lands on. The
+      // kernel's default is `http://localhost:3979`, its OWN dev port, so
+      // `/api/v1/auth/login` sent the desktop browser to a port nothing is
+      // listening on: the shell never binds 3979, and the surface the user has
+      // to end up on is the web-ui, not the kernel. Note this is deliberately
+      // the UI port and not `port` — a redirect to the kernel would render no
+      // login page either. Set after `...process.env` on purpose: the port is
+      // decided per launch, so a stale inherited value must not win.
+      PUBLIC_BASE_URL: `http://127.0.0.1:${uiPort}`,
+      // …but `PUBLIC_BASE_URL` has a second reader: the kernel derives the
+      // Entra OAuth callback from it as `{base}/api/v1/auth/login/entra/cb`.
+      // That is a KERNEL route, and the web-ui proxies only `/bot-api/*` and
+      // `/p/*` — never `/api/v1/*` — so repointing the base at the UI would
+      // send the callback somewhere that 404s. `AUTH_REDIRECT_URI` is the
+      // config's own override for exactly this split, so pin it to the kernel
+      // and keep the two concerns apart instead of trading one dead URL for
+      // another.
+      AUTH_REDIRECT_URI: `http://127.0.0.1:${port}/api/v1/auth/login/entra/cb`,
+      // OM-90, third reader of `PUBLIC_BASE_URL`: the kernel derives the MCP
+      // OAuth callback from it as `{base}/api/v1/operator/mcp-oauth/callback`.
+      // Since the base is now the UI port, that default lands on a Next route
+      // that does not exist — the web-ui proxies `/bot-api/*`, never
+      // `/api/v1/*` — so the callback would 404 and every MCP OAuth connect
+      // would die on the last hop. Unlike the Entra callback, this one CAN be
+      // served over the UI origin, so keep it there and prefix it so the
+      // rewrite forwards it (pattern from `middleware/.env.example`).
+      MCP_OAUTH_REDIRECT_URI: `http://127.0.0.1:${uiPort}/bot-api/v1/operator/mcp-oauth/callback`,
+      // Follow-up, same class of bug, deliberately NOT fixed here: the
+      // Conductor webhook base and the Teams reader also derive from
+      // `PUBLIC_BASE_URL` and want their own audit. Out of scope for OM-90.
       // Desktop-only overrides of kernel defaults that assume a LAN self-host
       // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
       ...desktopKernelEnvDefaults(process.env),
@@ -428,8 +480,21 @@ export class Supervisor extends EventEmitter {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout?.on('data', (d: Buffer) => log.info(`[${label}] ${d.toString().trimEnd()}`));
-    child.stderr?.on('data', (d: Buffer) => log.warn(`[${label}] ${d.toString().trimEnd()}`));
+    // OM-88: replace the record at spawn, not at wait time. A fast crash may
+    // already have printed its cause before the wait starts; conversely, late
+    // output from a replaced child must only update that child's old record.
+    const output: ChildErrorOutput = { child, lastErrorLine: '' };
+    this.childErrorOutput.set(label, output);
+    const captureStdout = captureErrorLines(output);
+    const captureStderr = captureErrorLines(output);
+    child.stdout?.on('data', (d: Buffer) => {
+      captureStdout(d);
+      log.info(`[${label}] ${d.toString().trimEnd()}`);
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      captureStderr(d);
+      log.warn(`[${label}] ${d.toString().trimEnd()}`);
+    });
     child.on('exit', (code, signal) => {
       log.warn(`[${label}] exited code=${code} signal=${signal}`);
       // Only a crash if this child belongs to the live generation AND we believed
@@ -444,12 +509,12 @@ export class Supervisor extends EventEmitter {
     return child;
   }
 
-  private async waitForKernel(port: number, gen: number): Promise<void> {
+  private async waitForKernel(port: number, gen: number, child: ChildProcess): Promise<void> {
     // Cold Windows boots / AV scanning / large migration sets can exceed the
     // default 90s; allow an override without a rebuild.
     const timeout =
       Number(process.env['OMADIA_BOOT_TIMEOUT_MS']) || Supervisor.KERNEL_BOOT_TIMEOUT_MS;
-    await this.waitForHttp(`http://127.0.0.1:${port}/health`, timeout, 'kernel', gen);
+    await this.waitForHttp(`http://127.0.0.1:${port}/health`, timeout, 'kernel', gen, child);
   }
 
   private async waitForHttp(
@@ -457,20 +522,92 @@ export class Supervisor extends EventEmitter {
     timeoutMs: number,
     label: string,
     gen: number,
+    child: ChildProcess,
+  ): Promise<void> {
+    // OM-88: boot owns this listener, not forkNode's running-state handler.
+    // That handler deliberately ignores exits while starting; broadening it
+    // would publish runtime crashes for intentional teardown. Race the whole
+    // poll outside its fetch catch, or the boot failure becomes a retryable
+    // network error and the spinner still lasts the full deadline.
+    const death = this.watchBootExit(child, label, gen);
+    const polling = new AbortController();
+    try {
+      await Promise.race([
+        death.exited,
+        this.pollForHttp(url, timeoutMs, label, gen, polling.signal),
+      ]);
+      this.assertLiveGeneration(gen);
+    } finally {
+      // OM-88: a race does not cancel its loser. Release the exit listener on
+      // EVERY outcome and abort the outstanding fetch/sleep so a failed boot
+      // cannot leave a poll running behind the next generation for 90 seconds.
+      death.dispose();
+      polling.abort();
+    }
+  }
+
+  private watchBootExit(
+    child: ChildProcess,
+    label: string,
+    gen: number,
+  ): { exited: Promise<never>; dispose: () => void } {
+    let onExit!: (code: number | null, signal: NodeJS.Signals | null) => void;
+    const exited = new Promise<never>((_resolve, reject) => {
+      onExit = (code, signal): void => {
+        // OM-88: generation wins even over a non-zero exit or SIGKILL. Teardown
+        // invalidates it BEFORE killing; treating that kill as a boot crash
+        // would turn every ordinary restart into a false failure dialog.
+        if (gen !== this.generation) {
+          reject(new Error('boot superseded'));
+        } else if (signal !== null || (code !== null && code !== 0)) {
+          const reason = signal !== null ? `signal ${signal}` : `code ${code}`;
+          const output = this.childErrorOutput.get(label);
+          const detail = output?.child === child ? output.lastErrorLine : '';
+          reject(new Error(
+            `${label} exited with ${reason} before becoming healthy: ` +
+              (detail || 'no error output captured'),
+          ));
+        }
+      };
+      child.on('exit', onExit);
+      // OM-88: subscribing alone misses a child that died before we got here.
+      // Subscribe first, then inspect the sticky exit fields; a clean exit
+      // intentionally leaves the health poll (and its deadline) in charge.
+      onExit(child.exitCode, child.signalCode);
+    });
+    return { exited, dispose: () => child.removeListener('exit', onExit) };
+  }
+
+  private async pollForHttp(
+    url: string,
+    timeoutMs: number,
+    label: string,
+    gen: number,
+    signal: AbortSignal,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let lastErr = '';
     while (Date.now() < deadline) {
-      if (gen !== this.generation) throw new Error('boot superseded');
+      this.assertLiveGeneration(gen);
+      let res: Response | undefined;
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(4_000) });
-        if (res.ok) return;
-        lastErr = `HTTP ${res.status}`;
+        res = await fetch(url, {
+          signal: AbortSignal.any([
+            signal,
+            AbortSignal.timeout(Math.max(1, Math.min(4_000, deadline - Date.now()))),
+          ]),
+        });
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
       }
-      await delay(750);
+      signal.throwIfAborted();
+      this.assertLiveGeneration(gen);
+      if (res?.ok) return;
+      if (res) lastErr = `HTTP ${res.status}`;
+      const remaining = deadline - Date.now();
+      if (remaining > 0) await delay(Math.min(750, remaining), undefined, { signal });
     }
+    this.assertLiveGeneration(gen);
     throw new Error(`${label} did not become healthy within ${timeoutMs}ms (${lastErr})`);
   }
 
@@ -613,6 +750,23 @@ export class Supervisor extends EventEmitter {
       return ['embedded-postgres'];
     }
   }
+}
+
+/**
+ * OM-88: pipes deliver chunks, not lines. Keep each stream's unfinished line
+ * separately, including a fatal message without a trailing newline, while
+ * sharing only the latest matching line across stdout and stderr. This extends
+ * the existing readers without changing the logger's chunk/level behaviour.
+ */
+function captureErrorLines(output: ChildErrorOutput): (data: Buffer) => void {
+  let pending = '';
+  return (data): void => {
+    const lines = (pending + data.toString()).split(/\r?\n/);
+    pending = lines.pop() ?? '';
+    for (const line of [...lines, pending]) {
+      if (/fatal|error/i.test(line)) output.lastErrorLine = line.trimEnd();
+    }
+  };
 }
 
 /** A rejected stop attempt counts as "did not stop", never as success. */

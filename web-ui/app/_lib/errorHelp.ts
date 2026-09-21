@@ -64,6 +64,7 @@ export const ERROR_HELP_CODES = [
   'cli_install.spawn_failed',
   // adminProviders.ts (+ providerCredentialVerifier.ts for key_rejected)
   'providers.apply_failed',
+  'providers.discovery_unavailable',
   'providers.invalid_request',
   'providers.key_rejected',
   'providers.model_provider_mismatch',

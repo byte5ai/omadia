@@ -829,6 +829,43 @@ registriert wie die übrigen Orchestrator-Tools in §3's Orchestrator-Setup:
 Filter/Aggregat-DSL (nie rohes SQL vom Modell), Ergebnisse immer
 server-seitig paginiert/aggregiert bzw. auf 200 Gruppen gecappt.
 
+**Link-Keys + Cross-File-Dedup** (`datasetLinkKey.ts`): der Import maskiert
+irreversibel und dateiabhängig, und der C0-Detektor erkennt keine Namen — zwei
+Uploads derselben Personen hatten also kein gemeinsames Identitätsmerkmal mehr.
+Deshalb bekommt jede `string`-Spalte eine Schlüsselspalte `__k_<Spalte>` =
+`HMAC-SHA256(secret, ownerOmadiaUserId ‖ "\n" ‖ normalize(raw))`, 16 Hex-Zeichen
+mit garantierter Ziffer, damit der v4-Shape-Classifier sie über die S5-`id`-Regel
+als `safe-cleartext` freigibt. Der Rohwert verlässt `buildDatasetFromTable` nie.
+Secret: `DATASET_LINK_KEY_SECRET`, sonst HKDF aus `VAULT_KEY`; fehlt beides,
+gibt es keine Key-Spalten und der `[dataset-imported]`-Block sagt das. Header im
+`__k_`-Namensraum werden beim Import abgewiesen; `query_rows`-`filters` auf
+`__k_*` sind server-seitig gesperrt (Oracle-Schutz). Die Privacy-Shield-Verben
+`v4_union` (mit `renameRight`) und `v4_distinct` (`by`, `keep`) vereinen zwei
+`query_rows`-Seiten oder Dateien und kollabieren auf den Link-Key; Prompt-Regel
+d) im `privacyV4Block` trägt das Rezept. `POST /api/v1/datasets` liefert je
+Tabelle `linkKeys.columns`.
+
+**PII-Zellen verschlüsselt at rest** (`datasetCellCrypto.ts`): geflaggte
+Zellen werden nicht mehr irreversibel maskiert, sondern als `enc1:…`
+(AES-256-GCM, Schlüssel = HKDF aus demselben Dataset-Secret, AAD = Owner +
+Spalte) gespeichert. `query_dataset` entschlüsselt **nur**, wenn der Turn ein
+`privacyHandle` trägt (⇒ Ergebnis wird interniert, Modell bekommt Digest,
+Render/Excel liefern echte Werte); ohne Guard wird auf dem Lesepfad neu
+maskiert (ein Pseudonym-Map pro Seite). Owner-Rows-Route entschlüsselt.
+Schema-`sample` bleibt der Surrogat. Ohne Secret: altes irreversibles Masking,
+Fakt im `[dataset-imported]`-Block sagt es. Secret-Rotation macht Alt-Zellen
+unlesbar (`[verschlüsselt — Schlüssel nicht verfügbar]`). Der v4-Shape-Classifier
+läuft seitdem mit den **Identitäts**-Typen des C0-Baseline (E-Mail, IBAN,
+Telefon, Adresse, ID-Nummer — nicht `date`/`amount`) als `detector`-Booster
+(Telefonnummern-Spalte wäre sonst ein safe `id`-Handle; Datums-/Betragsspalten
+bleiben filterbar). `privacyScan.encryptedAtRest` je Tabelle. Grenzen: die
+`query_rows`-DSL (`eq`/`contains`/`group_by`) arbeitet auf verschlüsselten
+Spalten über Ciphertext (jede Zelle unterschiedlich, frischer IV) — Filtern
+nach E-Mail funktioniert dort nicht; dafür sind die `__k_*`-Link-Keys da.
+Schlägt das Internieren einer `query_dataset`-Seite fehl, hält der
+Orchestrator die Zeilen **zurück** (fail-closed nur für dieses Tool), weil sie
+Klartext tragen.
+
 **Identity-Resolution (Fixup Runde 5):** für einen Channel-Turn (Teams/
 Slack/Telegram) ist `ChatTurnInput.userId` die RAW channel-native id, NICHT
 die kanonische `omadiaUserId` uuid. `resolveTurnOwnerIdentity`
@@ -1556,6 +1593,136 @@ Wahrheit lesen (OM-74/75/78/84):
   (Health-Karte „Gedächtnis / Embeddings“, Onboarding-Hinweis). Tests:
   `test/runtimeReadinessCause.test.ts`, `test/adminEmbeddingProviderRoute.test.ts`.
 
+### Gedächtnis-Funktionen auf dem Abo-Weg (Beta-Runde 5, OM-102)
+
+Faktenextraktion, Themenerkennung und der Scratch-Promotion-Reaper hingen am
+Config-Key `anthropic_api_key` von `@omadia/orchestrator-extras` statt am
+LLM-Provider, der dem Orchestrator zugewiesen ist. Auf einer reinen
+Abo-Installation (`llm_provider: claude-cli`, kein Anthropic-Key) blieben alle
+drei aus, und das Dashboard sprach nur über Embeddings — meldete also „OK“,
+während die halbe Gedächtnis-Pipeline still lag.
+
+**Provider-Kandidatenkette** (`packages/harness-orchestrator-extras/src/llmProviderResolution.ts`,
+verdrahtet in dessen `plugin.ts`). Kandidaten in Absichts-Reihenfolge, der
+erste, der sich bauen lässt, gewinnt:
+
+1. explizites `llm_provider` auf **diesem** Plugin — der Operator fragt direkt;
+2. `anthropic`, **aber nur** wenn der Key im eigenen Vault-Scope liegt
+   (`ownScopeAnthropic`). Ohne diese Stufe würde eine Installation, die einen
+   Key bezahlt, stillschweigend auf das persönliche Abo-Kontingent migrieren —
+   eine Kosten-/Quota-Änderung, die ein Bugfix nicht nebenbei machen darf;
+3. die Zuordnung des **Orchestrators**, gelesen über den Kernel-Service
+   `installedPluginConfigReader`. Dieses Plugin aktiviert **vor** dem
+   Orchestrator (der `contextRetriever@^1` + `factExtractor@^1` `requires:`),
+   deshalb ist der Config-Reader der einzige Weg — ein Service des
+   Orchestrators wäre zur Aktivierungszeit noch nicht da. Das ist die Stufe,
+   die den Abo-Fall repariert;
+4. `anthropic` als historischer Default.
+
+Credential-Quellen je Kandidat, in dieser Reihenfolge: eigener Vault-Scope,
+dann der Kernel-Pool `llmProviderPool` (liest den Orchestrator-Scope, teilt
+dessen Circuit-Breaker). Der `llmProviderCatalog` wird durchgereicht — ohne ihn
+löst `claude-cli` auf das Default-Wire-Format `openai-compatible` auf und
+scheitert an der fehlenden `baseURL`; Wire-Format und `requiresApiKey: false`
+stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
+übersprungen, nicht durchgereicht. Modell-Refs laufen durch
+`coerceModelToProvider` (Default still, ein explizit gesetztes
+`fact_extractor_model` laut). Alle drei Aufrufer nutzen ein reines
+`complete()` ohne `tools` und bleiben damit im Rahmen des Shape-2-Adapters,
+der nur Completions und forced single-tool structured output kann.
+
+**Capability + Manifest.** Das Plugin published zusätzlich
+`memoryFeatureStatus@1` (Service-Key `memoryFeatureStatus`, Kontrakt in
+`src/memoryFeatureStatus.ts`) und deklariert
+`optional_requires: ["llmProviderCatalog@1", "llmProviderPool@1",
+"installedPluginConfigReader@1"]`. `optional_requires` ist der dokumentierte
+Retirement-Pfad des Service-Grant-Gates (`src/platform/pluginServiceGrants.ts`)
+— es gewährt `get`/`getOptional`, ohne eine Aktivierungskante zu erzeugen, was
+hier zwingend ist: der Orchestrator muss downstream bleiben. Alle drei Services
+stellt der Kernel beim Boot bereit, vor jeder Plugin-Aktivierung, deshalb ist
+das eager `getOptional` in `activate()` zulässig.
+
+**`memoryFeatures` auf `GET /api/v1/admin/embedding-provider/status`.** Neben
+den vier bestehenden Feldern:
+
+```
+memoryFeatures: {
+  factExtractor: 'active' | 'disabled',
+  topicDetector: 'active' | 'disabled',
+  scratchReaper: 'active' | 'disabled',
+  providerId?: string,                       // aufgelöster Provider
+  reasons?: { <feature>: <reason-code> },    // nur für disabled-Features
+  detail?: string                            // englische Diagnose, sekundär
+}
+```
+
+Reason-Codes (geschlossenes Enum): `no_llm_provider`, `no_embedding_provider`,
+`no_graph_pool`, `disabled_by_config`, `plugin_inactive`. Geschlossen, weil die
+UI je Code eine Übersetzung führt — Backend-Englisch darf nie der primäre
+deutsche Satz werden (`web-ui/CLAUDE.md`); Freitext reist ausschließlich in
+`detail`. Die Ursache steht **pro Feature**, weil die drei aus verschiedenen
+Gründen ausfallen: ein In-Memory-Graph legt nur den Reaper still, ein fehlender
+Embedding-Anbieter nur die Themenerkennung. Publiziert das Plugin nichts,
+antwortet die Route mit dreimal `plugin_inactive`.
+
+Auf der Dashboard-Karte färbt **nur** `no_llm_provider` den Status auf WARN —
+ein bewusst abgeschalteter Reaper (`disabled_by_config`) oder ein
+In-Memory-Graph (`no_graph_pool`) sind normale Zustände; sie als Warnung zu
+rendern hätte OM-84s falsches OK nur gegen ein ebenso nutzloses falsches WARN
+getauscht. Tests: `test/orchestratorExtrasProviderResolution.test.ts`,
+`test/adminEmbeddingProviderRoute.test.ts`, `web-ui/app/__tests__/page.test.tsx`.
+
+### Embedding-Provider-Reaktivierung (Beta-Runde 5, OM-97/98/99)
+
+**`POST /api/v1/admin/embedding-provider/reactivate`** (Auth wie der Rest des
+Routers, kein Body). Beendet drei Sackgassen, die zusammen die Normalform einer
+Subscription-Installation sind: der keylose Adapter aktivierte vor dem
+Weights-Download und publizierte nichts; die Vektorspalten sind 768 breit und
+**leer**, während das Modell 384d liefert, und der einzige Pfad, der eine
+Spaltenbreite ändern durfte, war ein operator-bestätigter Provider-**Switch** —
+den #1053 unmöglich macht, weil es nach dem Boot keinen zweiten Provider mehr
+gibt, zu dem man wechseln könnte.
+
+Ablauf: aktiven Provider `deactivate` → `activate` (dabei liest der Adapter die
+Weights neu), dann Gate-Re-Evaluierung mit `allowEmptyColumnMigration: true`
+und `allowDestructiveMigration: false`. **Diese Route zerstört nie etwas.**
+
+| Code | HTTP | Wann |
+|---|---|---|
+| `embeddingProvider.corpus_not_empty` | 409 | Die Vektorspalten halten noch Embeddings. `details: { vectorsToDiscard, columnDimensions }`. Verweist auf `/switch` mit `confirmDiscardVectors` — den Pfad, der die Verwerfen-Bestätigung trägt. |
+| `embeddingProvider.no_active_provider` | 409 | Kein `embeddingClient@1`-Provider aktiv — es gibt nichts zu reaktivieren. |
+| `embeddingProvider.switch_in_progress` | 409 | `switchInFlight` — `/switch` und `/reactivate` teilen sich dieselbe Serialisierung. |
+| `embeddingProvider.reactivate_failed` | 500 | `activate` warf nach erfolgreichem `deactivate`. Ein **zweiter** `activate`-Versuch läuft automatisch (analog zu `restorePrevious` im `/switch`-Pfad); `details.capabilityPublished` sagt, ob er den Provider zurückgeholt hat. Das Gate lief in keinem Fall — `details.gateReevaluated: false`. |
+| `embeddingProvider.gate_reevaluation_failed` | 500 | Provider ist wieder live, aber die Gate-Re-Evaluierung warf. Der Graph läuft unter dem **vorherigen** Verdikt weiter. `details: { pluginId, capabilityPublished, gateReevaluated: false }`. |
+
+Erfolgs-Response (200): `{ ok: true, reactivated, capabilityPublished,
+gateReevaluated, gateWarning?, dedupThreshold }` plus das komplette
+`GET /`-Snapshot. `dedupThreshold` ist `null`, solange nichts publiziert wird,
+sonst `{ applied, value, previous, reason }` — der Adapter-eigene
+`process_dedup_threshold` wird nur in die *Abwesenheit* eines Werts
+geschrieben, nie über eine Operator-Entscheidung, und greift erst beim nächsten
+Start des Knowledge-Graph-Plugins.
+
+Zwei Ergänzungen im `GET /`-Snapshot: `capabilityGap`
+(`no-active-provider` | `missing-credentials` | `missing-weights` |
+`not-published`) sagt **warum** kein Client publiziert ist, statt jedem
+Adapter „API-Key fehlt“ zu unterstellen; `widthCollision`
+(`{ providerDimensions, columnDimensions, columnsEmpty }`) trennt die
+Breitenkollision von der Capability-Lücke — sie verhindert die *Writes*, nicht
+die Publikation. `columnsEmpty: null` heißt „nicht feststellbar“ und die UI
+bietet den Rebuild dann **nicht** an.
+
+Emptiness wird zweimal geprüft: hier für eine schnelle, spezifische Absage, und
+noch einmal **innerhalb** des Advisory-Locks von `migrateVectorColumns`
+(`requireEmpty`) — die Vorab-Prüfung liegt vor dem Lock, ein Backfill-Tick im
+Fenster dazwischen würde sonst still verworfen. Ein nicht ermittelbarer Count
+gilt an beiden Stellen als „nicht leer“ (fail closed).
+
+Tests: `test/adminEmbeddingProviderReactivate.test.ts` (Route inkl.
+Fehlerpfade), `test/embeddingColumnMigrationGuard.test.ts` (Gate-Hälfte:
+Permission, Master-Switch `auto_migrate_vector_columns`, `requireEmpty`),
+`web-ui/app/admin/embedding-provider/__tests__/page.test.tsx` (UI).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -1903,6 +2070,16 @@ AGENTS.md jede Env-Variable an einer Stelle dokumentiert haben will:
 | `OMADIA_CLI_LIVE_PROBE=1` | Startet die Live-Probe: echte `claude`-CLI mit dem Produktions-argv, die einen Shell-Befehl ablehnen muss. Kostet Abo-Kontingent und braucht eine eingeloggte CLI, daher opt-in. |
 | `OMADIA_CLI_NEGATIVE_CONTROL=1` | Ergänzt die Probe um die Gegenprobe mit dem argv von vor #991, das erwartungsgemäß ein Built-in-Tool erreicht. Lässt die CLI dabei bewusst einen Shell-Befehl auf dieser Maschine ausführen, deshalb ein eigener Schalter. |
 
+### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
+
+Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
+`cliChatAgent.ts`), nicht über `config.ts`, weil das Package die Middleware-Config
+nicht importieren kann.
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_CLI_SPAWN_TIMEOUT_MS` | Wanduhr-Budget **eines** CLI-geführten Chat-Turns (Shape 3) in Millisekunden, Default `600000`. Vorher fest 120 s ohne Override, während ein einzelner Aufruf des eigenen `query_seo_analyst`-Sub-Agenten 69–75 s dauert — zwei davon waren garantiert über dem Limit. Das Leerlauf-Limit (60 s ohne Ausgabe) bleibt getrennt bestehen. Nicht-numerische oder nicht-positive Werte werden ignoriert. Priorität: explizite `spawnTimeoutMs`-Dependency > ENV > Default. |
+
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
 
 ```
@@ -1944,6 +2121,10 @@ DEV_ENDPOINTS_LOOPBACK_ONLY=false   # optional: /api/dev nur über Loopback (#66
 # Teams
 MICROSOFT_APP_ID, MICROSOFT_APP_PASSWORD, MICROSOFT_APP_TYPE=MultiTenant,
 MICROSOFT_APP_TENANT_ID
+# Dataset-Link-Keys (`__k_*`-Spalten beim CSV/XLSX-Import, siehe §3 Dataset-Routen).
+# Optional: leer ⇒ HKDF aus VAULT_KEY (Rotation von VAULT_KEY re-keyt dann auch
+# die Link-Keys); gesetzt (>= 16 Zeichen) entkoppelt beides. Fehlt beides: keine Keys.
+DATASET_LINK_KEY_SECRET                    # openssl rand -hex 32
 # Diagram rendering (alle 7 müssen gesetzt sein, sonst wird Feature deaktiviert)
 KROKI_BASE_URL=http://localhost:8765       # Kroki-Gateway (lokal aus compose.yml)
 DIAGRAM_URL_SECRET                         # openssl rand -hex 32 — pro Env frisch
@@ -1986,6 +2167,34 @@ OMADIA_MCP_CALL_MAX_TOTAL_TIMEOUT_MS=180000 # absolute Decke inkl. Retry (W0-2)
 OMADIA_MCP_TOOLLIST_TTL_MS=60000            # Default-TTL Tool-List-Cache (#545,
                                             # ADR-0009); 0 = spec-strikt aus
 ```
+
+`@omadia/embedding-adapter-local` (keyloser Embedder) liest ebenfalls ohne zod:
+
+```
+OMADIA_EMBEDDING_MODEL_DIR=/data/embedding-models   # Modellgewichte (~129 MB)
+```
+
+**Auflösungsreihenfolge (OM-97), explizitester zuerst:** das `model_dir`-Setup-
+Feld des Plugins → `OMADIA_EMBEDDING_MODEL_DIR` → `PLATFORM_DATA_DIR/embedding-models`
+→ legacy `var/embedding-models`.
+
+**Warum es diese Variable gibt.** Der alte Default `var/embedding-models` ist
+*relativ* und löst gegen das Arbeitsverzeichnis der Middleware auf — in der
+Desktop-App ist das `<app bundle>/Resources/omadia/middleware`, also **innerhalb
+der signierten Anwendung**. Der Download von ~129 MB dorthin gelingt und
+invalidiert dabei die Code-Signatur; Gatekeeper verweigert dann den nächsten
+Start, und die einzige Rettung ist eine Neuinstallation. Gewichte sind mutabler
+Per-User-State und gehören zum Rest davon (Vault, eingebettete DB,
+Plugin-Uploads), nie in die read-only Anwendung. Die Desktop-Shell setzt die
+Variable auf Electrons `userData`; Docker/Fly kommen über `PLATFORM_DATA_DIR`
+auf das gemountete Datenvolume. Nur der Legacy-Zweig kann im Bundle landen, und
+er ist in jedem paketierten Deployment unerreichbar, weil dort mindestens eine
+der beiden anderen Variablen gesetzt ist.
+
+Ein älterer Build, der schon ins Bundle geladen hat, wird beim nächsten
+`activate()` einmalig übernommen (`adoptLegacyModelDir`, async — die
+Fallback-Kopie darf den 10-s-Deckel des Activate nicht blockieren). `npm run
+fetch-model` benutzt dieselbe Auflösung, statt sie nachzubauen.
 
 ### Wichtige Gotchas
 
@@ -2193,6 +2402,26 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
+
+`TODO(OM-102 follow-up)` in
+`packages/harness-orchestrator-extras/src/plugin.ts`. Die Provider-Kette wird
+**einmal je `activate()`** aufgelöst. Ändert ein Operator danach das
+`llm_provider` des Orchestrators, wird `@omadia/orchestrator-extras` nicht neu
+gebaut — Faktenextraktion, Themenerkennung und Reaper laufen bis zum nächsten
+Rebuild weiter auf dem alten Provider, ohne dass irgendeine Fläche das sagt.
+Dieselbe Klasse wie #989 (`agent_plugins`-Änderung war ein `update` statt eines
+`rebuild` und wirkte deshalb erst nach Neustart). Die Reparatur gehört auf die
+Zuweisungsseite — Rebuild von extras auslösen, wenn sich der Provider des
+Orchestrators ändert — nicht in ein weiteres Lazy-Lookup im Plugin.
+
+Nebenbei aufgefallen und offen: `@omadia/orchestrator` bezieht
+`llmProviderCatalog` und `installedPluginConfigReader` weiterhin aus der
+Allowlist in `src/platform/pluginServiceGrants.ts`, obwohl es beide eager
+konsumiert. Zwei Zeilen `optional_requires` in dessen Manifest würden diese
+Allowlist-Zeilen mit demselben Mechanismus leeren, den OM-102 für extras
+benutzt hat.
 
 ### KI-Kennzeichnung / Provenienz — offene Punkte (Epic #642)
 
@@ -2796,3 +3025,109 @@ Operator-UI in Produktion zu verschlechtern.
 **Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
 persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
 Unit.
+
+## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
+
+Der Orchestrator kann seit Runde 4 rein auf dem Claude-Abo laufen (Provider `claude-cli`).
+Die Randbereiche konnten es nicht: Der Plugin-Builder rief die Anthropic-API direkt, die
+Kostenseite zeigte "0 Calls", der Systemstatus meldete grün, während jeder Turn abbrach,
+und `manage_routine` bekam den Principal nie. Diese Wave zieht die vier Ränder nach.
+Befunde OM-101, OM-103, OM-100b, OM-104, OM-82.
+
+### Builder auf dem Abo-Weg (OM-101)
+
+`resolveBuilderProvider` (`src/index.ts`) baute für jedes Anthropic-Modell unbedingt einen
+API-Client. Ohne Key endete der erste Builder-Turn mit `401 API key is invalid` — für einen
+Key, den die Installation gar nicht braucht. Jetzt gilt: Key vorhanden → API-Pfad
+unverändert; kein Key, aber angemeldete Claude-CLI → CLI-Pfad; keins von beidem →
+`BuilderLlmAccessError`.
+
+`BuilderProviderResolution` trägt dafür entweder `provider` (API, In-Process-Loop) oder
+`cliModel` (Abo, CLI besitzt die Loop). Builder- und Preview-Chat verzweigen in ihrer
+`defaultBuildSubAgent` auf `createCliSubAgent` — dieselbe Verzweigung, die die
+Dynamic-Agent-Runtime für hochgeladene Agenten seit #309 macht, aus demselben Grund: der
+Completion-Adapter lehnt jede Anfrage mit Tools ab.
+
+**Bekannte Einschränkung:** `createCliSubAgent().ask()` nimmt keinen `AskObserver` und keine
+`AskOptions` entgegen. Auf dem Abo-Weg fehlen dem Builder-UI deshalb `tool_use` /
+`tool_result` / Token-Zähler, und `expectedTurnToolUse: 'fill_slot'` wirkt nicht. Der Turn
+läuft, die Live-Anzeige bleibt beim Heartbeat. Eigene Unit.
+
+### Kosten-Ledger nimmt Abo-Turns (OM-103)
+
+Graph-Migration **0032** (`packages/harness-knowledge-graph-neon/src/migrations/`) ergänzt
+`token_usage.reference_cost_usd`. Ein Abo-Turn schreibt `cost_usd = 0` (die Pauschale ist
+kein Preis pro Call) und legt den vom CLI gemeldeten `total_cost_usd` daneben. Keine
+Summe im Dashboard fasst diese Spalte an.
+
+`UsageRecord` akzeptiert dafür ein explizites `costUsd` und ein `referenceCostUsd`.
+Erfasst wird an zwei Stellen: `cliChatAgent.ts` (Chat-Turn, Quelle `claude-cli`) und
+`platform/claudeCliAdapter.ts` (Shape-2-Completion, Quelle `claude-cli-completion`).
+`UsageTotals` bekommt `referenceCostUsd` + `subscriptionCalls`; gezählt wird über eine
+**erschöpfende Liste** dieser beiden Quellen, nicht über ein Präfix — `source` ist bei
+`withProviderUsageTracking` ein Aufrufer-Wert.
+
+⚠️ Neue Codes gegen ein Schema vor 0032 lassen **jede** Usage-Erfassung und die ganze
+Kostenseite fehlschlagen, nicht nur die Abo-Zeilen. Migration vor Deploy.
+
+### Systemstatus: "Letzter Turn" (OM-100b, §3)
+
+Neue Route **`GET /api/v1/admin/last-turn`** (auth required, `routes/adminLastTurn.ts`) →
+`{ lastTurn: { status, at, errorCode?, errorMessage?, cliVersion?, minCliVersion? } | null }`.
+Gespeist aus beiden Chat-Routen, gehalten in `platform/lastTurnOutcome.ts` — bewusst
+prozess-lokal, weil es eine Aussage über *diese* Laufzeit ist; ein Neustart ist die
+Abhilfe, kein Zustand, der ihn überleben soll. `null` heißt "seit dem Start lief kein
+Turn" und wird als *unbekannt* gerendert, nicht als grün.
+
+Fehlerklassen: `cli_incompatible` (aus `CliIncompatibleError`, mit installierter und
+geforderter CLI-Version), `cli_timeout`, `orchestrator_failure`.
+
+**Die Falle, die das Ganze fast unbrauchbar gemacht hätte:** Keine der beiden Runtimes
+*wirft* bei einem gescheiterten Turn. `CliChatAgent.chatStream` und
+`Orchestrator.chatStream` melden den Fehler als `error`-Event und laufen dann normal aus.
+Wer im Streaming-Handler nach dem Drain "Erfolg" schreibt, protokolliert genau die tote
+Beta-Runde als lauter Erfolge. Der Handler liest das Ergebnis deshalb vom Draht.
+`cli_timeout` wird über den Wortlaut *"CLI timed out after &lt;n&gt;ms"* erkannt — der
+Produzent in `cliChatAgent.ts` trägt einen Kommentar, dass das ein Vertrag ist.
+
+Das Dashboard zeigt eine eigene Karte und setzt zusätzlich LLM-Provider und
+Orchestratoren auf "Aufmerksamkeit nötig", wenn der letzte Turn scheiterte — beide Karten
+beantworten Konfigurationsfragen und waren wahrheitsgemäß grün, während der Chat tot war.
+
+### Turn-Budget als Setup-Feld (OM-104, §10)
+
+Orchestrator-Setup-Feld **`cli_turn_seconds`** → `spawnTimeoutMs` des `CliChatAgent`.
+Reihenfolge: Setting > ENV `OMADIA_CLI_SPAWN_TIMEOUT_MS` > Default 600 s. Leer/0 heißt
+"nicht gesetzt", damit ein leeres Feld die ENV nicht überschreibt. UI auf der
+LLM-Zugang-Seite, Reiter Abos; sie schreibt über den normalen Plugin-Config-PATCH, das
+Plugin reaktiviert, kein Neustart.
+
+### `manage_routine` bekommt den Principal (OM-82)
+
+Root Cause war nicht der Transport. `#993` (Kontext über die Prozessgrenze restaurieren)
+und `#1016` (stale Kontext hart ablehnen) haben den Transport eines Wertes gehärtet, den
+auf dem Web-Chat **nie jemand gesetzt hat**: einziger Schreiber von `routineTurnContext`
+ist `RoutinesIntegration.captureRoutineTurn`, und das ruft nur der Teams-Adapter.
+`routineTurnContext.current()` war den ganzen Turn `undefined`, also lehnte das Tool ab.
+
+`routes/chat.ts` installiert den Kontext jetzt selbst, außen um den Turn (die
+CLI-Bridge snapshottet den Async-Kontext am öffentlichen Einstieg, erwischt also beide
+Stores). Drei Entscheidungen, die dazugehören:
+
+- **Identität nur aus der Session** (`req.session.omadia_user_id`), nie aus
+  `resolveUserId()`. Das fällt auf den Client-Header `x-user-id` zurück, und
+  `manage_routine` scopet `pause`/`resume`/`delete` auf `(tenant, userId)` (#1025) — ein
+  gefälschter Header wäre fremde Routinen verwalten. Der `#1016`-Guard fängt das nicht:
+  beide Seiten seines Vergleichs kämen aus derselben Fälschung.
+- **Anonym ⇒ gar kein Kontext.** Der Guard *lehnt ab*, wenn ein Kontext da ist, der Turn
+  aber keine `userId` zum Vergleichen hat. Ein anonymer Kontext würde die freundliche
+  Tool-Absage in einen harten Guard-Fehler verwandeln.
+- **`run`, nicht `enter`,** auf beiden Routen. Der Generator wird hier erzeugt *und*
+  ausgelesen, also deckt ein normaler Scope jedes `.next()` ab und endet sauber;
+  `enterWith` hätte den Principal ohne Scope-Ende auf der Request-Kette liegen lassen, und
+  die In-Process-Runtime hat keinen Owner-Guard, der so etwas abfinge.
+
+Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `create`
+scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
+die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
+**Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.

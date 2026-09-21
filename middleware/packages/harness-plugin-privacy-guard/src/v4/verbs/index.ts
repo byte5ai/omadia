@@ -39,6 +39,16 @@ export interface AggregateParams {
   readonly ops: ReadonlyArray<AggregateOp>;
 }
 
+export interface UnionOptions {
+  /** Column renames applied to the RIGHT dataset before concatenation, so
+   *  two files with differently-spelled headers ("Phone" vs "Telefon") land
+   *  in one column. Keys are right-side field paths, values the target name. */
+  readonly renameRight?: Readonly<Record<string, string>>;
+}
+
+/** Which row of a duplicate group `distinct` keeps. */
+export type DistinctKeep = 'first' | 'last';
+
 export interface VerbEngine {
   filter(input: string, predicate: Predicate): VerbResult;
   sort(input: string, by: string, direction?: SortDirection): VerbResult;
@@ -52,6 +62,14 @@ export interface VerbEngine {
     right: string,
     on: { readonly left: string; readonly right: string },
   ): VerbResult;
+  /** Concatenate two datasets' rows into one. Schemas need not match: a row
+   *  keeps only the fields it has. The building block for "these two files
+   *  are one list" — pair with `distinct` to de-duplicate across files. */
+  union(left: string, right: string, opts?: UnionOptions): VerbResult;
+  /** Drop rows whose `by` key repeats an earlier (or, with `keep: 'last'`,
+   *  a later) row's key. Keys must be safe fields. A row with an empty key
+   *  in any `by` field is never a duplicate of anything — it is kept. */
+  distinct(input: string, by: ReadonlyArray<string>, keep?: DistinctKeep): VerbResult;
 }
 
 // --- pure helpers ----------------------------------------------------------
@@ -69,6 +87,48 @@ function compareUnknown(a: unknown, b: unknown): number {
   const sa = String(a);
   const sb = String(b);
   return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+/**
+ * Canonical form of one `distinct` key part. Strings are compared after
+ * Unicode NFKC normalisation, trimming, whitespace collapsing and lower-
+ * casing — "Max  Mustermann " and "max mustermann" are the same contact.
+ * Empty/absent values become `null`, which `distinct` treats as "no key".
+ * Everything else compares by its JSON form.
+ */
+export function normalizeKeyPart(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') {
+    const s = v.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+    return s.length === 0 ? null : `s:${s}`;
+  }
+  try {
+    return `j:${JSON.stringify(v)}`;
+  } catch {
+    return `x:${String(v)}`;
+  }
+}
+
+/** Composite `distinct` key for a row, or `null` when ANY part is empty —
+ *  two rows that both lack an e-mail are not thereby the same person. */
+function distinctKeyOf(row: DatasetRow, by: ReadonlyArray<string>): string | null {
+  const parts: string[] = [];
+  for (const b of by) {
+    const p = normalizeKeyPart(row[b]);
+    if (p === null) return null;
+    parts.push(p);
+  }
+  return JSON.stringify(parts);
+}
+
+/** Apply a `union` rename map to one right-side row. */
+function renameRow(
+  row: DatasetRow,
+  rename: Readonly<Record<string, string>>,
+): DatasetRow {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) out[rename[k] ?? k] = v;
+  return out;
 }
 
 /** Project a row down to a set of columns. */
@@ -266,6 +326,64 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         for (const r of matches) rows.push({ ...r, ...l });
       }
       return derive(leftDs, 'join', rows);
+    },
+
+    union(left, right, opts = {}): VerbResult {
+      const leftDs = resolve(left);
+      const rightDs = resolve(right);
+      const rename = opts.renameRight ?? {};
+      // Validate the rename map against the RIGHT schema up front: every
+      // source must exist, targets must be non-empty and pairwise distinct,
+      // and a target may not collide with a right field that is NOT itself
+      // being renamed away — otherwise two values would race for one key.
+      const rightPaths = new Set(rightDs.schema.fields.map((f) => f.path));
+      const targets = new Set<string>();
+      for (const [from, to] of Object.entries(rename)) {
+        if (!rightPaths.has(from)) {
+          throw new VerbError(`union renameRight: unknown right field "${from}"`);
+        }
+        if (typeof to !== 'string' || to.length === 0) {
+          throw new VerbError(`union renameRight: invalid target for "${from}"`);
+        }
+        if (targets.has(to)) {
+          throw new VerbError(`union renameRight: two fields renamed to "${to}"`);
+        }
+        if (rightPaths.has(to) && rename[to] === undefined) {
+          throw new VerbError(
+            `union renameRight: target "${to}" collides with an existing right field`,
+          );
+        }
+        targets.add(to);
+      }
+      const rows: DatasetRow[] = [
+        ...leftDs.rows,
+        ...rightDs.rows.map((r) => renameRow(r, rename)),
+      ];
+      return derive(leftDs, 'union', rows);
+    },
+
+    distinct(input, by, keep = 'first'): VerbResult {
+      if (by.length === 0) {
+        throw new VerbError('distinct requires at least one key field in "by"');
+      }
+      const ds = resolve(input);
+      for (const b of by) requireSafe(ds.schema, b);
+      // Scan in the direction of the row we want to KEEP, then restore the
+      // original order so `keep: 'last'` does not also reverse the dataset.
+      const scan = keep === 'last' ? [...ds.rows].reverse() : [...ds.rows];
+      const seen = new Set<string>();
+      const kept: DatasetRow[] = [];
+      for (const r of scan) {
+        const key = distinctKeyOf(r, by);
+        if (key === null) {
+          kept.push(r);
+          continue;
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        kept.push(r);
+      }
+      return derive(ds, 'distinct', keep === 'last' ? kept.reverse() : kept);
     },
   };
 }

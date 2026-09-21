@@ -6,6 +6,7 @@ import {
   ProviderRegistry,
   parseAuthProvidersEnv,
   resolveActiveProviderIds,
+  shouldWarnEmptyAdminAllowlist,
 } from '../../src/auth/providerRegistry.js';
 import type { AuthProvider } from '../../src/auth/providers/AuthProvider.js';
 
@@ -135,6 +136,99 @@ describe('resolveActiveProviderIds', () => {
     assert.deepEqual(
       resolveActiveProviderIds(catalog(), ['local', 'google']),
       ['local'],
+    );
+  });
+});
+
+/**
+ * OM-92 — the empty-allowlist boot warning fired on every desktop start, where
+ * only the local password provider is active and `ADMIN_ALLOWED_EMAILS` is
+ * meaningless. It claimed "every sign-in will 403" two log lines above a
+ * healthy `1 active: local` registry, which a beta tester read as a broken
+ * install. The warning now follows the only provider that reads the list.
+ */
+describe('shouldWarnEmptyAdminAllowlist', () => {
+  const entraConfigured = {
+    authProviders: 'local,entra',
+    hasMicrosoftCredentials: true,
+  } as const;
+
+  it('warns when entra is requested, configured and the allowlist is empty', () => {
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        ...entraConfigured,
+        whitelistIsEmpty: true,
+      }),
+      true,
+    );
+  });
+
+  it('stays silent on a local-password-only install (the desktop default)', () => {
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        authProviders: 'local',
+        hasMicrosoftCredentials: false,
+        whitelistIsEmpty: true,
+      }),
+      false,
+    );
+  });
+
+  it('stays silent when entra is requested but its secrets are missing', () => {
+    // The registry logs its own "skipping entra registration" line for this
+    // case, naming the actual blocker. A second warning about a *different*
+    // secret only sends the operator after the wrong one.
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        authProviders: 'local,entra',
+        hasMicrosoftCredentials: false,
+        whitelistIsEmpty: true,
+      }),
+      false,
+    );
+  });
+
+  it('stays silent when entra is configured but not requested', () => {
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        authProviders: 'local',
+        hasMicrosoftCredentials: true,
+        whitelistIsEmpty: true,
+      }),
+      false,
+    );
+  });
+
+  it('never warns once the allowlist has entries', () => {
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        ...entraConfigured,
+        whitelistIsEmpty: false,
+      }),
+      false,
+    );
+  });
+
+  it('treats an unset AUTH_PROVIDERS as local-only, so it stays silent', () => {
+    // `parseAuthProvidersEnv(undefined)` is `['local']` — the OSS-Demo default.
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        authProviders: undefined,
+        hasMicrosoftCredentials: true,
+        whitelistIsEmpty: true,
+      }),
+      false,
+    );
+  });
+
+  it('tolerates whitespace and casing in AUTH_PROVIDERS', () => {
+    assert.equal(
+      shouldWarnEmptyAdminAllowlist({
+        authProviders: ' LOCAL , Entra ',
+        hasMicrosoftCredentials: true,
+        whitelistIsEmpty: true,
+      }),
+      true,
     );
   });
 });

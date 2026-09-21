@@ -15,6 +15,30 @@
 export { activate } from './plugin.js';
 export type { OrchestratorExtrasPluginHandle } from './plugin.js';
 
+// OM-102 — provider resolution for the background memory features, and the
+// status contract the dashboard's memory card reads.
+export {
+  buildProviderCandidates,
+  resolveExtrasLlmProvider,
+  DEFAULT_EXTRAS_PROVIDER_ID,
+} from './llmProviderResolution.js';
+export type {
+  ProviderSource,
+  ProviderCandidateInput,
+  ResolvedExtrasProvider,
+  ResolveExtrasProviderInput,
+} from './llmProviderResolution.js';
+export {
+  MEMORY_FEATURE_STATUS_SERVICE,
+  MEMORY_FEATURES,
+} from './memoryFeatureStatus.js';
+export type {
+  MemoryFeature,
+  MemoryFeatureReasonCode,
+  MemoryFeatureState,
+  MemoryFeatureStatus,
+} from './memoryFeatureStatus.js';
+
 export { ContextRetriever, extractCandidateTerms } from './contextRetriever.js';
 // KG-walk chat visualization — builds the per-turn `kg_graph` payload of the
 // recalled Knowledge-Graph neighbourhood. Best-effort, UI-only.

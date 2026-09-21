@@ -137,3 +137,44 @@ export function parseAuthProvidersEnv(raw: string | undefined): string[] {
   if (list.length === 0) return ['local'];
   return Array.from(new Set(list));
 }
+
+/** Inputs the empty-allowlist warning is allowed to depend on. */
+export interface AdminAllowlistWarningInput {
+  /** Raw `AUTH_PROVIDERS` env-var, exactly as configured. */
+  readonly authProviders: string | undefined;
+  /** True when all three `MICROSOFT_APP_*` secrets are present. */
+  readonly hasMicrosoftCredentials: boolean;
+  /** True when `ADMIN_ALLOWED_EMAILS` resolved to no addresses. */
+  readonly whitelistIsEmpty: boolean;
+}
+
+/**
+ * Whether an empty `ADMIN_ALLOWED_EMAILS` is worth warning about (OM-92).
+ *
+ * The allowlist only gates the Entra/OAuth path — `EntraProvider` is the sole
+ * consumer. `LocalPasswordProvider` authenticates against the users table and
+ * never consults it. The boot log nevertheless announced "every sign-in will
+ * 403 until the secret is set" on every desktop start, where the registry two
+ * screens further down reports `1 active: local`. A beta tester read that as a
+ * broken install and went looking for a secret that does not apply to them.
+ *
+ * So the warning follows the provider that actually reads the list: entra has
+ * to be *requested* (`AUTH_PROVIDERS`) AND *configurable* (the three
+ * `MICROSOFT_APP_*` secrets present). Those are exactly the two conditions the
+ * registry itself uses to decide whether to construct an `EntraProvider`; when
+ * either fails it logs its own "skipping entra registration" line, so the
+ * situation is not going unreported — it is being reported by the component
+ * that owns it, in terms the operator can act on.
+ *
+ * Deliberately NOT considered: the admin-UI's stored active-provider subset. It
+ * is resolved from the database much later in boot, and an operator who has
+ * merely toggled entra off in the UI can toggle it back on at any moment — the
+ * missing secret would then bite with no warning ever having been printed.
+ */
+export function shouldWarnEmptyAdminAllowlist(
+  input: AdminAllowlistWarningInput,
+): boolean {
+  if (!input.whitelistIsEmpty) return false;
+  if (!input.hasMicrosoftCredentials) return false;
+  return parseAuthProvidersEnv(input.authProviders).includes('entra');
+}

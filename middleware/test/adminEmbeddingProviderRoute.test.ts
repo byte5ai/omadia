@@ -144,6 +144,95 @@ describe('GET /api/v1/admin/embedding-provider/status', () => {
     assert.equal(body.activeProviderId, null);
     assert.equal(body.activeModel, null);
   });
+
+  // OM-102 — the card used to speak only about embeddings, so an abo install
+  // whose fact extraction and topic detection were both off still read "OK".
+  it('reports the three memory features the extras plugin published', async () => {
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: KG_NEON, status: 'active', config: {} },
+      ],
+      {
+        memoryFeatures: {
+          factExtractor: 'active',
+          topicDetector: 'active',
+          scratchReaper: 'active',
+          providerId: 'claude-cli',
+        },
+      },
+    );
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        factExtractor: string;
+        topicDetector: string;
+        scratchReaper: string;
+        providerId?: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.deepEqual(body.memoryFeatures, {
+      factExtractor: 'active',
+      topicDetector: 'active',
+      scratchReaper: 'active',
+      providerId: 'claude-cli',
+    });
+  });
+
+  it('carries the plugin-stated reason when a feature is off', async () => {
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: KG_NEON, status: 'active', config: {} },
+      ],
+      {
+        memoryFeatures: {
+          factExtractor: 'active',
+          topicDetector: 'disabled',
+          scratchReaper: 'active',
+          providerId: 'claude-cli',
+          reasons: { topicDetector: 'no_embedding_provider' },
+        },
+      },
+    );
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        topicDetector: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.equal(body.memoryFeatures.topicDetector, 'disabled');
+    assert.equal(
+      body.memoryFeatures.reasons?.['topicDetector'],
+      'no_embedding_provider',
+    );
+  });
+
+  it('reads all three as off when the extras plugin published nothing', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active', config: {} },
+    ]);
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        factExtractor: string;
+        topicDetector: string;
+        scratchReaper: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.equal(body.memoryFeatures.factExtractor, 'disabled');
+    assert.equal(body.memoryFeatures.topicDetector, 'disabled');
+    assert.equal(body.memoryFeatures.scratchReaper, 'disabled');
+    assert.equal(
+      body.memoryFeatures.reasons?.['factExtractor'],
+      'plugin_inactive',
+    );
+  });
 });
 
 describe('mount-time auth', () => {

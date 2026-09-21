@@ -392,11 +392,11 @@ export function createPluginContext(
     },
   };
 
-  // Scratch-Dir accessor: gated on `manifest.filesystem.scratch: true`.
+  // Scratch-Dir accessor: gated on `permissions.filesystem.scratch: true`.
   // Created lazily on first path() call. Not isolated across restarts —
   // a plugin that needs durable state must use ctx.memory (Phase 0b/M4b)
   // or its own vault entry. Scratch is purely ephemeral working space.
-  const scratch = scratchEnabled(agentId, catalog)
+  const scratch = scratchEnabled(catalogEntry?.manifest)
     ? createScratchAccessor(agentId)
     : undefined;
 
@@ -1566,8 +1566,8 @@ function extractLlmPermissions(
  *    provider (e.g. `gpt-5.4-mini` while anthropic is active) does NOT match,
  *    so a `class:fast` lock permits the active provider's fast model and
  *    nothing else. On the Anthropic default this resolves to
- *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-4-6`
- *    (`balanced`), `claude-opus-4-8` (`frontier`) — byte-identical gating to a
+ *    `claude-haiku-4-5-20251001` (class `fast`), `claude-sonnet-5`
+ *    (`balanced`), `claude-opus-5` (`frontier`) — byte-identical gating to a
  *    concrete Anthropic lock today.
  */
 function modelMatch(
@@ -1963,12 +1963,27 @@ function extractAuditConfig(
   };
 }
 
-function scratchEnabled(agentId: string, catalog: PluginCatalog): boolean {
-  const entry = catalog.get(agentId);
-  if (!entry) return false;
-  const manifest = entry.manifest as Record<string, unknown> | undefined;
-  const fsBlock = manifest?.['filesystem'] as Record<string, unknown> | undefined;
-  return fsBlock?.['scratch'] === true;
+/**
+ * OM-89 — permissions.filesystem is canonical: the catalog retains the raw
+ * YAML root, not its permissions block. Reading only root.filesystem left
+ * every built-in declaration ineffective. Tolerate that top-level form for
+ * legacy third-party manifests, but only when the canonical block is absent;
+ * legacy tolerance must not turn a current denial or malformed block into a
+ * grant. Only the literal boolean true enables the accessor.
+ */
+function scratchEnabled(manifest: unknown): boolean {
+  const root = manifestRecord(manifest);
+  const permissions = manifestRecord(root?.['permissions']);
+  const filesystem = permissions && Object.hasOwn(permissions, 'filesystem')
+    ? permissions['filesystem']
+    : root?.['filesystem'];
+  return manifestRecord(filesystem)?.['scratch'] === true;
+}
+
+function manifestRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 function createScratchAccessor(agentId: string): ScratchDirAccessor {

@@ -878,7 +878,12 @@ function EmptyState({
   );
 }
 
-function MessageRow({
+/**
+ * Exported for the OM-105 regression test, following the `ToolRow` precedent
+ * (#1008): the turn-end gate below is worth pinning, and driving it through
+ * the whole page would mean standing up the stream store for one boolean.
+ */
+export function MessageRow({
   message,
   disabled,
   onChoose,
@@ -905,7 +910,18 @@ function MessageRow({
   const hasPendingTool = (message.tools ?? []).some(
     (t) => t.output === undefined,
   );
-  const showLiveness = !isUser && (message.streaming === true || hasPendingTool);
+  // OM-105 — a turn that has ENDED must never keep the live row running.
+  // `hasPendingTool` on its own never clears after a failed turn: the tool
+  // call that was in flight when the stream died never receives its result
+  // event, so `output` stays `undefined` forever. A beta tester watched
+  // "stream live · 163s · tool running · iter 0 · … · probably hung — press
+  // stop?" keep counting up next to an answer bubble that already read "CLI
+  // timed out after 120000ms". `finishedAt` is the authoritative turn-end
+  // marker — `finalizePending` sets it from a `finally`, so done, error and
+  // abort all land here.
+  const turnEnded = message.finishedAt !== undefined;
+  const showLiveness =
+    !isUser && !turnEnded && (message.streaming === true || hasPendingTool);
   const liveNow = useClock(showLiveness ? 1000 : null);
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))

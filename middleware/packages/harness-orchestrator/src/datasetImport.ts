@@ -60,6 +60,13 @@ import type {
   KnowledgeGraph,
 } from '@omadia/plugin-api';
 
+import { encryptCell, type DatasetCellKey } from './datasetCellCrypto.js';
+import {
+  isLinkKeyColumn,
+  linkKeyColumnName,
+  type DatasetLinkKeyer,
+} from './datasetLinkKey.js';
+
 /** Hard cap on imported rows — protects `dataset_rows` + the per-row
  *  privacy scan from an unbounded upload. Mirrors the spirit of
  *  `MAX_TEXT_CHARS` in `attachmentExtract.ts`: a cap that degrades
@@ -205,8 +212,13 @@ export interface PrivacyScanStats {
   /** Total cells (across every row) that were passed through the baseline
    *  detector — string-typed columns only, see module doc. */
   scannedCells: number;
-  /** Cells where at least one span was masked. */
+  /** Cells where the scan found at least one PII span. With a cell key these
+   *  are stored ENCRYPTED (real value, server-side readable); without one
+   *  they are masked irreversibly as before. */
   maskedCells: number;
+  /** True when flagged cells were encrypted rather than masked — i.e. the
+   *  real values are recoverable server-side for rendering and export. */
+  encryptedAtRest: boolean;
 }
 
 /**
@@ -222,17 +234,71 @@ export type BuildDatasetResult =
       rows: Array<Record<string, unknown>>;
       privacyScan: PrivacyScanStats;
       truncation: TableTruncationStats;
+      linkKeys: LinkKeyReport;
     }
   | { ok: false; reason: string };
+
+export interface BuildDatasetOptions {
+  /** When set, every `string` column additionally gets a `__k_<column>`
+   *  link-key column (see `datasetLinkKey.ts`), computed from the RAW cell
+   *  before masking. Absent ⇒ no key columns, byte-identical pre-link-key
+   *  output. */
+  linkKey?: DatasetLinkKeyer;
+  /** When set, a cell the PII scan flags is stored as its REAL value under
+   *  AES-256-GCM (`enc1:…`, see `datasetCellCrypto.ts`) instead of the
+   *  irreversible surrogate. Absent ⇒ masking as before. */
+  cellKey?: DatasetCellKey;
+}
+
+export interface LinkKeyReport {
+  /** Link-key column names written, in schema order. Empty when no keyer
+   *  was supplied or no column qualified. */
+  columns: string[];
+}
 
 /** CSV bytes → scrubbed dataset. Thin wrapper over
  *  {@link buildDatasetFromTable}; the pipeline itself is format-neutral. */
 export async function buildDatasetFromCsv(
   bytes: Buffer,
+  opts: BuildDatasetOptions = {},
 ): Promise<BuildDatasetResult> {
   const parsed = parseCsv(bytes);
   if (!parsed.ok) return parsed;
-  return buildDatasetFromTable(parsed);
+  return buildDatasetFromTable(parsed, opts);
+}
+
+/**
+ * Which columns get a link key: every `string`-typed one — not just the
+ * masked ones. The C0 baseline that runs here does not detect person names,
+ * so a `Name` column is unmasked at import yet still refused as a verb key
+ * downstream (the v4 shape classifier masks multi-word strings). Keying only
+ * masked columns would therefore miss the single most common dedup key.
+ * Number/boolean/date columns are already safe keys and need none.
+ *
+ * The `__k_` namespace is reserved (see {@link reservedHeader}), so a key
+ * name can never collide with a real header here.
+ */
+function selectLinkKeyColumns(
+  headers: ReadonlyArray<string>,
+  columnTypes: ReadonlyMap<string, DatasetColumnType>,
+): Set<string> {
+  const keyed = new Set<string>();
+  for (const header of headers) {
+    if (columnTypes.get(header) === 'string') keyed.add(header);
+  }
+  return keyed;
+}
+
+/**
+ * A header in the reserved `__k_` namespace is refused outright — with or
+ * without link keys enabled. Accepting it would make the tool description's
+ * promise ("every `__k_` column is a link key") false for that file, and the
+ * `[dataset-imported]` fact ("Link-key columns: none") would contradict
+ * `get_schema`. The uploader is the owner, so this is not a leak; it is a
+ * consistency guarantee the model's dedup recipe relies on.
+ */
+function reservedHeader(headers: ReadonlyArray<string>): string | undefined {
+  return headers.find(isLinkKeyColumn);
 }
 
 /**
@@ -244,7 +310,16 @@ export async function buildDatasetFromCsv(
  */
 export async function buildDatasetFromTable(
   parsed: TableParse,
+  opts: BuildDatasetOptions = {},
 ): Promise<BuildDatasetResult> {
+  const reserved = reservedHeader(parsed.headers);
+  if (reserved !== undefined) {
+    return {
+      ok: false,
+      reason: `column name "${reserved}" uses the reserved "__k_" prefix (link-key columns are generated on import) — rename the column and upload again`,
+    };
+  }
+
   const columnTypes = new Map<string, DatasetColumnType>();
   for (const header of parsed.headers) {
     columnTypes.set(
@@ -253,22 +328,35 @@ export async function buildDatasetFromTable(
     );
   }
 
+  const linkKey = opts.linkKey;
+  const keyedColumns = linkKey
+    ? selectLinkKeyColumns(parsed.headers, columnTypes)
+    : new Set<string>();
+
   const detectors = [createBaselineDetector()];
+  const cellKey = opts.cellKey;
   let scannedCells = 0;
   let maskedCells = 0;
+  // Display-safe value of every column in the FIRST row — the schema sample.
+  // A flagged cell's stored value is now a ciphertext, which tells a human
+  // nothing; the sample keeps showing the masked surrogate instead.
+  const firstRowDisplay: Record<string, unknown> = {};
 
   const scrubbedRows: Array<Record<string, unknown>> = [];
   for (const rawRow of parsed.rows) {
+    const isFirstRow = scrubbedRows.length === 0;
     const outRow: Record<string, unknown> = {};
     for (const header of parsed.headers) {
       const type = columnTypes.get(header) ?? 'string';
       const raw = rawRow[header] ?? '';
       if (type === 'number') {
         outRow[header] = raw.trim() === '' ? null : Number(raw);
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       if (type === 'boolean') {
         outRow[header] = raw.trim() === '' ? null : /^true$/i.test(raw.trim());
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       if (type === 'date') {
@@ -276,39 +364,75 @@ export async function buildDatasetFromTable(
         // persisted date is irreversible + contradicts the declared type
         // (#727). Store the real date so the schema and the data agree.
         outRow[header] = raw.trim() === '' ? null : raw;
+        if (isFirstRow) firstRowDisplay[header] = outRow[header];
         continue;
       }
       // 'string' — the only cells that can carry free text, so the only ones
       // that go through the privacy scan (see module doc).
       scannedCells += 1;
+      let display = raw;
       if (raw.length === 0) {
         outRow[header] = raw;
-        continue;
+      } else {
+        const scanned = await maskPrompt(raw, detectors);
+        if (scanned.maskedText !== raw) {
+          maskedCells += 1;
+          display = scanned.maskedText;
+          // A flagged cell keeps its REAL value — encrypted, readable only
+          // server-side for the entitled user (render, Excel). Without a key
+          // the irreversible surrogate is stored, exactly as before.
+          outRow[header] = cellKey ? encryptCell(cellKey, header, raw) : scanned.maskedText;
+        } else {
+          outRow[header] = raw;
+        }
       }
-      const scanned = await maskPrompt(raw, detectors);
-      if (scanned.maskedText !== raw) maskedCells += 1;
-      outRow[header] = scanned.maskedText;
+      if (isFirstRow) firstRowDisplay[header] = display;
+      // The link key is computed from the RAW value — that is the whole
+      // point: it must be the same for the same person in every file, and
+      // the masked surrogate is not. The raw value never leaves this
+      // function; only the keyed digest does. `null` (not `''`) for a blank
+      // cell, so the v4 shape classifier's "every value is a token" check
+      // still holds for the key column.
+      if (linkKey && keyedColumns.has(header)) {
+        outRow[linkKeyColumnName(header)] = linkKey(raw);
+      }
     }
     scrubbedRows.push(outRow);
   }
 
-  const columns: DatasetColumnSchema[] = parsed.headers.map((name) => {
-    const type = columnTypes.get(name) ?? 'string';
-    const firstRow = scrubbedRows[0];
-    const sampleValue = firstRow ? firstRow[name] : undefined;
+  const describeColumn = (
+    name: string,
+    type: DatasetColumnType,
+  ): DatasetColumnSchema => {
+    const sampleValue = firstRowDisplay[name];
     const sample =
       sampleValue === null || sampleValue === undefined
         ? undefined
         : String(sampleValue).slice(0, 200);
     return { name, type, ...(sample !== undefined ? { sample } : {}) };
+  };
+  // A key column sits right after its source column, so a schema listing
+  // reads `Name, __k_Name, E-Mail, __k_E-Mail, …`.
+  const linkKeyColumns: string[] = [];
+  const columns: DatasetColumnSchema[] = parsed.headers.flatMap((name) => {
+    const type = columnTypes.get(name) ?? 'string';
+    const own = describeColumn(name, type);
+    if (!keyedColumns.has(name)) return [own];
+    const keyName = linkKeyColumnName(name);
+    linkKeyColumns.push(keyName);
+    // No `sample` for a key column: the schema is the one place a key value
+    // would surface without the model asking for rows, and a sample of an
+    // opaque token tells a human nothing anyway.
+    return [own, { name: keyName, type: 'string' }];
   });
 
   return {
     ok: true,
     columns,
     rows: scrubbedRows,
-    privacyScan: { scannedCells, maskedCells },
+    privacyScan: { scannedCells, maskedCells, encryptedAtRest: cellKey !== undefined },
     truncation: parsed.truncation,
+    linkKeys: { columns: linkKeyColumns },
   };
 }
 

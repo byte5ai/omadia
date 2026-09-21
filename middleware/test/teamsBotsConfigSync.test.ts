@@ -382,6 +382,7 @@ describe('syncTeamsBotConfig', () => {
     // widest interleaving window a real, async registry could open.
     const slow: InstalledRegistry = {
       ...registry,
+      markActivationBlocked: (id, error) => registry.markActivationBlocked(id, error),
       get: (id) => registry.get(id),
       updateConfig: async (id, config) => {
         await new Promise((resolve) => setTimeout(resolve, 5));

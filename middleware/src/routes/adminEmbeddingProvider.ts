@@ -10,10 +10,13 @@ import type { EmbeddingGateStatus } from '../health/kgHealth.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import {
   AUTO_MIGRATE_CONFIG_KEY,
+  DEDUP_THRESHOLD_CONFIG_KEY,
   EMBEDDING_CLIENT_CAPABILITY,
   GRAPH_TENANT_ID_CONFIG_KEY,
   KG_NEON_ID,
   describeProviderConfig,
+  isKeylessProvider,
+  recommendedDedupThreshold,
   type EmbeddingProviderCatalog,
 } from './embeddingProviderCatalog.js';
 
@@ -119,6 +122,53 @@ export interface LocalEmbeddingModelFetcher {
   start(): boolean;
 }
 
+/**
+ * OM-102 — the three LLM-backed memory features, as the extras plugin states
+ * them (`memoryFeatureStatus@1`).
+ *
+ * Duck-typed rather than imported, for the same reason `EmbeddingGateStatus`
+ * and `LocalEmbeddingModelFetcher` are: the plugin may be uninstalled, and the
+ * kernel takes no build dependency on it. `undefined` from the getter means
+ * the plugin published nothing — which is itself the answer "not installed".
+ */
+export type MemoryFeatureName =
+  | 'factExtractor'
+  | 'topicDetector'
+  | 'scratchReaper';
+
+/** Closed cause set — the dashboard owns a translated label per code, so the
+ *  UI never renders backend English as its primary sentence (web-ui i18n
+ *  rule). Free-text diagnostics travel in `detail` instead. */
+export type MemoryFeatureReason =
+  | 'no_llm_provider'
+  | 'no_embedding_provider'
+  | 'no_graph_pool'
+  | 'disabled_by_config'
+  | 'plugin_inactive';
+
+export interface MemoryFeatureStatusView {
+  readonly factExtractor: 'active' | 'disabled';
+  readonly topicDetector: 'active' | 'disabled';
+  readonly scratchReaper: 'active' | 'disabled';
+  readonly providerId?: string;
+  readonly reasons?: Readonly<
+    Partial<Record<MemoryFeatureName, MemoryFeatureReason>>
+  >;
+  readonly detail?: string;
+}
+
+/** What `/status` reports when the extras plugin published no status at all. */
+const MEMORY_FEATURES_UNAVAILABLE: MemoryFeatureStatusView = Object.freeze({
+  factExtractor: 'disabled',
+  topicDetector: 'disabled',
+  scratchReaper: 'disabled',
+  reasons: Object.freeze({
+    factExtractor: 'plugin_inactive',
+    topicDetector: 'plugin_inactive',
+    scratchReaper: 'plugin_inactive',
+  }),
+} as const);
+
 export interface AdminEmbeddingProviderDeps {
   readonly installedRegistry: InstalledRegistry;
   /** Manifest catalog — the source of truth for who provides the capability. */
@@ -153,6 +203,13 @@ export interface AdminEmbeddingProviderDeps {
    * field wins over it — see `resolveGraphTenantId`.
    */
   readonly tenantId: string;
+  /**
+   * OM-102 — live `memoryFeatureStatus@1`. Resolved per request (the plugin
+   * can be activated or deactivated without a restart), never cached.
+   * Optional so every existing caller and test harness keeps compiling; absent
+   * reads the same as "plugin not active".
+   */
+  readonly getMemoryFeatureStatus?: () => MemoryFeatureStatusView | undefined;
   /** Runtime activation of a tool/extension plugin (ToolPluginRuntime). */
   readonly activate: (pluginId: string) => Promise<void>;
   readonly deactivate: (pluginId: string) => Promise<boolean>;
@@ -168,6 +225,9 @@ export interface AdminEmbeddingProviderDeps {
  */
 type GateReevaluate = (request: {
   allowDestructiveMigration: boolean;
+  /** OM-98 — rebuild the governed vector columns IF the gate finds them
+   *  empty. Absent on older knowledge-graph builds, which simply ignore it. */
+  allowEmptyColumnMigration?: boolean;
 }) => Promise<unknown>;
 
 function readReevaluator(
@@ -380,6 +440,151 @@ class SwitchRolledBack extends Error {
  */
 class GateReevaluationFailed extends Error {}
 
+/**
+ * OM-99 — WHY there is no `embeddingClient@1`, in terms of the provider that
+ * is actually installed.
+ *
+ * The page used to answer this with one sentence for every case: "it is
+ * running but not configured (API key or base URL missing)". For the keyless
+ * adapter that sentence is simply false — it has no key and no base URL by
+ * design, and the two states it really reaches are "the model weights are not
+ * on disk" and "another adapter already owns the capability". Telling a
+ * subscription user to enter an API key for the adapter that exists so they
+ * would not need one is how a working install reads as broken.
+ */
+export type CapabilityGapReason =
+  /** No `embeddingClient@1` provider is active at all. */
+  | 'no-active-provider'
+  /** A keyed adapter is active but holds no credential. */
+  | 'missing-credentials'
+  /** The keyless adapter is active and its weights are incomplete. */
+  | 'missing-weights'
+  /** Weights are present, yet nothing was published — the adapter stood down
+   *  because a sibling already held the service, or its activation failed. */
+  | 'not-published';
+
+/**
+ * The width collision, as a separate fact from the gap above.
+ *
+ * A width mismatch does NOT stop the capability from being published — the
+ * adapter publishes and the GATE refuses the writes. The page treats them as
+ * one red box today, which is why an operator reads "no API key" when the real
+ * state is "your columns are 768 wide and this model emits 384".
+ */
+export interface WidthCollision {
+  readonly providerDimensions: number | null;
+  readonly columnDimensions: number | null;
+  /** Every governed vector column is empty ⇒ the rebuild costs nothing and
+   *  `POST /reactivate` will do it. `null` when it could not be counted. */
+  readonly columnsEmpty: boolean | null;
+}
+
+function describeCapabilityGap(
+  deps: AdminEmbeddingProviderDeps,
+  activeProviderIdValue: string | null,
+  localModel: ReturnType<LocalEmbeddingModelFetcher['status']> | null,
+): CapabilityGapReason | null {
+  if (deps.getEmbeddingClient() !== undefined) return null;
+  if (activeProviderIdValue === null) return 'no-active-provider';
+  if (isKeylessProvider(activeProviderIdValue)) {
+    // The fetcher is published on BOTH the with-weights and without-weights
+    // paths, so its absence here means the adapter never activated — not that
+    // its weights are fine.
+    if (localModel === null) return 'not-published';
+    return localModel.missingFiles.length > 0 ? 'missing-weights' : 'not-published';
+  }
+  return 'missing-credentials';
+}
+
+/** The gate's own verdict, reduced to the width question the page asks. */
+function describeWidthCollision(
+  gate: EmbeddingGateStatus | null,
+  activeModel: { modelId: string; dimensions: number } | null,
+  corpus: CorpusSnapshot,
+): WidthCollision | null {
+  if (gate === null) return null;
+  if (gate.reason !== 'column-width-mismatch') return null;
+  return {
+    providerDimensions: activeModel?.dimensions ?? null,
+    columnDimensions: corpus.columnDimensions,
+    // Fail closed on an unreadable count: `null` renders as "cannot tell",
+    // which keeps the reactivate button honest rather than optimistic.
+    columnsEmpty:
+      corpus.storedVectorTotal === null ? null : corpus.storedVectorTotal === 0,
+  };
+}
+
+/** What the reactivation did about the provider-relative dedup threshold. */
+export interface DedupThresholdOutcome {
+  readonly applied: boolean;
+  readonly value: number | null;
+  readonly previous: string | null;
+  readonly reason:
+    | 'applied'
+    /** The operator already put a value in the store — never overwritten. */
+    | 'operator-set'
+    /** This adapter makes no recommendation; the KG default stands. */
+    | 'no-recommendation'
+    /** No knowledge-graph installed, so there is nothing to configure. */
+    | 'no-knowledge-graph';
+}
+
+/**
+ * Beta round 5 — carry the active adapter's recommended
+ * `process_dedup_threshold` into the knowledge-graph's config.
+ *
+ * PROVENANCE IS THE WHOLE POINT. A value the operator typed is a decision and
+ * is never touched; the *absence* of a key is the KG's compiled-in 0.90, which
+ * is not a decision about this model at all — it is a default that predates
+ * the model being installable. So this writes only into that absence.
+ *
+ * WHY IT DOES NOT TAKE EFFECT IMMEDIATELY. `process_dedup_threshold` is read
+ * once, in the knowledge-graph plugin's `activate()`, and re-activating that
+ * plugin calls `graphPool.end()` on the pool ~40 subsystems share (see the
+ * module header). Persisting the value and saying "on the next restart" is
+ * therefore the honest outcome; silently reactivating the graph to make one
+ * number live would be a far worse trade.
+ */
+async function applyRecommendedDedupThreshold(
+  deps: AdminEmbeddingProviderDeps,
+  providerId: string,
+): Promise<DedupThresholdOutcome> {
+  const recommended = recommendedDedupThreshold(providerId);
+  if (recommended === null) {
+    return { applied: false, value: null, previous: null, reason: 'no-recommendation' };
+  }
+  const entry = deps.installedRegistry.get(KG_NEON_ID);
+  if (!entry) {
+    return {
+      applied: false,
+      value: recommended,
+      previous: null,
+      reason: 'no-knowledge-graph',
+    };
+  }
+  const config = entry.config ?? {};
+  const stored = config[DEDUP_THRESHOLD_CONFIG_KEY];
+  // An empty string is the Store UI's way of spelling "not set" — treating it
+  // as an operator decision would leave every install that once opened the
+  // form stuck on the wrong scale.
+  const storedText = typeof stored === 'string' ? stored.trim() : stored;
+  const isSet =
+    storedText !== undefined && storedText !== null && storedText !== '';
+  if (isSet) {
+    return {
+      applied: false,
+      value: recommended,
+      previous: String(storedText),
+      reason: 'operator-set',
+    };
+  }
+  await deps.installedRegistry.register({
+    ...entry,
+    config: { ...config, [DEDUP_THRESHOLD_CONFIG_KEY]: String(recommended) },
+  });
+  return { applied: true, value: recommended, previous: null, reason: 'applied' };
+}
+
 export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderDeps): Router {
   const router = Router();
   // Serialises `POST /switch`. See ONE SWITCH AT A TIME in the module header.
@@ -448,6 +653,18 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       // operator to notice by comparing two fields on the page.
       providerDrift: describeProviderDrift(activeMetadata, gateStatus),
       capabilityPublished: deps.getEmbeddingClient() !== undefined,
+      // OM-99 — WHY it is missing, in terms of the adapter that is installed.
+      // `null` when nothing is missing. Read from the local fetcher rather
+      // than guessed, so "the weights are still downloading" never renders as
+      // "enter an API key".
+      capabilityGap: describeCapabilityGap(
+        deps,
+        activeId,
+        deps.getLocalModelFetcher?.()?.status() ?? null,
+      ),
+      // The width collision as its own fact — it does not stop the capability
+      // from being published, it stops the WRITES.
+      widthCollision: describeWidthCollision(gateStatus, activeMetadata, corpus),
       corpus: recorded,
       columns: corpus.columns,
       columnDimensions: corpus.columnDimensions,
@@ -479,6 +696,10 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
       activeProviderId: activeId,
       activeModel: readActiveMetadata(deps),
       installedProviderIds: providerIds,
+      // OM-102 — the card used to speak only about embeddings, so an install
+      // whose fact-extraction and topic-detection were off looked healthy.
+      memoryFeatures:
+        deps.getMemoryFeatureStatus?.() ?? MEMORY_FEATURES_UNAVAILABLE,
     });
   });
 
@@ -550,6 +771,163 @@ export function createAdminEmbeddingProviderRouter(deps: AdminEmbeddingProviderD
     }
     res.status(202).json({ ok: true, started: true, ...fetcher.status() });
   });
+
+  /**
+   * OM-98 — bring the ACTIVE provider (back) into service, without a switch.
+   *
+   * Three states dead-ended before this route existed, and all three are the
+   * normal shape of a subscription install:
+   *
+   *  - the keyless adapter activated before its weights were on disk, so it
+   *    published nothing; the download finished, and the only thing that would
+   *    re-read the weights was a full restart;
+   *  - the governed vector columns are 768 wide and EMPTY while the adapter
+   *    emits 384, so the gate blocks writes. The only path allowed to change a
+   *    column width was an operator-confirmed provider SWITCH — and #1053
+   *    removes the surplus provider at boot, so there is no second provider to
+   *    switch to and nothing to confirm;
+   *  - both at once, which is what a beta tester actually hit.
+   *
+   * So: re-activate the provider (publishing the capability if it now can),
+   * then re-run the gate with the empty-column rebuild permitted. Emptiness is
+   * checked here for a fast, specific refusal AND again inside the gate, which
+   * is the check that counts — this one is a page-load-old preview.
+   *
+   * A non-empty corpus is refused with 409 and pointed at the switch path,
+   * which is the one that carries the discard confirmation. This route never
+   * destroys anything.
+   */
+  router.post('/reactivate', async (_req: Request, res: Response) => {
+    if (switchInFlight) {
+      res.status(409).json({
+        code: 'embeddingProvider.switch_in_progress',
+        message:
+          'another embedding-provider change is still running; wait for it to finish and re-read the current state before retrying',
+      });
+      return;
+    }
+    switchInFlight = true;
+    try {
+      await handleReactivate(res);
+    } finally {
+      switchInFlight = false;
+    }
+  });
+
+  async function handleReactivate(res: Response): Promise<void> {
+    const providerIds = installedProviderIds(deps);
+    const pluginId = activeProviderId(deps, providerIds);
+    if (pluginId === null) {
+      res.status(409).json({
+        code: 'embeddingProvider.no_active_provider',
+        message:
+          'no embeddingClient@1 provider is active — install and activate one first; there is nothing to reactivate',
+      });
+      return;
+    }
+
+    // Price the rebuild BEFORE touching the runtime. A populated corpus is a
+    // refusal, not a prompt: this route has no confirmation step by design.
+    const pool = deps.getGraphPool();
+    let corpus = EMPTY_CORPUS;
+    if (pool) {
+      try {
+        corpus = await readCorpus(pool, resolveGraphTenantId(deps));
+      } catch {
+        corpus = EMPTY_CORPUS;
+      }
+    }
+    if (corpus.storedVectorTotal !== null && corpus.storedVectorTotal > 0) {
+      res.status(409).json({
+        code: 'embeddingProvider.corpus_not_empty',
+        message:
+          'the governed vector columns still hold embeddings, so rebuilding them at another width would destroy a corpus — use the provider switch with confirmDiscardVectors instead',
+        details: {
+          vectorsToDiscard: corpus.storedVectorTotal,
+          columnDimensions: corpus.columnDimensions,
+        },
+      });
+      return;
+    }
+
+    // Deactivate → activate the SAME plugin. This is what makes a finished
+    // weight download take effect: the adapter decides whether to publish
+    // `embeddingClient@1` in its `activate()`, from the files it finds then.
+    // The knowledge-graph is never touched here — see the module header on why
+    // reactivating THAT would end the shared pool.
+    try {
+      await deps.deactivate(pluginId);
+      await deps.activate(pluginId);
+    } catch (err) {
+      // ONE MORE ATTEMPT, THEN THE TRUTH. The deactivate already happened, so
+      // a throw out of `activate` leaves this deployment with NO live
+      // embedding provider — the same hole `/switch`'s `restorePrevious`
+      // closes, reached by a shorter path. A second activate costs one call
+      // and recovers the common cause (a transient read of the weights that
+      // the adapter retries successfully).
+      //
+      // The response stays honest either way: `getEmbeddingClient()` is the
+      // same evidence the forward path is held to, so a recovered provider is
+      // reported as recovered and a dead one is still a 500. Never a rollback
+      // claim the runtime does not support.
+      await deps.activate(pluginId).catch(() => undefined);
+      const recovered = deps.getEmbeddingClient() !== undefined;
+      res.status(500).json({
+        code: 'embeddingProvider.reactivate_failed',
+        message: `reactivating '${pluginId}' failed (${err instanceof Error ? err.message : String(err)}); ${
+          recovered
+            ? 'a retry brought the provider back and embeddingClient@1 IS published again, but the gate was NOT re-evaluated — retry the reactivation'
+            : 'the retry did not bring it back either, so this deployment currently has NO active embedding provider — check the middleware log'
+        }`,
+        details: { pluginId, capabilityPublished: recovered, gateReevaluated: false },
+      });
+      return;
+    }
+
+    const capabilityPublished = deps.getEmbeddingClient() !== undefined;
+
+    // Re-gate even when nothing was published: the verdict on display was
+    // computed against the client that just went away, and leaving it up would
+    // be the provider-drift state this page exists to surface.
+    const reevaluate = readReevaluator(deps.getGateStatus());
+    let gateWarning: string | undefined;
+    if (reevaluate === undefined) {
+      gateWarning = NO_REEVALUATOR;
+    } else {
+      try {
+        await reevaluate({
+          // Never. This route is the non-destructive one.
+          allowDestructiveMigration: false,
+          // The capability that makes it useful — and the gate verifies the
+          // emptiness itself before acting on it.
+          allowEmptyColumnMigration: true,
+        });
+      } catch (err) {
+        res.status(500).json({
+          code: 'embeddingProvider.gate_reevaluation_failed',
+          message: `'${pluginId}' was reactivated and ${capabilityPublished ? 'IS publishing embeddingClient@1' : 'still publishes nothing'}, but re-evaluating the knowledge-graph model/dimension gate against it failed (${err instanceof Error ? err.message : String(err)}). The graph is still up and its pool is intact, but it is governed by the PREVIOUS verdict — check the middleware log, then retry.`,
+          details: { pluginId, capabilityPublished, gateReevaluated: false },
+        });
+        return;
+      }
+    }
+
+    // Only once the provider is genuinely serving: a threshold tuned for a
+    // vector space nothing writes into would be noise.
+    const dedupThreshold = capabilityPublished
+      ? await applyRecommendedDedupThreshold(deps, pluginId)
+      : null;
+
+    res.json({
+      ok: true,
+      reactivated: pluginId,
+      capabilityPublished,
+      gateReevaluated: reevaluate !== undefined,
+      ...(gateWarning === undefined ? {} : { gateWarning }),
+      dedupThreshold,
+      ...(await snapshot()),
+    });
+  }
 
   router.post('/switch', async (req: Request, res: Response) => {
     const parsed = SwitchBodySchema.safeParse(req.body);

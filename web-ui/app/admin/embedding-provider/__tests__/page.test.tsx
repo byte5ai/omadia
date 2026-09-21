@@ -2,6 +2,10 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Resolves to the mock below — the page and this file must throw the SAME
+// class, or `err instanceof ApiError` in `errorCodeOf` silently never matches
+// and every mapped error would fall through to the raw-message branch.
+import { ApiError } from '../../../_lib/api';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import EmbeddingProviderPage from '../page';
 
@@ -19,11 +23,13 @@ const {
   mockSwitchEmbeddingProvider,
   mockGetLocalEmbeddingModel,
   mockStartLocalEmbeddingModelFetch,
+  mockReactivateEmbeddingProvider,
 } = vi.hoisted(() => ({
   mockGetEmbeddingProvider: vi.fn(),
   mockSwitchEmbeddingProvider: vi.fn(),
   mockGetLocalEmbeddingModel: vi.fn(),
   mockStartLocalEmbeddingModelFetch: vi.fn(),
+  mockReactivateEmbeddingProvider: vi.fn(),
 }));
 
 vi.mock('../../../_lib/api', () => ({
@@ -40,6 +46,7 @@ vi.mock('../../../_lib/api', () => ({
   switchEmbeddingProvider: mockSwitchEmbeddingProvider,
   getLocalEmbeddingModel: mockGetLocalEmbeddingModel,
   startLocalEmbeddingModelFetch: mockStartLocalEmbeddingModelFetch,
+  reactivateEmbeddingProvider: mockReactivateEmbeddingProvider,
 }));
 
 const OLLAMA = '@omadia/embeddings';
@@ -357,5 +364,307 @@ describe('keyless embedder — weight download', () => {
 
     await screen.findByTestId('local-model-ready');
     expect(screen.queryByTestId('local-model-card')).toBeNull();
+  });
+});
+
+/**
+ * OM-98 / OM-99 — the two dead ends this page used to describe without being
+ * able to end, and the box that told everybody to enter an API key.
+ *
+ * The failure class both belong to: the page was RIGHT about the state and
+ * useless about the remedy. A subscription install with 768-wide EMPTY columns
+ * and the 384-d keyless adapter read as "missing API key" — for the adapter
+ * that exists so nobody needs one — and offered a provider switch to a
+ * provider #1053 had already removed at boot.
+ */
+const LOCAL = '@omadia/embedding-adapter-local';
+
+/** A single-provider install with the keyless adapter and nothing published. */
+function keylessState(overrides: Record<string, unknown> = {}) {
+  return baseState({
+    providers: [
+      {
+        pluginId: LOCAL,
+        label: 'Embeddings (keyless)',
+        active: true,
+        registryStatus: 'active',
+        modelId: 'paraphrase-multilingual-MiniLM-L12-v2',
+        dimensions: 384,
+        preview: null,
+      },
+    ],
+    activeProviderId: LOCAL,
+    activeModel: { modelId: 'local:paraphrase-multilingual-MiniLM-L12-v2', dimensions: 384 },
+    capabilityPublished: false,
+    ...overrides,
+  });
+}
+
+describe('capability gap — one box per reason', () => {
+  it('tells a keyless install the weights are missing, not the API key', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      keylessState({ capabilityGap: 'missing-weights' }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const box = await screen.findByTestId('capability-missing');
+    expect(box.textContent).toContain('keyless');
+    // It may MENTION the API key — to say this adapter needs none. What it may
+    // never do is what the old single sentence did: report the absence of one
+    // as the fault. The fault is the weights.
+    expect(box.textContent).toContain('needs neither an API key');
+    expect(box.textContent).toContain('model weights');
+    expect(box.textContent).not.toContain('not configured');
+  });
+
+  it('keeps the credential wording for a keyed adapter', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      keylessState({ capabilityGap: 'missing-credentials' }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    expect((await screen.findByTestId('capability-missing')).textContent).toContain(
+      'API key',
+    );
+  });
+
+  it('names the stood-down case, which has a different fix entirely', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      keylessState({ capabilityGap: 'not-published' }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    // "A second adapter already holds the capability" — uninstalling it is the
+    // remedy, and no amount of credential-entering gets there.
+    expect((await screen.findByTestId('capability-missing')).textContent).toContain(
+      'second adapter',
+    );
+  });
+
+  it('falls back to the historical wording when the middleware sends no reason', async () => {
+    // Compatibility runs both ways in a desktop install, where the page and
+    // the kernel can update separately.
+    mockGetEmbeddingProvider.mockResolvedValue(keylessState({ capabilityGap: null }));
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    expect((await screen.findByTestId('capability-missing')).textContent).toContain(
+      'API key',
+    );
+  });
+});
+
+describe('width collision', () => {
+  function collisionState(columnsEmpty: boolean | null) {
+    return keylessState({
+      capabilityPublished: true,
+      storedVectorTotal: columnsEmpty === true ? 0 : 1234,
+      gate: {
+        vectorWritesAllowed: false,
+        status: 'blocked',
+        reason: 'column-width-mismatch',
+        activeModelId: 'local:paraphrase-multilingual-MiniLM-L12-v2 (384d)',
+      },
+      widthCollision: {
+        providerDimensions: 384,
+        columnDimensions: 768,
+        columnsEmpty,
+      },
+    });
+  }
+
+  it('offers the rebuild, in amber, when the columns are empty', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(collisionState(true));
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const box = await screen.findByTestId('width-collision');
+    // Amber, not red: nothing is lost and the fix is one click away.
+    expect(box.className).toContain('--warning');
+    expect(box.className).not.toContain('--danger');
+    expect(box.textContent).toContain('384');
+    expect(box.textContent).toContain('768');
+    expect(screen.getByTestId('reactivate-provider')).toBeTruthy();
+  });
+
+  it('withholds the button, in red, while the columns hold vectors', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(collisionState(false));
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const box = await screen.findByTestId('width-collision');
+    expect(box.className).toContain('--danger');
+    // Offering a one-click rebuild the middleware then refuses with a 409 is
+    // worse than not offering it: it reads as a bug rather than as a guard.
+    expect(screen.queryByTestId('reactivate-provider')).toBeNull();
+    expect(box.textContent).toContain('provider switch');
+  });
+
+  it('withholds the button when emptiness could not be established', async () => {
+    // Fails closed for the same reason the gate does — "cannot tell" is not
+    // "probably empty".
+    mockGetEmbeddingProvider.mockResolvedValue(collisionState(null));
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    const box = await screen.findByTestId('width-collision');
+    expect(box.textContent).toContain('could not be established');
+    expect(screen.queryByTestId('reactivate-provider')).toBeNull();
+  });
+
+  it('says nothing when the gate is blocked for another reason', async () => {
+    mockGetEmbeddingProvider.mockResolvedValue(
+      baseState({
+        gate: {
+          vectorWritesAllowed: false,
+          status: 'blocked',
+          reason: 'dimension-mismatch',
+          activeModelId: 'ollama:nomic-embed-text (768d)',
+        },
+      }),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+
+    await screen.findByText('dimension-mismatch');
+    expect(screen.queryByTestId('width-collision')).toBeNull();
+  });
+});
+
+describe('reactivate — result and failure', () => {
+  const READY_WEIGHTS = {
+    modelDir: '/var/embedding-models',
+    missingFiles: [] as string[],
+    totalBytes: 135_392_208,
+    job: {
+      state: 'done' as const,
+      downloadedBytes: 135_392_208,
+      totalBytes: 135_392_208,
+      currentFile: null,
+      error: null,
+    },
+  };
+
+  /** Weights on disk, adapter still publishing nothing — the button's home. */
+  const UNPUBLISHED = (): Record<string, unknown> =>
+    keylessState({ capabilityGap: 'not-published' });
+
+  beforeEach(() => {
+    mockGetLocalEmbeddingModel.mockResolvedValue(READY_WEIGHTS);
+    mockGetEmbeddingProvider.mockResolvedValue(UNPUBLISHED());
+  });
+
+  it('reports a reactivation that published the client', async () => {
+    mockReactivateEmbeddingProvider.mockResolvedValue({
+      ...UNPUBLISHED(),
+      capabilityPublished: true,
+      dedupThreshold: null,
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    const result = await screen.findByTestId('reactivate-result');
+    expect(result.textContent).toContain('Provider reactivated');
+    expect(mockReactivateEmbeddingProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a reactivation that published nothing, rather than claiming success', async () => {
+    mockReactivateEmbeddingProvider.mockResolvedValue({
+      ...UNPUBLISHED(),
+      dedupThreshold: null,
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    expect((await screen.findByTestId('reactivate-result')).textContent).toContain(
+      'still publishes no embedding client',
+    );
+  });
+
+  it('names the dedup threshold it wrote, and that it needs a restart', async () => {
+    // Nobody would otherwise notice: at the knowledge graph's 0.90 default
+    // this model's dedup never fires, silently.
+    mockReactivateEmbeddingProvider.mockResolvedValue({
+      ...UNPUBLISHED(),
+      capabilityPublished: true,
+      dedupThreshold: { applied: true, value: 0.45, previous: null, reason: 'applied' },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    const line = await screen.findByTestId('reactivate-dedup');
+    expect(line.textContent).toContain('0.45');
+    expect(line.textContent).toContain('next time');
+  });
+
+  it('says it left an operator-set threshold alone, and what would have fitted', async () => {
+    // A value the operator typed is a decision. Overwriting it silently is the
+    // bug; overwriting it loudly is still the bug.
+    mockReactivateEmbeddingProvider.mockResolvedValue({
+      ...UNPUBLISHED(),
+      capabilityPublished: true,
+      dedupThreshold: {
+        applied: false,
+        value: 0.45,
+        previous: '0.80',
+        reason: 'operator-set',
+      },
+    });
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    const line = await screen.findByTestId('reactivate-dedup');
+    expect(line.textContent).toContain('0.80');
+    expect(line.textContent).toContain('0.45');
+  });
+
+  it('translates the corpus-not-empty refusal instead of leaking the raw message', async () => {
+    mockReactivateEmbeddingProvider.mockRejectedValue(
+      new ApiError(409, 'Conflict', '{"code":"embeddingProvider.corpus_not_empty"}'),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    const error = await screen.findByTestId('reactivate-error');
+    expect(error.textContent).toContain('never discards anything');
+    // A refusal is not a result.
+    expect(screen.queryByTestId('reactivate-result')).toBeNull();
+  });
+
+  it('translates the concurrent-change refusal', async () => {
+    mockReactivateEmbeddingProvider.mockRejectedValue(
+      new ApiError(409, 'Conflict', '{"code":"embeddingProvider.switch_in_progress"}'),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    expect((await screen.findByTestId('reactivate-error')).textContent).toContain(
+      'already running',
+    );
+  });
+
+  it('falls back to the raw message for an unmapped failure', async () => {
+    // A 500 from the route carries a diagnosis the operator needs verbatim.
+    // Swallowing it behind a generic sentence is how "check the middleware
+    // log" becomes the only thing anybody ever reads.
+    mockReactivateEmbeddingProvider.mockRejectedValue(
+      new Error('reactivating failed: onnxruntime could not load the model'),
+    );
+
+    renderWithIntl(<EmbeddingProviderPage />);
+    await userEvent.click(await screen.findByTestId('reactivate-provider'));
+
+    expect((await screen.findByTestId('reactivate-error')).textContent).toContain(
+      'onnxruntime',
+    );
   });
 });

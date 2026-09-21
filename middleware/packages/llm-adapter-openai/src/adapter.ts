@@ -8,12 +8,15 @@
  * `baseURL` + `quirks` (from the descriptor) specialise it per provider.
  */
 import type {
+  DiscoveredModel,
   LlmAdapter,
   LlmAdapterBuildOptions,
   LlmAdapterRegistry,
   LlmProvider,
 } from '@omadia/llm-provider-api';
 
+import { listOpenAiCompatibleModels } from './modelDiscovery.js';
+import { createOpenAiClient } from './openaiClient.js';
 import { createOpenAiProvider } from './openaiProvider.js';
 
 export const openAiAdapter: LlmAdapter = {
@@ -37,6 +40,18 @@ export const openAiAdapter: LlmAdapter = {
       ...(quirks?.extraBody !== undefined ? { extraBody: quirks.extraBody } : {}),
       ...(opts.log !== undefined ? { log: opts.log } : {}),
     });
+  },
+  /** Live catalog via the OpenAI-compatible `GET /v1/models`. OAuth-connected
+   *  providers resolve one bearer for the call; nothing is cached here. */
+  async listModels(opts: LlmAdapterBuildOptions): Promise<ReadonlyArray<DiscoveredModel>> {
+    const apiKey =
+      opts.bearerProvider !== undefined ? await opts.bearerProvider() : opts.apiKey;
+    const client = createOpenAiClient({
+      apiKey,
+      maxRetries: 1,
+      ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+    });
+    return listOpenAiCompatibleModels(client);
   },
 };
 

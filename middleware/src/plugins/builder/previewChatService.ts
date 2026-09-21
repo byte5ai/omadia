@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { LlmProvider } from '@omadia/llm-provider';
 import {
   LocalSubAgent,
+  createCliSubAgent,
   type AskObserver,
   type LocalSubAgentTool,
 } from '@omadia/orchestrator';
@@ -22,6 +23,7 @@ import {
   type BuilderProviderResolution,
   type BuilderProviderResolver,
 } from './builderAgent.js';
+import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import type { DraftStore } from './draftStore.js';
 import type { PreviewHandle, PreviewToolDescriptor } from './previewRuntime.js';
 import type { AgentSpecSkeleton, TranscriptEntry } from './types.js';
@@ -73,7 +75,10 @@ interface Askable {
 
 export interface SubAgentBuildOptions {
   name: string;
-  provider: LlmProvider;
+  /** OM-101 — absent on the subscription path; the CLI owns the loop there. */
+  provider?: LlmProvider;
+  /** OM-101 — CLI alias (`opus` / `sonnet` / `haiku`) on the subscription path. */
+  cliModel?: string;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -176,7 +181,8 @@ export class PreviewChatService {
     } catch (err) {
       yield {
         type: 'error',
-        code: 'builder.model_unavailable',
+        // OM-101 — see builderAgent: missing access is its own failure class.
+        code: builderResolverErrorCode(err),
         message: err instanceof Error ? err.message : String(err),
       };
       return;
@@ -191,7 +197,8 @@ export class PreviewChatService {
 
     const subAgent = this.buildSubAgent({
       name: `preview-${opts.handle.agentId}`,
-      provider: resolved.provider,
+      ...(resolved.provider ? { provider: resolved.provider } : {}),
+      ...(resolved.cliModel ? { cliModel: resolved.cliModel } : {}),
       model: resolved.modelId,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,
@@ -352,7 +359,25 @@ function bridgePreviewTool(td: PreviewToolDescriptor): LocalSubAgentTool {
   };
 }
 
+/**
+ * OM-101 — mirrors `builderAgent.defaultBuildSubAgent`. The preview chat is a
+ * tool-loop agent too (it drives the drafted agent's own toolkit), so on the
+ * subscription provider it has to run through the CLI for the same reason.
+ */
 function defaultBuildSubAgent(opts: SubAgentBuildOptions): Askable {
+  if (opts.cliModel) {
+    return createCliSubAgent({
+      name: opts.name,
+      systemPrompt: opts.systemPrompt,
+      model: opts.cliModel,
+      tools: opts.tools,
+    });
+  }
+  if (!opts.provider) {
+    throw new BuilderLlmAccessError(
+      'preview sub-agent: neither an LLM provider nor a subscription CLI model was resolved',
+    );
+  }
   return new LocalSubAgent({
     name: opts.name,
     provider: opts.provider,
