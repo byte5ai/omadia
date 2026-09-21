@@ -12,6 +12,7 @@ import {
   getProviders,
   patchSettings,
   refreshProviderModels,
+  updateInstalledPluginConfig,
   verifyProvider,
   ApiError,
   type AdminProvider,
@@ -153,6 +154,46 @@ export function ProvidersPanel({
     [],
   );
 
+  // #1099 — the orchestrator's per-turn routing flag is a plain non-secret
+  // config boolean; write it through the same installed-config PATCH the Store
+  // setup-field editor uses, rather than the assignment endpoint (which only
+  // carries provider + model). The flag key is orchestrator-specific, but so is
+  // the toggle — it renders only where `modelRouting` is present on the row.
+  const toggleRouting = useCallback(
+    async (pluginId: string, next: boolean): Promise<void> => {
+      const value = next ? 'true' : 'false';
+      setStatus((s) => ({ ...s, [pluginId]: 'saving' }));
+      setErrors((e) => {
+        const n = { ...e };
+        delete n[pluginId];
+        return n;
+      });
+      try {
+        await updateInstalledPluginConfig(pluginId, {
+          orchestrator_model_routing: value,
+        });
+        setState((prev) =>
+          prev.kind === 'ready'
+            ? {
+                ...prev,
+                data: {
+                  ...prev.data,
+                  assignments: prev.data.assignments.map((a) =>
+                    a.pluginId === pluginId ? { ...a, modelRouting: value } : a,
+                  ),
+                },
+              }
+            : prev,
+        );
+        setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
+      } catch (err) {
+        setStatus((s) => ({ ...s, [pluginId]: 'error' }));
+        setErrors((e) => ({ ...e, [pluginId]: err }));
+      }
+    },
+    [],
+  );
+
   return (
     <div>
       <p className="mb-8 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
@@ -217,6 +258,7 @@ export function ProvidersPanel({
                     status={status[a.pluginId] ?? 'idle'}
                     error={errors[a.pluginId]}
                     onApply={apply}
+                    onToggleRouting={toggleRouting}
                     t={t}
                   />
                 </li>
@@ -727,6 +769,7 @@ function AssignmentRow({
   status,
   error,
   onApply,
+  onToggleRouting,
   t,
 }: {
   assignment: ProviderAssignment;
@@ -735,12 +778,19 @@ function AssignmentRow({
   /** The thrown value from the last failed apply, resolved by <ErrorHelp>. */
   error?: unknown;
   onApply: (pluginId: string, provider: string, model: string) => void;
+  /** Flip the orchestrator's per-turn routing flag (#1099). Only invoked for
+   *  the row that carries `modelRouting`. */
+  onToggleRouting: (pluginId: string, next: boolean) => void;
   t: T;
 }): React.ReactElement {
   const selectedProvider =
     providers.find((p) => p.id === a.provider) ?? providers[0];
   const models = selectedProvider?.models ?? [];
   const disabled = !a.installed;
+  // Per-turn routing (#1099) is Anthropic-only — plugin.ts suppresses it under
+  // any other provider — so the toggle is both disabled and guarded off it.
+  const isAnthropic = a.provider === 'anthropic';
+  const routingDisabled = disabled || !isAnthropic;
   // Data-driven: surface the AVV / Art. 28 third-party disclosure unless the
   // provider opts out via its policy (the server defaults unknown providers to
   // requiring it). Replaces the previous hard-coded `!== 'anthropic'` check.
@@ -817,6 +867,39 @@ function AssignmentRow({
           ))}
         </select>
       </div>
+
+      {/* #1099 — per-turn model routing. The backend attaches `modelRouting`
+          to the orchestrator row only, so its presence is what gates the
+          toggle here. Routing is Anthropic-only (plugin.ts suppresses it under
+          any other provider), so the switch is disabled off-Anthropic with an
+          explanatory tooltip rather than silently doing nothing. */}
+      {a.modelRouting !== undefined && (
+        <div className="flex flex-col gap-1">
+          <label
+            className="flex items-center gap-2 text-[13px] text-[color:var(--fg-strong)]"
+            title={isAnthropic ? undefined : t('assignments.routingAnthropicOnly')}
+          >
+            <input
+              type="checkbox"
+              checked={a.modelRouting === 'true'}
+              disabled={routingDisabled}
+              // Guard as well as disable: routing is Anthropic-only, and the
+              // write must never fire from a disabled control.
+              onChange={(e) => {
+                if (routingDisabled) return;
+                onToggleRouting(a.pluginId, e.target.checked);
+              }}
+              className="disabled:opacity-50"
+            />
+            {t('assignments.routingLabel')}
+          </label>
+          <p className="text-[12px] leading-[1.5] text-[color:var(--fg-muted)]">
+            {isAnthropic
+              ? t('assignments.routingHint')
+              : t('assignments.routingAnthropicOnly')}
+          </p>
+        </div>
+      )}
 
       {/* OM-10: the copy is now present-tense, because `a.provider` is the
           ALREADY-PERSISTED provider and the select above applies immediately —

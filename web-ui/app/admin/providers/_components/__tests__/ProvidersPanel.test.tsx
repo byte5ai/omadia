@@ -22,12 +22,14 @@ const {
   mockPatchSettings,
   mockVerifyProvider,
   mockRefreshProviderModels,
+  mockUpdateInstalledPluginConfig,
 } = vi.hoisted(() => ({
   mockGetProviders: vi.fn(),
   mockAssignProvider: vi.fn(),
   mockPatchSettings: vi.fn(),
   mockVerifyProvider: vi.fn(),
   mockRefreshProviderModels: vi.fn(),
+  mockUpdateInstalledPluginConfig: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', () => ({
@@ -36,6 +38,7 @@ vi.mock('../../../../_lib/api', () => ({
   patchSettings: mockPatchSettings,
   verifyProvider: mockVerifyProvider,
   refreshProviderModels: mockRefreshProviderModels,
+  updateInstalledPluginConfig: mockUpdateInstalledPluginConfig,
   // Mirrors the real ApiError, including the OM-09 `code` parse — the panel
   // reads `err.code`, so a mock without it would test nothing.
   ApiError: class ApiError extends Error {
@@ -72,6 +75,23 @@ function providersResponse(over: Partial<ProvidersResponse> = {}): ProvidersResp
     providers: [provider()],
     assignments: [],
     vault_available: true,
+    ...over,
+  };
+}
+
+/** The orchestrator assignment is the only one the backend tags with
+ *  `modelRouting`; that field is what gates the per-turn routing toggle. */
+function orchestratorAssignment(
+  over: Partial<ProvidersResponse['assignments'][number]> = {},
+) {
+  return {
+    pluginId: '@omadia/orchestrator',
+    label: 'Orchestrator',
+    installed: true,
+    provider: 'anthropic',
+    model: 'claude-opus-4-8',
+    modelKey: 'orchestrator_model',
+    modelRouting: 'false',
     ...over,
   };
 }
@@ -821,6 +841,98 @@ describe('<ProvidersPanel />', () => {
       expect(
         screen.queryByText(en.adminProviders.providers.unverifiedReason.forbidden),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  // #1099 — per-turn model routing shipped in the backend (the orchestrator
+  // assignment carries `modelRouting`) but had no switch on this page; the only
+  // way to toggle it was the undocumented Store setup-field editor.
+  describe('per-turn model routing toggle (#1099)', () => {
+    const routingLabel = en.adminProviders.assignments.routingLabel;
+
+    it('renders the routing toggle for the orchestrator assignment', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [orchestratorAssignment({ modelRouting: 'true' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      expect(toggle.checked).toBe(true);
+    });
+
+    it('does not render the toggle for an assignment without modelRouting', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [
+            {
+              pluginId: '@omadia/verifier',
+              label: 'Verifier',
+              installed: true,
+              provider: 'anthropic',
+              model: 'claude-haiku-4-5',
+              modelKey: 'verifier_model',
+            },
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      await screen.findByText('Verifier');
+      expect(screen.queryByLabelText(routingLabel)).toBeNull();
+    });
+
+    it('disables the toggle when the assigned provider is not Anthropic', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider(),
+            provider({ id: 'openai', label: 'OpenAI', connected: true }),
+          ],
+          assignments: [orchestratorAssignment({ provider: 'openai' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      expect(toggle.disabled).toBe(true);
+    });
+
+    it('does not write when the disabled (off-Anthropic) toggle is clicked', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider(),
+            provider({ id: 'openai', label: 'OpenAI', connected: true }),
+          ],
+          assignments: [orchestratorAssignment({ provider: 'openai' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(await screen.findByLabelText(routingLabel));
+
+      expect(mockUpdateInstalledPluginConfig).not.toHaveBeenCalled();
+    });
+
+    it('writes the string boolean through updateInstalledPluginConfig on toggle', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [orchestratorAssignment({ modelRouting: 'false' })],
+        }),
+      );
+      mockUpdateInstalledPluginConfig.mockResolvedValue({ updated: null });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.click(await screen.findByLabelText(routingLabel));
+
+      await waitFor(() =>
+        expect(mockUpdateInstalledPluginConfig).toHaveBeenCalledWith(
+          '@omadia/orchestrator',
+          { orchestrator_model_routing: 'true' },
+        ),
+      );
     });
   });
 });
