@@ -48,7 +48,10 @@ function configKeysReadIn(files: readonly string[]): Set<string> {
   const keys = new Set<string>();
   for (const file of files) {
     const src = readFileSync(file, 'utf8');
-    for (const m of src.matchAll(re)) keys.add(m[1]);
+    for (const m of src.matchAll(re)) {
+      const key = m[1];
+      if (key) keys.add(key);
+    }
   }
   return keys;
 }
