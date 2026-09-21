@@ -2290,7 +2290,8 @@
           "communication": "Kommunikation"
         },
         "customLabel": "Eigene Verbote",
-        "customHint": "Eine Regel pro Zeile.",
+        "customHint": "Eine Regel pro Zeile, als vollständiger Satz formuliert — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "sycophancyLabel": "Schmeichel-Bremse",
         "sycophancyHint": "Wie deutlich der Agent widersprechen darf, statt dem Nutzer nach dem Mund zu reden.",
         "sycophancyLevels": {
@@ -3135,6 +3136,8 @@
         "selectedCount": "{count} ausgewählt",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
+        "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "save": "Boundaries speichern",
         "saving": "Boundaries speichern…",
         "saved": "Gespeichert",

@@ -73,12 +73,21 @@ describe('compileBoundaries (issue #54)', () => {
     assert.ok(piiIdx >= 0 && piiIdx < medIdx, 'preset order not preserved');
   });
 
-  it('renders custom lines with the "You must NOT:" prefix, trimming whitespace', () => {
+  it('splices custom lines verbatim, trimming whitespace (issue #1101)', () => {
     const { text } = compileBoundaries([], ['  promise refunds  ', '', 'leak internal data']);
-    assert.match(text, /You must NOT: promise refunds/);
-    assert.match(text, /You must NOT: leak internal data/);
-    // Empty / whitespace-only entries are skipped (do not produce a "You must NOT: " bare line)
-    assert.equal(text.split('You must NOT:').length - 1, 2);
+    // No hardcoded prefix — the line reaches the prompt as written.
+    assert.doesNotMatch(text, /You must NOT:/);
+    assert.deepEqual(text.split('\n'), ['promise refunds', 'leak internal data']);
+  });
+
+  it('does not double-negate a line already phrased as a prohibition (issue #1101)', () => {
+    // Regression: an operator writes the finished rule; the old prefix turned
+    // "Give no investment advice" into "You must NOT: Give no investment
+    // advice", literally permitting what was forbidden.
+    const { text } = compileBoundaries([], [
+      'Give no investment advice; refer to independent advisors.',
+    ]);
+    assert.equal(text, 'Give no investment advice; refer to independent advisors.');
   });
 
   it('reports unknown preset IDs via droppedIds instead of silently dropping', () => {

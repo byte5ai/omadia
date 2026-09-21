@@ -2290,7 +2290,8 @@
           "communication": "Communication"
         },
         "customLabel": "Own prohibitions",
-        "customHint": "One rule per line.",
+        "customHint": "One rule per line, written as a complete sentence — it reaches the agent exactly as typed.",
+        "customPlaceholder": "Give no investment advice; refer to independent advisors.",
         "sycophancyLabel": "Anti-flattery guard",
         "sycophancyHint": "How firmly the agent may disagree instead of telling the user what they want to hear.",
         "sycophancyLevels": {
@@ -3135,6 +3136,8 @@
         "selectedCount": "{count} selected",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
+        "customHint": "Write each as a complete sentence — it reaches the agent exactly as typed.",
+        "customPlaceholder": "Give no investment advice; refer to independent advisors.",
         "save": "Save boundaries",
         "saving": "Saving boundaries…",
         "saved": "Saved",

@@ -15,8 +15,9 @@ import type { QualityConfig } from '../../../../_lib/builderTypes';
 
 /**
  * Boundaries pillar — checkbox grid over the 12 kemia preset library
- * grouped by category, plus a textarea for custom "You must NOT: …"
- * lines. Persists the full `spec.quality` block via the same JSON-Patch
+ * grouped by category, plus a textarea for custom boundary lines that are
+ * spliced into the prompt verbatim (issue #1101). Persists the full
+ * `spec.quality` block via the same JSON-Patch
  * route as `setPersonaConfig` (issue #54).
  *
  * Unknown preset IDs (legacy values, future presets not yet ported)
@@ -168,8 +169,12 @@ export function BoundariesSection({
           onChange={(e) => setCustomLines(e.target.value)}
           rows={3}
           disabled={disabled || pending}
+          placeholder={t('customPlaceholder')}
           className="w-full rounded border border-[color:var(--border)] bg-transparent p-2 text-sm"
         />
+        <p className="text-[11px] text-[color:var(--fg-muted)]">
+          {t('customHint')}
+        </p>
       </div>
 
       {error && (

@@ -84,7 +84,8 @@ describe('loadPreviewSystemPrompt — live compose (issue #51/#54/#55 follow-up)
     assert.match(out, /## Boundaries/);
     assert.match(out, /personally identifiable information/);
     assert.match(out, /medical diagnoses/);
-    assert.match(out, /You must NOT: no Spekulationen/);
+    assert.match(out, /\nno Spekulationen/);
+    assert.doesNotMatch(out, /You must NOT: no Spekulationen/);
   });
 
   it('emits the sycophancy guard when quality.sycophancy is set', async () => {
