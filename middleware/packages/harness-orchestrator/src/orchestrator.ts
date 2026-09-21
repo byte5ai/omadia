@@ -316,9 +316,9 @@ export interface AiDisclosureSetup {
   readonly level: AiDisclosureLevel;
   /**
    * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
-   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
-   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
-   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * `slack` | `email` | `web` | `api`). A turn whose channel does not resolve to
+   * a `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram`/`api` are ever
    * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
    * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
    * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
@@ -5475,7 +5475,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5577,7 +5581,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(

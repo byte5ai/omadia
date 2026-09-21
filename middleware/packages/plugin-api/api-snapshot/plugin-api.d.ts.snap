@@ -743,7 +743,7 @@ entityIds: string[];
 inserted: number;
 updated: number;
 }
-export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web';
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web' | 'api';
 export interface ChannelIdentityIngest {
 channelKind: ChannelKind;
 channelUserId: string;
