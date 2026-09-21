@@ -127,6 +127,8 @@ src/
     signierte Proxy-URL zurück, Teams-Adapter + Web-Dev-UI hängen Bild
     automatisch an die Card an. Vega-Lite = Chart-Engine für quantitative
     Daten: Balken/Line/Pie/Scatter aus einem JSON-Spec.)
+  - `get_chat_participants` (unser eigenes Tool, **nur auf Turns mit
+    Roster-Provider** — seit #1108, siehe Unterabschnitt unten)
   - Eine DomainTool-Instanz pro Sub-Agent (`query_odoo_accounting`,
     `query_odoo_hr`, `query_confluence_playbook`)
 - **Methoden:** `chat()` blockierend, `chatStream()` als Async-Generator
@@ -135,6 +137,32 @@ src/
 - **System-Prompt:** Spricht Deutsch, liest zu Turn-Start `/memories/_rules`,
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
+
+### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
+
+- **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
+- **Rolle:** Liefert dem Modell die Teilnehmer des aktuellen Chats für
+  `<at>…</at>`-Mentions. Der Roster-Provider wird **pro Turn** vom Channel
+  verdrahtet (nur Teams / Telegram-Gruppen mit Admin-Rechten führen einen).
+- **Gating (der Kern von #1108):** Die Tool-Instanz wird einmalig gebaut und
+  ist kanal-unabhängig — daher wird das Tool **nicht** an der Instanz, sondern
+  am Live-Provider gegatet. `Orchestrator.turnHasChatRoster()` prüft
+  `turnContext.current()?.chatParticipants` und wird an **beiden** Advertise-
+  Stellen konsultiert: `buildToolsList()` (Tool-Specs) und der
+  `buildSystemPrompt`-Aufruf (`hasChatParticipants`-Roster). Ein Kanal ohne
+  Roster zeigt das Tool nirgends. Vorher wurde es auf jedem Kanal angeboten und
+  gab bei Fehltreffern einen englischen `Error:`-String zurück, den der Privacy
+  Shield (#1097) internierte und das Modell als Roster rendern ließ.
+- **Miss-Kontrakt:** Jeder "kein Roster"-Zweig des Handlers liefert ein
+  strukturiertes, deutsches Nicht-Fehler-Ergebnis der Form
+  `{ participants: [], reason, note }` — nie einen `Error:`-String. Die drei
+  `reason`-Codes sind exportierte Konstanten: `no_roster_on_this_channel`
+  (kein Provider), `roster_empty` (Provider vorhanden, leer — der
+  Telegram-Admin-Only-Fall) und `roster_fetch_failed` (Provider warf; der rohe
+  Fehler wird geloggt, aber **nicht** ins kanal-sichtbare Ergebnis gehängt).
+- **Verwandt:** das generische Readiness-Gate (#474, Unterabschnitt unten)
+  gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
+  kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
@@ -1005,6 +1033,19 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
+- **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
+  Zod-Schema ist `.strict()` — unbekannte Felder (`stream`, `userId`, `locale`,
+  ein `conversationID`-Casing-Typo) werden **nicht** stillschweigend gestrippt,
+  sondern mit `400 invalid_request` abgelehnt; die Response trägt ein
+  Top-Level-`message`, das die abgelehnten Feldnamen nennt. Nur `message` +
+  `conversationId` sind akzeptiert. Das hält den Weg offen, später ein echtes
+  `stream`/`locale`-Feld zu ergänzen, ohne bereits-ignorierte Caller zu brechen.
+  Zusätzlich: ein Request ohne `Content-Type: application/json` wird vom
+  globalen `express.json` nie geparst (`req.body` bliebe `undefined`); der Router
+  fängt das **vor** dem Schema-Parse mit `415 unsupported_media_type` ab und
+  nennt den erforderlichen Content-Type — statt der irreführenden
+  "expected object, received undefined"-Meldung. Beide Ausgänge auditieren als
+  `invalid_request`.
 
 Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
 Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
@@ -1350,6 +1391,25 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 `/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+#### API-Turn-Attribution + Korrelations-Id (#1107)
+
+Turns über `POST /api/public/v1/chat` trugen `channel = NULL` und der Caller
+bekam keine Id, die auf seine Receipt-Zeile zeigt. Zwei Nähte gefixt:
+- **`channel`-Label:** Der Public-API-Channel authentifiziert den Caller ALS
+  seinen Key (`userRef = { kind:'custom', id:'key:<uuid>' }`, #438). Da Canvas
+  denselben `custom`-Kind nutzt, diskriminiert `orchestratorDispatcher.toChannelKind`
+  jetzt am `key:`-Präfix und liefert die neue `ChannelKind` `'api'`
+  (`@omadia/plugin-api`, 1.14.0). `'api'` ist damit auch gültiges Ziel für
+  `ai_disclosure_level_overrides` und erscheint unter `/health`
+  `disclosure.channels` (in `AI_DISCLOSURE_CHANNEL_KINDS` **und**
+  `DISPATCHED_CHANNEL_KINDS`, sonst parst der Override, greift aber nie).
+- **Korrelations-Id:** Das `done`-Event trägt jetzt `receiptId` == der
+  Receipt-Store-Key (`turn_receipts.turn_id`, das per-Turn-`randomUUID`) — NICHT
+  die KG-Turn-Node-Id (`turnId`, `turn:<scope>:<time>`). Nur gesetzt, wenn ein
+  Receipt geschrieben wurde (Privacy-Shield-Aktivität). Löst über das
+  bestehende **`GET /api/v1/operator/receipts/:turnId`** auf. Dokumentiert im
+  Public-API-README ("Correlating a turn with its privacy receipt").
 
 ### Receipt-Hash-Kette + signierte Checkpoints (#758)
 
@@ -2058,6 +2118,15 @@ AGENTS.md's Doku-Regel ordnet "Neue Route / Tool / Sub-Agent" §3 **und**
 eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
 in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
 ("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
+
+### Cross-Referenz: `get_chat_participants` (#1108) ist kein Skill
+
+Ebenfalls ein natives Orchestrator-Tool ohne eigenen
+`skills/<name>/SKILL.md`-Ordner. Volle Doku in §3
+("`get_chat_participants` — per-Turn-Roster-Gating"): das Tool wird nur auf
+Turns angeboten, die einen Roster-Provider führen, und liefert bei
+Fehltreffern ein strukturiertes deutsches Ergebnis statt eines
+`Error:`-Strings.
 
 ---
 

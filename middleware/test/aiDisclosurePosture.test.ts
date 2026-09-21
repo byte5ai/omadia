@@ -44,7 +44,7 @@ describe('#648 — resolved AI-marking posture', () => {
     assert.equal(posture.defaultLevel, 'standard');
     assert.deepEqual(
       posture.channels.map((c) => c.level),
-      ['standard', 'standard', 'standard', 'standard', 'standard'],
+      ['standard', 'standard', 'standard', 'standard', 'standard', 'standard'],
     );
     assert.equal(formatDisclosureBootWarning(posture), undefined);
 
@@ -120,6 +120,34 @@ describe('#648 — resolved AI-marking posture', () => {
       overrides: { teams: 'off' },
     });
     assert.deepEqual(buildDisclosureHealth(dispatched).inertOverrides, []);
+  });
+
+  it('#1107 — api is a first-class channel: its override is effective, not inert', () => {
+    const posture = describeAiDisclosurePosture({
+      level: 'standard',
+      overrides: { api: 'concise' },
+    });
+
+    const api = posture.channels.find((c) => c.channel === 'api');
+    assert.equal(api?.level, 'concise');
+    assert.equal(api?.overridden, true);
+    assert.equal(api?.deviates, true);
+    // The whole point of #1107: API turns DO carry a channelKind now, so the
+    // override actually fires — it must not be reported as inert.
+    assert.equal(api?.effective, true);
+
+    const health = buildDisclosureHealth(posture);
+    assert.equal(health.channels['api'], 'concise');
+    assert.deepEqual(health.inertOverrides, []);
+
+    // The single-derivation resolver agrees.
+    assert.equal(
+      resolveDisclosureLevelForChannel(
+        { level: 'standard', overrides: { api: 'concise' } },
+        'api',
+      ),
+      'concise',
+    );
   });
 
   it('never exposes the assistant name or the operator note', () => {

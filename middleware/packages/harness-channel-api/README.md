@@ -158,6 +158,19 @@ event means the turn failed, not the credential.
 | `message` | string | yes | Non-empty. |
 | `conversationId` | string | no | 1–200 chars. Omit it to start a fresh conversation on every call. When set, reusing the same value on later calls continues the same conversation *for that key* — conversation scope is always namespaced per API key, so two different keys can never collide on the same `conversationId`. |
 
+`message` and `conversationId` are the **only** accepted fields. The body is
+validated strictly: any other key (for example `stream`, `userId`, `locale`,
+or a `conversationID` casing typo) is **rejected** with `400 invalid_request`
+naming the offending field — it is never silently ignored. This keeps the
+contract honest and leaves room to add real fields such as `stream` or
+`locale` later without changing the behaviour for callers already sending
+them.
+
+The request must be sent with `Content-Type: application/json`. A body sent
+without that header (or with any other content type) is **not** parsed and
+returns `415 Unsupported Media Type` naming `application/json`, rather than a
+misleading body-shape error.
+
 A body that fails validation returns `400 Bad Request` with an `issues`
 array (Zod's validation error shape). This still counts as an authenticated
 call — the key must be valid to reach validation at all.
@@ -179,7 +192,7 @@ relevant to a plain chat integration:
 | `type` | Meaning |
 |---|---|
 | `text_delta` | Incremental chunk of the assistant's answer text. Concatenate these to reconstruct the streamed answer as it's produced. |
-| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. |
+| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
 
@@ -200,6 +213,35 @@ will ever appear on the stream afterward.
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
 gone.
+
+## Correlating a turn with its privacy receipt
+
+When the omadia instance runs on the Postgres backend and the privacy shield
+recorded activity during a turn, the turn's `done` event carries a `receiptId`:
+
+```
+{"type":"done","answer":"…","toolCalls":1,"iterations":2,"receiptId":"3f2a…-uuid"}
+```
+
+`receiptId` is the key of the persisted privacy-receipt row
+(`turn_receipts.turn_id`). An operator can resolve it directly:
+
+```bash
+curl -H "cookie: omadia_session=<operator-token>" \
+  https://<your-omadia-host>/api/v1/operator/receipts/<receiptId>
+```
+
+Notes:
+
+- `receiptId` is **only** present when a receipt was actually written. A row
+  is written solely when the privacy shield masked or otherwise processed
+  something this turn, so a tool-free turn produces no receipt and no
+  `receiptId`. Treat its absence as "nothing to correlate", not an error.
+- It is **distinct** from any `turnId` on the event (the knowledge-graph turn
+  node id, `turn:<scope>:<time>`). Only `receiptId` resolves through the
+  operator receipts route.
+- Receipts written for this channel carry `channel = "api"`, so operators can
+  tell external-integration traffic apart from every other channel.
 
 ## Rate limiting
 
@@ -228,7 +270,8 @@ replica count`. This is a known, accepted v1 trade-off (see
 |---|---|---|
 | `401` | `unauthorized` | Missing/malformed `Authorization` header, or an unknown/revoked key. |
 | `403` | `forbidden` | Valid key, but it is not scoped for this route. |
-| `400` | `invalid_request` | Body fails schema validation (e.g. empty `message`). |
+| `400` | `invalid_request` | Body fails schema validation (e.g. empty `message`, or an unknown field). |
+| `415` | `unsupported_media_type` | Body sent without `Content-Type: application/json`. |
 | `429` | `rate_limited` | Key is over its per-minute budget. |
 | `200` + `error` NDJSON event | `error` | Key and request were valid, but the turn itself failed mid-stream. |
 
