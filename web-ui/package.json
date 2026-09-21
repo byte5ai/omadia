@@ -42,7 +42,7 @@
     "lucide-react": "^1.42.0",
     "monaco-editor": "^0.56.0",
     "next": "^16.3.4",
-    "next-intl": "^4.14.2",
+    "next-intl": "^4.14.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-force-graph-2d": "^1.29.1",
