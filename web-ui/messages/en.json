@@ -3761,7 +3761,8 @@
     "explainer": {
       "heading": "Subscription vs API key",
       "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
-      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page."
+      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page.",
+      "featureNote": "One gap versus an API key: on the subscription path the assistant has no long-term memory yet, so it will not remember facts across chats. Knowledge-graph lookups, choice cards, follow-up buttons and calendar all work as usual."
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",

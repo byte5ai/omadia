@@ -140,6 +140,7 @@ import type {
   KnowledgeGraph,
   MemorableKind,
   NudgeRegistry,
+  NativeToolSpec,
   NudgeStateStore,
   PalaiaExcerpt,
   PalaiaExcerptExtractor,
@@ -185,6 +186,9 @@ import {
   type StickyScopeClassification,
 } from './directLineSticky.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+// #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
+// shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
+import type { CliTurnCards } from './cliChatAgent.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
@@ -283,7 +287,7 @@ import { RoleSourceRegistry as RoleSourceRegistryImpl } from '@omadia/channel-sd
  * will append to the same registry in later phases — the dispatch paths
  * (isNative checks) use `this.nativeTools.has(name)`, not this list.
  */
-const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
+export const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   'memory',
   'query_knowledge_graph',
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -292,6 +296,102 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   FIND_FREE_SLOTS_TOOL_NAME,
   BOOK_MEETING_TOOL_NAME,
 ];
+
+/** A kernel-native tool instance the loopback handler delegates to. */
+interface KernelNativeHandleable {
+  handle(input: unknown): Promise<string>;
+}
+
+/**
+ * Issue #1102 — the per-turn tool instances a full-form kernel-native
+ * registration delegates to. A field is `undefined` when this Agent was built
+ * without that capability; the tool is then registered marker-only, exactly as
+ * before. Keys are required (not `?`) so a new kernel native cannot be added to
+ * the wiring table and silently forgotten at the call site.
+ */
+export interface KernelNativeInstances {
+  knowledgeGraphTool: KernelNativeHandleable | undefined;
+  askUserChoiceTool: KernelNativeHandleable | undefined;
+  suggestFollowUpsTool: KernelNativeHandleable | undefined;
+  findFreeSlotsTool: KernelNativeHandleable | undefined;
+  bookMeetingTool: KernelNativeHandleable | undefined;
+}
+
+/**
+ * The kernel natives that get a real spec + handler on the loopback/CLI path.
+ *
+ * `memory` and `get_chat_participants` are deliberately absent:
+ *  - `memory` resolves a per-turn `MemoryBinder` handler in the in-process loop
+ *    (the axis that keeps team A's notes out of team B, see `dispatchToolInner`);
+ *    that binding is not resolved on the loopback path, so advertising the
+ *    build-time handler would risk crossing the tenant boundary. Wiring it
+ *    safely is a follow-up; until then Stage 1's honesty sentence tells the CLI
+ *    model it has no memory here (#1102).
+ *  - `get_chat_participants` stays channel-bound, as the issue specifies.
+ */
+const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
+  readonly name: string;
+  readonly spec: NativeToolSpec;
+  readonly pick: (i: KernelNativeInstances) => KernelNativeHandleable | undefined;
+}> = [
+  {
+    name: KNOWLEDGE_GRAPH_TOOL_NAME,
+    spec: knowledgeGraphToolSpec,
+    pick: (i) => i.knowledgeGraphTool,
+  },
+  {
+    name: ASK_USER_CHOICE_TOOL_NAME,
+    spec: askUserChoiceToolSpec,
+    pick: (i) => i.askUserChoiceTool,
+  },
+  {
+    name: SUGGEST_FOLLOW_UPS_TOOL_NAME,
+    spec: suggestFollowUpsToolSpec,
+    pick: (i) => i.suggestFollowUpsTool,
+  },
+  {
+    name: FIND_FREE_SLOTS_TOOL_NAME,
+    spec: findFreeSlotsToolSpec,
+    pick: (i) => i.findFreeSlotsTool,
+  },
+  {
+    name: BOOK_MEETING_TOOL_NAME,
+    spec: bookMeetingToolSpec,
+    pick: (i) => i.bookMeetingTool,
+  },
+];
+
+/**
+ * Register the kernel-native tools into `registry`, giving each of the wired
+ * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
+ * MCP server actually advertises AND dispatches it on the subscription-CLI
+ * path (#1102). The rest stay marker-only — dispatchable by the in-process
+ * loop's own branches, invisible to the CLI, exactly as before.
+ *
+ * A name already present in `registry` (a plugin got there first) is left
+ * untouched, matching the previous loop's `has()` guard.
+ */
+export function registerKernelNativeTools(
+  registry: NativeToolRegistry,
+  instances: KernelNativeInstances,
+): void {
+  const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
+  for (const name of KERNEL_NATIVE_TOOL_NAMES) {
+    if (registry.has(name)) {
+      continue;
+    }
+    const full = fullByName.get(name);
+    const instance = full?.pick(instances);
+    if (full && instance) {
+      registry.register(name, {
+        spec: full.spec,
+        handler: (input: unknown) => instance.handle(input),
+      });
+    } else {
+      registry.register(name);
+    }
+  }
+}
 
 // `DiagramAttachment` was moved to `@omadia/channel-sdk` in S+10-2; see
 // the import block at the top. Re-exported below from this module's barrel
@@ -2155,11 +2255,16 @@ export class Orchestrator {
     this.turnHookRegistry = options.turnHookRegistry;
 
     this.nativeTools = options.nativeToolRegistry;
-    for (const name of KERNEL_NATIVE_TOOL_NAMES) {
-      if (!this.nativeTools.has(name)) {
-        this.nativeTools.register(name);
-      }
-    }
+    // #1102 — the wired five get a spec + handler so the loopback MCP server
+    // advertises and dispatches them on the subscription-CLI path; memory and
+    // get_chat_participants stay marker-only (see registerKernelNativeTools).
+    registerKernelNativeTools(this.nativeTools, {
+      knowledgeGraphTool: this.knowledgeGraphTool,
+      askUserChoiceTool: this.askUserChoiceTool,
+      suggestFollowUpsTool: this.suggestFollowUpsTool,
+      findFreeSlotsTool: this.findFreeSlotsTool,
+      bookMeetingTool: this.bookMeetingTool,
+    });
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -2885,6 +2990,36 @@ export class Orchestrator {
     const a = this.findFreeSlotsTool?.takeConsentRequired() ?? false;
     const b = this.bookMeetingTool?.takeConsentRequired() ?? false;
     return a || b;
+  }
+
+  /**
+   * Issue #1102 — drain the interactive-card state a subscription-CLI turn left
+   * on the kernel-native tool instances, so the CliChatAgent can attach it to
+   * its `done` event and the card / chips / slot-picker actually render.
+   *
+   * On the in-process path the same four drains run inline at every turn-loop
+   * exit (see the `done` assembly). The CLI owns its own loop, so it calls this
+   * ONCE after its subprocess terminates. Draining also clears the instances,
+   * so the next CLI turn starts clean — same contract as the in-process drains.
+   *
+   * Privacy restore (`restorePendingChoiceForUser` / `restoreFollowUpsForUser`)
+   * is intentionally NOT applied: the CLI path does not run the orchestrator's
+   * per-turn privacy shield in-band, so there is no turn handle to un-mask
+   * surrogates against. The values are whatever the tool handlers stored, which
+   * is the same input the CLI model itself produced. Surfacing masked values is
+   * a follow-up that belongs with the CLI path's privacy-shield integration.
+   */
+  public drainCliTurnCards(): CliTurnCards {
+    const pendingUserChoice = this.drainPendingChoice();
+    const followUpOptions = this.drainFollowUps();
+    const pendingSlotCard = this.drainPendingSlotCard();
+    const pendingOAuthConsent = this.drainConsentRequired();
+    return {
+      ...(pendingUserChoice ? { pendingUserChoice } : {}),
+      ...(followUpOptions ? { followUpOptions } : {}),
+      ...(pendingSlotCard ? { pendingSlotCard } : {}),
+      ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+    };
   }
 
   /**
