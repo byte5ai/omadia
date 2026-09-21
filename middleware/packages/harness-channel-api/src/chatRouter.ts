@@ -191,16 +191,12 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         // something to inherit by accident.
         const turn: IncomingTurn = {
           channelId: deps.channelId,
-          // #1106 — routing selector. Stable per API key and NEVER
-          // caller-controlled, so an operator can bind an agent to
-          // `(channel_type:"@omadia/channel-api", channel_key:"key:<uuid>")`
-          // and every turn made with that key resolves to it. This is a
-          // SEPARATE concern from `conversationId` below: that value stays the
-          // per-conversation `internalConversationId` hash (the memory scope),
-          // which is deliberately different for every thread and must not be
-          // reused as the binding selector. Format matches `userRef.id` so the
-          // key reads identically in logs, bindings, and the key directory
-          // (single-sourced via `channelKeyOf`, same value as `userRef.id`).
+          // #1106 — routing selector: stable per API key, never
+          // caller-controlled, so an operator can bind an agent to this key.
+          // Deliberately SEPARATE from `conversationId` below, which stays the
+          // per-conversation `internalConversationId` hash (the memory scope)
+          // and must not be reused as the binding selector. Key format lives in
+          // `channelKeyOf` (same value as `userRef.id`).
           channelKey: channelKeyOf(key.keyId),
           // Namespaced by key identity: CoreApi derives its scope as
           // `${channelId}::${conversationId}` (same channelId for every key

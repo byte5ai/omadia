@@ -11,6 +11,7 @@ import {
   createApiChatRouter,
   internalConversationId,
 } from '../../packages/harness-channel-api/src/chatRouter.js';
+import { channelKeyOf } from '../../packages/harness-channel-api/src/channelKey.js';
 import { createInProcessClient, type InProcessClient } from '../support/inProcessHttp.js';
 // Imported from source (not the `@omadia/channel-sdk` dist barrel): these were
 // added in #647, after the last dist build — same rationale as `graphScopeFor`
@@ -129,7 +130,7 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
     // #1106 — routing selector: stable per key, `key:<uuid>`, and DISTINCT
     // from the per-conversation `conversationId` hash above so an operator can
     // bind an agent to this key and every turn with it resolves to that agent.
-    assert.equal(capturedTurns[0]?.channelKey, `key:${created.record.id}`);
+    assert.equal(capturedTurns[0]?.channelKey, channelKeyOf(created.record.id));
     assert.notEqual(
       capturedTurns[0]?.channelKey,
       capturedTurns[0]?.conversationId,
@@ -285,7 +286,7 @@ describe('channelApi/chatRouter — stable per-key routing selector (#1106)', ()
     assert.equal(capturedTurns.length, 2);
     // Same binding selector for both turns → an operator's single binding
     // covers the whole key, not one conversation.
-    assert.equal(capturedTurns[0]?.channelKey, `key:${key.record.id}`);
+    assert.equal(capturedTurns[0]?.channelKey, channelKeyOf(key.record.id));
     assert.equal(capturedTurns[1]?.channelKey, capturedTurns[0]?.channelKey);
     // ...but separate memory scopes: the conversationId hash still differs.
     assert.notEqual(

@@ -8,6 +8,7 @@ import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKe
 import { createAuditLog } from '../../packages/harness-api-key-auth/src/auditLog.js';
 import { createRateLimiter } from '../../packages/harness-api-key-auth/src/rateLimiter.js';
 import { createApiChatRouter } from '../../packages/harness-channel-api/src/chatRouter.js';
+import { channelKeyOf } from '../../packages/harness-channel-api/src/channelKey.js';
 import { createCoreApi } from '../../src/channels/coreApi.js';
 import { createOrchestratorDispatcher } from '../../src/channels/orchestratorDispatcher.js';
 import { deriveChannelType } from '../../src/channels/channelType.js';
@@ -111,9 +112,9 @@ describe('channelApi — end-to-end binding routing (#1106)', () => {
     // The exact pair an operator binds — real deriveChannelType(channelId) plus
     // the stable per-key selector. Guards both the routing claim AND the
     // directory/routing channelType equality.
-    assert.deepEqual(seen, [[deriveChannelType(CHANNEL_ID), `key:${key.record.id}`]]);
+    assert.deepEqual(seen, [[deriveChannelType(CHANNEL_ID), channelKeyOf(key.record.id)]]);
     assert.equal(seen[0]?.[0], '@omadia/channel-api');
-    assert.equal(seen[0]?.[1], `key:${key.record.id}`);
+    assert.equal(seen[0]?.[1], channelKeyOf(key.record.id));
   });
 
   it('falls back to the platform agent when the key has no binding', async () => {

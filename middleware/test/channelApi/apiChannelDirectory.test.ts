@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import { createApiKeyStore } from '../../packages/harness-api-key-auth/src/apiKeyStore.js';
 import { createApiChannelDirectory } from '../../packages/harness-channel-api/src/apiChannelDirectory.js';
+import { channelKeyOf } from '../../packages/harness-channel-api/src/channelKey.js';
 import { createFakeSecrets } from './testSecrets.js';
 
 /**
@@ -43,10 +44,10 @@ describe('channelApi/apiChannelDirectory', () => {
     // The key IS the value the router now sets as `IncomingTurn.channelKey`,
     // so binding this row routes real turns (see chatRouter.ts #1106).
     const byKey = new Map(entries.map((e) => [e.key, e]));
-    assert.ok(byKey.has(`key:${alpha.record.id}`), 'alpha listed by key:<uuid>');
-    assert.ok(byKey.has(`key:${beta.record.id}`), 'beta listed by key:<uuid>');
-    assert.equal(byKey.get(`key:${alpha.record.id}`)?.label, 'alpha');
-    assert.equal(byKey.get(`key:${beta.record.id}`)?.label, 'beta');
+    assert.ok(byKey.has(channelKeyOf(alpha.record.id)), 'alpha listed by key:<uuid>');
+    assert.ok(byKey.has(channelKeyOf(beta.record.id)), 'beta listed by key:<uuid>');
+    assert.equal(byKey.get(channelKeyOf(alpha.record.id))?.label, 'alpha');
+    assert.equal(byKey.get(channelKeyOf(beta.record.id))?.label, 'beta');
   });
 
   it('omits revoked keys — a revoked key is no longer bindable', async () => {
@@ -63,7 +64,7 @@ describe('channelApi/apiChannelDirectory', () => {
     const entries = await directory.listKeys();
 
     assert.equal(entries.length, 1);
-    assert.equal(entries[0]?.key, `key:${live.record.id}`);
+    assert.equal(entries[0]?.key, channelKeyOf(live.record.id));
   });
 
   it('falls back to a self-describing label when a key has none', async () => {
