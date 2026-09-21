@@ -2456,6 +2456,27 @@ sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
 
+**Contract-Erweiterung — `answerSource` (#1105).** Wenn Privacy Shield v4 die
+Antwort serverseitig rendert (`v4_render_answer`), tauscht der Orchestrator den
+gerenderten Text kurz vor dem `done`-Event in `answer` — die zuvor als
+`text_delta` gestreamten Modell-Tokens sind dann veraltet. Damit die beiden
+dokumentierten Lesarten (Deltas konkatenieren vs. `done.answer`) nicht
+widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
+`ChatTurnResult`/`SemanticAnswer`) ein optionales
+`answerSource: 'model' | 'privacy-render'`. Gestempelt `'privacy-render'` an
+**beiden** Swap-Stellen — Streaming (`chatStream`) und gepuffert
+(`chatInContext`) — wenn `takeRenderedAnswerV4` einen Wert lieferte, sonst
+weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
+der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
+sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
+`Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
+abgeleitet wird), wird an den beiden Dispatch-Nähten
+(`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`) nicht mehr als
+1-Zeilen-Dataset interniert, sondern unverändert an das Modell durchgereicht —
+sonst sah das Modell den Fehler nie und ein späteres Render materialisierte ihn
+als Daten. Die Maskierung geworfener Exceptions (`maskErrorText`) bleibt unberührt.
+
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
 nicht weitergeleitet — stattdessen emittiert das `tool_use`-Event einmal
