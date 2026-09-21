@@ -52,24 +52,24 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@formatjs/icu-messageformat-parser": "^3.5.17",
+    "@formatjs/icu-messageformat-parser": "^3.5.19",
     "@tailwindcss/postcss": "^4.3.3",
-    "@testing-library/dom": "^10.4.1",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "@types/cytoscape": "^3.31.0",
-    "@types/node": "^22.20.2",
+    "@types/node": "^22.20.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.3.4",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.0",
     "postcss": "8.5.28",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "overrides": {
     "@swc/helpers": "0.5.21",
