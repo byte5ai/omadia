@@ -1,19 +1,51 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { CoreApi } from '../../packages/harness-channel-sdk/src/index.js';
+import type { CoreApi, ChannelKeyDirectory } from '../../packages/harness-channel-sdk/src/index.js';
 import type { PluginContext, SecretsAccessor } from '../../packages/plugin-api/src/index.js';
 import { API_PREFIX, activate } from '../../packages/harness-channel-api/src/plugin.js';
 import { createFakeSecrets } from './testSecrets.js';
 
+/** Records the ChannelKeyDirectory register/unregister calls the plugin makes
+ *  against the kernel's `channelDirectoryRegistry` service (#1106). */
+interface FakeDirectoryRegistry {
+  registered: ChannelKeyDirectory[];
+  unregistered: string[];
+  register(directory: ChannelKeyDirectory): void;
+  unregister(channelType: string): void;
+}
+
+function makeDirectoryRegistry(): FakeDirectoryRegistry {
+  const reg: FakeDirectoryRegistry = {
+    registered: [],
+    unregistered: [],
+    register(directory) {
+      reg.registered.push(directory);
+    },
+    unregister(channelType) {
+      reg.unregistered.push(channelType);
+    },
+  };
+  return reg;
+}
+
 /** Mirrors `test/uiChannelPlugin.test.ts`'s `makeMocks()` for the sibling
  *  `@omadia/ui-channel` package, adapted to `registerRouter` instead of a
- *  single `registerRoute`. */
-function makeMocks(secrets: SecretsAccessor) {
+ *  single `registerRoute`. When `directoryRegistry` is supplied, it is served
+ *  via `ctx.services.getOptional('channelDirectoryRegistry')`; when omitted,
+ *  `getOptional` returns undefined (a kernel that doesn't publish it). */
+function makeMocks(secrets: SecretsAccessor, directoryRegistry?: FakeDirectoryRegistry) {
   const ctx = {
     agentId: '@omadia/channel-api',
     log: () => {},
     secrets,
+    services: {
+      getOptional<T>(name: string): T | undefined {
+        return name === 'channelDirectoryRegistry'
+          ? (directoryRegistry as unknown as T | undefined)
+          : undefined;
+      },
+    },
   } as unknown as PluginContext;
   const captured: { channelId?: string; prefix?: string; router?: unknown } = {};
   const core = {
@@ -34,6 +66,36 @@ describe('@omadia/channel-api activate', () => {
     assert.equal(captured.prefix, API_PREFIX);
     assert.ok(captured.router, 'a router was registered');
     assert.ok(handle.close, 'returns a closeable handle');
+    await handle.close();
+  });
+
+  it('contributes a ChannelKeyDirectory for its channel type, and retracts it on close (#1106)', async () => {
+    const registry = makeDirectoryRegistry();
+    const { ctx, core } = makeMocks(createFakeSecrets(), registry);
+    const handle = await activate(ctx, core);
+
+    assert.equal(registry.registered.length, 1, 'one directory registered');
+    assert.equal(
+      registry.registered[0]?.channelType,
+      '@omadia/channel-api',
+      'directory channel_type matches what the dispatcher derives from the channelId',
+    );
+    assert.equal(registry.registered[0]?.originPluginId, '@omadia/channel-api');
+
+    await handle.close();
+    assert.deepEqual(
+      registry.unregistered,
+      ['@omadia/channel-api'],
+      'the directory is retracted on deactivate',
+    );
+  });
+
+  it('activates without a directory registry (kernel does not publish it) — routing still works', async () => {
+    // No registry supplied → getOptional returns undefined. activate() must
+    // not throw and must still mount the router.
+    const { ctx, core, captured } = makeMocks(createFakeSecrets());
+    const handle = await activate(ctx, core);
+    assert.ok(captured.router, 'router still mounted without the directory service');
     await handle.close();
   });
 

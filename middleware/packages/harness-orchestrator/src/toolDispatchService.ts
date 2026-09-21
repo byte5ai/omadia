@@ -406,6 +406,15 @@ export class ToolDispatchService {
       return result;
     }
 
+    // #1105 — a fulfilled prose error (`Error:` convention) reaches the model
+    // as an error, never interned: interning would both hide the failure
+    // behind a masked digest and register a renderable dataset a later
+    // `v4_render_answer` could materialize as if the error were data. Mirrors
+    // the same guard on `Orchestrator.dispatchTool`. Thrown exceptions take the
+    // separate `maskErrorText` path and are unaffected.
+    if (result.startsWith('Error:')) {
+      return result;
+    }
     try {
       const v4 = await privacy.internToolResultV4({
         toolName: name,

@@ -36,6 +36,60 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
+
+2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
+readings as equivalent: concatenate the `text_delta` chunks, or read
+`done.answer`. Whenever Privacy Shield v4 renders the final answer server-side
+(`v4_render_answer`), the orchestrator swaps that text into the terminal `done`
+event after the model's own tokens have already streamed as `text_delta` — so
+the two readings disagreed, with no signal that the earlier deltas were void. A
+streaming client showed a success (or a plain-prose answer) the server had
+already thrown away.
+
+The `done` event (and `ChatTurnResult` / `SemanticAnswer` for the buffered
+path) now carries an optional `answerSource: 'model' | 'privacy-render'`. It is
+stamped `'privacy-render'` at both swap sites — streaming (`chatStream`) and
+buffered (`chatInContext`) — whenever `takeRenderedAnswerV4` returned a value,
+and omitted (meaning `'model'`) otherwise. `done.answer` is authoritative; a
+client that reconstructs the answer from deltas must overwrite it with
+`done.answer` whenever `answerSource` is present and not `'model'`. The
+`@omadia/channel-api` README no longer presents the two readings as
+interchangeable and states which one wins. No new event type was added; the
+field is additive and a client that ignores it and always renders `done.answer`
+is already correct.
+
+Also fixed the second defect the issue surfaced: a guarded tool that RETURNED a
+prose `Error:` string (the orchestrator's tool-error convention) was interned
+by Privacy Shield v4 as a one-row masked dataset, so the model never saw the
+error text and a later render materialized it as if it were data. The two
+dispatch seams (`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`)
+now pass a fulfilled `Error:` result through verbatim instead of interning it,
+so the model sees the failure and it can never become a renderable dataset.
+Thrown-exception masking (`maskErrorText`) is unchanged.
+
+### Fixed — public chat API validates its request contract strictly (#1109)
+
+2026-09-18 — two defects in `POST /api/public/v1/chat`
+(`packages/harness-channel-api/src/chatRouter.ts`) made the public contract
+unreliable. The request schema was a plain `z.object({ message, conversationId })`
+with no `.strict()`, so Zod silently stripped any other field: a caller sending
+`stream: false`, `userId`, `locale`, or a `conversationID` casing typo got a 200
+with the field discarded and no signal it was unsupported. And a valid JSON body
+sent with no `Content-Type` was never parsed by the global `express.json`, so it
+reached `safeParse` as `undefined` and answered `400 invalid_request` with
+"expected object, received undefined" — an error about the payload for what was
+really a missing header.
+
+The schema is now `.strict()`: unknown fields are rejected with `400
+invalid_request` and a top-level `message` naming the offending field(s), rather
+than stripped — which also keeps the door open to add a real `stream`/`locale`
+field later without breaking callers already sending it. And a request whose
+`Content-Type` is not `application/json` is rejected up front with `415
+unsupported_media_type` naming the required content type, before schema parsing.
+Both outcomes audit as `invalid_request`. Regression tests and the plugin README
+cover the new contract.
+
 ### Fixed — routine card buttons keep working, and say when they run unscoped (#1029)
 
 2026-09-04 — follow-up to #1025, which scoped the routine smart-card handler
