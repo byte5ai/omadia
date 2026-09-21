@@ -284,10 +284,10 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
 /** AI-Act Art. 50 (#644) — the tokens the per-channel override map may key on:
  *  the full `ChannelKind` set from `@omadia/plugin-api`. An override for any
  *  other token is dropped with a warning so a typo never silently disables the
- *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
- *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
- *  `web` are accepted here but currently resolve to the global level, same as
- *  the kind-less channels — see the `ai_disclosure_level_overrides` help text.
+ *  marking. NOTE: today only `teams`/`slack`/`telegram`/`api` are ever produced
+ *  as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email`
+ *  and `web` are accepted here but currently resolve to the global level, same
+ *  as the kind-less channels — see the `ai_disclosure_level_overrides` help text.
  *
  *  #648 — derived from the shared list rather than spelled again here. The
  *  posture view reports one row per accepted kind, so a second literal would

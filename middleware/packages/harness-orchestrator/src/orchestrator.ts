@@ -316,9 +316,9 @@ export interface AiDisclosureSetup {
   readonly level: AiDisclosureLevel;
   /**
    * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
-   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
-   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
-   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * `slack` | `email` | `web` | `api`). A turn whose channel does not resolve to
+   * a `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram`/`api` are ever
    * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
    * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
    * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
@@ -5479,7 +5479,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5584,7 +5588,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -7367,7 +7375,9 @@ export class Orchestrator {
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
-      this.chatParticipantsTool !== undefined,
+      // #1108 — same per-turn gate as buildToolsList(): only describe the
+      // roster tool on a turn that actually carries a provider.
+      this.turnHasChatRoster(),
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
@@ -7961,6 +7971,23 @@ export class Orchestrator {
     return this.isPluginToolsReady(agentId);
   }
 
+  /**
+   * #1108 — `get_chat_participants` may only be advertised on a turn that
+   * actually carries a roster provider. The tool instance is built once and is
+   * channel-independent, so gating on `this.chatParticipantsTool` alone offers
+   * the tool on every non-Teams channel, where the handler can only return a
+   * miss the model never sees (the Privacy Shield interns it). Both the tool
+   * list and the system-prompt roster gate on this, so a channel without a
+   * roster shows the tool nowhere. Must be called inside the turn scope, where
+   * `turnContext.current()` resolves the per-turn provider.
+   */
+  private turnHasChatRoster(): boolean {
+    return (
+      this.chatParticipantsTool !== undefined &&
+      turnContext.current()?.chatParticipants !== undefined
+    );
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7977,7 +8004,9 @@ export class Orchestrator {
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
-    if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
+    // #1108 — gate on the per-turn roster provider, not the constructed
+    // instance, so non-Teams channels never advertise a tool that can't work.
+    if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
     if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);

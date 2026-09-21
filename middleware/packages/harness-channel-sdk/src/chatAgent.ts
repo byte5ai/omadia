@@ -852,6 +852,16 @@ export type ChatStreamEvent =
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
       /**
+       * #1107 — the privacy-receipt store key (`turn_receipts.turn_id`, a UUID)
+       * for this turn. Distinct from `turnId` above (the KG turn-node external
+       * id): this is the id `GET /api/v1/operator/receipts/:id` resolves, so a
+       * caller can hand it to their operator (or use it themselves) to locate
+       * the matching receipt row. Present ONLY when a receipt was actually
+       * written for the turn — a row exists solely when the privacy shield
+       * recorded activity, so a tool-free turn carries no receipt and no id.
+       */
+      receiptId?: string;
+      /**
        * The model this turn actually ran on, resolved once at turn start by
        * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's
        * default model when model-routing is off. Lets the UI show which model

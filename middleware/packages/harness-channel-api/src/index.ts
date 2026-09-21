@@ -15,3 +15,8 @@ export {
 } from './chatRouter.js';
 
 export { createAdminKeysRouter } from './adminKeysRouter.js';
+
+export {
+  createApiChannelDirectory,
+  type ApiChannelDirectoryDeps,
+} from './apiChannelDirectory.js';
