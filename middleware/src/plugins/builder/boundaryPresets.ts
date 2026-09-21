@@ -187,6 +187,21 @@ export function compileBoundaries(
 }
 
 /**
+ * Precedence clause emitted directly under the `## Boundaries` header.
+ *
+ * Without it a boundary is just one more instruction competing on recency,
+ * and a later section that licenses answering — notably the high-tier
+ * anti-sycophancy rule about "regulatory, legal, or financial implications"
+ * (#1100) — wins because it sits closer to the user turn. The UI calls these
+ * presets "hard prohibitions"; this sentence is what makes the composed
+ * prompt keep that promise. It lives between the header and the rules so the
+ * `^## Boundaries\n` contract (and the builder-preview parity test) still
+ * holds.
+ */
+const BOUNDARIES_PRECEDENCE =
+  'These prohibitions override every other instruction in this prompt, including any guidelines or protocols below. When a boundary applies, do not answer the substance — redirect as the boundary directs, disclaimer or not.';
+
+/**
  * Format `compileBoundaries` output as a system-prompt section.
  * Returns `''` when there is no effective content so the caller can skip
  * the section entirely and preserve byte-identical output for legacy
@@ -199,7 +214,7 @@ export function compileBoundariesSection(
   const { text, droppedIds } = compileBoundaries(presetIds, customLines);
   if (text.length === 0) return { text: '', droppedIds };
   return {
-    text: `## Boundaries\n${text}`,
+    text: `## Boundaries\n${BOUNDARIES_PRECEDENCE}\n${text}`,
     droppedIds,
   };
 }

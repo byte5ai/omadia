@@ -112,6 +112,29 @@ describe('compileBoundariesSection (issue #54)', () => {
     assert.match(text, /personally identifiable information/);
   });
 
+  it('states that boundaries override the rest of the prompt (#1100)', () => {
+    // A boundary the UI calls a "hard prohibition" must say so in the prompt:
+    // without a precedence clause a later section (e.g. the sycophancy guard)
+    // that licenses answering wins on recency. The clause sits between the
+    // header and the rules, so `^## Boundaries\n` still holds.
+    const { text } = compileBoundariesSection(['no-legal-advice'], []);
+    assert.match(text, /^## Boundaries\n/);
+    assert.match(text, /override every other instruction/);
+    assert.match(text, /do not answer the substance/);
+    // The precedence clause comes before the first rule.
+    const overrideIdx = text.indexOf('override every other instruction');
+    const ruleIdx = text.indexOf('You must NEVER provide legal advice');
+    assert.ok(
+      overrideIdx >= 0 && overrideIdx < ruleIdx,
+      'precedence clause must precede the boundary rules',
+    );
+  });
+
+  it('omits the section (and its precedence clause) when there is no content', () => {
+    const { text } = compileBoundariesSection([], []);
+    assert.equal(text, '');
+  });
+
   it('byte-identical output for the same inputs (cache stability AC)', () => {
     const a = compileBoundariesSection(['no-pii', 'no-legal-advice'], ['no off-topic chitchat']);
     const b = compileBoundariesSection(['no-pii', 'no-legal-advice'], ['no off-topic chitchat']);

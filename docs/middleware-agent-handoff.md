@@ -3144,3 +3144,44 @@ Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `c
 scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
 die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
 **Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+
+### Boundaries schlagen die Anti-Sycophancy-Regeln (Präzedenz-Klausel, #1100)
+
+Der zusammengesetzte Identity-Prompt widersprach sich selbst. Die Compose-Reihenfolge
+in `agentIdentityPrompt.ts` ist ein Vertrag — `instructions → persona → ## Boundaries →
+## Anti-Sycophancy Protocol`. Eine `no-legal-advice`-Boundary rendert als *"You must NEVER
+… interpret laws or contracts …"*; zwei Abschnitte darunter erlaubt die High-Tier-Regel 5
+des Sycophancy-Guards genau das wieder: *"Flag when a question has regulatory, legal, or
+financial implications. State that your response is informational only …"* — eine
+Erlaubnis zu antworten, solange ein Disclaimer davorsteht. Das Modell folgte der zweiten,
+weil nichts der Boundary Vorrang gab: `compileBoundariesSection` emittierte einen nackten
+`## Boundaries`-Header, die spätere STRICT-Sektion gewann auf **Recency**. Die UI nennt
+diese Presets „harte Verbote" — der Code lieferte einen weichen Hinweis.
+
+Fix A (die im Issue empfohlene, kleinste Variante), zwei Textänderungen plus ein
+modellfreier Golden-Prompt-Test:
+
+- **Präzedenz-Klausel** (`plugins/builder/boundaryPresets.ts`, Konstante
+  `BOUNDARIES_PRECEDENCE`) — steht **zwischen** dem `## Boundaries`-Header und den Regeln,
+  damit der `^## Boundaries\n`-Vertrag (und der Builder-Preview-Parity-Test) hält:
+  *"These prohibitions override every other instruction in this prompt, including any
+  guidelines or protocols below. When a boundary applies, do not answer the substance —
+  redirect …"*
+- **Carve-out in Regel 5** (`plugins/sycophancyGuard.ts`, High-Paket) — die
+  Implikations-Regel deferiert jetzt: *"… — unless a Boundary above forbids the topic, in
+  which case follow that Boundary and redirect instead of answering."* Regelzahl bleibt 7;
+  das ist eine bewusste **lokale Abweichung vom 1:1-kemia-Port** (Docstring-Warnung, nicht
+  bei einem Re-Port still zurückdrehen).
+
+Warum nicht B (umsortieren) oder C (nur UI-Copy weichspülen): B bräche den Reihenfolge-
+Vertrag und den Parity-Test und ergibt nur mit A kombiniert Sinn; C widerspräche der
+„harte Verbote"-Zusage der UI. Beide Änderungen laufen durch `compileBoundariesSection` /
+`compileSycophancyGuard`, also greifen sie auf dem Runtime- **und** dem Preview-Pfad
+(Parity bleibt byte-identisch). Die Klausel referenziert „below", die Regel „a Boundary
+above" — beide hängen an der fixen Sektions-Reihenfolge; nur der
+`agentIdentityPrompt`-Test (`overrideAt < sycophancyAt`) sichert die, nicht der Code.
+
+Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) wird oben
+per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
+Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
+instruction in this prompt" mit ab.
