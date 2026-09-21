@@ -5,7 +5,12 @@ import { z } from 'zod';
 
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import { DatasetQueryValidationError } from '@omadia/plugin-api';
-import { detectTabularFormat, importTabularDataset } from '@omadia/orchestrator';
+import {
+  decryptRows,
+  detectTabularFormat,
+  importTabularDataset,
+  resolveDatasetCellKey,
+} from '@omadia/orchestrator';
 
 /**
  * #430 — REST surface for structured dataset ingestion (CSV + XLSX import).
@@ -231,6 +236,18 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
       );
       if (!result) {
         res.status(404).json({ code: 'dataset.not_found' });
+        return;
+      }
+      // The owner previews their OWN data: `enc1:` cells (real values,
+      // encrypted at rest — see datasetCellCrypto.ts) are decrypted for the
+      // session user, whose id is also the ciphertexts' AAD. No key ⇒ marker.
+      if (result.rows !== undefined) {
+        const key = resolveDatasetCellKey();
+        const rows = decryptRows(
+          key === undefined ? undefined : { key, ownerOmadiaUserId: sessionUserId },
+          result.rows,
+        );
+        res.json({ ...result, rows });
         return;
       }
       res.json(result);

@@ -692,6 +692,16 @@ export {
 } from './datasetLinkKey.js';
 export type { DatasetLinkKeyer } from './datasetLinkKey.js';
 export {
+  decryptCell,
+  decryptRows,
+  encryptCell,
+  isEncryptedCell,
+  resolveDatasetCellKey,
+  ENCRYPTED_CELL_PREFIX,
+  UNAVAILABLE_CELL,
+} from './datasetCellCrypto.js';
+export type { DatasetCellKey } from './datasetCellCrypto.js';
+export {
   parseXlsx,
   parseXlsxFirstSheet,
   cellToString,
