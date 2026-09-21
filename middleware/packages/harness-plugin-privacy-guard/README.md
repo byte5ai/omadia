@@ -14,6 +14,20 @@ every tool result:
 5. Each turn emits a PII-free **PrivacyReceipt** that the channel renderers
    (Teams Adaptive Card, web inline disclosure) surface to the user.
 
+**Tool errors are not interned (#1105).** A tool result that is a prose error
+— the orchestrator's `Error:`-prefix convention, the same prefix that derives
+the `is_error` flag on the tool_result — is passed to the LLM verbatim instead
+of being interned. Interning an error would both hide the failure behind a
+masked digest (the model would narrate success) and register a renderable
+1-row dataset that a later `v4_render_answer` could materialize as if the error
+were data. The skip lives at the two dispatch seams (`Orchestrator.dispatchTool`,
+`ToolDispatchService.afterDispatch`), not in this package. **Limitation:** the
+guard is a literal `result.startsWith('Error:')` — a *successful* result whose
+data happens to begin with `Error:` also skips interning and reaches the LLM
+unmasked. This mirrors the existing `is_error` heuristic (a tool signalling an
+error by that prefix is the established contract), so a guarded tool must not
+emit real rows that start with the literal `Error:`.
+
 The boundary itself has no configuration: it is generic over JSON shape and
 value statistics — no per-tenant policy, allowlist, or detector tuning. The
 only permission is `llm` (see below).

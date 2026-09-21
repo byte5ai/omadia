@@ -2282,6 +2282,7 @@
       "boundaries": {
         "presetsHeading": "Limits from the library",
         "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
         "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
         "categories": {
           "data": "Data",
@@ -3133,6 +3134,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} selected",
+        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
         "save": "Save boundaries",

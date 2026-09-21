@@ -316,9 +316,9 @@ export interface AiDisclosureSetup {
   readonly level: AiDisclosureLevel;
   /**
    * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
-   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
-   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
-   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * `slack` | `email` | `web` | `api`). A turn whose channel does not resolve to
+   * a `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram`/`api` are ever
    * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
    * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
    * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
@@ -3678,6 +3678,10 @@ export class Orchestrator {
             result = {
               ...result,
               answer: v4Rendered.text,
+              // #1105 — see the streaming twin: mark the server-rendered
+              // answer so `toSemanticAnswer` / clients can tell it apart from
+              // the model's own text.
+              answerSource: 'privacy-render',
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -5475,7 +5479,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5552,6 +5560,9 @@ export class Orchestrator {
               ? {
                   ...event,
                   answer: v4Rendered.text,
+                  // #1105 — mark the answer as server-rendered so a streaming
+                  // client knows it supersedes the `text_delta` preview.
+                  answerSource: 'privacy-render' as const,
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -5577,7 +5588,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -7022,6 +7037,19 @@ export class Orchestrator {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
       }
+      // #1105 — a guarded tool that returned a prose error string (the
+      // orchestrator's `Error:` tool-error convention — the same prefix the
+      // tool-result assembly reads to stamp `is_error`) must reach the model
+      // AS an error, not be interned. Interning it would (a) hide the failure
+      // behind a masked digest so the model never learns the call failed, and
+      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
+      // materializes as if the error were data — the divergence reported in
+      // #1105. Pass it through verbatim: the chat path already forwards tool
+      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
+      // `is_error` flag is derived from this very prefix.
+      if (result.startsWith('Error:')) {
+        return result;
+      }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
@@ -7347,7 +7375,9 @@ export class Orchestrator {
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
-      this.chatParticipantsTool !== undefined,
+      // #1108 — same per-turn gate as buildToolsList(): only describe the
+      // roster tool on a turn that actually carries a provider.
+      this.turnHasChatRoster(),
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
@@ -7941,6 +7971,23 @@ export class Orchestrator {
     return this.isPluginToolsReady(agentId);
   }
 
+  /**
+   * #1108 — `get_chat_participants` may only be advertised on a turn that
+   * actually carries a roster provider. The tool instance is built once and is
+   * channel-independent, so gating on `this.chatParticipantsTool` alone offers
+   * the tool on every non-Teams channel, where the handler can only return a
+   * miss the model never sees (the Privacy Shield interns it). Both the tool
+   * list and the system-prompt roster gate on this, so a channel without a
+   * roster shows the tool nowhere. Must be called inside the turn scope, where
+   * `turnContext.current()` resolves the per-turn provider.
+   */
+  private turnHasChatRoster(): boolean {
+    return (
+      this.chatParticipantsTool !== undefined &&
+      turnContext.current()?.chatParticipants !== undefined
+    );
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7957,7 +8004,9 @@ export class Orchestrator {
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
-    if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
+    // #1108 — gate on the per-turn roster provider, not the constructed
+    // instance, so non-Teams channels never advertise a tool that can't work.
+    if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
     if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);

@@ -70,20 +70,33 @@ function readTurnOrigin(raw: unknown): TurnOrigin | undefined {
  * #430 fixup — map the channel-plugin-facing {@link ChannelUserKind}
  * namespace to the KG-facing {@link ChannelKind} the ACL/identity model
  * understands. Deliberately partial: `discord-user` / `whatsapp-phone` have
- * no `ChannelKind` counterpart yet, and `custom` (the canvas/Omadia-UI
- * channel's own namespace, which carries its already-resolved
- * `omadiaUserId` via a different path — `metadata.omadiaUserId`) is not a
- * single channel at all. Callers must treat `undefined` as "cannot safely
- * resolve an identity for this turn", not fall back to guessing.
+ * no `ChannelKind` counterpart yet. Callers must treat `undefined` as "cannot
+ * safely resolve an identity for this turn", not fall back to guessing.
+ *
+ * #1107 — the public chat API also arrives as `custom`, but unlike the
+ * canvas/Omadia-UI channel (which carries a resolved human identity via
+ * `session.subject` / `metadata.omadiaUserId`) it authenticates the caller AS
+ * its API key: `harness-channel-api` sets `id: 'key:<uuid>'` (issue #438, "the
+ * key IS its own identity"). That `key:` prefix is the API channel's own,
+ * never-caller-controlled convention, so it is the safe discriminator between
+ * the two `custom` producers — canvas ids are never `key:`-prefixed. Without
+ * this the turn's receipt is written with `channel = NULL` and API traffic is
+ * invisible in every per-channel view. Takes the whole ref, not just `kind`,
+ * because the discriminant for `api` lives in the id.
  */
-function toChannelKind(kind: ChannelUserKind): ChannelKind | undefined {
-  switch (kind) {
+function toChannelKind(ref: {
+  kind: ChannelUserKind;
+  id: string;
+}): ChannelKind | undefined {
+  switch (ref.kind) {
     case 'teams-aad':
       return 'teams';
     case 'slack-user':
       return 'slack';
     case 'telegram-chat':
       return 'telegram';
+    case 'custom':
+      return ref.id.startsWith('key:') ? 'api' : undefined;
     default:
       return undefined;
   }
@@ -220,7 +233,7 @@ export function createOrchestratorDispatcher(
       // documented behaviour); `channelIdentity` gives downstream code
       // (dataset ingest ACL) a typed, resolvable channel kind when one
       // exists, without guessing for kinds the KG model doesn't cover.
-      const channelKind = toChannelKind(input.userRef.kind);
+      const channelKind = toChannelKind(input.userRef);
       const channelIdentity = channelKind
         ? { channelKind, channelUserId: input.userRef.id }
         : undefined;

@@ -274,6 +274,12 @@ export function toSemanticAnswer(
     ...(r.maskedValues && r.maskedValues.length > 0
       ? { maskedValues: r.maskedValues }
       : {}),
+    // #1105 — forward the answer's provenance so a channel that also exposes
+    // the raw stream can reconcile deltas vs the final text. Omitted for the
+    // ordinary `'model'` case.
+    ...(r.answerSource && r.answerSource !== 'model'
+      ? { answerSource: r.answerSource }
+      : {}),
     // Omadia UI: forward the canvas surface payload so converter-based channels
     // reach the initial primitive tree. Sidecar — ignored by non-canvas channels.
     ...(r.surface ? { surface: r.surface } : {}),

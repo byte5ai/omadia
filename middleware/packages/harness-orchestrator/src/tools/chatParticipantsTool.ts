@@ -3,6 +3,15 @@ import { turnContext } from '../turnContext.js';
 
 export const CHAT_PARTICIPANTS_TOOL_NAME = 'get_chat_participants';
 
+/**
+ * #1108 — machine-readable `reason` on every "can't mention anyone" result, so
+ * the model can distinguish a channel that has no roster at all from a roster
+ * that resolved empty. Both share the shape `{ participants: [], reason, note }`.
+ */
+export const CHAT_PARTICIPANTS_NO_ROSTER_REASON = 'no_roster_on_this_channel';
+export const CHAT_PARTICIPANTS_EMPTY_ROSTER_REASON = 'roster_empty';
+export const CHAT_PARTICIPANTS_FETCH_FAILED_REASON = 'roster_fetch_failed';
+
 export const chatParticipantsToolSpec = {
   name: CHAT_PARTICIPANTS_TOOL_NAME,
   description:
@@ -35,8 +44,15 @@ export const chatParticipantsToolSpec = {
 
 /**
  * Tool handler: reads the roster via the TurnContext-provided accessor.
- * Returns an error string when invoked outside a Teams turn (no provider
- * wired) — the model can recover by simply not using a mention.
+ *
+ * #1108 — a turn without a wired provider must NOT return an `Error:` string.
+ * Prose tool results are interned by the Privacy Shield (#1097), so the model
+ * never sees such a string and renders it as if it were the roster. It returns
+ * a structured, German, non-error result instead, letting the model answer
+ * that this channel has no participant list. The primary guard is the tool
+ * list: `orchestrator.turnHasChatRoster()` only advertises the tool on turns
+ * that carry a provider, so this branch is defense-in-depth for any residual
+ * call (e.g. a present-but-empty admin-only roster on Telegram).
  */
 export class ChatParticipantsTool {
   /**
@@ -60,7 +76,11 @@ export class ChatParticipantsTool {
     const ctx = turnContext.current();
     const provider = ctx?.chatParticipants;
     if (!provider) {
-      return 'Error: chat-participants provider not available in this turn (probably not a Teams turn).';
+      return JSON.stringify({
+        participants: [],
+        reason: CHAT_PARTICIPANTS_NO_ROSTER_REASON,
+        note: 'Dieser Kanal hat keine Teilnehmerliste. Antworte ohne @-Mention.',
+      });
     }
     try {
       const humans = await provider();
@@ -75,6 +95,7 @@ export class ChatParticipantsTool {
       if (members.length === 0) {
         return JSON.stringify({
           participants: [],
+          reason: CHAT_PARTICIPANTS_EMPTY_ROSTER_REASON,
           note: 'Roster leer — entweder keine Teilnehmer sichtbar oder fehlende Berechtigung. Formuliere ohne @-Mention.',
         });
       }
@@ -100,7 +121,21 @@ export class ChatParticipantsTool {
           'Schreib den Namen im Antworttext EXAKT in dieser Form, byteweise identisch zum `displayName`. Ohne die <at>…</at>-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt.',
       });
     } catch (err) {
-      return `Error: roster fetch failed — ${err instanceof Error ? err.message : String(err)}`;
+      // #1108 — a fetch failure is the same class of bug as the no-provider
+      // miss: an English `Error:` string is interned by the Privacy Shield
+      // (#1097) and rendered to the user as if it were the roster. Return a
+      // structured German non-error instead. The raw error is logged here but
+      // deliberately kept OUT of the channel-visible result, which would leak
+      // internal detail; without this line the failure would vanish silently.
+      console.error(
+        '[chat-participants] roster fetch failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return JSON.stringify({
+        participants: [],
+        reason: CHAT_PARTICIPANTS_FETCH_FAILED_REASON,
+        note: 'Teilnehmerliste konnte nicht geladen werden. Antworte ohne @-Mention.',
+      });
     }
   }
 }
