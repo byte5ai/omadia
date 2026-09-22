@@ -36,6 +36,58 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a Privacy-Shield `ds_…` id in `query_dataset` no longer kills the turn (#1093)
+
+2026-09-22 — `query_dataset` passed the model's `dataset_id` unvalidated into
+`WHERE tenant_id = $1 AND id = $2` against the `uuid` column `datasets.id`, so
+a non-uuid id raised Postgres `22P02` *before* the owner check in the same
+statement. The id the model actually sent was a `ds_<uuid>` from a Privacy
+Shield v4 digest — a turn-scoped in-memory dataset, a different id space from
+the uploaded datasets the tool reads, and one the digest and system prompt
+explicitly tell the model to carry to other tools (`create_xlsx` takes exactly
+that id). On the `get_schema` branch, which had no `try/catch`, the rejection
+left the tool handler and ended the whole turn: a terminal `error` event with
+no `done`, or — when another tool had already committed in the same turn — the
+emergency `done` from #506 reporting `runTrace.status: "success"` with an
+English non-answer.
+
+Four layers, the last one generic:
+
+- `queryDatasetTool.ts` normalizes `dataset_id` before calling the graph. A
+  `ds_` prefix gets its own message naming the right id space (`v4_*` verbs, or
+  `create_xlsx`) so the model stops re-sending the same id; anything that
+  cannot address a row answers `{"error":"not_found_or_not_owned"}`,
+  indistinguishable from a dataset owned by someone else. Every branch of the
+  tool — `list_datasets` included — now answers with the `Error:` string
+  convention instead of throwing.
+- One shared canonicaliser, `normalizeDatasetUuid`
+  (`@omadia/plugin-api`, `src/datasetId.ts`), is used by both the tool and the
+  Neon graph so the two layers cannot disagree about which ids exist. It
+  accepts every spelling Postgres accepts for `uuid` input (upper case, braces,
+  omitted hyphens) and returns the canonical form, so an id that resolved
+  before any validation existed still resolves.
+- `NeonKnowledgeGraph.loadDatasetRow` / `deleteDataset` return `null` / `false`
+  for an id that cannot address a row instead of throwing — validated before
+  the query rather than via `id::text = $2`, which would drop the primary-key
+  index. `queryDatasetRows` now binds the id as STORED rather than as spelled
+  by the caller.
+- `src/routes/datasets.ts` maps `22P02` to **404 `dataset.not_found`** in the
+  three `/:id` handlers (`GET /api/v1/datasets/foo` used to answer 500 with the
+  raw Postgres text in the body). The collection handlers have no path id, so a
+  `22P02` there stays a 5xx.
+- `Orchestrator.prepareStreamSlot` catches per slot. The streaming dispatch
+  races the slot promises, so one rejected slot rejected the race and took the
+  turn down, while the non-streaming path (`Promise.allSettled`) had always
+  degraded the same rejection to an `is_error` tool result. Both paths now
+  format identically (`Error: <message>`), and `is_error` is derived from that
+  prefix. Any throwing tool — not just this one — is now a recoverable tool
+  error in both paths.
+
+Note for anyone testing this by hand: `middleware/packages/*/dist` is build
+output, and a stale `dist` can make the streaming fix look already-present.
+Rebuild the touched package (`npm run build -w @omadia/orchestrator`) before
+trusting a green run.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two

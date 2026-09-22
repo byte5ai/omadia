@@ -251,6 +251,9 @@ export interface ConversationSendService {
 sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOutcome>;
 }
 
+// ===== datasetId.d.ts =====
+export declare function normalizeDatasetUuid(raw: string): string | undefined;
+
 // ===== embeddingClient.d.ts =====
 export interface EmbeddingClient {
 embed(text: string): Promise<number[]>;
@@ -403,6 +406,7 @@ export * from './agentGraph.js';
 export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
+export * from './datasetId.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
 export * from './agentPriorities.js';

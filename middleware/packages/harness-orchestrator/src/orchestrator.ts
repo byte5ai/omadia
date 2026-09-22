@@ -6617,7 +6617,28 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory);
+    // #1093 — per-slot catch. The race loop below awaits these promises with
+    // `Promise.race`, so ONE rejected slot would reject the race, propagate
+    // out of `chatStreamInner` and end the whole turn — while the
+    // non-streaming loop (`Promise.allSettled`, see `chatInContext`) has
+    // always degraded the same rejection to an `is_error` tool result. A
+    // tool that throws instead of returning the `Error: …` string the tool
+    // convention asks for is a bug in that tool, but it must never be able
+    // to take the turn down: the model can react to an error result, the
+    // user cannot react to a dead turn. Formatted exactly like the
+    // non-streaming path so `is_error` is derived from the same prefix.
+    const promise = this.dispatchTool(
+      use.name,
+      use.input,
+      observer,
+      turnMemory,
+    ).catch((err: unknown): string => {
+      console.warn(
+        `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling this slot as a tool error; the turn continues:`,
+        err,
+      );
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    });
     return {
       idx,
       use,
