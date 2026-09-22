@@ -817,6 +817,33 @@ export type ChatStreamEvent =
        */
       runTrace?: RunTracePayload;
       /**
+       * #1094 — marks a DEGRADED terminal: the turn threw after at least one
+       * tool call had already committed, so the side effect stands but no
+       * answer was ever generated. The event stays `done` rather than `error`
+       * on purpose (#506: reporting the committed call as failed makes the
+       * next turn re-invoke it); this flag is what keeps that honest. Without
+       * it, every consumer — web chat, Public API clients, Teams/Telegram —
+       * renders the turn as an ordinary success and the user's question looks
+       * answered. Additive and optional: a client that ignores it behaves
+       * exactly as it did before.
+       */
+      degraded?: true;
+      /**
+       * #1094 — the tools that committed before the throw. DISTINCT names in
+       * first-commit order, NOT a call count: two calls to the same tool
+       * appear once (the orchestrator deduplicates while collecting them).
+       * Present only alongside {@link degraded}. Lets a client name what did
+       * happen without parsing the answer text.
+       */
+      committedTools?: readonly string[];
+      /**
+       * #1094 — the same per-turn token the `error` variant carries (#641) and
+       * the `[orchestrator] turn failed (correlationId=…)` log line quotes, so
+       * a degraded turn is exactly as diagnosable as a failed one. Present only
+       * alongside {@link degraded}.
+       */
+      correlationId?: string;
+      /**
        * Present when the turn ended because Claude invoked `ask_user_choice`.
        * See ChatTurnResult.pendingUserChoice for semantics.
        */

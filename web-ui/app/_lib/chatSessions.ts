@@ -548,6 +548,24 @@ export interface Message {
    */
   directLineSession?: DirectLineSessionState;
   error?: boolean;
+  /**
+   * #1094 — set when the turn ended DEGRADED: a tool call had already
+   * committed a real side effect when a later step of the same turn threw, so
+   * the side effect stands but no answer was ever generated. The turn is not
+   * an `error` (that would make the next turn re-invoke the committed tool —
+   * #506), and it must not render as an ordinary success either: the bubble
+   * shows a localized warning naming these tools plus the support token.
+   * Restored on reload — `coerceMessage` spreads unknown fields through —
+   * and, for sessions restored from the server-side mirror where only the
+   * answer text survives, re-derived by `parseTurnIncomplete`.
+   */
+  degradedTurn?: {
+    /** Distinct tool names that committed, in commit order. Not a call count. */
+    committedTools: readonly string[];
+    /** Token matching the `[orchestrator] turn failed (correlationId=…)` log
+     *  line. Absent on middleware older than #1094. */
+    correlationId?: string;
+  };
   startedAt: number;
   finishedAt?: number;
   streaming?: boolean;

@@ -193,6 +193,7 @@ relevant to a plain chat integration:
 |---|---|
 | `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the server MAY replace the answer before `done` (see `done.answerSource`), in which case the concatenated deltas are stale and do not match `done.answer`. |
 | `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
+| `done` with `degraded: true` | Terminal event for a **degraded** turn: one or more tool calls committed real side effects and the turn then threw before an answer existed. Deliberately not an `error` — the committed work must not be reported as failed — but it is **not a successful answer either**: the user's question is unanswered. Carries `committedTools` (distinct tool names that ran, in commit order — not a call count) and `correlationId` (the token in the server's `[orchestrator] turn failed (correlationId=…)` log line). `answer` is a localized notice stating that the turn did not finish, which tools already ran and the support token — never a claim of success. `runTrace.status` is `"error"`. See **Degraded turns** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
 
@@ -231,6 +232,46 @@ will ever appear on the stream afterward.
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
 gone.
+
+## Degraded turns (`done` with `degraded: true`)
+
+A turn can commit real side effects and then fail: a tool creates a record,
+and a later step of the same turn (a follow-up model call, the nudge
+pipeline, …) throws. Reporting that as `error` would be a false negative —
+and would invite a retry that runs the committed tool a second time — so the
+stream ends with `done`. That `done` is explicitly marked:
+
+```json
+{
+  "type": "done",
+  "answer": "This turn did not finish. These actions had already run and took effect: memory, query_dataset. Generating the answer failed afterwards, so your question is still unanswered. Ask it again — and check before repeating anything that changes data. Reference for support: 4f1c…",
+  "degraded": true,
+  "committedTools": ["memory", "query_dataset"],
+  "correlationId": "4f1c…",
+  "toolCalls": 3,
+  "iterations": 2,
+  "runTrace": { "status": "error" }
+}
+```
+
+How to handle it:
+
+- **`answer` is a notice, not an answer.** It states that the turn failed and
+  which tools already ran, in the language the operator configured (the same
+  locale mechanism as the AI-Act marking, `de` by default). Rendering it
+  verbatim is safe — it never claims success — but there is no answer to the
+  user's question in this turn.
+- **Do not blindly retry the same request.** The tools in `committedTools`
+  already ran; re-sending may repeat their side effects.
+- **Keep `correlationId`.** It is the token the operator can search the
+  middleware log for (`[orchestrator] turn failed (correlationId=…)`).
+- `degraded` is absent on every healthy turn, and on middleware older than
+  this field. A client that ignores it still shows the notice rather than a
+  fake success — which is why the wording rides `answer` and not only a flag.
+- Internally the turn is persisted as a neutral, language-free marker
+  (`<turn-incomplete tools="…" ref="…"></turn-incomplete>`), so the session
+  log and the knowledge graph carry no locale-specific prose and no fake
+  success. That form is not what this route delivers.
 
 ## Correlating a turn with its privacy receipt
 
@@ -292,6 +333,7 @@ replica count`. This is a known, accepted v1 trade-off (see
 | `415` | `unsupported_media_type` | Body sent without `Content-Type: application/json`. |
 | `429` | `rate_limited` | Key is over its per-minute budget. |
 | `200` + `error` NDJSON event | `error` | Key and request were valid, but the turn itself failed mid-stream. |
+| `200` + `done` NDJSON event with `degraded: true` | — | Key and request were valid, tool calls committed, and the turn then failed before producing an answer. Not an `error` by design; check the flag if you need to distinguish an answer from a degraded turn. |
 
 ## Minimal curl example
 

@@ -7,12 +7,12 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
-import type { ChatStreamEvent } from '@omadia/channel-sdk';
+import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/chatAgent.js';
+import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import {
-  NativeToolRegistry,
   Orchestrator,
   type SessionLogEntry,
-} from '@omadia/orchestrator';
+} from '../../packages/harness-orchestrator/src/orchestrator.js';
 
 // #644 — the streaming `done` event's `answer` now carries the AI-Act Art. 50
 // marking, folded at the delivery boundary; the session log records the RAW
@@ -36,6 +36,11 @@ function withoutDisclosure(text: string): string {
  * succeeded. These tests exercise the fix: a committed tool result changes
  * the catch block's outcome to a `done` event; a genuine failure with no
  * prior committed tool result is unaffected.
+ *
+ * Imported from SOURCE, not the `@omadia/orchestrator` barrel — the barrel
+ * resolves to `dist/`, so a mutation in `src/` would otherwise be invisible
+ * without a rebuild and a mutation check could report GREEN over stale code
+ * (same reasoning as turnErrorCorrelation.test.ts).
  *
  * Review follow-up: the original version of this file never constructed a
  * `sessionLogger`, so it couldn't have caught the emergency-`done` path
@@ -178,6 +183,25 @@ const minimalSpec = (name: string): Record<string, unknown> => ({
   input_schema: { type: 'object' as const, properties: {}, required: [] },
 });
 
+/** Runs `fn` with `console.error` captured. Always restores, including on throw
+ *  — a leaked stub would silently swallow every later test's diagnostics.
+ *  Same shape as turnErrorCorrelation.test.ts's helper. */
+async function withCapturedConsoleError<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; lines: string[] }> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]): void => {
+    lines.push(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
+  };
+  try {
+    const result = await fn();
+    return { result, lines };
+  } finally {
+    console.error = original;
+  }
+}
+
 describe('Issue #506 — report success when a tool already committed', () => {
   it('ends with `done` (not `error`) when a tool committed in an earlier iteration and a later model call throws', async () => {
     const registry = new NativeToolRegistry();
@@ -224,8 +248,45 @@ describe('Issue #506 — report success when a tool already committed', () => {
     const done = doneEvents[0];
     assert.ok(done && done.type === 'done');
     if (done && done.type === 'done') {
+      // #1094 — the terminal event stays `done` (the committed call must not
+      // be reported as failed, or the next turn re-invokes it), but it is now
+      // RECOGNIZABLY degraded instead of indistinguishable from a real answer.
+      assert.equal(
+        done.degraded,
+        true,
+        'the degraded turn is reported as an ordinary success (#1094)',
+      );
+      assert.deepEqual(
+        done.committedTools,
+        ['manage_widget'],
+        'the committed tool names are not machine-readable on the event',
+      );
+      assert.ok(
+        done.correlationId !== undefined && done.correlationId !== '',
+        'a degraded turn carries no support token, so the user cannot correlate it',
+      );
+      assert.equal(
+        done.runTrace?.status,
+        'error',
+        'the run trace still claims success for a turn that threw',
+      );
+      // No hardcoded prose in the orchestrator: the catch block emits a
+      // language-free marker and the DELIVERED wording is composed at the
+      // boundary in the turn's locale (German is the shipping default), the
+      // same mechanism the AI-Act marking uses. The marker itself never
+      // reaches a channel.
+      assert.doesNotMatch(
+        done.answer,
+        /completed successfully/i,
+        'the hardcoded English pseudo-success is back in the orchestrator',
+      );
+      assert.doesNotMatch(
+        done.answer,
+        /<turn-incomplete/,
+        'the raw marker was delivered to the channel instead of the notice',
+      );
+      assert.match(done.answer, /Dieser Turn wurde nicht abgeschlossen/);
       assert.match(done.answer, /manage_widget/);
-      assert.match(done.answer, /completed successfully/i);
       assert.equal(done.toolCalls, 1);
       // Two iterations were entered (0 and 1) before the failure.
       assert.equal(done.iterations, 2);
@@ -243,12 +304,32 @@ describe('Issue #506 — report success when a tool already committed', () => {
     if (logged) {
       assert.equal(logged.scope, 'sess-506-committed');
       assert.equal(logged.userMessage, 'create a widget');
-      assert.equal(
-        logged.assistantAnswer,
-        done && done.type === 'done' ? withoutDisclosure(done.answer) : undefined,
-      );
+      // NOT equal to the delivered answer here — #1094 splits the two on this
+      // path only: the channel gets the localized notice, the log keeps the
+      // neutral marker (asserted below). Every other `done` site still
+      // persists exactly what it yields, minus the disclosure line.
       assert.equal(logged.toolCalls, 1);
       assert.equal(logged.iterations, 2);
+      // #1094 — what lands in the session log (and from there in the KG turn
+      // node, and in the next turn's context) must not read as a success.
+      assert.doesNotMatch(
+        logged.assistantAnswer,
+        /completed successfully/i,
+        'the next turn reads a fake success as context (#1094)',
+      );
+      // PERSISTED is the language-free marker, not the delivered prose: the
+      // session log feeds the KG turn node and the next turn's context, which
+      // must not carry a locale-specific sentence (nor a fake success).
+      assert.match(logged.assistantAnswer, /^<turn-incomplete\b/);
+      assert.ok(
+        logged.assistantAnswer.includes('tools="manage_widget"'),
+        `persisted form lost the tool names: ${logged.assistantAnswer}`,
+      );
+      assert.notEqual(
+        logged.assistantAnswer,
+        withoutDisclosure(done.answer),
+        'the localized notice was persisted instead of the neutral marker',
+      );
     }
   });
 
@@ -365,5 +446,171 @@ describe('Issue #506 — report success when a tool already committed', () => {
     // as the single-tool case above — that part of the behavior is not
     // being challenged by this test.
     assert.equal(calls.length, 1, 'expected sessionLogger.log to be called once');
+  });
+  it('MUTATION CHECK: the degraded turn carries the token that is in the server log', async () => {
+    // #1094 — the whole point of the token is that support can join it to the
+    // `[orchestrator] turn failed (correlationId=…)` line. The `error` branch
+    // has had this since #641; the degraded `done` branch did not, so a user
+    // hitting it had nothing to quote. Asserting mere presence would pass over
+    // a token that joins nothing, so compare against the captured log line.
+    const registry = new NativeToolRegistry();
+    registry.register('manage_widget', {
+      handler: async (): Promise<string> => 'widget-created',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('manage_widget') as any,
+    });
+    const provider = fakeStreamProvider([
+      streamWithTools([{ id: 'use-1', name: 'manage_widget', input: {} }]),
+      {
+        throws: Object.assign(new Error('boom: provider hard-failed'), {
+          status: 400,
+        }),
+      },
+    ]);
+    const { sessionLogger } = recordingSessionLogger();
+    const orchestrator = buildOrchestrator(provider, registry, sessionLogger);
+
+    const { result: events, lines } = await withCapturedConsoleError(async () => {
+      const collected: ChatStreamEvent[] = [];
+      for await (const ev of orchestrator.chatStream({
+        userMessage: 'create a widget',
+        sessionScope: 'sess-1094-correlation',
+      })) {
+        collected.push(ev);
+      }
+      return collected;
+    });
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    const id = done.type === 'done' ? done.correlationId : undefined;
+    assert.ok(id, 'the degraded done carries no correlation id');
+
+    const logged = lines.filter((l) => l.includes('[orchestrator] turn failed'));
+    assert.equal(
+      logged.length,
+      1,
+      `expected exactly one failure log line, got ${String(logged.length)}`,
+    );
+    assert.ok(
+      logged[0]?.includes(id),
+      `the log line does not carry the user's token '${id}': ${logged[0] ?? '<none>'}`,
+    );
+    // The notice the channels render carries the same token, so a text-only
+    // channel (Telegram, email) is as correlatable as a rich client.
+    if (done.type === 'done') {
+      assert.ok(
+        done.answer.includes(id),
+        `the delivered notice does not carry the token: ${done.answer}`,
+      );
+    }
+  });
+
+  it('names every DISTINCT committed tool, deduplicated, in first-commit order', async () => {
+    // The dedup is deliberate (orchestrator.ts, `committedToolNames.includes`),
+    // and `committedTools` inherits it: distinct NAMES, not a call count. Two
+    // calls to the same tool appear once — pinned here so a consumer counting
+    // entries as calls fails loudly rather than silently miscounting.
+    const registry = new NativeToolRegistry();
+    registry.register('manage_widget', {
+      handler: async (): Promise<string> => 'widget-created',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('manage_widget') as any,
+    });
+    registry.register('memory', {
+      handler: async (): Promise<string> => 'recalled',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('memory') as any,
+    });
+    const provider = fakeStreamProvider([
+      streamWithTools([
+        { id: 'use-1', name: 'memory', input: {} },
+        { id: 'use-2', name: 'manage_widget', input: {} },
+        { id: 'use-3', name: 'memory', input: {} },
+      ]),
+      {
+        throws: Object.assign(new Error('boom: provider hard-failed'), {
+          status: 400,
+        }),
+      },
+    ]);
+    const { sessionLogger, calls } = recordingSessionLogger();
+    const orchestrator = buildOrchestrator(provider, registry, sessionLogger);
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({
+      userMessage: 'remember this and create a widget',
+      sessionScope: 'sess-1094-dedup',
+    })) {
+      events.push(ev);
+    }
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    if (done.type === 'done') {
+      assert.deepEqual(done.committedTools, ['memory', 'manage_widget']);
+      assert.equal(done.toolCalls, 3, 'three calls, two distinct names');
+      assert.ok(
+        done.answer.includes('memory, manage_widget'),
+        `the notice does not name both tools: ${done.answer}`,
+      );
+    }
+    assert.ok(
+      calls[0]?.assistantAnswer.includes('tools="memory,manage_widget"'),
+      `unexpected persisted marker: ${calls[0]?.assistantAnswer ?? '<none>'}`,
+    );
+  });
+
+  it('composes the delivered notice in the operator locale, not hardcoded English', async () => {
+    // #1094 — the old behaviour was an English sentence hardcoded in the
+    // orchestrator, shown verbatim in a German UI. The wording now goes through
+    // the same locale mechanism as the AI-Act marking, so an `en` deployment
+    // gets English and the default (`de`) German — pinned in both directions,
+    // because a composer that ignores the locale would still pass a one-sided
+    // assertion.
+    const registry = new NativeToolRegistry();
+    registry.register('manage_widget', {
+      handler: async (): Promise<string> => 'widget-created',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      spec: minimalSpec('manage_widget') as any,
+    });
+    const scripted = (): Array<ScriptedStream | ThrowingStream> => [
+      streamWithTools([{ id: 'use-1', name: 'manage_widget', input: {} }]),
+      {
+        throws: Object.assign(new Error('boom: provider hard-failed'), {
+          status: 400,
+        }),
+      },
+    ];
+    const answerFor = async (locale: string | undefined): Promise<string> => {
+      const { sessionLogger } = recordingSessionLogger();
+      const orchestrator = new Orchestrator({
+        provider: fakeStreamProvider(scripted()),
+        model: 'test',
+        maxTokens: 1024,
+        maxToolIterations: 5,
+        domainTools: [],
+        nativeToolRegistry: registry,
+        sessionLogger,
+        ...(locale ? { aiDisclosure: { level: 'standard' as const, locale } } : {}),
+      });
+      const events: ChatStreamEvent[] = [];
+      for await (const ev of orchestrator.chatStream({
+        userMessage: 'create a widget',
+        sessionScope: `sess-1094-locale-${locale ?? 'default'}`,
+      })) {
+        events.push(ev);
+      }
+      const done = events.find((e) => e.type === 'done');
+      assert.ok(done && done.type === 'done');
+      return done.type === 'done' ? done.answer : '';
+    };
+
+    const english = await answerFor('en');
+    assert.match(english, /This turn did not finish/);
+    assert.match(english, /manage_widget/);
+
+    const german = await answerFor(undefined);
+    assert.match(german, /Dieser Turn wurde nicht abgeschlossen/);
   });
 });

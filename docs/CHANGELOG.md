@@ -36,6 +36,44 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a turn that throws after a tool ran is no longer reported as a successful answer (#1094)
+
+2026-09-22 — when a turn threw after at least one tool call had already
+committed, the streaming orchestrator emitted a regular `done` whose `answer`
+was a hardcoded English sentence ("The requested action (…) completed
+successfully, but the turn could not finish generating a follow-up response.").
+The `done`-instead-of-`error` branch itself is deliberate (#506: a tool that
+already committed a side effect must not be reported as failed, or the next
+turn re-invokes it) — how the degraded turn was *reported* was the bug. The
+event carried no flag, no committed tool names and no `correlationId`, and
+`runTrace.status` said `"success"`, so every consumer — web chat, Public API
+clients, Teams/Telegram — rendered it as a normal answer while the user's
+question stayed unanswered. The sentence was English in a German UI, and it was
+persisted as the turn's assistant answer, so the next turn's model read
+"completed successfully" as context for a turn that had failed.
+
+The `done` event now carries `degraded: true`, `committedTools` (distinct tool
+names in commit order — not a call count) and `correlationId`, the same token
+the `[orchestrator] turn failed (correlationId=…)` log line quotes (#641), and
+the run trace records `status: 'error'`. `RunStatus` stays binary; the degraded
+nuance rides the event rather than a third status value written to the
+knowledge graph. The orchestrator composes no prose: it emits a neutral,
+language-free marker (`<turn-incomplete tools="…" ref="…"></turn-incomplete>`,
+following the existing `<mcp-auth-required>` convention) and persists THAT, so
+the session log, the KG turn node and the next turn's context carry no
+locale-specific sentence and no fake success; the system prompt explains the
+marker, so the model reads the named tools as already executed instead of
+re-invoking them. What is delivered is a localized notice: the marker is
+expanded at the delivery boundary via `composeTurnIncompleteText`
+(`@omadia/channel-sdk`), through the same locale mechanism as the AI-Act
+marking — so Teams/Telegram/email, which render `answer` and nothing else, get
+readable text instead of a tag, while the web UI rings the bubble in the
+warning colour and adds its own localized card. A degraded turn no longer
+counts as the operator's "last turn ok" health signal, nor as an `ok` entry in
+the Public API key audit trail, and the verifier skips it (a marker carries no
+claims to check). The `@omadia/channel-api` README documents the degraded
+terminal and how a client should handle it.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
