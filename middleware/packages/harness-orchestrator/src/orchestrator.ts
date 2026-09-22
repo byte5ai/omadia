@@ -6617,7 +6617,45 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory);
+    // #1095 — a REJECTED dispatch must settle this slot, not escape it. The
+    // race loop awaits `Promise.race([...slots, tick])`, so a bare rejection
+    // here leaves the async generator and kills the WHOLE turn: siblings never
+    // settle, their already-streamed `tool_use` never gets a `tool_result`, and
+    // the #506 branch can then report the dead turn to the caller as a success.
+    // Resolving with an `Error:` string is exactly the convention the
+    // non-streaming path builds from its `Promise.allSettled` rejections, and
+    // the one this loop already reads (`output.startsWith('Error:')`).
+    //
+    // The message stays RAW — no masking, no digesting. Same deliberate
+    // divergence from `ToolDispatchService` that the chat path fences in
+    // `test/orchestrator/chatPathToolErrorText.test.ts`: the reader here is the
+    // operator debugging their own tool, and the two chat paths must not drift
+    // apart again in the opposite direction.
+    //
+    // Known consequence, accepted for parity rather than overlooked: a THROWN
+    // message never passes the Privacy Shield (interning in
+    // `dispatchToolDeadlined` only ever sees a RETURNED string), so a driver
+    // error that quotes a row value ships that value to the provider and to
+    // the API caller. That is exactly what the non-streaming path has always
+    // done with the same rejection; narrowing it belongs in one change that
+    // moves BOTH paths, not in a fix that makes them disagree again. A handler
+    // that knows its errors carry data should catch and return its own
+    // `Error:` prose — that path is guarded (#1105).
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
+      (err: unknown) => {
+        // Settling the slot must not cost the operator the STACK. Before this
+        // catch existed, a throwing handler at least reached the turn's catch
+        // and was logged there with its stack; the model-facing string keeps
+        // only `message`, which for the reported trigger (a Postgres 22P02
+        // escaping `QueryDatasetTool.handle`) does not say which call site
+        // threw. Same shape as the deadline warning in `dispatchTool`.
+        console.warn(
+          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling the slot as a tool error; the turn continues:`,
+          err,
+        );
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      },
+    );
     return {
       idx,
       use,
