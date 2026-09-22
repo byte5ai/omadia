@@ -15,13 +15,30 @@
  *     stripped text and the hint-derived classification (or schema
  *     defaults). No turns are dropped.
  *   - At `level=normal|aggressive` the scorer runs; turns below the
- *     threshold are skipped (the inner KG is NOT called and the result
- *     mirrors a no-op ingest so callers don't crash).
+ *     threshold are written as a TAIL-ONLY record (#1096, see below).
  *
- * Drop-result shape (HANDOFF Eckpfeiler #6 — `embedAndStoreTurn` stays the
- * single embedding write-path → for a dropped turn we simply return a
- * synthetic `TurnIngestResult` with the IDs the inner backend WOULD have
- * computed; no embedding work runs).
+ * #1096 — what "below the threshold" may and may not decide.
+ * Until #1096 a sub-threshold turn was not written at all: the inner
+ * `ingestTurn` was skipped and a synthetic `TurnIngestResult` returned. But
+ * `getSession().turns` is also the ONLY source of the orchestrator's
+ * in-session context tail, so an LLM-scored number was deciding whether a
+ * message had happened *at all* as far as the model was concerned. Short
+ * turns ("ok", "pong", "Farbe: blau") score 0.00–0.10 and vanished, and the
+ * user and the model then disagreed about what was said.
+ *
+ * A sub-threshold turn is therefore still written, flagged `tailOnly`, which
+ * splits the two jobs that used to ride on one boolean:
+ *   - *conversation* (the session record the tail reads) — always written;
+ *   - *knowledge* (embedding, cross-session recall, promotion) — still gated
+ *     by significance. Backends honouring `tailOnly` write no embedding and
+ *     keep the row out of every recall query; promotion needs no special
+ *     case because a sub-threshold score is below its own threshold anyway.
+ * So the capture filter keeps deciding what costs money, and stops deciding
+ * what the model remembers.
+ *
+ * The write is best-effort: if the inner backend rejects it, the old
+ * synthetic result is returned rather than propagating an error the caller
+ * never used to see for these turns.
  */
 
 import type {
@@ -134,16 +151,38 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     });
 
     if (!decision.persist) {
-      // Skip the inner write entirely. Surface a synthetic result so the
-      // orchestrator's success path doesn't have to special-case this.
+      // #1096 — sub-threshold: keep the conversation, drop the knowledge.
+      // `entityRefs` are deliberately dropped with it — entity-anchored
+      // recall is a knowledge path, and no CAPTURED edge means no way for a
+      // tail-only turn to re-enter recall through the side door.
       this.log(
-        `[capture-filter] turn skipped (significance=${decision.significance?.toFixed(2) ?? 'null'}) reasons=[${decision.reasons.join('|')}]`,
+        `[capture-filter] turn tail-only (significance=${decision.significance?.toFixed(2) ?? 'null'}) reasons=[${decision.reasons.join('|')}]`,
       );
-      return {
-        sessionId: sessionNodeId(turn.scope),
-        turnId: turnNodeId(turn.scope, turn.time),
-        entityNodeIds: [],
+      const tailOnly: TurnIngest = {
+        ...turn,
+        userMessage: decision.cleanUserMessage,
+        assistantAnswer: decision.cleanAssistantAnswer,
+        entryType: decision.entryType,
+        visibility: decision.visibility,
+        significance: decision.significance,
+        entityRefs: [],
+        tailOnly: true,
       };
+      try {
+        return await this.inner.ingestTurn(tailOnly);
+      } catch (err) {
+        // Best-effort by design: before #1096 this path never called the
+        // inner backend and never threw. Keep that contract — a failed
+        // continuity record must not fail the turn.
+        this.log(
+          `[capture-filter] tail-only write FAILED, continuing without: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return {
+          sessionId: sessionNodeId(turn.scope),
+          turnId: turnNodeId(turn.scope, turn.time),
+          entityNodeIds: [],
+        };
+      }
     }
 
     const cleaned: TurnIngest = {

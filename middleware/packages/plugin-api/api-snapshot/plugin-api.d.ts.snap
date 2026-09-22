@@ -866,6 +866,7 @@ speaker?: string;
 entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
+tailOnly?: boolean;
 }
 export interface TurnIngestResult {
 sessionId: string;

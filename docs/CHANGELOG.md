@@ -36,6 +36,53 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the model sees the whole running conversation again (#1096)
+
+2026-09-22 — the orchestrator's in-session history (the "context tail") was
+built exclusively from turns the knowledge graph had ingested, and the capture
+filter skipped that ingest entirely for any turn scoring below the significance
+threshold (0.2 at `capture_level=normal`). Short messages — "ok", "pong",
+"Farbe: blau" — score 0.00–0.10, so they were dropped, and with them the only
+record the model had that the message ever happened. The user saw a coherent
+dialog (web chat and API clients keep the full transcript), the model saw a
+series of unrelated single-shot requests, and a request to summarise the
+conversation was answered with "there is no prior context". This was not
+web-chat-only: it reproduced on the Public API channel, which has no
+client-side history at all, and Teams uses the same tail loader.
+
+A sub-threshold turn is now still written, flagged `tailOnly` on `TurnIngest`.
+That splits the two jobs one boolean used to carry: the **conversation** (the
+session record `getSession()` returns, and therefore the tail) is always
+recorded, while **knowledge** (embedding, cross-session recall, promotion)
+stays gated by significance exactly as before. Backends honouring the flag
+write no embedding for such a turn and exclude it from `searchTurns`,
+`searchTurnsByEmbedding` and `findEntityCapturedTurns`; its `entityRefs` are
+dropped so no `CAPTURED` edge can let it back into recall through the side
+door, the periodic embedding backfill sweep skips them (otherwise it would
+hand every "ok" a vector at the next sweep), and both promotion paths — the
+per-turn auto-promote and the bulk promoter — decline them explicitly rather
+than inferring it from the score: the capture threshold and the promotion
+threshold are configured independently, so a tail-only turn can outrank the
+promotion bar, and a promoted turn becomes a MemorableKnowledge, which IS
+visible to cross-session recall. The flag is written on every turn, including
+as `false`, because node properties are merged on upsert — a replay at
+`capture_level=off` or a backfill re-ingest clears it instead of stranding a
+row outside recall for good. The write is best-effort: a backend that rejects
+it leaves the turn behaving exactly as it did before, rather than failing it.
+
+The second, independent limit is gone too: the tail was hard-capped at the last
+3 knowledge-graph turns by a `tailSize: 3` constant with no configuration
+surface, so even significant turns left the model's view after three exchanges.
+The default is now 10 (aligned with `sessionBriefing`'s own tail) and operators
+can set `context_tail_size` — declared in the `orchestrator-extras` manifest, so
+it is reachable from the plugin store rather than only from the source, and
+clamped to 1–100 (every tail turn enters the candidate pool, so an accidental
+5000 would flip every assembly into compact rendering). A larger
+tail consumes the shared token budget (`context_default_budget_tokens`) ahead of
+cross-session recall, which is the trade the field makes visible. The
+`[harness-orchestrator-extras] context-assembler ready` log line now reports the
+effective tail length.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two

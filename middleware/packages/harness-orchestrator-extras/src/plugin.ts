@@ -340,6 +340,21 @@ export async function activate(
     ctx.config.get<unknown>('context_compact_mode_threshold'),
     100,
   );
+  // #1096 — verbatim in-session tail depth. Was a hard-wired 3 inside the
+  // retriever, which silently cut the model's view of the running chat after
+  // three exchanges with no way for an operator to see or change it. Clamped
+  // to a whole number in [1, 100]: the tail is the model's only in-session
+  // memory, so "0 turns" is never meant — and every tail turn enters the
+  // candidate pool, so a fat-fingered 5000 would push every assembly past
+  // `compactModeThreshold` (100) into compact rendering for the whole
+  // instance. The token budget trims what actually ships either way.
+  const contextTailSize = Math.min(
+    100,
+    Math.max(
+      1,
+      Math.round(parseNumberOrDefault(ctx.config.get<unknown>('context_tail_size'), 10)),
+    ),
+  );
 
   // Slice 7 — memory-recall toggle + tuning. Default ON whenever an
   // embeddingClient is wired (we still skip the leg in `loadMemoryHits`
@@ -653,6 +668,7 @@ export async function activate(
   const contextRetriever = new ContextRetriever(
     wrappedKg,
     {
+      tailSize: contextTailSize,
       recallMinScore,
       recallRecencyBoost,
       recallTypeWeights,
@@ -687,7 +703,7 @@ export async function activate(
     relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
+    `[harness-orchestrator-extras] context-assembler ready (tail=${String(contextTailSize)}, budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
