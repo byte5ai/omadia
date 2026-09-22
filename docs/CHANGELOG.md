@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — cost-ledger rows are attributable to a turn, a session, and the call time (#1098)
+
+2026-09-21 — every LLM call writes one row into the `token_usage` ledger
+(`@omadia/usage-telemetry`), but the rows carried no attribution: `session_id`
+was NULL on every row, there was no `turn_id` column at all, and `created_at`
+recorded the flush tick, not the call — the recorder buffers and flushes on a
+5-second grid, so `DEFAULT NOW()` stamped every row of a flush with one
+transaction-start time. A single turn emits several rows (one per streaming
+iteration plus background extras / model- and persona-router calls), so "what
+did this turn/session/user cost?" could not be answered, and a time-window
+heuristic failed because rows of different turns landed on the same tick.
+
+Graph migration `0033_token_usage_attribution.sql` adds `turn_id TEXT NULL` (with
+a partial index) and `provider TEXT NULL` (mirroring `turn_receipts.provider`, so
+a provider fallback is visible in the ledger). The recorder now freezes the call
+time (`occurredAt`) at `recordUsage()` and writes it explicitly to `created_at`
+instead of leaning on `DEFAULT NOW()` at flush. Turn attribution is read from the
+orchestrator's per-turn `AsyncLocalStorage` context via a `setUsageContextProvider`
+hook (the telemetry package sits below the orchestrator and cannot import it), so
+every capture seam picks up `turn_id`/`session_id` without threading ids through
+each call site; ids passed explicitly on a `UsageRecord` still win, and off-turn
+callers (background jobs) keep NULL ids rather than throwing. `session_id` maps to
+the turn's `sessionScope` — best-effort, since unscoped HTTP turns share
+`http-default` (see #445), so group on `turn_id`. Regression tests
+(`test/costLedger/tokenUsageAttribution.test.ts`) cover turn/session attribution,
+two turns separable within one flush window, `occurredAt` surviving the flush, and
+the no-context NULL path. The `/api/usage` missing role check is out of scope and
+tracked separately.
+
 ### Fixed — public chat API validates its request contract strictly (#1109)
 
 2026-09-18 — two defects in `POST /api/public/v1/chat`

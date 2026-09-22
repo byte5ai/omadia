@@ -31,6 +31,7 @@ export interface UsageTrackingOptions {
 function record(
   usage: LlmUsage,
   model: string,
+  providerId: string,
   opts: UsageTrackingOptions,
 ): void {
   try {
@@ -38,6 +39,10 @@ function record(
       source: opts.source,
       model,
       tenantId: opts.tenantId,
+      // #1098: turnId/sessionId come from the ambient turn context (these
+      // background scorers run inside the turn's async scope); the provider id
+      // is known here at the boundary.
+      provider: providerId,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       // Neutral usage names cacheWriteTokens what the recorder calls
@@ -63,13 +68,13 @@ export function withProviderUsageTracking(
     capabilities: provider.capabilities,
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const response = await provider.complete(req);
-      record(response.usage, response.model, opts);
+      record(response.usage, response.model, provider.id, opts);
       return response;
     },
     async *stream(req: LlmRequest): AsyncIterable<LlmStreamEvent> {
       for await (const event of provider.stream(req)) {
         if (event.type === 'final') {
-          record(event.response.usage, event.response.model, opts);
+          record(event.response.usage, event.response.model, provider.id, opts);
         }
         yield event;
       }

@@ -33,6 +33,20 @@ export interface UsageRecord extends UsageTokens {
   /** Turn id, when known. */
   readonly turnId?: string | undefined;
   /**
+   * #1098 — the provider id the call actually ran on (`anthropic`, `openai`, a
+   * plugin provider id). Passed at the provider boundary so a fallback is
+   * visible in the ledger; mirrors `turn_receipts.provider`. NULL when the
+   * seam does not know it.
+   */
+  readonly provider?: string | undefined;
+  /**
+   * #1098 — when the LLM call happened, captured at `recordUsage()` time. The
+   * recorder buffers and flushes on a 5s grid, so the DB `DEFAULT NOW()` would
+   * record the flush tick, not the call; passing this explicitly keeps the
+   * true call time. Defaults to the moment `recordUsage()` runs.
+   */
+  readonly occurredAt?: Date | undefined;
+  /**
    * OM-103 — billed cost, when the CALLER knows it and the price table does
    * not. Set to `0` by the subscription (`claude-cli`) seams: the operator
    * pays a flat fee, so per-token pricing would invent money nobody spent.
@@ -50,6 +64,33 @@ export interface UsageRecord extends UsageTokens {
 interface BufferedRow extends UsageRecord {
   readonly costUsd: number;
   readonly referenceCostUsd: number;
+  readonly occurredAt: Date;
+}
+
+/**
+ * #1098 — ambient turn attribution. The capture seams (streaming, extras,
+ * verifier, routers) run inside the orchestrator's per-turn AsyncLocalStorage
+ * scope, but this package sits below the orchestrator and cannot import it. So
+ * the orchestrator registers a provider once (see `setUsageContextProvider`)
+ * and the recorder reads `turnId`/`sessionId` from it at `recordUsage()` time.
+ * Ids passed explicitly on a `UsageRecord` still win; off-turn callers (e.g.
+ * background jobs) get `undefined` → NULL, never a throw.
+ */
+export interface UsageContext {
+  readonly turnId?: string | undefined;
+  readonly sessionId?: string | undefined;
+}
+
+let contextProvider: (() => UsageContext | undefined) | undefined;
+
+/**
+ * Registers the ambient turn-context reader. Idempotent-friendly: a later call
+ * replaces the provider. Passing `undefined` clears it (used by tests).
+ */
+export function setUsageContextProvider(
+  provider: (() => UsageContext | undefined) | undefined,
+): void {
+  contextProvider = provider;
 }
 
 const FLUSH_INTERVAL_MS = 5_000;
@@ -108,10 +149,24 @@ export function recordUsage(record: UsageRecord): void {
     }
     return;
   }
+  // #1098: fill turn attribution from the ambient turn context, but never
+  // override ids the caller passed explicitly. The read is defensive — a
+  // throwing provider must not break a telemetry write.
+  let ctx: UsageContext | undefined;
+  try {
+    ctx = contextProvider?.();
+  } catch {
+    ctx = undefined;
+  }
   // OM-103: an explicit `costUsd` from the caller wins over the price table.
   // `?? ` and not `||` — `0` is the whole point on the subscription path.
   buffer.push({
     ...record,
+    turnId: record.turnId ?? ctx?.turnId,
+    sessionId: record.sessionId ?? ctx?.sessionId,
+    // #1098: freeze the call time now; the flush that writes this row may be
+    // up to FLUSH_INTERVAL_MS later.
+    occurredAt: record.occurredAt ?? new Date(),
     costUsd: record.costUsd ?? computeCostUsd(record.model, record),
     referenceCostUsd: record.referenceCostUsd ?? 0,
   });
@@ -127,9 +182,10 @@ export async function flush(): Promise<void> {
   if (!pool || buffer.length === 0) return;
   const rows = buffer.splice(0, FLUSH_MAX_BATCH);
 
-  // Build a single parameterised multi-row INSERT: 10 columns per row
-  // (OM-103 added `reference_cost_usd`; graph migration 0032).
-  const cols = 10;
+  // Build a single parameterised multi-row INSERT: 13 columns per row
+  // (OM-103 added `reference_cost_usd`, graph migration 0032; #1098 added
+  // `turn_id`/`provider`/explicit `created_at`, graph migration 0033).
+  const cols = 13;
   const valuesSql = rows
     .map((_, i) => {
       const b = i * cols;
@@ -150,6 +206,9 @@ export async function flush(): Promise<void> {
       r.tenantId ?? null,
       r.sessionId ?? null,
       r.referenceCostUsd,
+      r.turnId ?? null,
+      r.provider ?? null,
+      r.occurredAt,
     );
   }
 
@@ -158,7 +217,7 @@ export async function flush(): Promise<void> {
       `INSERT INTO token_usage
          (source, model, input_tokens, output_tokens,
           cache_read_tokens, cache_creation_tokens, cost_usd, tenant_id, session_id,
-          reference_cost_usd)
+          reference_cost_usd, turn_id, provider, created_at)
        VALUES ${valuesSql}`,
       params,
     );
