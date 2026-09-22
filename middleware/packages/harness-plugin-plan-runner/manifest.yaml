@@ -73,13 +73,16 @@ setup:
     - key: "processReuseThreshold"
       type: "string"
       label: "Ähnlichkeitsschwelle für Prozess-Wiederverwendung"
-      help: "Hybrid-Retrieval-Score (Wertebereich 0–1), ab dem ein gelernter Prozess statt einer Neuplanung wiederverwendet wird; höher = strenger, weniger Treffer. Nicht-numerische oder leere Werte fallen auf den Standard 0.6 zurück. Greift nur bei reuseProcesses=on. Standard: 0.6."
+      help: "Hybrid-Retrieval-Score (Wertebereich 0–1), ab dem ein gelernter Prozess statt einer Neuplanung wiederverwendet wird; höher = strenger, weniger Treffer. Nicht-numerische, leere oder außerhalb von 0–1 liegende Werte fallen auf den Standard 0.6 zurück. Greift nur bei reuseProcesses=on. Standard: 0.6."
       required: false
       default: "0.6"
       # No decimal field type exists (loader: string|url|secret|oauth|enum|
       # boolean|integer|host_list|json_file), so the 0–1 score is a string with
       # a pattern that rejects out-of-range/non-numeric input at the schema
-      # level. The plugin still falls back to 0.6 on a bad value (belt + braces).
+      # level. The pattern is not the only write path, though — `ctx.config.set`
+      # persists a declared field without re-running it — so the plugin ALSO
+      # falls back to 0.6 on anything non-numeric or outside 0–1
+      # (`parseProcessReuseThreshold`, belt + braces).
       pattern: "^(0|1|0\\.[0-9]+|1\\.0+)$"
       pattern_hint:
         en: "Decimal between 0 and 1, e.g. 0.6"

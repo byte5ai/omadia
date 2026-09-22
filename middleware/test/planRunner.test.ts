@@ -7,8 +7,10 @@ import {
   buildPlanSnapshot,
   materializePlan,
   parsePlanSteps,
+  parseProcessReuseThreshold,
   pruneTurns,
   shouldPlan,
+  DEFAULT_PROCESS_REUSE_THRESHOLD,
 } from '@omadia/plugin-plan-runner';
 
 // #133 (plan-as-data) slice E2 — gate + materializer. The LLM is mocked so
@@ -204,5 +206,43 @@ describe('#133 E2 — plan-runner gate + materializer', () => {
         ],
       );
     });
+  });
+});
+
+describe('#1103 — processReuseThreshold parsing', () => {
+  it('accepts in-range decimals verbatim', () => {
+    for (const [raw, want] of [
+      ['0', 0],
+      ['1', 1],
+      ['0.6', 0.6],
+      ['0.85', 0.85],
+      ['1.00', 1],
+    ] as const) {
+      assert.equal(parseProcessReuseThreshold(raw), want, `raw=${raw}`);
+    }
+  });
+
+  it('falls back to the default on empty / non-numeric input', () => {
+    for (const raw of [undefined, '', '   ', 'abc', 'NaN']) {
+      assert.equal(
+        parseProcessReuseThreshold(raw),
+        DEFAULT_PROCESS_REUSE_THRESHOLD,
+        `raw=${String(raw)}`,
+      );
+    }
+  });
+
+  // The manifest pattern rejects these, but `ctx.config.set` persists a
+  // declared field WITHOUT re-running the pattern — so out-of-range values can
+  // reach the plugin. A bare `Number.isFinite` guard used to let them through:
+  // `0,6` parsed to 0 (reuse every hit) and `5` disabled reuse silently.
+  it('falls back to the default on out-of-range values reaching it via config.set', () => {
+    for (const raw of ['0,6', '5', '1.5', '2', '-0.1', '-1']) {
+      assert.equal(
+        parseProcessReuseThreshold(raw),
+        DEFAULT_PROCESS_REUSE_THRESHOLD,
+        `raw=${raw}`,
+      );
+    }
   });
 });

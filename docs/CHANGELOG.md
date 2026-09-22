@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — plan-runner process-reuse settings are reachable, and a bad threshold can no longer disable similarity (#1103)
+
+2026-09-22 — the plan-runner plugin read two setup keys its manifest never
+declared, `reuseProcesses` and `processReuseThreshold`. The store only renders
+fields declared under `setup.fields`, so both values were unreachable from the
+UI: process reuse was on with a fixed 0.6 threshold and no way to change
+either. Both fields are now declared (`harness-plugin-plan-runner/manifest.yaml`),
+and `test/planRunnerConfigManifestDrift.test.ts` pins the invariant by scanning
+the package's `src/` for every literal config key read through
+`ctx.config.get(...)` / `ctx.config.require(...)` and asserting the manifest
+declares it — `require()` is included because an undeclared key there throws
+`MissingConfigError` at activation rather than returning `undefined`. The
+guard's allow-list of kernel-injected synthetic fields imports
+`PRIVACY_MODE_CONFIG_KEY` and `PRIVACY_BYPASS_SCOPES_CONFIG_KEY` from
+`@omadia/plugin-api` instead of repeating the strings, so a kernel-side rename
+cannot silently re-open the drift.
+
+`processReuseThreshold` is a string field (the manifest loader has no decimal
+type) constrained by a `0–1` pattern. The pattern is not the only write path:
+`ctx.config.set` persists a declared non-secret field without re-running
+`checkSetupFieldPattern`, so out-of-contract values could still reach the
+plugin, and the old `Number.parseFloat` + `Number.isFinite` guard passed them
+through. `"0,6"` (decimal comma) parsed to the prefix `0` — finite, in range,
+and therefore invisible to a range check — which reuses **every** retrieved
+process regardless of similarity; `"5"` silently disabled reuse while the
+startup log printed a plausible threshold. Parsing now rejects anything that is
+not a complete numeric literal and anything outside 0–1, falling back to the
+0.6 default in both cases (`parseProcessReuseThreshold`), which is what the
+field's help text promises.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
