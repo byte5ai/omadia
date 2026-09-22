@@ -176,6 +176,66 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(receipt.pseudonymProjectionUsed, false);
   });
 
+  /**
+   * #1097 — a render whose materialized text is control flow (a tool error, an
+   * MCP auth prompt) is a rendered FAILURE. The stashed answer says so, so the
+   * orchestrator can put `answerIsError` on the wire and channels can present
+   * it as an error instead of success prose wrapped around an error string.
+   *
+   * Reaching the store at all takes the `internToolResultV4` path directly:
+   * the dispatch seams keep such results out of the shield entirely (the
+   * primary fix), so this exercises the second line of defence.
+   */
+  it('flags a rendered tool error as isError', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-err';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'manage_routine',
+      rawResult: 'Error: routines are unavailable in this session.',
+    });
+    const srcId = datasetIdOf(interned.digestText);
+
+    await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: srcId, columns: ['value'], format: 'scalar' },
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    assert.ok(
+      answer.text.includes('Error: routines are unavailable'),
+      'the render still materializes what the model asked for',
+    );
+    assert.equal(answer.isError, true, 'a rendered error must be flagged as one');
+  });
+
+  it('leaves isError unset for an ordinary rendered answer', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-ok';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    const srcId = datasetIdOf(interned.digestText);
+
+    await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: srcId, columns: ['employee', 'days'], format: 'table' },
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    assert.equal(answer.isError, undefined, 'an ordinary answer carries no error flag');
+  });
+
   it('takeRenderedAnswerV4 clears the stash after taking', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-clear';

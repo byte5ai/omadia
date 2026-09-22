@@ -152,6 +152,7 @@ import type {
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
+  isControlFlowToolResult,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
@@ -2690,6 +2691,28 @@ export class Orchestrator {
       }
     }
 
+    // #1097 — a replay the server answered with `isError`, or that failed in
+    // transport, comes back from `McpManager.callTool` as an `Error: …` string
+    // (the manager never throws; `renderToolResult` prefixes failures). It is
+    // control-flow text, not an MCP row: interning it would hide the failure
+    // behind a masked digest and register a renderable 1-row dataset. Same
+    // guard, same position as `dispatchTool` above — after the operator
+    // bypass, before interning.
+    //
+    // Not every failed replay looks like that: `handleFailure` answers an
+    // auth-shaped failure with the provider's connect prompt instead (`🔒 …`
+    // plus the `<mcp-auth-required>` block the chat UI turns into a Connect
+    // card), which carries no `Error:` prefix. `isControlFlowToolResult`
+    // covers both carriers — interning the prompt destroyed the card and left
+    // the model narrating success over a masked digest.
+    //
+    // Known limit (#1097): the text behind an MCP `Error:` prefix is the
+    // REMOTE server's own body, so this passthrough trusts foreign error
+    // text — the trade-off #1105 already made on the chat path, not a new one
+    // taken here.
+    if (isControlFlowToolResult(rawResult)) {
+      return rawResult;
+    }
     try {
       const v4 = await privacy.internToolResultV4({
         toolName: record.toolName,
@@ -3682,6 +3705,10 @@ export class Orchestrator {
               // answer so `toSemanticAnswer` / clients can tell it apart from
               // the model's own text.
               answerSource: 'privacy-render',
+              // #1097 — the render materialized control flow (a tool error, an
+              // MCP auth prompt), not a result. Channels decide how to show a
+              // failure; the orchestrator only reports that it is one.
+              ...(v4Rendered.isError === true ? { answerIsError: true } : {}),
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -5563,6 +5590,9 @@ export class Orchestrator {
                   // #1105 — mark the answer as server-rendered so a streaming
                   // client knows it supersedes the `text_delta` preview.
                   answerSource: 'privacy-render' as const,
+                  // #1097 — see the buffered twin: a rendered tool error / auth
+                  // prompt is a failure, and says so on the wire.
+                  ...(v4Rendered.isError === true ? { answerIsError: true } : {}),
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -7037,17 +7067,17 @@ export class Orchestrator {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
       }
-      // #1105 — a guarded tool that returned a prose error string (the
+      // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
-      // tool-result assembly reads to stamp `is_error`) must reach the model
-      // AS an error, not be interned. Interning it would (a) hide the failure
+      // tool-result assembly reads to stamp `is_error` — or an MCP auth
+      // prompt) must reach the model AS that text, not be interned. Interning it would (a) hide the failure
       // behind a masked digest so the model never learns the call failed, and
       // (b) register a renderable 1-row dataset that a later `v4_render_answer`
       // materializes as if the error were data — the divergence reported in
       // #1105. Pass it through verbatim: the chat path already forwards tool
       // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
       // `is_error` flag is derived from this very prefix.
-      if (result.startsWith('Error:')) {
+      if (isControlFlowToolResult(result)) {
         return result;
       }
       // Intern the raw result server-side and hand the LLM only the

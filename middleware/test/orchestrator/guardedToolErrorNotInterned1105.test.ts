@@ -27,6 +27,15 @@ import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 const ERROR_RESULT =
   'Error: routines are unavailable in this session because the user context did not reach the routines tool.';
 const OK_RESULT = '{"status":"ok","rows":[{"a":1}]}';
+/** #1097 — the other control-flow carrier: `McpManager.handleFailure` answers
+ *  an auth-shaped failure with the app layer's connect prompt (`🔒 …` plus the
+ *  `<mcp-auth-required>` machine block the chat UI turns into a Connect card).
+ *  It carries no `Error:` prefix, so the original guard missed it. */
+const AUTH_PROMPT =
+  '🔒 The MCP server "Strava" needs authorization before it can be used. Ask the ' +
+  'user to click Connect (this opens the provider\'s login), then retry: ' +
+  'https://example.test/oauth/authorize?x=1\n' +
+  '<mcp-auth-required serverId="s-1" server="Strava" needsClient="false"></mcp-auth-required>';
 
 const usage = {
   inputTokens: 10,
@@ -181,6 +190,31 @@ describe('#1105 — guarded-tool error result is not interned as a dataset', () 
       results[0]?.includes('«dataset:'),
       false,
       'an error result must NOT be interned as a renderable dataset (that is the #1105 bug)',
+    );
+  });
+
+  it('#1097 — hands an MCP auth prompt to the model verbatim, block intact', async () => {
+    const { provider, seen } = recordingProvider([
+      toolCallResponse('mcp__Strava__list_activities'),
+      textResponse('bitte verbinden'),
+    ]);
+    const orchestrator = orchestratorWith(
+      provider,
+      registryWith('mcp__Strava__list_activities', () => Promise.resolve(AUTH_PROMPT)),
+    );
+
+    await orchestrator.runTurn({ userMessage: 'Zeig meine Läufe.' });
+
+    const results = toolResultTexts(seen);
+    assert.equal(results.length, 1);
+    assert.equal(
+      results[0],
+      AUTH_PROMPT,
+      'the model must see the connect prompt so it can relay it to the user',
+    );
+    assert.ok(
+      results[0]?.includes('<mcp-auth-required'),
+      'the machine block the Connect card is parsed from must survive the boundary',
     );
   });
 

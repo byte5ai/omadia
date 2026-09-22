@@ -277,6 +277,7 @@ export function toSemanticAnswer(
     // #1105 — forward the answer's provenance so a channel that also exposes
     // the raw stream can reconcile deltas vs the final text. Omitted for the
     // ordinary `'model'` case.
+    ...(r.answerIsError === true ? { answerIsError: true } : {}),
     ...(r.answerSource && r.answerSource !== 'model'
       ? { answerSource: r.answerSource }
       : {}),

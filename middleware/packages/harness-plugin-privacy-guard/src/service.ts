@@ -34,6 +34,7 @@ import type {
   PromptPiiDetector,
   PromptPiiSpan,
 } from '@omadia/plugin-api';
+import { isControlFlowToolResult } from '@omadia/plugin-api';
 
 import { createDatasetStore } from './v4/datasetStore.js';
 import { createShapeClassifier } from './v4/shapeClassifier.js';
@@ -479,14 +480,21 @@ export function createPrivacyGuardService(deps?: {
         if (request.toolName === RENDER_TOOL_SPEC.name) {
           const directive = parseRenderDirective(request.input);
           const rendered = materialize(store, directive);
+          // #1097 — a render whose materialized text is control flow (a tool
+          // error, an MCP auth prompt) is a rendered FAILURE, not a result.
+          // Flag it so channels can display it as one instead of presenting
+          // the model's success prose over an error string.
+          const renderIsError = isControlFlowToolResult(rendered.text);
           renderedAnswers.set(request.turnId, {
             text: rendered.text,
             maskedValues: rendered.maskedValues,
+            ...(renderIsError ? { isError: true } : {}),
           });
           console.log(
             `[privacy-guard v4] render turn=${request.turnId} ` +
               `datasetId=${directive.datasetId} rows=${String(rendered.rowCount)} ` +
-              `rendered=${String(rendered.renderedRowCount)} format=${directive.format}`,
+              `rendered=${String(rendered.renderedRowCount)} format=${directive.format}` +
+              `${renderIsError ? ' isError=true' : ''}`,
           );
           return {
             resultText:
