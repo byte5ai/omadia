@@ -1483,6 +1483,30 @@ export const SECURITY_QUARANTINE_NOTICE =
   'Diese Eingabe wurde vom Sicherheits-Screening zurückgehalten und nicht verarbeitet. / This input was withheld by security screening and was not processed.';
 
 /**
+ * Shown when the model's safety classifiers decline the turn
+ * (`stop_reason: "refusal"`, HTTP 200 — Fable 5.x, Opus 5+, Sonnet 5). The API
+ * then returns no text or only a fragment; without this the user saw an empty
+ * reply that looked like a platform bug. DE-first with an EN line, same shape
+ * as {@link SECURITY_QUARANTINE_NOTICE}.
+ */
+export const MODEL_REFUSAL_NOTICE =
+  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell. / The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+
+/**
+ * The turn's final answer text. A refusal is made explicit: an empty answer
+ * becomes {@link MODEL_REFUSAL_NOTICE}, a partial one (refusal mid-stream)
+ * gets the notice appended so the fragment is not mistaken for a full answer.
+ */
+export function finalAnswerText(
+  textParts: readonly string[],
+  stopReason: string | null | undefined,
+): string {
+  const text = textParts.join('\n\n').trim();
+  if (stopReason !== 'refusal') return text;
+  return text === '' ? MODEL_REFUSAL_NOTICE : `${text}\n\n${MODEL_REFUSAL_NOTICE}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -4925,7 +4949,7 @@ export class Orchestrator {
         textParts.push(...collectTextBlocks(response.content));
 
         if (response.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, response.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // Only force a retry on a PURE-TEXT end (no tool_use block). A
           // tool_use present with a non-'tool_use' stop_reason means the model
@@ -6117,7 +6141,7 @@ export class Orchestrator {
         textParts.push(...collectTextBlocks(finalMessage.content));
 
         if (finalMessage.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, finalMessage.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // See the non-streaming path: only force a retry on a pure-text end,
           // never when a (possibly truncated) tool_use block is present.
