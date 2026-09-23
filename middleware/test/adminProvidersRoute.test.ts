@@ -723,6 +723,30 @@ describe('admin providers route — live model discovery', () => {
     assert.equal(liveRow?.['modelsDiscoveredAt'], '2026-09-08T12:00:00.000Z');
   });
 
+  it('GET / names vendor models the last sync hid for lack of a classify rule', async () => {
+    const last: ModelCatalogSyncResult = {
+      providerId: 'anthropic',
+      status: 'discovered',
+      models: 3,
+      dropped: [
+        { modelId: 'claude-fable-9', reason: 'unclassified' },
+        { modelId: 'claude-3-haiku-20240307', reason: 'excluded' },
+      ],
+      at: '2026-09-23T12:00:00.000Z',
+    };
+    const sync: ModelCatalogSync = {
+      ...fakeSync(() => last),
+      lastResult: (id: string) => (id === 'anthropic' ? last : undefined),
+    };
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
+    const { providers } = await getProviders(h);
+    const anthropic = providers.find((p) => p.id === 'anthropic') as Record<string, unknown> | undefined;
+    // Only `unclassified` counts — an `excluded` retired family is intended.
+    assert.deepEqual(anthropic?.['unclassifiedModels'], ['claude-fable-9']);
+    const openai = providers.find((p) => p.id === 'openai') as Record<string, unknown> | undefined;
+    assert.equal(openai?.['unclassifiedModels'], undefined, 'absent when nothing is hidden');
+  });
+
   it('a verified key kicks off a background refresh for that provider', async () => {
     const sync = fakeSync((providerId) => ({ providerId, status: 'discovered', models: 1, dropped: [], at: 'x' }));
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], { modelCatalogSync: sync });
