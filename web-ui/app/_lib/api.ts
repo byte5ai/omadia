@@ -446,6 +446,10 @@ export interface AdminProvider {
    *  `modelsSource === 'discovered'`; absent on pre-discovery middleware
    *  payloads and whenever the static seed list is active. */
   modelsDiscoveredAt?: string;
+  /** Vendor model ids the last discovery run hid because no `classify` rule
+   *  matches them — typically a brand-new model family. Present only when
+   *  there are some; absent on older middleware payloads. */
+  unclassifiedModels?: string[];
   models: AdminProviderModel[];
 }
 

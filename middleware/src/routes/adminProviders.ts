@@ -65,7 +65,10 @@ import {
   resolveProviderVerification,
   type LlmProviderCatalogView,
 } from '../platform/pluginLlmReadiness.js';
-import type { ModelCatalogSync } from '../platform/modelCatalogSync.js';
+import {
+  unclassifiedModelIds,
+  type ModelCatalogSync,
+} from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
 
 export interface AdminProvidersDeps {
@@ -266,6 +269,15 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           ...(descriptor?.modelsDiscoveredAt !== undefined
             ? { modelsDiscoveredAt: descriptor.modelsDiscoveredAt }
             : {}),
+          // Vendor models the last discovery run hid for lack of a `classify`
+          // rule (a new model family). Present only when there are some, so
+          // the operator sees why a model the vendor offers is not pickable.
+          ...(() => {
+            const hidden = unclassifiedModelIds(
+              deps.modelCatalogSync?.lastResult(id)?.dropped ?? [],
+            );
+            return hidden.length > 0 ? { unclassifiedModels: hidden } : {};
+          })(),
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,

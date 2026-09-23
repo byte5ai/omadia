@@ -3702,6 +3702,7 @@
       "modelsRefreshUnsupported": "Dieser Provider unterstützt keine Live-Erkennung.",
       "modelsSourceLive": "live · {at}",
       "modelsSourceSeed": "Seed-Liste",
+      "unclassifiedModels": "{count, plural, one {# Modell} other {# Modelle}} ausgeblendet (keine Discovery-Regel): {models}",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
