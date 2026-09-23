@@ -8198,6 +8198,17 @@ export class Orchestrator {
     if (v4ToolSpecs) {
       for (const spec of v4ToolSpecs) tools.push(spec);
     }
+    // The Anthropic API rejects the whole request when two tools share a name
+    // (`400 tools: Tool names must be unique.`, every model). The segments
+    // above are filled independently — kernel specs, plugin native specs,
+    // domain tools, Privacy v4 — so a plugin that ships a name the kernel (or
+    // another plugin) already advertises turned every turn of that agent into
+    // an error. Keep the spec whose handler `dispatchTool` actually runs.
+    const unique = this.dropDuplicateToolNames(tools, {
+      v4: new Set<unknown>(v4ToolSpecs ?? []),
+      native: new Set<unknown>(nativeSpecs),
+      domain: new Set<unknown>(domainSpecs),
+    });
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.
@@ -8208,14 +8219,55 @@ export class Orchestrator {
     // because the dynamic segments above are name-sorted. Do not reorder or
     // append unsorted segments before this point without re-reading
     // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
-    const last = tools[tools.length - 1];
-    if (last) {
-      tools[tools.length - 1] = {
-        ...last,
-        cache_control: { type: 'ephemeral' },
-      };
+    const last = unique[unique.length - 1];
+    return last
+      ? [...unique.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+      : unique;
+  }
+
+  /** Names already reported by {@link dropDuplicateToolNames} — warn once. */
+  private readonly reportedDuplicateToolNames = new Set<string>();
+
+  /**
+   * Drops tools whose `name` repeats, keeping the spec whose handler
+   * `dispatchTool` actually runs: `v4_*` (Privacy v4) → kernel `memory` →
+   * native registry → kernel tools → domain tools. Segments are told apart by
+   * object identity. Survivors keep their order, so the cached prefix is
+   * unchanged whenever there is nothing to drop.
+   */
+  private dropDuplicateToolNames<T extends { readonly name: string; readonly type?: string }>(
+    tools: ReadonlyArray<T>,
+    segments: {
+      readonly v4: ReadonlySet<unknown>;
+      readonly native: ReadonlySet<unknown>;
+      readonly domain: ReadonlySet<unknown>;
+    },
+  ): T[] {
+    const count = new Map<string, number>();
+    for (const t of tools) count.set(t.name, (count.get(t.name) ?? 0) + 1);
+    if (![...count.values()].some((n) => n > 1)) return [...tools];
+
+    const rank = (t: T): number => {
+      if (segments.v4.has(t)) return 0;
+      if (t.name === MEMORY_TOOL_NAME && t.type === MEMORY_TOOL_TYPE) return 1;
+      if (segments.native.has(t)) return 2;
+      if (segments.domain.has(t)) return 4;
+      return 3; // kernel tool
+    };
+    const winner = new Map<string, T>();
+    for (const t of tools) {
+      const current = winner.get(t.name);
+      if (current === undefined || rank(t) < rank(current)) winner.set(t.name, t);
     }
-    return tools;
+    for (const [name, n] of count) {
+      if (n > 1 && !this.reportedDuplicateToolNames.has(name)) {
+        this.reportedDuplicateToolNames.add(name);
+        console.warn(
+          `[harness-orchestrator] tool name '${name}' offered ${String(n)}× — kept the spec dispatch serves, dropped the rest (the API rejects duplicate names). Two sources register '${name}'; rename one.`,
+        );
+      }
+    }
+    return tools.filter((t) => winner.get(t.name) === t);
   }
 }
 
