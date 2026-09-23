@@ -2282,6 +2282,7 @@
       "boundaries": {
         "presetsHeading": "Grenzen aus der Bibliothek",
         "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
         "categories": {
           "data": "Daten",
@@ -3133,6 +3134,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} ausgewählt",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "save": "Boundaries speichern",

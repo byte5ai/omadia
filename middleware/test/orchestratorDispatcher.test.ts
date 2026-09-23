@@ -292,6 +292,38 @@ describe('createOrchestratorDispatcher', () => {
     });
   });
 
+  it('threads channelIdentity {api} for the public API channel (key:-prefixed custom ref, #1107)', async () => {
+    const seen: unknown[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: () => ({
+        agent: {
+          chat: () => Promise.resolve({ text: '' }),
+          async *chatStream(input) {
+            seen.push(input);
+            await Promise.resolve();
+            yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+          },
+        },
+      }),
+    });
+    await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        // harness-channel-api sets `id: key:<uuid>` — the key IS its identity.
+        userRef: { kind: 'custom', id: 'key:11111111-2222-3333-4444-555555555555' },
+        channelId: 'de.byte5.channel.api',
+      }),
+    );
+    const input = seen[0] as {
+      channelIdentity?: { channelKind: string; channelUserId: string };
+    };
+    assert.deepEqual(input.channelIdentity, {
+      channelKind: 'api',
+      channelUserId: 'key:11111111-2222-3333-4444-555555555555',
+    });
+  });
+
   it('omits channelIdentity for a userRef kind the KG ChannelKind model has no mapping for (custom)', async () => {
     const seen: unknown[] = [];
     const dispatcher = createOrchestratorDispatcher({

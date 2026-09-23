@@ -127,6 +127,8 @@ src/
     signierte Proxy-URL zurück, Teams-Adapter + Web-Dev-UI hängen Bild
     automatisch an die Card an. Vega-Lite = Chart-Engine für quantitative
     Daten: Balken/Line/Pie/Scatter aus einem JSON-Spec.)
+  - `get_chat_participants` (unser eigenes Tool, **nur auf Turns mit
+    Roster-Provider** — seit #1108, siehe Unterabschnitt unten)
   - Eine DomainTool-Instanz pro Sub-Agent (`query_odoo_accounting`,
     `query_odoo_hr`, `query_confluence_playbook`)
 - **Methoden:** `chat()` blockierend, `chatStream()` als Async-Generator
@@ -135,6 +137,32 @@ src/
 - **System-Prompt:** Spricht Deutsch, liest zu Turn-Start `/memories/_rules`,
   nutzt Session-Transkripte nur auf Rückbezug, persistiert Learnings
   früh (im nächsten Tool-Call, nicht am Ende).
+
+### `get_chat_participants` — per-Turn-Roster-Gating (#1108)
+
+- **Datei:** `packages/harness-orchestrator/src/tools/chatParticipantsTool.ts`.
+- **Rolle:** Liefert dem Modell die Teilnehmer des aktuellen Chats für
+  `<at>…</at>`-Mentions. Der Roster-Provider wird **pro Turn** vom Channel
+  verdrahtet (nur Teams / Telegram-Gruppen mit Admin-Rechten führen einen).
+- **Gating (der Kern von #1108):** Die Tool-Instanz wird einmalig gebaut und
+  ist kanal-unabhängig — daher wird das Tool **nicht** an der Instanz, sondern
+  am Live-Provider gegatet. `Orchestrator.turnHasChatRoster()` prüft
+  `turnContext.current()?.chatParticipants` und wird an **beiden** Advertise-
+  Stellen konsultiert: `buildToolsList()` (Tool-Specs) und der
+  `buildSystemPrompt`-Aufruf (`hasChatParticipants`-Roster). Ein Kanal ohne
+  Roster zeigt das Tool nirgends. Vorher wurde es auf jedem Kanal angeboten und
+  gab bei Fehltreffern einen englischen `Error:`-String zurück, den der Privacy
+  Shield (#1097) internierte und das Modell als Roster rendern ließ.
+- **Miss-Kontrakt:** Jeder "kein Roster"-Zweig des Handlers liefert ein
+  strukturiertes, deutsches Nicht-Fehler-Ergebnis der Form
+  `{ participants: [], reason, note }` — nie einen `Error:`-String. Die drei
+  `reason`-Codes sind exportierte Konstanten: `no_roster_on_this_channel`
+  (kein Provider), `roster_empty` (Provider vorhanden, leer — der
+  Telegram-Admin-Only-Fall) und `roster_fetch_failed` (Provider warf; der rohe
+  Fehler wird geloggt, aber **nicht** ins kanal-sichtbare Ergebnis gehängt).
+- **Verwandt:** das generische Readiness-Gate (#474, Unterabschnitt unten)
+  gilt für Plugin-Tools mit `agentId`; `get_chat_participants` ist
+  kernel-intern und wird stattdessen am Turn-Roster gegatet.
 
 ### Turn-Owner-Guard für den Subscription-CLI-Pfad (`routineTurnOwnerGuard`, #1016)
 
@@ -1005,6 +1033,19 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Mechanik.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
+- **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
+  Zod-Schema ist `.strict()` — unbekannte Felder (`stream`, `userId`, `locale`,
+  ein `conversationID`-Casing-Typo) werden **nicht** stillschweigend gestrippt,
+  sondern mit `400 invalid_request` abgelehnt; die Response trägt ein
+  Top-Level-`message`, das die abgelehnten Feldnamen nennt. Nur `message` +
+  `conversationId` sind akzeptiert. Das hält den Weg offen, später ein echtes
+  `stream`/`locale`-Feld zu ergänzen, ohne bereits-ignorierte Caller zu brechen.
+  Zusätzlich: ein Request ohne `Content-Type: application/json` wird vom
+  globalen `express.json` nie geparst (`req.body` bliebe `undefined`); der Router
+  fängt das **vor** dem Schema-Parse mit `415 unsupported_media_type` ab und
+  nennt den erforderlichen Content-Type — statt der irreführenden
+  "expected object, received undefined"-Meldung. Beide Ausgänge auditieren als
+  `invalid_request`.
 
 Tests: `test/channelApi/` — u.a. eine echte Orchestrator- + echte
 Privacy-Guard-Integration (`chatRouterPrivacyIntegration.test.ts`, spiegelt
@@ -1013,6 +1054,50 @@ Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
 + die reale `ctx.operatorAuth`-Verifikation inkl. Fail-closed-Pfad
 (`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
 (`publicPathsExemption.test.ts`).
+
+#### Agent-Bindung pro API-Key (issue #1106)
+
+Bis #1106 landete **jeder** API-Turn beim Fallback-Orchestrator: der Channel
+setzte keinen `channelKey`, also fiel `coreApi.ts` auf `turn.conversationId`
+zurück — und das ist der pro-Conversation-`internalConversationId`-Hash, für
+jede Conversation anders. Ein Operator konnte den Public-API-Channel weder in
+`/operator/channels` sehen noch binden. **Direction A** (aus dem Issue) macht
+den API-Key zur Bindungs-Einheit:
+
+- **Router setzt einen stabilen, nie caller-kontrollierten `channelKey`**
+  (`chatRouter.ts`): `IncomingTurn.channelKey = key:<keyId>`. Getrennt vom
+  `conversationId` — der bleibt der Hash (der Memory-Scope, absichtlich pro
+  Thread verschieden). So löst der Dispatcher (`orchestratorDispatcher.ts`,
+  US7-Pfad) die Bindung über `(channelType, channelKey)` auf: zwei Turns
+  desselben Keys mit unterschiedlichen `conversationId` treffen **dieselbe**
+  Bindung, behalten aber **getrennte** Memory-Scopes.
+- **Format single-sourced** in `channelKey.ts` (`channelKeyOf(keyId)`,
+  `CHANNEL_KEY_PREFIX`): derselbe String ist `channelKey`, `userRef.id` und der
+  im Directory gelistete Key — identisch in Logs, `channel_bindings`-Zeile und
+  Dashboard.
+- **`ChannelKeyDirectory`-Beitrag** (`apiChannelDirectory.ts`): listet eine
+  Zeile pro **aktivem** (nicht widerrufenem) Key, `key:<uuid>` + Label
+  (Fallback `API key <id8>`). Der Channel holt die Kernel-Registry über
+  `ctx.services.getOptional('channelDirectoryRegistry')` (Manifest:
+  `optional_requires: ["channelDirectoryRegistry@1"]` — der Kernel stellt sie
+  bereit, also **kein** hartes `requires`; fehlt sie, aktiviert der Channel
+  trotzdem, nur die Dashboard-Liste entfällt) und meldet sie beim Aktivieren
+  an, `close()` meldet sie symmetrisch wieder ab.
+- **`channelType`-Konsistenz:** das Directory annonciert `channelType =
+  ctx.agentId` (`@omadia/channel-api`), Routing leitet den Typ via
+  `deriveChannelType(channelId)` ab — für diese id (kein Punkt, schon
+  lowercase) derselbe String, also matcht eine gebundene Zeile echte Turns.
+  Fragil, falls je ein `channel_type:` ins Manifest käme; das
+  Binding-Routing-Integrationstest pinnt die Gleichheit.
+- **Direction B** (per-Request-`agent`-Feld + Allowlist) ist bewusst ein
+  Folge-Issue, hier nicht enthalten.
+
+Tests: `apiChannelDirectory.test.ts` (aktiv/widerrufen/Label-Fallback),
+`chatRouter.test.ts` (#1106-Block: stabiler `channelKey`, getrennte Scopes),
+`apiChannelBindingRouting.test.ts` (echter Router→CoreApi→Dispatcher-Pfad:
+`bound` bei Bindung, `fallback` ohne — die vom Issue vorgeschlagenen
+Regressionstests 2–4), `plugin.test.ts` (Directory register/unregister +
+Degradieren ohne Registry).
 
 ---
 
@@ -1306,6 +1391,25 @@ auth-gated **`GET /api/v1/operator/receipts`** (Liste, Composite-Keyset-Cursor
 `/operator/receipts`. Retention: `RECEIPT_RETENTION_DAYS` (Default 90),
 Reaper mit Eager-Boot-Tick, Cutoff auf der DB-Uhr. Tests:
 `test/turnReceipts.test.ts`, `test/orchestrator/turnReceiptPersistence.test.ts`.
+
+#### API-Turn-Attribution + Korrelations-Id (#1107)
+
+Turns über `POST /api/public/v1/chat` trugen `channel = NULL` und der Caller
+bekam keine Id, die auf seine Receipt-Zeile zeigt. Zwei Nähte gefixt:
+- **`channel`-Label:** Der Public-API-Channel authentifiziert den Caller ALS
+  seinen Key (`userRef = { kind:'custom', id:'key:<uuid>' }`, #438). Da Canvas
+  denselben `custom`-Kind nutzt, diskriminiert `orchestratorDispatcher.toChannelKind`
+  jetzt am `key:`-Präfix und liefert die neue `ChannelKind` `'api'`
+  (`@omadia/plugin-api`, 1.14.0). `'api'` ist damit auch gültiges Ziel für
+  `ai_disclosure_level_overrides` und erscheint unter `/health`
+  `disclosure.channels` (in `AI_DISCLOSURE_CHANNEL_KINDS` **und**
+  `DISPATCHED_CHANNEL_KINDS`, sonst parst der Override, greift aber nie).
+- **Korrelations-Id:** Das `done`-Event trägt jetzt `receiptId` == der
+  Receipt-Store-Key (`turn_receipts.turn_id`, das per-Turn-`randomUUID`) — NICHT
+  die KG-Turn-Node-Id (`turnId`, `turn:<scope>:<time>`). Nur gesetzt, wenn ein
+  Receipt geschrieben wurde (Privacy-Shield-Aktivität). Löst über das
+  bestehende **`GET /api/v1/operator/receipts/:turnId`** auf. Dokumentiert im
+  Public-API-README ("Correlating a turn with its privacy receipt").
 
 ### Receipt-Hash-Kette + signierte Checkpoints (#758)
 
@@ -2015,6 +2119,15 @@ eigenen `skills/<name>/SKILL.md`-Ordner — es gehört also inhaltlich nicht
 in "Aktuelle Skills" oben. Referenz statt Duplikat: volle Doku in §3
 ("Dataset-Routen + `query_dataset`-Tool") und §7 (Knowledge-Graph-Schicht).
 
+### Cross-Referenz: `get_chat_participants` (#1108) ist kein Skill
+
+Ebenfalls ein natives Orchestrator-Tool ohne eigenen
+`skills/<name>/SKILL.md`-Ordner. Volle Doku in §3
+("`get_chat_participants` — per-Turn-Roster-Gating"): das Tool wird nur auf
+Turns angeboten, die einen Roster-Provider führen, und liefert bei
+Fehltreffern ein strukturiertes deutsches Ergebnis statt eines
+`Error:`-Strings.
+
 ---
 
 ## 9. Tests (63 Stück, alle grün)
@@ -2342,6 +2455,27 @@ Beide Felder sind additiv und optional im Sinne des Wire-Contracts: ein Client, 
 sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
+
+**Contract-Erweiterung — `answerSource` (#1105).** Wenn Privacy Shield v4 die
+Antwort serverseitig rendert (`v4_render_answer`), tauscht der Orchestrator den
+gerenderten Text kurz vor dem `done`-Event in `answer` — die zuvor als
+`text_delta` gestreamten Modell-Tokens sind dann veraltet. Damit die beiden
+dokumentierten Lesarten (Deltas konkatenieren vs. `done.answer`) nicht
+widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
+`ChatTurnResult`/`SemanticAnswer`) ein optionales
+`answerSource: 'model' | 'privacy-render'`. Gestempelt `'privacy-render'` an
+**beiden** Swap-Stellen — Streaming (`chatStream`) und gepuffert
+(`chatInContext`) — wenn `takeRenderedAnswerV4` einen Wert lieferte, sonst
+weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
+der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
+sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
+`Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
+abgeleitet wird), wird an den beiden Dispatch-Nähten
+(`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`) nicht mehr als
+1-Zeilen-Dataset interniert, sondern unverändert an das Modell durchgereicht —
+sonst sah das Modell den Fehler nie und ein späteres Render materialisierte ihn
+als Daten. Die Maskierung geworfener Exceptions (`maskErrorText`) bleibt unberührt.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -3131,3 +3265,39 @@ Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `c
 scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
 die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
 **Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+
+## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
+
+Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen
+zusammen im System-Prompt — das ist kein Bug, aber es war nirgends dokumentiert.
+Dieser Change ist reine Doku/Copy, kein Verhaltenswechsel.
+
+- **Plugin-Ebene (install-weit):** `@omadia/plugin-quality-guard` löst *intern*
+  drei Quellen per **Override** zu einem Block auf — AGENT.md-`quality`-Frontmatter →
+  `agent_overrides`-Map → Plugin-Defaults (`src/plugin.ts` `resolveProfileQuality`,
+  `?? deps.defaults`). Der Orchestrator holt diesen Block über die
+  `responseGuard@1`-Capability und **prependet** ihn vor die Body-Prose, getrennt
+  durch `---` (`harness-orchestrator/src/orchestrator.ts` `resolvePrependRules` /
+  `composeStableSystemPrompt`).
+- **Agent-Ebene (pro Orchestrator):** die im Agent-Builder / Operator-Tab „Grenzen"
+  gesetzten Boundaries sind fest im gespeicherten `composed_prompt` als
+  `## Boundaries`-Abschnitt einkompiliert (`middleware/src/services/agentIdentityPrompt.ts`,
+  Reihenfolge instructions → persona → boundaries → sycophancy).
+
+Diese beiden Blöcke wissen nichts voneinander → sie **stapeln**. Ein in beiden
+Ebenen gesetztes Verbot erscheint doppelt (ggf. in zwei Sprachen); Plugin-Default-
+Sycophancy + Agent-Slider ergeben zwei konkurrierende Anti-Schmeichel-Blöcke.
+
+Die zwei Preset-Libraries sind zudem fast disjunkt (Agent-UI 12 IDs englisch in
+`web-ui/app/_lib/boundaryPresets.ts`; Plugin 10 IDs deutsch in
+`harness-plugin-quality-guard/src/boundaryPresets.ts`; Schnittmenge nur
+`no-legal-advice`, `no-speculation`). Eine aus der Agent-UI kopierte ID (z. B.
+`no-financial-data`) wird vom Plugin still verworfen. Die Vereinheitlichung auf eine
+gemeinsame Library ist bewusst **nicht** Teil dieses Changes (braucht Migrations-/
+Alias-Entscheidung, siehe #1104).
+
+Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
+`operatorAgents.identity.boundaries.pluginStackNote` und
+`builder.persona.boundaries.pluginStackNote` (in der UI gerendert), plus die
+`help`-Felder in `harness-plugin-quality-guard/manifest.yaml`
+(`default_sycophancy`, `default_boundary_presets`).
