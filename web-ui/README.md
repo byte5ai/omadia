@@ -33,6 +33,27 @@ The UI is bilingual: **English (default) and German**. Locale is resolved per re
 
 To add a translation, edit `messages/en.json` (source of truth) and `messages/de.json` in the same PR, then run `npm run i18n:check`. The full convention guide lives at [`messages/README.md`](./messages/README.md).
 
+### Timezone
+
+Timestamps render in the **operator's** timezone, not the server's (#1091).
+`getRequestConfig` runs in the container — where `Intl` resolves to UTC in the
+shipped image — so the browser reports its own IANA zone instead: the headless
+`TimeZoneSync` component mirrors it into the non-secret **`omadia-tz` cookie**
+on mount and refreshes once, and `i18n/request.ts` reads it back through
+`parseTimeZoneCookie` (`app/_lib/timeZone.ts`), validating against `Intl`.
+Requests with no cookie yet — a first visit, an e2e run, a client that cannot
+store cookies — use an explicitly configured container `TZ` when there is one,
+and `'UTC'` otherwise — an explicitly set `TZ` is
+operator intent, and the cookie still wins whenever it exists. What must never
+come back is resolving the *runtime's own* zone (`Intl.…resolvedOptions()`) in
+the request config, which is what rendered UTC for everyone. Never drop the
+`timeZone` key either — it also suppresses next-intl's `ENVIRONMENT_FALLBACK`
+IntlError (#821). Both halves are pinned by
+`app/_lib/__tests__/timeZone.test.ts`.
+
+The layout stamps the resolved zone onto `<html data-timezone>` so
+`TimeZoneSync` can skip the refresh when the page is already correct.
+
 ## Project layout
 
 ```

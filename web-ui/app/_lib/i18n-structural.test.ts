@@ -87,6 +87,10 @@ describe('#679 / I6 — number and date formatting follows the active locale', (
     'memories/page.tsx',
     'memories/[id]/page.tsx',
     'store/builder/[id]/_components/VersionsTab.tsx',
+    // #1091 — the last absolute date formatter in the app that bypassed
+    // next-intl: it rendered a German-formatted date inside the English UI and
+    // in the machine's zone, so the #1091 cookie never reached it.
+    'store/builder/_components/DraftRow.tsx',
   ];
 
   for (const file of SWEPT) {
