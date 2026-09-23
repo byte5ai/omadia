@@ -23,6 +23,7 @@ import type {
   LlmStreamEvent,
 } from '@omadia/llm-provider';
 import {
+  AskUserChoiceTool,
   ChatParticipantsTool,
   NativeToolRegistry,
   Orchestrator,
@@ -118,6 +119,29 @@ describe('buildToolsList never offers the same tool name twice', () => {
   it('keeps the spec dispatch serves (native registry beats the kernel tool)', async () => {
     const request = await runTeamsTurn({ pluginCollides: true });
     assert.equal(named(request)[0]?.description, PLUGIN_DESCRIPTION);
+  });
+
+  it('kernel tools #1143 registers into the native registry are advertised once', async () => {
+    // The prod failure: the orchestrator constructor registers its OWN spec
+    // constants (ask_user_choice, suggest_follow_ups, …) into the native
+    // registry for the CLI loopback, so the same OBJECT reached the list from
+    // the kernel segment and from the native segment.
+    const seen: LlmRequest[] = [];
+    const orchestrator = new Orchestrator({
+      provider: recordingProvider(seen),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      askUserChoiceTool: new AskUserChoiceTool(),
+    });
+    for await (const _ev of orchestrator.chatStream({ userMessage: 'go' })) {
+      // drain
+    }
+    const names = (seen[0]?.tools ?? []).map((tool) => tool.name);
+    assert.equal(names.filter((n) => n === 'ask_user_choice').length, 1, names.join(', '));
+    assert.equal(new Set(names).size, names.length, `duplicate names in ${names.join(', ')}`);
   });
 
   it('without a collision the kernel spec is advertised unchanged', async () => {

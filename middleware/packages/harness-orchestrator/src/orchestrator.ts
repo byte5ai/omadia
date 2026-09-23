@@ -361,6 +361,14 @@ const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
   },
 ];
 
+/** The spec objects {@link registerKernelNativeTools} puts into the native
+ *  registry. `buildToolsList()` advertises these itself, so its native-registry
+ *  loop must skip them (by identity — a plugin spec with the same name is a
+ *  genuine collision and goes through the dedupe instead). */
+const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
+  KERNEL_NATIVE_FULL_FORM.map((f) => f.spec),
+);
+
 /**
  * Register the kernel-native tools into `registry`, giving each of the wired
  * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
@@ -8162,6 +8170,11 @@ export class Orchestrator {
     // still resolves by name, so precedence is unaffected.
     const nativeSpecs: unknown[] = [];
     for (const entry of this.nativeTools.listWithHandler()) {
+      // #1143 registers the kernel's OWN specs here (spec + handler) so the
+      // subscription-CLI loopback can advertise them. The kernel already
+      // pushes those above — advertising them again duplicated five names and
+      // 400'd every turn (`tools: Tool names must be unique.`).
+      if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
       if (entry.spec && this.isToolAvailable(entry.agentId)) {
         nativeSpecs.push(entry.spec);
       }
@@ -8254,11 +8267,14 @@ export class Orchestrator {
       if (segments.domain.has(t)) return 4;
       return 3; // kernel tool
     };
-    const winner = new Map<string, T>();
-    for (const t of tools) {
+    // Winner by POSITION, not by object: the same spec object can sit in the
+    // list twice (#1143 registers the kernel's own spec constants into the
+    // native registry), and an identity filter would then keep both copies.
+    const winner = new Map<string, number>();
+    tools.forEach((t, i) => {
       const current = winner.get(t.name);
-      if (current === undefined || rank(t) < rank(current)) winner.set(t.name, t);
-    }
+      if (current === undefined || rank(t) < rank(tools[current]!)) winner.set(t.name, i);
+    });
     for (const [name, n] of count) {
       if (n > 1 && !this.reportedDuplicateToolNames.has(name)) {
         this.reportedDuplicateToolNames.add(name);
@@ -8267,7 +8283,7 @@ export class Orchestrator {
         );
       }
     }
-    return tools.filter((t) => winner.get(t.name) === t);
+    return tools.filter((t, i) => winner.get(t.name) === i);
   }
 }
 
