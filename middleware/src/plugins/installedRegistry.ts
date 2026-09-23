@@ -10,7 +10,22 @@
  * secrets are encrypted blobs.
  */
 
-import type { AgentId, ISO8601 } from '../api/admin-v1.js';
+import type { AgentId, ISO8601, PluginInstallOrigin } from '../api/admin-v1.js';
+
+/**
+ * #1089 — WHO put this entry in the registry. Re-exported from the API type so
+ * the registry field and the store DTO can never drift apart.
+ *
+ * Deliberately NOT the same question as `PluginCatalogEntry.origin` (#794),
+ * which asks whether the package ships inside the middleware image. The two
+ * answers differ exactly where it matters: the KG providers and the
+ * memoryStore alternatives ship in the image but are skipped by
+ * `bootstrapBuiltInPackages` so the operator owns the choice, and a bundled
+ * package the operator uninstalls and installs again is an operator install
+ * from then on. The onboarding surfaces ask "has the operator installed
+ * anything yet", so they need the write, not the package.
+ */
+export type InstallOrigin = PluginInstallOrigin;
 
 export interface InstalledAgent {
   id: AgentId;
@@ -19,6 +34,15 @@ export interface InstalledAgent {
   status: 'active' | 'inactive' | 'errored';
   /** Non-secret setup values (everything whose SetupField.type !== 'secret' && !== 'oauth'). */
   config: Record<string, unknown>;
+  /** #1089 — who wrote this entry. Absent from registry files written before
+   *  the field existed, and deliberately NOT backfilled: the only evidence
+   *  available after the fact is whether the image ships the package, and that
+   *  is wrong for precisely the entries that prove an operator did something —
+   *  a KG provider or an OpenAI adapter the boot auto-install skips and the
+   *  operator installed by hand would be relabelled 'bundled'. Consumers must
+   *  read absence as "unknown" (see `isOperatorInstalled` in the web-ui, which
+   *  falls back to counting every installed plugin), never as 'bundled'. */
+  origin?: InstallOrigin;
   /** Circuit-breaker: count of consecutive activation failures since the last
    *  successful activation. Reset to 0 on success. When it reaches
    *  CIRCUIT_BREAKER_THRESHOLD the entry's status flips to 'errored' and

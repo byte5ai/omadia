@@ -17,7 +17,11 @@
  * different concept it is.
  */
 
-import type { Plugin, PluginInstallState } from './storeTypes';
+import type {
+  Plugin,
+  PluginInstallOrigin,
+  PluginInstallState,
+} from './storeTypes';
 
 /**
  * True when the plugin is present in the runtime registry.
@@ -56,4 +60,33 @@ export function countReadiness(
 ): { installed: number; ready: number } {
   const installed = plugins.filter(isInstalled);
   return { installed: installed.length, ready: installed.filter(isReady).length };
+}
+
+/**
+ * True when the OPERATOR installed this plugin — #1089.
+ *
+ * `isInstalled` answers "is it in the registry", which on a fresh Docker
+ * Compose deployment is already true for the 16 packages the kernel
+ * auto-installs at boot. The onboarding surfaces ask a different question
+ * ("has the operator done anything yet"), and reading the first as the second
+ * pre-completed dashboard step 3 and pushed the store past the profile
+ * modal's threshold, so the curated-profile path was unreachable in the
+ * default install.
+ *
+ * Back-compat: a middleware without #1089 sends no `install_origin` at all.
+ * Falling back to `isInstalled` there keeps the old (wrong-but-harmless)
+ * behaviour, whereas treating absence as 'bundled' would pop the profile modal
+ * over a fully configured deployment — the worse of the two failures.
+ *
+ * Deliberately a SECOND predicate, not a widening of `isInstalled`: the health
+ * tile and the store's "Installiert" tab must keep counting the built-ins,
+ * which are genuinely installed.
+ */
+export function isOperatorInstalled(plugin: {
+  install_state: PluginInstallState;
+  install_origin?: PluginInstallOrigin;
+}): boolean {
+  if (!isInstalled(plugin)) return false;
+  if (!plugin.install_origin) return true;
+  return plugin.install_origin === 'operator';
 }

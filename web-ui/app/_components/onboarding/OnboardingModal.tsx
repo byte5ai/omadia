@@ -13,26 +13,31 @@ import type {
 } from '../../_lib/profileTypes';
 
 /**
- * Onboarding-Modal (S+12-3) — surfaces on the store page when the
- * middleware looks fresh (`installedCount < 3`). Operator picks a
- * curated profile, the modal POSTs `/api/v1/profiles/:id/apply` and
- * shows the per-plugin outcome.
+ * Onboarding-Modal (S+12-3) — surfaces on the store page while the operator
+ * has not installed anything yet. Operator picks a curated profile, the modal
+ * POSTs `/api/v1/profiles/:id/apply` and shows the per-plugin outcome.
  *
- * Why threshold 3 and not 0: built-in `bootstrapBuiltInPackages` may
- * have seeded one or two leaf-tools (no-required-secret) on first
- * boot; that doesn't make the deployment "operator-ready" yet. 3
- * keeps the modal visible until the operator has run a profile or
- * manually installed enough to call it set up.
+ * #1089 — this used to gate on `installedCount < 3`, a buffer sized for a boot
+ * that "may have seeded one or two leaf-tools". Today's bootstrap
+ * auto-installs 16 packages, so the threshold was exceeded before the operator
+ * ever opened /store and the modal never rendered on a Docker Compose
+ * deployment — the curated-profile path was dead code in the default install.
+ * The count is now the OPERATOR count (`isOperatorInstalled`), which makes the
+ * buffer unnecessary: one deliberate install is the honest signal that the
+ * operator no longer needs the profile shortcut.
  *
  * Browser-side gating only — server-side route stays open for direct
  * scripted apply (CI seeding, ops scripts).
  */
 
 export interface OnboardingModalProps {
-  installedCount: number;
+  /** #1089 — plugins the OPERATOR installed (hub, ZIP upload, profile apply).
+   *  Never the plain installed count: on a fresh system that is 16 before the
+   *  operator has done anything. */
+  operatorInstalledCount: number;
   profiles: ProfileSummary[];
-  /** When true, the modal stays mounted after `installedCount >= 3` so
-   *  developers can preview it via a toggle. Production use: false. */
+  /** When true, the modal stays mounted even after the operator has installed
+   *  something, so developers can preview it via a toggle. Production: false. */
   forceOpen?: boolean;
 }
 
@@ -42,10 +47,8 @@ type Phase =
   | { kind: 'done'; outcome: ProfileApplyOutcome }
   | { kind: 'errored'; profileId: string; message: string };
 
-const ONBOARDING_THRESHOLD = 3;
-
 export function OnboardingModal({
-  installedCount,
+  operatorInstalledCount,
   profiles,
   forceOpen = false,
 }: OnboardingModalProps): React.ReactElement | null {
@@ -57,7 +60,7 @@ export function OnboardingModal({
   const shouldShow =
     !dismissed &&
     profiles.length > 0 &&
-    (forceOpen || installedCount < ONBOARDING_THRESHOLD);
+    (forceOpen || operatorInstalledCount === 0);
 
   if (!shouldShow) return null;
 
@@ -116,7 +119,7 @@ export function OnboardingModal({
               {t('title')}
             </h2>
             <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-              {t('intro', { count: installedCount })}
+              {t('intro')}
             </p>
           </div>
           {/* eslint-disable-next-line no-restricted-syntax -- icon-only chrome (× close glyph) */}

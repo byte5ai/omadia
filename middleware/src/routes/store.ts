@@ -367,8 +367,17 @@ function applyInstallState(
   // Incompatible stays incompatible — registry state only overrides
   // "available" → "installed". Legacy plugins remain blocked.
   if (plugin.install_state === 'incompatible') return plugin;
-  if (registry.has(plugin.id)) {
-    return { ...plugin, install_state: 'installed' };
+  const entry = registry.get(plugin.id);
+  if (entry) {
+    // #1089 — `install_origin` rides along with the state it qualifies: both
+    // come from the same registry entry, and every store response goes through
+    // here. Absent when the entry predates the field (see
+    // `backfillInstallOrigins`), which readers must not read as 'bundled'.
+    return {
+      ...plugin,
+      install_state: 'installed',
+      ...(entry.origin ? { install_origin: entry.origin } : {}),
+    };
   }
   return plugin;
 }

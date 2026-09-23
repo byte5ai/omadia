@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — onboarding no longer counts the kernel's own installs as the operator's (#1089)
+
+2026-09-23 — on a fresh Docker Compose deployment the kernel auto-installs 16
+bundled packages at boot, and two onboarding surfaces read those registry
+entries as operator work, because both asked the same predicate ("is it in the
+registry?", `web-ui/app/_lib/pluginCounts.ts`). The dashboard's "Erste
+Schritte" card showed step 3 "Plugins installieren" as done on the very first
+page load — the counter could never read "0 von 3" — and the store's "Profil
+wählen" modal, gated on `installedCount < 3`, was already past its threshold
+before the operator opened `/store`, so the curated-profile path ("productive
+in under 60 seconds") was unreachable in the default install.
+
+Registry entries now record WHO wrote them: `InstalledAgent.origin` is
+`'bundled'` for every boot auto-install and `'operator'` for a hub install, a
+ZIP upload, or a profile apply, and the store DTO carries it as the optional
+`install_origin`. The catalog's existing `PluginOrigin` (#794) was not usable
+for this — it says whether a package ships in the image, and bundled packages
+the operator installs by hand are exactly the case that matters (the KG
+providers and the memoryStore alternatives are skipped by the boot
+auto-install so the operator owns that choice).
+
+Registry entries written before the field are deliberately NOT backfilled.
+The only evidence available after the fact is whether the image ships the
+package, and that is wrong for precisely the entries that prove an operator did
+something: a KG provider or an OpenAI adapter ships in the image, is skipped by
+the boot auto-install, and is installed by hand — relabelling those `bundled`
+would un-tick step 3 and pop the profile modal over an established deployment.
+An absent origin therefore means "not attributable", and the web-ui's new
+`isOperatorInstalled` predicate falls back to counting every installed plugin,
+i.e. the pre-#1089 behaviour. `isInstalled` is unchanged, so the health tile
+and the store's "Installiert" tab keep counting all 16 built-ins, which
+genuinely are installed.
+
+Applying a curated profile also promotes plugins it finds already installed to
+`origin: 'operator'` (the outcome still reports them as `already_installed`,
+and nothing is reinstalled). Without that, applying a profile whose plugins the
+kernel had already auto-installed — which `minimal-dev` is on a default
+Compose deploy — would leave the operator count at zero and reopen the modal
+that triggered the apply.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two

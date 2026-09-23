@@ -22,7 +22,7 @@ import {
 import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
 import { cn } from './_lib/cn';
-import { isInstalled, isReady } from './_lib/pluginCounts';
+import { isInstalled, isOperatorInstalled, isReady } from './_lib/pluginCounts';
 import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
 
 /**
@@ -207,6 +207,13 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   const installedPlugins = (plugins?.items ?? []).filter(isInstalled);
   const installedCount = installedPlugins.length;
   const readyCount = installedPlugins.filter(isReady).length;
+  // #1089 — the health tile above counts every installed plugin (all 16
+  // built-ins genuinely are installed); onboarding step 3 asks whether the
+  // OPERATOR has installed anything, which on a fresh Compose deployment is
+  // still zero. Two questions, two numbers — see `pluginCounts.ts`.
+  const operatorInstalledCount = (plugins?.items ?? []).filter(
+    isOperatorInstalled,
+  ).length;
 
   // OM-100b — one line per error class. `cli_incompatible` gets the version
   // numbers because the remedy (update the CLI) is only actionable with them;
@@ -425,7 +432,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           assignedProviderStatus={assignedProviderStatus}
           assignedProviderLabel={assignedProviderLabel}
           embeddingsOff={embeddingsOff}
-          hasInstalledPlugin={installedCount > 0}
+          hasInstalledPlugin={operatorInstalledCount > 0}
         />
 
         <section aria-labelledby="dash-quick-heading">
