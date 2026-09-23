@@ -5,17 +5,20 @@ import { ArrowRight } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import type { ProviderCredentialStatus } from '../../_lib/api';
+import type { RuntimeReadiness } from '../../_lib/runtimeReadiness';
 
 /**
  * Body of onboarding step 1 ("LLM verbinden"). The step frame (number,
  * checkmark, title) stays in `DashboardOnboarding`'s `StepShell`; this file
- * owns only what the operator reads INSIDE the step, in its three states:
+ * owns only what the operator reads INSIDE the step, in its four states:
  *
  *   1. runtime up          → a sentence that names what the orchestrator
  *                            actually runs on (OM-74, #999)
- *   2. access, no runtime  → the assignment is missing (OM-78 / #1001, the
+ *   2. unreachable         → the middleware did not answer, so nothing about
+ *                            the runtime can be claimed (#1088)
+ *   3. access, no runtime  → the assignment is missing (OM-78 / #1001, the
  *                            handoff gap of #994)
- *   3. nothing yet         → the two connect CTAs
+ *   4. nothing yet         → the two connect CTAs
  *
  * Extracted so `DashboardOnboarding.tsx` stays under the file-size limit.
  */
@@ -25,9 +28,15 @@ import type { ProviderCredentialStatus } from '../../_lib/api';
 export type AssignedProviderKind = 'cli' | 'oauth' | 'api' | null;
 
 export interface LlmStepBodyProps {
-  /** Step 1 is done: `/operator/agents` answers (see `DashboardOnboarding`). */
-  readonly done: boolean;
-  /** A stored access exists (verified key or CLI login) but `done` is false. */
+  /**
+   * What `/operator/agents` answered (see `_lib/runtimeReadiness.ts`). Step 1
+   * is done for `'up'` only; `'unreachable'` gets its own copy instead of
+   * borrowing either the done sentence or the assignment hint, because in that
+   * state neither claim is supported by anything the page knows (#1088).
+   */
+  readonly runtimeState: RuntimeReadiness;
+  /** A stored access exists (verified key or CLI login) and the runtime
+   *  answered its structured "no orchestrator" 503. */
   readonly accessWithoutRuntime: boolean;
   readonly assignedProviderKind: AssignedProviderKind;
   /** The assigned provider's credential verdict; `null` when unknown. */
@@ -64,7 +73,7 @@ function doneCopy(
 }
 
 export function LlmStepBody({
-  done,
+  runtimeState,
   accessWithoutRuntime,
   assignedProviderKind,
   assignedProviderStatus,
@@ -72,11 +81,32 @@ export function LlmStepBody({
 }: LlmStepBodyProps): React.ReactElement {
   const t = useTranslations('dashboard.onboarding.llmStep');
 
-  if (done) {
+  if (runtimeState === 'up') {
     return (
       <p data-testid="onboarding-step-1-done-copy" className={BODY}>
         {doneCopy(t, assignedProviderKind, assignedProviderStatus, assignedProviderLabel)}
       </p>
+    );
+  }
+
+  if (runtimeState === 'unreachable') {
+    // #1088 — the middleware did not answer, so every other sentence in this
+    // step would be a guess: we do not know whether an access exists, whether
+    // the orchestrator is assigned, or whether the runtime is up. Say the one
+    // thing we DO know, and send the operator where the stack's own state is
+    // visible — not to the provider page, which is not the problem here.
+    return (
+      <>
+        <p data-testid="onboarding-step-1-unreachable" className={BODY}>
+          {t('unreachable')}
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Link href="/admin/update" className={PRIMARY_CTA}>
+            {t('openSystemStatus')}
+            <ArrowRight className="size-3.5" aria-hidden />
+          </Link>
+        </div>
+      </>
     );
   }
 

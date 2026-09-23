@@ -154,7 +154,9 @@
         "doneViaRuntime": "The agent runtime runs on {label}.",
         "doneViaRuntimeNoLabel": "The agent runtime is running.",
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
-        "assignOrchestrator": "Assign the orchestrator"
+        "assignOrchestrator": "Assign the orchestrator",
+        "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
+        "openSystemStatus": "Open update & status"
       },
       "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
@@ -1382,8 +1384,11 @@
     "bodyNoAssignment": "An LLM access exists, but the orchestrator is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the orchestrator, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
     "titleUnknown": "Agent runtime not responding",
     "bodyUnknown": "Access and assignment are set, but the agent runtime still does not respond. Check the stored access under LLM access.",
+    "titleUnreachable": "Runtime status unknown",
+    "bodyUnreachable": "The request to the agent runtime failed, so its status cannot be determined. The middleware may be unavailable, still starting, or returning an error. Check the version and status page, then reload.",
     "cta": "Open LLM access",
     "ctaNoAssignment": "Open assignment",
+    "ctaUnreachable": "Open update & status",
     "dismiss": "Later"
   },
   "agentDetailsModal": {

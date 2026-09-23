@@ -154,7 +154,9 @@
         "doneViaRuntime": "Die Agent-Runtime läuft über {label}.",
         "doneViaRuntimeNoLabel": "Die Agent-Runtime läuft.",
         "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
-        "assignOrchestrator": "Orchestrator zuordnen"
+        "assignOrchestrator": "Orchestrator zuordnen",
+        "unreachable": "Die Agent-Runtime hat nicht geantwortet, dieser Schritt lässt sich deshalb nicht prüfen. Möglicherweise ist die Middleware nicht verfügbar, startet noch oder liefert einen Fehler.",
+        "openSystemStatus": "Update & Status öffnen"
       },
       "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
       "embeddingsCta": "Embedding-Anbieter einrichten",
@@ -1382,8 +1384,11 @@
     "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator, bei einem Abo „Claude (subscription CLI)“. Die Runtime startet danach ohne Neustart.",
     "titleUnknown": "Agent-Runtime antwortet nicht",
     "bodyUnknown": "Zugang und Zuordnung sind gesetzt, die Agent-Runtime antwortet trotzdem nicht. Prüfe den hinterlegten Zugang unter LLM-Zugang.",
+    "titleUnreachable": "Runtime-Status unbekannt",
+    "bodyUnreachable": "Die Anfrage an die Agent-Runtime ist fehlgeschlagen, ihr Status lässt sich deshalb nicht bestimmen. Möglicherweise ist die Middleware nicht verfügbar, startet noch oder liefert einen Fehler. Prüfe die Versions- und Statusseite und lade die Seite neu.",
     "cta": "LLM-Zugang öffnen",
     "ctaNoAssignment": "Zuordnung öffnen",
+    "ctaUnreachable": "Update & Status öffnen",
     "dismiss": "Später"
   },
   "agentDetailsModal": {

@@ -36,6 +36,58 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a dead middleware no longer ticks dashboard setup step 1 (#1088)
+
+2026-09-23 — with the middleware container stopped, crash-looping, inside its
+Compose `start_period` or mid rolling-update, the operator dashboard at `/`
+read *more* complete than before the outage: setup step 1 "LLM verbinden" got a
+green checkmark with the copy „Die Agent-Runtime läuft.", and the
+Runtime-Readiness card — the one surface whose job is to say the runtime cannot
+serve agents — disappeared. On the same render the "Systemstatus" tile for the
+middleware correctly read „Nicht erreichbar", so the page contradicted itself
+in exactly the situation where an operator needs it.
+
+The readiness signal was a boolean derived by EXCLUSION of one error shape
+(`ApiError` with status 503), so every other failure read as "runtime up". That
+covers the whole outage family: a stopped container rejects the server-rendered
+`/v1/operator/agents` call with a plain `TypeError` (an RSC call goes direct to
+`MIDDLEWARE_URL`, not through the `/bot-api` proxy), a proxy answers 500/502,
+and a hung middleware trips the 10s RSC fetch timeout — none of them an
+`ApiError(503)`.
+
+It is now a tri-state derived by SUCCESS, in one shared classifier
+(`web-ui/app/_lib/runtimeReadiness.ts`) used by both surfaces so they cannot
+drift apart again: `'up'` (the route answered), `'down'` (the middleware's own
+structured `multi_orchestrator_unavailable` 503) and `'unreachable'` (anything
+else — transport error, abort, proxy 5xx, bare 503, or a 4xx that says nothing
+about the runtime). Step 1 is done for `'up'` only; `'unreachable'` renders
+„Die Agent-Runtime hat nicht geantwortet, dieser Schritt lässt sich deshalb
+nicht prüfen" with a link to the update/status page, and the readiness card
+gains a fourth cause with its own copy (it does not reuse the `unknown` text,
+which asserts that access and assignment are set — the one thing an unanswered
+middleware cannot tell us).
+
+`unreachable` deliberately claims only "this route gave us nothing to go on",
+not "the container is down": a live middleware can answer 500 from that one
+handler while `middlewareOk` — true as soon as ANY call came back — keeps the
+Systemstatus tile at „Verbunden". Both new texts hedge accordingly, so the two
+surfaces cannot contradict each other the way #1088 described. For the same
+reason the card, unlike step 1, stays silent on 401/403: a session error
+belongs to the header's auth badge, while step 1 simply cannot tick itself off
+on a permission answer.
+
+Because a transport failure can now raise the readiness card, its dismissal is
+keyed to the CAUSE rather than to the component — one waved-away blip no longer
+suppresses a later, real `no_llm_access` 503, and a cleared card re-arms the
+dismissal for the next outage — and overlapping probes carry a generation guard
+so a slow failure landing after a newer success cannot flash the card against a
+healthy backend.
+
+This narrows the OM-78 (#1001) trade-off that biased the old boolean toward
+"up" so a network blip would not un-tick step 1: a blip and a dead backend are
+indistinguishable in a boolean, and an unknown state is now reported as
+unknown. Flap-resistance, if wanted back, belongs in a bounded retry.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two

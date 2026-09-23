@@ -2,6 +2,7 @@ import { cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../_lib/test-utils';
+import type { RuntimeReadiness } from '../../../_lib/runtimeReadiness';
 import type { Plugin } from '../../../_lib/storeTypes';
 import {
   DashboardOnboarding,
@@ -54,7 +55,7 @@ function renderCard(
     plugins: Plugin[] | null;
     llmVerified: boolean;
     cliLoggedIn: boolean;
-    runtimeUp: boolean;
+    runtimeState: RuntimeReadiness;
     assignedProviderKind: 'cli' | 'oauth' | 'api' | null;
     assignedProviderStatus: 'no_key' | 'unverified' | 'verified' | 'invalid' | null;
     assignedProviderLabel: string | null;
@@ -64,11 +65,11 @@ function renderCard(
 ) {
   // OM-78 (#1001) — a stored access implies the runtime is up in the default
   // fixture, so the pre-existing step-model tests keep describing the happy
-  // path. The OM-78 tests below set `runtimeUp` explicitly. Likewise the
-  // default assignment mirrors the access flags: CLI login → CLI assignment,
-  // verified key → verified API assignment.
-  const runtimeUp =
-    over.runtimeUp ?? Boolean(over.llmVerified || over.cliLoggedIn);
+  // path. The OM-78 / #1088 tests below set `runtimeState` explicitly.
+  // Likewise the default assignment mirrors the access flags: CLI login → CLI
+  // assignment, verified key → verified API assignment.
+  const runtimeState: RuntimeReadiness =
+    over.runtimeState ?? (over.llmVerified || over.cliLoggedIn ? 'up' : 'down');
   return renderWithIntl(
     <DashboardOnboarding
       plugins={[]}
@@ -80,7 +81,7 @@ function renderCard(
       embeddingsOff={false}
       hasInstalledPlugin={false}
       {...over}
-      runtimeUp={runtimeUp}
+      runtimeState={runtimeState}
     />,
     { locale: 'de' },
   );
@@ -170,7 +171,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
   });
 
   it('OM-78: step 1 stays OPEN while the runtime is down, even with a verified key', () => {
-    renderCard({ llmVerified: true, runtimeUp: false });
+    renderCard({ llmVerified: true, runtimeState: 'down' });
 
     const step1 = screen.getByTestId('onboarding-step-1');
     expect(step1.dataset['done']).toBe('false');
@@ -180,7 +181,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
   });
 
   it('OM-78 / #994: a stored access without a runtime points at the assignment, not at connecting again', () => {
-    renderCard({ cliLoggedIn: true, runtimeUp: false });
+    renderCard({ cliLoggedIn: true, runtimeState: 'down' });
 
     expect(screen.getByTestId('onboarding-step-1-assign-hint')).toBeTruthy();
     expect(screen.getByText(/Zuordnung des Orchestrators/)).toBeTruthy();
@@ -198,17 +199,70 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
       llmVerified: true,
       cliLoggedIn: true,
       hasInstalledPlugin: true,
-      runtimeUp: false,
+      runtimeState: 'down',
     });
     expect(screen.queryByText(/3 von 3 erledigt/)).toBeNull();
     expect(screen.getByText(/1 von 3 erledigt/)).toBeTruthy();
+  });
+
+  /**
+   * #1088 — with the middleware container stopped, step 1 used to show a green
+   * checkmark and „Die Agent-Runtime läuft." while the health tile on the same
+   * page read „Nicht erreichbar". An unreachable backend must never tick a
+   * setup step, and must not borrow either of the two copies that make claims
+   * about an access it cannot see.
+   */
+  describe('#1088 — an unreachable middleware', () => {
+    it('leaves step 1 open and never claims the runtime is running', () => {
+      renderCard({ llmVerified: true, runtimeState: 'unreachable' });
+
+      const step1 = screen.getByTestId('onboarding-step-1');
+      expect(step1.dataset['done']).toBe('false');
+      expect(screen.queryByTestId('onboarding-step-1-check')).toBeNull();
+      expect(screen.queryByText(/Die Agent-Runtime läuft/)).toBeNull();
+      expect(screen.queryByTestId('onboarding-step-1-done-copy')).toBeNull();
+    });
+
+    it('says the status could not be checked and links to the status page', () => {
+      renderCard({ llmVerified: true, runtimeState: 'unreachable' });
+
+      const copy = screen.getByTestId('onboarding-step-1-unreachable');
+      expect(copy.textContent).toMatch(/nicht geantwortet/);
+      // The page only knows that THIS route gave nothing back — a live
+      // middleware can answer 500 from one handler — so the copy hedges
+      // instead of declaring the container dead. Otherwise it would
+      // contradict the "Middleware · Verbunden" health tile beside it.
+      expect(copy.textContent).toMatch(/Möglicherweise/);
+      const step1 = screen.getByTestId('onboarding-step-1');
+      const links = Array.from(step1.querySelectorAll('a'));
+      expect(links).toHaveLength(1);
+      expect(links[0]?.getAttribute('href')).toBe('/admin/update');
+    });
+
+    it('does not send the operator to the assignment — that diagnosis needs an answer', () => {
+      renderCard({ cliLoggedIn: true, runtimeState: 'unreachable' });
+
+      expect(screen.queryByTestId('onboarding-step-1-assign-hint')).toBeNull();
+      expect(screen.queryByText(/Zuordnung des Orchestrators/)).toBeNull();
+      expect(screen.queryByText(/API-Schlüssel hinterlegen/)).toBeNull();
+    });
+
+    it('does not let the counter climb', () => {
+      renderCard({
+        llmVerified: true,
+        cliLoggedIn: true,
+        hasInstalledPlugin: true,
+        runtimeState: 'unreachable',
+      });
+      expect(screen.getByText(/1 von 3 erledigt/)).toBeTruthy();
+    });
   });
 
   it('OM-74: the done-copy follows the ASSIGNMENT — a CLI-backed orchestrator is not "its key was verified"', () => {
     renderCard({
       cliLoggedIn: true,
       llmVerified: true,
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: 'cli',
     });
     expect(screen.getByText(/Abo-CLI angemeldet/)).toBeTruthy();
@@ -219,7 +273,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     renderCard({
       cliLoggedIn: true,
       llmVerified: true,
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: 'api',
       assignedProviderStatus: 'verified',
     });
@@ -229,7 +283,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
 
   it('OM-74: an UNVERIFIED key that the runtime happens to run on is not called "geprüft"', () => {
     renderCard({
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: 'api',
       assignedProviderStatus: 'unverified',
       assignedProviderLabel: 'Anthropic',
@@ -241,7 +295,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
 
   it('OM-74: a rejected (invalid) key is not called "geprüft" either', () => {
     renderCard({
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: 'api',
       assignedProviderStatus: 'invalid',
       assignedProviderLabel: 'OpenAI',
@@ -253,7 +307,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
 
   it('OM-74: an OAuth subscription assignment gets its own neutral sentence', () => {
     renderCard({
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: 'oauth',
       assignedProviderStatus: 'verified',
       assignedProviderLabel: 'ChatGPT',
@@ -266,7 +320,7 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
 
   it('OM-74: an unknown assignment (providers call failed) falls back to the label-less sentence', () => {
     renderCard({
-      runtimeUp: true,
+      runtimeState: 'up',
       assignedProviderKind: null,
       assignedProviderStatus: null,
       assignedProviderLabel: null,

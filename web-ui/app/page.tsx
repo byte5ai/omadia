@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 
 import {
-  ApiError,
   getCliBackends,
   getEmbeddingProviderStatus,
   getLastTurn,
@@ -21,6 +20,7 @@ import {
 } from './_lib/api';
 import { getMcpServerSummary, listOperatorAgents } from './_lib/agents';
 import { redirectIfUnauthorized } from './_lib/authRedirect';
+import { runtimeStateOf } from './_lib/runtimeReadiness';
 import { cn } from './_lib/cn';
 import { isInstalled, isReady } from './_lib/pluginCounts';
 import { DashboardOnboarding } from './_components/dashboard/DashboardOnboarding';
@@ -86,13 +86,15 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     cliP.status === 'fulfilled'
       ? cliP.value.backends.some((b) => b.loggedIn === 'yes')
       : false;
-  // OM-78 (#1001) — the ONE readiness signal this page and the
-  // RuntimeReadinessBanner share: `/operator/agents` answered, or failed with
-  // anything OTHER than its structured 503. Only the 503 means "runtime down";
-  // a transient 500 or a network blip must not un-tick step 1.
-  const runtimeUp =
-    agentP.status === 'fulfilled' ||
-    !(agentP.reason instanceof ApiError && agentP.reason.status === 503);
+  // OM-78 (#1001) / #1088 — the ONE readiness signal this page and the
+  // RuntimeReadinessBanner share, derived by SUCCESS rather than by excluding
+  // a single error shape. `up` means `/operator/agents` actually answered;
+  // `down` is the middleware's own structured 503; everything else (transport
+  // error, abort, proxy 5xx) is `unreachable` — an UNKNOWN runtime, not a
+  // healthy one. See `_lib/runtimeReadiness.ts` for why the OM-78 bias toward
+  // "up" had to go: it ticked step 1 with "Die Agent-Runtime läuft." while the
+  // middleware container was stopped.
+  const runtimeState = runtimeStateOf(agentP);
 
   // Middleware is "connected" if any call came back at all — a transport
   // failure rejects every call with the same network error.
@@ -420,7 +422,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
           plugins={plugins?.items ?? null}
           llmVerified={verified.length > 0}
           cliLoggedIn={cliLoggedIn}
-          runtimeUp={runtimeUp}
+          runtimeState={runtimeState}
           assignedProviderKind={assignedProviderKind}
           assignedProviderStatus={assignedProviderStatus}
           assignedProviderLabel={assignedProviderLabel}

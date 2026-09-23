@@ -13,6 +13,7 @@ import { RuntimeReadinessBanner } from '../RuntimeReadinessBanner';
  */
 
 const TITLE_DE = 'LLM-Zugang fehlt';
+const TITLE_UNREACHABLE_DE = 'Runtime-Status unbekannt';
 
 const { mockUsePathname } = vi.hoisted(() => ({
   mockUsePathname: vi.fn(() => '/'),
@@ -72,11 +73,18 @@ describe('<RuntimeReadinessBanner />', () => {
     expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
   });
 
-  it('stays silent on a 503 without the structured error code', async () => {
+  /**
+   * #1088 — a 503 that is NOT the middleware's own structured verdict is a
+   * gateway sentence: in the stock stack it is what sits in front of a dead
+   * container. It used to clear the card ("not this card's concern"); it now
+   * reports the backend as unreachable, without borrowing the access copy.
+   */
+  it('reports unreachable on a 503 without the structured error code', async () => {
     respondWith(503, { error: 'something_else' });
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
 
+    expect(screen.getByText(TITLE_UNREACHABLE_DE)).toBeInTheDocument();
     expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
   });
 
@@ -170,6 +178,188 @@ describe('<RuntimeReadinessBanner />', () => {
     const card = screen.getByTestId('runtime-readiness-card');
     expect(card.textContent).not.toMatch(/right away/);
     expect(card.textContent).not.toMatch(/middleware restart/i);
+  });
+
+  /**
+   * #1088 — the outage case the card was built for and then hid. With the
+   * middleware container down, `/bot-api/*` answers 5xx (web-ui's own proxy
+   * route throws → 500; a reverse proxy in front → 502), or the fetch throws
+   * outright. The old probe cleared the card for every `status !== 503` and
+   * swallowed the throw, so the one card whose job is to say the runtime
+   * cannot serve agents disappeared exactly when it was true.
+   */
+  describe('#1088 — a middleware that does not answer', () => {
+    it.each([500, 502, 504])('shows the unreachable card on a proxy %i', async (status) => {
+      respondWith(status, null);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      const card = screen.getByTestId('runtime-readiness-card');
+      expect(card.dataset['cause']).toBe('unreachable');
+      expect(screen.getByText(TITLE_UNREACHABLE_DE)).toBeInTheDocument();
+    });
+
+    it('shows the unreachable card when the fetch itself throws', async () => {
+      mockFetch.mockRejectedValue(new TypeError('Failed to fetch'));
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      expect(screen.getByTestId('runtime-readiness-card').dataset['cause']).toBe(
+        'unreachable',
+      );
+    });
+
+    /**
+     * The `unknown` copy asserts "access and assignment are set" — the one
+     * thing a middleware that never answered cannot tell us — and its CTA
+     * leads to the provider page, which is not where a stopped container is
+     * fixed.
+     */
+    it('does not borrow the unknown-cause copy or its CTA', async () => {
+      respondWith(502, null);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      const card = screen.getByTestId('runtime-readiness-card');
+      expect(card.textContent).not.toMatch(/Zugang und Zuordnung sind gesetzt/);
+      expect(card.textContent).not.toMatch(/kein LLM-API-Key/);
+      expect(
+        screen.getByRole('link', { name: /Update & Status öffnen/i }),
+      ).toHaveAttribute('href', '/admin/update');
+    });
+
+    /**
+     * The card's copy must survive the health tile next to it: `middlewareOk`
+     * (app/page.tsx) is true as soon as ANY call came back, and a live
+     * middleware can still answer 500 from this one handler. So the text may
+     * not assert that the container is stopped.
+     */
+    it.each([
+      ['de', /Möglicherweise/],
+      ['en', /may be/],
+    ])('does not assert the container is down (%s)', async (locale, hedge) => {
+      respondWith(500, null);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: locale as 'de' | 'en' });
+      await flush();
+
+      const card = screen.getByTestId('runtime-readiness-card');
+      expect(card.textContent).toMatch(hedge);
+      expect(card.textContent).not.toMatch(/Crash-Schleife|crash-looping/);
+    });
+
+    /**
+     * The dismissal is keyed to the CAUSE. A transport failure can now raise
+     * the card, so a plain boolean would let one waved-away blip swallow every
+     * later cause — including a real `no_llm_access` 503 — for the rest of the
+     * session.
+     */
+    it('a dismissed blip does not suppress a later, different cause', async () => {
+      mockFetch.mockRejectedValue(new TypeError('Failed to fetch'));
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      await act(async () => {
+        screen.getByRole('button', { name: /Später/i }).click();
+      });
+      expect(screen.queryByTestId('runtime-readiness-card')).not.toBeInTheDocument();
+
+      // The backend comes back and reports the real problem.
+      respondWith(503, { error: 'multi_orchestrator_unavailable' });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(screen.getByText(TITLE_DE)).toBeInTheDocument();
+    });
+
+    it('keeps the same cause dismissed', async () => {
+      respondWith(502, null);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      await act(async () => {
+        screen.getByRole('button', { name: /Später/i }).click();
+      });
+
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(screen.queryByTestId('runtime-readiness-card')).not.toBeInTheDocument();
+    });
+
+    it('re-arms the dismissal once the card has cleared — a new outage is a new event', async () => {
+      respondWith(502, null);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+      await act(async () => {
+        screen.getByRole('button', { name: /Später/i }).click();
+      });
+
+      // The middleware comes back …
+      respondWith(200, { agents: [] });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // … and falls over again later. The operator dismissed the earlier
+      // outage, not this one.
+      respondWith(502, null);
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(screen.getByText(TITLE_UNREACHABLE_DE)).toBeInTheDocument();
+    });
+
+    /**
+     * Two probes can be in flight (heartbeat + tab focus). Only reachable now
+     * that a rejection writes state: a slow failure landing AFTER a newer
+     * success must not resurrect the card against a healthy backend.
+     */
+    it('a stale rejection does not resurrect the card after a newer success', async () => {
+      let failSlowProbe = (): void => {};
+      const slow = new Promise((_resolve, reject) => {
+        failSlowProbe = () => reject(new TypeError('Failed to fetch'));
+      });
+      mockFetch.mockReturnValueOnce(slow);
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+
+      // A second probe starts and succeeds while the first is still hanging.
+      respondWith(200, { agents: [] });
+      await act(async () => {
+        document.dispatchEvent(new Event('visibilitychange'));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      failSlowProbe();
+      await flush();
+
+      // Two observables, because the card alone is not enough: raising it
+      // flips `visible`, which re-arms the effect and fires a THIRD probe that
+      // clears the card again within the same tick. Without the generation
+      // guard the operator still sees a flash and the app pays for an extra
+      // round-trip, so pin the probe count too.
+      expect(screen.queryByTestId('runtime-readiness-card')).not.toBeInTheDocument();
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('clears itself once the middleware answers again', async () => {
+      mockFetch.mockRejectedValue(new TypeError('Failed to fetch'));
+      renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+      await flush();
+      expect(screen.getByText(TITLE_UNREACHABLE_DE)).toBeInTheDocument();
+
+      respondWith(200, { agents: [] });
+      await flush(60 * 1000);
+
+      expect(screen.queryByText(TITLE_UNREACHABLE_DE)).not.toBeInTheDocument();
+    });
   });
 
   it('clears itself once a heartbeat sees the runtime come up', async () => {

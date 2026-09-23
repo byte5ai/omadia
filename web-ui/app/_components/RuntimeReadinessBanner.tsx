@@ -1,13 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
-import { Cpu, KeyRound } from 'lucide-react';
+import { Cpu, KeyRound, PlugZap } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import { Button } from './ui/Button';
+import {
+  classifyProbeResponse,
+  type ReadinessCardCause,
+  type ReadinessProbeBody,
+} from '../_lib/runtimeReadiness';
 
 /**
  * RuntimeReadinessBanner — turns the fresh-install "everything 503s" state
@@ -35,19 +40,24 @@ import { Button } from './ui/Button';
  *
  * A 503 without a cause (older middleware) renders the no-access copy.
  *
+ * #1088 — a fourth state the middleware can never report about itself:
+ * `unreachable`. The probe used to clear the card for every `status !== 503`
+ * and to swallow a thrown fetch entirely, so a stopped middleware hid the one
+ * card whose job is to say the runtime cannot serve agents. Classification now
+ * lives in `_lib/runtimeReadiness.ts`, shared with the dashboard's step 1 —
+ * two copies of this rule are what let the two surfaces contradict each other.
+ *
+ * Because a transport failure can now raise the card, the dismissal is keyed
+ * to the CAUSE rather than to the component: a single blip that the operator
+ * waves away must not swallow a later, real `no_llm_access` 503 for the rest
+ * of the session.
+ *
  * Mounted once in the root layout, next to SessionWatcher. Renders nothing
  * on /login + /setup.
  */
 
 /** Heartbeat cadence while the card is visible — catches the fix landing. */
 const HEARTBEAT_MS = 60 * 1000;
-
-/** Mirrors `RuntimeReadinessCause` in middleware/src/platform/pluginLlmReadiness.ts. */
-export type RuntimeReadinessCause = 'no_llm_access' | 'no_assignment' | 'unknown';
-
-function parseCause(value: unknown): RuntimeReadinessCause {
-  return value === 'no_assignment' || value === 'unknown' ? value : 'no_llm_access';
-}
 
 function isAuthPage(pathname: string): boolean {
   return pathname === '/login' || pathname === '/setup';
@@ -58,9 +68,17 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
   const onAuthPage = isAuthPage(pathname);
 
   // `null` = runtime is up (or not this card's concern); a cause = show it.
-  const [cause, setCause] = useState<RuntimeReadinessCause | null>(null);
-  const [dismissed, setDismissed] = useState(false);
-  const unavailable = cause !== null;
+  const [cause, setCause] = useState<ReadinessCardCause | null>(null);
+  // Which cause the operator waved away — not a plain boolean, so a dismissed
+  // blip does not suppress a different, real cause later in the same session.
+  const [dismissedCause, setDismissedCause] = useState<ReadinessCardCause | null>(
+    null,
+  );
+  // Last-started probe wins. Two probes can be in flight (heartbeat + tab
+  // focus); without this a slow failure landing after a newer success would
+  // resurrect the card against a healthy backend until the next heartbeat.
+  const probeSeq = useRef(0);
+  const visible = cause !== null && cause !== dismissedCause;
 
   // ── Initial probe + focus re-check + heartbeat-while-visible ────────────
   // One effect à la SessionWatcher: the probe lives inside so every
@@ -72,36 +90,41 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
     let cancelled = false;
 
     const probe = async (): Promise<void> => {
+      const seq = (probeSeq.current += 1);
+      const stale = (): boolean => cancelled || seq !== probeSeq.current;
+      const apply = (next: ReadinessCardCause | null): void => {
+        setCause(next);
+        // A cleared card re-arms the dismissal: the next outage is a new
+        // event, not the one the operator already waved away.
+        if (next === null) setDismissedCause(null);
+      };
       try {
         const res = await fetch('/bot-api/v1/operator/agents', {
           credentials: 'include',
         });
-        if (cancelled) return;
-        if (res.status !== 503) {
-          // 200 = runtime is up; 401/403 = not this card's concern.
-          setCause(null);
-          return;
-        }
-        const body = (await res.json().catch(() => null)) as {
-          error?: string;
-          cause?: unknown;
-        } | null;
-        if (cancelled) return;
-        setCause(
-          body?.error === 'multi_orchestrator_unavailable'
-            ? parseCause(body.cause)
-            : null,
-        );
+        // Only the 503 carries a structured body; a proxy's HTML error page
+        // has nothing to classify on, so don't read it.
+        const body =
+          res.status === 503
+            ? ((await res.json().catch(() => null)) as ReadinessProbeBody | null)
+            : null;
+        if (stale()) return;
+        apply(classifyProbeResponse(res.status, body));
       } catch {
-        // Network blip — leave state intact; the next probe retries.
+        // #1088 — a thrown fetch used to leave the state intact ("network
+        // blip"), which silently hid a dead backend for as long as it stayed
+        // dead. It is reported as unreachable instead: the card self-clears on
+        // the next heartbeat or tab focus once the middleware answers again,
+        // so the cost of a genuine blip is one dismissible card.
+        if (stale()) return;
+        apply('unreachable');
       }
     };
 
     void probe();
-    const heartbeat =
-      unavailable && !dismissed
-        ? window.setInterval(() => void probe(), HEARTBEAT_MS)
-        : undefined;
+    const heartbeat = visible
+      ? window.setInterval(() => void probe(), HEARTBEAT_MS)
+      : undefined;
     const onVisibility = (): void => {
       if (document.visibilityState === 'visible') void probe();
     };
@@ -112,14 +135,16 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
       if (heartbeat !== undefined) window.clearInterval(heartbeat);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [onAuthPage, unavailable, dismissed]);
+  }, [onAuthPage, visible]);
 
-  if (onAuthPage || cause === null || dismissed) return null;
+  if (onAuthPage || cause === null || !visible) return null;
 
   // No AnimatePresence exit animation on purpose: the card leaves when the
   // runtime comes up — an instant disappearance is fine, and it keeps the
   // clear-on-heartbeat path deterministic under fake timers in tests.
-  return <ReadinessCard cause={cause} onDismiss={() => setDismissed(true)} />;
+  return (
+    <ReadinessCard cause={cause} onDismiss={() => setDismissedCause(cause)} />
+  );
 }
 
 /** Non-blocking bottom-right card, styled after SessionWarningCard. */
@@ -127,7 +152,7 @@ function ReadinessCard({
   cause,
   onDismiss,
 }: {
-  cause: RuntimeReadinessCause;
+  cause: ReadinessCardCause;
   onDismiss: () => void;
 }): React.ReactElement {
   const t = useTranslations('runtimeReadiness');
@@ -135,19 +160,36 @@ function ReadinessCard({
   // derives it), so the no-access sentence would be a measured falsehood —
   // e.g. a stored-but-invalid key. It gets its own copy; the CTA still leads
   // to the provider page because that is where the access is checked.
+  //
+  // #1088 — `unreachable` deliberately does NOT reuse the `unknown` copy:
+  // that text asserts "access and assignment are set", which is precisely what
+  // a middleware that did not answer cannot tell us. Its CTA leads to the
+  // version/update page instead of the provider page, because a stopped
+  // container is not a provider problem.
   const noAssignment = cause === 'no_assignment';
   const unknown = cause === 'unknown';
-  const Icon = noAssignment ? Cpu : KeyRound;
-  const title = noAssignment
-    ? t('titleNoAssignment')
-    : unknown
-      ? t('titleUnknown')
-      : t('title');
-  const body = noAssignment
-    ? t('bodyNoAssignment')
-    : unknown
-      ? t('bodyUnknown')
-      : t('body');
+  const unreachable = cause === 'unreachable';
+  const Icon = unreachable ? PlugZap : noAssignment ? Cpu : KeyRound;
+  const title = unreachable
+    ? t('titleUnreachable')
+    : noAssignment
+      ? t('titleNoAssignment')
+      : unknown
+        ? t('titleUnknown')
+        : t('title');
+  const body = unreachable
+    ? t('bodyUnreachable')
+    : noAssignment
+      ? t('bodyNoAssignment')
+      : unknown
+        ? t('bodyUnknown')
+        : t('body');
+  const href = unreachable ? '/admin/update' : '/admin/providers';
+  const cta = unreachable
+    ? t('ctaUnreachable')
+    : noAssignment
+      ? t('ctaNoAssignment')
+      : t('cta');
 
   return (
     <motion.div
@@ -169,11 +211,11 @@ function ReadinessCard({
       </p>
       <div className="mt-4 flex items-center gap-2">
         <Link
-          href="/admin/providers"
+          href={href}
           onClick={onDismiss}
           className="flex-1 border border-[color:var(--ink)] bg-[color:var(--ink)] px-3 py-2 text-center text-[11px] uppercase tracking-[0.16em] text-[color:var(--paper)] transition hover:border-[color:var(--accent)] hover:bg-[color:var(--accent)]"
         >
-          {noAssignment ? t('ctaNoAssignment') : t('cta')}
+          {cta}
         </Link>
         <Button
           type="button"
