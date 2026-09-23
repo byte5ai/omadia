@@ -3702,6 +3702,7 @@
       "modelsRefreshUnsupported": "This provider does not support live discovery.",
       "modelsSourceLive": "live · {at}",
       "modelsSourceSeed": "seed list",
+      "unclassifiedModels": "{count, plural, one {# model} other {# models}} hidden (no discovery rule): {models}",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",

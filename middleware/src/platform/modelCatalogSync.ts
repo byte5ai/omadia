@@ -82,6 +82,13 @@ function summariseDrops(dropped: ReadonlyArray<DiscoveryDrop>): string {
   return [...counts.entries()].map(([reason, n]) => `${reason} ${String(n)}`).join(', ');
 }
 
+/** Model ids the discovery rules dropped only for lack of a `classify` rule. */
+export function unclassifiedModelIds(
+  dropped: ReadonlyArray<DiscoveryDrop>,
+): string[] {
+  return dropped.filter((d) => d.reason === 'unclassified').map((d) => d.modelId);
+}
+
 function describeDefaults(desc: LlmProviderDescriptor): string {
   const parts: string[] = [];
   for (const cls of ['frontier', 'balanced', 'fast'] as const) {
@@ -100,6 +107,26 @@ export function createModelCatalogSync(deps: ModelCatalogSyncDeps): ModelCatalog
   const results = new Map<string, ModelCatalogSyncResult>();
   const inFlight = new Map<string, Promise<ModelCatalogSyncResult>>();
   let timer: NodeJS.Timeout | undefined;
+
+  // A vendor model that passed include/exclude but matches no `classify` rule
+  // is dropped as `unclassified` — typically a brand-new model FAMILY (a new
+  // generation of a known family is picked up by the family rule on its own).
+  // It never reaches the model picker, so it must not vanish silently: name
+  // it once per process, not on every periodic sync.
+  const reportedUnclassified = new Set<string>();
+  const warnUnclassified = (
+    providerId: string,
+    dropped: ReadonlyArray<DiscoveryDrop>,
+  ): void => {
+    const fresh = unclassifiedModelIds(dropped).filter(
+      (id) => !reportedUnclassified.has(`${providerId}:${id}`),
+    );
+    if (fresh.length === 0) return;
+    for (const id of fresh) reportedUnclassified.add(`${providerId}:${id}`);
+    warn(
+      `${providerId}: ${String(fresh.length)} vendor model(s) match no discovery rule and are hidden from the model picker: ${fresh.join(', ')} — a new model family needs a \`classify\` rule in the provider descriptor`,
+    );
+  };
 
   const finish = (result: ModelCatalogSyncResult): ModelCatalogSyncResult => {
     results.set(result.providerId, result);
@@ -151,6 +178,7 @@ export function createModelCatalogSync(deps: ModelCatalogSyncDeps): ModelCatalog
     }
 
     const outcome = applyDiscoveryRules(desc, listed, { now: now() });
+    warnUnclassified(providerId, outcome.dropped);
     if (outcome.models.length === 0) {
       warn(
         `${providerId}: vendor listed ${String(listed.length)} model(s) but the discovery rules kept none (dropped: ${summariseDrops(outcome.dropped)}) — keeping the current ${String(currentCount)} model(s)`,
