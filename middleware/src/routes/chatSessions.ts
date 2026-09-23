@@ -8,6 +8,8 @@ import {
   isValidSessionId,
 } from '@omadia/orchestrator';
 
+import { LLM_SETUP_HINT } from '../llmSetupHint.js';
+
 /**
  * CRUD for persisted chat-tab sessions. Mounted at `/api/chat`, so the full
  * routes are:
@@ -89,7 +91,8 @@ interface ChatSessionDeps {
   /** Live resolver for the chat session store. Returns `undefined` while the
    *  orchestrator plugin has not published it yet (no ANTHROPIC_API_KEY) — the
    *  handlers then 503 instead of the kernel hard-failing at boot. Set via the
-   *  Setup Wizard reactivates the plugin and makes this resolve non-null. */
+   *  key save on the LLM access page reactivates the plugin and makes this
+   *  resolve non-null. */
   getStore: () => ChatSessionStore | undefined;
 }
 
@@ -104,7 +107,7 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
       res.status(503).json({
         error: 'chat_unavailable',
         message:
-          'chat is not configured — set ANTHROPIC_API_KEY on @omadia/orchestrator via the Setup Wizard',
+          `chat is not configured — ${LLM_SETUP_HINT}`,
       });
       return undefined;
     }

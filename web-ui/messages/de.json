@@ -16,7 +16,7 @@
         "downDetail": "Keine Antwort von der Middleware-API."
       },
       "llm": {
-        "title": "LLM-Provider",
+        "title": "LLM-Zugang",
         "connected": "{count, plural, one {# Provider verbunden} other {# Provider verbunden}}",
         "none": "Kein Provider verbunden",
         "active": "Aktiv: {name}",
@@ -160,7 +160,7 @@
       "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
-      "applied": "Installiert",
+      "done": "Erledigt",
       "browseAll": "Alle Plugins ansehen",
       "bringSkills": {
         "kicker": "Optional",
@@ -946,11 +946,7 @@
     "passwordTooShort": "Das Passwort muss mindestens 8 Zeichen lang sein.",
     "alreadyLocked": "Setup ist bereits abgeschlossen — ein anderer Nutzer wurde angelegt.",
     "credentialsRejected": "E-Mail oder Passwort wurde vom Server abgelehnt (gültige E-Mail + mindestens 8 Zeichen erforderlich).",
-    "anthropicKeyLabel": "Anthropic API Key (optional)",
-    "anthropicKeyHelp": "Beginnt mit sk-ant-…. Hol dir einen unter console.anthropic.com. Wird verschlüsselt im Per-Plugin-Vault gespeichert — nicht in .env. Du kannst das Feld leer lassen und den Key später unter Admin → Runtime → Secrets nachtragen.",
-    "anthropicKeyInvalid": "Anthropic API Keys beginnen mit „sk-ant-\". Bitte den Wert von console.anthropic.com prüfen.",
-    "anthropicKeyRejected": "Der Server hat diesen Anthropic-Key abgelehnt (401/403). Bitte unter console.anthropic.com → API keys überprüfen.",
-    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Provider einen Provider (Anthropic, OpenAI, …)."
+    "providerHint": "Hier ist kein LLM-Schlüssel nötig. Nachdem du das Admin-Konto angelegt hast, verbinde unter Admin → LLM-Zugang einen Provider (Anthropic, OpenAI, …)."
   },
   "onboarding": {
     "ariaLabel": "Erste Einrichtung",
@@ -958,7 +954,7 @@
     "ariaClose": "Schließen",
     "kicker": "Erste Einrichtung",
     "title": "Profil wählen — in <60 Sekunden arbeitsfähig",
-    "intro": "Diese Middleware ist noch leer ({count, plural, one {# Plugin} other {# Plugins}} installiert). Wähle ein curated Profil — die Plugins werden in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss über den Wizard.",
+    "intro": "Diese Middleware ist noch leer ({count, plural, one {# Plugin} other {# Plugins}} installiert). Wähle ein curated Profil — die Plugins werden in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss je Plugin auf dessen Detail-Seite.",
     "exportPrefix": "Bereits eingerichtet?",
     "exportLink": "Profil als YAML exportieren",
     "exportSuffix": "und in einen anderen Deploy importieren.",
@@ -3674,7 +3670,6 @@
     }
   },
   "adminProviders": {
-    "title": "LLM-Provider",
     "intro": "Verbinde LLM-Provider und lege fest, mit welchem jeder Agent läuft. Schlüssel werden verschlüsselt im Vault gespeichert und verlassen deinen Server nie. Anthropic ist der Standard; ein Provider-Wechsel pro Agent wirkt sofort.",
     "loading": "Lädt …",
     "loadError": "Die Provider-Liste konnte nicht geladen werden.",
@@ -3763,7 +3758,7 @@
     "explainer": {
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
-      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Zugang."
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",

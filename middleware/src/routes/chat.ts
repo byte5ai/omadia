@@ -268,7 +268,7 @@ export interface CreateChatRouterOptions {
   chatSessionStore?: ChatSessionStore;
   /** Live resolver for the chat session store. Preferred over the static
    *  `chatSessionStore` so the store is picked up when the orchestrator
-   *  plugin publishes it post-boot (Setup-Wizard key entry) without a
+   *  plugin publishes it post-boot (LLM-access-page key entry) without a
    *  restart. Falls back to `chatSessionStore` when absent. */
   getChatSessionStore?: () => ChatSessionStore | undefined;
   /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.

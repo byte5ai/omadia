@@ -2,13 +2,13 @@
  * Graceful-degradation tests for the chat-sessions router.
  *
  * The middleware now boots WITHOUT an ANTHROPIC_API_KEY: @omadia/orchestrator
- * publishes the ChatSessionStore only once the key is set (via the Setup
- * Wizard). The router therefore takes a LIVE `getStore` resolver instead of a
+ * publishes the ChatSessionStore only once the key is set (on the LLM access
+ * page). The router therefore takes a LIVE `getStore` resolver instead of a
  * captured store and must:
  *   1. 503 (`chat_unavailable`) while the store is absent — never crash.
  *   2. Serve normally once the store appears (hot, no restart) — the same
  *      router instance flips from 503 → 200 when `getStore` starts returning
- *      a value, mirroring a post-boot Setup-Wizard key entry.
+ *      a value, mirroring a post-boot key entry.
  */
 
 import { strict as assert } from 'node:assert';
