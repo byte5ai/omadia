@@ -69,11 +69,22 @@ requires:
 # cooldown). When published, this plugin runs its turns through it so the
 # operator surfaces and the turn loop see ONE breaker state; absent → the
 # plugin builds a private pool, which behaves the same minus the sharing.
+#
+# #1076 — llmProviderCatalog@1 (plugin-contributed providers' baseURL/quirks
+# for the provider factory) and installedPluginConfigReader@1 (cross-plugin
+# config for the privacy-bypass resolver) are both published by the KERNEL at
+# boot, before any plugin activates, so resolving them eagerly in activate()
+# is safe. Absent means a legacy host or a unit test: the factory then knows
+# only the built-in providers, and the bypass resolver falls back to kernel
+# tools only. Until #1076 both came from this plugin's row in the legacy
+# service-grant allowlist; declaring them here let that row shrink.
 optional_requires:
   - "transcription@1"
   - "routineTurnOwnerGuard@1"
   - "chatPeerAgents@1"
   - "llmProviderPool@1"
+  - "llmProviderCatalog@1"
+  - "installedPluginConfigReader@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime

@@ -120,10 +120,11 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
  * Reachable only when the catalog says `origin === 'bundled'`, which the loader
  * stamps from WHERE the package was found and never reads from a manifest.
  * That is the whole of the #789 fix for these ids, and it matters most here:
- * `@omadia/orchestrator` alone carries nineteen names including `graphPool`
+ * `@omadia/orchestrator` alone carried nineteen names at the 2026-08-20 audit
+ * (seventeen since #1076 moved two into its manifest), including `graphPool`
  * (the operator's Postgres pool) and `tigrisStore`. `PluginCatalog` documents
  * that an uploaded package wins an `identity.id` collision, so before this gate
- * a zip claiming that id inherited all nineteen without declaring one of them.
+ * a zip claiming that id inherited all of them without declaring one.
  * Same mechanism and same fail-closed default as `LEGACY_SQL_GRANTS_2026_08_20`
  * in `pluginSqlGrants.ts`.
  *
@@ -161,9 +162,7 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
     'attachmentBindings',
     'audienceGrants',
     'graphPool',
-    'installedPluginConfigReader',
     'installedPluginToolsReadyReader',
-    'llmProviderCatalog',
     'microsoft365.graph',
     'nativeToolRegistry',
     'nudgeProviders',
