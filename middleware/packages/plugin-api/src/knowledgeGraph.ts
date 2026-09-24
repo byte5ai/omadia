@@ -1220,8 +1220,10 @@ export interface EntityIngestResult {
 
 /** Supported platform discriminators for ChannelIdentity nodes. `web` is
  *  the admin UI (and any future end-user surface served from the same
- *  middleware); the channelUserId there is the local `users.id` uuid. */
-export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web';
+ *  middleware); the channelUserId there is the local `users.id` uuid. `api` is
+ *  the public chat API (#1107): the caller IS its API key (#438), so the
+ *  channelUserId there is the `key:<uuid>` ref, not a human end-user. */
+export type ChannelKind = 'teams' | 'telegram' | 'slack' | 'email' | 'web' | 'api';
 
 /**
  * Payload for {@link KnowledgeGraph.resolveOrCreateChannelIdentity}.

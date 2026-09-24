@@ -192,7 +192,7 @@ setup:
       label: "KI-Kennzeichnung: Stufe je Kanal"
       type: "string"
       required: false
-      help: "Optionale Overrides pro Kanal, kompakt als 'kanal=stufe' kommagetrennt. Stufen: standard, concise, off. Beispiel: 'telegram=concise,slack=off'. WIRKSAM sind Overrides heute nur für Kanäle, die pro Turn eine Kanal-Art auflösen: teams, telegram, slack. Die Werte email und web werden zwar akzeptiert, greifen aktuell aber NICHT — solche Turns tragen (noch) keine auflösbare Kanal-Art und nutzen wie discord/whatsapp/canvas/HTTP die globale Stufe (sichere Richtung: Kennzeichnung bleibt aktiv). Ungültige Einträge werden mit Warnung ignoriert."
+      help: "Optionale Overrides pro Kanal, kompakt als 'kanal=stufe' kommagetrennt. Stufen: standard, concise, off. Beispiel: 'telegram=concise,api=off'. WIRKSAM sind Overrides heute nur für Kanäle, die pro Turn eine Kanal-Art auflösen: teams, telegram, slack, api. Die Werte email und web werden zwar akzeptiert, greifen aktuell aber NICHT — solche Turns tragen (noch) keine auflösbare Kanal-Art und nutzen wie discord/whatsapp/canvas/HTTP die globale Stufe (sichere Richtung: Kennzeichnung bleibt aktiv). Ungültige Einträge werden mit Warnung ignoriert."
     - key: "ai_disclosure_locale"
       label: "KI-Kennzeichnung: Sprache"
       type: "enum"

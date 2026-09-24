@@ -22,16 +22,33 @@
  */
 
 import { Router } from 'express';
-import type { ChannelHandle, CoreApi } from '@omadia/channel-sdk';
+import type { ChannelHandle, ChannelKeyDirectory, CoreApi } from '@omadia/channel-sdk';
 import type { PluginContext } from '@omadia/plugin-api';
 import { createApiKeyStore, createAuditLog, createRateLimiter } from '@omadia/api-key-auth';
 
 import { createAdminKeysRouter } from './adminKeysRouter.js';
 import { createApiChatRouter } from './chatRouter.js';
+import { createApiChannelDirectory } from './apiChannelDirectory.js';
 
 /** Mount prefix this plugin registers under. `publicPaths.ts` exempts ONLY
  *  `${API_PREFIX}/chat` from the session gate — keep the two in sync. */
 export const API_PREFIX = '/api/public/v1';
+
+/** Kernel service (published by `src/index.ts`) that aggregates every
+ *  channel's `ChannelKeyDirectory` for `/operator/channels`. Declared as
+ *  `optional_requires` in manifest.yaml — the kernel provides it, so a hard
+ *  `requires` would be unresolvable, and a kernel too old to publish it must
+ *  still let this channel activate (routing by `channelKey` works regardless;
+ *  only the dashboard listing is lost). */
+const CHANNEL_DIRECTORY_SERVICE = 'channelDirectoryRegistry';
+
+/** The registry surface this plugin uses — the kernel's
+ *  `ChannelDirectoryRegistry` lives in core src and is not importable from a
+ *  plugin, so we depend on its shape, not its class. */
+interface ChannelDirectoryRegistryLike {
+  register(directory: ChannelKeyDirectory): void;
+  unregister(channelType: string): void;
+}
 
 export async function activate(
   ctx: PluginContext,
@@ -74,11 +91,44 @@ export async function activate(
     `[channel-api] chat route at POST ${API_PREFIX}/chat, key admin at ${API_PREFIX}/admin/keys`,
   );
 
+  // #1106 — contribute a ChannelKeyDirectory so each active API key shows up
+  // as a bindable row in /operator/channels. The channel_type an operator
+  // binds under is what the dispatcher resolves via `deriveChannelType(
+  // channelId)`; for this plugin's id (`@omadia/channel-api`: no dotted
+  // segment, already lowercase) that is the id verbatim, and the router now
+  // sets the matching `IncomingTurn.channelKey` of `key:<uuid>`. Binding a row
+  // therefore routes real turns instead of the fallback orchestrator.
+  const channelType = ctx.agentId;
+  const directory = createApiChannelDirectory({
+    apiKeys,
+    channelType,
+    originPluginId: ctx.agentId,
+  });
+  let unregisterDirectory: (() => void) | undefined;
+  // Optional (see CHANNEL_DIRECTORY_SERVICE): a kernel that doesn't publish
+  // the registry, or a bare test PluginContext with no `services`, must not
+  // fail activation — the channel still routes, it just isn't listed.
+  const directoryRegistry = ctx.services?.getOptional?.<ChannelDirectoryRegistryLike>(
+    CHANNEL_DIRECTORY_SERVICE,
+  );
+  if (directoryRegistry) {
+    directoryRegistry.register(directory);
+    unregisterDirectory = () => directoryRegistry.unregister(channelType);
+    ctx.log(`[channel-api] contributed ChannelKeyDirectory for ${channelType}`);
+  } else {
+    ctx.log(
+      '[channel-api] channelDirectoryRegistry unavailable — API keys will not appear in /operator/channels (routing by channelKey still works)',
+    );
+  }
+
   return {
     async close(): Promise<void> {
       ctx.log('deactivating @omadia/channel-api');
-      // Routes are torn down by the kernel per channelId (CoreApi contract) —
-      // nothing else to release (no timers, no sockets).
+      // Symmetric teardown of the directory contribution so a
+      // deactivate/uninstall stops listing this channel's keys. Routes are
+      // torn down by the kernel per channelId (CoreApi contract); no other
+      // runtime resources to release (no timers, no sockets).
+      unregisterDirectory?.();
     },
   };
 }

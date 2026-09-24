@@ -219,6 +219,7 @@ export type {
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,
+  AnswerSource,
   OutgoingAttachment,
   VerifierBadge,
   FollowUpOption,

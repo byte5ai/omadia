@@ -117,6 +117,13 @@ export function BoundariesSection({
         </span>
       </header>
 
+      <p
+        data-testid="boundaries-plugin-stack-note"
+        className="text-xs text-[color:var(--fg-muted)]"
+      >
+        {t('pluginStackNote')}
+      </p>
+
       {unknownIds.length > 0 && (
         <div
           data-testid="boundaries-unknown-warning"
