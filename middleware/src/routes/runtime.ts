@@ -8,6 +8,7 @@ import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
 import {
+  ProviderDependentRebuildError,
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
 } from '../platform/providerAssignment.js';
@@ -237,6 +238,10 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
             : null,
         });
       } catch (err) {
+        if (err instanceof ProviderDependentRebuildError) {
+          res.status(500).json(dependentRebuildFailure(err));
+          return;
+        }
         const message = err instanceof Error ? err.message : String(err);
         res
           .status(500)
@@ -966,9 +971,33 @@ async function applySetupValues(
       config_values: configValues,
     });
   } catch (err) {
+    if (err instanceof ProviderDependentRebuildError) {
+      res.status(500).json(dependentRebuildFailure(err));
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ code: 'runtime.vault_write_failed', message });
   }
+}
+
+/**
+ * #1076 — the envelope for a config write whose `llm_provider` rebuild left a
+ * provider dependent (extras) down. The write itself IS persisted and the
+ * plugin was rebuilt on it (`primaryApplied`), so neither `update_failed` nor
+ * `vault_write_failed` ("could not be written") would be true.
+ */
+function dependentRebuildFailure(err: ProviderDependentRebuildError): {
+  readonly code: 'runtime.dependent_rebuild_failed';
+  readonly message: string;
+  readonly dependentId: string;
+  readonly primaryApplied: true;
+} {
+  return {
+    code: 'runtime.dependent_rebuild_failed',
+    message: err.message,
+    dependentId: err.dependentId,
+    primaryApplied: err.primaryApplied,
+  };
 }
 
 function resolveSecretFieldKeys(

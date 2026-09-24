@@ -1812,9 +1812,15 @@ seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 neu zu bauen, ließe die Chat-Turn-Faktenextraktion auf der alten Instanz. Scheitert
 ein abhängiges Plugin, wird der Orchestrator trotzdem neu gebaut und danach eine
 `ProviderDependentRebuildError` (mit `dependentId`, `primaryApplied: true` und
-dem `last_activation_error` im Text) geworfen; die Routen antworten mit
-`providers.apply_failed` bzw. `runtime.update_failed` /
-`runtime.vault_write_failed`. „Gescheitert“ heißt: `reactivate` wirft **oder**
+dem `last_activation_error` im Text; „runs on its new provider“ nur bei einer
+effektiven Änderung, sonst „rebuilt on its unchanged provider“) geworfen. Die
+Routen antworten mit eigenem Code, `providers.dependent_rebuild_failed` bzw.
+`runtime.dependent_rebuild_failed` (beide PATCH-Routen), und legen
+`dependentId` + `primaryApplied: true` mit auf den Envelope; beide Codes haben
+en/de-Copy im ErrorHelp-Katalog. Das `ProvidersPanel` übernimmt bei
+`primaryApplied` den neuen Provider in die Zeile, statt das kontrollierte Select
+auf den alten zurückspringen zu lassen, und `autoAssignSubscriptionCli` zählt
+so ein Plugin als `assigned`. „Gescheitert“ heißt: `reactivate` wirft **oder**
 hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und

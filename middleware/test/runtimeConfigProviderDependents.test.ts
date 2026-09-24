@@ -24,6 +24,14 @@ import { InMemorySecretVault } from '../src/secrets/vault.js';
 const ORCH = '@omadia/orchestrator';
 const EXTRAS = '@omadia/orchestrator-extras';
 
+/** `runtime.dependent_rebuild_failed` — the write landed, a dependent is down. */
+interface DependentFailureBody {
+  code: string;
+  message: string;
+  dependentId?: string;
+  primaryApplied?: boolean;
+}
+
 interface Harness {
   baseUrl: string;
   registry: InMemoryInstalledRegistry;
@@ -153,9 +161,11 @@ describe('runtime config writes rebuild provider dependents (#1076)', () => {
       { llm_provider: 'claude-cli' },
     );
     assert.equal(res.status, 500);
-    const body = JSON.parse(res.body) as { code: string; message: string };
-    assert.equal(body.code, 'runtime.update_failed');
+    const body = JSON.parse(res.body) as DependentFailureBody;
+    assert.equal(body.code, 'runtime.dependent_rebuild_failed');
     assert.match(body.message, /orchestrator-extras failed to rebuild/);
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, true);
     // The orchestrator was still rebuilt on the persisted config.
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
     assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'claude-cli');
@@ -183,7 +193,10 @@ describe('runtime config writes rebuild provider dependents (#1076)', () => {
     h.reactivated.length = 0;
     const res = await patchWithBody(url, { set: { llm_provider: 'openai' } });
     assert.equal(res.status, 500);
-    assert.equal((JSON.parse(res.body) as { code: string }).code, 'runtime.vault_write_failed');
+    const body = JSON.parse(res.body) as DependentFailureBody;
+    assert.equal(body.code, 'runtime.dependent_rebuild_failed');
+    assert.match(body.message, /unchanged provider/);
+    assert.equal(body.primaryApplied, true);
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 
@@ -197,9 +210,13 @@ describe('runtime config writes rebuild provider dependents (#1076)', () => {
       { set: { llm_provider: 'openai' } },
     );
     assert.equal(res.status, 500);
-    const body = JSON.parse(res.body) as { code: string; message: string };
-    assert.equal(body.code, 'runtime.vault_write_failed');
+    const body = JSON.parse(res.body) as DependentFailureBody;
+    assert.equal(body.code, 'runtime.dependent_rebuild_failed');
     assert.match(body.message, /orchestrator-extras failed to rebuild/);
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, true);
+    // The config write itself landed.
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 

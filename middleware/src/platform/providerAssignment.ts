@@ -54,6 +54,15 @@ export type ProviderAssignmentResult =
       readonly status: 400 | 404 | 500;
       readonly code: string;
       readonly message: string;
+      /**
+       * Set only on `providers.dependent_rebuild_failed` (#1076): the
+       * assignment IS persisted and the plugin itself was rebuilt on it; only
+       * the named provider dependent did not come back up. The route puts
+       * both fields on the error envelope, so the UI can show the new
+       * provider instead of snapping back to the old one.
+       */
+      readonly dependentId?: string;
+      readonly primaryApplied?: true;
     };
 
 // ---------------------------------------------------------------------------
@@ -107,12 +116,23 @@ export interface ProviderReactivationDeps {
 export class ProviderDependentRebuildError extends Error {
   readonly primaryId: string;
   readonly dependentId: string;
-  readonly primaryApplied = true;
+  readonly primaryApplied = true as const;
 
-  constructor(primaryId: string, dependentId: string, reason: string) {
-    super(
-      `${primaryId} runs on its new provider, but its dependent ${dependentId} failed to rebuild: ${reason}`,
-    );
+  /**
+   * `providerChanged` picks the wording: on a same-provider re-save (the retry
+   * of a dependent still `errored`) the primary did not move to a NEW
+   * provider, so the message must not claim it did.
+   */
+  constructor(
+    primaryId: string,
+    dependentId: string,
+    reason: string,
+    providerChanged: boolean,
+  ) {
+    const primaryState = providerChanged
+      ? `${primaryId} runs on its new provider`
+      : `${primaryId} was saved and rebuilt on its unchanged provider`;
+    super(`${primaryState}, but its dependent ${dependentId} failed to rebuild: ${reason}`);
     this.name = 'ProviderDependentRebuildError';
     this.primaryId = primaryId;
     this.dependentId = dependentId;
@@ -198,7 +218,9 @@ export async function reactivateAfterProviderWrite(
   for (const id of dependents) {
     const reason = await rebuildDependent(deps.installedRegistry, reactivate, id);
     if (reason !== undefined) {
-      failures.push(new ProviderDependentRebuildError(pluginId, id, reason));
+      failures.push(
+        new ProviderDependentRebuildError(pluginId, id, reason, opts.providerChanged),
+      );
     }
   }
   try {
@@ -302,6 +324,18 @@ export async function applyProviderAssignment(
       providerWritten: true,
     });
   } catch (err) {
+    if (err instanceof ProviderDependentRebuildError) {
+      // Persisted and rebuilt, but a dependent (extras) is down: its own code,
+      // so the operator is not told the assignment failed to write.
+      return {
+        ok: false,
+        status: 500,
+        code: 'providers.dependent_rebuild_failed',
+        message: err.message,
+        dependentId: err.dependentId,
+        primaryApplied: err.primaryApplied,
+      };
+    }
     return {
       ok: false,
       status: 500,
@@ -431,6 +465,15 @@ export async function autoAssignSubscriptionCli(
       assigned.push(desc.id);
       log(
         `[providers] subscription hand-off: ${desc.id} had no credential for '${current}', now runs on '${SUBSCRIPTION_CLI_PROVIDER}' (model=${result.model})`,
+      );
+    } else if (result.primaryApplied === true) {
+      // #1076 — the assignment was persisted and the plugin rebuilt on it; only
+      // a provider dependent did not come back up. The plugin IS switched, so
+      // reporting it as skipped would be untrue; the dependent's failure is
+      // logged (and stays visible as `errored` on the plugin list).
+      assigned.push(desc.id);
+      log(
+        `[providers] subscription hand-off: ${desc.id} had no credential for '${current}', now runs on '${SUBSCRIPTION_CLI_PROVIDER}', but its dependent ${result.dependentId ?? '(unknown)'} failed to rebuild (${result.code}: ${result.message})`,
       );
     } else {
       skipped.push({ pluginId: desc.id, reason: result.code });

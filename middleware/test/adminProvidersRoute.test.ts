@@ -55,7 +55,12 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { probeStatus?: number; modelCatalogSync?: ModelCatalogSync } = {},
+  opts: {
+    probeStatus?: number;
+    modelCatalogSync?: ModelCatalogSync;
+    /** Plugin whose reactivation throws (#1076 dependent failure). */
+    reactivateThrowsFor?: string;
+  } = {},
 ): Promise<Harness> {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -83,6 +88,7 @@ async function makeHarness(
       vault,
       reactivate: async (id: string) => {
         reactivated.push(id);
+        if (opts.reactivateThrowsFor === id) throw new Error(`${id} activate() exploded`);
       },
       llmProviderCatalog,
       ...(opts.modelCatalogSync !== undefined
@@ -491,6 +497,25 @@ describe('admin providers route — POST /assignment', () => {
     // #1076 — extras inherits the orchestrator's provider and resolves it once
     // per activate(), so a provider change must rebuild it too. Extras FIRST:
     // the orchestrator captures extras' services eagerly in its own activate().
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('answers dependent_rebuild_failed with dependentId + primaryApplied when only extras fails', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateThrowsFor: EXTRAS,
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as { code?: string; dependentId?: string; primaryApplied?: boolean };
+    assert.equal(body.code, 'providers.dependent_rebuild_failed');
+    assert.equal(body.dependentId, EXTRAS);
+    assert.equal(body.primaryApplied, true);
+    // The assignment itself landed and the orchestrator was rebuilt on it.
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 

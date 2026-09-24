@@ -1086,6 +1086,10 @@
         "what": "The assignment was accepted but could not be written to the plugin.",
         "next": "Save again. If it keeps failing, the middleware cannot write to its config store."
       },
+      "dependent_rebuild_failed": {
+        "what": "The assignment was saved and is live, but the background memory features that inherit it did not restart.",
+        "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
+      },
       "invalid_request": {
         "what": "The assignment was missing the plugin, the provider or the model.",
         "next": "Pick a provider and a model, then save again."
@@ -1148,6 +1152,10 @@
       "agent_inactive": {
         "what": "The plugin is installed but not running, so it cannot answer right now.",
         "next": "Activate the plugin, then reload this page."
+      },
+      "dependent_rebuild_failed": {
+        "what": "The change was saved and is live, but a plugin that depends on it did not restart.",
+        "next": "Save again to retry the restart. If it keeps failing, the support details name the plugin and its activation error."
       },
       "empty_secrets_patch": {
         "what": "The save carried no changed value.",

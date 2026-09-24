@@ -55,17 +55,28 @@ instance. The dependency is data (`inheritsProviderFrom` on the extras entry
 of `LLM_PLUGINS`, drift-tested against a constant exported by extras), and
 every writer of `llm_provider` goes through the same
 `reactivateAfterProviderWrite`: the providers assignment route, the runtime
-`PATCH …/config` route and the config branch of `PATCH …/secrets`. A
-model-only change, or unset to explicit `anthropic`, still rebuilds only the
-plugin itself. If extras does not come back up (the kernel's reactivation
-records the failure and marks it `errored` rather than throwing), the
-orchestrator is still rebuilt on its new, persisted provider, but the write
-answers with an error naming extras and its activation error instead of a
-success. Saving the same provider again (what the error copy recommends)
+`PATCH …/config` route and the config branch of `PATCH …/secrets`. A write
+that leaves the effective provider unchanged (a model-only change, or unset to
+explicit `anthropic`) rebuilds only the plugin itself as long as extras is
+healthy. If extras is `errored`, any write that carries `llm_provider` retries
+it too, changed or not, and every save on `/admin/providers` carries it. So a
+model-only save of the orchestrator there also rebuilds an errored extras, and
+if extras keeps failing it answers `providers.dependent_rebuild_failed`, not
+`ok`. If extras does not come back up (the kernel's reactivation records the
+failure and marks it `errored` rather than throwing), the orchestrator is
+still rebuilt on its persisted config, and the write answers with its own
+code instead of a success: `providers.dependent_rebuild_failed` on the
+providers route, `runtime.dependent_rebuild_failed` on the runtime `PATCH`
+routes, both carrying `dependentId` and `primaryApplied: true` next to
+extras' activation error. The providers page then keeps the new provider
+selected rather than snapping back to the old one, and both codes have en/de
+error-help copy. Saving the same provider again (what that copy recommends)
 retries every dependent still left `errored`, so the retry answers `ok` only
-once extras is really back up. The subscription-login hand-off now assigns plugins that others
-inherit from last (verifier, extras, orchestrator), so the final rebuild
-captures extras with its own hand-off model rather than an intermediate one.
+once extras is really back up. The subscription-login hand-off now assigns
+plugins that others inherit from last (verifier, extras, orchestrator), so the
+final rebuild captures extras with its own hand-off model rather than an
+intermediate one, and it counts a plugin whose only failure was a dependent
+rebuild as assigned, because its config was persisted and rebuilt.
 
 The orchestrator also declares `llmProviderCatalog@1` and
 `installedPluginConfigReader@1` under `optional_requires` and resolves both

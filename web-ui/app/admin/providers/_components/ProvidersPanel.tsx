@@ -64,6 +64,52 @@ function errorCode(err: unknown): string | null {
 }
 
 /**
+ * #1076 — true when a failed assignment says the assignment itself landed:
+ * `providers.dependent_rebuild_failed` carries `primaryApplied: true` when the
+ * plugin runs on the new provider and only a dependent (extras) did not come
+ * back up. The row must then show the NEW provider; snapping the controlled
+ * select back to the old one would misstate what the server now holds.
+ */
+function wasPrimaryApplied(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  try {
+    const parsed = JSON.parse(err.body) as { primaryApplied?: unknown };
+    return parsed.primaryApplied === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The providers response with `pluginId`'s row moved to `provider` / `model`,
+ * mirroring what the server persisted.
+ */
+function withAssignment(
+  data: ProvidersResponse,
+  pluginId: string,
+  provider: string,
+  model: string,
+): ProvidersResponse {
+  return {
+    ...data,
+    assignments: data.assignments.map((a) => {
+      if (a.pluginId !== pluginId) return a;
+      // #1099 — mirror the server: a non-Anthropic assignment force-writes
+      // `orchestrator_model_routing: 'false'`
+      // (`LLM_PLUGINS[orchestrator].extraOnNonAnthropic` in
+      // pluginLlmReadiness.ts, applied by providerAssignment.ts). Keeping the
+      // old value would show routing ON after an Anthropic → other → Anthropic
+      // round-trip while it is off.
+      const routingReset =
+        provider !== 'anthropic' && a.modelRouting !== undefined
+          ? { modelRouting: 'false' }
+          : {};
+      return { ...a, provider, model, ...routingReset };
+    }),
+  };
+}
+
+/**
  * LLM provider admin (S4). Two concerns on one page:
  *  1. Providers — which LLM providers exist, whether a key is connected in the
  *     vault, and what models each serves. The API key is entered inline here
@@ -130,34 +176,20 @@ export function ProvidersPanel({
         delete n[pluginId];
         return n;
       });
-      try {
-        await assignProvider({ pluginId, provider, model });
+      const commitRow = (): void =>
         setState((prev) =>
           prev.kind === 'ready'
-            ? {
-                ...prev,
-                data: {
-                  ...prev.data,
-                  assignments: prev.data.assignments.map((a) => {
-                    if (a.pluginId !== pluginId) return a;
-                    // #1099 — mirror the server: a non-Anthropic assignment
-                    // force-writes `orchestrator_model_routing: 'false'`
-                    // (`LLM_PLUGINS[orchestrator].extraOnNonAnthropic` in
-                    // pluginLlmReadiness.ts, applied by providerAssignment.ts).
-                    // Keeping the old value would show routing ON after an
-                    // Anthropic → other → Anthropic round-trip while it is off.
-                    const routingReset =
-                      provider !== 'anthropic' && a.modelRouting !== undefined
-                        ? { modelRouting: 'false' }
-                        : {};
-                    return { ...a, provider, model, ...routingReset };
-                  }),
-                },
-              }
+            ? { ...prev, data: withAssignment(prev.data, pluginId, provider, model) }
             : prev,
         );
+      try {
+        await assignProvider({ pluginId, provider, model });
+        commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
+        // #1076 — the assignment landed; only a dependent is down. Show the
+        // row on the provider the server now holds, AND the error.
+        if (wasPrimaryApplied(err)) commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
         setErrors((e) => ({ ...e, [pluginId]: err }));
       }

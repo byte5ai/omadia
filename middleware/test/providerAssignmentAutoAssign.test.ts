@@ -35,7 +35,7 @@ const EXTRAS = '@omadia/orchestrator-extras';
 
 async function makeDeps(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { reactivateThrows?: boolean } = {},
+  opts: { reactivateThrows?: boolean; throwFor?: string } = {},
 ) {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -63,6 +63,7 @@ async function makeDeps(
       reactivate: async (id: string) => {
         if (opts.reactivateThrows) throw new Error('activation exploded');
         reactivated.push(id);
+        if (opts.throwFor === id) throw new Error(`${id} activation exploded`);
       },
     },
   };
@@ -203,6 +204,31 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     assert.deepEqual(outcome.assigned, []);
     assert.ok(
       outcome.skipped.some((s) => s.pluginId === ORCH && s.reason === 'providers.apply_failed'),
+    );
+  });
+
+  // #1076 — the orchestrator's switch rebuilds extras first. If only extras
+  // fails, the orchestrator's config IS persisted and rebuilt on the CLI, so it
+  // counts as assigned; reporting it as skipped would claim it never moved.
+  it('counts the orchestrator as assigned when only its dependent fails to rebuild', async () => {
+    const { registry, reactivated, deps } = await makeDeps(
+      [
+        { id: ORCH, config: {} },
+        { id: EXTRAS, config: { llm_provider: SUBSCRIPTION_CLI_PROVIDER } },
+      ],
+      { throwFor: EXTRAS },
+    );
+    const logs: string[] = [];
+
+    const outcome = await autoAssignSubscriptionCli({ ...deps, log: (m) => logs.push(m) });
+
+    assert.deepEqual(outcome.assigned, [ORCH]);
+    assert.ok(!outcome.skipped.some((s) => s.pluginId === ORCH));
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER);
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
+    assert.ok(
+      logs.some((l) => l.includes(ORCH) && l.includes(`dependent ${EXTRAS} failed to rebuild`)),
+      logs.join('\n'),
     );
   });
 

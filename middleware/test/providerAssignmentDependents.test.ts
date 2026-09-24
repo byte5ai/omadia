@@ -161,7 +161,7 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.deepEqual(reactivated, [VERIFIER]);
   });
 
-  it('a dependent the production reactivate leaves errored still rebuilds the orchestrator, then reports apply_failed', async () => {
+  it('a dependent the production reactivate leaves errored still rebuilds the orchestrator, then reports dependent_rebuild_failed', async () => {
     // The REAL `InstallService.reactivate`, the function production's
     // `reactivateAgent` awaits. It never throws on an activation failure: it
     // records `markActivationFailed`, flips the entry to `errored` and
@@ -195,10 +195,15 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     // The primary's config IS persisted; only the report says "not whole".
     assert.equal(registry.get(ORCH)?.config['llm_provider'], 'openai');
     assert.equal(result.ok, false);
-    assert.equal(result.ok === false ? result.code : undefined, 'providers.apply_failed');
+    assert.equal(result.ok === false ? result.code : undefined, 'providers.dependent_rebuild_failed');
     const message = result.ok === false ? result.message : '';
     assert.match(message, /@omadia\/orchestrator-extras failed to rebuild/);
     assert.match(message, /extras activate\(\) exploded/);
+    assert.match(message, /runs on its new provider/);
+    // The envelope carries WHICH dependent is down and that the assignment
+    // itself landed, so the UI keeps the new provider selected.
+    assert.equal(result.ok === false ? result.dependentId : undefined, EXTRAS);
+    assert.equal(result.ok === false ? result.primaryApplied : undefined, true);
   });
 
   it('a dependent that comes back up (errored lifted by the rebuild) is not a failure', async () => {
@@ -270,7 +275,7 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
   it('re-saving the same provider retries a dependent left errored and reports ok once it is up', async () => {
     const run = await saveTwiceWithExtrasFailing(1);
     assert.equal(run.first.ok, false);
-    assert.equal(run.first.ok === false ? run.first.code : undefined, 'providers.apply_failed');
+    assert.equal(run.first.ok === false ? run.first.code : undefined, 'providers.dependent_rebuild_failed');
     assert.deepEqual(run.firstActivated, [EXTRAS, ORCH]);
     assert.equal(run.extrasAfterFirst, 'errored');
 
@@ -279,17 +284,23 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.equal(run.registry.get(EXTRAS)?.status, 'active');
   });
 
-  it('re-saving the same provider while the dependent keeps failing reports apply_failed again', async () => {
+  it('re-saving the same provider while the dependent keeps failing reports dependent_rebuild_failed again', async () => {
     const run = await saveTwiceWithExtrasFailing(Number.POSITIVE_INFINITY);
     assert.equal(run.first.ok, false);
     assert.equal(run.second.ok, false, JSON.stringify(run.second));
-    assert.equal(run.second.ok === false ? run.second.code : undefined, 'providers.apply_failed');
-    assert.match(run.second.ok === false ? run.second.message : '', /orchestrator-extras failed to rebuild/);
+    assert.equal(run.second.ok === false ? run.second.code : undefined, 'providers.dependent_rebuild_failed');
+    const secondMessage = run.second.ok === false ? run.second.message : '';
+    assert.match(secondMessage, /orchestrator-extras failed to rebuild/);
+    // A same-provider re-save did not move the orchestrator anywhere; the
+    // message must not claim a NEW provider.
+    assert.doesNotMatch(secondMessage, /new provider/);
+    assert.match(secondMessage, /unchanged provider/);
+    assert.equal(run.second.ok === false ? run.second.primaryApplied : undefined, true);
     assert.deepEqual(run.secondActivated, [EXTRAS, ORCH]);
     assert.equal(run.registry.get(EXTRAS)?.status, 'errored');
   });
 
-  it('a throwing dependent still rebuilds the orchestrator, then reports apply_failed', async () => {
+  it('a throwing dependent still rebuilds the orchestrator, then reports dependent_rebuild_failed', async () => {
     const { reactivated, deps } = await makeDeps(
       [{ id: ORCH, config: { llm_provider: 'anthropic' } }, { id: EXTRAS }],
       { throwFor: EXTRAS },
@@ -301,7 +312,7 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     });
     assert.deepEqual(reactivated, [EXTRAS, ORCH]);
     assert.equal(result.ok, false);
-    assert.equal(result.ok === false ? result.code : undefined, 'providers.apply_failed');
+    assert.equal(result.ok === false ? result.code : undefined, 'providers.dependent_rebuild_failed');
     assert.match(result.ok === false ? result.message : '', /orchestrator-extras activation exploded/);
   });
 });

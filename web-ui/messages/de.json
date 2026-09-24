@@ -1086,6 +1086,10 @@
         "what": "Die Zuordnung wurde angenommen, konnte aber nicht ins Plugin geschrieben werden.",
         "next": "Speichere erneut. Bleibt es dabei, kann die Middleware ihren Config-Store nicht schreiben."
       },
+      "dependent_rebuild_failed": {
+        "what": "Die Zuordnung wurde gespeichert und ist aktiv, aber die Hintergrund-Gedächtnisfunktionen, die sie übernehmen, sind nicht neu gestartet.",
+        "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
+      },
       "invalid_request": {
         "what": "In der Zuordnung fehlte das Plugin, der Provider oder das Modell.",
         "next": "Wähle Provider und Modell und speichere erneut."
@@ -1148,6 +1152,10 @@
       "agent_inactive": {
         "what": "Das Plugin ist installiert, läuft aber nicht und kann deshalb gerade nicht antworten.",
         "next": "Aktiviere das Plugin und lade diese Seite neu."
+      },
+      "dependent_rebuild_failed": {
+        "what": "Die Änderung wurde gespeichert und ist aktiv, aber ein davon abhängiges Plugin ist nicht neu gestartet.",
+        "next": "Speichere erneut, um den Neustart zu wiederholen. Bleibt es dabei, nennen die Support-Details das Plugin und seinen Aktivierungsfehler."
       },
       "empty_secrets_patch": {
         "what": "Beim Speichern war kein geänderter Wert dabei.",

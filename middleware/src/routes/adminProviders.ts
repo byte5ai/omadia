@@ -459,7 +459,15 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     // subscription-login hand-off (OM-79) applies exactly the same checks.
     const result = await applyProviderAssignment(deps, { pluginId, provider, model });
     if (!result.ok) {
-      res.status(result.status).json({ code: result.code, message: result.message });
+      res.status(result.status).json({
+        code: result.code,
+        message: result.message,
+        // #1076 — `providers.dependent_rebuild_failed`: the assignment IS
+        // persisted and live on the plugin; only a provider dependent is down.
+        ...(result.primaryApplied === true
+          ? { dependentId: result.dependentId, primaryApplied: true }
+          : {}),
+      });
       return;
     }
     res.json({ ok: true, pluginId: result.pluginId, provider: result.provider, model: result.model });
