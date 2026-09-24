@@ -10,12 +10,15 @@ import type {
   ChatTurnInput,
   ChatStreamEvent,
   ChatStreamObserver,
+  FollowUpOption,
+  PendingUserChoice,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
 } from './toolDispatchService.js';
+import type { PendingSlotCard } from './tools/findFreeSlotsTool.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
@@ -131,14 +134,77 @@ const CLI_RUNTIME_CONTEXT = [
 const DEFAULT_CLI_SYSTEM_PROMPT = 'You are a helpful, precise assistant.';
 
 /**
- * Compose the `--system-prompt` value: the caller's persona (or a neutral
- * default when none is configured) followed by the omadia runtime context.
+ * Issue #1102 — the kernel-native capabilities that DON'T exist on the CLI
+ * provider unless they are advertised over the loopback MCP server this turn.
+ *
+ * On the subscription-CLI path a kernel native that carries neither a spec nor
+ * a handler never reaches the CLI (see `toolDispatchService.listDispatchable
+ * ToolSpecs`), so the model is offered no tool AND no hint that the tool is
+ * missing — and it answers as if the action had happened ("Gespeichert!" with
+ * `tools=0`). This table drives an honesty sentence that names exactly the
+ * capabilities the model does NOT have, keyed on the tool's wire name so the
+ * sentence shrinks automatically as Stage 2 advertises more of them: a tool in
+ * the advertised set is truthfully present and is dropped from the list.
+ *
+ * The phrases are infinitive so they slot into "you cannot <phrase>".
  */
-export function composeCliSystemPrompt(persona: string | undefined): string {
+const KERNEL_NATIVE_CAPABILITY_PHRASES: ReadonlyArray<
+  readonly [toolName: string, phrase: string]
+> = [
+  ['memory', 'remember facts across turns (long-term memory)'],
+  ['query_knowledge_graph', 'look things up in the knowledge graph'],
+  ['ask_user_choice', 'offer interactive choice buttons'],
+  ['suggest_follow_ups', 'offer follow-up suggestion buttons'],
+  ['find_free_slots', 'check calendar availability'],
+  ['book_meeting', 'book calendar meetings'],
+  ['get_chat_participants', 'list the participants of this chat'],
+];
+
+/**
+ * The capability phrases for every kernel-native tool NOT in `advertisedTool
+ * Names`. Returns `[]` once all of them are advertised, which is the honest
+ * end-state after Stage 2 parity (bar `get_chat_participants`, which stays
+ * channel-bound). Names are compared verbatim — the advertised specs carry the
+ * un-prefixed wire name (`ask_user_choice`, not `mcp__omadia__ask_user_choice`).
+ */
+export function absentKernelCapabilities(
+  advertisedToolNames: Iterable<string>,
+): string[] {
+  const advertised = new Set(advertisedToolNames);
+  return KERNEL_NATIVE_CAPABILITY_PHRASES.filter(
+    ([name]) => !advertised.has(name),
+  ).map(([, phrase]) => phrase);
+}
+
+/** Joins phrases into an English list: "a", "a and b", "a, b or c". */
+function joinPhrases(phrases: readonly string[]): string {
+  if (phrases.length <= 1) return phrases[0] ?? '';
+  return `${phrases.slice(0, -1).join(', ')} or ${phrases[phrases.length - 1]}`;
+}
+
+/**
+ * Compose the `--system-prompt` value: the caller's persona (or a neutral
+ * default when none is configured), the omadia runtime context, and — when any
+ * kernel-native capability is absent this turn (#1102) — an honesty sentence
+ * naming what the model CANNOT do, so it stops inventing durable side effects
+ * it never performed.
+ */
+export function composeCliSystemPrompt(
+  persona: string | undefined,
+  absentCapabilities?: readonly string[],
+): string {
   const base = typeof persona === 'string' && persona.trim().length > 0
     ? persona.trimEnd()
     : DEFAULT_CLI_SYSTEM_PROMPT;
-  return `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
+  const prompt = `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
+  if (absentCapabilities === undefined || absentCapabilities.length === 0) {
+    return prompt;
+  }
+  const honesty =
+    `In this mode you cannot ${joinPhrases(absentCapabilities)}. ` +
+    'If the user asks for one of these, say plainly that it is not available ' +
+    'in this mode; never claim to have done it.';
+  return `${prompt}\n\n${honesty}`;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -538,6 +604,29 @@ export interface CliChatAgentDeps {
   readonly resolveCliVersion?: (binary: string) => Promise<string | undefined>;
   /** OM-94 — where spawn, exit code and first stderr line are recorded. */
   readonly logger?: CliSpawnLogger;
+  /**
+   * Issue #1102 — drain the interactive-card state a kernel-native tool left on
+   * the orchestrator this turn (choice card, follow-up chips, calendar slot
+   * picker, OAuth-consent flag), so it can be attached to the `done` event and
+   * actually render in web chat and channels. The CLI owns its own loop, so it
+   * calls this once after the subprocess terminates. Wired by
+   * `buildOrchestratorForAgent` to `orchestrator.drainCliTurnCards()`; left
+   * unset (unit tests, tool-less hosts) the CLI simply surfaces no cards, as
+   * before.
+   */
+  readonly drainTurnCards?: () => CliTurnCards;
+}
+
+/**
+ * Issue #1102 — the per-turn interactive cards a subscription-CLI turn can
+ * produce, mirrored onto the `done` event. All optional: a turn that scheduled
+ * nothing drains an empty object.
+ */
+export interface CliTurnCards {
+  readonly pendingUserChoice?: PendingUserChoice;
+  readonly followUpOptions?: FollowUpOption[];
+  readonly pendingSlotCard?: PendingSlotCard;
+  readonly pendingOAuthConsent?: boolean;
 }
 
 /**
@@ -617,6 +706,11 @@ export class CliChatAgent implements ChatAgent {
   ): AsyncGenerator<ChatStreamEvent> {
     const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
+    // #1102 — the interactive cards are drained exactly once per turn: on the
+    // `done` event when there is one, otherwise in `finally` (so an errored or
+    // aborted turn still clears the tool state and cannot leak a stale card
+    // into the next turn).
+    let cardsDrained = false;
 
     try {
       while (true) {
@@ -626,7 +720,12 @@ export class CliChatAgent implements ChatAgent {
           return;
         }
 
-        yield step.value;
+        if (step.value.type === 'done' && !cardsDrained) {
+          cardsDrained = true;
+          yield { ...step.value, ...(this.deps.drainTurnCards?.() ?? {}) };
+        } else {
+          yield step.value;
+        }
       }
     } catch (error) {
       yield {
@@ -634,6 +733,11 @@ export class CliChatAgent implements ChatAgent {
         message: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      if (!cardsDrained) {
+        // Clear any card state a failed turn left behind; the result is
+        // discarded (there is no `done` event to carry it).
+        this.deps.drainTurnCards?.();
+      }
       if (!finished) {
         await lifecycle.return(undefined);
       }
@@ -807,7 +911,12 @@ export class CliChatAgent implements ChatAgent {
         // was "Claude Code in the middleware repo", sending them out of the
         // omadia chat they were already in.
         '--system-prompt',
-        composeCliSystemPrompt(this.deps.systemPrompt),
+        composeCliSystemPrompt(
+          this.deps.systemPrompt,
+          // #1102 — derive the honesty sentence from what THIS turn actually
+          // advertised, so it names only genuinely-absent capabilities.
+          absentKernelCapabilities(tools.map((tool) => tool.name)),
+        ),
       ];
 
       // OM-94 — the argv shape without the prompt (which travels on stdin) and

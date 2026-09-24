@@ -395,6 +395,37 @@ describe('<ProvidersPanel />', () => {
       expect(screen.queryByText(en.adminProviders.providers.modelsSourceSeed)).not.toBeInTheDocument();
     });
 
+    it('names vendor models hidden for lack of a discovery rule', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({
+              connected: true,
+              status: 'verified',
+              unclassifiedModels: ['claude-fable-9'],
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      expect(
+        await screen.findByText('1 model hidden (no discovery rule): claude-fable-9'),
+      ).toBeInTheDocument();
+    });
+
+    it('shows no hidden-models hint when every vendor model has a rule', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [provider({ connected: true, status: 'verified' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      await screen.findByText(en.adminProviders.providers.modelsSourceSeed);
+      expect(screen.queryByText(/hidden \(no discovery rule\)/)).not.toBeInTheDocument();
+    });
+
     it('labels a provider without live provenance as a seed list', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
