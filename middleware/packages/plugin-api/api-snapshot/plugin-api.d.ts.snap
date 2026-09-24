@@ -2214,15 +2214,18 @@ lastRunAt: string | null;
 lastRunStatus: 'ok' | 'error' | 'timeout' | null;
 }>;
 }
-export interface RoutinesIntegration {
-captureRoutineTurn(info: {
+export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+export interface RoutineTurnInput {
 tenant: string;
 userId: string;
 channel: string;
 conversationRef: unknown;
 principalRef?: string;
 canTargetOthers?: boolean;
-}): void;
+}
+export interface RoutinesIntegration {
+captureRoutineTurn(info: RoutineTurnInput): void;
+beginRoutineTurn(info: RoutineTurnInput): RoutineTurnRunner;
 updateRoutineConversationRef(routineId: string, conversationRef: unknown): Promise<void>;
 publishProactiveSend(channel: string, send: (conversationRef: unknown, message: {
 text: string;

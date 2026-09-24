@@ -450,12 +450,16 @@ import {
   routineTurnContext,
   type RoutinesHandle,
 } from './plugins/routines/index.js';
-import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
+import {
+  ROUTINES_INTEGRATION_SERVICE_NAME,
+  type RoutinesIntegration,
+} from '@omadia/plugin-api';
 import { createRoutinesRouter } from './routes/routines.js';
 import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
+import type { RoutineTurnInfo } from './channels/coreApi.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
@@ -2926,12 +2930,15 @@ async function main(): Promise<void> {
   // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
-  // `createProactiveSender('teams', sendFn)`). Channel adapters MUST also
-  // wrap their inbound turn with `routineTurnContext.run/enter({tenant,
-  // userId, channel, conversationRef}, …)` — without it, the
-  // `manage_routine` tool's `create`/`list` actions return a
-  // model-friendly error string and the model degrades gracefully.
+  // `createProactiveSender('teams', sendFn)`). The per-turn principal the
+  // `manage_routine` tool needs is NO LONGER adapter-side work (#1086):
+  // `CoreApi.handleTurnStream` installs one for every channel that does not
+  // bring its own. An adapter that holds a richer channel-native
+  // `conversationRef` (Teams) still installs it itself and keeps precedence.
   let routinesHandle: RoutinesHandle | undefined;
+  // #1086 — held in a variable (not only in the service registry) so the
+  // channel CoreApi below can wire the channel-agnostic routine-turn producer.
+  let routinesIntegration: RoutinesIntegration | undefined;
   if (graphPool) {
     routinesHandle = await initRoutines({
       pool: graphPool,
@@ -2951,25 +2958,23 @@ async function main(): Promise<void> {
     // channel plugins can late-resolve all routines callbacks (capture-
     // turn, proactive-send registration, action handler, smart-card
     // builders) without constructor-injected Deps.
-    serviceRegistry.provide(
-      ROUTINES_INTEGRATION_SERVICE_NAME,
-      createRoutinesIntegration(routinesHandle, (info) => {
-        // US5: persist a Conductor channel binding per inbound turn so awaits can be reminded.
-        // Lazy-resolve the store (Conductor wires later in boot); fire-and-forget — a turn must
-        // never be blocked or broken by it.
-        const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
-          'conductorChannelBindings',
-        );
-        // Key the binding by the operator-addressable principalRef (Teams: the user's email) when the
-        // channel supplied one, so it matches a human-step principal / role holder; otherwise fall back
-        // to the channel-native userId (e.g. AAD object id). The store canonicalizes the key on write.
-        if (bindings) {
-          void bindings
-            .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef)
-            .catch(() => undefined);
-        }
-      }),
-    );
+    routinesIntegration = createRoutinesIntegration(routinesHandle, (info) => {
+      // US5: persist a Conductor channel binding per inbound turn so awaits can be reminded.
+      // Lazy-resolve the store (Conductor wires later in boot); fire-and-forget — a turn must
+      // never be blocked or broken by it.
+      const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
+        'conductorChannelBindings',
+      );
+      // Key the binding by the operator-addressable principalRef (Teams: the user's email) when the
+      // channel supplied one, so it matches a human-step principal / role holder; otherwise fall back
+      // to the channel-native userId (e.g. AAD object id). The store canonicalizes the key on write.
+      if (bindings) {
+        void bindings
+          .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef)
+          .catch(() => undefined);
+      }
+    });
+    serviceRegistry.provide(ROUTINES_INTEGRATION_SERVICE_NAME, routinesIntegration);
     console.log(
       '[middleware] routines feature ready (manage_routine tool registered, routinesIntegration published, chat agent resolved live per run)',
     );
@@ -6021,6 +6026,15 @@ async function main(): Promise<void> {
   // to reach into the service registry themselves to answer a turn.
   // channelId == the channel plugin's catalog id; read its manifest `channel`
   // block (loaded into pluginCatalog at boot) to pick the dispatch service.
+  // US7 — one resolver for the short binding type, shared by the dispatcher
+  // (Agent routing) and the CoreApi (#1086: the key a routine is stored and
+  // delivered under). Two derivations would let a manifest-declared
+  // `channel_type` route the turn one way and file its routines another.
+  const channelTypeFor = (channelId: string): string =>
+    deriveChannelType(channelId, {
+      manifest: pluginCatalog.get(channelId)?.plugin.channel,
+    });
+
   const orchestratorDispatcher: TurnDispatcher = createOrchestratorDispatcher({
     getChannelBlock: (channelId) =>
       pluginCatalog.get(channelId)?.plugin.channel,
@@ -6029,10 +6043,7 @@ async function main(): Promise<void> {
     // US7 — channelType autodiscovery: prefer the manifest's declared
     // channel_type, else derive it from the channel id's last dotted segment
     // (de.byte5.channel.teams → teams), the convention operators bind under.
-    channelTypeFor: (channelId) =>
-      deriveChannelType(channelId, {
-        manifest: pluginCatalog.get(channelId)?.plugin.channel,
-      }),
+    channelTypeFor,
     // US7 — per-binding routing: resolve the scoped ChatAgent the operator
     // bound to (channelType, channelKey) via the multi-orchestrator
     // channelResolver. Resolved lazily so hot config reloads take effect and
@@ -6078,6 +6089,8 @@ async function main(): Promise<void> {
     }),
   );
 
+  // Narrowed once here: TS cannot keep a `let` narrowed inside the closures below.
+  const routines = routinesIntegration;
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
     routes: routeRegistry,
@@ -6086,6 +6099,50 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
+    // #1086 — the channel-agnostic producer of the routines principal. Before
+    // this, the Teams adapter's own `captureRoutineTurn` call was the only
+    // producer in the tree, so `manage_routine` refused every action on every
+    // other channel. Absent when routines are off (no pg pool), which leaves
+    // `handleTurnStream` byte-for-byte on its old behaviour.
+    channelTypeFor,
+    ...(routines
+      ? {
+          routineTurn: {
+            // An adapter-installed context wins — its conversationRef is the
+            // channel-native delivery handle. But `captureRoutineTurn` uses
+            // `enterWith` and never exits (#1016), so a context found here may
+            // be the PREVIOUS turn's: only one that names THIS turn's user is
+            // treated as the adapter's own. Trimmed on both sides for the same
+            // reason `turnOwnerGuard` trims: a stray space must not silently
+            // turn "the adapter's own context" into "someone else's", which
+            // here would mean overwriting a working delivery handle.
+            hasContextFor: (userId: string): boolean => {
+              const current = routineTurnContext.current()?.userId?.trim();
+              return current !== undefined && current !== '' && current === userId.trim();
+            },
+            begin: (info: RoutineTurnInfo) =>
+              routines.beginRoutineTurn({
+                // Classic channels declare no tenant; the deployment one is the
+                // same value `routes/chat.ts` gives the web chat, so both name
+                // the same tenant. (The USER id still differs per channel by
+                // design — see the handoff doc: `manage_routine` scopes rows by
+                // (tenant, userId), and the channel-native id is what the
+                // #1016 guard compares against.)
+                tenant: info.tenant ?? graphTenantId,
+                userId: info.userId,
+                ...(info.principalRef !== undefined
+                  ? { principalRef: info.principalRef }
+                  : {}),
+                channel: info.channel,
+                conversationRef: info.conversationRef,
+                // Cold-start outreach to OTHER people needs an explicit
+                // governance source. The core has none, so it stays closed
+                // for every channel; only an adapter may grant it.
+                canTargetOthers: false,
+              }),
+          },
+        }
+      : {}),
   });
 
   // Phase 5B: channel discovery flips to plugin-store-flow. The

@@ -7,16 +7,22 @@ import type { ManageRoutineContext } from './manageRoutineTool.js';
  *   - attribute `create` calls to the right (tenant, user)
  *   - capture the channel-native delivery handle for proactive sends
  *
- * Channel adapters install the context at the OUTER edge of an inbound
- * turn (before the orchestrator-internal AsyncLocalStorage scope) by
- * calling `withRoutineContext(value, fn)`. The tool reads it via
- * `currentRoutineContext()`. Decoupled from the orchestrator's
- * `turnContext` so we don't have to touch that package — the cost is
- * one extra ALS per turn (negligible) in exchange for plugin isolation.
+ * The context is installed at the OUTER edge of an inbound turn (before
+ * the orchestrator-internal AsyncLocalStorage scope). Three producers,
+ * in the order they were added:
+ *   - a channel adapter, via `RoutinesIntegration.captureRoutineTurn`
+ *     (Teams) — `enterWith`, so it never exits (see `enter` below);
+ *   - the HTTP chat route (`routes/chat.ts`, OM-82), from the session;
+ *   - `CoreApi.handleTurnStream` (#1086) for every channel plugin whose
+ *     adapter installed nothing — the channel-agnostic default.
+ * The last two use `run`, so their scope ends with the turn.
  *
- * Outside a channel turn (HTTP /api/chat with no routine support, unit
- * tests, ad-hoc invocations) the context is undefined and the tool
- * returns a clear error string.
+ * Decoupled from the orchestrator's `turnContext` so we don't have to
+ * touch that package — the cost is one extra ALS per turn (negligible)
+ * in exchange for plugin isolation.
+ *
+ * Outside a turn (unit tests, ad-hoc invocations) the context is
+ * undefined and the tool returns a clear error string.
  */
 
 const storage = new AsyncLocalStorage<ManageRoutineContext>();

@@ -29,11 +29,20 @@ import { routineTurnContext } from './routineTurnContext.js';
  * uuid via the KnowledgeGraph, which is async and would compare two different
  * id spaces here.
  *
- * Scope, twice over. Only the CLI agent runtime is guarded — the in-process
- * orchestrator path never crosses a process boundary. And among the shipped
- * channels only the Teams adapter calls `captureRoutineTurn`, so it is the
- * only one that installs a context this guard can find stale;
- * `omadia-channel-telegram` never calls it and does not participate.
+ * Scope. Only the CLI agent runtime is guarded — the in-process orchestrator
+ * path never crosses a process boundary.
+ *
+ * What this guard sees changed with #1086. Every channel now carries a routine
+ * context, because `CoreApi.handleTurnStream` installs one for turns whose
+ * adapter did not. That producer uses `routineTurnContext.run`, so its value
+ * cannot go stale: it is gone when the turn's stream ends. `captureRoutineTurn`
+ * (`enterWith`, no scope exit) is still the only way to leak a principal
+ * forward, and among the shipped channels the Teams adapter is still its only
+ * caller — so it remains the only source of the staleness this guard refuses.
+ * The change is that a stale value now has a competitor: the #1086 producer
+ * replaces a context whose `userId` is not this turn's, which means the common
+ * chain-reuse case is corrected before the guard ever sees it, and what reaches
+ * here is a context an adapter installed for this turn on purpose.
  */
 
 /** Service name the kernel publishes the factory under. */

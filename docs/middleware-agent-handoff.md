@@ -3266,6 +3266,84 @@ scheitert also weiter — aber mit *"no proactive sender registered for channel 
 die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
 **Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
 
+### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
+
+Der OM-82-Fix oben war route-lokal. Channel-Plugins hatten weiter keinen Producer:
+`RoutinesIntegration.captureRoutineTurn` rief nur der (out-of-tree) Teams-Adapter, und
+alle anderen Kanäle laufen über `CoreApi.handleTurnStream`
+(`middleware/src/channels/coreApi.ts`), das den Kontext nie gesetzt hat. `manage_routine`
+lehnte dort **alle fünf** Aktionen ab, inklusive des lesenden `list` — auch auf den zwei
+Kanälen, die in diesem Repo liegen: `@omadia/channel-api` (Public API) und
+`@omadia/ui-channel` (Canvas).
+
+`handleTurnStream` ist die einzige Tür, durch die jedes Channel-Plugin geht, also sitzt
+der generische Producer dort. Fünf Entscheidungen, die dazugehören:
+
+- **Adapter-Kontext gewinnt — aber nur der eigene.** Teams ruft `captureRoutineTurn`
+  *vor* `handleTurnStream`; dessen `conversationRef` ist die Bot-Framework-
+  `ConversationReference`, also der echte Zustell-Handle. Ihn mit dem generischen Ref zu
+  überschreiben hieße: Routine wird angelegt, ist aber nicht zustellbar. Gleichzeitig hat
+  `captureRoutineTurn` kein Scope-Ende (`enterWith`, #1016), ein gefundener Kontext kann
+  also der des *vorigen* Turns sein. Der Producer fragt deshalb `hasContextFor(userId)`:
+  gleiche `userId` ⇒ Adapter-Kontext bleibt, andere ⇒ stale, dieser Turn setzt seinen
+  eigenen darüber.
+- **`run`, nicht `enterWith` — pro `next()`.** `handleTurnStream` gibt ein
+  `AsyncIterable` zurück; ein `run()` um den Aufruf deckt nur die synchrone Erzeugung des
+  Iterators ab, denn der Generator-Body läuft erst beim `next()` des Consumers weiter.
+  Gewrappt wird darum jeder Pull (`withRoutineTurnScope`). Ergebnis: Kontext über den
+  ganzen Turn, Scope-Ende inklusive — auch wenn der Consumer früh ausbricht (`return()`).
+- **Tenant kommt aus einer Quelle.** `IncomingTurn.tenantId` wenn der Kanal einen
+  liefert (heute nur Canvas), sonst der Deployment-Tenant `graphTenantId` — derselbe Wert,
+  den `routes/chat.ts` dem Web-Chat gibt. Zwei verschiedene Defaults hätten Routinen in
+  Tenant-Töpfe gelegt, die sich gegenseitig nicht sehen: `list` liefert leer, ohne Fehler.
+- **`userId` unverändert durchreichen.** Der #1016-Owner-Guard vergleicht den Kontext
+  gegen `ChatTurnInput.userId`, und der Dispatcher füllt den aus demselben
+  `turn.userRef.id` (`channels/orchestratorDispatcher.ts`). Jede Kanonisierung an dieser
+  Stelle würde den Guard auf dem Subscription-CLI-Pfad jeden Dispatch ablehnen lassen.
+- **`canTargetOthers` bleibt `false`.** Cold-Start-Outreach an *andere* Personen braucht
+  eine Governance-Quelle; der Kern hat keine. Der generische Producer kann das Flag gar
+  nicht ausdrücken — nur ein Adapter über `captureRoutineTurn`.
+
+Verdrahtung: `createRoutinesIntegration` bekommt `beginRoutineTurn(info)`
+(`@omadia/plugin-api` 1.15.0, additiv). Der Aufruf schreibt die Conductor-Channel-Bindung
+**einmal** und liefert einen Runner zurück, der je *Segment* des Turns den Principal
+setzt. Zwei Stufen statt einer, weil ein gestreamter Turn viele Segmente hat: eine Bindung
+im Runner wäre ein Postgres-Upsert pro Text-Delta. Reminder/Approvals erreichen damit auch
+Nicht-Teams-Kanäle, zum Preis von einem Write pro Turn. `index.ts` reicht das als
+optionales `routineTurn` in `createCoreApi`; ohne Routines-Feature (kein Postgres) fehlt
+die Option und `handleTurnStream` verhält sich exakt wie vorher.
+
+Kanal-String ist der kurze Binding-Typ — `turn.channelType`, sonst über **denselben**
+manifest-bewussten `channelTypeFor`, den auch der Dispatcher benutzt (eine Auflösung, nicht
+zwei: sonst routet ein deklarierter `channel_type` den Turn anders, als die Routine
+abgelegt wird). Genau dieser Schlüssel ist der, unter dem ein Plugin seinen
+`ProactiveSender` registriert. Wer keinen registriert hat, bekommt bei `create` weiterhin
+*"no proactive sender registered for channel '<x>'"*; `list`/`pause`/`resume`/`delete`
+laufen.
+
+Zwei Grenzen, die bewusst offen bleiben:
+
+- **Der generische `conversationRef`.** Der Kern kennt die Wire-Shape eines Kanals nicht
+  und legt darum `{kind:'channel', channelId, conversationId}` ab. Ein `ProactiveSender`,
+  der so einen Ref bekommt, muss über `conversationId` zustellen; ein Adapter mit echtem
+  Handle installiert weiter seinen eigenen Kontext (Teams) oder hebt einen gespeicherten
+  Ref per `updateRoutineConversationRef` an. Heute betrifft das keinen ausgelieferten
+  Sender: die beiden In-Tree-Kanäle registrieren keinen, Teams bringt seinen eigenen Ref
+  mit. Dieser Ref landet jetzt auch in der Conductor-Channel-Bindung — ein Plugin, das
+  einen `ProactiveSender` registriert, aber `captureRoutineTurn` nie ruft, wird also zum
+  Zustellen auf eine Shape gebeten, die es nicht definiert hat (fehlgeschlagener Versuch,
+  wo vorher gar keiner stattfand). Bindungen sind auf `(user, channel_type)` geschlüsselt,
+  die generische Zeile kann die Teams-Zeile also nicht überschreiben.
+- **Ein Mensch, mehrere Routinen-Besitzer.** `manage_routine` scopet Zeilen auf
+  `(tenant, userId)`, und `userId` ist die *kanal-native* Id — der Wert, gegen den der
+  #1016-Guard vergleicht. Web-Chat keyt auf `req.session.omadia_user_id`, der Canvas-Kanal
+  auf `session.subject`, Telegram auf die Chat-Id. Derselbe Mensch sieht also pro Kanal
+  seine eigene Routinen-Liste. Der *Tenant* stimmt seit #1086 überein, die User-Id
+  bewusst nicht — eine kanalübergreifende Identität ist ein eigenes Thema
+  (`resolveTurnOwnerIdentity`), nicht Teil dieses Fixes. Auf der Public API ist der
+  Principal der **API-Key** (`userRef.id` = `key:<uuid>`, #438), nicht eine Person —
+  Routinen gehören dort dem Key.
+
 ## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
 
 Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen

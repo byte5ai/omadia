@@ -199,6 +199,15 @@ working across it:
   channels only the Teams adapter calls `captureRoutineTurn`, so it is the only
   one that installs a context this guard can find stale.
 
+  **#1086 changed what reaches the guard, not what it refuses.** Every channel
+  now carries a routine principal, because `CoreApi.handleTurnStream` installs
+  one for turns whose adapter did not. That producer uses
+  `routineTurnContext.run`, so its value ends with the turn and can never be the
+  stale one; and it deliberately does not defer to a context belonging to a
+  *different* user, so the chain-reuse case is corrected before the guard is
+  consulted. `enterWith` — i.e. `captureRoutineTurn` — remains the only way to
+  leak a principal forward, and Teams remains its only caller.
+
   **The declaration is part of the mechanism, not bookkeeping.** Both
   `services.get` and `services.getOptional` run `assertServiceGranted`, which
   throws `ServiceNotDeclaredError` for a name in none of `requires:`,
