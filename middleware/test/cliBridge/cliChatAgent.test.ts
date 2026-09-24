@@ -917,25 +917,27 @@ describe('CliChatAgent conversation memory (#1087)', () => {
     const { agent, prompt } = makeAgent({
       sessionTail: async (_scope, limit) => {
         asked.push(limit);
-        return [
-          { userMessage: 'u1', assistantAnswer: 'a1' },
-          { userMessage: 'u2', assistantAnswer: 'a2' },
-          { userMessage: 'u3', assistantAnswer: 'a3' },
-          { userMessage: 'u4', assistantAnswer: 'a4' },
-          { userMessage: 'u5', assistantAnswer: 'a5' },
-        ];
+        // Zero-padded so `q01` can never match inside `q10`..`q12`.
+        return Array.from({ length: 12 }, (_, i) => {
+          const n = String(i + 1).padStart(2, '0');
+          return { userMessage: `q${n}`, assistantAnswer: `a${n}` };
+        });
       },
     });
 
     await agent.chat({ userMessage: 'now', sessionScope: 'sess-1' });
 
-    assert.deepEqual(asked, [3], 'default tail size mirrors ContextRetriever.tailSize');
+    assert.deepEqual(
+      asked,
+      [10],
+      "default tail size matches ContextRetriever's default tailSize (#1096/#1171)",
+    );
     const text = prompt();
     // A supplier that over-delivers must not widen the replay window.
-    assert.ok(!text.includes('u1'), text);
-    assert.ok(!text.includes('u2'), text);
-    assert.ok(text.includes('User: u3'), text);
-    assert.ok(text.includes('User: u5'), text);
+    assert.ok(!text.includes('q01'), text);
+    assert.ok(!text.includes('q02'), text);
+    assert.ok(text.includes('User: q03'), text);
+    assert.ok(text.includes('User: q12'), text);
   });
 
   it('honours a configured tail size', async () => {

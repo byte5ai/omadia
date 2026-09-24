@@ -882,11 +882,20 @@ export function buildOrchestratorForAgent(
             // write was lost, not that the chat is new. Reading it as "new"
             // would reproduce #1087 silently; the cost of the other reading is
             // a disclosure note on the rare first turn that races the PUT.
-            if (session === null || !Array.isArray(session.messages)) return undefined;
+            if (session === null || !Array.isArray(session.messages)) {
+              // Logged, because the system-prompt note is otherwise the only
+              // trace of the lost write (thrown and timed-out reads log too).
+              console.warn(
+                `[cli-chat-agent] session tail unreadable: chat-session document missing or malformed ${JSON.stringify({ sessionScope })}`,
+              );
+              return undefined;
+            }
             const turns = chatSessionTailTurns(session.messages, limit);
             // Messages exist but none of them form a replayable turn (a first
-            // question that errored, a turn still in flight): that is a gap the
-            // agent must disclose, not the empty chat `[]` would claim.
+            // question that errored or was never answered): that is a gap the
+            // agent must disclose, not the empty chat `[]` would claim. A
+            // session with NO messages (fresh or cleared tab) is the genuine
+            // first turn and falls through to `[]`.
             if (turns.length === 0 && session.messages.length > 0) return undefined;
             return turns;
           },

@@ -238,8 +238,9 @@ export function composeCliSystemPrompt(
  * Per-replayed-turn size budget, mirroring the in-process verbatim tail
  * (`contextRetriever.ts`: 600 chars per question, 1200 per answer). The turn
  * COUNT alone is not a budget — one long answer (a table, a document, a code
- * listing) would otherwise be prepended in full to each of the next three
- * prompts, inflating cost and eventually overflowing the model's context.
+ * listing) would otherwise be prepended in full to every prompt for the length
+ * of the replay window, inflating cost and eventually overflowing the model's
+ * context.
  */
 const REPLAY_USER_MAX_CHARS = 600;
 const REPLAY_ASSISTANT_MAX_CHARS = 1200;
@@ -725,7 +726,8 @@ export interface CliChatAgentDeps {
     sessionScope: string,
     limit: number,
   ) => Promise<readonly CliPriorTurn[] | undefined>;
-  /** How many prior turns {@link sessionTail} is asked for. Default 3. */
+  /** How many prior turns {@link sessionTail} is asked for. Default
+   *  {@link DEFAULT_CLI_SESSION_TAIL_SIZE} (10). */
   readonly sessionTailSize?: number;
   /**
    * Deadline for the {@link sessionTail} read, in ms (default 5000). The read
@@ -748,11 +750,15 @@ export interface CliPriorTurn {
 }
 
 /**
- * Default replay window, mirroring `ContextRetriever`'s `tailSize` (3) so the
- * subscription-CLI provider and the in-process one give a chat the same depth
- * of short-term memory.
+ * Default replay window, matching `ContextRetriever`'s default `tailSize` (10
+ * since #1096 / #1171) so the subscription-CLI provider and the in-process one
+ * give a chat the same depth of short-term memory. A shorter window brings the
+ * #1096 symptom back on this provider — the model presents the last few turns
+ * as the whole conversation, with no disclosure note, because the tail DID
+ * read. The operator's `context_tail_size` does not reach this path yet
+ * (`buildOrchestratorForAgent` passes no `sessionTailSize`).
  */
-export const DEFAULT_CLI_SESSION_TAIL_SIZE = 3;
+export const DEFAULT_CLI_SESSION_TAIL_SIZE = 10;
 
 /** Default deadline for {@link CliChatAgentDeps.sessionTailTimeoutMs}. */
 const DEFAULT_SESSION_TAIL_TIMEOUT_MS = 5_000;
@@ -1027,10 +1033,14 @@ export class CliChatAgent implements ChatAgent {
    * INERT ON THIS PATH TODAY, deliberately: the handle is read from
    * `turnContext`, and only the in-process orchestrator installs one
    * (`orchestrator.ts`, `privacyHandle`). The subscription-CLI path therefore
-   * has no prompt masking at all right now — the live user message reaches the
-   * child unmasked too. That pre-existing gap is tracked in #1087; this seam
-   * exists so the replay is covered the moment a handle is installed here,
-   * instead of quietly multiplying the gap by the size of the replay window.
+   * has no masking at all right now — the replayed history, the live user
+   * message and tool results all reach the child unmasked, in line with the
+   * UI's notice not to route personal data through this provider. The replay
+   * does widen that for one case: a session whose earlier turns were answered
+   * on an API-key provider with Privacy Shield active holds their RESTORED
+   * real values, so up to the tail window of them reach the CLI child raw.
+   * This seam covers the replay the moment a handle is installed here; masking
+   * parity stays open on #1087, which this change does not close.
    */
   private async maskHistory(
     turns: readonly CliPriorTurn[],

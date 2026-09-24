@@ -55,17 +55,20 @@ wires it in the `claude-cli` branch to the `ChatSessionStore` — the RAW sessio
 source, deliberately not the `ContextRetriever` tail: that one reads Session
 nodes from the knowledge graph, and CLI turns never reach the graph
 (`SessionLogger.log` runs on the in-process path only), so a KG-backed tail
-would be empty here rather than merely lossy. The window is 3 turns, mirroring
-`ContextRetriever`'s `tailSize`. `chatSessionTailTurns` pairs the flat message
-list into completed (user, assistant) turns and drops the trailing unanswered
-question — the web UI persists a question before its answer exists, so replaying
-it would hand the model the current turn twice — along with failed and blank
-answers.
+would be empty here rather than merely lossy. The window is 10 turns, matching
+`ContextRetriever`'s default `tailSize` since #1096 / #1171 — a shorter window
+would bring the #1096 symptom back on this provider. The operator's
+`context_tail_size` does not reach this path yet. `chatSessionTailTurns` pairs
+the flat message list into completed (user, assistant) turns and drops failed
+and blank answers, plus a trailing unanswered question — defensively: neither
+writer stores the live question early (the web UI PUTs the session on create and
+after each turn), but were it the turn in flight, replaying it would hand the
+model the current question twice.
 
 Replayed turns are budgeted and sanitized on the way out: 600 chars per
 question and 1200 per answer, mirroring the in-process verbatim tail (a turn
 COUNT is not a budget — one long answer would otherwise be prepended in full to
-each of the next three prompts), and a line inside replayed content that starts
+each of the next ten prompts), and a line inside replayed content that starts
 with `User:` / `Assistant:` / `System Hint:` is neutralized, so a pasted
 transcript cannot forge turn boundaries in the region of the prompt the model
 reads as established history. The live user message rides the same transcript
@@ -84,10 +87,15 @@ generator body, and `createOrchestratorDispatcher` iterates it with no
 channel turns.
 **Known limitation, stated deliberately:** that seam is inert on this path
 today, because only the in-process orchestrator installs a privacy handle in
-`turnContext` — the subscription-CLI path has no prompt masking at all right
-now, the live user message included. Adding the tail does not widen that gap
-(the seam covers the replay the moment a handle is installed here), but closing
-it is separate work, tracked in #1087.
+`turnContext` — the subscription-CLI path has no masking at all right now: the
+replayed history, the live user message and tool results all reach the CLI
+child unmasked, in line with the UI's notice not to route personal data through
+this provider. The replay does widen that for one case: a session whose earlier
+turns were answered on an API-key provider with Privacy Shield active stores
+their restored real values, so after a switch to the CLI provider up to the
+tail window of them reach the vendor unmasked. The seam covers the replay the
+moment a handle is installed here; masking parity stays open on #1087, which
+this change does not close.
 
 Second, independent defect from the same report: when a turn carries no
 history, the system prompt now says so ("you were given no transcript of earlier
@@ -104,12 +112,13 @@ session ids and resolve to "no history" WITH the disclosure note — the supplie
 answers `undefined` ("cannot read this scope"), deliberately distinct from `[]`
 ("read it, the chat is empty"), so an unreadable scope can never pass as a
 genuine first turn. A session whose messages contain no replayable turn (its
-only question errored, or the turn is still in flight) reads as unreadable for
-the same reason — "something was there and none of it is replayable" is a gap,
-not a new chat. A chat id with no stored document reads as unreadable too:
-the web UI PUTs a session when the tab is created, so a missing document means a
-lost write, and the cost of that reading is a disclosure note on the rare first
-turn that races the PUT.
+only question errored or has no answer) reads as unreadable for the same reason
+— "something was there and none of it is replayable" is a gap, not a new chat;
+a stored session with no messages at all (a fresh or cleared tab) is the genuine
+first turn, `[]`. A chat id with no stored document reads as unreadable too, and
+is logged with its scope: the web UI PUTs a session when the tab is created, so
+a missing document means a lost write, and the cost of that reading is a
+disclosure note on the rare first turn that races the PUT.
 
 On this path nothing server-side writes the chat session (`SessionLogger.log` is
 in-process only), so the tail depends on the browser's fire-and-forget PUT: a

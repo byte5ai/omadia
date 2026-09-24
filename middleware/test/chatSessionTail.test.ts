@@ -58,7 +58,8 @@ test('drops the trailing unanswered user message (the turn in flight)', () => {
     [
       msg('user', 'erste Frage'),
       msg('assistant', 'erste Antwort'),
-      // The web UI persists the question before the answer exists.
+      // An unanswered trailing question — dropped defensively, in case it is
+      // the live turn.
       msg('user', 'Fasse unser Gespräch zusammen'),
     ],
     3,

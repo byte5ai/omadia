@@ -126,9 +126,12 @@ export class InvalidSessionIdError extends Error {
  * pairing rules are properties of that shape:
  *  - a session is a flat message list, so a turn is a user message plus the
  *    answer that follows it;
- *  - the web UI persists the question before the answer exists, so a trailing
- *    unanswered user message is the turn IN FLIGHT — replaying it would hand
- *    the model the current question a second time;
+ *  - a trailing unanswered user message is dropped defensively: were it the
+ *    turn IN FLIGHT, replaying it would hand the model the current question a
+ *    second time. Neither writer actually stores the live question early — the
+ *    web UI PUTs the session on create and after each turn (`StreamRunner`'s
+ *    `finally`), `appendTurnFromServer` writes whole pairs — so the store
+ *    usually lags by a whole turn rather than holding the question;
  *  - failed (`error`) and blank answers are dropped, so a broken prior turn
  *    cannot poison the next prompt. When two user messages arrive back to back
  *    the later one owns the answer.
