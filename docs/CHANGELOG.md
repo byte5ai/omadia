@@ -386,6 +386,79 @@ change up on the first boot after the upgrade without being re-saved. Builder
 and AGENT.md agents compile their prompt when they load and pick the change up
 on the next restart.
 
+### Fixed — first-run copy pointed at a renamed page and a removed wizard field (#1090)
+
+2026-09-23 — the first path a new operator walks (setup wizard → boot log →
+dashboard onboarding) described UI that no longer exists. Three symptoms, one
+cause: the S4 provider-v2 change removed the LLM-key field from the setup
+wizard and merged the provider admin into a single page renamed **LLM-Zugang /
+LLM access**, and the copy sweep was never finished. Every stale string was a
+valid, correctly translated sentence about a screen that is gone, so no
+existing gate could see it.
+
+- **Page name.** `setup.providerHint` sent the operator to "Admin →
+  LLM-Provider", a label the nav does not render (`nav.llmAccess` is
+  "LLM-Zugang" / "LLM access" for `/admin/providers`).
+  `adminSubscriptionClis.explainer.singleOperator` carried the same old name,
+  eleven lines above a sibling string that already used the new one. Both now
+  name the visible label. So does the dashboard health tile
+  (`dashboard.health.llm.title`), which links to `/admin/providers` and titled
+  itself "LLM-Provider" / "LLM provider" on the same screen as the onboarding
+  card — the second visible name, and the more visible one. The dead
+  `adminProviders.title` — never rendered, `ProvidersPanel` only reads
+  `t('intro')` — is deleted rather than reworded, so the page has exactly one
+  name again.
+- **Chat-disabled hints.** The boot warning (`middleware/src/index.ts`) and the
+  `chat_unavailable` 503 body (`middleware/src/routes/chatSessions.ts`) both
+  told the operator to set `ANTHROPIC_API_KEY` "via the Setup Wizard". The
+  wizard creates the first admin account and nothing else. Both now name
+  Admin → LLM access (`/admin/providers`). `middleware/.env` is deliberately
+  not offered: the env key is seeded only on the boot that first registers the
+  orchestrator, and every boot that shows this hint is past that. The 503 was
+  the more damaging of the two: it is what an operator sees on the live path
+  when chat is dead, not a line in a log.
+- **Onboarding done-label.** `StepShell` renders one label next to all three
+  steps ("LLM verbinden", "Business-Case wählen", "Plugins installieren"), and
+  it read "Installiert" / "Installed" — so connecting a key and picking a
+  business case both reported an install that never happened. The key is
+  renamed `dashboard.onboarding.applied` → `.done` with a neutral value
+  ("Erledigt" / "Done"); renaming the value alone would have left the next
+  contributor reading "applied" and writing install wording back in. The plugin
+  store's own "Installiert" badge is untouched.
+
+Also removed four orphan keys per locale (`setup.anthropicKey{Label,Help,
+Invalid,Rejected}`) left behind by the removed key field — one of them still
+pointed at "Admin → Runtime → Secrets", a route this app does not have — and
+disambiguated `onboarding.intro`, which said secrets are set "via the wizard"
+on the screen next to the setup wizard while meaning the per-plugin secrets
+wizard on a plugin's detail page.
+
+The two hints are no longer two literals: both compose
+`middleware/src/llmSetupHint.ts`'s `LLM_SETUP_HINT`. One sentence living in two
+places is how the wizard claim survived — a fix could land in one copy and miss
+the other, which is exactly what the issue reported.
+
+Swept the same stale claim out of the code comments that would have seeded it
+again: twenty-three sites across `middleware/src/`, `middleware/test/` and
+`web-ui/app/_lib/api.ts` described
+the Setup Wizard as the key-entry path (`config.ts`, `index.ts`, `routes/auth.ts`,
+`routes/chat.ts`, `routes/chatSessions.ts`, `plugins/routines/routineRunner.ts`
+and four test docstrings). They now name the LLM access page, and the ones that
+pointed at `/admin/runtime/secrets` — a UI route that does not exist — name the
+real endpoint, `PATCH /api/v1/admin/runtime/installed/:id/secrets`. The
+`postAuthSetup` doc comment in `web-ui/app/_lib/api.ts` said the same thing
+about the same missing route and now says the field is back-compat only. Comments
+where the wizard means account creation or route mounting (`auth/bootstrap.ts`,
+`auth/userStore.ts`, the `setupRequired` log line) are accurate and untouched,
+as is the plugin setup-field wizard in `teamsBotsConfigSync`.
+
+Guarded by `web-ui/app/_lib/first-run-copy.test.ts` (old page name, every
+visible title for `/admin/providers` pinned to the nav label, unqualified
+"the wizard", orphan `setup.*` keys, the done-label) and
+`middleware/test/firstRunChatHints.test.ts` (503 body through the real router,
+the boot warning read from source and required to compose `LLM_SETUP_HINT`).
+Both pin the claim, not the phrasing.
+
 ### Fixed — admin timestamps render in the operator's timezone, not the container's (#1091)
 
 2026-09-23 — every absolute date and time in the web UI that goes through

@@ -347,3 +347,29 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     expect(screen.queryByText(/Plugins? installiert/)).toBeNull();
   });
 });
+
+/**
+ * #1090 / defect 3 — one done-label sits next to all three steps, and it read
+ * "Installiert". Connecting an LLM and picking a business case install
+ * nothing, so two thirds of the card claimed something that never happened.
+ * Pinned on step 1, the step furthest from anything installable.
+ */
+describe('<DashboardOnboarding /> — #1090 done-label', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetOnboardingStores();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('marks a satisfied LLM step done without claiming an install', () => {
+    renderCard({ llmVerified: true });
+
+    const step1 = screen.getByTestId('onboarding-step-1');
+    expect(step1.dataset['done']).toBe('true');
+    expect(step1.textContent).toContain('Erledigt');
+    expect(step1.textContent).not.toContain('Installiert');
+  });
+});

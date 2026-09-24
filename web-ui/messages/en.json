@@ -16,7 +16,7 @@
         "downDetail": "No response from the middleware API."
       },
       "llm": {
-        "title": "LLM provider",
+        "title": "LLM access",
         "connected": "{count, plural, one {# provider connected} other {# providers connected}}",
         "none": "No provider connected",
         "active": "Active: {name}",
@@ -160,7 +160,7 @@
       "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
-      "applied": "Installed",
+      "done": "Done",
       "browseAll": "Browse all plugins",
       "bringSkills": {
         "kicker": "Optional",
@@ -946,11 +946,7 @@
     "passwordTooShort": "Password must be at least 8 characters.",
     "alreadyLocked": "Setup is already locked — another user has been created.",
     "credentialsRejected": "Email or password rejected by the server (must be valid email + 8+ chars).",
-    "anthropicKeyLabel": "Anthropic API Key (optional)",
-    "anthropicKeyHelp": "Starts with sk-ant-…. Get one at console.anthropic.com. Stored encrypted in the per-plugin vault — never in .env. Leave empty to add later via Admin → Runtime → Secrets.",
-    "anthropicKeyInvalid": "Anthropic API keys start with \"sk-ant-\". Double-check the value from console.anthropic.com.",
-    "anthropicKeyRejected": "The server rejected this Anthropic key (401/403). Verify it at console.anthropic.com → API keys.",
-    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM providers."
+    "providerHint": "No LLM key needed here. After you create the admin account, connect a provider (Anthropic, OpenAI, …) under Admin → LLM access."
   },
   "onboarding": {
     "ariaLabel": "First-time setup",
@@ -958,7 +954,7 @@
     "ariaClose": "Close",
     "kicker": "First-time setup",
     "title": "Pick a profile — operational in <60 seconds",
-    "intro": "This middleware is still empty ({count, plural, one {# plugin} other {# plugins}} installed). Pick a curated profile — the plugins will be registered in the correct capability order. Secrets like API keys are set afterwards via the wizard.",
+    "intro": "This middleware is still empty ({count, plural, one {# plugin} other {# plugins}} installed). Pick a curated profile — the plugins will be registered in the correct capability order. Secrets like API keys are set afterwards per plugin, on its detail page.",
     "exportPrefix": "Already set up?",
     "exportLink": "Export profile as YAML",
     "exportSuffix": "and import it into another deployment.",
@@ -3683,7 +3679,6 @@
     }
   },
   "adminProviders": {
-    "title": "LLM providers",
     "intro": "Connect LLM providers and choose which one each agent runs on. Keys are stored encrypted in the vault and never leave your server. Anthropic is the default; switching an agent to another provider takes effect live.",
     "loading": "Loading …",
     "loadError": "The provider list could not be loaded.",
@@ -3776,7 +3771,7 @@
     "explainer": {
       "heading": "Subscription vs API key",
       "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
-      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page.",
+      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM access page.",
       "featureNote": "One gap versus an API key: on the subscription path the assistant has no long-term memory yet, so it will not remember facts across chats. Knowledge-graph lookups, choice cards, follow-up buttons and calendar all work as usual."
     },
     "loading": "Loading …",
