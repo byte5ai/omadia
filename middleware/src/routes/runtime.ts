@@ -7,6 +7,10 @@ import type { PromptContributionRegistry } from '../platform/promptContributionR
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
+import {
+  isEffectiveProviderChange,
+  reactivateAfterProviderWrite,
+} from '../platform/providerAssignment.js';
 import type { SetupOption } from '../api/admin-v1.js';
 import {
   SetupOptionsResolveError,
@@ -216,9 +220,11 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       }
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
-        if (deps.reactivate) {
-          await deps.reactivate(id);
-        }
+        // #1076 — an `llm_provider` change also rebuilds the plugins that
+        // inherit it (extras from the orchestrator), dependents first.
+        await reactivateAfterProviderWrite(deps, id, {
+          providerChanged: isEffectiveProviderChange(installed.config, nextConfig),
+        });
         const updated = deps.installedRegistry.get(id);
         res.json({
           updated: updated
@@ -934,6 +940,7 @@ async function applySetupValues(
     for (const key of vaultDelete) {
       await vault.deleteKey(id, key);
     }
+    let providerChanged = false;
     if (Object.keys(configSet).length > 0 || configDelete.length > 0) {
       const nextConfig: Record<string, unknown> = {
         ...installed.config,
@@ -941,10 +948,10 @@ async function applySetupValues(
       };
       for (const k of configDelete) delete nextConfig[k];
       await deps.installedRegistry.updateConfig(id, nextConfig);
+      providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
-    if (deps.reactivate) {
-      await deps.reactivate(id);
-    }
+    // #1076 — same dependent rebuild as PATCH /installed/:id/config.
+    await reactivateAfterProviderWrite(deps, id, { providerChanged });
     const keys = await vault.listKeys(id);
     const updated = deps.installedRegistry.get(id);
     const configValues = stringifyConfigValues(updated?.config);

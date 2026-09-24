@@ -187,7 +187,12 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     // Extras has two model keys; both must be set.
     assert.equal(registry.get(EXTRAS)?.config?.['fact_extractor_model'], model.modelId);
     assert.equal(registry.get(EXTRAS)?.config?.['topic_classifier_model'], model.modelId);
-    assert.equal(reactivated.length, 3);
+    // #1076 — plugins with provider dependents go LAST, so the orchestrator's
+    // cascade (extras, then orchestrator) runs after extras has its own final
+    // assignment. The orchestrator therefore ends up holding an extras instance
+    // built from extras' final config, not an intermediate one.
+    assert.deepEqual(reactivated, [VERIFIER, EXTRAS, EXTRAS, ORCH]);
+    assert.equal(reactivated.at(-1), ORCH, 'the orchestrator is rebuilt last');
   });
 
   it('reports a failing reactivate as apply_failed and does not throw', async () => {

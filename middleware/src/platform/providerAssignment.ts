@@ -56,10 +56,81 @@ export type ProviderAssignmentResult =
       readonly message: string;
     };
 
+// ---------------------------------------------------------------------------
+// #1076 (OM-102 follow-up) — provider dependents.
+//
+// `@omadia/orchestrator-extras` falls back to the orchestrator's `llm_provider`
+// and resolves it ONCE per activate(). A change to the orchestrator's provider
+// therefore has to rebuild extras too — on the writing side, the lesson of #989
+// (a capability-relevant change is a rebuild, not an update). Doing it inside
+// extras as a lazy lookup is ruled out: the orchestrator captures extras'
+// `factExtractor` / `contextRetriever` / `sessionBriefing` instances eagerly in
+// its own activate(), so the instances themselves must be replaced.
+//
+// That capture is also why the ORDER matters: dependents first, then the plugin
+// itself — the boot order. Rebuilding extras after the orchestrator would leave
+// the running orchestrator holding the old extras instances.
+// ---------------------------------------------------------------------------
+
+/** Ids of the LLM plugins that inherit their provider from `pluginId`. */
+export function providerDependentsOf(pluginId: string): string[] {
+  return LLM_PLUGINS.filter((p) => p.inheritsProviderFrom === pluginId).map(
+    (p) => p.id,
+  );
+}
+
+function effectiveProvider(cfg: Record<string, unknown> | undefined): string {
+  return (readStringConfig(cfg ?? {}, 'llm_provider') ?? DEFAULT_PROVIDER).trim();
+}
+
+/** True when two configs resolve to different providers. Unset means the
+ *  platform default, so unset → explicit `anthropic` is NOT a change. */
+export function isEffectiveProviderChange(
+  before: Record<string, unknown> | undefined,
+  after: Record<string, unknown> | undefined,
+): boolean {
+  return effectiveProvider(before) !== effectiveProvider(after);
+}
+
+export interface ProviderReactivationDeps {
+  readonly installedRegistry: Pick<InstalledRegistry, 'has'>;
+  readonly reactivate?: (pluginId: string) => Promise<void>;
+}
+
+/**
+ * Reactivate `pluginId` after a config write. When its provider changed, every
+ * INSTALLED provider dependent is rebuilt first. A failing dependent does not
+ * stop the primary from being rebuilt (it re-captures whatever the dependent
+ * left published); the first dependent error is rethrown afterwards so the
+ * caller reports the write as failed instead of silently half-applied.
+ */
+export async function reactivateAfterProviderWrite(
+  deps: ProviderReactivationDeps,
+  pluginId: string,
+  opts: { readonly providerChanged: boolean },
+): Promise<void> {
+  const reactivate = deps.reactivate;
+  if (reactivate === undefined) return;
+  const dependents = opts.providerChanged
+    ? providerDependentsOf(pluginId).filter((id) => deps.installedRegistry.has(id))
+    : [];
+  const failures: unknown[] = [];
+  for (const id of dependents) {
+    try {
+      await reactivate(id);
+    } catch (err) {
+      failures.push(err);
+    }
+  }
+  await reactivate(pluginId);
+  if (failures.length > 0) throw failures[0];
+}
+
 /**
  * Validate and persist `{ provider, model }` for an LLM-consuming plugin, then
- * reactivate it. Pure with respect to HTTP: the route turns the result into a
- * response, the hand-off logs it.
+ * reactivate it (on a provider change, its provider dependents first). Pure
+ * with respect to HTTP: the route turns the result into a response, the
+ * hand-off logs it.
  */
 export async function applyProviderAssignment(
   deps: ProviderAssignmentDeps,
@@ -137,7 +208,9 @@ export async function applyProviderAssignment(
 
   try {
     await deps.installedRegistry.updateConfig(pluginId, nextConfig);
-    if (deps.reactivate) await deps.reactivate(pluginId);
+    await reactivateAfterProviderWrite(deps, pluginId, {
+      providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
+    });
   } catch (err) {
     return {
       ok: false,
@@ -213,7 +286,19 @@ export async function autoAssignSubscriptionCli(
     return { assigned, skipped: LLM_PLUGINS.map((p) => ({ pluginId: p.id, reason: 'no_cli_model' })) };
   }
 
-  for (const desc of LLM_PLUGINS) {
+  // #1076 — plugins that others inherit their provider from go LAST. Their
+  // assignment rebuilds those dependents and then themselves; processing them
+  // after the dependents' own assignment means the final rebuild sees every
+  // dependent's final config (the orchestrator ends up holding an extras
+  // instance with extras' hand-off model, not an intermediate one). The UI
+  // order of `LLM_PLUGINS` stays untouched.
+  const hasDependents = (id: string): boolean => providerDependentsOf(id).length > 0;
+  const handOffOrder = [
+    ...LLM_PLUGINS.filter((p) => !hasDependents(p.id)),
+    ...LLM_PLUGINS.filter((p) => hasDependents(p.id)),
+  ];
+
+  for (const desc of handOffOrder) {
     if (!deps.installedRegistry.has(desc.id)) {
       skipped.push({ pluginId: desc.id, reason: 'not_installed' });
       continue;

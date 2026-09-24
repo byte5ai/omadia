@@ -44,6 +44,11 @@ export interface LlmPluginDesc {
    *  silently disable its tools. Tool-less plugins (extractors/classifiers)
    *  omit this. */
   readonly requiresTools?: boolean;
+  /** The plugin whose `llm_provider` this one falls back to when it has none
+   *  of its own. A change to THAT plugin's provider must rebuild this one
+   *  (`reactivateAfterProviderWrite` in `providerAssignment.ts`), because the
+   *  inherited provider is resolved once per `activate()`. */
+  readonly inheritsProviderFrom?: string;
 }
 
 export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
@@ -67,6 +72,10 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     id: '@omadia/orchestrator-extras',
     label: 'Background-Scorer',
     modelKeys: ['fact_extractor_model', 'topic_classifier_model'],
+    // OM-102 / #1076 — extras' provider candidate chain falls back to the
+    // orchestrator's assignment (`INHERITS_PROVIDER_FROM_PLUGIN_ID` in
+    // `@omadia/orchestrator-extras`; a drift test keeps the two equal).
+    inheritsProviderFrom: '@omadia/orchestrator',
   },
 ];
 

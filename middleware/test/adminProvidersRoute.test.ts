@@ -471,7 +471,7 @@ describe('admin providers route — POST /assignment', () => {
     __clearVerificationCache();
   });
 
-  it('sets provider + model, disables routing for the orchestrator, reactivates', async () => {
+  it('sets provider + model, disables routing for the orchestrator, rebuilds extras then the orchestrator', async () => {
     h = await makeHarness([
       { id: ORCH, config: { orchestrator_model: 'claude-opus-4-8', orchestrator_model_routing: 'true' } },
       { id: VERIFIER },
@@ -488,7 +488,10 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(cfg['orchestrator_model'], 'gpt-5.5');
     // non-anthropic → per-turn routing forced off
     assert.equal(cfg['orchestrator_model_routing'], 'false');
-    assert.deepEqual(h.reactivated, [ORCH]);
+    // #1076 — extras inherits the orchestrator's provider and resolves it once
+    // per activate(), so a provider change must rebuild it too. Extras FIRST:
+    // the orchestrator captures extras' services eagerly in its own activate().
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 
   it('sets BOTH model keys for the extras plugin', async () => {
