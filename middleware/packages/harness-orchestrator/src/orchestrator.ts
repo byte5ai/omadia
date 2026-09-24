@@ -9,6 +9,7 @@ import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
+  composeTurnIncompleteText,
   resolveAiDisclosure,
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
@@ -1149,6 +1150,36 @@ const PROMPT_MASK_BLOCKED_ANSWER =
   'the language model. Please try again or contact your operator.';
 
 /**
+ * #1094 — the neutral, language-free stand-in for a degraded turn's answer.
+ *
+ * The branch below used to compose an English sentence ("The requested action
+ * (…) completed successfully, but …"). That was wrong twice over: it is prose
+ * hardcoded in the orchestrator, so a German UI showed English while every
+ * other user-facing text is localized; and it reads as a success, so it was
+ * persisted as the turn's assistant answer and the NEXT turn's model consumed
+ * "completed successfully" as context for a turn that threw.
+ *
+ * A marker instead of a sentence, following the `<mcp-auth-required …>`
+ * convention already in use for machine blocks that ride the answer text:
+ * language-free and parseable. It is what the session log persists; what a
+ * channel receives is the notice `expandDegradedDoneEvent` composes from the
+ * event fields at the delivery boundary. `web-ui/app/_lib/turnIncomplete.ts`
+ * parses this exact shape as a fallback for text that is still the marker.
+ *
+ * Tool names are emitted verbatim minus anything that could break the
+ * attribute quoting — defensive only: native tool names are `[a-z_]`.
+ */
+function turnIncompleteMarker(
+  committedTools: readonly string[],
+  correlationId: string | undefined,
+): string {
+  const safe = (value: string): string => value.replace(/[^A-Za-z0-9_.:-]/g, '');
+  const tools = committedTools.map(safe).filter((t) => t.length > 0).join(',');
+  const ref = correlationId === undefined ? '' : safe(correlationId);
+  return `<turn-incomplete tools="${tools}"${ref ? ` ref="${ref}"` : ''}></turn-incomplete>`;
+}
+
+/**
  * Mask a wire-bound prompt text through the turn's privacy handle. Returns
  * the text unchanged when no handle is present, the operator flag is off,
  * or the text is empty — byte-identical legacy behavior. Throws
@@ -1699,6 +1730,8 @@ Regeln:
 9. **Zahlen aus dem Kontext-Block sind NICHT live.** Konkret: Zahlen unter \`## Früher besprochene Entitäten\`, \`## Inhaltlich ähnliche Turns\`, \`## Letzte Turns in diesem Chat\` stammen aus der Vergangenheit. Präsentiere sie NICHT als aktuellen Stand. Wenn der User nach aktuellen Zahlen fragt (Umsatz, offene Rechnungen, Urlaubstage, Teamleistung), musst du im selben Turn mindestens EINEN passenden Fach-Agent-Call machen — sonst widerspricht der Verifier automatisch und erzwingt einen Retry.
 
 10. **Gültiger Rückbezug:** Wenn der User explizit auf einen früheren Turn verweist ("wie eben berichtet", "die Zahl von gestern"), darfst du die Kontext-Zahl zitieren — aber formuliere dann klar als Rückbezug ("laut Stand vom <Datum>, keine Neu-Abfrage in diesem Turn"), niemals als "verifiziert/geprüft". Für Aggregate über mehrere Dimensionen (Team × Kunde × Zeitraum) immer einen Plausibilitäts-Check gegen bekannte Muster aus \`/memories/\`: wenn die Zahl >50 % vom Erwartungsband abweicht, EXPLIZIT als Auffälligkeit markieren und nachfragen statt bestätigen.
+
+**\`<turn-incomplete …>\` im Verlauf — die Aktion lief, die Antwort fehlt:** Besteht eine frühere Assistenz-Antwort nur aus dem Marker \`<turn-incomplete tools="a,b" ref="…"></turn-incomplete>\`, dann ist **jener Turn abgebrochen, NACHDEM die in \`tools\` genannten Tools bereits gelaufen sind und gewirkt haben**. Behandle diese Aktionen als **ausgeführt**: rufe sie nicht erneut auf, nur weil keine Antwort dasteht — sonst löst du denselben Seiteneffekt ein zweites Mal aus. Es ist aber **keine Erfolgsmeldung**: die damalige Frage ist unbeantwortet geblieben. Beantworte sie jetzt, und frage vor allem, was Daten verändert, vorher kurz zurück. \`ref\` ist der Support-Token — nenne ihn nur, wenn der User nach dem Fehler fragt.
 
 **Dateianhänge (Teams-Uploads):**
 
@@ -3485,16 +3518,62 @@ export class Orchestrator {
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
   ): Extract<ChatStreamEvent, { type: 'done' }> {
+    // #1094 — expand a degraded turn's marker into the localized notice FIRST,
+    // so the disclosure line below folds onto readable text (and so the fold's
+    // own first-turn bookkeeping sees the same answer every other path sees).
+    const delivered = this.expandDegradedDoneEvent(done, input);
     const aiDisclosure = this.resolveTurnDisclosure(input);
-    if (!aiDisclosure) return done;
-    const { text } = applyAiDisclosure(done.answer, {
+    if (!aiDisclosure) return delivered;
+    const { text } = applyAiDisclosure(delivered.answer, {
       disclosure: aiDisclosure,
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
       seen: this.disclosureSeen,
     });
-    return { ...done, answer: text, aiDisclosure };
+    return { ...delivered, answer: text, aiDisclosure };
+  }
+
+  /**
+   * #1094 — turn a degraded turn's language-free marker into the notice the
+   * user actually reads.
+   *
+   * The orchestrator deliberately composes no prose: the catch block emits
+   * `<turn-incomplete tools="…" ref="…"></turn-incomplete>` and PERSISTS that,
+   * so the session log, the KG turn node and the next turn's context stay
+   * language-free and carry no fake success. Delivery is a different problem:
+   * Teams, Telegram and email render `answer` and nothing else, so a bare flag
+   * is invisible there and the raw marker is unreadable. The wording is
+   * therefore composed here, through the same locale the AI-Act marking uses
+   * (operator setup → `'de'` default), and the machine-readable fields
+   * (`degraded`, `committedTools`, `correlationId`) ride on unchanged. The web
+   * chat renders this text too, under its own UI-localized warning heading.
+   *
+   * A `done` that is not degraded is returned untouched — byte-identical. So
+   * is a degraded `done` whose answer Privacy Shield v4 already rendered
+   * server-side (`answerSource: 'privacy-render'`): a `v4_render_answer` call
+   * counts as committed, so a throw on the model call after it lands here, and
+   * replacing that table with "your question is still unanswered" would drop
+   * a real answer. The event stays flagged `degraded` for audit/health/verifier.
+   */
+  private expandDegradedDoneEvent(
+    done: Extract<ChatStreamEvent, { type: 'done' }>,
+    input: ChatTurnInput,
+  ): Extract<ChatStreamEvent, { type: 'done' }> {
+    if (done.degraded !== true || done.answerSource === 'privacy-render') return done;
+    // The resolved carrier is absent when an operator set the disclosure to
+    // `'off'`; the notice is not a disclosure and must still be localized, so
+    // it falls back to the operator's configured locale and then to the
+    // composer's own `'de'` default.
+    const locale = this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+    return {
+      ...done,
+      answer: composeTurnIncompleteText(
+        locale,
+        done.committedTools ?? [],
+        done.correlationId,
+      ),
+    };
   }
 
   /**
@@ -6718,11 +6797,13 @@ export class Orchestrator {
       // false-negative-on-success bug unfixed for every side-effecting
       // tool, not just routine creation.
       if (committedToolNames.length > 0) {
-        const toolList = committedToolNames.join(', ');
-        const answer =
-          committedToolNames.length === 1
-            ? `The requested action (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`
-            : `The requested actions (${toolList}) completed successfully, but the turn could not finish generating a follow-up response.`;
+        // #1094 — the turn is reported as DEGRADED, not as a plain success.
+        // `answer` is the neutral marker (see `turnIncompleteMarker`), and the
+        // machine-readable truth rides the event: `degraded`, the committed
+        // tool names, and the same correlation token the `error` branch below
+        // carries (#641) and the `console.error` above logged.
+        const correlationId = turnContext.currentTurnId() ?? undefined;
+        const answer = turnIncompleteMarker(committedToolNames, correlationId);
         const iterations = lastIterationIndex + 1;
         // Issue #506 (review follow-up) — every OTHER `done`-emission site
         // in this function persists the exchange via `sessionLogger.log()`
@@ -6738,9 +6819,19 @@ export class Orchestrator {
           privacyForPrompt,
           answer,
         );
+        // #1094 — the trace is the one record that outlives the turn (it is
+        // persisted on the KG Run node), so it must not claim `'success'` for
+        // a turn that threw. `RunStatus` is deliberately left binary
+        // (`'success' | 'error'`, declared in both @omadia/channel-sdk and
+        // @omadia/plugin-api and written to the graph); the degraded nuance
+        // lives on the event, not in a third status value.
         const runTrace = traceCollector?.finish({
           iterations,
-          status: 'success',
+          status: 'error',
+          // The detail belongs ON the record, not only in the log line: the
+          // trace is what a reader finds later on the KG Run node, and a bare
+          // `'error'` there is an unexplained failure.
+          error: err instanceof Error ? err.message : String(err),
         });
         let persistedTurnId: string | undefined;
         if (this.sessionLogger && input.sessionScope) {
@@ -6769,6 +6860,12 @@ export class Orchestrator {
           answer: restoredAnswer,
           toolCalls,
           iterations,
+          degraded: true,
+          // Distinct names in first-commit order — the dedup at the collection
+          // site is deliberate, so this is not a call count. Copied so a
+          // consumer cannot mutate the orchestrator's own list.
+          committedTools: [...committedToolNames],
+          ...(correlationId ? { correlationId } : {}),
           ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
           ...(runTrace ? { runTrace } : {}),
           ...(this.directLineSticky
@@ -6814,7 +6911,46 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory);
+    // #1095 — a REJECTED dispatch must settle this slot, not escape it. The
+    // race loop awaits `Promise.race([...slots, tick])`, so a bare rejection
+    // here leaves the async generator and kills the WHOLE turn: siblings never
+    // settle, their already-streamed `tool_use` never gets a `tool_result`, and
+    // the #506 branch can then report the dead turn to the caller as a success.
+    // Resolving with an `Error:` string is exactly the convention the
+    // non-streaming path builds from its `Promise.allSettled` rejections, and
+    // the one this loop already reads (`output.startsWith('Error:')`).
+    //
+    // The message stays RAW — no masking, no digesting. Same deliberate
+    // divergence from `ToolDispatchService` that the chat path fences in
+    // `test/orchestrator/chatPathToolErrorText.test.ts`: the reader here is the
+    // operator debugging their own tool, and the two chat paths must not drift
+    // apart again in the opposite direction.
+    //
+    // Known consequence, accepted for parity rather than overlooked: a THROWN
+    // message never passes the Privacy Shield (interning in
+    // `dispatchToolDeadlined` only ever sees a RETURNED string), so a driver
+    // error that quotes a row value ships that value to the provider and to
+    // the API caller. That is exactly what the non-streaming path has always
+    // done with the same rejection; narrowing it belongs in one change that
+    // moves BOTH paths, not in a fix that makes them disagree again. A handler
+    // that knows its errors carry data should catch and return its own
+    // data-free `Error:` prose — returned `Error:` strings also reach the
+    // model verbatim, un-interned (#1105, #1097).
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
+      (err: unknown) => {
+        // Settling the slot must not cost the operator the STACK. Before this
+        // catch existed, a throwing handler at least reached the turn's catch
+        // and was logged there with its stack; the model-facing string keeps
+        // only `message`, which for the reported trigger (a Postgres 22P02
+        // escaping `QueryDatasetTool.handle`) does not say which call site
+        // threw. Same shape as the deadline warning in `dispatchTool`.
+        console.warn(
+          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling the slot as a tool error; the turn continues:`,
+          err,
+        );
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      },
+    );
     return {
       idx,
       use,
@@ -7449,7 +7585,7 @@ export class Orchestrator {
       // race window. Returned (not thrown) as an `Error:`-prefixed string,
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
-      // only the non-streaming one also catches thrown rejections.
+      // both also fold a thrown rejection into the same convention (#1095).
       if (!this.isToolAvailable(reg.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
       }

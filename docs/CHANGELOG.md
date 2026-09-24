@@ -127,6 +127,202 @@ reach neither the knowledge graph nor the markdown transcript — so cross-chat
 recall, memory promotion and the session log remain blank on this provider. Both
 deserve their own follow-ups.
 
+### Fixed — a dead middleware no longer ticks dashboard setup step 1 (#1088)
+
+2026-09-23 — with the middleware container stopped, crash-looping, inside its
+Compose `start_period` or mid rolling-update, the operator dashboard at `/`
+read *more* complete than before the outage: setup step 1 "LLM verbinden" got a
+green checkmark with the copy „Die Agent-Runtime läuft.", and the
+Runtime-Readiness card — the one surface whose job is to say the runtime cannot
+serve agents — disappeared. On the same render the "Systemstatus" tile for the
+middleware correctly read „Nicht erreichbar", so the page contradicted itself
+in exactly the situation where an operator needs it.
+
+The readiness signal was a boolean derived by EXCLUSION of one error shape
+(`ApiError` with status 503), so every other failure read as "runtime up". That
+covers the whole outage family: a stopped container rejects the server-rendered
+`/v1/operator/agents` call with a plain `TypeError` (an RSC call goes direct to
+`MIDDLEWARE_URL`, not through the `/bot-api` proxy), a proxy answers 500/502,
+and a hung middleware trips the 10s RSC fetch timeout — none of them an
+`ApiError(503)`.
+
+It is now a tri-state derived by SUCCESS, in one shared classifier
+(`web-ui/app/_lib/runtimeReadiness.ts`) used by both surfaces so they cannot
+drift apart again: `'up'` (the route answered), `'down'` (the middleware's own
+structured `multi_orchestrator_unavailable` 503) and `'unreachable'` (anything
+else — transport error, abort, proxy 5xx, bare 503, or a 4xx that says nothing
+about the runtime). Step 1 is done for `'up'` only; `'unreachable'` renders
+„Die Agent-Runtime hat nicht geantwortet, dieser Schritt lässt sich deshalb
+nicht prüfen" with a link to the update/status page, and the readiness card
+gains a fourth cause with its own copy (it does not reuse the `unknown` text,
+which asserts that access and assignment are set — the one thing an unanswered
+middleware cannot tell us).
+
+`unreachable` deliberately claims only "this route gave us nothing to go on",
+not "the container is down": a live middleware can answer 500 from that one
+handler while `middlewareOk` — true as soon as ANY call came back — keeps the
+Systemstatus tile at „Verbunden". Both new texts hedge accordingly, so the two
+surfaces cannot contradict each other the way #1088 described. For the same
+reason the card, unlike step 1, stays silent on 401/403: a session error
+belongs to the header's auth badge, while step 1 simply cannot tick itself off
+on a permission answer.
+
+Because a transport failure can now raise the readiness card, its dismissal is
+keyed to the CAUSE rather than to the component — one waved-away blip no longer
+suppresses a later, real `no_llm_access` 503, and a cleared card re-arms the
+dismissal for the next outage — and overlapping probes carry a generation guard
+so a slow failure landing after a newer success cannot flash the card against a
+healthy backend.
+
+This narrows the OM-78 (#1001) trade-off that biased the old boolean toward
+"up" so a network blip would not un-tick step 1: a blip and a dead backend are
+indistinguishable in a boolean, and an unknown state is now reported as
+unknown. Flap-resistance, if wanted back, belongs in a bounded retry.
+
+### Fixed — a Privacy-Shield `ds_…` id in `query_dataset` no longer kills the turn (#1093)
+
+2026-09-22 — `query_dataset` passed the model's `dataset_id` unvalidated into
+`WHERE tenant_id = $1 AND id = $2` against the `uuid` column `datasets.id`, so
+a non-uuid id raised Postgres `22P02` *before* the owner check in the same
+statement. The id the model actually sent was a `ds_<uuid>` from a Privacy
+Shield v4 digest — a turn-scoped in-memory dataset, a different id space from
+the uploaded datasets the tool reads, and one the digest and system prompt
+explicitly tell the model to carry to other tools (`create_xlsx` takes exactly
+that id). On the `get_schema` branch, which had no `try/catch`, the rejection
+left the tool handler and ended the whole turn: a terminal `error` event with
+no `done`, or — when another tool had already committed in the same turn — the
+emergency `done` from #506 reporting `runTrace.status: "success"` with an
+English non-answer.
+
+Four layers:
+
+- `queryDatasetTool.ts` normalizes `dataset_id` before calling the graph. A
+  `ds_` prefix gets its own message naming the right id space (`v4_*` verbs, or
+  `create_xlsx`) so the model stops re-sending the same id; anything that
+  cannot address a row answers `{"error":"not_found_or_not_owned"}`,
+  indistinguishable from a dataset owned by someone else. Every branch of the
+  tool — `list_datasets` included — now answers with the `Error:` string
+  convention instead of throwing.
+- One shared canonicaliser, `normalizeDatasetUuid`
+  (`@omadia/plugin-api`, `src/datasetId.ts`), is used by both the tool and the
+  Neon graph so the two layers cannot disagree about which ids exist. It
+  accepts every spelling Postgres accepts for `uuid` input (upper case, braces,
+  omitted hyphens) and returns the canonical form, so an id that resolved
+  before any validation existed still resolves.
+- `NeonKnowledgeGraph.loadDatasetRow` / `deleteDataset` return `null` / `false`
+  for an id that cannot address a row instead of throwing — validated before
+  the query rather than via `id::text = $2`, which would drop the primary-key
+  index. `queryDatasetRows` now binds the id as STORED rather than as spelled
+  by the caller.
+- `src/routes/datasets.ts` maps `22P02` to **404 `dataset.not_found`** in the
+  three `/:id` handlers (`GET /api/v1/datasets/foo` used to answer 500 with the
+  raw Postgres text in the body). The collection handlers have no path id, so a
+  `22P02` there stays a 5xx.
+
+The generic last line of defence — `Orchestrator.prepareStreamSlot` settling a
+rejected slot as an `Error: <message>` tool result instead of letting it kill
+the streaming turn — landed with #1095 (entry below). This fix had built the
+same per-slot catch independently and now relies on that one.
+
+Note for anyone testing this by hand: `middleware/packages/*/dist` is build
+output, and a stale `dist` can make the #1095 streaming fix look already-present.
+Rebuild the touched package (`npm run build -w @omadia/orchestrator`) before
+trusting a green run.
+
+### Fixed — a turn that throws after a tool ran is no longer reported as a successful answer (#1094)
+
+2026-09-22 — when a turn threw after at least one tool call had already
+committed, the streaming orchestrator emitted a regular `done` whose `answer`
+was a hardcoded English sentence ("The requested action (…) completed
+successfully, but the turn could not finish generating a follow-up response.").
+The `done`-instead-of-`error` branch itself is deliberate (#506: a tool that
+already committed a side effect must not be reported as failed, or the next
+turn re-invokes it) — how the degraded turn was *reported* was the bug. The
+event carried no flag, no committed tool names and no `correlationId`, and
+`runTrace.status` said `"success"`, so every consumer — web chat, Public API
+clients, Teams/Telegram — rendered it as a normal answer while the user's
+question stayed unanswered. The sentence was English in a German UI, and it was
+persisted as the turn's assistant answer, so the next turn's model read
+"completed successfully" as context for a turn that had failed.
+
+The `done` event now carries `degraded: true`, `committedTools` (distinct tool
+names in commit order — not a call count) and `correlationId`, the same token
+the `[orchestrator] turn failed (correlationId=…)` log line quotes (#641), and
+the run trace records `status: 'error'`. `RunStatus` stays binary; the degraded
+nuance rides the event rather than a third status value written to the
+knowledge graph. The orchestrator composes no prose: it emits a neutral,
+language-free marker (`<turn-incomplete tools="…" ref="…"></turn-incomplete>`,
+following the existing `<mcp-auth-required>` convention) and persists THAT, so
+the session log, the KG turn node and the next turn's context carry no
+locale-specific sentence and no fake success; the system prompt explains the
+marker, so the model reads the named tools as already executed instead of
+re-invoking them. What is delivered is a localized notice: the marker is
+expanded at the delivery boundary via `composeTurnIncompleteText`
+(`@omadia/channel-sdk`), through the same locale mechanism as the AI-Act
+marking — so Teams/Telegram/email, which render `answer` and nothing else, get
+readable text instead of a tag, while the web UI rings the bubble in the
+warning colour and adds its own localized card. If Privacy Shield v4 had
+already rendered the answer server-side (`answerSource: 'privacy-render'`)
+before the failure, that answer is kept and the notice does not replace it.
+A degraded turn no longer counts as the operator's "last turn ok" health
+signal, nor as an `ok` entry in the Public API key audit trail, and the
+verifier skips it (a notice carries no claims to check). The `@omadia/channel-api` README documents the degraded
+terminal and how a client should handle it.
+
+### Fixed — a throwing tool no longer kills a whole streaming turn (#1095)
+
+2026-09-22 — the orchestrator's two tool-loop paths disagreed about a tool
+handler that throws. The non-streaming path (`chatInContext`, used by Teams and
+Telegram) runs its dispatches through `Promise.allSettled` and folds a rejection
+into a normal `Error: <message>` tool result: the model sees the error, can
+correct its call, and the turn finishes. The streaming path (`chatStream`, used
+by the web chat and by the Public API channel) put the bare dispatch promise on
+its parallel slot and awaited `Promise.race([...slots, tick])`, so the first
+rejection escaped the async generator and aborted the entire turn. Sibling tools
+running in the same iteration never settled — their `tool_use` event had already
+streamed, but no `tool_result` ever followed, leaving the web chat's tool row on
+"TOOL RUNNING" forever.
+
+Worse on the Public API: when an earlier tool in the turn had already completed,
+the dead turn hit issue #506's emergency branch and was reported to the client as
+a SUCCESS — a fabricated `done` event ("The requested action(s) … completed
+successfully, but the turn could not finish generating a follow-up response."),
+`runTrace.status: "success"`, HTTP 200 and no `error` event. That pseudo-answer
+was also persisted via the session logger, so the next turn's model read a stored
+message claiming an action had succeeded in a turn where a tool had in fact
+blown up.
+
+`prepareStreamSlot()` now attaches a `.catch()` to the dispatch promise that
+resolves to `Error: <message>` — the same convention the non-streaming path
+builds from its rejections and the one the race loop already reads
+(`output.startsWith('Error:')`). A rejected dispatch therefore settles its slot:
+the `tool_result` streams with `isError: true`, the model gets the error back,
+sibling tools keep running, and the turn finishes normally. No
+`[orchestrator] turn failed` log line and no fabricated success for a tool-level
+failure. The message is passed through RAW, matching the chat path's deliberate
+divergence from `ToolDispatchService` (fenced by
+`test/orchestrator/chatPathToolErrorText.test.ts`). The non-streaming path is
+unchanged; `dispatchTool` itself still rejects, so the `allSettled` branch stays
+live rather than becoming dead code.
+
+Two consequences are deliberate. A rejected dispatch is now logged at the slot
+(`[orchestrator.prepareStreamSlot:<tool>] dispatch rejected …`, with the error
+object) instead of at the turn's catch, so the operator keeps the stack a
+handler-level failure used to produce. And a THROWN message still bypasses
+Privacy Shield interning — that only ever sees a RETURNED string — so a driver
+error quoting a row value reaches the provider (new for streaming turns) and the
+API caller (which already received the same raw text as the `error` event's
+`message` before this fix). The provider half is what the non-streaming path
+has always done with the same rejection; tightening it
+has to move both paths at once, and a handler whose errors may carry data should
+catch and return its own data-free `Error:` prose — returned `Error:` strings
+also reach the model verbatim, un-interned (#1105, #1097).
+
+The reported trigger — `query_dataset` with `query: "get_schema"` and a non-UUID
+`dataset_id`, where `QueryDatasetTool.handle` lets a Postgres `22P02` escape — is
+a separate input-validation defect and is NOT fixed here; it is simply survivable
+now, like every other throwing handler.
+
 ### Fixed — the model sees the whole running conversation again (#1096)
 
 2026-09-22 — the orchestrator's in-session history (the "context tail") was
@@ -332,6 +528,223 @@ saved (`agent_identities.composed_prompt`); the boot-time recompose added with
 change up on the first boot after the upgrade without being re-saved. Builder
 and AGENT.md agents compile their prompt when they load and pick the change up
 on the next restart.
+
+### Fixed — onboarding no longer counts the kernel's own installs as the operator's (#1089)
+
+2026-09-23 — on a fresh Docker Compose deployment the kernel auto-installs 16
+bundled packages at boot, and two onboarding surfaces read those registry
+entries as operator work, because both asked the same predicate ("is it in the
+registry?", `web-ui/app/_lib/pluginCounts.ts`). The dashboard's "Erste
+Schritte" card showed step 3 "Plugins installieren" as done on the very first
+page load — the counter could never read "0 von 3" — and the store's "Profil
+wählen" modal, gated on `installedCount < 3`, was already past its threshold
+before the operator opened `/store`, so the curated-profile path ("productive
+in under 60 seconds") was unreachable in the default install.
+
+Registry entries now record WHO wrote them: `InstalledAgent.origin` is
+`'bundled'` for every boot auto-install and `'operator'` for a hub install, a
+ZIP upload, or a profile apply, and the store DTO carries it as the optional
+`install_origin`. The catalog's existing `PluginOrigin` (#794) was not usable
+for this — it says whether a package ships in the image, and bundled packages
+the operator installs by hand are exactly the case that matters (the KG
+providers and the memoryStore alternatives are skipped by the boot
+auto-install so the operator owns that choice).
+
+Registry entries written before the field are deliberately NOT backfilled.
+The only evidence available after the fact is whether the image ships the
+package, and that is wrong for precisely the entries that prove an operator did
+something: a KG provider or an OpenAI adapter ships in the image, is skipped by
+the boot auto-install, and is installed by hand — relabelling those `bundled`
+would un-tick step 3 and pop the profile modal over an established deployment.
+An absent origin therefore means "not attributable", and the web-ui's new
+`isOperatorInstalled` predicate falls back to counting every installed plugin,
+i.e. the pre-#1089 behaviour. `isInstalled` is unchanged, so the health tile
+and the store's "Installiert" tab keep counting all 16 built-ins, which
+genuinely are installed.
+
+Applying a curated profile also promotes plugins it finds already installed to
+`origin: 'operator'` (the outcome still reports them as `already_installed`,
+and nothing is reinstalled; a failed promotion write is reported per plugin as
+`register_failed` instead of failing the whole apply). Without that, a profile
+made only of plugins the kernel had already auto-installed would leave the
+operator count at zero and reopen the modal that triggered the apply. On a
+default Compose deploy that overlap is `@omadia/embeddings`, the orchestrator
+and orchestrator-extras from `minimal-dev`; its `@omadia/memory` and
+`@omadia/knowledge-graph-inmemory` are not auto-installed there (Compose boots
+memory-postgres and the Neon KG), and `de.byte5.channel.teams` is not in the
+catalog.
+
+The modal also stays open once an apply has started, so the per-plugin outcome
+(including errors) survives the refresh that raises the operator count, and it
+no longer opens when the store's plugin list failed to load.
+
+### Fixed — first-run copy pointed at a renamed page and a removed wizard field (#1090)
+
+2026-09-23 — the first path a new operator walks (setup wizard → boot log →
+dashboard onboarding) described UI that no longer exists. Three symptoms, one
+cause: the S4 provider-v2 change removed the LLM-key field from the setup
+wizard and merged the provider admin into a single page renamed **LLM-Zugang /
+LLM access**, and the copy sweep was never finished. Every stale string was a
+valid, correctly translated sentence about a screen that is gone, so no
+existing gate could see it.
+
+- **Page name.** `setup.providerHint` sent the operator to "Admin →
+  LLM-Provider", a label the nav does not render (`nav.llmAccess` is
+  "LLM-Zugang" / "LLM access" for `/admin/providers`).
+  `adminSubscriptionClis.explainer.singleOperator` carried the same old name,
+  eleven lines above a sibling string that already used the new one. Both now
+  name the visible label. So does the dashboard health tile
+  (`dashboard.health.llm.title`), which links to `/admin/providers` and titled
+  itself "LLM-Provider" / "LLM provider" on the same screen as the onboarding
+  card — the second visible name, and the more visible one. The dead
+  `adminProviders.title` — never rendered, `ProvidersPanel` only reads
+  `t('intro')` — is deleted rather than reworded, so the page has exactly one
+  name again.
+- **Chat-disabled hints.** The boot warning (`middleware/src/index.ts`) and the
+  `chat_unavailable` 503 body (`middleware/src/routes/chatSessions.ts`) both
+  told the operator to set `ANTHROPIC_API_KEY` "via the Setup Wizard". The
+  wizard creates the first admin account and nothing else. Both now name
+  Admin → LLM access (`/admin/providers`). `middleware/.env` is deliberately
+  not offered: the env key is seeded only on the boot that first registers the
+  orchestrator, and every boot that shows this hint is past that. The 503 was
+  the more damaging of the two: it is what an operator sees on the live path
+  when chat is dead, not a line in a log.
+- **Onboarding done-label.** `StepShell` renders one label next to all three
+  steps ("LLM verbinden", "Business-Case wählen", "Plugins installieren"), and
+  it read "Installiert" / "Installed" — so connecting a key and picking a
+  business case both reported an install that never happened. The key is
+  renamed `dashboard.onboarding.applied` → `.done` with a neutral value
+  ("Erledigt" / "Done"); renaming the value alone would have left the next
+  contributor reading "applied" and writing install wording back in. The plugin
+  store's own "Installiert" badge is untouched.
+
+Also removed four orphan keys per locale (`setup.anthropicKey{Label,Help,
+Invalid,Rejected}`) left behind by the removed key field — one of them still
+pointed at "Admin → Runtime → Secrets", a route this app does not have — and
+disambiguated `onboarding.intro`, which said secrets are set "via the wizard"
+on the screen next to the setup wizard while meaning the per-plugin secrets
+wizard on a plugin's detail page.
+
+The two hints are no longer two literals: both compose
+`middleware/src/llmSetupHint.ts`'s `LLM_SETUP_HINT`. One sentence living in two
+places is how the wizard claim survived — a fix could land in one copy and miss
+the other, which is exactly what the issue reported.
+
+Swept the same stale claim out of the code comments that would have seeded it
+again: twenty-three sites across `middleware/src/`, `middleware/test/` and
+`web-ui/app/_lib/api.ts` described
+the Setup Wizard as the key-entry path (`config.ts`, `index.ts`, `routes/auth.ts`,
+`routes/chat.ts`, `routes/chatSessions.ts`, `plugins/routines/routineRunner.ts`
+and four test docstrings). They now name the LLM access page, and the ones that
+pointed at `/admin/runtime/secrets` — a UI route that does not exist — name the
+real endpoint, `PATCH /api/v1/admin/runtime/installed/:id/secrets`. The
+`postAuthSetup` doc comment in `web-ui/app/_lib/api.ts` said the same thing
+about the same missing route and now says the field is back-compat only. Comments
+where the wizard means account creation or route mounting (`auth/bootstrap.ts`,
+`auth/userStore.ts`, the `setupRequired` log line) are accurate and untouched,
+as is the plugin setup-field wizard in `teamsBotsConfigSync`.
+
+Guarded by `web-ui/app/_lib/first-run-copy.test.ts` (old page name, every
+visible title for `/admin/providers` pinned to the nav label, unqualified
+"the wizard", orphan `setup.*` keys, the done-label) and
+`middleware/test/firstRunChatHints.test.ts` (503 body through the real router,
+the boot warning read from source and required to compose `LLM_SETUP_HINT`).
+Both pin the claim, not the phrasing.
+
+### Fixed — admin timestamps render in the operator's timezone, not the container's (#1091)
+
+2026-09-23 — every absolute date and time in the web UI that goes through
+next-intl was rendered in the SERVER's timezone, which is UTC in the shipped
+Docker image. The most visible
+case was the subscription-CLI page: "Zuletzt geprüft um 14:17:47" for a
+re-check the operator had triggered at 16:17 CEST, read as local time and taken
+as evidence that the re-check never ran. The shift also moved any timestamp
+between 22:00 and 24:00 local onto the previous calendar day.
+
+Cause: `web-ui/i18n/request.ts` set next-intl's `timeZone` to
+`Intl.DateTimeFormat().resolvedOptions()`'s zone. That expression lives in
+`getRequestConfig`, which runs on the server, so it resolved to the container
+zone; `NextIntlClientProvider` inherits the server config, so all 37
+`format.dateTime` call sites across 33 files got it too — client components
+included. `format.relativeTime` was never affected: a delta between two
+instants carries no zone.
+
+The browser is the only party that knows the operator's zone, so it now says
+so. `TimeZoneSync` (headless, mounted in the root layout) mirrors
+`Intl.DateTimeFormat().resolvedOptions()`'s zone into the non-secret
+`omadia-tz` cookie on mount and calls `router.refresh()` once when the page
+was rendered in a different zone (per `<html data-timezone>`) — the same
+client-writes / RSC-reads mechanism `ThemeControls` already uses for the
+no-FOUC palette cookie. `i18n/request.ts` reads the cookie through
+`parseTimeZoneCookie` (`web-ui/app/_lib/timeZone.ts`), which decodes,
+shape-checks and validates against `Intl` before returning it. Deciding the
+zone *before* render rather than re-formatting after
+mount is what keeps server and client output identical: no hydration mismatch,
+and no change at any of the 33 call sites.
+
+Requests where no browser has spoken yet — a first visit, an e2e run, a client
+that cannot store cookies — fall back to an explicitly configured container
+`TZ` when there is one, and to a fixed `'UTC'` literal otherwise. Honouring an
+explicit `TZ` is not a relapse: the bug was *preferring* the runtime zone over
+the operator's, and the cookie still wins wherever it exists. Nothing in the
+repo sets `TZ`, so a value there is deliberate operator configuration. The
+refresh closes the first-visit gap within the same visit — unless the client
+cannot store cookies at all, in which case the write is detected as lost and no
+refresh is fired, rather than re-rendering the whole RSC tree on every page
+load for a value the server will never see. `layout.tsx` stamps the resolved
+zone onto `<html data-timezone>`, so a page that is already correct — operator
+in UTC, or a container whose `TZ` matches the browser — costs no second render.
+
+Swept up with it, three render sites outside next-intl that the cookie never
+reached: `DraftRow` (the plugin-builder draft list) formatted its fallback date
+with a hardcoded German locale tag via `toLocaleDateString` — a
+German-formatted date in the English UI, in the machine's zone; and the "last
+changed" line of the `/admin/mcp` key bindings and the turn cards of the graph
+list view sliced the `Z` off a UTC ISO string and printed the rest as unmarked
+wall-clock time. All three now use `useFormatter()`. `DraftRow` is pinned by
+the `SWEPT` list in `app/_lib/i18n-structural.test.ts`, which is where the
+#679 sweep tracks this category; its guard now also catches the
+`toLocaleDateString`/`toLocaleTimeString` variants.
+
+The `timeZone` key stays explicitly set — dropping
+it would bring back the `ENVIRONMENT_FALLBACK` IntlError flood (one per
+rendered table row on `/admin/datasets`) that #821 added it to silence. A guard
+test pins both halves, and `timeZone.request.test.ts` runs the request config
+against stubbed cookies, so a config that stops reading the cookie fails.
+
+### Fixed — plan-runner process-reuse settings are reachable, and a bad threshold can no longer disable similarity (#1103)
+
+2026-09-22 — the plan-runner plugin read two setup keys its manifest never
+declared, `reuseProcesses` and `processReuseThreshold`. The store only renders
+fields declared under `setup.fields`, so both values were unreachable from the
+UI: process reuse was on with a fixed 0.6 threshold and no way to change
+either. Both fields are now declared (`harness-plugin-plan-runner/manifest.yaml`),
+and `test/planRunnerConfigManifestDrift.test.ts` pins the invariant by scanning
+the package's `src/` for every literal config key read through
+`ctx.config.get(...)` / `ctx.config.require(...)` and asserting the manifest
+declares it — `require()` is included because an undeclared key there throws
+`MissingConfigError` at activation rather than returning `undefined`. The
+guard's allow-list of kernel-injected synthetic fields imports
+`PRIVACY_MODE_CONFIG_KEY` and `PRIVACY_BYPASS_SCOPES_CONFIG_KEY` from
+`@omadia/plugin-api` instead of repeating the strings, so a kernel-side rename
+cannot silently re-open the drift.
+
+`processReuseThreshold` is a string field (the manifest loader has no decimal
+type) constrained by a `0–1` pattern. The pattern is not the only write path:
+`PATCH /api/v1/admin/runtime/installed/:id/config` blind-merges the JSON body
+and profile apply stores the profile's YAML `config` as-is — neither re-runs
+`checkSetupFieldPattern`, and both keep the raw JSON/YAML type — so
+out-of-contract values could still reach the plugin, and the old
+`Number.parseFloat` + `Number.isFinite` guard passed them through. `"0,6"`
+(decimal comma) parsed to the prefix `0` — finite, in range, and therefore
+invisible to a range check — which reuses **every** retrieved process
+regardless of similarity; `"5"` silently disabled reuse while the startup log
+printed a plausible threshold. Parsing now range-checks a stored number as-is,
+rejects any string that is not a complete numeric literal, and rejects anything
+outside 0–1 or of another type, falling back to the 0.6 default
+(`parseProcessReuseThreshold`, which never throws, so a bad value cannot fail
+activation) — what the field's help text promises. A rejected, operator-set
+value is logged at activation instead of being swapped for 0.6 silently.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

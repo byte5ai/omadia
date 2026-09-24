@@ -32,6 +32,7 @@ export * from './agentGraph.js';
 export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
+export * from './datasetId.js';
 
 // #440: provider-neutral `embeddingClient@1` contract. Lives here for the same
 // reason the KG contract does — every adapter (`@omadia/embeddings` for Ollama,

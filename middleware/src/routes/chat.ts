@@ -268,7 +268,7 @@ export interface CreateChatRouterOptions {
   chatSessionStore?: ChatSessionStore;
   /** Live resolver for the chat session store. Preferred over the static
    *  `chatSessionStore` so the store is picked up when the orchestrator
-   *  plugin publishes it post-boot (Setup-Wizard key entry) without a
+   *  plugin publishes it post-boot (LLM-access-page key entry) without a
    *  restart. Falls back to `chatSessionStore` when absent. */
   getChatSessionStore?: () => ChatSessionStore | undefined;
   /** Phase A — builds a SessionConfigSnapshot for a given Agent slug.
@@ -665,6 +665,16 @@ export function createChatRouter(
         }
         if (event.type === 'error') {
           streamError = event.message;
+        }
+        // #1094 — a DEGRADED `done` is a turn that threw; it is reported as
+        // `done` only so the tool call it already committed is not written off
+        // as failed (#506). Recording it as the operator's "last turn ok"
+        // signal would be the same false green OM-100b removed below.
+        if (event.type === 'done' && event.degraded === true) {
+          // The cause rides the run trace; without it the status card shows a
+          // bare "turn incomplete" where an error turn shows the provider text.
+          const cause = event.runTrace?.error ? `: ${event.runTrace.error}` : '';
+          streamError = `turn incomplete after ${event.committedTools?.join(', ') ?? 'a committed tool call'} (correlationId=${event.correlationId ?? 'unknown'})${cause}`;
         }
         safeWrite(event);
       }

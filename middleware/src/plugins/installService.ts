@@ -413,6 +413,12 @@ export class InstallService {
         installed_version: job.plugin_version,
         installed_at: new Date().toISOString(),
         status: 'active',
+        // #1089 — this is THE operator install path (hub install and ZIP
+        // upload both land here), and the onboarding surfaces count exactly
+        // these. Bundled ids reached this way — a built-in the operator
+        // uninstalled and installed again, or one the boot auto-install skips
+        // on purpose — are operator installs from here on.
+        origin: 'operator',
         config,
       });
       // #825 — NOT `active` yet. The registry row above says `active` because

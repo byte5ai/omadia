@@ -60,12 +60,13 @@ interface AuthDeps {
     displayName: string;
   }) => Promise<string | undefined>;
   /**
-   * OB-61 — per-plugin secret vault. The /setup wizard writes the
+   * OB-61 — per-plugin secret vault. The /setup endpoint writes an
    * operator-supplied `anthropic_api_key` here for every plugin in
    * `anthropicKeyConsumers` so the orchestrator/verifier/extras plugins
-   * pick it up on the next activate(). Optional so existing test wiring
-   * without a vault keeps compiling — the wizard then simply skips the
-   * key-seed step and behaves like before.
+   * pick it up on the next activate(). Back-compat only since S4: the
+   * wizard UI no longer sends a key, so in practice this seed step is
+   * skipped and the key arrives via the LLM access page (#1090). Optional
+   * so existing test wiring without a vault keeps compiling.
    */
   vault?: SecretVault;
   /**
@@ -407,8 +408,8 @@ export function createAuthRouter(deps: AuthDeps): Router {
     }
 
     // OB-61: validate the Anthropic key *before* persisting any state.
-    // Skipping when empty keeps the wizard usable for operators who plan
-    // to add the key later through /admin/runtime/secrets — the
+    // Skipping when empty keeps the wizard usable for operators who add
+    // the key later on the LLM access page (the normal path since S4) — the
     // orchestrator/verifier capabilities simply stay unpublished until
     // they do.
     // OM-08: the ping's RESULT is now recorded, not just acted on. Previously an
@@ -465,8 +466,8 @@ export function createAuthRouter(deps: AuthDeps): Router {
     // OB-61: seed the validated key into every consumer plugin's vault,
     // then reactivate each so the plugin picks it up without a server
     // restart. Failure to write/reactivate one plugin is logged but does
-    // NOT roll back the user creation — the operator can re-seed via
-    // /admin/runtime/secrets, but they MUST be able to log in afterwards.
+    // NOT roll back the user creation — the operator can re-seed on the
+    // LLM access page, but they MUST be able to log in afterwards.
     if (anthropicApiKey.length > 0 && deps.vault) {
       const consumers = deps.anthropicKeyConsumers ?? [];
       for (const agentId of consumers) {

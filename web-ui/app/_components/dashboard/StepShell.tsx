@@ -63,7 +63,7 @@ export function StepShell({
           {t('stepOfTotal', { n, total })}
         </span>
         {done ? (
-          <span className="text-[color:var(--success)]">{t('applied')}</span>
+          <span className="text-[color:var(--success)]">{t('done')}</span>
         ) : null}
       </div>
       <h3 className="font-display mt-1 text-lg font-medium text-[color:var(--fg-strong)]">

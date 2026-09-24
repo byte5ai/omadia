@@ -27,6 +27,7 @@ import express from 'express';
 import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { config, parseRegistries } from './config.js';
+import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { createTigrisStore } from '@omadia/diagrams';
 import type { MemoryStore } from '@omadia/plugin-api';
 import { createAdminRouter } from './routes/admin.js';
@@ -765,7 +766,7 @@ async function main(): Promise<void> {
   serviceRegistry.provide('anthropicClient', client);
 
   // Customer bug (builder.ask_failed / "Could not resolve authentication
-  // method"): on installs where the key arrives via the Setup Wizard (vault)
+  // method"): on installs where the key arrives via the LLM access page (vault)
   // and not via ENV, the boot-time `client` above is unauthenticated forever —
   // `refreshSharedAnthropicClientFromVault` only swaps the REGISTRY providers,
   // never this const. Host-side consumers (BuilderAgent, PreviewChatService)
@@ -1442,7 +1443,7 @@ async function main(): Promise<void> {
   // `orchestratorRegistry` LIVE from the serviceRegistry on every call.
   // Previously they were assigned inside the `if (orchestrator) { … }`
   // boot block, so on a chat-DISABLED boot (no ANTHROPIC_API_KEY at start —
-  // the Setup-Wizard / Docker path) they stayed `undefined`. The
+  // the keyless first-boot / Docker path) they stayed `undefined`. The
   // `onInstalled` hook's `propagatePluginInstall?.(agentId)` then silently
   // no-op'd: the agent activated in `dynamicAgentRuntime` but the fallback
   // Agent's `agent_plugins` enablement row was never written, so
@@ -1451,7 +1452,7 @@ async function main(): Promise<void> {
   // (Channels are unaffected: the channel install hook activates them
   // directly, with no plugin-scoping — which is why connectors appear on a
   // new session but specialist agents never did.) Resolving live here makes
-  // the propagation take effect the moment chat goes live via the wizard.
+  // the propagation take effect the moment chat goes live on a key save.
   const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
 
   // Reconcile a single agent-plugin's DomainTool across every per-Agent
@@ -1642,19 +1643,20 @@ async function main(): Promise<void> {
   // OB-61 fix — the shared `llm` + `anthropicClient` ServiceRegistry providers
   // are registered ONCE at boot (above) from `config.ANTHROPIC_API_KEY`. On a
   // cold boot without that env var the key is '' and those providers capture an
-  // unauthenticated Anthropic client for the whole process lifetime. The /setup
-  // wizard and the admin-secrets editor seed the real key into each consumer
-  // plugin's vault and reactivate the plugin — but those plugins build their
-  // OWN clients, so the SHARED providers stayed broken. Any plugin that reaches
-  // the host LLM via `ctx.llm` (e.g. plan-runner's Haiku planning gate, which
-  // swallows the resulting 401 and silently skips planning) then never worked
-  // after a wizard key-entry.
+  // unauthenticated Anthropic client for the whole process lifetime. The LLM
+  // access page and the admin-secrets editor seed the real key into each
+  // consumer plugin's vault and reactivate the plugin — but those plugins build
+  // their OWN clients, so the SHARED providers stayed broken. Any plugin that
+  // reaches the host LLM via `ctx.llm` (e.g. plan-runner's Haiku planning gate,
+  // which swallows the resulting 401 and silently skips planning) then never
+  // worked after a key entry.
   //
   // Fix: funnel every reactivation through `reactivateAgent`. When the
   // reactivated agent is the canonical host-key holder (@omadia/orchestrator),
   // re-read its freshly-seeded vault key and hot-swap the shared providers via
-  // ServiceRegistry.replace(). Covers /setup, /admin/runtime/secrets, and any
-  // future reactivate path. Idempotent: replacing with an equivalent client is
+  // ServiceRegistry.replace(). Covers the LLM access page, a PATCH to
+  // /api/v1/admin/runtime/installed/:id/secrets, the back-compat /setup seed,
+  // and any future reactivate path. Idempotent: replacing with an equivalent client is
   // harmless when the key was already present via env. `ctx.llm` resolves the
   // 'llm' provider at call time, so already-active plugins pick up the swap on
   // their next call without re-activation.
@@ -1694,8 +1696,9 @@ async function main(): Promise<void> {
   };
   const reactivateAgent = async (agentId: string): Promise<void> => {
     await installService.reactivate(agentId);
-    // Live key-entry path (/setup wizard, /admin/runtime/secrets): the consumer
-    // plugin's vault was just (re)seeded. Re-source the shared providers so any
+    // Live key-entry path (LLM access page, or a PATCH to
+    // /api/v1/admin/runtime/installed/:id/secrets): the consumer plugin's
+    // vault was just (re)seeded. Re-source the shared providers so any
     // plugin reaching the host LLM via `ctx.llm` picks up the real key without
     // a restart.
     if (agentId === ORCHESTRATOR_SECRET_SOURCE) {
@@ -2440,12 +2443,12 @@ async function main(): Promise<void> {
   // the plugin returns a no-op handle and chatAgent@1 is NOT published —
   // boot fails fast with a clear error so the operator wires up the key.
   // Graceful degradation: chatAgent@1 is published by @omadia/orchestrator
-  // only once `anthropic_api_key` is set. That key is entered post-boot via
-  // the Setup Wizard, so a missing key must NOT fail the boot — otherwise the
-  // very admin UI that captures the key never comes up. We boot
-  // "chat-disabled": the admin UI, Setup Wizard and every non-chat endpoint
-  // run; the chat route returns 503 until the key is configured. Saving the
-  // key via the wizard reactivates the orchestrator plugin (PATCH
+  // only once `anthropic_api_key` is set. That key is entered post-boot on
+  // the LLM access page, so a missing key must NOT fail the boot — otherwise
+  // the very admin UI that captures the key never comes up. We boot
+  // "chat-disabled": the admin UI and every non-chat endpoint run; the chat
+  // route returns 503 until the key is configured. Saving the key there
+  // reactivates the orchestrator plugin (PATCH
   // /installed/:id/secrets → reactivate → activate()), which publishes
   // chatAgent@1 + orchestratorRegistry@1. The chat / session / operator
   // routes below resolve those services LIVE from the registry per request,
@@ -2461,12 +2464,12 @@ async function main(): Promise<void> {
   const orchestrator = chatAgentBundle?.raw;
   if (!chatAgentBundle) {
     console.warn(
-      '[middleware] ⚠ chat DISABLED — chatAgent@1 not published. Set ANTHROPIC_API_KEY on @omadia/orchestrator via the Setup Wizard; chat goes live on save. Admin UI + all other endpoints are up.',
+      `[middleware] ⚠ chat DISABLED — chatAgent@1 not published — ${LLM_SETUP_HINT}; chat goes live on save. Admin UI + all other endpoints are up.`,
     );
   }
   // Live resolver for the plugin-published chat bundle. Every chat/session
-  // consumer reads through this so a post-boot reactivation (Setup Wizard key
-  // entry) is picked up without a restart.
+  // consumer reads through this so a post-boot reactivation (key entry on the
+  // LLM access page) is picked up without a restart.
   const getChatAgentBundle = (): ChatAgentBundle | undefined =>
     serviceRegistry.get<ChatAgentBundle>('chatAgent');
   const getChatSessionStore = (): ChatSessionStore | undefined =>
@@ -2936,7 +2939,7 @@ async function main(): Promise<void> {
   // dev (in-memory KG backend, no DATABASE_URL). The chat agent is NOT
   // required at wiring time — the runner resolves chatAgent@1 live per run
   // (same pattern as the chat routes above), so routines hot-enable the
-  // moment the Setup Wizard key save publishes it; keyless fires record an
+  // moment the LLM-access-page key save publishes it; keyless fires record an
   // `error` run naming the missing key (issue #473). Channel adapters that
   // want proactive delivery register their `ProactiveSender` into
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
@@ -3177,8 +3180,9 @@ async function main(): Promise<void> {
   //      same shortcut for back-compat.
   // Otherwise the slug must map to a registered Agent (registry.get).
   // Resolve orchestratorRegistry@1 + chatAgent@1 LIVE per request. Both are
-  // published by the orchestrator plugin's activate(); after a Setup-Wizard
-  // key entry the plugin reactivates and (re)publishes them, so capturing a
+  // published by the orchestrator plugin's activate(); after a key entry on
+  // the LLM access page the plugin reactivates and (re)publishes them, so
+  // capturing a
   // boot-time value would pin the chat-disabled state forever.
   const getRegistry = (): MultiOrchestratorRegistry | undefined =>
     serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
@@ -4587,10 +4591,12 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
-        // OB-61 — /setup wizard seeds the operator-supplied
+        // OB-61 — the /setup ENDPOINT still seeds an operator-supplied
         // `anthropic_api_key` into each consumer plugin's vault and
         // reactivates the plugin so the LLM-bound capabilities go live
-        // without a server restart.
+        // without a server restart. Kept for back-compat only: the wizard
+        // UI stopped sending a key in S4, and the supported path is the
+        // LLM access page (#1090).
         vault: secretVault,
         reactivate: reactivateAgent,
         anthropicKeyConsumers: [

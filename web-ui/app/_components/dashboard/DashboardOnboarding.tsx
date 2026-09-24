@@ -25,8 +25,9 @@ import {
 import { useTranslations } from 'next-intl';
 
 import type { ProviderCredentialStatus } from '../../_lib/api';
+import type { RuntimeReadiness } from '../../_lib/runtimeReadiness';
 import type { Plugin } from '../../_lib/storeTypes';
-import { isInstalled } from '../../_lib/pluginCounts';
+import { isOperatorInstalled } from '../../_lib/pluginCounts';
 import { LlmStepBody, type AssignedProviderKind } from './LlmStep';
 import { StepShell } from './StepShell';
 import {
@@ -220,17 +221,20 @@ export interface DashboardOnboardingProps {
    */
   cliLoggedIn: boolean;
   /**
-   * OM-78 (#1001) — the agent runtime actually answers (`/operator/agents`
-   * came back instead of 503 `multi_orchestrator_unavailable`).
+   * OM-78 (#1001) — what the agent runtime answered, as a tri-state.
    *
-   * This is what step 1 ticks on now. `llmVerified` / `cliLoggedIn` say that
-   * an ACCESS exists; they do not say the orchestrator can use it. In the
-   * round-4 beta test the dashboard read "LLM verbunden · 3 von 3 erledigt"
-   * while the readiness card two centimetres below said "LLM-Zugang fehlt",
-   * because the orchestrator was still assigned to a provider without a key.
-   * One page, two verdicts. The card and this step now read the same signal.
+   * This is what step 1 ticks on. `llmVerified` / `cliLoggedIn` say that an
+   * ACCESS exists; they do not say the orchestrator can use it. In the round-4
+   * beta test the dashboard read "LLM verbunden · 3 von 3 erledigt" while the
+   * readiness card two centimetres below said "LLM-Zugang fehlt", because the
+   * orchestrator was still assigned to a provider without a key. One page, two
+   * verdicts. The card and this step now read the same signal.
+   *
+   * #1088 — and it is a tri-state, not a boolean, because "the middleware did
+   * not answer at all" is not "the runtime is fine". Only `'up'` ticks the
+   * step; see `_lib/runtimeReadiness.ts`.
    */
-  runtimeUp: boolean;
+  runtimeState: RuntimeReadiness;
   /**
    * OM-74 (#999) — what the orchestrator is actually assigned to, so the
    * done-copy names the right thing. `'cli'` for a keyless subscription CLI,
@@ -262,7 +266,7 @@ export function DashboardOnboarding({
   plugins,
   llmVerified,
   cliLoggedIn,
-  runtimeUp,
+  runtimeState,
   assignedProviderKind,
   assignedProviderStatus,
   assignedProviderLabel,
@@ -318,7 +322,10 @@ export function DashboardOnboarding({
   // while every operator route 503ed; the counter reached "3 von 3" for a
   // system that could not run a single agent.
   const steps: readonly [OnboardingStep, OnboardingStep, OnboardingStep] = [
-    { id: 'llmAccess', done: runtimeUp },
+    // #1088 — `'up'` ONLY. An unreachable middleware used to tick this step
+    // with "Die Agent-Runtime läuft." while its own health tile on the same
+    // page read "Nicht erreichbar".
+    { id: 'llmAccess', done: runtimeState === 'up' },
     { id: 'businessCase', done: selectedCase !== null },
     { id: 'install', done: hasInstalledPlugin },
   ];
@@ -326,12 +333,21 @@ export function DashboardOnboarding({
   // An access exists but the runtime is down: the missing piece is almost
   // always the orchestrator's provider assignment (#994), so the step says
   // that instead of offering to connect an access the operator already has.
-  const accessWithoutRuntime = !llmDone && (llmVerified || cliLoggedIn);
-  // #886 — step 3's RESULT copy. Counted here with the same OM-27 predicate the
-  // dashboard health tile uses, over the same `plugins` array `page.tsx` derives
-  // `hasInstalledPlugin` from — so the badge and the sentence underneath it read
-  // off one source and cannot contradict each other.
-  const installedCount = (plugins ?? []).filter(isInstalled).length;
+  // #1088 — `'down'` only: that diagnosis rests on the middleware having
+  // ANSWERED. When it is unreachable we know nothing about the assignment, and
+  // sending the operator to the provider page would be a guess.
+  const accessWithoutRuntime =
+    runtimeState === 'down' && (llmVerified || cliLoggedIn);
+  // #886 — step 3's RESULT copy. Counted over the same `plugins` array
+  // `page.tsx` derives `hasInstalledPlugin` from, with the same predicate, so
+  // the badge and the sentence underneath it read off one source and cannot
+  // contradict each other.
+  //
+  // #1089 — that predicate is `isOperatorInstalled`, not `isInstalled`: the
+  // step is about the operator's installs, and counting all of them made a
+  // ticked step 3 say "17 plugins installed" after a single operator install
+  // on a deployment whose 16 built-ins the kernel had installed itself.
+  const installedCount = (plugins ?? []).filter(isOperatorInstalled).length;
 
   return (
     <section
@@ -383,10 +399,11 @@ export function DashboardOnboarding({
         icon={Cpu}
         title={t('llmStep.title')}
       >
-        {/* Body lives in `LlmStep.tsx` (three states: done / access without
-            runtime / nothing yet) so this file stays under the size limit. */}
+        {/* Body lives in `LlmStep.tsx` (four states: done / unreachable /
+            access without runtime / nothing yet) so this file stays under the
+            size limit. */}
         <LlmStepBody
-          done={llmDone}
+          runtimeState={runtimeState}
           accessWithoutRuntime={accessWithoutRuntime}
           assignedProviderKind={assignedProviderKind}
           assignedProviderStatus={assignedProviderStatus}

@@ -45,11 +45,13 @@ const ConfigSchema = z.object({
   HOST: z.string().min(1).default('::'),
 
   // Anthropic SDK — optional since OB-61: the operator can supply the key
-  // through the /setup wizard on first boot (vault-stored per plugin), so
-  // an empty ENV is now a valid state. When unset AND the vault has no key
-  // either, the orchestrator + verifier + orchestrator-extras plugins
-  // register but their LLM-bound capabilities stay unpublished until the
-  // operator runs /setup or PATCHes a key via /api/v1/admin/runtime/secrets.
+  // after boot on the LLM access page (/admin/providers, vault-stored per
+  // plugin), so an empty ENV is now a valid state. When unset AND the vault
+  // has no key either, the orchestrator + verifier + orchestrator-extras
+  // plugins register but their LLM-bound capabilities stay unpublished until
+  // the operator connects a provider there, or PATCHes a key via
+  // /api/v1/admin/runtime/installed/:id/secrets. (Pre-S4 this said the /setup
+  // wizard — that step was removed with the wizard's key field, #1090.)
   ANTHROPIC_API_KEY: z.string().optional(),
   // A CLASS ref by default (resolved against the live model catalog at build
   // time), so a fresh install follows the vendor's current frontier model

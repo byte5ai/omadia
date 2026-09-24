@@ -154,7 +154,7 @@ export interface RoutineRunnerOptions {
    * Live resolver for the plugin-published chat agent — production wiring
    * passes a closure over `serviceRegistry.get('chatAgent')?.raw`; tests
    * pass `() => stub`. Resolved per run (never captured) so routines
-   * hot-enable the moment the Setup Wizard key save republishes
+   * hot-enable the moment the LLM-access-page key save republishes
    * chatAgent@1, and a key rotation swaps instances without a restart.
    * A run that fires while it returns `undefined` records an `error`
    * run via `ChatAgentUnavailableError`. The runner needs `runTurn`

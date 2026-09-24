@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
+import type { KnowledgeGraph } from '@omadia/plugin-api';
 
 // Imported from the SAME relative source path `queryDatasetTool.ts` itself
 // uses (not the built `@omadia/orchestrator` package) — tsx loads test files
@@ -237,5 +238,136 @@ describe('QueryDatasetTool', () => {
       tool.handle({ query: 'query_rows', dataset_id: datasetId }),
     );
     assert.match(rows, /a1b2c3d4e5f60001/);
+  });
+});
+
+/**
+ * #1093 — `dataset_id` reaches the tool straight from the model, and on the
+ * Neon backend it lands in `WHERE id = $2` against a `uuid` column: a
+ * non-uuid id raises Postgres `22P02` BEFORE any owner check. The in-memory
+ * graph these tests otherwise use returns `null` for an unknown id and can
+ * therefore never reproduce that — hence the throwing fake below, and the
+ * "never touched the graph" assertions.
+ *
+ * The id the model actually passes is a Privacy-Shield digest's
+ * `ds_<uuid>` (a turn-scoped in-memory dataset), which is a DIFFERENT id
+ * space from the uploaded datasets `query_dataset` reads — and one the
+ * digest itself tells the model to carry to other tools (`create_xlsx`),
+ * so "the model should know better" is not a fix.
+ */
+const PG_UUID_SYNTAX_ERROR = 'invalid input syntax for type uuid';
+
+function throwingGraph(): {
+  graph: KnowledgeGraph;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const graph = {
+    getDataset: (datasetId: string): Promise<never> => {
+      calls.push(`getDataset:${datasetId}`);
+      return Promise.reject(new Error(`${PG_UUID_SYNTAX_ERROR}: "${datasetId}"`));
+    },
+    queryDatasetRows: (datasetId: string): Promise<never> => {
+      calls.push(`queryDatasetRows:${datasetId}`);
+      return Promise.reject(new Error(`${PG_UUID_SYNTAX_ERROR}: "${datasetId}"`));
+    },
+  } as unknown as KnowledgeGraph;
+  return { graph, calls };
+}
+
+describe('QueryDatasetTool — dataset_id validation (#1093)', () => {
+  const SHIELD_ID = 'ds_00000000-0000-0000-0000-000000000000';
+
+  for (const query of ['get_schema', 'query_rows'] as const) {
+    it(`rejects a Privacy-Shield ds_ id on ${query} without touching the graph`, async () => {
+      const { graph, calls } = throwingGraph();
+      const tool = new QueryDatasetTool(graph);
+      const out = await asUser('user-1', () =>
+        tool.handle({ query, dataset_id: SHIELD_ID }),
+      );
+      assert.match(out, /^Error: /);
+      // The model must learn WHICH id space the id belongs to, or it
+      // retries the same id on the next iteration.
+      assert.match(out, /v4_/);
+      assert.match(out, /list_datasets/);
+      assert.doesNotMatch(out, new RegExp(PG_UUID_SYNTAX_ERROR));
+      assert.deepEqual(calls, [], 'the graph must not be called for a non-uuid id');
+    });
+
+    it(`answers not_found_or_not_owned for any other non-uuid id on ${query}`, async () => {
+      const { graph, calls } = throwingGraph();
+      const tool = new QueryDatasetTool(graph);
+      const out = await asUser('user-1', () =>
+        tool.handle({ query, dataset_id: 'not-a-uuid' }),
+      );
+      // Same shape as a dataset owned by someone else — existence of an id
+      // outside the caller's scope stays unobservable.
+      assert.equal(out, JSON.stringify({ error: 'not_found_or_not_owned' }));
+      assert.deepEqual(calls, [], 'the graph must not be called for a non-uuid id');
+    });
+
+    it(`returns a recoverable error instead of throwing when the graph rejects on ${query}`, async () => {
+      // A well-formed uuid passes the guard, so this exercises the layer
+      // below it: `get_schema` had no try/catch at all, and its rejection
+      // left the tool handler and killed the whole streaming turn.
+      const { graph, calls } = throwingGraph();
+      const tool = new QueryDatasetTool(graph);
+      const out = await asUser('user-1', () =>
+        tool.handle({
+          query,
+          dataset_id: '11111111-2222-3333-4444-555555555555',
+        }),
+      );
+      assert.match(out, /^Error: query_dataset failed/);
+      assert.equal(calls.length, 1, 'a uuid id must reach the graph');
+    });
+  }
+
+  it('still resolves a real dataset by its uuid id', async () => {
+    const graph = new InMemoryKnowledgeGraph();
+    const { datasetId } = await graph.ingestDataset({
+      ownerOmadiaUserId: 'user-1',
+      name: 'D',
+      sourceFileName: 'd.csv',
+      columns: [{ name: 'v', type: 'number' }],
+      rows: [{ v: 1 }],
+    });
+    const tool = new QueryDatasetTool(graph);
+    const out = await asUser('user-1', () =>
+      tool.handle({ query: 'get_schema', dataset_id: datasetId }),
+    );
+    assert.match(out, /"rowCount":1/);
+  });
+
+  // Postgres accepts all of these as `uuid` input, so an id that resolved
+  // before any validation existed must keep resolving — and must reach the
+  // graph in ONE canonical spelling, whichever the model typed.
+  for (const spelling of [
+    '11111111-AAAA-4BBB-8CCC-555555555555',
+    '11111111aaaa4bbb8ccc555555555555',
+    '{11111111-aaaa-4bbb-8ccc-555555555555}',
+    ' 11111111-aaaa-4bbb-8ccc-555555555555 ',
+  ]) {
+    it(`canonicalises the uuid spelling "${spelling}" before querying`, async () => {
+      const { graph, calls } = throwingGraph();
+      const tool = new QueryDatasetTool(graph);
+      await asUser('user-1', () =>
+        tool.handle({ query: 'get_schema', dataset_id: spelling }),
+      );
+      assert.deepEqual(calls, [
+        'getDataset:11111111-aaaa-4bbb-8ccc-555555555555',
+      ]);
+    });
+  }
+
+  it('reports a list_datasets backend failure as a tool error, not a throw', async () => {
+    const graph = {
+      listDatasets: (): Promise<never> =>
+        Promise.reject(new Error('connection terminated unexpectedly')),
+    } as unknown as KnowledgeGraph;
+    const tool = new QueryDatasetTool(graph);
+    const out = await asUser('user-1', () => tool.handle({ query: 'list_datasets' }));
+    assert.match(out, /^Error: query_dataset failed/);
+    assert.match(out, /connection terminated/);
   });
 });

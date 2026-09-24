@@ -1422,10 +1422,11 @@ export async function postAuthSetup(body: {
   password: string;
   display_name?: string;
   /** OB-61 — operator-supplied Anthropic key, seeded into the
-   *  orchestrator/verifier/extras vault on first-user setup. Optional:
-   *  the wizard accepts an empty value (operator can add the key later
-   *  via /admin/runtime/secrets) but then the LLM-bound capabilities
-   *  stay unpublished until they do. */
+   *  orchestrator/verifier/extras vault on first-user setup. Back-compat
+   *  only: the wizard's key field was removed in S4 and this client never
+   *  sends the field, so the endpoint just skips the seed and the key
+   *  arrives on the LLM access page (/admin/providers) instead. Do not
+   *  re-add an input for it here (#1090). */
   anthropic_api_key?: string;
 }): Promise<AuthSetupSuccess> {
   return postJson<AuthSetupSuccess>('/v1/auth/setup', body);
