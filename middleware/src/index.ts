@@ -52,6 +52,7 @@ import {
 } from './routes/operatorAgents.js';
 import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { AgentIdentityStore } from './platform/agentIdentityStore.js';
+import { recomposeStaleIdentities } from './services/agentIdentityPrompt.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningEventStore } from './platform/teamsProvisioningEventStore.js';
 import { TeamsDelegatedTokenStore } from './platform/teamsDelegatedTokenStore.js';
@@ -2038,6 +2039,20 @@ async function main(): Promise<void> {
     // a Teams bot at all.
     const agentIdentityStore = new AgentIdentityStore(graphPool);
     serviceRegistry.provide('agentIdentityStore', agentIdentityStore);
+    // #1100 — `composed_prompt` is a write-time cache, so a compiler change
+    // (the boundary precedence clause) would otherwise reach a stored agent
+    // only on its next save. One idempotent pass per boot recompiles what is
+    // stale; the orchestrator plugin activated above, so its agent store and
+    // registry are reachable here, and nothing listens for HTTP yet. Never
+    // throws — see `recomposeStaleIdentities`.
+    await recomposeStaleIdentities({
+      identityStore: agentIdentityStore,
+      agentStore: serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      registry: serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      log: (m) => {
+        console.log(m);
+      },
+    });
     // Migration 0051 — the PERSISTED team↔agent bindings. Registered next to
     // the identity store because both the operator routes and the job runner
     // consume it; without it the pair degrades to the single-column era
