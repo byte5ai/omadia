@@ -78,6 +78,12 @@ export function AgentBoundariesEditor(
 
   return (
     <div className="space-y-5" data-testid="agent-boundaries-editor">
+      <p
+        data-testid="agent-boundaries-plugin-stack-note"
+        className="text-[11px] text-[color:var(--fg-muted)]"
+      >
+        {t('pluginStackNote')}
+      </p>
       <div>
         <p className="text-xs font-medium">{t('presetsHeading')}</p>
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">

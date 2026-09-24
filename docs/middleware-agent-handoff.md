@@ -1055,6 +1055,50 @@ Muster), Auth/Rate-Limit/Revoke/Audit-Wiring (`chatRouter.test.ts`), Key-CRUD
 (`adminKeysRouter.test.ts`), und die `publicPaths`-Exemption
 (`publicPathsExemption.test.ts`).
 
+#### Agent-Bindung pro API-Key (issue #1106)
+
+Bis #1106 landete **jeder** API-Turn beim Fallback-Orchestrator: der Channel
+setzte keinen `channelKey`, also fiel `coreApi.ts` auf `turn.conversationId`
+zurück — und das ist der pro-Conversation-`internalConversationId`-Hash, für
+jede Conversation anders. Ein Operator konnte den Public-API-Channel weder in
+`/operator/channels` sehen noch binden. **Direction A** (aus dem Issue) macht
+den API-Key zur Bindungs-Einheit:
+
+- **Router setzt einen stabilen, nie caller-kontrollierten `channelKey`**
+  (`chatRouter.ts`): `IncomingTurn.channelKey = key:<keyId>`. Getrennt vom
+  `conversationId` — der bleibt der Hash (der Memory-Scope, absichtlich pro
+  Thread verschieden). So löst der Dispatcher (`orchestratorDispatcher.ts`,
+  US7-Pfad) die Bindung über `(channelType, channelKey)` auf: zwei Turns
+  desselben Keys mit unterschiedlichen `conversationId` treffen **dieselbe**
+  Bindung, behalten aber **getrennte** Memory-Scopes.
+- **Format single-sourced** in `channelKey.ts` (`channelKeyOf(keyId)`,
+  `CHANNEL_KEY_PREFIX`): derselbe String ist `channelKey`, `userRef.id` und der
+  im Directory gelistete Key — identisch in Logs, `channel_bindings`-Zeile und
+  Dashboard.
+- **`ChannelKeyDirectory`-Beitrag** (`apiChannelDirectory.ts`): listet eine
+  Zeile pro **aktivem** (nicht widerrufenem) Key, `key:<uuid>` + Label
+  (Fallback `API key <id8>`). Der Channel holt die Kernel-Registry über
+  `ctx.services.getOptional('channelDirectoryRegistry')` (Manifest:
+  `optional_requires: ["channelDirectoryRegistry@1"]` — der Kernel stellt sie
+  bereit, also **kein** hartes `requires`; fehlt sie, aktiviert der Channel
+  trotzdem, nur die Dashboard-Liste entfällt) und meldet sie beim Aktivieren
+  an, `close()` meldet sie symmetrisch wieder ab.
+- **`channelType`-Konsistenz:** das Directory annonciert `channelType =
+  ctx.agentId` (`@omadia/channel-api`), Routing leitet den Typ via
+  `deriveChannelType(channelId)` ab — für diese id (kein Punkt, schon
+  lowercase) derselbe String, also matcht eine gebundene Zeile echte Turns.
+  Fragil, falls je ein `channel_type:` ins Manifest käme; das
+  Binding-Routing-Integrationstest pinnt die Gleichheit.
+- **Direction B** (per-Request-`agent`-Feld + Allowlist) ist bewusst ein
+  Folge-Issue, hier nicht enthalten.
+
+Tests: `apiChannelDirectory.test.ts` (aktiv/widerrufen/Label-Fallback),
+`chatRouter.test.ts` (#1106-Block: stabiler `channelKey`, getrennte Scopes),
+`apiChannelBindingRouting.test.ts` (echter Router→CoreApi→Dispatcher-Pfad:
+`bound` bei Bindung, `fallback` ohne — die vom Issue vorgeschlagenen
+Regressionstests 2–4), `plugin.test.ts` (Directory register/unregister +
+Degradieren ohne Registry).
+
 ---
 
 ### API-Keys als eigenständige Auth-Methode (issue #439)
@@ -2412,6 +2456,27 @@ sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
 
+**Contract-Erweiterung — `answerSource` (#1105).** Wenn Privacy Shield v4 die
+Antwort serverseitig rendert (`v4_render_answer`), tauscht der Orchestrator den
+gerenderten Text kurz vor dem `done`-Event in `answer` — die zuvor als
+`text_delta` gestreamten Modell-Tokens sind dann veraltet. Damit die beiden
+dokumentierten Lesarten (Deltas konkatenieren vs. `done.answer`) nicht
+widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
+`ChatTurnResult`/`SemanticAnswer`) ein optionales
+`answerSource: 'model' | 'privacy-render'`. Gestempelt `'privacy-render'` an
+**beiden** Swap-Stellen — Streaming (`chatStream`) und gepuffert
+(`chatInContext`) — wenn `takeRenderedAnswerV4` einen Wert lieferte, sonst
+weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
+der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
+sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
+`Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
+abgeleitet wird), wird an den beiden Dispatch-Nähten
+(`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`) nicht mehr als
+1-Zeilen-Dataset interniert, sondern unverändert an das Modell durchgereicht —
+sonst sah das Modell den Fehler nie und ein späteres Render materialisierte ihn
+als Daten. Die Maskierung geworfener Exceptions (`maskErrorText`) bleibt unberührt.
+
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
 nicht weitergeleitet — stattdessen emittiert das `tool_use`-Event einmal
@@ -3200,3 +3265,39 @@ Kanal ist `web`. Für den hat kein Plugin einen Proactive-Sender registriert, `c
 scheitert also weiter — aber mit *"no proactive sender registered for channel 'web'"*, was
 die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren.
 **Offen:** ein Web-Sender, damit auch `create` aus dem Browser-Chat trägt.
+
+## Quality Guard: Grenzen stapeln sich, sie überschreiben nicht (#1104, 2026-09-21)
+
+Boundaries sind an **zwei** unabhängigen Stellen konfigurierbar, und beide landen
+zusammen im System-Prompt — das ist kein Bug, aber es war nirgends dokumentiert.
+Dieser Change ist reine Doku/Copy, kein Verhaltenswechsel.
+
+- **Plugin-Ebene (install-weit):** `@omadia/plugin-quality-guard` löst *intern*
+  drei Quellen per **Override** zu einem Block auf — AGENT.md-`quality`-Frontmatter →
+  `agent_overrides`-Map → Plugin-Defaults (`src/plugin.ts` `resolveProfileQuality`,
+  `?? deps.defaults`). Der Orchestrator holt diesen Block über die
+  `responseGuard@1`-Capability und **prependet** ihn vor die Body-Prose, getrennt
+  durch `---` (`harness-orchestrator/src/orchestrator.ts` `resolvePrependRules` /
+  `composeStableSystemPrompt`).
+- **Agent-Ebene (pro Orchestrator):** die im Agent-Builder / Operator-Tab „Grenzen"
+  gesetzten Boundaries sind fest im gespeicherten `composed_prompt` als
+  `## Boundaries`-Abschnitt einkompiliert (`middleware/src/services/agentIdentityPrompt.ts`,
+  Reihenfolge instructions → persona → boundaries → sycophancy).
+
+Diese beiden Blöcke wissen nichts voneinander → sie **stapeln**. Ein in beiden
+Ebenen gesetztes Verbot erscheint doppelt (ggf. in zwei Sprachen); Plugin-Default-
+Sycophancy + Agent-Slider ergeben zwei konkurrierende Anti-Schmeichel-Blöcke.
+
+Die zwei Preset-Libraries sind zudem fast disjunkt (Agent-UI 12 IDs englisch in
+`web-ui/app/_lib/boundaryPresets.ts`; Plugin 10 IDs deutsch in
+`harness-plugin-quality-guard/src/boundaryPresets.ts`; Schnittmenge nur
+`no-legal-advice`, `no-speculation`). Eine aus der Agent-UI kopierte ID (z. B.
+`no-financial-data`) wird vom Plugin still verworfen. Die Vereinheitlichung auf eine
+gemeinsame Library ist bewusst **nicht** Teil dieses Changes (braucht Migrations-/
+Alias-Entscheidung, siehe #1104).
+
+Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
+`operatorAgents.identity.boundaries.pluginStackNote` und
+`builder.persona.boundaries.pluginStackNote` (in der UI gerendert), plus die
+`help`-Felder in `harness-plugin-quality-guard/manifest.yaml`
+(`default_sycophancy`, `default_boundary_presets`).
