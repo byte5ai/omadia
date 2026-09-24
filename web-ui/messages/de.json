@@ -958,7 +958,7 @@
     "ariaClose": "Schließen",
     "kicker": "Erste Einrichtung",
     "title": "Profil wählen — in <60 Sekunden arbeitsfähig",
-    "intro": "Du hast noch keine Plugins installiert — die bereits laufenden Pakete kommen aus dem Image. Wähle ein curated Profil, dann werden dessen Plugins in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss über den Wizard.",
+    "intro": "Du hast noch keine Plugins installiert — die bereits laufenden Pakete kommen aus dem Image. Wähle ein curated Profil, dann werden dessen Plugins in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss je Plugin auf dessen Detail-Seite.",
     "exportPrefix": "Bereits eingerichtet?",
     "exportLink": "Profil als YAML exportieren",
     "exportSuffix": "und in einen anderen Deploy importieren.",

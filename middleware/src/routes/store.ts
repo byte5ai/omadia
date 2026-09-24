@@ -371,8 +371,9 @@ function applyInstallState(
   if (entry) {
     // #1089 — `install_origin` rides along with the state it qualifies: both
     // come from the same registry entry, and every store response goes through
-    // here. Absent when the entry predates the field (see
-    // `backfillInstallOrigins`), which readers must not read as 'bundled'.
+    // here. Absent when the entry predates the field (see the
+    // `InstalledAgent.origin` doc comment), which readers must not read as
+    // 'bundled'.
     return {
       ...plugin,
       install_state: 'installed',

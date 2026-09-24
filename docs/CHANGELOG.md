@@ -112,10 +112,19 @@ genuinely are installed.
 
 Applying a curated profile also promotes plugins it finds already installed to
 `origin: 'operator'` (the outcome still reports them as `already_installed`,
-and nothing is reinstalled). Without that, applying a profile whose plugins the
-kernel had already auto-installed — which `minimal-dev` is on a default
-Compose deploy — would leave the operator count at zero and reopen the modal
-that triggered the apply.
+and nothing is reinstalled; a failed promotion write is reported per plugin as
+`register_failed` instead of failing the whole apply). Without that, a profile
+made only of plugins the kernel had already auto-installed would leave the
+operator count at zero and reopen the modal that triggered the apply. On a
+default Compose deploy that overlap is `@omadia/embeddings`, the orchestrator
+and orchestrator-extras from `minimal-dev`; its `@omadia/memory` and
+`@omadia/knowledge-graph-inmemory` are not auto-installed there (Compose boots
+memory-postgres and the Neon KG), and `de.byte5.channel.teams` is not in the
+catalog.
+
+The modal also stays open once an apply has started, so the per-plugin outcome
+(including errors) survives the refresh that raises the operator count, and it
+no longer opens when the store's plugin list failed to load.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

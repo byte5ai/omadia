@@ -57,10 +57,14 @@ export function OnboardingModal({
   const [dismissed, setDismissed] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
 
+  // Once an apply has started the modal stays until the operator closes it:
+  // the router.refresh() after a successful apply raises the operator count,
+  // and gating on it alone would unmount the per-plugin outcome — including
+  // the errored entries — one round-trip after it appeared.
   const shouldShow =
     !dismissed &&
     profiles.length > 0 &&
-    (forceOpen || operatorInstalledCount === 0);
+    (forceOpen || phase.kind !== 'idle' || operatorInstalledCount === 0);
 
   if (!shouldShow) return null;
 

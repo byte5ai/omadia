@@ -358,8 +358,6 @@ describe('dashboard — LLM health derivation', () => {
   });
 });
 
-// OM-84 (#1003) — memory, semantic search and dedup hang off embeddingClient@1.
-// A default install has none, and no surface said so.
 /**
  * #1089 — "Plugins installieren" reported success for work nobody did.
  *
@@ -437,6 +435,8 @@ describe('dashboard — onboarding step 3 counts operator installs (#1089)', () 
   });
 });
 
+// OM-84 (#1003) — memory, semantic search and dedup hang off embeddingClient@1.
+// A default install has none, and no surface said so.
 describe('dashboard — embeddings health card', () => {
   beforeEach(() => {
     vi.clearAllMocks();

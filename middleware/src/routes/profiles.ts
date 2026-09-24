@@ -1314,11 +1314,25 @@ async function applyProfile(
       // #1089 — the plugin is already there, but the OPERATOR has now asked
       // for it by name, so the entry stops being a boot artifact. Without this
       // promotion a profile whose plugins the kernel already auto-installed
-      // (every plugin of `minimal-dev` is on a default Compose deploy) would
-      // apply with nothing but `already_installed` skips, leave the operator
-      // count at zero, and reopen the very modal that triggered the apply.
+      // (on a default Compose deploy that is `@omadia/embeddings`, the
+      // orchestrator and orchestrator-extras from `minimal-dev`) would apply
+      // with nothing but `already_installed` skips for those, and a profile
+      // made only of such plugins would leave the operator count at zero and
+      // reopen the very modal that triggered the apply.
       if (existing.origin !== 'operator') {
-        await deps.registry.register({ ...existing, origin: 'operator' });
+        try {
+          await deps.registry.register({ ...existing, origin: 'operator' });
+        } catch (err) {
+          // Same per-plugin contract as a fresh install below: one failed
+          // write must not turn the whole apply into a 500 and lose the
+          // outcome of the entries already written.
+          outcome.errored.push({
+            id: entry.id,
+            reason: 'register_failed',
+            message: `already installed, but recording it as an operator install failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          continue;
+        }
       }
       outcome.skipped.push({ id: entry.id, reason: 'already_installed' });
       continue;

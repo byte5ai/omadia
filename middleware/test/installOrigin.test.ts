@@ -26,12 +26,20 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import path from 'node:path';
 import { describe, it, before, after } from 'node:test';
 import express from 'express';
+import ts from 'typescript';
 
-import { bootstrapBuiltInPackages } from '../src/plugins/bootstrap.js';
+import {
+  bootstrapBuiltInPackages,
+  bootstrapEmbeddingsFromEnv,
+  bootstrapKnowledgeGraphFromEnv,
+  bootstrapMemoryFromEnv,
+} from '../src/plugins/bootstrap.js';
 import type { Config } from '../src/config.js';
 import {
   InMemoryInstalledRegistry,
@@ -80,7 +88,8 @@ function plugin(id: string, over: Partial<Plugin> = {}): Plugin {
   };
 }
 
-/** Catalog fake that answers `isBundledId` — the backfill's only input. */
+/** Catalog fake that answers `isBundledId` — whether the image ships an id,
+ *  which is NOT who installed it (see `InstalledAgent.origin`). */
 function fakeCatalog(plugins: Plugin[], bundledIds: string[] = []): PluginCatalog {
   const bundled = new Set(bundledIds);
   return {
@@ -153,6 +162,131 @@ describe('#1089 · bootstrapBuiltInPackages stamps bundled', () => {
     });
 
     assert.equal(registry.get('@om/auto')?.origin, 'bundled');
+  });
+});
+
+describe('#1089 · the env-driven bootstraps stamp bundled', () => {
+  // Six of the sixteen boot entries on a default Compose deploy come from the
+  // env-driven installers, not from bootstrapBuiltInPackages. `origin` is
+  // optional, so typecheck cannot catch a dropped stamp, and a missing origin
+  // counts as an operator install — the #1089 bug, back with CI green.
+  const vault = {
+    ...noopVault,
+    get: async () => undefined,
+  } as unknown as SecretVault;
+
+  void it('memory: the DATABASE_URL-selected memoryStore provider', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    await bootstrapMemoryFromEnv({
+      config: {
+        DATABASE_URL: 'postgres://x',
+        MEMORY_SEED_DIR: '/seed',
+        MEMORY_SEED_MODE: 'missing',
+      } as unknown as Config,
+      catalog: fakeCatalog([plugin('@omadia/memory-postgres')]),
+      registry,
+      vault,
+      log: () => {},
+    });
+    assert.equal(registry.get('@omadia/memory-postgres')?.origin, 'bundled');
+  });
+
+  void it('embeddings: the Ollama adapter', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    await bootstrapEmbeddingsFromEnv({
+      config: { OLLAMA_BASE_URL: 'http://ollama:11434' } as unknown as Config,
+      catalog: fakeCatalog([plugin('@omadia/embeddings')]),
+      registry,
+      vault,
+      log: () => {},
+    });
+    assert.equal(registry.get('@omadia/embeddings')?.origin, 'bundled');
+  });
+
+  void it('knowledge graph: the DATABASE_URL-selected provider', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    await bootstrapKnowledgeGraphFromEnv({
+      config: {
+        DATABASE_URL: 'postgres://x',
+        GRAPH_TENANT_ID: 'default',
+      } as unknown as Config,
+      catalog: fakeCatalog([plugin('@omadia/knowledge-graph-neon')]),
+      registry,
+      vault,
+      log: () => {},
+    });
+    assert.equal(
+      registry.get('@omadia/knowledge-graph-neon')?.origin,
+      'bundled',
+    );
+  });
+});
+
+describe('#1089 · every fresh bootstrap write is stamped (source guard)', () => {
+  // The runtime tests above reach only the exported installers. The other
+  // boot writes (orchestrator, orchestrator-extras, verifier, diagrams,
+  // office, Microsoft 365, Telegram, the two auto-install-dependent helpers)
+  // sit behind env and filesystem preconditions, so this reads bootstrap.ts
+  // itself: a `registry.register({ … })` that does not start with a spread
+  // creates a new entry and must say `origin: 'bundled'`; one that spreads an
+  // existing entry must leave the origin it carries alone.
+  const FRESH_WRITE_SITES = 13;
+
+  void it("stamps origin 'bundled' on every fresh registry write", async () => {
+    const file = path.resolve(
+      import.meta.dirname,
+      '../src/plugins/bootstrap.ts',
+    );
+    const source = ts.createSourceFile(
+      file,
+      await readFile(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const fresh: string[] = [];
+    const unstamped: string[] = [];
+    const overridden: string[] = [];
+
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'register' &&
+        /registry$/.test(node.expression.expression.getText(source))
+      ) {
+        const at = `bootstrap.ts:${String(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1)}`;
+        const arg = node.arguments[0];
+        if (!arg || !ts.isObjectLiteralExpression(arg)) {
+          unstamped.push(`${at} (argument is not an object literal)`);
+        } else {
+          const origin = arg.properties.find(
+            (p) => ts.isPropertyAssignment(p) && p.name.getText(source) === 'origin',
+          );
+          const first = arg.properties[0];
+          if (first && ts.isSpreadAssignment(first)) {
+            if (origin) overridden.push(at);
+          } else {
+            fresh.push(at);
+            const stamped =
+              origin !== undefined &&
+              ts.isPropertyAssignment(origin) &&
+              ts.isStringLiteral(origin.initializer) &&
+              origin.initializer.text === 'bundled';
+            if (!stamped) unstamped.push(at);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+
+    assert.deepEqual(unstamped, [], "fresh boot writes without origin: 'bundled'");
+    assert.deepEqual(overridden, [], 'spread writes that overwrite the origin');
+    assert.equal(
+      fresh.length,
+      FRESH_WRITE_SITES,
+      `fresh write sites changed (${fresh.join(', ')}) — stamp the new one and update FRESH_WRITE_SITES`,
+    );
   });
 });
 

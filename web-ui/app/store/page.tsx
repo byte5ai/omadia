@@ -112,10 +112,13 @@ export default async function StorePage({
 
   return (
     <main className="mx-auto max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
-      <OnboardingModal
-        operatorInstalledCount={operatorInstalledCount}
-        profiles={profiles}
-      />
+      {/* A failed plugin list reads as zero installs; that is not a first run. */}
+      {loadError ? null : (
+        <OnboardingModal
+          operatorInstalledCount={operatorInstalledCount}
+          profiles={profiles}
+        />
+      )}
 
       {/* Hero — omadia brand cadence (Days One headline + magenta colon lead) */}
       <header className="b5-hero-bg relative -mx-6 rounded-lg border border-[color:var(--divider)] px-6 py-8 lg:-mx-8 lg:px-8 lg:py-12">

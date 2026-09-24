@@ -9,7 +9,10 @@ import express from 'express';
 import { parse as parseYaml } from 'yaml';
 
 import type { Plugin } from '../src/api/admin-v1.js';
-import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import {
+  InMemoryInstalledRegistry,
+  type InstalledAgent,
+} from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { loadProfile } from '../src/plugins/profileLoader.js';
 import { createProfilesRouter } from '../src/routes/profiles.js';
@@ -321,6 +324,43 @@ describe('/api/v1/profiles router', () => {
       assert.equal(
         registry.get('@omadia/memory')?.installed_at,
         '2026-04-20T00:00:00Z',
+      );
+    });
+
+    it('reports a failed promotion per plugin instead of failing the apply (#1089)', async (t) => {
+      await registry.register({
+        id: '@omadia/memory',
+        installed_version: '0.1.0',
+        installed_at: '2026-04-20T00:00:00Z',
+        status: 'active',
+        origin: 'bundled',
+        config: {},
+      });
+      const realRegister = registry.register.bind(registry);
+      t.mock.method(registry, 'register', async (e: InstalledAgent) => {
+        if (e.id === '@omadia/memory') throw new Error('disk full');
+        await realRegister(e);
+      });
+
+      const res = await fetch(`${baseUrl}/api/v1/profiles/production/apply`, {
+        method: 'POST',
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        installed: Array<{ id: string }>;
+        skipped: unknown[];
+        errored: Array<{ id: string; reason: string; message: string }>;
+      };
+      assert.deepEqual(
+        body.errored.map((e) => [e.id, e.reason]),
+        [['@omadia/memory', 'register_failed']],
+      );
+      assert.match(body.errored[0]?.message ?? '', /disk full/);
+      assert.deepEqual(body.skipped, []);
+      // The rest of the profile still applied.
+      assert.deepEqual(
+        body.installed.map((p) => p.id),
+        ['@omadia/embeddings'],
       );
     });
 
