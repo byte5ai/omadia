@@ -640,4 +640,47 @@ describe('channelApi/chatRouter — audit-log accuracy for every authenticated o
       'an in-band error event with no throw must be audited as "error", not "ok"',
     );
   });
+
+  it('audits status "error" — never "ok" — for a `done` marked degraded (#1094)', async () => {
+    // A degraded turn threw after a tool committed. It ends with `done` on the
+    // wire (#506) so the committed call is not reported as failed, but the
+    // audit trail must still record the failure — same bug class as #403.
+    let degraded = true;
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        await Promise.resolve();
+        yield {
+          type: 'done',
+          answer: 'Dieser Turn wurde nicht abgeschlossen.',
+          toolCalls: 1,
+          iterations: 2,
+          ...(degraded
+            ? { degraded: true as const, committedTools: ['manage_widget'], correlationId: 'c-1094' }
+            : {}),
+        };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'degraded' });
+    const send = async (): Promise<void> => {
+      const res = await harness.client.fetch('/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+        body: JSON.stringify({ message: 'hi' }),
+      });
+      assert.equal(res.status, 200);
+      await res.text();
+    };
+
+    await send();
+    degraded = false;
+    await send();
+
+    const statuses = (await harness.auditLog.list()).map((e) => e.status);
+    assert.equal(statuses.length, 2, 'one audit row per authenticated call');
+    assert.ok(
+      statuses.includes('error'),
+      `a degraded done must be audited as "error", got ${JSON.stringify(statuses)}`,
+    );
+    assert.ok(statuses.includes('ok'), 'control: an ordinary done still audits "ok"');
+  });
 });

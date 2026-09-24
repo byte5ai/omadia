@@ -23,6 +23,7 @@ import type {
   ToolEvent,
   UseChatSessionsResult,
 } from './chatSessions';
+import { parseTurnIncomplete } from './turnIncomplete';
 
 /**
  * Wire-format for chat stream events. Mirrors `ChatStreamEvent` in
@@ -150,6 +151,22 @@ export type ChatStreamEvent =
       delegatedAnswer?: DelegatedAnswer;
       /** #445 — see `Message.directLineSession`. */
       directLineSession?: DirectLineSessionState;
+      /**
+       * #1094 — `true` when the turn threw AFTER a tool call had already
+       * committed. The terminal stays `done` on purpose (an `error` would make
+       * the next turn re-invoke the committed tool, #506); this flag is what
+       * stops the UI from rendering the turn as an ordinary answer. Mirrors
+       * the `done` variant in `@omadia/channel-sdk`'s `ChatStreamEvent`.
+       *
+       * Optional because middleware older than this change does not send it;
+       * `parseTurnIncomplete` then recovers the same facts from the answer.
+       */
+      degraded?: true;
+      /** #1094 — distinct tool names that committed, in commit order. */
+      committedTools?: readonly string[];
+      /** #1094 — the turn's support token, same value the `error` variant
+       *  carries (#641). */
+      correlationId?: string;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
@@ -358,10 +375,30 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
       });
       return { ...m, tools };
     }
-    case 'done':
+    case 'done': {
+      // #1094 — a degraded turn's answer is the neutral `<turn-incomplete>`
+      // marker, not prose. Strip it here so the machine block never reaches
+      // the bubble, and keep what it carried on the message so the row can
+      // render a localized warning instead. `event.degraded` is authoritative;
+      // the parsed marker covers middleware that predates the event fields.
+      const incomplete = parseTurnIncomplete(event.answer);
+      const degradedTurn =
+        event.degraded === true || incomplete
+          ? {
+              committedTools:
+                event.committedTools ?? incomplete?.committedTools ?? [],
+              ...(event.correlationId ?? incomplete?.correlationId
+                ? {
+                    correlationId: (event.correlationId ??
+                      incomplete?.correlationId) as string,
+                  }
+                : {}),
+            }
+          : undefined;
       return {
         ...m,
-        content: event.answer,
+        content: incomplete ? incomplete.cleaned : event.answer,
+        ...(degradedTurn ? { degradedTurn } : {}),
         telemetry: {
           tool_calls: event.toolCalls,
           iterations: event.iterations,
@@ -407,6 +444,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         finishedAt: Date.now(),
         streaming: false,
       };
+    }
     case 'error':
       return {
         ...m,

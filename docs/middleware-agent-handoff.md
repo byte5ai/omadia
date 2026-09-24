@@ -2435,6 +2435,47 @@ Genau ein `done` oder `error` schließt den Stream. Header:
 `Content-Type: application/x-ndjson; charset=utf-8`, `X-Accel-Buffering: no`
 (nginx-buffer-off).
 
+**Degradierter Turn (#1094).** Wirft ein Turn, *nachdem* mindestens ein
+Tool-Call bereits committet hat, bleibt das terminale Event bewusst `done` —
+ein `error` würde den committeten Seiteneffekt als gescheitert melden und den
+nächsten Turn zum erneuten Aufruf verleiten (#506). Dieses `done` ist aber als
+degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
+
+- `degraded: true`, `committedTools: string[]` (deduplizierte Tool-**Namen** in
+  Commit-Reihenfolge, **keine** Call-Anzahl) und `correlationId` — derselbe
+  Token wie im `error`-Zweig (#641) und in der Logzeile
+  `[orchestrator] turn failed (correlationId=…)`.
+- `runTrace.status` ist `'error'`. `RunStatus` bleibt binär (`'success' |
+  'error'`, doppelt deklariert in `@omadia/channel-sdk` und `@omadia/plugin-api`,
+  persistiert am KG-Run-Node) — die Degradations-Nuance liegt am Event, nicht in
+  einem dritten Status-Wert.
+- **Persistiert** wird der sprachfreie Marker
+  `<turn-incomplete tools="…" ref="…"></turn-incomplete>` (Konvention wie
+  `<mcp-auth-required>`): Session-Log, KG-Turn-Node und damit der Kontext des
+  Folge-Turns bleiben sprachneutral und tragen keinen fingierten Erfolg. Der
+  System-Prompt erklärt den Marker (Block unter den Integritäts-Regeln), damit
+  das Modell die genannten Tools als **ausgeführt** liest und sie nicht erneut
+  aufruft (#506).
+- **Ausgeliefert** wird stattdessen eine lokalisierte Notiz: `discloseDoneEvent`
+  expandiert den Marker am Delivery-Boundary über
+  `composeTurnIncompleteText(locale, tools, ref)` (`@omadia/channel-sdk`) —
+  dieselbe Locale-Mechanik wie die KI-Kennzeichnung, Default `de`. Text-only-
+  Channels (Teams, Telegram, Mail) rendern damit lesbaren Text statt eines
+  Tags. Auch der Web-Chat zeigt diesen Text (also in der Operator-Locale, nicht
+  der UI-Locale) und setzt aus den Event-Feldern nur eine UI-lokalisierte
+  Warn-Überschrift darüber (`TurnIncompleteNotice`, `chat.turnIncomplete.*`).
+  `web-ui/app/_lib/turnIncomplete.ts` parst den rohen Marker nur als Fallback;
+  der serverseitige Chat-Mirror speichert die expandierte Notiz und verliert
+  `degradedTurn` (zod-`MessageSchema`), ein Mirror-Restore zeigt also nur den
+  Text ohne Warn-Überschrift.
+- **Ausnahme Privacy Shield v4:** Hat `v4_render_answer` die Antwort schon
+  serverseitig gerendert (`answerSource: 'privacy-render'`), bleibt diese
+  Antwort stehen — die Notiz ersetzt sie nicht. `degraded`, `committedTools`
+  und `correlationId` bleiben am Event.
+- Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
+  (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
+  (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).
+
 **Contract-Erweiterung — AI-Act-Kennzeichnung (Epic #642).** Der Ausgangs-Contract
 trägt die KI-Kennzeichnung zusätzlich zum Antworttext:
 
