@@ -10,10 +10,15 @@ import { ReceiptsList } from './_components/ReceiptsList';
 /**
  * #757 — operator-facing list of persisted per-turn privacy receipts.
  *
- * Every completed turn writes its PII-free receipt to the middleware's
- * `turn_receipts` store; this page is the read surface: what did the shield
- * intern, mask, and (where the operator opted into bypass) pass through —
- * per turn, after the fact, not only while the answer was on screen.
+ * A turn writes its PII-free receipt to the middleware's `turn_receipts`
+ * store only when the privacy shield acted in it: it interned a dataset,
+ * recorded a bypass, produced structured output, or masked the prompt
+ * (`finalizeTurn()` in harness-plugin-privacy-guard `src/service.ts`
+ * returns no receipt otherwise, and the orchestrator persists only when one
+ * exists). Turns without shield activity leave no row (#1081). This page is
+ * the read surface: what did the shield intern, mask, and (where the
+ * operator opted into bypass) pass through, per turn, after the fact, not
+ * only while the answer was on screen.
  */
 
 export async function generateMetadata(): Promise<Metadata> {
