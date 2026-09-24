@@ -51,13 +51,20 @@ to **0.1.3** (0.1.2 is never reused) and `plugin-web-search` to **0.1.1**, each
 in `manifest.yaml`, `package.json` and the lockfile workspace entry. New
 `middleware/scripts/build-plugin-zip.mjs`, wired as `npm run package` in both
 packages, is the only way to cut their ZIPs. It hard-fails on manifest vs.
-`package.json` version or id drift, on any uncommitted or untracked file under
-the package (the actual root cause), and on a missing `lifecycle.entry` after a
-fresh build. It writes a flat, byte-reproducible ZIP to `<repo>/out/` with
-`yazl` and prints the commit SHA and sha256. `test/pluginPackageVersions.test.ts`
-holds manifest, `package.json` and lockfile versions equal for every in-tree
-package with a `manifest.yaml`, so this drift fails CI. Publishing the two new
-versions is an operator step after merge (docs/creating-plugins.md §8).
+`package.json` version or id drift, on any uncommitted, untracked or gitignored
+non-build file under the package (the actual root cause), on a HEAD no
+remote-tracking ref contains (unless `--allow-unpushed-commit`, which marks the
+output not publishable), on a `lifecycle.entry` that is missing after a fresh
+build or absent from the archive, and on symlinks under `dist/`. It writes a
+flat, byte-reproducible ZIP to `<repo>/out/` with `yazl` and prints the commit
+SHA and sha256. `test/pluginPackageVersions.test.ts` holds manifest,
+`package.json` and lockfile versions equal for every in-tree package with a
+`manifest.yaml`, so a manifest/`package.json`/lockfile disagreement fails CI.
+It does not catch the other #1075 drift classes — a Hub version the repo never
+had, or content changing without a bump. Publishing the two new versions is an
+operator step after merge (docs/creating-plugins.md §8); publishing web-search
+0.1.1 puts a dead "update available" badge on kernels that installed 0.1.0,
+because store update detection does not skip bundled IDs.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 

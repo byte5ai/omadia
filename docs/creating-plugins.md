@@ -449,10 +449,16 @@ npm run package -w @omadia/plugin-web-search
 
 Das Script bricht hart ab, wenn `manifest.yaml` `identity.version`/`identity.id`
 nicht mit `package.json` `version`/`name` übereinstimmt, wenn unter dem
-Paketordner **irgendetwas** uncommitted oder untracked ist, oder wenn nach dem
-frischen Build (`dist/` + `*.tsbuildinfo` gelöscht, dann `npm run build`)
-`lifecycle.entry` fehlt. Das ZIP ist flach (`manifest.yaml`, `package.json`,
-`dist/`) und byte-reproduzierbar; die Ausgabe nennt Commit-SHA und sha256.
+Paketordner **irgendetwas** uncommitted oder untracked ist — auch gitignorierte
+Dateien außer Build-Output (`dist/`, `node_modules/`, `*.tsbuildinfo`), denn die
+Root-`.gitignore` ignoriert `tmp/`, `build/`, `logs/` überall und `tsc` würde
+`src/tmp/*.ts` trotzdem kompilieren —, wenn `HEAD` auf keinem Remote-Tracking-Ref
+liegt (Dry-Run nur mit `--allow-unpushed-commit`, Ausgabe dann als
+„NOT PUBLISHABLE" markiert), wenn nach dem frischen Build (`dist/` +
+`*.tsbuildinfo` gelöscht, dann `npm run build`) `lifecycle.entry` fehlt oder
+nicht im Archiv landet, oder wenn unter `dist/` ein Symlink liegt. Das ZIP ist
+flach (`manifest.yaml`, `package.json`, `dist/`) und byte-reproduzierbar; die
+Ausgabe nennt Commit-SHA und sha256.
 `middleware/test/pluginPackageVersions.test.ts` hält Manifest, `package.json`
 und den Lockfile-Workspace-Eintrag jedes Pakets mit `manifest.yaml` im CI
 synchron.
@@ -469,8 +475,19 @@ Vor dem Publish:
 > **Bundled-IDs:** Beide IDs sind auf einem Standard-Kernel mitgeliefert. Ein
 > Hub-Install derselben ID läuft durch `PackageUploadService.ingest` und wird
 > dort mit `package.id_conflict_bundled` abgelehnt (#789), außer die Middleware
-> läuft mit `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`. Der Hub-Eintrag bedient also
-> Kernels, die das Paket nicht mitliefern.
+> läuft mit `PLUGIN_ALLOW_BUNDLED_ID_OVERRIDE=1`. Das ZIP ist außerdem nicht
+> eigenständig lauffähig: office bündelt seine Runtime-`dependencies` (`docx`,
+> `exceljs`, `jszip`) nicht, sie müssen im Host-`node_modules` liegen.
+>
+> **Toter Update-Badge:** Die Update-Erkennung im Store (`routes/store.ts`,
+> Detailseite und `enrichWithRegistry`) vergleicht die Hub-`latest_version` mit
+> der gespeicherten `installed_version` und nimmt Bundled-IDs nicht aus. Jede
+> höhere Hub-Version zeigt auf Kernels mit älterer `installed_version` also
+> „Update verfügbar", der Klick endet in 422 `package.id_conflict_bundled`.
+> Für office besteht das schon (Hub 0.1.2 > installiert 0.1.1); ein Publish von
+> web-search 0.1.1 erzeugt es für web-search neu. Vor diesem Publish die
+> Update-Erkennung für Bundled-IDs abschalten oder den Badge bewusst in Kauf
+> nehmen.
 
 ---
 

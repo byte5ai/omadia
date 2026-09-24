@@ -39,6 +39,9 @@ interface Fixture {
   pkgVersion?: string;
   pkgName?: string;
   entry?: string;
+  buildJs?: string;
+  /** false: no remote-tracking ref contains the fixture commit. */
+  pushed?: boolean;
 }
 
 /** The caller's env minus GIT_* — a git hook can set GIT_DIR and redirect every call. */
@@ -64,7 +67,8 @@ function makeRepo(f: Fixture = {}): { repo: string; pkg: string; out: string } {
   const repo = join(root, `repo-${counter}`);
   const pkg = join(repo, 'packages', 'demo');
   mkdirSync(pkg, { recursive: true });
-  writeFileSync(join(repo, '.gitignore'), 'dist/\nout/\n*.tsbuildinfo\n');
+  // `tmp/` unanchored, like the real root .gitignore — it matches src/tmp/ too.
+  writeFileSync(join(repo, '.gitignore'), 'dist/\nout/\ntmp/\nnode_modules/\n*.tsbuildinfo\n');
   writeFileSync(
     join(pkg, 'manifest.yaml'),
     [
@@ -90,19 +94,25 @@ function makeRepo(f: Fixture = {}): { repo: string; pkg: string; out: string } {
       2,
     ),
   );
-  writeFileSync(join(pkg, 'build.cjs'), BUILD_JS);
+  writeFileSync(join(pkg, 'build.cjs'), f.buildJs ?? BUILD_JS);
   git(repo, ['init', '-q']);
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-q', '-m', 'fixture']);
+  // Fake a pushed commit: a remote-tracking ref that contains HEAD.
+  if (f.pushed !== false) git(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   return { repo, pkg, out: join(repo, 'artifacts') };
 }
 
-function runScript(pkg: string, out: string): { status: number | null; stderr: string } {
-  const r = spawnSync(process.execPath, [SCRIPT, pkg, '--out-dir', out], {
+function runScript(
+  pkg: string,
+  out: string,
+  extra: string[] = [],
+): { status: number | null; stdout: string; stderr: string } {
+  const r = spawnSync(process.execPath, [SCRIPT, pkg, '--out-dir', out, ...extra], {
     encoding: 'utf8',
     env: CHILD_ENV,
   });
-  return { status: r.status, stderr: r.stderr };
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
 function zipEntries(file: string): Promise<string[]> {
@@ -206,5 +216,50 @@ describe('scripts/build-plugin-zip.mjs (#1075)', () => {
     const r = runScript(pkg, out);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /dist\/missing\.js is missing/);
+  });
+
+  it('refuses a gitignored source file under the package (git status never lists it)', () => {
+    const { pkg, out } = makeRepo();
+    mkdirSync(join(pkg, 'src', 'tmp'), { recursive: true });
+    writeFileSync(join(pkg, 'src', 'tmp', 'x.js'), 'export const leaked = 1;\n');
+    const r = runScript(pkg, out);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /gitignored files/);
+    assert.match(r.stderr, /src\/tmp\//);
+  });
+
+  it('accepts ignored build output (node_modules/, dist/, *.tsbuildinfo)', () => {
+    const { pkg, out } = makeRepo();
+    mkdirSync(join(pkg, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(pkg, 'node_modules', 'dep', 'index.js'), '\n');
+    writeFileSync(join(pkg, 'tsconfig.tsbuildinfo'), '{}');
+    const r = runScript(pkg, out);
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  it('refuses a commit no remote-tracking ref contains, unless explicitly allowed', () => {
+    const { pkg, out } = makeRepo({ pushed: false });
+    const refused = runScript(pkg, out);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /on no remote-tracking ref/);
+
+    const dry = runScript(pkg, out, ['--allow-unpushed-commit']);
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.match(dry.stdout, /NOT PUBLISHABLE/);
+  });
+
+  it('refuses a lifecycle.entry that exists on disk but is not in the archive', () => {
+    const { pkg, out } = makeRepo({ entry: './build.cjs' });
+    const r = runScript(pkg, out);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /build\.cjs is not an entry of the archive/);
+  });
+
+  it('refuses a symlink under dist/ instead of dropping it', () => {
+    const buildJs = `${BUILD_JS}fs.symlinkSync('plugin.js', 'dist/alias.js');\n`;
+    const { pkg, out } = makeRepo({ buildJs });
+    const r = runScript(pkg, out);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /dist\/alias\.js is a symlink/);
   });
 });

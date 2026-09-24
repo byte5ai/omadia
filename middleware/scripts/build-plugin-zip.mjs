@@ -7,6 +7,7 @@
  *     # → <repo>/out/omadia-plugin-office-<version>.zip
  *
  *     node scripts/build-plugin-zip.mjs [<package-dir>] [--out-dir <dir>]
+ *                                       [--allow-unpushed-commit]
  *
  * ## Why this exists (#1075)
  *
@@ -22,12 +23,20 @@
  *     Both files are PARSED, not regex-matched.
  *   - **Uncommitted source.** The package directory must sit in a git work
  *     tree with nothing modified or untracked under it, so every artifact can
- *     be traced to the commit printed at the end.
+ *     be traced to the commit printed at the end. Gitignored files count too
+ *     (the repo ignores `tmp/`, `build/`, `logs/` anywhere, and `tsc` would
+ *     still compile `src/tmp/*.ts`); only build output (`dist/`,
+ *     `node_modules/`, `*.tsbuildinfo`) and `.DS_Store` may be ignored.
+ *   - **Unpushed commit.** HEAD must be reachable from a remote-tracking ref,
+ *     otherwise the printed SHA is provenance nobody else can check out.
+ *     `--allow-unpushed-commit` builds anyway for a dry run and marks the
+ *     output NOT PUBLISHABLE.
  *   - **Stale build output.** `dist/` and any `*.tsbuildinfo` are deleted and
  *     the package's own `npm run build` runs fresh. The packages are
  *     `composite: true`; a leftover tsbuildinfo would make `tsc` skip emitting
  *     into a deleted `dist/`. The manifest's `lifecycle.entry` must exist
- *     afterwards.
+ *     afterwards and must be an entry of the written archive. Symlinks and
+ *     other non-regular files under `dist/` are refused, not dropped.
  *
  * ## Archive layout
  *
@@ -60,6 +69,8 @@ const FIXED_MTIME = new Date(1980, 0, 1, 0, 0, 0);
 const FILE_MODE = 0o100644;
 const EXCLUDED_NAMES = new Set(['.DS_Store']);
 const EXCLUDED_SUFFIXES = ['.tsbuildinfo'];
+/** Gitignored paths (relative to the package) that are build output, not source. */
+const IGNORED_OK_DIRS = ['dist/', 'node_modules/'];
 
 class BuildError extends Error {}
 
@@ -70,12 +81,15 @@ function fail(message) {
 function parseArgs(argv) {
   let pkgDir;
   let outDir;
+  let allowUnpushed = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--out-dir') {
       outDir = argv[i + 1];
       if (!outDir) fail('--out-dir needs a directory');
       i += 1;
+    } else if (arg === '--allow-unpushed-commit') {
+      allowUnpushed = true;
     } else if (arg.startsWith('--')) {
       fail(`unknown option ${arg}`);
     } else if (pkgDir === undefined) {
@@ -87,6 +101,7 @@ function parseArgs(argv) {
   return {
     pkgDir: resolve(pkgDir ?? process.cwd()),
     outDir: outDir === undefined ? undefined : resolve(outDir),
+    allowUnpushed,
   };
 }
 
@@ -123,12 +138,32 @@ function readIdentity(pkgDir) {
   if (typeof entry !== 'string' || entry.length === 0) {
     fail('manifest.yaml declares no lifecycle.entry');
   }
-  return { name: pkg.name, version: pkg.version, entry };
+  return { name: pkg.name, version: pkg.version, entry: normalizeEntry(entry) };
+}
+
+/** `./dist/index.js` and `dist/index.js` name the same archive entry. */
+function normalizeEntry(entry) {
+  const norm = entry.replace(/\\/g, '/').replace(/^(\.\/)+/, '');
+  if (norm.startsWith('/') || norm.split('/').includes('..')) {
+    fail(`lifecycle.entry ${entry} must be a path inside the package`);
+  }
+  return norm;
+}
+
+function isIgnoredBuildOutput(rel) {
+  const base = rel.replace(/\/$/, '').split('/').pop() ?? '';
+  return (
+    IGNORED_OK_DIRS.some((d) => rel.startsWith(d)) ||
+    EXCLUDED_NAMES.has(base) ||
+    EXCLUDED_SUFFIXES.some((suffix) => base.endsWith(suffix))
+  );
 }
 
 function assertCleanTree(pkgDir) {
   const top = git(pkgDir, ['rev-parse', '--show-toplevel']);
-  if (!top.ok) fail(`${pkgDir} is not inside a git work tree — a release must come from a commit`);
+  if (!top.ok) {
+    fail(`${pkgDir} is not inside a git work tree — a release must come from a commit (${top.err})`);
+  }
   const status = git(pkgDir, ['status', '--porcelain', '--untracked-files=all', '--', '.']);
   if (!status.ok) fail(`git status failed: ${status.err}`);
   if (status.out.length > 0) {
@@ -137,9 +172,31 @@ function assertCleanTree(pkgDir) {
         `a release must be reproducible from a commit:\n${status.out}`,
     );
   }
+  const ignored = git(pkgDir, [
+    'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '--', '.',
+  ]);
+  if (!ignored.ok) fail(`git ls-files failed: ${ignored.err}`);
+  const strays = ignored.out
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .filter((rel) => !isIgnoredBuildOutput(rel));
+  if (strays.length > 0) {
+    fail(
+      `gitignored files under ${pkgDir} that are not build output — tsc could compile ` +
+        `them into the artifact without any commit carrying them; delete or move them:\n` +
+        strays.join('\n'),
+    );
+  }
   const head = git(pkgDir, ['rev-parse', 'HEAD']);
-  if (!head.ok) fail('the work tree has no commit yet');
+  if (!head.ok) fail(`the work tree has no commit yet (${head.err})`);
   return { repoRoot: top.out, headSha: head.out };
+}
+
+/** True when some remote-tracking ref contains HEAD, i.e. others can check it out. */
+function isPushed(pkgDir) {
+  const r = git(pkgDir, ['branch', '-r', '--contains', 'HEAD']);
+  if (!r.ok) fail(`git branch -r --contains failed: ${r.err}`);
+  return r.out.length > 0;
 }
 
 function freshBuild(pkgDir, entry) {
@@ -164,8 +221,10 @@ function listFiles(root, dir) {
     if (EXCLUDED_NAMES.has(e.name)) return [];
     if (EXCLUDED_SUFFIXES.some((s) => e.name.endsWith(s))) return [];
     const abs = join(dir, e.name);
+    const rel = relative(root, abs).split(sep).join('/');
     if (e.isDirectory()) return listFiles(root, abs);
-    return e.isFile() ? [relative(root, abs).split(sep).join('/')] : [];
+    if (!e.isFile()) fail(`${rel} is a symlink or other non-regular file — refusing to drop it silently`);
+    return [rel];
   });
 }
 
@@ -191,9 +250,16 @@ function writeZip(pkgDir, zipPath) {
 }
 
 async function main() {
-  const { pkgDir, outDir } = parseArgs(process.argv.slice(2));
+  const { pkgDir, outDir, allowUnpushed } = parseArgs(process.argv.slice(2));
   const { name, version, entry } = readIdentity(pkgDir);
   const { repoRoot, headSha } = assertCleanTree(pkgDir);
+  const pushed = isPushed(pkgDir);
+  if (!pushed && !allowUnpushed) {
+    fail(
+      `HEAD ${headSha} is on no remote-tracking ref — build from the merge commit on main ` +
+        '(or pass --allow-unpushed-commit for a dry run that is not publishable)',
+    );
+  }
 
   freshBuild(pkgDir, entry);
 
@@ -202,12 +268,16 @@ async function main() {
   const zipPath = join(target, `${name.replace(/^@/, '').replace(/\//g, '-')}-${version}.zip`);
   rmSync(zipPath, { force: true });
   const entries = await writeZip(pkgDir, zipPath);
+  if (!entries.includes(entry)) {
+    rmSync(zipPath, { force: true });
+    fail(`lifecycle.entry ${entry} is not an entry of the archive — the artifact would not load`);
+  }
 
   const sha256 = createHash('sha256').update(readFileSync(zipPath)).digest('hex');
   process.stdout.write(
     `✓ ${zipPath}\n` +
       `  ${name}@${version} · ${entries.length} files\n` +
-      `  commit ${headSha}\n` +
+      `  commit ${headSha}${pushed ? '' : ' (NOT on any remote — NOT PUBLISHABLE)'}\n` +
       `  sha256 ${sha256}\n`,
   );
 }
