@@ -8,14 +8,18 @@ import {
   CLI_SPAWN_TIMEOUT_ENV_KEY,
   CliChatAgent,
   StreamJsonParser,
+  absentKernelCapabilities,
   composeCliSystemPrompt,
   resolveCliSpawnTimeoutMs,
 } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
 import type {
   CliChatAgentDeps,
   CliSpawnLogger,
+  CliTurnCards,
 } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
+import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/chatAgent.js';
 import { CliIncompatibleError } from '../../packages/harness-orchestrator/src/cliSpawnGate.js';
+import { KERNEL_NATIVE_TOOL_NAMES } from '../../packages/harness-orchestrator/src/orchestrator.js';
 
 // Unit tests for the M2 stream-json → omadia mapping. The `claude -p
 // --output-format stream-json` terminal `result` line is the authoritative
@@ -448,6 +452,78 @@ describe('CliChatAgent CLI process boundary (OM-81, OM-83)', () => {
     assert.equal(composeCliSystemPrompt(undefined), composeCliSystemPrompt(''));
   });
 
+  // Issue #1102 Stage 1 — the CLI provider must not silently pretend to own a
+  // capability it was never offered. The honesty sentence is DERIVED from the
+  // turn's advertised tool set, so it stays truthful once Stage 2 advertises
+  // some of these tools: only the still-absent ones are named.
+  it('composeCliSystemPrompt appends no honesty sentence when nothing is absent', () => {
+    assert.equal(
+      composeCliSystemPrompt('Persona text.', []),
+      composeCliSystemPrompt('Persona text.'),
+    );
+    assert.equal(
+      composeCliSystemPrompt('Persona text.', undefined),
+      composeCliSystemPrompt('Persona text.'),
+    );
+  });
+
+  it('composeCliSystemPrompt names the absent capabilities and forbids claiming them', () => {
+    const composed = composeCliSystemPrompt('Persona text.', [
+      'remember facts across turns',
+      'book calendar meetings',
+    ]);
+    assert.match(composed, /remember facts across turns/);
+    assert.match(composed, /book calendar meetings/);
+    // Behaviour, not just a list: it must forbid the invented "Gespeichert!".
+    assert.match(composed, /never claim/i);
+    // Still appended after the runtime context, so the persona stays first.
+    assert.ok(composed.startsWith('Persona text.'));
+  });
+
+  it('absentKernelCapabilities maps unadvertised kernel-native tools to phrases', () => {
+    // Nothing advertised → every kernel-native capability is absent.
+    const allAbsent = absentKernelCapabilities([]);
+    assert.ok(allAbsent.some((c) => /memory|remember/i.test(c)));
+    assert.ok(allAbsent.some((c) => /knowledge graph/i.test(c)));
+    assert.ok(allAbsent.some((c) => /choice/i.test(c)));
+    assert.ok(allAbsent.some((c) => /calendar|meeting/i.test(c)));
+
+    // Advertise memory + both calendar tools → only the rest remain absent.
+    const someAbsent = absentKernelCapabilities([
+      'memory',
+      'find_free_slots',
+      'book_meeting',
+    ]);
+    assert.ok(!someAbsent.some((c) => /remember|long-term memory/i.test(c)));
+    assert.ok(!someAbsent.some((c) => /calendar|meeting/i.test(c)));
+    assert.ok(someAbsent.some((c) => /knowledge graph/i.test(c)));
+
+    // A plugin tool that is not a kernel native never appears.
+    assert.deepEqual(
+      absentKernelCapabilities([
+        'memory',
+        'query_knowledge_graph',
+        'ask_user_choice',
+        'suggest_follow_ups',
+        'find_free_slots',
+        'book_meeting',
+        'get_chat_participants',
+      ]),
+      [],
+    );
+  });
+
+  // The phrase table lives in cliChatAgent while the canonical name list lives
+  // in orchestrator.ts; nothing ties them at compile time. This guards the
+  // drift: every kernel native must have exactly one honesty phrase, or an
+  // absent capability would go unmentioned and the "Gespeichert!" lie returns.
+  it('has one absence phrase per kernel-native tool', () => {
+    assert.equal(
+      absentKernelCapabilities([]).length,
+      KERNEL_NATIVE_TOOL_NAMES.length,
+    );
+  });
+
 /**
  * Beta round 5. OM-85: a 2.1.246 CLI killed every turn with `unknown option
  * '--restricted'`. OM-94: that failure never reached the log file. OM-104: the
@@ -597,5 +673,142 @@ describe('StreamJsonParser foreign tool marking (OM-81)', () => {
     assert.equal(bash.foreign, true);
     assert.equal(omadia.type, 'tool_use');
     assert.equal('foreign' in omadia, false);
+  });
+});
+
+/**
+ * Issue #1102 Stage 2b — a choice card / follow-up chips / calendar slot picker
+ * scheduled by a kernel-native tool on the subscription-CLI path has to reach
+ * the `done` event, or the card the model asked for never renders. The CLI owns
+ * its own loop, so `streamTurn` drains the orchestrator's per-turn card state
+ * (via the `drainTurnCards` dep) exactly once and merges it onto `done`.
+ */
+describe('CliChatAgent interactive cards (#1102 Stage 2b)', () => {
+  function agentWithDrain(
+    drain: () => CliTurnCards,
+    calls: { n: number },
+    opts: { readonly emitResult?: boolean } = {},
+  ): CliChatAgent {
+    const emitResult = opts.emitResult ?? true;
+    return new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({
+            url: 'http://127.0.0.1:1/mcp',
+            port: 1,
+            bearer: 'bearer',
+          }),
+          stop: async () => {},
+        }) as never,
+      resolveCliVersion: async () => '2.1.259',
+      drainTurnCards: () => {
+        calls.n += 1;
+        return drain();
+      },
+      spawnFn: (() => {
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const child = Object.assign(new PassThrough(), {
+          stdin,
+          stdout,
+          stderr,
+          exitCode: null as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: () => true,
+        });
+        stdin.on('finish', () => {
+          if (emitResult) {
+            stdout.end(
+              JSON.stringify({
+                type: 'result',
+                is_error: false,
+                result: 'ok',
+                num_turns: 1,
+              }) + '\n',
+            );
+          } else {
+            // Clean exit, no terminal result line → runLifecycle throws.
+            stdout.end();
+          }
+          child.exitCode = 0;
+          child.emit('close', 0, null);
+        });
+        return child;
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+  }
+
+  async function collect(
+    agent: CliChatAgent,
+  ): Promise<ChatStreamEvent[]> {
+    const events: ChatStreamEvent[] = [];
+    for await (const event of agent.chatStream({ userMessage: 'hi' })) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  const CHOICE: CliTurnCards['pendingUserChoice'] = {
+    question: 'Umsatz wonach?',
+    options: [
+      { label: 'Nach Kunde', value: 'kunde' },
+      { label: 'Nach Monat', value: 'monat' },
+    ],
+  };
+
+  it('attaches a drained choice card to the done event', async () => {
+    const calls = { n: 0 };
+    const agent = agentWithDrain(() => ({ pendingUserChoice: CHOICE }), calls);
+    const events = await collect(agent);
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    assert.deepEqual(done.pendingUserChoice, CHOICE);
+    assert.equal(calls.n, 1, 'drainTurnCards must run exactly once');
+  });
+
+  it('attaches follow-ups and the OAuth-consent flag too', async () => {
+    const calls = { n: 0 };
+    const followUpOptions = [{ label: 'Letzter Monat', prompt: 'Zeig den letzten Monat.' }];
+    const agent = agentWithDrain(
+      () => ({ followUpOptions, pendingOAuthConsent: true }),
+      calls,
+    );
+    const events = await collect(agent);
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    assert.deepEqual(done.followUpOptions, followUpOptions);
+    assert.equal(done.pendingOAuthConsent, true);
+    assert.equal(done.pendingUserChoice, undefined);
+  });
+
+  it('adds no card fields when the turn scheduled nothing', async () => {
+    const calls = { n: 0 };
+    const agent = agentWithDrain(() => ({}), calls);
+    const events = await collect(agent);
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    assert.equal(done.pendingUserChoice, undefined);
+    assert.equal(done.followUpOptions, undefined);
+    assert.equal(calls.n, 1);
+  });
+
+  it('drains once to clear card state even when the turn fails', async () => {
+    const calls = { n: 0 };
+    const agent = agentWithDrain(() => ({ pendingUserChoice: CHOICE }), calls, {
+      emitResult: false,
+    });
+    const events = await collect(agent);
+
+    // No done event (the turn errored), but the drain still ran to clear state.
+    assert.ok(!events.some((e) => e.type === 'done'));
+    assert.ok(events.some((e) => e.type === 'error'));
+    assert.equal(calls.n, 1, 'failed turn must still clear card state exactly once');
   });
 });

@@ -13,11 +13,13 @@ import type Anthropic from '@anthropic-ai/sdk';
 import {
   classifyAnthropicError,
   createAnthropicProvider,
+  supportsForcedToolChoice,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
   toolCalls,
   type LlmStreamEvent,
+  type ToolChoice,
 } from '@omadia/llm-provider';
 
 import { createAnthropicLlmProvider } from '../src/platform/anthropicLlmProvider.js';
@@ -428,6 +430,64 @@ test('toolChoice disableParallel maps to disable_parallel_tool_use', async () =>
     type: 'auto',
     disable_parallel_tool_use: true,
   });
+});
+
+/**
+ * `claude-opus-5-5` and `claude-fable-5-1` 400 on a forced `tool_choice`
+ * (measured 2026-09-23). Opus 5.5 was already selectable, so every forced
+ * path — card router, claim extractor, evidence judge, sub-agent turn
+ * obligation — threw on it and fell back silently.
+ */
+test('forced toolChoice degrades to auto on models that reject it', async () => {
+  const cases: ReadonlyArray<[ToolChoice, Record<string, unknown>]> = [
+    [{ type: 'required' }, { type: 'auto' }],
+    [{ type: 'tool', name: 'a' }, { type: 'auto' }],
+    [
+      { type: 'tool', name: 'a', disableParallel: true },
+      { type: 'auto', disable_parallel_tool_use: true },
+    ],
+    [{ type: 'none' }, { type: 'none' }],
+  ];
+  for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-mythos-5-1']) {
+    for (const [choice, expected] of cases) {
+      const captured: Captured = {};
+      const provider = createAnthropicProvider({
+        client: mockClient(captured, textResponse()),
+      });
+      await provider.complete({
+        model,
+        maxTokens: 64,
+        tools: [{ name: 'a', description: 'A', inputSchema: { type: 'object' } }],
+        toolChoice: choice,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+      });
+      assert.deepEqual(
+        captured.params?.['tool_choice'],
+        expected,
+        `${model} ${choice.type}`,
+      );
+    }
+  }
+});
+
+test('forced toolChoice is still sent to models that honour it', async () => {
+  // The other direction: a gate that downgraded everywhere would pass the
+  // test above while removing forcing from Opus 5 / Fable 5 / Haiku.
+  for (const model of ['claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001']) {
+    assert.equal(supportsForcedToolChoice(model), true, model);
+    const captured: Captured = {};
+    const provider = createAnthropicProvider({
+      client: mockClient(captured, textResponse()),
+    });
+    await provider.complete({
+      model,
+      maxTokens: 64,
+      tools: [{ name: 'a', description: 'A', inputSchema: { type: 'object' } }],
+      toolChoice: { type: 'tool', name: 'a' },
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+    assert.deepEqual(captured.params?.['tool_choice'], { type: 'tool', name: 'a' });
+  }
 });
 
 test('structured system blocks map to per-block cache_control', async () => {
