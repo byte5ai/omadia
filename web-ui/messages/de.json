@@ -2282,6 +2282,7 @@
       "boundaries": {
         "presetsHeading": "Grenzen aus der Bibliothek",
         "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
         "categories": {
           "data": "Daten",
@@ -3133,6 +3134,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} ausgewählt",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "save": "Boundaries speichern",
@@ -3700,6 +3702,7 @@
       "modelsRefreshUnsupported": "Dieser Provider unterstützt keine Live-Erkennung.",
       "modelsSourceLive": "live · {at}",
       "modelsSourceSeed": "Seed-Liste",
+      "unclassifiedModels": "{count, plural, one {# Modell} other {# Modelle}} ausgeblendet (keine Discovery-Regel): {models}",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
@@ -3761,7 +3764,8 @@
     "explainer": {
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
-      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider.",
+      "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg hat der Assistent noch kein Langzeitgedächtnis, er merkt sich also keine Fakten über Chats hinweg. Wissensgraph-Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",

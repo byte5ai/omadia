@@ -115,5 +115,10 @@ permissions:
     outbound: []
   filesystem:
     scratch: false
+  # Signed PNG URLs (`/diagrams/dl/<key>?exp=&sig=`) are opened by channel
+  # users without an operator session; the route verifies the HMAC itself.
+  # Served session-less only once the operator grants the prefix.
+  public_paths:
+    - "/diagrams/dl"
 
 integrations: []

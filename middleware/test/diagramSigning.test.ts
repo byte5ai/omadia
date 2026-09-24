@@ -13,9 +13,9 @@ describe('diagram signing', () => {
       publicBaseUrl: 'http://localhost:3979',
       nowSec: 1_000_000,
     });
-    // /diagrams/<encoded-key>?exp=<unix>&sig=<hex>
+    // /diagrams/dl/<encoded-key>?exp=<unix>&sig=<hex>
     const u = new URL(url);
-    assert.equal(u.pathname, `/diagrams/${encodeURIComponent('byte5/abc123.png')}`);
+    assert.equal(u.pathname, `/diagrams/dl/${encodeURIComponent('byte5/abc123.png')}`);
     const exp = Number(u.searchParams.get('exp'));
     const sig = u.searchParams.get('sig') ?? '';
     assert.equal(exp, 1_000_060);

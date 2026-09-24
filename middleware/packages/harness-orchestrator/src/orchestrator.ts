@@ -140,6 +140,7 @@ import type {
   KnowledgeGraph,
   MemorableKind,
   NudgeRegistry,
+  NativeToolSpec,
   NudgeStateStore,
   PalaiaExcerpt,
   PalaiaExcerptExtractor,
@@ -185,6 +186,9 @@ import {
   type StickyScopeClassification,
 } from './directLineSticky.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+// #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
+// shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
+import type { CliTurnCards } from './cliChatAgent.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
@@ -283,7 +287,7 @@ import { RoleSourceRegistry as RoleSourceRegistryImpl } from '@omadia/channel-sd
  * will append to the same registry in later phases — the dispatch paths
  * (isNative checks) use `this.nativeTools.has(name)`, not this list.
  */
-const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
+export const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   'memory',
   'query_knowledge_graph',
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -292,6 +296,110 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   FIND_FREE_SLOTS_TOOL_NAME,
   BOOK_MEETING_TOOL_NAME,
 ];
+
+/** A kernel-native tool instance the loopback handler delegates to. */
+interface KernelNativeHandleable {
+  handle(input: unknown): Promise<string>;
+}
+
+/**
+ * Issue #1102 — the per-turn tool instances a full-form kernel-native
+ * registration delegates to. A field is `undefined` when this Agent was built
+ * without that capability; the tool is then registered marker-only, exactly as
+ * before. Keys are required (not `?`) so a new kernel native cannot be added to
+ * the wiring table and silently forgotten at the call site.
+ */
+export interface KernelNativeInstances {
+  knowledgeGraphTool: KernelNativeHandleable | undefined;
+  askUserChoiceTool: KernelNativeHandleable | undefined;
+  suggestFollowUpsTool: KernelNativeHandleable | undefined;
+  findFreeSlotsTool: KernelNativeHandleable | undefined;
+  bookMeetingTool: KernelNativeHandleable | undefined;
+}
+
+/**
+ * The kernel natives that get a real spec + handler on the loopback/CLI path.
+ *
+ * `memory` and `get_chat_participants` are deliberately absent:
+ *  - `memory` resolves a per-turn `MemoryBinder` handler in the in-process loop
+ *    (the axis that keeps team A's notes out of team B, see `dispatchToolInner`);
+ *    that binding is not resolved on the loopback path, so advertising the
+ *    build-time handler would risk crossing the tenant boundary. Wiring it
+ *    safely is a follow-up; until then Stage 1's honesty sentence tells the CLI
+ *    model it has no memory here (#1102).
+ *  - `get_chat_participants` stays channel-bound, as the issue specifies.
+ */
+const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
+  readonly name: string;
+  readonly spec: NativeToolSpec;
+  readonly pick: (i: KernelNativeInstances) => KernelNativeHandleable | undefined;
+}> = [
+  {
+    name: KNOWLEDGE_GRAPH_TOOL_NAME,
+    spec: knowledgeGraphToolSpec,
+    pick: (i) => i.knowledgeGraphTool,
+  },
+  {
+    name: ASK_USER_CHOICE_TOOL_NAME,
+    spec: askUserChoiceToolSpec,
+    pick: (i) => i.askUserChoiceTool,
+  },
+  {
+    name: SUGGEST_FOLLOW_UPS_TOOL_NAME,
+    spec: suggestFollowUpsToolSpec,
+    pick: (i) => i.suggestFollowUpsTool,
+  },
+  {
+    name: FIND_FREE_SLOTS_TOOL_NAME,
+    spec: findFreeSlotsToolSpec,
+    pick: (i) => i.findFreeSlotsTool,
+  },
+  {
+    name: BOOK_MEETING_TOOL_NAME,
+    spec: bookMeetingToolSpec,
+    pick: (i) => i.bookMeetingTool,
+  },
+];
+
+/** The spec objects {@link registerKernelNativeTools} puts into the native
+ *  registry. `buildToolsList()` advertises these itself, so its native-registry
+ *  loop must skip them (by identity — a plugin spec with the same name is a
+ *  genuine collision and goes through the dedupe instead). */
+const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
+  KERNEL_NATIVE_FULL_FORM.map((f) => f.spec),
+);
+
+/**
+ * Register the kernel-native tools into `registry`, giving each of the wired
+ * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
+ * MCP server actually advertises AND dispatches it on the subscription-CLI
+ * path (#1102). The rest stay marker-only — dispatchable by the in-process
+ * loop's own branches, invisible to the CLI, exactly as before.
+ *
+ * A name already present in `registry` (a plugin got there first) is left
+ * untouched, matching the previous loop's `has()` guard.
+ */
+export function registerKernelNativeTools(
+  registry: NativeToolRegistry,
+  instances: KernelNativeInstances,
+): void {
+  const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
+  for (const name of KERNEL_NATIVE_TOOL_NAMES) {
+    if (registry.has(name)) {
+      continue;
+    }
+    const full = fullByName.get(name);
+    const instance = full?.pick(instances);
+    if (full && instance) {
+      registry.register(name, {
+        spec: full.spec,
+        handler: (input: unknown) => instance.handle(input),
+      });
+    } else {
+      registry.register(name);
+    }
+  }
+}
 
 // `DiagramAttachment` was moved to `@omadia/channel-sdk` in S+10-2; see
 // the import block at the top. Re-exported below from this module's barrel
@@ -316,9 +424,9 @@ export interface AiDisclosureSetup {
   readonly level: AiDisclosureLevel;
   /**
    * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
-   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
-   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
-   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * `slack` | `email` | `web` | `api`). A turn whose channel does not resolve to
+   * a `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram`/`api` are ever
    * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
    * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
    * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
@@ -1375,6 +1483,30 @@ export const SECURITY_QUARANTINE_NOTICE =
   'Diese Eingabe wurde vom Sicherheits-Screening zurückgehalten und nicht verarbeitet. / This input was withheld by security screening and was not processed.';
 
 /**
+ * Shown when the model's safety classifiers decline the turn
+ * (`stop_reason: "refusal"`, HTTP 200 — Fable 5.x, Opus 5+, Sonnet 5). The API
+ * then returns no text or only a fragment; without this the user saw an empty
+ * reply that looked like a platform bug. DE-first with an EN line, same shape
+ * as {@link SECURITY_QUARANTINE_NOTICE}.
+ */
+export const MODEL_REFUSAL_NOTICE =
+  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell. / The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+
+/**
+ * The turn's final answer text. A refusal is made explicit: an empty answer
+ * becomes {@link MODEL_REFUSAL_NOTICE}, a partial one (refusal mid-stream)
+ * gets the notice appended so the fragment is not mistaken for a full answer.
+ */
+export function finalAnswerText(
+  textParts: readonly string[],
+  stopReason: string | null | undefined,
+): string {
+  const text = textParts.join('\n\n').trim();
+  if (stopReason !== 'refusal') return text;
+  return text === '' ? MODEL_REFUSAL_NOTICE : `${text}\n\n${MODEL_REFUSAL_NOTICE}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -1488,7 +1620,7 @@ function buildSystemPrompt(
 
 Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf.
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit \`create_xlsx\` und derselben \`datasetId\`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
 
@@ -1505,6 +1637,13 @@ c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
    3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
    4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 `
     : '';
 
@@ -2148,11 +2287,16 @@ export class Orchestrator {
     this.turnHookRegistry = options.turnHookRegistry;
 
     this.nativeTools = options.nativeToolRegistry;
-    for (const name of KERNEL_NATIVE_TOOL_NAMES) {
-      if (!this.nativeTools.has(name)) {
-        this.nativeTools.register(name);
-      }
-    }
+    // #1102 — the wired five get a spec + handler so the loopback MCP server
+    // advertises and dispatches them on the subscription-CLI path; memory and
+    // get_chat_participants stay marker-only (see registerKernelNativeTools).
+    registerKernelNativeTools(this.nativeTools, {
+      knowledgeGraphTool: this.knowledgeGraphTool,
+      askUserChoiceTool: this.askUserChoiceTool,
+      suggestFollowUpsTool: this.suggestFollowUpsTool,
+      findFreeSlotsTool: this.findFreeSlotsTool,
+      bookMeetingTool: this.bookMeetingTool,
+    });
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -2878,6 +3022,36 @@ export class Orchestrator {
     const a = this.findFreeSlotsTool?.takeConsentRequired() ?? false;
     const b = this.bookMeetingTool?.takeConsentRequired() ?? false;
     return a || b;
+  }
+
+  /**
+   * Issue #1102 — drain the interactive-card state a subscription-CLI turn left
+   * on the kernel-native tool instances, so the CliChatAgent can attach it to
+   * its `done` event and the card / chips / slot-picker actually render.
+   *
+   * On the in-process path the same four drains run inline at every turn-loop
+   * exit (see the `done` assembly). The CLI owns its own loop, so it calls this
+   * ONCE after its subprocess terminates. Draining also clears the instances,
+   * so the next CLI turn starts clean — same contract as the in-process drains.
+   *
+   * Privacy restore (`restorePendingChoiceForUser` / `restoreFollowUpsForUser`)
+   * is intentionally NOT applied: the CLI path does not run the orchestrator's
+   * per-turn privacy shield in-band, so there is no turn handle to un-mask
+   * surrogates against. The values are whatever the tool handlers stored, which
+   * is the same input the CLI model itself produced. Surfacing masked values is
+   * a follow-up that belongs with the CLI path's privacy-shield integration.
+   */
+  public drainCliTurnCards(): CliTurnCards {
+    const pendingUserChoice = this.drainPendingChoice();
+    const followUpOptions = this.drainFollowUps();
+    const pendingSlotCard = this.drainPendingSlotCard();
+    const pendingOAuthConsent = this.drainConsentRequired();
+    return {
+      ...(pendingUserChoice ? { pendingUserChoice } : {}),
+      ...(followUpOptions ? { followUpOptions } : {}),
+      ...(pendingSlotCard ? { pendingSlotCard } : {}),
+      ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+    };
   }
 
   /**
@@ -3671,6 +3845,10 @@ export class Orchestrator {
             result = {
               ...result,
               answer: v4Rendered.text,
+              // #1105 — see the streaming twin: mark the server-rendered
+              // answer so `toSemanticAnswer` / clients can tell it apart from
+              // the model's own text.
+              answerSource: 'privacy-render',
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -4771,7 +4949,7 @@ export class Orchestrator {
         textParts.push(...collectTextBlocks(response.content));
 
         if (response.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, response.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // Only force a retry on a PURE-TEXT end (no tool_use block). A
           // tool_use present with a non-'tool_use' stop_reason means the model
@@ -5468,7 +5646,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5545,6 +5727,9 @@ export class Orchestrator {
               ? {
                   ...event,
                   answer: v4Rendered.text,
+                  // #1105 — mark the answer as server-rendered so a streaming
+                  // client knows it supersedes the `text_delta` preview.
+                  answerSource: 'privacy-render' as const,
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -5570,7 +5755,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5952,7 +6141,7 @@ export class Orchestrator {
         textParts.push(...collectTextBlocks(finalMessage.content));
 
         if (finalMessage.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, finalMessage.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // See the non-streaming path: only force a retry on a pure-text end,
           // never when a (possibly truncated) tool_use block is present.
@@ -7015,6 +7204,19 @@ export class Orchestrator {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
       }
+      // #1105 — a guarded tool that returned a prose error string (the
+      // orchestrator's `Error:` tool-error convention — the same prefix the
+      // tool-result assembly reads to stamp `is_error`) must reach the model
+      // AS an error, not be interned. Interning it would (a) hide the failure
+      // behind a masked digest so the model never learns the call failed, and
+      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
+      // materializes as if the error were data — the divergence reported in
+      // #1105. Pass it through verbatim: the chat path already forwards tool
+      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
+      // `is_error` flag is derived from this very prefix.
+      if (result.startsWith('Error:')) {
+        return result;
+      }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
@@ -7024,6 +7226,17 @@ export class Orchestrator {
         });
         return v4.digestText;
       } catch (err) {
+        // `query_dataset` returned REAL cell values precisely because this
+        // interning was about to happen (see QueryDatasetTool). If it did
+        // not, those values must not fall through to the model: fail closed
+        // for this one tool. Every other tool keeps the historical fail-open.
+        if (name === QUERY_DATASET_TOOL_NAME) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
+            err,
+          );
+          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
+        }
         console.warn(
           `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
@@ -7329,7 +7542,9 @@ export class Orchestrator {
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
-      this.chatParticipantsTool !== undefined,
+      // #1108 — same per-turn gate as buildToolsList(): only describe the
+      // roster tool on a turn that actually carries a provider.
+      this.turnHasChatRoster(),
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
@@ -7818,7 +8033,10 @@ export class Orchestrator {
 
     let scannedCells = 0;
     let maskedCells = 0;
+    let linkKeyColumns = 0;
+    let encryptedTables = 0;
     const lines = imported.imported.map((t) => {
+      if (t.privacyScan.encryptedAtRest) encryptedTables += 1;
       const { truncatedCellCount, truncatedColumns } = t.truncation;
       // Only claim "not truncated" when that is actually true for this table
       // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
@@ -7829,7 +8047,16 @@ export class Orchestrator {
       const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
       scannedCells += t.privacyScan.scannedCells;
       maskedCells += t.privacyScan.maskedCells;
-      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}`;
+      linkKeyColumns += t.linkKeys.columns.length;
+      // Name the key columns per table: the model must not guess them from
+      // the source headers (a header can be skipped, see
+      // `selectLinkKeyColumns`), and rule d) tells it to say plainly when a
+      // file has none.
+      const keysNote =
+        t.linkKeys.columns.length > 0
+          ? ` Link-key columns: [${t.linkKeys.columns.join(', ')}].`
+          : ' Link-key columns: none.';
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}${keysNote}`;
     });
 
     // Observability: a successful import used to log nothing at all, so the
@@ -7838,7 +8065,8 @@ export class Orchestrator {
     console.log(
       `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
         `datasets=${String(imported.imported.length)} ` +
-        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)}`,
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)} ` +
+        `linkKeyColumns=${String(linkKeyColumns)}`,
     );
 
     // #976 — state the privacy FACTS for this file in the prompt.
@@ -7850,13 +8078,45 @@ export class Orchestrator {
     // reassurance is bad; a wrong ALARM is worse, because the user acts on
     // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
     // the fact — so ship the fact.
+    // Encrypted at rest (the default with a dataset secret) means the REAL
+    // values survive for the entitled user — render and Excel show them —
+    // while the model still only ever gets a digest. Without a secret the
+    // old irreversible masking applies and the model must not promise real
+    // values in an export.
+    const allEncrypted = encryptedTables === imported.imported.length;
+    // Real values reach render/export ONLY behind an active Privacy Shield —
+    // without a guard `query_dataset` re-masks on read. Promising real data
+    // on an install that cannot deliver it is exactly the wrong fact #976
+    // exists to prevent, so the promise depends on both conditions.
+    const shieldActive = turnContext.current()?.privacyHandle !== undefined;
+    const piiCellsFact = !allEncrypted
+      ? `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
+        `secret configured) — exports show surrogates, not real values`
+      : shieldActive
+        ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
+          `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
+          `so the user sees and exports real data while you never receive it`
+        : `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest, but no ` +
+          `Privacy Shield is active in this turn, so they are re-masked on read — exports ` +
+          `show surrogates, not real values`;
     const privacyFact =
       `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
       `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
       `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
-      `${String(maskedCells)} masked). You do not have this file's raw contents; ` +
+      `${piiCellsFact}). You do not have this file's raw contents; ` +
       `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
-      `boundary as any other tool result.`;
+      `boundary as any other tool result.` +
+      // Link keys are a fact about the file too: with them, cross-file dedup
+      // is possible; without them it is not, and the model should say so
+      // instead of offering the user a manual workaround.
+      (linkKeyColumns > 0
+        ? ` Its text columns carry \`__k_<column>\` link keys — stable, identity-free ` +
+          `per-person keys that are the same across all of this user's uploads; use ` +
+          `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
+          `match across files, and never display them.`
+        : ` No link-key columns were generated for this file (the install has no ` +
+          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+          `not available — state that plainly if asked.`);
 
     return (
       `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +
@@ -7878,6 +8138,23 @@ export class Orchestrator {
     return this.isPluginToolsReady(agentId);
   }
 
+  /**
+   * #1108 — `get_chat_participants` may only be advertised on a turn that
+   * actually carries a roster provider. The tool instance is built once and is
+   * channel-independent, so gating on `this.chatParticipantsTool` alone offers
+   * the tool on every non-Teams channel, where the handler can only return a
+   * miss the model never sees (the Privacy Shield interns it). Both the tool
+   * list and the system-prompt roster gate on this, so a channel without a
+   * roster shows the tool nowhere. Must be called inside the turn scope, where
+   * `turnContext.current()` resolves the per-turn provider.
+   */
+  private turnHasChatRoster(): boolean {
+    return (
+      this.chatParticipantsTool !== undefined &&
+      turnContext.current()?.chatParticipants !== undefined
+    );
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7894,7 +8171,9 @@ export class Orchestrator {
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
-    if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
+    // #1108 — gate on the per-turn roster provider, not the constructed
+    // instance, so non-Teams channels never advertise a tool that can't work.
+    if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
     if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);
@@ -7915,6 +8194,11 @@ export class Orchestrator {
     // still resolves by name, so precedence is unaffected.
     const nativeSpecs: unknown[] = [];
     for (const entry of this.nativeTools.listWithHandler()) {
+      // #1143 registers the kernel's OWN specs here (spec + handler) so the
+      // subscription-CLI loopback can advertise them. The kernel already
+      // pushes those above — advertising them again duplicated five names and
+      // 400'd every turn (`tools: Tool names must be unique.`).
+      if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
       if (entry.spec && this.isToolAvailable(entry.agentId)) {
         nativeSpecs.push(entry.spec);
       }
@@ -7951,6 +8235,17 @@ export class Orchestrator {
     if (v4ToolSpecs) {
       for (const spec of v4ToolSpecs) tools.push(spec);
     }
+    // The Anthropic API rejects the whole request when two tools share a name
+    // (`400 tools: Tool names must be unique.`, every model). The segments
+    // above are filled independently — kernel specs, plugin native specs,
+    // domain tools, Privacy v4 — so a plugin that ships a name the kernel (or
+    // another plugin) already advertises turned every turn of that agent into
+    // an error. Keep the spec whose handler `dispatchTool` actually runs.
+    const unique = this.dropDuplicateToolNames(tools, {
+      v4: new Set<unknown>(v4ToolSpecs ?? []),
+      native: new Set<unknown>(nativeSpecs),
+      domain: new Set<unknown>(domainSpecs),
+    });
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.
@@ -7961,14 +8256,58 @@ export class Orchestrator {
     // because the dynamic segments above are name-sorted. Do not reorder or
     // append unsorted segments before this point without re-reading
     // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
-    const last = tools[tools.length - 1];
-    if (last) {
-      tools[tools.length - 1] = {
-        ...last,
-        cache_control: { type: 'ephemeral' },
-      };
+    const last = unique[unique.length - 1];
+    return last
+      ? [...unique.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+      : unique;
+  }
+
+  /** Names already reported by {@link dropDuplicateToolNames} — warn once. */
+  private readonly reportedDuplicateToolNames = new Set<string>();
+
+  /**
+   * Drops tools whose `name` repeats, keeping the spec whose handler
+   * `dispatchTool` actually runs: `v4_*` (Privacy v4) → kernel `memory` →
+   * native registry → kernel tools → domain tools. Segments are told apart by
+   * object identity. Survivors keep their order, so the cached prefix is
+   * unchanged whenever there is nothing to drop.
+   */
+  private dropDuplicateToolNames<T extends { readonly name: string; readonly type?: string }>(
+    tools: ReadonlyArray<T>,
+    segments: {
+      readonly v4: ReadonlySet<unknown>;
+      readonly native: ReadonlySet<unknown>;
+      readonly domain: ReadonlySet<unknown>;
+    },
+  ): T[] {
+    const count = new Map<string, number>();
+    for (const t of tools) count.set(t.name, (count.get(t.name) ?? 0) + 1);
+    if (![...count.values()].some((n) => n > 1)) return [...tools];
+
+    const rank = (t: T): number => {
+      if (segments.v4.has(t)) return 0;
+      if (t.name === MEMORY_TOOL_NAME && t.type === MEMORY_TOOL_TYPE) return 1;
+      if (segments.native.has(t)) return 2;
+      if (segments.domain.has(t)) return 4;
+      return 3; // kernel tool
+    };
+    // Winner by POSITION, not by object: the same spec object can sit in the
+    // list twice (#1143 registers the kernel's own spec constants into the
+    // native registry), and an identity filter would then keep both copies.
+    const winner = new Map<string, number>();
+    tools.forEach((t, i) => {
+      const current = winner.get(t.name);
+      if (current === undefined || rank(t) < rank(tools[current]!)) winner.set(t.name, i);
+    });
+    for (const [name, n] of count) {
+      if (n > 1 && !this.reportedDuplicateToolNames.has(name)) {
+        this.reportedDuplicateToolNames.add(name);
+        console.warn(
+          `[harness-orchestrator] tool name '${name}' offered ${String(n)}× — kept the spec dispatch serves, dropped the rest (the API rejects duplicate names). Two sources register '${name}'; rename one.`,
+        );
+      }
     }
-    return tools;
+    return tools.filter((t, i) => winner.get(t.name) === i);
   }
 }
 

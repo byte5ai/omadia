@@ -15,6 +15,7 @@ import { buildDigest } from '@omadia/plugin-privacy-guard/dist/v4/digest.js';
 import {
   VerbError,
   createVerbEngine,
+  normalizeKeyPart,
 } from '@omadia/plugin-privacy-guard/dist/v4/verbs/index.js';
 import type { DatasetRow } from '@omadia/plugin-privacy-guard/dist/v4/types.js';
 
@@ -170,5 +171,183 @@ describe('Verb API — guard rails', () => {
   it('rejects an unknown datasetId', () => {
     const { engine } = harness();
     assert.throws(() => engine.count('ds_does_not_exist'), VerbError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// union / distinct — the cross-file dedup building blocks
+// ---------------------------------------------------------------------------
+
+/** Two "uploads" of a contact list. `__k_email` stands in for the import-time
+ *  link key: an opaque, digit-bearing token that is identical for the same
+ *  person in both files even though the e-mail text is masked. */
+const FILE_A: DatasetRow[] = [
+  { email: '[masked]', __k_email: 'a1f9c2e4b7d80013', firma: 'byte5', src: 'A' },
+  { email: '[masked]', __k_email: 'b2e8d3f5c6a90124', firma: 'Fraunhofer', src: 'A' },
+  { email: '', __k_email: null, firma: 'unbekannt', src: 'A' },
+];
+const FILE_B: DatasetRow[] = [
+  { email: '[masked]', __k_email: 'a1f9c2e4b7d80013', firma: 'byte5 GmbH', src: 'B' },
+  { email: '[masked]', __k_email: 'c3d7e4a6b5f80235', firma: 'omadia', src: 'B' },
+  { email: '', __k_email: null, firma: 'unbekannt', src: 'B' },
+];
+
+function twoFiles() {
+  const classify = createShapeClassifier();
+  const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
+  const engine = createVerbEngine({ store, classify });
+  const { datasetId: a } = store.internToolResult('query_dataset', FILE_A);
+  const { datasetId: b } = store.internToolResult('query_dataset', FILE_B);
+  return { store, engine, a, b };
+}
+
+describe('Verb API — union', () => {
+  it('concatenates both datasets, left rows first', () => {
+    const { store, engine, a, b } = twoFiles();
+    const r = engine.union(a, b);
+    const rows = store.get(r.datasetId)!.rows;
+    assert.equal(rows.length, 6);
+    assert.deepEqual(rows.map((x) => x.src), ['A', 'A', 'A', 'B', 'B', 'B']);
+  });
+
+  it('applies renameRight so differently-spelled headers land in one column', () => {
+    const { store, engine, a } = twoFiles();
+    const { datasetId: other } = store.internToolResult('query_dataset', [
+      { Company: 'acme', __k_Company: 'd4e5f6a7b8c90346' },
+    ]);
+    const r = engine.union(a, other, {
+      renameRight: { Company: 'firma', __k_Company: '__k_firma' },
+    });
+    const last = store.get(r.datasetId)!.rows.at(-1)!;
+    assert.equal(last.firma, 'acme');
+    assert.equal(last.__k_firma, 'd4e5f6a7b8c90346');
+    assert.equal('Company' in last, false);
+  });
+
+  it('rejects a rename of an unknown right field', () => {
+    const { engine, a, b } = twoFiles();
+    assert.throws(
+      () => engine.union(a, b, { renameRight: { nope: 'firma' } }),
+      VerbError,
+    );
+  });
+
+  it('rejects two right fields renamed to the same target', () => {
+    const { engine, a, b } = twoFiles();
+    assert.throws(
+      () => engine.union(a, b, { renameRight: { email: 'x', firma: 'x' } }),
+      VerbError,
+    );
+  });
+
+  it('rejects a rename target that collides with a right field not itself renamed', () => {
+    const { engine, a, b } = twoFiles();
+    assert.throws(
+      () => engine.union(a, b, { renameRight: { email: 'firma' } }),
+      VerbError,
+    );
+  });
+
+  it('allows a swap: both colliding fields are renamed', () => {
+    const { store, engine, a, b } = twoFiles();
+    const r = engine.union(a, b, { renameRight: { email: 'firma', firma: 'email' } });
+    const last = store.get(r.datasetId)!.rows.at(-1)!;
+    assert.equal(last.email, 'unbekannt');
+    assert.equal(last.firma, '');
+  });
+
+  it('returns a new datasetId derived from the left input', () => {
+    const { store, engine, a, b } = twoFiles();
+    const r = engine.union(a, b);
+    assert.notEqual(r.datasetId, a);
+    assert.equal(store.get(r.datasetId)!.provenance.derivedFrom, a);
+    assert.equal(store.get(r.datasetId)!.provenance.toolName, 'union');
+  });
+});
+
+describe('Verb API — distinct', () => {
+  it('a link-key column is classified safe and accepted as a key', () => {
+    const { store, a } = twoFiles();
+    const f = store.get(a)!.schema.fields.find((x) => x.path === '__k_email')!;
+    assert.equal(f.classification, 'safe-cleartext');
+  });
+
+  it('collapses rows with the same key across two unioned files', () => {
+    const { store, engine, a, b } = twoFiles();
+    const u = engine.union(a, b);
+    const d = engine.distinct(u.datasetId, ['__k_email']);
+    const rows = store.get(d.datasetId)!.rows;
+    // 6 rows in, one shared key (the byte5 contact) → 5 out; both
+    // null-key rows are kept.
+    assert.equal(rows.length, 5);
+    assert.equal(d.digest.rowCount, 5);
+    const byte5 = rows.filter((r) => r.__k_email === 'a1f9c2e4b7d80013');
+    assert.equal(byte5.length, 1);
+    assert.equal(byte5[0]!.src, 'A', 'keep: first keeps the earlier row');
+  });
+
+  it('keep: "last" keeps the later row and preserves dataset order', () => {
+    const { store, engine, a, b } = twoFiles();
+    const u = engine.union(a, b);
+    const d = engine.distinct(u.datasetId, ['__k_email'], 'last');
+    const rows = store.get(d.datasetId)!.rows;
+    assert.equal(rows.length, 5);
+    const byte5 = rows.find((r) => r.__k_email === 'a1f9c2e4b7d80013')!;
+    assert.equal(byte5.src, 'B');
+    assert.equal(byte5.firma, 'byte5 GmbH');
+    // Original order, not reversed.
+    assert.deepEqual(rows.map((r) => r.src), ['A', 'A', 'B', 'B', 'B']);
+  });
+
+  it('never treats two empty keys as duplicates of each other', () => {
+    const { store, engine, a, b } = twoFiles();
+    const u = engine.union(a, b);
+    const d = engine.distinct(u.datasetId, ['__k_email']);
+    const nulls = store.get(d.datasetId)!.rows.filter((r) => r.__k_email === null);
+    assert.equal(nulls.length, 2);
+  });
+
+  it('compares string keys case-insensitively', () => {
+    const classify = createShapeClassifier();
+    const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
+    const engine = createVerbEngine({ store, classify });
+    // `status` is a low-cardinality single-token enum (3 distinct / 30 rows
+    // = the S4 ratio ceiling) → safe → allowed as a key.
+    const { datasetId } = store.internToolResult('x', [
+      ...Array.from({ length: 28 }, () => ({ status: 'open' })),
+      { status: 'OPEN' },
+      { status: 'Open' },
+    ]);
+    const d = engine.distinct(datasetId, ['status']);
+    assert.equal(store.get(d.datasetId)!.rows.length, 1);
+  });
+
+  it('normalizeKeyPart folds case, whitespace and NFKC; empty → null', () => {
+    assert.equal(normalizeKeyPart(' Max  Mustermann '), normalizeKeyPart('max mustermann'));
+    assert.equal(normalizeKeyPart('Ａnna'), normalizeKeyPart('anna'));
+    assert.equal(normalizeKeyPart(''), null);
+    assert.equal(normalizeKeyPart('   '), null);
+    assert.equal(normalizeKeyPart(null), null);
+    assert.equal(normalizeKeyPart(undefined), null);
+    assert.notEqual(normalizeKeyPart(1), normalizeKeyPart('1'), 'a number is not its string');
+  });
+
+  it('rejects a masked field as key and an empty `by`', () => {
+    const { engine, a } = twoFiles();
+    assert.throws(() => engine.distinct(a, ['firma']), VerbError);
+    assert.throws(() => engine.distinct(a, []), VerbError);
+  });
+
+  it('composite keys: a row is a duplicate only when every part matches', () => {
+    const classify = createShapeClassifier();
+    const store = createDatasetStore({ classify, buildDigest, turnId: 'turn-test' });
+    const engine = createVerbEngine({ store, classify });
+    const { datasetId } = store.internToolResult('x', [
+      { k1: 'a1b2c3d4e5f60001', k2: 'f6e5d4c3b2a10002' },
+      { k1: 'a1b2c3d4e5f60001', k2: 'f6e5d4c3b2a10003' },
+      { k1: 'a1b2c3d4e5f60001', k2: 'f6e5d4c3b2a10002' },
+    ]);
+    const d = engine.distinct(datasetId, ['k1', 'k2']);
+    assert.equal(store.get(d.datasetId)!.rows.length, 2);
   });
 });

@@ -206,7 +206,9 @@ export type VerbName =
   | 'top_n'
   | 'select'
   | 'count'
-  | 'join';
+  | 'join'
+  | 'union'
+  | 'distinct';
 
 export type SortDirection = 'asc' | 'desc';
 

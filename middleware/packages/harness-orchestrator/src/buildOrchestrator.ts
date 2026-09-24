@@ -857,6 +857,10 @@ export function buildOrchestratorForAgent(
       bundle: {
         agent: new CliChatAgent({
           dispatch,
+          // #1102 — surface the choice card / follow-up chips / slot picker a
+          // kernel-native tool scheduled this turn on the `done` event, so the
+          // subscription-CLI path renders them like the API-key path.
+          drainTurnCards: () => orchestrator.drainCliTurnCards(),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
           ...(assistantIdentityWithName
             ? { systemPrompt: assistantIdentityWithName }

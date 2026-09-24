@@ -320,6 +320,9 @@ export {
   // …and its production enforcement. Call at boot: a deployment whose timeout
   // knobs invert the hierarchy must not start quietly.
   assertTimeoutHierarchy,
+  // `stop_reason: "refusal"` → explicit notice instead of an empty answer.
+  MODEL_REFUSAL_NOTICE,
+  finalAnswerText,
 } from './orchestrator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
@@ -679,6 +682,28 @@ export {
   MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
 } from './datasetImport.js';
+export type { BuildDatasetOptions, LinkKeyReport } from './datasetImport.js';
+export {
+  createDatasetLinkKeyer,
+  isLinkKeyColumn,
+  linkKeyColumnName,
+  normalizeLinkValue,
+  resolveDatasetLinkKeySecret,
+  LINK_KEY_COLUMN_PREFIX,
+  LINK_KEY_LENGTH,
+  LINK_KEY_SECRET_ENV,
+} from './datasetLinkKey.js';
+export type { DatasetLinkKeyer } from './datasetLinkKey.js';
+export {
+  decryptCell,
+  decryptRows,
+  encryptCell,
+  isEncryptedCell,
+  resolveDatasetCellKey,
+  ENCRYPTED_CELL_PREFIX,
+  UNAVAILABLE_CELL,
+} from './datasetCellCrypto.js';
+export type { DatasetCellKey } from './datasetCellCrypto.js';
 export {
   parseXlsx,
   parseXlsxFirstSheet,
