@@ -1783,6 +1783,30 @@ stehen nur im Katalog-Descriptor. Eine werfende Quelle wird geloggt und
 `complete()` ohne `tools` und bleiben damit im Rahmen des Shape-2-Adapters,
 der nur Completions und forced single-tool structured output kann.
 
+**Pool-Invalidierung bei Credential-Änderung (#1080).** Der Kernel-Pool
+memoisiert pro Provider-Id, auch ein negatives „kein Key". Deshalb hängt er an
+einem kernel-internen Write-Observer der konkreten Vaults
+(`FileSecretVault.onWrite` / `InMemorySecretVault.onWrite`, Typen in
+`src/secrets/vaultWriteEvents.ts`, bewusst **nicht** auf dem
+`SecretVault`-Interface). Der Listener (`src/platform/providerPoolInvalidation.ts`)
+reagiert nur auf den Scope `@omadia/orchestrator`:
+`provider:<id>/api_key` und das Legacy-`anthropic_api_key` →
+`invalidate(id)` + `health.markHealthy(id)`, denn ein neuer Key ist ein neues
+Credential und erbt keinen Breaker-Cooldown.
+`provider:<id>/oauth_access_token` → nur `invalidate(id)`, weil die stündliche
+Rotation dasselbe Credential ist. `verified_at` und die übrigen OAuth-Leaves
+werden ignoriert. Ein `purge` → `invalidateAll()` plus alle Breaker zurück. Der
+Listener läuft, bevor der Write-Promise settled, also vor jedem Reactivate,
+egal über welchen Pfad geschrieben wurde. Zusätzlich invalidieren
+`registerProviderFromPlugin`/`unregisterProviderFromPlugin` die Id, weil der
+Descriptor `keyless`/`oauth`/`baseURL`/Wire-Format bestimmt. Der Pool wird dafür
+vor der Provider-Plugin-Boot-Schleife erzeugt. Der geteilte
+`anthropicClient`/`llm` läuft über `src/platform/sharedAnthropicClientRefresher.ts`
+(serialisiert, getriggert von `reactivateAgent` **und** einem Vault-Listener).
+Ein entfernter Vault-Key fällt auf `ANTHROPIC_API_KEY` zurück, sonst auf einen
+unauthentifizierten `''`-Client. Offen: Bereits gebaute dynamische Sub-Agenten
+behalten ihren Provider bis zum nächsten Rebuild.
+
 **Capability + Manifest.** Das Plugin published zusätzlich
 `memoryFeatureStatus@1` (Service-Key `memoryFeatureStatus`, Kontrakt in
 `src/memoryFeatureStatus.ts`) und deklariert

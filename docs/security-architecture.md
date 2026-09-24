@@ -40,6 +40,12 @@ Benefits:
   place.
 - Rotating a credential is a vault update + middleware redeploy. The agent
   configuration does not change.
+- LLM provider keys are the exception to the redeploy: since #1080 a vault
+  write to the orchestrator scope drops the kernel provider pool's cached
+  client, and removing the Anthropic key revokes the shared host
+  `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
+  otherwise to an unauthenticated client). A deleted key stops being used
+  without a restart.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
 proxy contract next to the handler, not in the agent prompt.

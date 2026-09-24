@@ -509,8 +509,9 @@ export class DynamicAgentRuntime {
       provider = liveAnthropicProvider();
     } else {
       // #1033 W1 — through the kernel's provider pool when one is wired
-      // (memoised per provider id; a key change is picked up on invalidate),
-      // else a one-off resolve as before.
+      // (memoised per provider id; the kernel's vault write listener
+      // invalidates the entry on a key change, #1080), else a one-off
+      // resolve as before.
       const resolved = this.deps.providerPool
         ? await this.deps.providerPool.get(hostProviderId)
         : this.deps.hostGetSecret
