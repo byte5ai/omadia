@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, type AdminProvider, type ProvidersResponse } from '../_lib/api';
@@ -47,8 +47,9 @@ vi.mock('next/link', () => ({
   }): React.ReactElement => <a href={href}>{children}</a>,
 }));
 
-// `ApiError` stays real: page.tsx narrows the operator-agents rejection with
-// `instanceof ApiError` to tell the structured 503 from any other failure.
+// `ApiError` stays real: the readiness classifier narrows the operator-agents
+// rejection with `instanceof ApiError` to tell the middleware's own structured
+// 503 from any other failure.
 vi.mock('../_lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../_lib/api')>()),
   getProviders: mockGetProviders,
@@ -70,7 +71,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   DashboardOnboarding: ({
     llmVerified,
     cliLoggedIn,
-    runtimeUp,
+    runtimeState,
     assignedProviderKind,
     assignedProviderStatus,
     assignedProviderLabel,
@@ -79,7 +80,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   }: {
     llmVerified: boolean;
     cliLoggedIn: boolean;
-    runtimeUp: boolean;
+    runtimeState: string;
     assignedProviderKind: 'cli' | 'oauth' | 'api' | null;
     assignedProviderStatus: string | null;
     assignedProviderLabel: string | null;
@@ -90,7 +91,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
       data-testid="onboarding"
       data-llm-verified={String(llmVerified)}
       data-cli-logged-in={String(cliLoggedIn)}
-      data-runtime-up={String(runtimeUp)}
+      data-runtime-state={runtimeState}
       data-assigned-kind={String(assignedProviderKind)}
       data-assigned-status={String(assignedProviderStatus)}
       data-assigned-label={String(assignedProviderLabel)}
@@ -261,7 +262,7 @@ describe('dashboard — LLM health derivation', () => {
   // OM-78 (#1001) — the runtime signal handed to onboarding is the operator
   // route's answer, the same probe the readiness banner uses. A 503 there
   // means "not up", whatever the provider list says.
-  it('OM-78: runtimeUp follows /operator/agents, not the provider list', async () => {
+  it('OM-78: the runtime state follows /operator/agents, not the provider list', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse([provider({ status: 'verified', connected: true })]),
     );
@@ -271,27 +272,40 @@ describe('dashboard — LLM health derivation', () => {
     render(await DashboardPage());
     const onboarding = screen.getByTestId('onboarding').dataset;
     expect(onboarding['llmVerified']).toBe('true');
-    expect(onboarding['runtimeUp']).toBe('false');
+    expect(onboarding['runtimeState']).toBe('down');
   });
 
-  it('OM-78: runtimeUp is true once the operator route answers', async () => {
+  it('OM-78: the runtime state is up once the operator route answers', async () => {
     mockGetProviders.mockResolvedValue(providersResponse([provider()]));
     render(await DashboardPage());
-    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
+    expect(screen.getByTestId('onboarding').dataset['runtimeState']).toBe('up');
   });
 
-  it('OM-78: a transient 500 (or a network blip) does not un-tick step 1 — only the structured 503 does', async () => {
+  /**
+   * #1088 — this test used to assert the opposite ("a transient 500 or a
+   * network blip does not un-tick step 1"), which was OM-78's deliberate bias
+   * toward `true`. A boolean cannot tell a blip from a stopped container, and
+   * the bias made the dashboard read all-green during an outage: with the
+   * middleware down, `/operator/agents` rejects with a bare `TypeError` (an
+   * RSC call goes direct to MIDDLEWARE_URL) or with a proxy 5xx — never the
+   * structured 503 — so step 1 ticked with "Die Agent-Runtime läuft."
+   *
+   * The state is now reported as `unreachable` and step 1 stays open. Blip
+   * resistance, if it is wanted back, belongs in a bounded retry.
+   */
+  it.each([
+    ['a stopped container (transport error)', new TypeError('fetch failed')],
+    ['an aborted call', new DOMException('aborted', 'TimeoutError')],
+    ['a proxy 502', new ApiError(502, 'GET /v1/operator/agents failed: 502', '<html>')],
+    ['a transient 500', new ApiError(500, 'GET /v1/operator/agents failed: 500')],
+    ['a bare 503 with no structured body', new ApiError(503, 'x', '<html>503')],
+  ])('#1088: %s reads as unreachable, not as a running runtime', async (_label, reason) => {
     mockGetProviders.mockResolvedValue(providersResponse([provider()]));
-    mockListOperatorAgents.mockRejectedValue(
-      new ApiError(500, 'GET /v1/operator/agents failed: 500'),
+    mockListOperatorAgents.mockRejectedValue(reason);
+    render(await DashboardPage());
+    expect(screen.getByTestId('onboarding').dataset['runtimeState']).toBe(
+      'unreachable',
     );
-    render(await DashboardPage());
-    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
-
-    cleanup();
-    mockListOperatorAgents.mockRejectedValue(new TypeError('fetch failed'));
-    render(await DashboardPage());
-    expect(screen.getByTestId('onboarding').dataset['runtimeUp']).toBe('true');
   });
 
   // OM-74 (#999) — the done-copy follows what the orchestrator is ASSIGNED to.
