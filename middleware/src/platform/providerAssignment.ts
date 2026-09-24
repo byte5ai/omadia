@@ -13,9 +13,10 @@
  * catalog instead of being pinned to today's frontier model. The consumers of
  * the keys written here resolve it with `resolveConfiguredModel` /
  * `resolveModelRefStrict` (#1079): the orchestrator, verifier and extras once
- * at activation (the assignment reactivates the plugin; a catalog change that
- * moves the class reactivates it again, see classRefReactivation.ts), the
- * issue reformulation (`issuesRouter`, reading `orchestrator_model`) per call.
+ * at activation (the assignment reactivates the plugin; they keep that model
+ * until the next reactivation or restart, even if a later discovery run moves
+ * the class), the issue reformulation (`issuesRouter`, reading
+ * `orchestrator_model`) per call.
  * It fails closed only when the provider serves no model at all.
  * Provider-qualified ids and legacy aliases are still normalised to the bare
  * vendor `modelId`.

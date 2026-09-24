@@ -364,7 +364,6 @@ import {
   createModelCatalogSync,
   type ModelCatalogSync,
 } from './platform/modelCatalogSync.js';
-import { createClassRefReactivator } from './platform/classRefReactivation.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -996,19 +995,9 @@ async function main(): Promise<void> {
   // hot-install path below can refresh a runtime-installed provider through
   // it; the boot refresh + timer start further down, once installed provider
   // plugins are in the catalog too.
-  // #1083 — the orchestrator / verifier / extras resolve a class ref once, at
-  // activation; a discovery run that moves the class reactivates them so the
-  // model they run matches what the providers page labels the class with.
-  // `reactivateAgent` is bound lazily: the reactivator only calls it after
-  // boot activation finished (see `activationFinished` below).
-  const classRefReactivator = createClassRefReactivator({
-    installedRegistry,
-    reactivate: (id) => reactivateAgent(id),
-  });
   const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
     catalog: llmProviderCatalog,
     getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
-    beforeModelsSwap: (providerId) => classRefReactivator.beforeModelsSwap(providerId),
   });
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
@@ -1942,15 +1931,10 @@ async function main(): Promise<void> {
   // and the Microsoft365Accessor provided by de.byte5.integration.microsoft365).
   // Agents below consume these services through ctx, so the tool runtime
   // must run before the agent runtime.
-  classRefReactivator.activationStarting();
   await toolPluginRuntime.activateAllInstalled();
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
   );
-  // A discovery run that landed while the plugins above activated may have
-  // moved a class ref after they resolved it — reactivate those now (awaited,
-  // so it never overlaps the boot steps below; never throws).
-  await classRefReactivator.activationFinished();
 
   // OB-61 fix (boot path) — when the operator completed /setup in a PRIOR
   // session, the anthropic key lives in the orchestrator's VAULT, not in ENV.

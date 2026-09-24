@@ -424,9 +424,14 @@ async function defaultResolveLlm(
   // alias. Adapters send `model` raw, so resolve it to the concrete vendor id
   // first; an unresolvable ref falls back to the provider's default.
   const rawModel = cfg['orchestrator_model'];
-  const model =
-    (typeof rawModel === 'string' && resolveConfiguredModel(rawModel, providerId)) ||
-    defaultModelFor(providerId);
+  const resolved =
+    typeof rawModel === 'string' ? resolveConfiguredModel(rawModel, providerId) : undefined;
+  const model = resolved || defaultModelFor(providerId);
+  if (typeof rawModel === 'string' && rawModel !== '' && !resolved) {
+    console.warn(
+      `[issues] orchestrator_model '${rawModel}' does not resolve for provider '${providerId}' — reformulating with '${model}'`,
+    );
+  }
   const provider = await resolveLlmProvider({
     providerId,
     getSecret: (k) => deps.vault.get(ORCHESTRATOR_ID, k),
