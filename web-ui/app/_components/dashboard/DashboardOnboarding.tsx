@@ -399,8 +399,9 @@ export function DashboardOnboarding({
         icon={Cpu}
         title={t('llmStep.title')}
       >
-        {/* Body lives in `LlmStep.tsx` (three states: done / access without
-            runtime / nothing yet) so this file stays under the size limit. */}
+        {/* Body lives in `LlmStep.tsx` (four states: done / unreachable /
+            access without runtime / nothing yet) so this file stays under the
+            size limit. */}
         <LlmStepBody
           runtimeState={runtimeState}
           accessWithoutRuntime={accessWithoutRuntime}

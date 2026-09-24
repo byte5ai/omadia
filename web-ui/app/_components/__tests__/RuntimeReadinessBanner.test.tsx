@@ -65,12 +65,25 @@ describe('<RuntimeReadinessBanner />', () => {
     );
   });
 
+  // #1088 — a hung middleware must surface within the same 10 s the
+  // server-rendered probe allows, not after undici's ~300 s headers timeout.
+  it('bounds the probe with an abort signal', async () => {
+    respondWith(200, { agents: [] });
+    renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
+    await flush();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/bot-api/v1/operator/agents',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it('stays silent when the runtime is up (200)', async () => {
     respondWith(200, { agents: [] });
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
 
-    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('runtime-readiness-card')).not.toBeInTheDocument();
   });
 
   /**
@@ -93,7 +106,10 @@ describe('<RuntimeReadinessBanner />', () => {
     renderWithIntl(<RuntimeReadinessBanner />, { locale: 'de' });
     await flush();
 
-    expect(screen.queryByText(TITLE_DE)).not.toBeInTheDocument();
+    // No card at all — not just not the access copy. A 401 says nothing about
+    // the runtime, so it must not read as `unreachable` either.
+    expect(screen.queryByTestId('runtime-readiness-card')).not.toBeInTheDocument();
+    expect(screen.queryByText(TITLE_UNREACHABLE_DE)).not.toBeInTheDocument();
   });
 
   it('does not probe at all on the auth pages', async () => {

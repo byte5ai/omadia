@@ -58,6 +58,11 @@ import {
 
 /** Heartbeat cadence while the card is visible — catches the fix landing. */
 const HEARTBEAT_MS = 60 * 1000;
+// #1088 — same 10 s cap the server-rendered dashboard probe gets from
+// `rscTimeoutSignal`. Without it a middleware that accepts the connection but
+// never answers kept this card hidden until undici's ~300 s headers timeout,
+// while dashboard step 1 already said "unreachable".
+const PROBE_TIMEOUT_MS = 10 * 1000;
 
 function isAuthPage(pathname: string): boolean {
   return pathname === '/login' || pathname === '/setup';
@@ -101,6 +106,7 @@ export function RuntimeReadinessBanner(): React.ReactElement | null {
       try {
         const res = await fetch('/bot-api/v1/operator/agents', {
           credentials: 'include',
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
         // Only the 503 carries a structured body; a proxy's HTML error page
         // has nothing to classify on, so don't read it.
