@@ -176,10 +176,17 @@ export function compileBoundaries(
     }
   }
 
+  // Custom lines are spliced verbatim — the operator writes the finished
+  // rule ("Give no investment advice."), and it reaches the prompt with the
+  // meaning as written. An older build wrapped each line in a hardcoded
+  // "You must NOT: " prefix, which turned a prohibition into a double
+  // negative (issue #1101). Verbatim also matches the Quality Guard plugin,
+  // which splices `boundaries.custom` unchanged, so a line means the same
+  // thing on both surfaces.
   for (const custom of customLines) {
     const trimmed = custom.trim();
     if (trimmed.length > 0) {
-      lines.push(`You must NOT: ${trimmed}`);
+      lines.push(trimmed);
     }
   }
 

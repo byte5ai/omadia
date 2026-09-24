@@ -137,9 +137,10 @@ export function AgentBoundariesEditor(
         <textarea
           id="agent-boundaries-custom"
           className="min-h-[5rem] w-full rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 px-3 py-2 font-mono text-xs"
-          // One rule per line — the shape the compiler emits, so what the
-          // operator types is what the agent reads.
+          // One rule per line, spliced verbatim into the prompt — what the
+          // operator types is what the agent reads (issue #1101).
           value={custom.join('\n')}
+          placeholder={t('customPlaceholder')}
           disabled={props.disabled}
           onChange={(e) =>
             setBoundaries(

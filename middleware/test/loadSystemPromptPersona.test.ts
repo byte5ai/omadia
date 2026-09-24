@@ -325,7 +325,7 @@ quality:
     assert.match(out, /medical diagnoses/);
   });
 
-  it('includes custom "You must NOT:" lines after preset prompts', async () => {
+  it('includes custom boundary lines verbatim after preset prompts', async () => {
     await fs.writeFile(
       path.join(pkgRoot, 'AGENT.md'),
       `---
@@ -334,7 +334,7 @@ quality:
     presets:
       - no-pii
     custom:
-      - reveal staff names
+      - Never reveal staff names.
 ---
 
 # Body
@@ -342,7 +342,8 @@ quality:
     );
     const out = await composeBoundariesFromAgentMd(pkgRoot);
     assert.match(out, /personally identifiable information/);
-    assert.match(out, /You must NOT: reveal staff names/);
+    assert.match(out, /\nNever reveal staff names\./);
+    assert.doesNotMatch(out, /You must NOT:/);
   });
 
   it('silently skips unknown preset IDs at runtime (warnings are edit-time only)', async () => {
