@@ -787,7 +787,8 @@ Versionen). Die PersonaPillar („Charakter prägen") bietet:
   Healthcare, Legal, E-Commerce, Creative Agency), die nur die Achsen verschieben.
 - **Boundary-Presets** — zwölf Vorgaben in vier Kategorien (Daten, Scope, Autorität,
   Kommunikation), z. B. „keine PII", „nur eigene Domäne", „keine Zusagen", plus ein
-  Freitextfeld für eigene „You must NOT"-Regeln.
+  Freitextfeld für eigene Regeln, die als vollständige Sätze wörtlich in den Prompt
+  übernommen werden (Issue #1101).
 - **Konflikt-Erkennung** rund um Sycophancy: eine hohe Sycophancy-Einstellung zusammen
   mit sehr niedriger oder sehr hoher `directness` wird als Warnung an der betroffenen
   Achse markiert, bevor daraus ein widersprüchlicher System-Prompt wird.
