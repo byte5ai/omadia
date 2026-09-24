@@ -36,6 +36,45 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — cost-ledger rows are attributable to a turn, a session, and the call time (#1098)
+
+2026-09-21 — every LLM call writes one row into the `token_usage` ledger
+(`@omadia/usage-telemetry`), but the rows carried no attribution: `session_id`
+was NULL on every row, there was no `turn_id` column at all, and `created_at`
+recorded the flush tick, not the call — the recorder buffers and flushes on a
+5-second grid, so `DEFAULT NOW()` stamped every row of a flush with one
+transaction-start time. A single turn emits several rows (one per streaming
+iteration plus background extras / model- and persona-router calls), so "what
+did this turn/session/user cost?" could not be answered, and a time-window
+heuristic failed because rows of different turns landed on the same tick.
+
+Graph migration `0033_token_usage_attribution.sql` adds `turn_id TEXT NULL` (with
+a partial index) and `provider TEXT NULL` (mirroring `turn_receipts.provider`, so
+a provider fallback is visible in the ledger). The recorder now freezes the call
+time (`occurredAt`) at `recordUsage()` and writes it explicitly to `created_at`
+instead of leaning on `DEFAULT NOW()` at flush. Turn attribution is read from the
+orchestrator's per-turn `AsyncLocalStorage` context via a `setUsageContextProvider`
+hook (the telemetry package sits below the orchestrator and cannot import it), so
+the seams inside the orchestrator's own turn scope (streaming iterations, model-
+and persona-router calls, extras hooks) pick up `turn_id`/`session_id` without
+threading ids through each call site. Only that scope counts
+(`usageContextFromTurn`): the placeholder scopes routes and adapters open around
+a turn (`http-chat-<scope>`, or `''` on channel, routine and canvas turns) read
+as "no turn", so their rows stay NULL instead of carrying a plausible but wrong
+id. The subscription runtime (`CliChatAgent`) never opens an orchestrator scope
+and passes its own per-turn id explicitly; ids passed on a `UsageRecord` always
+win. Not yet attributed: the verifier scorers (they run after the turn scope
+closed) and `claude-cli-completion` rows, which stay NULL. Off-turn callers
+(background jobs) keep NULL ids rather than throwing. `session_id` maps to the
+turn's `sessionScope` — best-effort, since unscoped HTTP turns share
+`http-default` (see #445), so group on `turn_id`. Regression tests
+(`test/costLedger/`) cover turn/session attribution, placeholder scopes writing
+NULL, two turns separable within one flush window (including on the CLI path),
+the call time surviving the flush, the provider column at each seam, and the
+no-context NULL path. Deploy graph migration 0033 before this code: the INSERT
+names the new columns, so an older schema drops every usage batch. The
+`/api/usage` missing role check is out of scope and tracked separately.
+
 ### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
 
 2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`

@@ -413,6 +413,42 @@ export const turnContext = {
 };
 
 /**
+ * #1098 — the cost-ledger attribution a turn scope can vouch for, or
+ * `undefined` for "no turn" (the row then writes NULL ids).
+ *
+ * Only the orchestrator's OWN turn scope qualifies: it always sets
+ * `sessionScope` (`input.sessionScope ?? turnId`), and its nested dispatch
+ * scopes spread it along. The outer scopes that routes and adapters open around
+ * a turn — `chat.ts`'s `http-chat-<scope>`, `runWithChatParticipants`, the
+ * routine runner, the canvas orchestrator — carry a PLACEHOLDER `turnId` (`''`,
+ * or one shared by every turn of a session) and no `sessionScope`. Reading those
+ * as attribution would stamp plausible-looking wrong ids on the row, which is
+ * worse than an honest NULL. Nested scopes that copy fields selectively
+ * (`pluginContext.callTool`, skill-bound tools) drop `sessionScope` too and read
+ * as "no turn"; no capture seam runs inside them today.
+ *
+ * Structural return type so this module keeps its dependency-free shape; it is
+ * assignable to `@omadia/usage-telemetry`'s `UsageContext`.
+ */
+export function usageContextFromTurn(
+  ctx: TurnContextValue | undefined,
+): TurnUsageAttribution | undefined {
+  if (!ctx || ctx.turnId === '' || ctx.sessionScope === undefined) return undefined;
+  return { turnId: ctx.turnId, sessionId: ctx.sessionScope };
+}
+
+export interface TurnUsageAttribution {
+  readonly turnId: string;
+  readonly sessionId: string;
+}
+
+/** {@link usageContextFromTurn} for the ambient turn — the provider the
+ *  orchestrator registers with `setUsageContextProvider`. */
+export function currentUsageContext(): TurnUsageAttribution | undefined {
+  return usageContextFromTurn(storage.getStore());
+}
+
+/**
  * Implementation of {@link turnContext.runGenerator}. Kept as a module-level
  * generator function (rather than inline) so it can `yield` while still owning
  * the `storage.run` wrapping of every `next()`.
