@@ -247,6 +247,12 @@ export interface RunTracePayload {
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
   /**
+   * #1094 — the failure detail when `status` is `'error'` (the degraded-turn
+   * path sets it). Mirrors `RunTrace.error` in `@omadia/plugin-api`, which the
+   * session logger spreads this payload into.
+   */
+  error?: string;
+  /**
    * #650 (epic #642) — the model that produced the answer, and the provider
    * that served it. Mirrors `RunTrace` in `@omadia/plugin-api`; this payload is
    * a structural copy of it (see the note on `RunTracePayload` in

@@ -16,9 +16,11 @@
  * so the bubble can render a LOCALIZED warning (the old behavior was a
  * hardcoded English sentence shown in normal answer styling, in a German UI).
  * The streaming `done` event also carries `degraded` / `committedTools` /
- * `correlationId` as first-class fields; this parser is what covers the paths
- * where only the persisted answer text survives — a reloaded session restored
- * from the server-side mirror.
+ * `correlationId` as first-class fields, and on the live path its `answer` is
+ * already the server-composed notice, not the marker. This parser is the
+ * defensive fallback for text that is still the bare marker (the form the
+ * session log persists). It does NOT recover a turn restored from the
+ * server-side chat mirror, which stores the expanded notice.
  */
 export interface TurnIncomplete {
   /** Distinct tool names that committed before the throw, in commit order.

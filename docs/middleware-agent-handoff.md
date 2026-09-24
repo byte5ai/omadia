@@ -2461,9 +2461,17 @@ degradiert markiert und darf von keinem Consumer als Antwort gerendert werden:
   `composeTurnIncompleteText(locale, tools, ref)` (`@omadia/channel-sdk`) —
   dieselbe Locale-Mechanik wie die KI-Kennzeichnung, Default `de`. Text-only-
   Channels (Teams, Telegram, Mail) rendern damit lesbaren Text statt eines
-  Tags; Rich-Clients ignorieren ihn und rendern aus den Event-Feldern ihre
-  eigene Warnung (`web-ui/app/_lib/turnIncomplete.ts` + `chat.turnIncomplete.*`,
-  das den persistierten Marker zusätzlich für den Mirror-/Reload-Pfad parst).
+  Tags. Auch der Web-Chat zeigt diesen Text (also in der Operator-Locale, nicht
+  der UI-Locale) und setzt aus den Event-Feldern nur eine UI-lokalisierte
+  Warn-Überschrift darüber (`TurnIncompleteNotice`, `chat.turnIncomplete.*`).
+  `web-ui/app/_lib/turnIncomplete.ts` parst den rohen Marker nur als Fallback;
+  der serverseitige Chat-Mirror speichert die expandierte Notiz und verliert
+  `degradedTurn` (zod-`MessageSchema`), ein Mirror-Restore zeigt also nur den
+  Text ohne Warn-Überschrift.
+- **Ausnahme Privacy Shield v4:** Hat `v4_render_answer` die Antwort schon
+  serverseitig gerendert (`answerSource: 'privacy-render'`), bleibt diese
+  Antwort stehen — die Notiz ersetzt sie nicht. `degraded`, `committedTools`
+  und `correlationId` bleiben am Event.
 - Ein degradierter Turn zählt **nicht** als „letzter Turn ok" im Operator-Health
   (`routes/chat.ts`), **nicht** als `ok` im Public-API-Key-Audit
   (`chatRouter.ts`), und der Verifier überspringt ihn (keine Claims).

@@ -14,8 +14,10 @@
  * warning: Teams, Telegram and email render `done.answer` and nothing else. A
  * flag is invisible there, and the raw marker is unreadable — both would leave
  * those users worse off than the (wrong-language, falsely-successful) sentence
- * this replaced. Rich clients ignore this text and render their own warning
- * from the `degraded` / `committedTools` / `correlationId` fields.
+ * this replaced. The web chat renders this text as well, under a UI-localized
+ * warning heading it derives from the `degraded` / `committedTools` /
+ * `correlationId` fields — so its body is in the operator's locale, which can
+ * differ from the UI locale.
  */
 
 import { normalizeDisclosureLocale } from './aiDisclosure.js';

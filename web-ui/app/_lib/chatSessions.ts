@@ -554,10 +554,13 @@ export interface Message {
    * the side effect stands but no answer was ever generated. The turn is not
    * an `error` (that would make the next turn re-invoke the committed tool —
    * #506), and it must not render as an ordinary success either: the bubble
-   * shows a localized warning naming these tools plus the support token.
-   * Restored on reload — `coerceMessage` spreads unknown fields through —
-   * and, for sessions restored from the server-side mirror where only the
-   * answer text survives, re-derived by `parseTurnIncomplete`.
+   * gets a warning heading over the server's notice (see
+   * `TurnIncompleteNotice`). Restored on a local reload — `coerceMessage`
+   * spreads unknown fields through. NOT carried by the server-side mirror:
+   * its `MessageSchema` (middleware `routes/chatSessions.ts`) strips unknown
+   * keys, and the mirror stores the expanded notice rather than the marker,
+   * so `parseTurnIncomplete` cannot re-derive it — a mirror-restored degraded
+   * turn shows the notice text without the warning heading.
    */
   degradedTurn?: {
     /** Distinct tool names that committed, in commit order. Not a call count. */

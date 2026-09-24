@@ -68,10 +68,12 @@ expanded at the delivery boundary via `composeTurnIncompleteText`
 (`@omadia/channel-sdk`), through the same locale mechanism as the AI-Act
 marking — so Teams/Telegram/email, which render `answer` and nothing else, get
 readable text instead of a tag, while the web UI rings the bubble in the
-warning colour and adds its own localized card. A degraded turn no longer
-counts as the operator's "last turn ok" health signal, nor as an `ok` entry in
-the Public API key audit trail, and the verifier skips it (a marker carries no
-claims to check). The `@omadia/channel-api` README documents the degraded
+warning colour and adds its own localized card. If Privacy Shield v4 had
+already rendered the answer server-side (`answerSource: 'privacy-render'`)
+before the failure, that answer is kept and the notice does not replace it.
+A degraded turn no longer counts as the operator's "last turn ok" health
+signal, nor as an `ok` entry in the Public API key audit trail, and the
+verifier skips it (a notice carries no claims to check). The `@omadia/channel-api` README documents the degraded
 terminal and how a client should handle it.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)

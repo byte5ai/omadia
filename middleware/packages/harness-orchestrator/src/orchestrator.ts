@@ -1160,10 +1160,10 @@ const PROMPT_MASK_BLOCKED_ANSWER =
  *
  * A marker instead of a sentence, following the `<mcp-auth-required …>`
  * convention already in use for machine blocks that ride the answer text:
- * language-free, parseable, and — unlike a bare event flag — visible on
- * text-only channels (Telegram, email) that render `answer` and nothing else.
- * Rich clients (web chat) strip it and render a localized warning from it; see
- * `web-ui/app/_lib/turnIncomplete.ts`, which parses this exact shape.
+ * language-free and parseable. It is what the session log persists; what a
+ * channel receives is the notice `expandDegradedDoneEvent` composes from the
+ * event fields at the delivery boundary. `web-ui/app/_lib/turnIncomplete.ts`
+ * parses this exact shape as a fallback for text that is still the marker.
  *
  * Tool names are emitted verbatim minus anything that could break the
  * attribute quoting — defensive only: native tool names are `[a-z_]`.
@@ -3523,16 +3523,21 @@ export class Orchestrator {
    * is invisible there and the raw marker is unreadable. The wording is
    * therefore composed here, through the same locale the AI-Act marking uses
    * (operator setup → `'de'` default), and the machine-readable fields
-   * (`degraded`, `committedTools`, `correlationId`) ride on unchanged for rich
-   * clients, which render their own localized warning and ignore this text.
+   * (`degraded`, `committedTools`, `correlationId`) ride on unchanged. The web
+   * chat renders this text too, under its own UI-localized warning heading.
    *
-   * A `done` that is not degraded is returned untouched — byte-identical.
+   * A `done` that is not degraded is returned untouched — byte-identical. So
+   * is a degraded `done` whose answer Privacy Shield v4 already rendered
+   * server-side (`answerSource: 'privacy-render'`): a `v4_render_answer` call
+   * counts as committed, so a throw on the model call after it lands here, and
+   * replacing that table with "your question is still unanswered" would drop
+   * a real answer. The event stays flagged `degraded` for audit/health/verifier.
    */
   private expandDegradedDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
   ): Extract<ChatStreamEvent, { type: 'done' }> {
-    if (done.degraded !== true) return done;
+    if (done.degraded !== true || done.answerSource === 'privacy-render') return done;
     // The resolved carrier is absent when an operator set the disclosure to
     // `'off'`; the notice is not a disclosure and must still be localized, so
     // it falls back to the operator's configured locale and then to the

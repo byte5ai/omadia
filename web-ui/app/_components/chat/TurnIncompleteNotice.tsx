@@ -10,13 +10,15 @@ interface Props {
    *  log line. Absent on middleware older than #1094. */
   correlationId?: string;
   /**
-   * True when the bubble already renders the server-composed notice (the
-   * orchestrator expands the marker into a localized sentence at the delivery
-   * boundary, for channels that render `answer` and nothing else). The card
-   * then shows the warning header ONLY — repeating the tools and the support
-   * token underneath the same sentence would say everything twice. False on a
-   * session restored from the server-side mirror, where the persisted answer
-   * is the neutral marker and this card is the only explanation on screen.
+   * True when the bubble already renders answer text. On the live stream this
+   * is always the case: the orchestrator expands the marker into a notice at
+   * the delivery boundary, in the OPERATOR's disclosure locale (not the UI
+   * locale), for channels that render `answer` and nothing else. The card then
+   * shows only its UI-localized warning header — repeating the tools and the
+   * support token under the same sentence would say everything twice. False
+   * only when the text was the bare `<turn-incomplete>` marker, which
+   * `parseTurnIncomplete` strips to nothing; this card is then the only
+   * explanation on screen.
    */
   hasAnswerText: boolean;
 }
@@ -29,9 +31,10 @@ interface Props {
  * this, the orchestrator filled that `done` with a hardcoded English sentence
  * claiming the actions "completed successfully" — rendered in ordinary answer
  * styling, in a German UI, with nothing marking it as a failure and no token
- * to hand to support. The server now sends a neutral marker plus a `degraded`
- * flag; the wording lives here, in the catalog, like every other user-facing
- * text.
+ * to hand to support. The server now sends a `degraded` flag with the facts
+ * and a notice composed in the operator's locale; this card adds the
+ * UI-localized warning heading, and renders the catalog body itself only when
+ * no answer text is on screen (see `hasAnswerText`).
  *
  * Deliberately states BOTH halves of the truth: the listed tools really did
  * run (so the user must not simply repeat a side-effecting request blindly),

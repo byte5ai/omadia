@@ -7,12 +7,11 @@ import type {
   LlmResponse,
   LlmStreamEvent,
 } from '@omadia/llm-provider';
+import type { PrivacyGuardService, PrivacyRenderedAnswer } from '@omadia/plugin-api';
 import type { ChatStreamEvent } from '../../packages/harness-channel-sdk/src/chatAgent.js';
 import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
-import {
-  Orchestrator,
-  type SessionLogEntry,
-} from '../../packages/harness-orchestrator/src/orchestrator.js';
+import { Orchestrator } from '../../packages/harness-orchestrator/src/orchestrator.js';
+import type { SessionLogEntry } from '../../packages/harness-orchestrator/src/sessionLogger.js';
 
 // #644 — the streaming `done` event's `answer` now carries the AI-Act Art. 50
 // marking, folded at the delivery boundary; the session log records the RAW
@@ -269,6 +268,11 @@ describe('Issue #506 — report success when a tool already committed', () => {
         done.runTrace?.status,
         'error',
         'the run trace still claims success for a turn that threw',
+      );
+      assert.equal(
+        done.runTrace?.error,
+        'boom: provider hard-failed',
+        'the run trace records the failure without its cause',
       );
       // No hardcoded prose in the orchestrator: the catch block emits a
       // language-free marker and the DELIVERED wording is composed at the
@@ -582,7 +586,9 @@ describe('Issue #506 — report success when a tool already committed', () => {
         }),
       },
     ];
-    const answerFor = async (locale: string | undefined): Promise<string> => {
+    const answerFor = async (
+      aiDisclosure: ConstructorParameters<typeof Orchestrator>[0]['aiDisclosure'],
+    ): Promise<string> => {
       const { sessionLogger } = recordingSessionLogger();
       const orchestrator = new Orchestrator({
         provider: fakeStreamProvider(scripted()),
@@ -592,12 +598,12 @@ describe('Issue #506 — report success when a tool already committed', () => {
         domainTools: [],
         nativeToolRegistry: registry,
         sessionLogger,
-        ...(locale ? { aiDisclosure: { level: 'standard' as const, locale } } : {}),
+        ...(aiDisclosure ? { aiDisclosure } : {}),
       });
       const events: ChatStreamEvent[] = [];
       for await (const ev of orchestrator.chatStream({
         userMessage: 'create a widget',
-        sessionScope: `sess-1094-locale-${locale ?? 'default'}`,
+        sessionScope: `sess-1094-locale-${aiDisclosure?.level ?? 'default'}-${aiDisclosure?.locale ?? 'default'}`,
       })) {
         events.push(ev);
       }
@@ -606,11 +612,104 @@ describe('Issue #506 — report success when a tool already committed', () => {
       return done.type === 'done' ? done.answer : '';
     };
 
-    const english = await answerFor('en');
+    const english = await answerFor({ level: 'standard', locale: 'en' });
     assert.match(english, /This turn did not finish/);
     assert.match(english, /manage_widget/);
 
     const german = await answerFor(undefined);
     assert.match(german, /Dieser Turn wurde nicht abgeschlossen/);
+
+    // An operator who switched the AI-Act marking OFF still configured a
+    // language: the notice is not a disclosure, so it must not lose the
+    // operator locale along with the (absent) disclosure carrier.
+    const englishDisclosureOff = await answerFor({ level: 'off', locale: 'en' });
+    assert.match(
+      englishDisclosureOff,
+      /This turn did not finish/,
+      'with disclosure off the notice fell back to German despite locale "en"',
+    );
+  });
+
+  it('keeps a Privacy Shield v4 server-rendered answer when the model call after `v4_render_answer` throws', async () => {
+    // `v4_render_answer` is an ordinary non-error tool result, so it counts as
+    // committed; nothing short-circuits the loop after it, so a follow-up model
+    // call still runs. When that call throws, `chatStream` swaps the rendered
+    // table in (`answerSource: 'privacy-render'`) — and the degraded-notice
+    // expansion must not then overwrite a real answer with "your question is
+    // still unanswered". The turn stays flagged for audit/health/verifier.
+    const RENDERED = '| Mitarbeiter | Urlaubstage |\n|---|---|\n| Erika Muster | 12 |';
+    let stashed: PrivacyRenderedAnswer | undefined;
+    const privacyService = {
+      async internToolResultV4(request: { toolName: string; rawResult: string }) {
+        return { digestText: request.rawResult, datasetId: `ds-${request.toolName}` };
+      },
+      async recordBypassedTool() {},
+      async runV4Tool(request: { toolName: string }) {
+        if (request.toolName === 'v4_render_answer') {
+          stashed = { text: RENDERED, maskedValues: [] };
+        }
+        return { resultText: 'rendered' };
+      },
+      async subAgentResultV4() {
+        return { resultText: '' };
+      },
+      async takeRenderedAnswerV4() {
+        const out = stashed;
+        stashed = undefined;
+        return out;
+      },
+      v4ToolSpecs() {
+        return [
+          {
+            name: 'v4_render_answer',
+            description: 'render the final answer server-side',
+            input_schema: { type: 'object', properties: {}, required: [] },
+          },
+        ];
+      },
+      async finalizeTurn() {
+        return undefined;
+      },
+    } as unknown as PrivacyGuardService;
+
+    const { sessionLogger } = recordingSessionLogger();
+    const orchestrator = new Orchestrator({
+      provider: fakeStreamProvider([
+        streamWithTools([{ id: 'use-1', name: 'v4_render_answer', input: {} }]),
+        {
+          throws: Object.assign(new Error('boom: 529 overloaded'), { status: 529 }),
+        },
+      ]),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: new NativeToolRegistry(),
+      sessionLogger,
+      privacyGuard: () => privacyService,
+    });
+
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of orchestrator.chatStream({
+      userMessage: 'Wie viele Urlaubstage hat Erika noch?',
+      sessionScope: 'sess-1094-privacy-render',
+    })) {
+      events.push(ev);
+    }
+
+    assert.equal(events.filter((e) => e.type === 'error').length, 0);
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    if (done.type === 'done') {
+      assert.equal(done.answerSource, 'privacy-render');
+      assert.ok(
+        done.answer.startsWith(RENDERED),
+        `the server-rendered answer was replaced: ${done.answer}`,
+      );
+      assert.doesNotMatch(done.answer, /Dieser Turn wurde nicht abgeschlossen/);
+      assert.equal(done.degraded, true, 'the turn still threw — keep it flagged');
+      assert.deepEqual(done.committedTools, ['v4_render_answer']);
+      assert.ok(done.correlationId, 'the support token must survive the render swap');
+    }
   });
 });
