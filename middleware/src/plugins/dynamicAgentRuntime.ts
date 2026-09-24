@@ -478,7 +478,7 @@ export class DynamicAgentRuntime {
 
     // OB-61 follow-up: the host arms the shared Anthropic client from the
     // operator's vault key AFTER boot (see index.ts
-    // `refreshSharedAnthropicClientFromVault` →
+    // `createSharedAnthropicClientRefresher` →
     // `serviceRegistry.replace('anthropicClient', …)`). The constructor-
     // injected `this.deps.anthropic` is the *boot-time* client, built from
     // `config.ANTHROPIC_API_KEY ?? ''`. On deployments where the key lives

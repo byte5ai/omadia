@@ -44,8 +44,15 @@ Benefits:
   write to the orchestrator scope drops the kernel provider pool's cached
   client, and removing the Anthropic key revokes the shared host
   `anthropicClient`/`llm` live (falling back to `ANTHROPIC_API_KEY` if set,
-  otherwise to an unauthenticated client). A deleted key stops being used
-  without a restart.
+  otherwise to an unauthenticated client). After a deletion the kernel pool
+  and the orchestrator stop using the key immediately. Two limits remain:
+  the shared host client falls back to `ANTHROPIC_API_KEY` when it is set,
+  and on installs whose vault key was seeded from that env var at first boot
+  it is the same key, so host consumers (plan-runner gate, Teams, builder)
+  keep using it until the env var is removed. Sub-agents that
+  `DynamicAgentRuntime` has already built keep their captured provider until
+  a restart or rebuild. Both limits are recorded as open items in
+  `middleware-agent-handoff.md` §13.
 
 Pattern: thin proxy handler → typed client → upstream API. Document the
 proxy contract next to the handler, not in the agent prompt.

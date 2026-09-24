@@ -62,8 +62,12 @@ provider plugin invalidates its id as well. The shared host
 `anthropicClient`/`llm` is now revoked on key removal: it falls back to
 `ANTHROPIC_API_KEY` when set, otherwise to the unauthenticated client a keyless
 boot builds. Before this fix, OB-61's refresh returned early on a missing key.
-Sub-agents that `DynamicAgentRuntime` has already built keep their captured
-provider until their next rebuild, which is tracked as a follow-up.
+Not covered, and not yet filed as an issue: sub-agents that
+`DynamicAgentRuntime` has already built resolve their provider once at
+`activate()` and keep it until a restart or rebuild. After a keyless boot,
+Anthropic sub-agents stay on the unauthenticated client after a key is saved,
+and non-Anthropic agents whose activation failed are never retried. The open
+item is recorded in `docs/middleware-agent-handoff.md` §13.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
