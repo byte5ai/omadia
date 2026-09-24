@@ -90,6 +90,7 @@ export interface PromoteTurnResult {
     | 'already-promoted'
     | 'missing-user'
     | 'missing-turn'
+    | 'tail-only'
     | 'error';
   mkId?: string;
   significance: number | null;
@@ -115,8 +116,11 @@ export async function promoteTurnIfSignificant(
   try {
     const sigRow = await input.pool.query<{
       significance: number | null;
+      tail_only: boolean;
     }>(
-      `SELECT significance FROM graph_nodes
+      `SELECT significance,
+              COALESCE((properties->>'tailOnly')::boolean, FALSE) AS tail_only
+         FROM graph_nodes
        WHERE external_id = $1 AND tenant_id = $2 AND type = 'Turn'
        LIMIT 1`,
       [input.turnId, input.tenantId],
@@ -126,6 +130,19 @@ export async function promoteTurnIfSignificant(
       return { promoted: false, reason: 'missing-turn', significance: null };
     }
     const significance = sigRow.rows[0]!.significance;
+
+    // #1096 — a tail-only Turn exists purely so the model can see the running
+    // conversation; it is not knowledge. Promoting it would mint a
+    // MemorableKnowledge, which IS visible to cross-session recall — the exact
+    // door this flag closes. Relying on "sub-threshold implies below the
+    // promotion threshold" would be wrong: the capture threshold and the
+    // promotion threshold are configured independently (capture_level=aggressive
+    // at 0.5 with KG_ACL_AUTO_PROMOTE_THRESHOLD=0.4 inverts them). Before #1096
+    // this path returned 'missing-turn' because no row existed at all.
+    if (sigRow.rows[0]!.tail_only) {
+      log(`[promotion] skip turn=${input.turnId} reason=tail-only`);
+      return { promoted: false, reason: 'tail-only', significance };
+    }
 
     if (significance === null) {
       log(

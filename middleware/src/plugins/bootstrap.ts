@@ -461,6 +461,7 @@ export async function bootstrapMemoryFromEnv(deps: BootstrapDeps): Promise<void>
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: {
       seed_dir: deps.config.MEMORY_SEED_DIR,
       seed_mode: deps.config.MEMORY_SEED_MODE,
@@ -613,6 +614,7 @@ export async function bootstrapEmbeddingsFromEnv(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config,
   });
 
@@ -827,6 +829,7 @@ export async function bootstrapKnowledgeGraphFromEnv(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config,
   });
 
@@ -885,6 +888,7 @@ async function bootstrapOrchestratorExtrasFromEnv(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config,
   });
 
@@ -959,6 +963,7 @@ async function bootstrapVerifierFromEnv(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config,
   });
 
@@ -1095,6 +1100,7 @@ async function bootstrapOrchestratorFromEnv(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config,
   });
 
@@ -1160,6 +1166,7 @@ async function bootstrapDiagramsFromEnv(deps: BootstrapDeps): Promise<void> {
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: {
       kroki_base_url: KROKI_BASE_URL as string,
       public_base_url: DIAGRAM_PUBLIC_BASE_URL as string,
@@ -1237,6 +1244,7 @@ async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: {
       public_base_url: DIAGRAM_PUBLIC_BASE_URL as string,
       tigris_endpoint: AWS_ENDPOINT_URL_S3 as string,
@@ -1360,6 +1368,7 @@ export async function bootstrapBuiltInPackages(
       installed_version: catalogEntry.plugin.version,
       installed_at: new Date().toISOString(),
       status: 'active',
+      origin: 'bundled',
       config: defaultConfig,
     });
     log(
@@ -1413,6 +1422,7 @@ async function bootstrapMicrosoft365FromEnv(
       installed_version: catalogEntry.plugin.version,
       installed_at: new Date().toISOString(),
       status: 'active',
+      origin: 'bundled',
       config: {
         microsoft_tenant_id: MICROSOFT_APP_TENANT_ID as string,
         microsoft_app_id: MICROSOFT_APP_ID as string,
@@ -1551,6 +1561,7 @@ async function bootstrapTelegramFromEnv(deps: BootstrapDeps): Promise<void> {
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: initialConfig,
   });
   log(
@@ -1611,6 +1622,7 @@ async function autoInstallDependentWithConfig(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: cleaned,
   });
   log(
@@ -1640,6 +1652,7 @@ async function autoInstallDependent(
     installed_version: catalogEntry.plugin.version,
     installed_at: new Date().toISOString(),
     status: 'active',
+    origin: 'bundled',
     config: {},
   });
   log(

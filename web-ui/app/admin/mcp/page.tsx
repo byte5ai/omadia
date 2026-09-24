@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ApiError } from '../../_lib/api';
@@ -2081,6 +2081,7 @@ function AuditPane(): React.ReactElement {
  */
 function BindingsPane(): React.ReactElement {
   const t = useTranslations('adminMcp');
+  const format = useFormatter();
   const [bindings, setBindings] = useState<PublicMcpKeyBinding[] | null>(null);
   const [orchestrators, setOrchestrators] = useState<McpOrchestrator[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -2336,7 +2337,10 @@ function BindingsPane(): React.ReactElement {
           <div className="text-[10px] text-[color:var(--fg-muted)]">
             {t('bindings.meta', {
               rate: b.writeRateLimitPerMinute,
-              updated: b.updatedAt.slice(0, 19).replace('T', ' '),
+              updated: format.dateTime(new Date(b.updatedAt), {
+                dateStyle: 'medium',
+                timeStyle: 'medium',
+              }),
             })}
           </div>
           {b.enabled ? (

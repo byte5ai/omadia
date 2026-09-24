@@ -223,7 +223,7 @@ describe('BuilderAgent.runTurn', () => {
 
   // Regression: customer-reported builder.ask_failed ("Could not resolve
   // authentication method"). On vault-only installs the shared Anthropic
-  // client is hot-swapped AFTER boot (Setup Wizard key entry, OB-61); the
+  // client is hot-swapped AFTER boot (LLM-access-page key entry, OB-61); the
   // BuilderAgent used to capture the unauthenticated boot client at
   // construction and never see the swap. The accessor must be re-resolved
   // on every turn.
@@ -251,7 +251,7 @@ describe('BuilderAgent.runTurn', () => {
         modelChoice: 'claude-haiku-4-5-20251001',
       }),
     );
-    current = vaultProvider; // Setup-Wizard key entry swaps the shared provider
+    current = vaultProvider; // LLM-access-page key entry swaps the provider
     await collect(
       agent.runTurn({
         draftId: harness.draftId,

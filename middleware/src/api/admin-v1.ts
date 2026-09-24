@@ -472,6 +472,19 @@ export interface PluginReadiness {
   error_detail?: string;
 }
 
+/**
+ * #1089 — who put an installed plugin into the runtime registry: `bundled` is
+ * the kernel's boot auto-install, `operator` is a deliberate human install
+ * (hub, ZIP upload, or curated profile apply).
+ *
+ * Not the same question as the catalog's `PluginOrigin` (#794), which asks
+ * whether the package ships inside the middleware image. A bundled package the
+ * operator installs by hand — the KG providers and the memoryStore
+ * alternatives are skipped by the boot auto-install for exactly that reason —
+ * is `operator` here and `bundled` there.
+ */
+export type PluginInstallOrigin = 'bundled' | 'operator';
+
 export interface Plugin {
   id: AgentId;
   kind: PluginKind;
@@ -519,6 +532,21 @@ export interface Plugin {
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;
+  /**
+   * #1089 — WHO installed it: `bundled` for the kernel's boot auto-install,
+   * `operator` for a hub install, ZIP upload or profile apply. Present only
+   * for an installed plugin whose registry entry records it.
+   *
+   * Optional on purpose, for two reasons: an older middleware omits it
+   * entirely (the `readiness` version-skew rule), and a registry entry written
+   * before #1089 carries no origin to project. A consumer must then fall back
+   * to counting every installed plugin rather than reporting zero — absence
+   * means "not attributable", never 'bundled'.
+   *
+   * Orthogonal to `source` (which registry advertised the download) and to the
+   * catalog's own `PluginOrigin` (whether the package ships in the image).
+   */
+  install_origin?: PluginInstallOrigin;
   incompatibility_reasons?: string[];
   /** Present only for entries sourced from a remote registry that are not yet
    *  downloaded/ingested locally. Its presence is what tells the install flow

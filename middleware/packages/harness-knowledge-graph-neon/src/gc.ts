@@ -19,6 +19,14 @@ import type { Pool } from 'pg';
  * value, generic `memory` rows churn). Within the same type, low
  * decay-score (cold + ungenutzt) goes first.
  *
+ * #1096 — tail-only Turns (sub-threshold chatter the capture filter keeps
+ * only for the session tail) are evicted before ANY knowledge Turn. They
+ * still count toward both quotas, or they would pile up without bound, but
+ * they must not push out significant rows: `getSession` marks every turn
+ * accessed, so `decay_score` ties and the order would otherwise fall back to
+ * oldest-first. With tail-only first, the knowledge Turns that survive are
+ * exactly the ones the sweep kept before tail-only rows existed.
+ *
  * The done-task-TTL is intentionally NOT part of this sweep — that lives
  * in `runDecaySweep` (hourly) so resolved tasks vanish quickly without
  * waiting for the daily quota tick.
@@ -126,7 +134,8 @@ async function evictByCount(
        WHERE tenant_id = $1
          AND type = 'Turn'
          AND scope = $2
-       ORDER BY (
+       ORDER BY COALESCE((properties->>'tailOnly')::boolean, FALSE) DESC,
+       (
          CASE entry_type
            WHEN 'process' THEN $3::real
            WHEN 'task'    THEN $4::real
@@ -170,7 +179,8 @@ async function evictByChars(
           LENGTH(COALESCE(properties->>'userMessage', '')) +
           LENGTH(COALESCE(properties->>'assistantAnswer', ''))
         ) OVER (
-          ORDER BY (
+          ORDER BY COALESCE((properties->>'tailOnly')::boolean, FALSE) DESC,
+          (
             CASE entry_type
               WHEN 'process' THEN $3::real
               WHEN 'task'    THEN $4::real

@@ -9,6 +9,7 @@ export {
   activate,
   pruneTurns,
   pickReusableProcess,
+  parseProcessReuseThreshold,
   DEFAULT_PROCESS_REUSE_THRESHOLD,
   type PlanRunnerPluginHandle,
   type ReusableProcess,

@@ -389,6 +389,26 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     expect(screen.queryByText(/Wähle oben einen Business-Case/)).toBeNull();
   });
 
+  /**
+   * #1089 — the badge and the sentence must agree on WHICH plugins count. The
+   * step ticks on the operator's installs, so the copy counts those too;
+   * counting all of them made a ticked step 3 read "17 Plugins installiert" on
+   * a deployment where the operator had installed exactly one.
+   */
+  it('step 3 counts the operator installs, not the boot auto-installs', () => {
+    renderCard({
+      hasInstalledPlugin: true,
+      plugins: [
+        plugin({ id: '@omadia/memory', install_origin: 'bundled' }),
+        plugin({ id: '@omadia/orchestrator', install_origin: 'bundled' }),
+        plugin({ id: '@acme/crm', install_origin: 'operator' }),
+      ],
+    });
+
+    expect(screen.getByText(/1 Plugin installiert/)).toBeTruthy();
+    expect(screen.queryByText(/3 Plugins installiert/)).toBeNull();
+  });
+
   it('step 3 still asks for a business case while nothing is installed', () => {
     renderCard({
       hasInstalledPlugin: false,
@@ -399,5 +419,31 @@ describe('<DashboardOnboarding /> — round-4 readiness truth', () => {
     expect(step3.dataset['done']).toBe('false');
     expect(screen.getByText(/Wähle oben einen Business-Case/)).toBeTruthy();
     expect(screen.queryByText(/Plugins? installiert/)).toBeNull();
+  });
+});
+
+/**
+ * #1090 / defect 3 — one done-label sits next to all three steps, and it read
+ * "Installiert". Connecting an LLM and picking a business case install
+ * nothing, so two thirds of the card claimed something that never happened.
+ * Pinned on step 1, the step furthest from anything installable.
+ */
+describe('<DashboardOnboarding /> — #1090 done-label', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetOnboardingStores();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('marks a satisfied LLM step done without claiming an install', () => {
+    renderCard({ llmVerified: true });
+
+    const step1 = screen.getByTestId('onboarding-step-1');
+    expect(step1.dataset['done']).toBe('true');
+    expect(step1.textContent).toContain('Erledigt');
+    expect(step1.textContent).not.toContain('Installiert');
   });
 });

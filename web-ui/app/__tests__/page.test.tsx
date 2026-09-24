@@ -76,6 +76,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
     assignedProviderStatus,
     assignedProviderLabel,
     embeddingsOff,
+    hasInstalledPlugin,
   }: {
     llmVerified: boolean;
     cliLoggedIn: boolean;
@@ -84,6 +85,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
     assignedProviderStatus: string | null;
     assignedProviderLabel: string | null;
     embeddingsOff: boolean;
+    hasInstalledPlugin: boolean;
   }): React.ReactElement => (
     <div
       data-testid="onboarding"
@@ -94,6 +96,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
       data-assigned-status={String(assignedProviderStatus)}
       data-assigned-label={String(assignedProviderLabel)}
       data-embeddings-off={String(embeddingsOff)}
+      data-has-installed-plugin={String(hasInstalledPlugin)}
     />
   ),
 }));
@@ -366,6 +369,83 @@ describe('dashboard — LLM health derivation', () => {
     const onboarding = screen.getByTestId('onboarding').dataset;
     expect(onboarding['assignedKind']).toBe('null');
     expect(onboarding['assignedStatus']).toBe('null');
+  });
+});
+
+/**
+ * #1089 — "Plugins installieren" reported success for work nobody did.
+ *
+ * A fresh Docker Compose deployment holds 16 registry entries the kernel
+ * auto-installed at boot. The step read `installedCount > 0` over all of them,
+ * so it was ticked on the first page load and the card could never show
+ * "0 von 3 erledigt". The step asks about the OPERATOR's installs.
+ */
+describe('dashboard — onboarding step 3 counts operator installs (#1089)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProviders.mockResolvedValue(providersResponse([]));
+    mockListOperatorAgents.mockResolvedValue({ agents: [] });
+    mockMcp.mockResolvedValue({});
+    mockGetCliBackends.mockResolvedValue({ backends: [], generatedAt: Date.now() });
+    mockGetEmbeddingStatus.mockResolvedValue({
+      capabilityPublished: true,
+      activeProviderId: '@omadia/embeddings',
+      activeModel: { modelId: 'ollama:nomic-embed-text', dimensions: 768 },
+      installedProviderIds: ['@omadia/embeddings'],
+    });
+  });
+
+  function storePlugin(
+    id: string,
+    install_origin?: 'bundled' | 'operator',
+  ): Record<string, unknown> {
+    return {
+      id,
+      kind: 'tool',
+      name: id,
+      version: '1.0.0',
+      latest_version: '1.0.0',
+      description: '',
+      categories: [],
+      integrations_summary: [],
+      install_state: 'installed',
+      ...(install_origin ? { install_origin } : {}),
+    };
+  }
+
+  async function renderWithPlugins(
+    items: Array<Record<string, unknown>>,
+  ): Promise<string | undefined> {
+    mockListStorePlugins.mockResolvedValue({ items });
+    render(await DashboardPage());
+    return screen.getByTestId('onboarding').dataset['hasInstalledPlugin'];
+  }
+
+  it('stays open when only bundled built-ins are installed', async () => {
+    expect(
+      await renderWithPlugins([
+        storePlugin('@omadia/memory', 'bundled'),
+        storePlugin('@omadia/orchestrator', 'bundled'),
+        storePlugin('@omadia/verifier', 'bundled'),
+      ]),
+    ).toBe('false');
+  });
+
+  it('ticks as soon as the operator installed one plugin', async () => {
+    expect(
+      await renderWithPlugins([
+        storePlugin('@omadia/memory', 'bundled'),
+        storePlugin('@acme/crm', 'operator'),
+      ]),
+    ).toBe('true');
+  });
+
+  it('falls back to any install when the middleware sends no origin', async () => {
+    // Version skew: pre-#1089 middleware. Counting zero there would un-tick a
+    // step an established operator has long completed.
+    expect(await renderWithPlugins([storePlugin('@omadia/memory')])).toBe(
+      'true',
+    );
   });
 });
 

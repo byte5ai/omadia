@@ -4,6 +4,7 @@ export * from './pluginContext.js';
 export * from './pkce.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
+export * from './toolControlFlowText.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
@@ -31,6 +32,7 @@ export * from './agentGraph.js';
 export * from './entityRef.js';
 export * from './entityRefBus.js';
 export * from './knowledgeGraph.js';
+export * from './datasetId.js';
 
 // #440: provider-neutral `embeddingClient@1` contract. Lives here for the same
 // reason the KG contract does — every adapter (`@omadia/embeddings` for Ollama,

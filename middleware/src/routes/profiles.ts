@@ -1309,7 +1309,31 @@ async function applyProfile(
   };
 
   for (const entry of profile.plugins) {
-    if (deps.registry.has(entry.id)) {
+    const existing = deps.registry.get(entry.id);
+    if (existing) {
+      // #1089 — the plugin is already there, but the OPERATOR has now asked
+      // for it by name, so the entry stops being a boot artifact. Without this
+      // promotion a profile whose plugins the kernel already auto-installed
+      // (on a default Compose deploy that is `@omadia/embeddings`, the
+      // orchestrator and orchestrator-extras from `minimal-dev`) would apply
+      // with nothing but `already_installed` skips for those, and a profile
+      // made only of such plugins would leave the operator count at zero and
+      // reopen the very modal that triggered the apply.
+      if (existing.origin !== 'operator') {
+        try {
+          await deps.registry.register({ ...existing, origin: 'operator' });
+        } catch (err) {
+          // Same per-plugin contract as a fresh install below: one failed
+          // write must not turn the whole apply into a 500 and lose the
+          // outcome of the entries already written.
+          outcome.errored.push({
+            id: entry.id,
+            reason: 'register_failed',
+            message: `already installed, but recording it as an operator install failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          continue;
+        }
+      }
       outcome.skipped.push({ id: entry.id, reason: 'already_installed' });
       continue;
     }
@@ -1341,6 +1365,10 @@ async function applyProfile(
         installed_version: catalogEntry.plugin.version,
         installed_at: new Date().toISOString(),
         status: 'active',
+        // #1089 — a profile apply is the operator installing plugins, even
+        // though the list came from a curated file. Counting it as 'bundled'
+        // would reopen the store's profile modal over the profile it applied.
+        origin: 'operator',
         config: entry.config,
       });
       outcome.installed.push({

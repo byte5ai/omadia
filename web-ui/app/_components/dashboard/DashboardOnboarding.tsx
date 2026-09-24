@@ -27,7 +27,7 @@ import { useTranslations } from 'next-intl';
 import type { ProviderCredentialStatus } from '../../_lib/api';
 import type { RuntimeReadiness } from '../../_lib/runtimeReadiness';
 import type { Plugin } from '../../_lib/storeTypes';
-import { isInstalled } from '../../_lib/pluginCounts';
+import { isOperatorInstalled } from '../../_lib/pluginCounts';
 import { LlmStepBody, type AssignedProviderKind } from './LlmStep';
 import { StepShell } from './StepShell';
 import {
@@ -338,11 +338,16 @@ export function DashboardOnboarding({
   // sending the operator to the provider page would be a guess.
   const accessWithoutRuntime =
     runtimeState === 'down' && (llmVerified || cliLoggedIn);
-  // #886 — step 3's RESULT copy. Counted here with the same OM-27 predicate the
-  // dashboard health tile uses, over the same `plugins` array `page.tsx` derives
-  // `hasInstalledPlugin` from — so the badge and the sentence underneath it read
-  // off one source and cannot contradict each other.
-  const installedCount = (plugins ?? []).filter(isInstalled).length;
+  // #886 — step 3's RESULT copy. Counted over the same `plugins` array
+  // `page.tsx` derives `hasInstalledPlugin` from, with the same predicate, so
+  // the badge and the sentence underneath it read off one source and cannot
+  // contradict each other.
+  //
+  // #1089 — that predicate is `isOperatorInstalled`, not `isInstalled`: the
+  // step is about the operator's installs, and counting all of them made a
+  // ticked step 3 say "17 plugins installed" after a single operator install
+  // on a deployment whose 16 built-ins the kernel had installed itself.
+  const installedCount = (plugins ?? []).filter(isOperatorInstalled).length;
 
   return (
     <section
