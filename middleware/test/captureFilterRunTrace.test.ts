@@ -139,6 +139,9 @@ describe('#1082 — capture-filtered turns keep their run trace and are counted'
     assert.equal(view.turn.props['tailOnly'], true);
 
     // Criterion 3 — booked as recorded, and nothing blames a User-Cluster.
+    // Note: InMemoryKnowledgeGraph.ingestRun does not check that the Turn
+    // exists, so these asserts alone would stay green if the old skip bug
+    // returned. The regression is caught by `assert.ok(view)` above.
     assert.equal(stats.snapshot().recorded, 1);
     assert.equal(stats.snapshot()['run-ingest-failed'], 0);
     assert.equal(stats.droppedTotal(), 0);

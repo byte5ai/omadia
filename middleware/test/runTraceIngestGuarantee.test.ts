@@ -155,8 +155,12 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
     assert.equal(stats.snapshot().recorded, 0);
     const drop = warnings.find((w) => w.includes('run-ingest-failed'));
     assert.ok(drop, 'the drop must be visible in the log');
+    // Everything before the "known cases" list is the diagnosis; it must not
+    // name the User-Cluster, only the known-cases list may.
+    const knownCasesAt = drop.indexOf('(known cases');
+    assert.ok(knownCasesAt > 0, `the drop text lists its known cases: ${drop}`);
     assert.ok(
-      !drop.includes('does not exist'),
+      !drop.slice(0, knownCasesAt).includes('User-Cluster'),
       `a connection failure must not be diagnosed as a missing node: ${drop}`,
     );
     assert.ok(!drop.includes('most often'), `hint must not guess a cause: ${drop}`);
