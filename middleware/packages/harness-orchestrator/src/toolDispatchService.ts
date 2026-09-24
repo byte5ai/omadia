@@ -12,7 +12,7 @@
  */
 
 import { isInternExemptTool } from './privacyInternPolicy.js';
-import { isWriteCapableTool } from '@omadia/plugin-api';
+import { isControlFlowToolResult, isWriteCapableTool } from '@omadia/plugin-api';
 import type { WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
@@ -406,13 +406,14 @@ export class ToolDispatchService {
       return result;
     }
 
-    // #1105 — a fulfilled prose error (`Error:` convention) reaches the model
-    // as an error, never interned: interning would both hide the failure
-    // behind a masked digest and register a renderable dataset a later
-    // `v4_render_answer` could materialize as if the error were data. Mirrors
-    // the same guard on `Orchestrator.dispatchTool`. Thrown exceptions take the
-    // separate `maskErrorText` path and are unaffected.
-    if (result.startsWith('Error:')) {
+    // #1105 / #1097 — fulfilled control-flow prose (the `Error:` convention,
+    // or an MCP auth prompt) reaches the model as that text, never interned:
+    // interning would both hide the failure behind a masked digest and
+    // register a renderable dataset a later `v4_render_answer` could
+    // materialize as if the error were data. Mirrors the same guard on
+    // `Orchestrator.dispatchTool`. Thrown exceptions take the separate
+    // `maskErrorText` path and are unaffected.
+    if (isControlFlowToolResult(result)) {
       return result;
     }
     try {

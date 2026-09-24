@@ -247,6 +247,12 @@ export interface RunTracePayload {
   /** One entry per sub-agent invocation in invocation-order. */
   agentInvocations: RunAgentInvocation[];
   /**
+   * #1094 — the failure detail when `status` is `'error'` (the degraded-turn
+   * path sets it). Mirrors `RunTrace.error` in `@omadia/plugin-api`, which the
+   * session logger spreads this payload into.
+   */
+  error?: string;
+  /**
    * #650 (epic #642) — the model that produced the answer, and the provider
    * that served it. Mirrors `RunTrace` in `@omadia/plugin-api`; this payload is
    * a structural copy of it (see the note on `RunTracePayload` in
@@ -543,6 +549,16 @@ export interface ChatTurnResult {
    */
   answerSource?: AnswerSource;
   /**
+   * #1097 — `true` when the server-rendered `answer` is control flow rather
+   * than a result: a tool error (`Error: …`) or an MCP auth prompt the model
+   * rendered as if it were data. Channels MAY present the turn as a failure
+   * (and localise around it) instead of showing success prose over an error
+   * string. Only ever set alongside `answerSource: 'privacy-render'`; omitted
+   * for an ordinary answer, so a client that ignores it keeps today's
+   * behaviour.
+   */
+  answerIsError?: boolean;
+  /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
    * canvas-aware turn produced an initial primitive tree; `toSemanticAnswer`
    * forwards it to `SemanticAnswer.surface`. Channels not declaring the
@@ -817,6 +833,33 @@ export type ChatStreamEvent =
        */
       runTrace?: RunTracePayload;
       /**
+       * #1094 — marks a DEGRADED terminal: the turn threw after at least one
+       * tool call had already committed, so the side effect stands but no
+       * answer was ever generated. The event stays `done` rather than `error`
+       * on purpose (#506: reporting the committed call as failed makes the
+       * next turn re-invoke it); this flag is what keeps that honest. Without
+       * it, every consumer — web chat, Public API clients, Teams/Telegram —
+       * renders the turn as an ordinary success and the user's question looks
+       * answered. Additive and optional: a client that ignores it behaves
+       * exactly as it did before.
+       */
+      degraded?: true;
+      /**
+       * #1094 — the tools that committed before the throw. DISTINCT names in
+       * first-commit order, NOT a call count: two calls to the same tool
+       * appear once (the orchestrator deduplicates while collecting them).
+       * Present only alongside {@link degraded}. Lets a client name what did
+       * happen without parsing the answer text.
+       */
+      committedTools?: readonly string[];
+      /**
+       * #1094 — the same per-turn token the `error` variant carries (#641) and
+       * the `[orchestrator] turn failed (correlationId=…)` log line quotes, so
+       * a degraded turn is exactly as diagnosable as a failed one. Present only
+       * alongside {@link degraded}.
+       */
+      correlationId?: string;
+      /**
        * Present when the turn ended because Claude invoked `ask_user_choice`.
        * See ChatTurnResult.pendingUserChoice for semantics.
        */
@@ -848,6 +891,13 @@ export type ChatStreamEvent =
        * `AnswerSource`.
        */
       answerSource?: AnswerSource;
+      /**
+       * #1097 — `true` when the server-rendered `answer` is control flow (a
+       * tool error, an MCP auth prompt) rather than a result. Additive and
+       * optional; only ever set alongside `answerSource: 'privacy-render'`.
+       * See `ChatTurnResult.answerIsError`.
+       */
+      answerIsError?: boolean;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;

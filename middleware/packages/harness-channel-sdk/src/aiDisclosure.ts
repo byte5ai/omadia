@@ -141,11 +141,13 @@ export interface ComposeDisclosureOptions {
 
 /**
  * Normalize an arbitrary locale tag to the two languages this module composes.
+ * Exported since #1094: the degraded-turn notice (`turnIncomplete.ts`) is
+ * composed at the same boundary and must land on the same two languages.
  * DE is the shipping default (the assistant is German-first — cf. the German
  * `withMcpInputPrompt` block); any non-`en` or unknown tag resolves to `'de'`,
  * never to an empty or accidentally-English line.
  */
-function normalizeLocale(locale: string | undefined): 'de' | 'en' {
+export function normalizeDisclosureLocale(locale: string | undefined): 'de' | 'en' {
   return locale !== undefined && /^en\b/i.test(locale) ? 'en' : 'de';
 }
 
@@ -158,7 +160,7 @@ export function composeDisclosureText(
   level: Exclude<AiDisclosureLevel, 'off'>,
   opts: ComposeDisclosureOptions = {},
 ): string {
-  const lang = normalizeLocale(locale);
+  const lang = normalizeDisclosureLocale(locale);
   const name = opts.assistantName?.trim();
   switch (level) {
     case 'concise':
@@ -220,7 +222,7 @@ function resolveFromPolicy(ctx: ApplyAiDisclosureContext): AiDisclosure | undefi
   const effective =
     policy.level === 'off' && policy.source !== 'operator' ? DEFAULT_AI_DISCLOSURE_POLICY : policy;
   if (effective.level === 'off') return undefined;
-  const locale = normalizeLocale(ctx.locale ?? effective.locale);
+  const locale = normalizeDisclosureLocale(ctx.locale ?? effective.locale);
   const operatorNote = ctx.operatorNote?.trim();
   return Object.freeze({
     text: composeDisclosureText(locale, effective.level, {

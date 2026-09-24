@@ -78,6 +78,22 @@ function isErrorEvent(event: unknown): boolean {
 }
 
 /**
+ * True for a `done` event the orchestrator marked DEGRADED (#1094): a tool call
+ * committed a real side effect and a later step of the same turn threw. It is
+ * a `done` so the committed work is not reported as failed, but it is not a
+ * successful turn — for auditing it counts as a failure.
+ */
+function isDegradedDoneEvent(event: unknown): boolean {
+  return (
+    typeof event === 'object' &&
+    event !== null &&
+    'type' in event &&
+    (event as { type: unknown }).type === 'done' &&
+    (event as { degraded?: unknown }).degraded === true
+  );
+}
+
+/**
  * #647 — folds the AI-Act Art. 50 provenance marker into the `done` event as it
  * is forwarded, so a client can read the marking per TURN and not only per
  * connection (the header covers the connection).
@@ -300,6 +316,12 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
         let sawInBandError = false;
         for await (const event of deps.core.handleTurnStream(turn)) {
           if (isErrorEvent(event)) sawInBandError = true;
+          // #1094 — a `done` marked `degraded` is a turn that threw after a
+          // tool had already committed. It stays `done` on the wire (#506),
+          // but auditing it as 'ok' would leave the operator's audit trail
+          // showing a clean turn for a failure that is only visible in the
+          // middleware log — the same false negative as issue #403.
+          if (isDegradedDoneEvent(event)) sawInBandError = true;
           safeWrite(withProvenance(event));
         }
         key.audit(sawInBandError ? 'error' : 'ok');

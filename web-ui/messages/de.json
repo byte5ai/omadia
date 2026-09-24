@@ -1601,6 +1601,12 @@
       "factPrivateBlocks": "'<private>'-Blöcke",
       "factHintTags": "'<palaia-hint>'-Tags"
     },
+    "turnIncomplete": {
+      "heading": "Dieser Turn wurde nicht abgeschlossen",
+      "body": "Die unten genannten Aktionen wurden ausgeführt — der Assistent konnte danach aber keine Antwort erzeugen, deine Frage ist also weiterhin offen. Stelle die Frage erneut; die Aktionen selbst nur dann wiederholen, wenn sie sicher ein zweites Mal laufen sollen.",
+      "bodyNoTools": "Beim Abbruch dieses Turns waren bereits Aktionen ausgeführt worden, und der Assistent konnte danach keine Antwort erzeugen — deine Frage ist also weiterhin offen. Stelle die Frage erneut; alles, was Daten verändert, vorher mit deinem Betreiber klären.",
+      "completedTools": "Ausgeführte Aktionen:"
+    },
     "errorUpstreamErrorPage": "Der Server hat statt einer Antwort eine Fehlerseite geliefert (HTTP 500). Es hat also etwas geantwortet, der Fehler liegt serverseitig — prüfe die Middleware-Logs oder melde das deinem Betreiber.",
     "errorCorrelationRef": "Referenz für den Support: {id}",
     "routing": {
