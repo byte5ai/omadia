@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.17.1 — 2026-09-24
+
+Documentation only. No change to the exported type surface (#978).
+
+### Documentation
+
+- **`AgentNode.privacyProfile`** is now documented as *reserved, not
+  enforced*. The value is persisted and reported, but no runtime path reads it:
+  `'strict'` currently behaves exactly like `'default'`, and changing it no
+  longer rebuilds the agent. The field stays in the contract for API
+  stability; it is deliberately not tagged `@deprecated`, because whether
+  `'strict'` should enforce something later is an open product decision, not a
+  planned removal.
+
 ## 1.17.0 — 2026-09-24
 
 Additive. One canonicaliser for dataset ids, so the `query_dataset` tool and

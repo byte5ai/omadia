@@ -162,6 +162,7 @@ export async function ensureFallbackAgent(
       slug,
       name: options.name ?? FALLBACK_AGENT_SEED_NAME,
       description: options.description ?? FALLBACK_AGENT_SEED_DESCRIPTION,
+      // Reserved, not enforced (#978): `strict` has no runtime effect today.
       privacyProfile: 'strict',
       status: 'enabled',
     });

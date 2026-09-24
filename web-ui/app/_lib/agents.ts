@@ -57,6 +57,8 @@ export interface OperatorAgentDto {
   slug: string;
   name: string;
   description: string | null;
+  /** Reserved, not enforced (#978): persisted and reported, read by no
+   *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
   created_at: string;
@@ -150,6 +152,8 @@ export interface CreateAgentInput {
   slug: string;
   name: string;
   description?: string;
+  /** Reserved, not enforced (#978): persisted and reported, read by no
+   *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
   status?: AgentStatus;
 }
@@ -167,6 +171,8 @@ export async function createOperatorAgent(input: CreateAgentInput): Promise<{
 export interface PatchAgentInput {
   name?: string;
   description?: string | null;
+  /** Reserved, not enforced (#978): persisted and reported, read by no
+   *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
   status?: AgentStatus;
 }
@@ -1095,6 +1101,8 @@ export interface EnabledAgentDto {
   slug: string;
   name: string;
   description: string | null;
+  /** Reserved, not enforced (#978): persisted and reported, read by no
+   *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
   is_fallback: boolean;
 }
@@ -1182,6 +1190,7 @@ export interface ResolveChannelResponse {
   matched: {
     slug: string;
     name: string;
+    /** Reserved, not enforced (#978). */
     privacy_profile: PrivacyProfile;
   } | null;
   /** `identity` — the key IS an agent's provisioned bot, which outranks
