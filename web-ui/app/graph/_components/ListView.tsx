@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import type {
@@ -62,10 +62,19 @@ function TurnCard({
   // the language that is supposed to live only in `messages/de.json`. An
   // English operator read German here.
   const t = useTranslations('graph.listView');
+  const format = useFormatter();
   const [open, setOpen] = useState(false);
-  const time = String(turn.props['time'] ?? '')
-    .replace('T', ' ')
-    .slice(0, 19);
+  // #1091 — `time` is a UTC ISO string. Slicing the 'Z' off printed it as
+  // unmarked wall-clock time; format it in the operator's zone instead, and
+  // show the raw value only when it does not parse.
+  const rawTime = String(turn.props['time'] ?? '');
+  const parsedTime = Date.parse(rawTime);
+  const time = Number.isNaN(parsedTime)
+    ? rawTime
+    : format.dateTime(new Date(parsedTime), {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+      });
   const user = String(turn.props['userMessage'] ?? '');
   // `props` is untyped JSON; coerce once and render only when it really is a
   // number, rather than stringifying whatever came back.

@@ -386,6 +386,67 @@ change up on the first boot after the upgrade without being re-saved. Builder
 and AGENT.md agents compile their prompt when they load and pick the change up
 on the next restart.
 
+### Fixed — admin timestamps render in the operator's timezone, not the container's (#1091)
+
+2026-09-23 — every absolute date and time in the web UI that goes through
+next-intl was rendered in the SERVER's timezone, which is UTC in the shipped
+Docker image. The most visible
+case was the subscription-CLI page: "Zuletzt geprüft um 14:17:47" for a
+re-check the operator had triggered at 16:17 CEST, read as local time and taken
+as evidence that the re-check never ran. The shift also moved any timestamp
+between 22:00 and 24:00 local onto the previous calendar day.
+
+Cause: `web-ui/i18n/request.ts` set next-intl's `timeZone` to
+`Intl.DateTimeFormat().resolvedOptions()`'s zone. That expression lives in
+`getRequestConfig`, which runs on the server, so it resolved to the container
+zone; `NextIntlClientProvider` inherits the server config, so all 37
+`format.dateTime` call sites across 33 files got it too — client components
+included. `format.relativeTime` was never affected: a delta between two
+instants carries no zone.
+
+The browser is the only party that knows the operator's zone, so it now says
+so. `TimeZoneSync` (headless, mounted in the root layout) mirrors
+`Intl.DateTimeFormat().resolvedOptions()`'s zone into the non-secret
+`omadia-tz` cookie on mount and calls `router.refresh()` once when the page
+was rendered in a different zone (per `<html data-timezone>`) — the same
+client-writes / RSC-reads mechanism `ThemeControls` already uses for the
+no-FOUC palette cookie. `i18n/request.ts` reads the cookie through
+`parseTimeZoneCookie` (`web-ui/app/_lib/timeZone.ts`), which decodes,
+shape-checks and validates against `Intl` before returning it. Deciding the
+zone *before* render rather than re-formatting after
+mount is what keeps server and client output identical: no hydration mismatch,
+and no change at any of the 33 call sites.
+
+Requests where no browser has spoken yet — a first visit, an e2e run, a client
+that cannot store cookies — fall back to an explicitly configured container
+`TZ` when there is one, and to a fixed `'UTC'` literal otherwise. Honouring an
+explicit `TZ` is not a relapse: the bug was *preferring* the runtime zone over
+the operator's, and the cookie still wins wherever it exists. Nothing in the
+repo sets `TZ`, so a value there is deliberate operator configuration. The
+refresh closes the first-visit gap within the same visit — unless the client
+cannot store cookies at all, in which case the write is detected as lost and no
+refresh is fired, rather than re-rendering the whole RSC tree on every page
+load for a value the server will never see. `layout.tsx` stamps the resolved
+zone onto `<html data-timezone>`, so a page that is already correct — operator
+in UTC, or a container whose `TZ` matches the browser — costs no second render.
+
+Swept up with it, three render sites outside next-intl that the cookie never
+reached: `DraftRow` (the plugin-builder draft list) formatted its fallback date
+with a hardcoded German locale tag via `toLocaleDateString` — a
+German-formatted date in the English UI, in the machine's zone; and the "last
+changed" line of the `/admin/mcp` key bindings and the turn cards of the graph
+list view sliced the `Z` off a UTC ISO string and printed the rest as unmarked
+wall-clock time. All three now use `useFormatter()`. `DraftRow` is pinned by
+the `SWEPT` list in `app/_lib/i18n-structural.test.ts`, which is where the
+#679 sweep tracks this category; its guard now also catches the
+`toLocaleDateString`/`toLocaleTimeString` variants.
+
+The `timeZone` key stays explicitly set — dropping
+it would bring back the `ENVIRONMENT_FALLBACK` IntlError flood (one per
+rendered table row on `/admin/datasets`) that #821 added it to silence. A guard
+test pins both halves, and `timeZone.request.test.ts` runs the request config
+against stubbed cookies, so a config that stops reading the cookie fails.
+
 ### Fixed — plan-runner process-reuse settings are reachable, and a bad threshold can no longer disable similarity (#1103)
 
 2026-09-22 — the plan-runner plugin read two setup keys its manifest never
