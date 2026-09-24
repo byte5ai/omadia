@@ -34,13 +34,22 @@ import type { BuilderTool } from './types.js';
 // input/output types. Using `.optional()` here keeps the type inference
 // trivial while preserving the same admission rules at runtime: unset
 // fields fall through to "no preset list / no custom list".
+// Issue #1101 — custom lines reach the agent prompt verbatim (no prefix is
+// added any more), so the BuilderAgent needs the same wording contract the
+// UI hint gives operators: a bare action would be spliced as an instruction.
+const CUSTOM_BOUNDARY_GUIDANCE =
+  'Custom boundary lines are spliced verbatim into the agent prompt: write each as a complete, self-contained rule ("Never promise refunds."), never a bare action ("promise refunds").';
+
 const InputSchema = z
   .object({
     sycophancy: SycophancyLevelSpecSchema.optional(),
     boundaries: z
       .object({
         presets: z.array(z.string().min(1)).optional(),
-        custom: z.array(z.string().min(1)).optional(),
+        custom: z
+          .array(z.string().min(1))
+          .describe(CUSTOM_BOUNDARY_GUIDANCE)
+          .optional(),
       })
       .strict()
       .optional(),
@@ -77,6 +86,7 @@ export const setQualityConfigTool: BuilderTool<Input, Result> = {
     'Set the response-quality block on the draft AgentSpec (sycophancy + boundary presets / custom lines). ' +
     'Sycophancy levels: off (no anti-flattery rules), low (mild correction), medium (balanced), high (devil\'s-advocate). ' +
     'Boundary presets are picked from a closed library — unknown ids are dropped at runtime. ' +
+    `${CUSTOM_BOUNDARY_GUIDANCE} ` +
     'This tool replaces any existing `spec.quality` block in full; pass an empty `{}` to clear it.',
   input: InputSchema,
   async run(input, ctx) {

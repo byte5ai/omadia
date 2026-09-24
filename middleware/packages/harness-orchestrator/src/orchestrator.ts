@@ -154,6 +154,7 @@ import type {
 } from '@omadia/plugin-api';
 import {
   agentScopePrefix,
+  isControlFlowToolResult,
   PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
   PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
@@ -2860,6 +2861,28 @@ export class Orchestrator {
       }
     }
 
+    // #1097 — a replay the server answered with `isError`, or that failed in
+    // transport, comes back from `McpManager.callTool` as an `Error: …` string
+    // (the manager never throws; `renderToolResult` prefixes failures). It is
+    // control-flow text, not an MCP row: interning it would hide the failure
+    // behind a masked digest and register a renderable 1-row dataset. Same
+    // guard, same position as `dispatchTool` above — after the operator
+    // bypass, before interning.
+    //
+    // Not every failed replay looks like that: `handleFailure` answers an
+    // auth-shaped failure with the provider's connect prompt instead (`🔒 …`
+    // plus the `<mcp-auth-required>` block the chat UI turns into a Connect
+    // card), which carries no `Error:` prefix. `isControlFlowToolResult`
+    // covers both carriers — interning the prompt destroyed the card and left
+    // the model narrating success over a masked digest.
+    //
+    // Known limit (#1097): the text behind an MCP `Error:` prefix is the
+    // REMOTE server's own body, so this passthrough trusts foreign error
+    // text — the trade-off #1105 already made on the chat path, not a new one
+    // taken here.
+    if (isControlFlowToolResult(rawResult)) {
+      return rawResult;
+    }
     try {
       const v4 = await privacy.internToolResultV4({
         toolName: record.toolName,
@@ -3928,6 +3951,10 @@ export class Orchestrator {
               // answer so `toSemanticAnswer` / clients can tell it apart from
               // the model's own text.
               answerSource: 'privacy-render',
+              // #1097 — the render materialized control flow (a tool error, an
+              // MCP auth prompt), not a result. Channels decide how to show a
+              // failure; the orchestrator only reports that it is one.
+              ...(v4Rendered.isError === true ? { answerIsError: true } : {}),
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -5809,6 +5836,9 @@ export class Orchestrator {
                   // #1105 — mark the answer as server-rendered so a streaming
                   // client knows it supersedes the `text_delta` preview.
                   answerSource: 'privacy-render' as const,
+                  // #1097 — see the buffered twin: a rendered tool error / auth
+                  // prompt is a failure, and says so on the wire.
+                  ...(v4Rendered.isError === true ? { answerIsError: true } : {}),
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -6881,7 +6911,45 @@ export class Orchestrator {
         : undefined;
     const observer = this.makeSlotObserver(use.id, subEvents, invocation);
     const started = Date.now();
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory);
+    // #1095 — a REJECTED dispatch must settle this slot, not escape it. The
+    // race loop awaits `Promise.race([...slots, tick])`, so a bare rejection
+    // here leaves the async generator and kills the WHOLE turn: siblings never
+    // settle, their already-streamed `tool_use` never gets a `tool_result`, and
+    // the #506 branch can then report the dead turn to the caller as a success.
+    // Resolving with an `Error:` string is exactly the convention the
+    // non-streaming path builds from its `Promise.allSettled` rejections, and
+    // the one this loop already reads (`output.startsWith('Error:')`).
+    //
+    // The message stays RAW — no masking, no digesting. Same deliberate
+    // divergence from `ToolDispatchService` that the chat path fences in
+    // `test/orchestrator/chatPathToolErrorText.test.ts`: the reader here is the
+    // operator debugging their own tool, and the two chat paths must not drift
+    // apart again in the opposite direction.
+    //
+    // Known consequence, accepted for parity rather than overlooked: a THROWN
+    // message never passes the Privacy Shield (interning in
+    // `dispatchToolDeadlined` only ever sees a RETURNED string), so a driver
+    // error that quotes a row value ships that value to the provider and to
+    // the API caller. That is exactly what the non-streaming path has always
+    // done with the same rejection; narrowing it belongs in one change that
+    // moves BOTH paths, not in a fix that makes them disagree again. A handler
+    // that knows its errors carry data should catch and return its own
+    // `Error:` prose — that path is guarded (#1105).
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
+      (err: unknown) => {
+        // Settling the slot must not cost the operator the STACK. Before this
+        // catch existed, a throwing handler at least reached the turn's catch
+        // and was logged there with its stack; the model-facing string keeps
+        // only `message`, which for the reported trigger (a Postgres 22P02
+        // escaping `QueryDatasetTool.handle`) does not say which call site
+        // threw. Same shape as the deadline warning in `dispatchTool`.
+        console.warn(
+          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling the slot as a tool error; the turn continues:`,
+          err,
+        );
+        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      },
+    );
     return {
       idx,
       use,
@@ -7301,17 +7369,17 @@ export class Orchestrator {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
       }
-      // #1105 — a guarded tool that returned a prose error string (the
+      // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
-      // tool-result assembly reads to stamp `is_error`) must reach the model
-      // AS an error, not be interned. Interning it would (a) hide the failure
+      // tool-result assembly reads to stamp `is_error` — or an MCP auth
+      // prompt) must reach the model AS that text, not be interned. Interning it would (a) hide the failure
       // behind a masked digest so the model never learns the call failed, and
       // (b) register a renderable 1-row dataset that a later `v4_render_answer`
       // materializes as if the error were data — the divergence reported in
       // #1105. Pass it through verbatim: the chat path already forwards tool
       // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
       // `is_error` flag is derived from this very prefix.
-      if (result.startsWith('Error:')) {
+      if (isControlFlowToolResult(result)) {
         return result;
       }
       // Intern the raw result server-side and hand the LLM only the
@@ -7516,7 +7584,7 @@ export class Orchestrator {
       // race window. Returned (not thrown) as an `Error:`-prefixed string,
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
-      // only the non-streaming one also catches thrown rejections.
+      // both also fold a thrown rejection into the same convention (#1095).
       if (!this.isToolAvailable(reg.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
       }

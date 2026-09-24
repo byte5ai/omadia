@@ -2297,7 +2297,8 @@
           "communication": "Kommunikation"
         },
         "customLabel": "Eigene Verbote",
-        "customHint": "Eine Regel pro Zeile.",
+        "customHint": "Eine Regel pro Zeile, als vollständiger Satz formuliert — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "sycophancyLabel": "Schmeichel-Bremse",
         "sycophancyHint": "Wie deutlich der Agent widersprechen darf, statt dem Nutzer nach dem Mund zu reden.",
         "sycophancyLevels": {
@@ -3143,6 +3144,8 @@
         "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
+        "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "save": "Boundaries speichern",
         "saving": "Boundaries speichern…",
         "saved": "Gespeichert",
@@ -3742,7 +3745,10 @@
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
       "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
-      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten.",
+      "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
+      "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
+      "routingAnthropicOnly": "Nur mit Anthropic verfügbar."
     },
     "status": {
       "saving": "speichert …",

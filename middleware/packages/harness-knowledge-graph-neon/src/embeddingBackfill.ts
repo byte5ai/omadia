@@ -188,6 +188,11 @@ export function startEmbeddingBackfill(
            AND type = ANY($2::text[])
            AND embedding IS NULL
            AND embedding_attempts < $3
+           -- #1096 — a tail-only Turn is deliberately left unembedded at
+           -- ingest; without this the sweep would hand it a vector anyway,
+           -- one provider call per "ok"/"pong" that no recall query reads.
+           -- Other node types never carry the flag, so this is a no-op there.
+           AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
          ORDER BY embedding_attempts ASC, created_at ASC
          LIMIT $4
         `,

@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 
 import type { AuditLogger } from '../../../src/plugins/builder/audit.js';
 import { setQualityConfigTool } from '../../../src/plugins/builder/tools/setQualityConfig.js';
+import { zodToJsonSchema } from '../../../src/plugins/zodToJsonSchema.js';
 import {
   createBuilderToolHarness,
   type BuilderToolHarness,
@@ -180,6 +181,19 @@ describe('setQualityConfigTool', () => {
     assert.equal(call.details.sycophancy, 'medium');
     assert.deepEqual(call.details.presets, ['no-pii']);
     assert.equal(call.details.customCount, 1);
+  });
+
+  it('issue #1101 — tells the BuilderAgent that custom lines are spliced verbatim', () => {
+    // Custom lines no longer get a "You must NOT: " prefix, so a bare action
+    // from the LLM would reach the prompt as an instruction. The wording
+    // contract must reach the model on both surfaces it reads.
+    assert.match(setQualityConfigTool.description, /spliced verbatim/);
+    assert.match(setQualityConfigTool.description, /complete, self-contained rule/);
+    const schema = zodToJsonSchema(setQualityConfigTool.input);
+    assert.match(
+      schema.properties?.['boundaries']?.properties?.['custom']?.description ?? '',
+      /complete, self-contained rule/,
+    );
   });
 
   it('issue #56 — audit details carry warnings when unknown preset IDs are submitted', async () => {

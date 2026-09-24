@@ -2510,13 +2510,49 @@ widersprüchlich bleiben, trägt `done` (und für den gepufferten Pfad
 weggelassen (bedeutet `'model'`). **`done.answer` ist autoritativ**; ein Client,
 der die Antwort aus Deltas rekonstruiert, muss sie durch `done.answer` ersetzen,
 sobald `answerSource` gesetzt und nicht `'model'` ist. Additiv/optional wie oben.
+
+**Kontrakt-Erweiterung — `answerIsError` (#1097).** Ein Server-Render kann auch
+ein *Fehler* sein (das Modell hat den Shield gebeten, etwas zu rendern, das in
+Wahrheit ein Tool-Fehler oder ein Auth-Prompt ist). Dann trägt `done` (bzw.
+`ChatTurnResult`/`SemanticAnswer`) zusätzlich `answerIsError: true`, gesetzt aus
+`PrivacyRenderedAnswer.isError`. Kanäle dürfen den Turn damit als Fehler
+darstellen, statt den englischen Fehlertext als Ergebnis zu zeigen. Nur
+zusammen mit `answerSource: 'privacy-render'`, nie `false`, additiv/optional.
 Zweiter, unabhängiger Fix im selben Issue: ein Guarded-Tool, das einen prosaischen
 `Error:`-String **zurückgibt** (die `Error:`-Konvention, aus der auch `is_error`
-abgeleitet wird), wird an den beiden Dispatch-Nähten
-(`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`) nicht mehr als
-1-Zeilen-Dataset interniert, sondern unverändert an das Modell durchgereicht —
-sonst sah das Modell den Fehler nie und ein späteres Render materialisierte ihn
-als Daten. Die Maskierung geworfener Exceptions (`maskErrorText`) bleibt unberührt.
+abgeleitet wird), wird an den Dispatch-Nähten nicht mehr als 1-Zeilen-Dataset
+interniert, sondern unverändert an das Modell durchgereicht — sonst sah das
+Modell den Fehler nie und ein späteres Render materialisierte ihn als Daten.
+#1105 schloss die beiden Nähte seiner Repros (`Orchestrator.dispatchTool`,
+`ToolDispatchService.afterDispatch`), **#1097** die restlichen zwei:
+`LocalSubAgent.dispatch` (Fehler eines Tools *innerhalb* eines Sub-Agents) und
+`Orchestrator.guardReplayResult` (fehlgeschlagener MCP-Input-Replay — der
+`McpManager` wirft nie, er liefert einen `Error: …`-String). Alle vier Guards
+sitzen an derselben Stelle: nach Intern-Exemption-Allowlist und Operator-Bypass,
+vor dem Internieren — und konsultieren **ein** Prädikat,
+`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
+
+Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
+den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
+`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
+Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
+statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
+abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
+die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
+Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
+
+Ein **gerenderter Fehler** wird als solcher markiert —
+`PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
+aus genau einer Control-Flow-Zelle), vom Orchestrator als
+`answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
+**Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
+wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
+Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
+unberührt: diesen Text hat niemand saniert (ein ORM echot die
+Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
+konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
 
 `orchestrator.chatStream` ist ein Async-Generator. Text-Deltas stammen
 aus `anthropic.messages.stream` (nicht `.create`). Tool-Use-Deltas werden
@@ -3245,6 +3281,25 @@ Erfasst wird an zwei Stellen: `cliChatAgent.ts` (Chat-Turn, Quelle `claude-cli`)
 ⚠️ Neue Codes gegen ein Schema vor 0032 lassen **jede** Usage-Erfassung und die ganze
 Kostenseite fehlschlagen, nicht nur die Abo-Zeilen. Migration vor Deploy.
 
+### Kosten-Ledger: Turn-Zuordnung (#1098)
+
+Graph-Migration **0033** ergänzt `token_usage.turn_id` + `provider` (beide NULL-bar,
+partieller Index auf `turn_id`); `created_at` schreibt der Recorder jetzt explizit zum
+Aufrufzeitpunkt (`occurredAt`), nicht mehr per `DEFAULT NOW()` beim 5-s-Flush.
+Gruppierschlüssel ist `turn_id` — `session_id` bleibt best-effort (`http-default`, #445).
+
+Die IDs kommen über `setUsageContextProvider` (`@omadia/usage-telemetry`); der
+Orchestrator registriert `currentUsageContext` aus `turnContext.ts`. Der liefert nur für
+den **eigenen** Turn-Scope des Orchestrators etwas (erkennbar an gesetztem
+`sessionScope`). Die Platzhalter-Scopes der Routen/Adapter (`http-chat-<scope>`, `''`)
+ergeben NULL statt einer plausiblen, falschen ID. `CliChatAgent` hat keinen
+Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — explizite IDs
+gewinnen immer.
+
+Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
+
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)
 
 Neue Route **`GET /api/v1/admin/last-turn`** (auth required, `routes/adminLastTurn.ts`) →
@@ -3342,3 +3397,55 @@ Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
 `builder.persona.boundaries.pluginStackNote` (in der UI gerendert), plus die
 `help`-Felder in `harness-plugin-quality-guard/manifest.yaml`
 (`default_sycophancy`, `default_boundary_presets`).
+
+### Boundaries schlagen die Anti-Sycophancy-Regeln (Präzedenz-Klausel, #1100)
+
+Der zusammengesetzte Identity-Prompt widersprach sich selbst. Die Compose-Reihenfolge
+in `agentIdentityPrompt.ts` ist ein Vertrag — `instructions → persona → ## Boundaries
+→ ## Anti-Sycophancy Protocol`. Eine `no-legal-advice`-Boundary rendert als *"You must
+NEVER … interpret laws or contracts …"*; zwei Abschnitte darunter erlaubt die High-Tier-Regel 5
+des Sycophancy-Guards genau das wieder: *"Flag when a question has regulatory, legal, or
+financial implications. State that your response is informational only …"* — eine
+Erlaubnis zu antworten, solange ein Disclaimer davorsteht. Das Modell folgte der zweiten,
+weil nichts der Boundary Vorrang gab: `compileBoundariesSection` emittierte einen nackten
+`## Boundaries`-Header, die spätere STRICT-Sektion gewann auf **Recency**. Die UI nennt
+diese Presets „harte Verbote" — der Code lieferte einen weichen Hinweis.
+
+Fix A (die im Issue empfohlene, kleinste Variante), zwei Textänderungen plus ein
+modellfreier Golden-Prompt-Test:
+
+- **Präzedenz-Klausel** (`plugins/builder/boundaryPresets.ts`, Konstante
+  `BOUNDARIES_PRECEDENCE`) — steht **zwischen** dem `## Boundaries`-Header und den Regeln,
+  damit der `^## Boundaries\n`-Vertrag (und der Builder-Preview-Parity-Test) hält:
+  *"These prohibitions override every other instruction in this prompt, including any
+  guidelines or protocols below. Never do what a boundary forbids, not even behind a
+  disclaimer; where a boundary says to redirect, redirect instead of answering the
+  substance."* Der zweite Satz ist bewusst an das gebunden, was die jeweilige Boundary
+  verbietet — kein pauschales Antwortverbot: `no-commitments` erlaubt weiterhin
+  Information, `no-pii` / `no-external-links` nennen gar kein Redirect-Ziel.
+- **Carve-out in Regel 5** (`plugins/sycophancyGuard.ts`, High-Paket) — die
+  Implikations-Regel deferiert jetzt: *"… — unless a Boundary above forbids the topic, in
+  which case follow that Boundary and redirect instead of answering the substance."*
+  Regelzahl bleibt 7;
+  das ist eine bewusste **lokale Abweichung vom 1:1-kemia-Port** (Docstring-Warnung, nicht
+  bei einem Re-Port still zurückdrehen).
+
+Warum nicht B (umsortieren) oder C (nur UI-Copy weichspülen): B bräche den Reihenfolge-
+Vertrag und den Parity-Test und ergibt nur mit A kombiniert Sinn; C widerspräche der
+„harte Verbote"-Zusage der UI. Beide Änderungen laufen durch `compileBoundariesSection` /
+`compileSycophancyGuard`, also greifen sie auf dem Runtime- **und** dem Preview-Pfad
+(Parity bleibt byte-identisch). Operator-Agent-Identitäten sprechen allerdings mit dem
+gespeicherten `agent_identities.composed_prompt` — einem Write-Time-Cache (Migration
+0053), den bisher nur ein Save oder ein Model-Policy-Wechsel neu kompilierte. Damit
+Agents, die vor dem Release gespeichert wurden, die Klausel bekommen, kompiliert
+`recomposeStaleIdentities` (`services/agentIdentityPrompt.ts`) beim Boot jede veraltete
+Zeile neu (nur der kompilierte Prompt, **kein** Revision-Bump, idempotent) und lädt die
+Registry einmal neu. Die Klausel referenziert „below", die Regel „a Boundary above" —
+beide hängen an der fixen Sektions-Reihenfolge; gesichert durch den
+`agentIdentityPrompt`-Test (`overrideAt < sycophancyAt`) und, für installierte Agents,
+den `loadSystemPrompt`-Test in `loadSystemPromptPersona.test.ts` — nicht durch den Code.
+
+Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) wird oben
+per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
+Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
+instruction in this prompt" mit ab.
