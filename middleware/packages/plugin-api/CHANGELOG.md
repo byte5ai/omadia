@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.17.0 — 2026-09-24
+
+Additive. One canonicaliser for dataset ids, so the `query_dataset` tool and
+the Neon graph cannot disagree about which ids exist (#1093).
+
+### Added
+
+- **`normalizeDatasetUuid(raw): string | undefined`** — returns the canonical
+  lower-case hyphenated form of a `datasets.id` / `dataset_rows.dataset_id`
+  value, accepting every spelling Postgres accepts for `uuid` input (upper
+  case, braces, omitted or differently placed hyphens), and `undefined` for
+  anything that cannot address a row. Both columns are Postgres `uuid`, where
+  a non-uuid string raises `22P02` *before* the ACL predicate in the same
+  statement is evaluated — a failure no caller can tell apart from a real one.
+
 ## 1.10.0 — 2026-08-21
 
 Additive. The service grant gate reports which verb it refused, and `replace`

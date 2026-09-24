@@ -36,6 +36,315 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a Privacy-Shield `ds_…` id in `query_dataset` no longer kills the turn (#1093)
+
+2026-09-22 — `query_dataset` passed the model's `dataset_id` unvalidated into
+`WHERE tenant_id = $1 AND id = $2` against the `uuid` column `datasets.id`, so
+a non-uuid id raised Postgres `22P02` *before* the owner check in the same
+statement. The id the model actually sent was a `ds_<uuid>` from a Privacy
+Shield v4 digest — a turn-scoped in-memory dataset, a different id space from
+the uploaded datasets the tool reads, and one the digest and system prompt
+explicitly tell the model to carry to other tools (`create_xlsx` takes exactly
+that id). On the `get_schema` branch, which had no `try/catch`, the rejection
+left the tool handler and ended the whole turn: a terminal `error` event with
+no `done`, or — when another tool had already committed in the same turn — the
+emergency `done` from #506 reporting `runTrace.status: "success"` with an
+English non-answer.
+
+Four layers:
+
+- `queryDatasetTool.ts` normalizes `dataset_id` before calling the graph. A
+  `ds_` prefix gets its own message naming the right id space (`v4_*` verbs, or
+  `create_xlsx`) so the model stops re-sending the same id; anything that
+  cannot address a row answers `{"error":"not_found_or_not_owned"}`,
+  indistinguishable from a dataset owned by someone else. Every branch of the
+  tool — `list_datasets` included — now answers with the `Error:` string
+  convention instead of throwing.
+- One shared canonicaliser, `normalizeDatasetUuid`
+  (`@omadia/plugin-api`, `src/datasetId.ts`), is used by both the tool and the
+  Neon graph so the two layers cannot disagree about which ids exist. It
+  accepts every spelling Postgres accepts for `uuid` input (upper case, braces,
+  omitted hyphens) and returns the canonical form, so an id that resolved
+  before any validation existed still resolves.
+- `NeonKnowledgeGraph.loadDatasetRow` / `deleteDataset` return `null` / `false`
+  for an id that cannot address a row instead of throwing — validated before
+  the query rather than via `id::text = $2`, which would drop the primary-key
+  index. `queryDatasetRows` now binds the id as STORED rather than as spelled
+  by the caller.
+- `src/routes/datasets.ts` maps `22P02` to **404 `dataset.not_found`** in the
+  three `/:id` handlers (`GET /api/v1/datasets/foo` used to answer 500 with the
+  raw Postgres text in the body). The collection handlers have no path id, so a
+  `22P02` there stays a 5xx.
+
+The generic last line of defence — `Orchestrator.prepareStreamSlot` settling a
+rejected slot as an `Error: <message>` tool result instead of letting it kill
+the streaming turn — landed with #1095 (entry below). This fix had built the
+same per-slot catch independently and now relies on that one.
+
+Note for anyone testing this by hand: `middleware/packages/*/dist` is build
+output, and a stale `dist` can make the #1095 streaming fix look already-present.
+Rebuild the touched package (`npm run build -w @omadia/orchestrator`) before
+trusting a green run.
+
+### Fixed — a turn that throws after a tool ran is no longer reported as a successful answer (#1094)
+
+2026-09-22 — when a turn threw after at least one tool call had already
+committed, the streaming orchestrator emitted a regular `done` whose `answer`
+was a hardcoded English sentence ("The requested action (…) completed
+successfully, but the turn could not finish generating a follow-up response.").
+The `done`-instead-of-`error` branch itself is deliberate (#506: a tool that
+already committed a side effect must not be reported as failed, or the next
+turn re-invokes it) — how the degraded turn was *reported* was the bug. The
+event carried no flag, no committed tool names and no `correlationId`, and
+`runTrace.status` said `"success"`, so every consumer — web chat, Public API
+clients, Teams/Telegram — rendered it as a normal answer while the user's
+question stayed unanswered. The sentence was English in a German UI, and it was
+persisted as the turn's assistant answer, so the next turn's model read
+"completed successfully" as context for a turn that had failed.
+
+The `done` event now carries `degraded: true`, `committedTools` (distinct tool
+names in commit order — not a call count) and `correlationId`, the same token
+the `[orchestrator] turn failed (correlationId=…)` log line quotes (#641), and
+the run trace records `status: 'error'`. `RunStatus` stays binary; the degraded
+nuance rides the event rather than a third status value written to the
+knowledge graph. The orchestrator composes no prose: it emits a neutral,
+language-free marker (`<turn-incomplete tools="…" ref="…"></turn-incomplete>`,
+following the existing `<mcp-auth-required>` convention) and persists THAT, so
+the session log, the KG turn node and the next turn's context carry no
+locale-specific sentence and no fake success; the system prompt explains the
+marker, so the model reads the named tools as already executed instead of
+re-invoking them. What is delivered is a localized notice: the marker is
+expanded at the delivery boundary via `composeTurnIncompleteText`
+(`@omadia/channel-sdk`), through the same locale mechanism as the AI-Act
+marking — so Teams/Telegram/email, which render `answer` and nothing else, get
+readable text instead of a tag, while the web UI rings the bubble in the
+warning colour and adds its own localized card. If Privacy Shield v4 had
+already rendered the answer server-side (`answerSource: 'privacy-render'`)
+before the failure, that answer is kept and the notice does not replace it.
+A degraded turn no longer counts as the operator's "last turn ok" health
+signal, nor as an `ok` entry in the Public API key audit trail, and the
+verifier skips it (a notice carries no claims to check). The `@omadia/channel-api` README documents the degraded
+terminal and how a client should handle it.
+
+### Fixed — a throwing tool no longer kills a whole streaming turn (#1095)
+
+2026-09-22 — the orchestrator's two tool-loop paths disagreed about a tool
+handler that throws. The non-streaming path (`chatInContext`, used by Teams and
+Telegram) runs its dispatches through `Promise.allSettled` and folds a rejection
+into a normal `Error: <message>` tool result: the model sees the error, can
+correct its call, and the turn finishes. The streaming path (`chatStream`, used
+by the web chat and by the Public API channel) put the bare dispatch promise on
+its parallel slot and awaited `Promise.race([...slots, tick])`, so the first
+rejection escaped the async generator and aborted the entire turn. Sibling tools
+running in the same iteration never settled — their `tool_use` event had already
+streamed, but no `tool_result` ever followed, leaving the web chat's tool row on
+"TOOL RUNNING" forever.
+
+Worse on the Public API: when an earlier tool in the turn had already completed,
+the dead turn hit issue #506's emergency branch and was reported to the client as
+a SUCCESS — a fabricated `done` event ("The requested action(s) … completed
+successfully, but the turn could not finish generating a follow-up response."),
+`runTrace.status: "success"`, HTTP 200 and no `error` event. That pseudo-answer
+was also persisted via the session logger, so the next turn's model read a stored
+message claiming an action had succeeded in a turn where a tool had in fact
+blown up.
+
+`prepareStreamSlot()` now attaches a `.catch()` to the dispatch promise that
+resolves to `Error: <message>` — the same convention the non-streaming path
+builds from its rejections and the one the race loop already reads
+(`output.startsWith('Error:')`). A rejected dispatch therefore settles its slot:
+the `tool_result` streams with `isError: true`, the model gets the error back,
+sibling tools keep running, and the turn finishes normally. No
+`[orchestrator] turn failed` log line and no fabricated success for a tool-level
+failure. The message is passed through RAW, matching the chat path's deliberate
+divergence from `ToolDispatchService` (fenced by
+`test/orchestrator/chatPathToolErrorText.test.ts`). The non-streaming path is
+unchanged; `dispatchTool` itself still rejects, so the `allSettled` branch stays
+live rather than becoming dead code.
+
+Two consequences are deliberate. A rejected dispatch is now logged at the slot
+(`[orchestrator.prepareStreamSlot:<tool>] dispatch rejected …`, with the error
+object) instead of at the turn's catch, so the operator keeps the stack a
+handler-level failure used to produce. And a THROWN message still bypasses
+Privacy Shield interning — that only ever sees a RETURNED string — so a driver
+error quoting a row value reaches the provider (new for streaming turns) and the
+API caller (which already received the same raw text as the `error` event's
+`message` before this fix). The provider half is what the non-streaming path
+has always done with the same rejection; tightening it
+has to move both paths at once, and a handler whose errors may carry data should
+catch and return its own data-free `Error:` prose — returned `Error:` strings
+also reach the model verbatim, un-interned (#1105, #1097).
+
+The reported trigger — `query_dataset` with `query: "get_schema"` and a non-UUID
+`dataset_id`, where `QueryDatasetTool.handle` lets a Postgres `22P02` escape — is
+a separate input-validation defect and is NOT fixed here; it is simply survivable
+now, like every other throwing handler.
+
+### Fixed — the model sees the whole running conversation again (#1096)
+
+2026-09-22 — the orchestrator's in-session history (the "context tail") was
+built exclusively from turns the knowledge graph had ingested, and the capture
+filter skipped that ingest entirely for any turn scoring below the significance
+threshold (0.2 at `capture_level=normal`). Short messages — "ok", "pong",
+"Farbe: blau" — score 0.00–0.10, so they were dropped, and with them the only
+record the model had that the message ever happened. The user saw a coherent
+dialog (web chat and API clients keep the full transcript), the model saw a
+series of unrelated single-shot requests, and a request to summarise the
+conversation was answered with "there is no prior context". This was not
+web-chat-only: it reproduced on the Public API channel, which has no
+client-side history at all, and Teams uses the same tail loader.
+
+A sub-threshold turn is now still written, flagged `tailOnly` on `TurnIngest`.
+That splits the two jobs one boolean used to carry: the **conversation** (the
+session record `getSession()` returns, and therefore the tail) is always
+recorded, while **knowledge** (embedding, cross-session recall, promotion)
+stays gated by significance exactly as before. Backends honouring the flag
+write no embedding for such a turn and exclude it from `searchTurns`,
+`searchTurnsByEmbedding` and `findEntityCapturedTurns`; its `entityRefs` are
+dropped so no `CAPTURED` edge can let it back into recall through the side
+door, the periodic embedding backfill sweep skips them (otherwise it would
+hand every "ok" a vector at the next sweep), and both promotion paths — the
+per-turn auto-promote and the bulk promoter — decline them explicitly rather
+than inferring it from the score: the capture threshold and the promotion
+threshold are configured independently, so a tail-only turn can outrank the
+promotion bar, and a promoted turn becomes a MemorableKnowledge, which IS
+visible to cross-session recall. The flag is written on every turn, including
+as `false`, because node properties are merged on upsert — a replay at
+`capture_level=off` or a backfill re-ingest clears it instead of stranding a
+row outside recall for good. A backend that rejects the tail-only write fails
+the ingest like any other turn write: the session logger absorbs it without
+failing the turn and counts it as `turn-ingest-failed`. On Neon the daily GC
+quotas count tail-only rows (so they cannot pile up) but evict them before any
+knowledge turn, so the significant turns a scope keeps are the same ones it
+kept before tail-only rows existed.
+
+The second, independent limit is gone too: the tail was hard-capped at the last
+3 knowledge-graph turns by a `tailSize: 3` constant with no configuration
+surface, so even significant turns left the model's view after three exchanges.
+The default is now 10 (aligned with `sessionBriefing`'s own tail) and operators
+can set `context_tail_size` — declared in the `orchestrator-extras` manifest, so
+it is reachable from the plugin store rather than only from the source, and
+clamped to 1–50 (every tail turn enters the candidate pool, so a tail near the
+compact-mode threshold of 100 would flip every assembly into compact rendering,
+and the Neon GC keeps 50 turns per scope by default). A larger
+tail consumes the shared token budget (`context_default_budget_tokens`) ahead of
+cross-session recall, which is the trade the field makes visible. The
+`[harness-orchestrator-extras] context-assembler ready` log line now reports the
+effective tail length.
+
+### Fixed — tool errors and MCP auth prompts are no longer interned as datasets (#1097)
+
+2026-09-22 — completes the `Error:`-passthrough fix that #1105 started. A tool
+result following the orchestrator's `Error:` tool-error convention is
+control-flow text the model must read, not a data row: interning it hides the
+failure behind a masked digest (so the model cannot act on the hint the error
+carries and cannot self-correct) and registers a renderable one-row dataset
+that a later `v4_render_answer` materializes as if the error were data. #1105
+closed the two seams its reproductions hit — `Orchestrator.dispatchTool` (web
+chat) and `ToolDispatchService.afterDispatch` (public API). Two intern sites
+were left:
+
+- `LocalSubAgent.dispatch` — a tool failing inside a sub-agent handed that
+  sub-agent's own model a `[masked]` digest. The `is_error` flag on the
+  `tool_result` block is derived from the same prefix, so interning also
+  cleared the machine-readable error signal.
+- `Orchestrator.guardReplayResult` — a failed MCP input replay comes back from
+  `McpManager.callTool` as an `Error: …` string (the manager never throws) and
+  was interned like a personnel row.
+
+Both now return the string verbatim, with the guard in the same position as the
+two existing ones: after the intern-exemption allowlist and the operator
+bypass, before interning. Behaviour for successful results is unchanged — each
+regression test carries a control case asserting an ordinary result is still
+interned. An end-to-end chat-path test drives the issue's own reproduction
+(`search_turns_semantic` without an embedding client) and pins that the error
+reaches the model verbatim with `is_error` set, and that the `search_turns`
+fallback it names is dispatched and its data result interned.
+
+The `Error:` prefix check that #1105 introduced was also the wrong shape for a
+second carrier, so all four seams now share one predicate,
+`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`): an
+**MCP auth prompt** (anchored to its exact `🔒 The MCP server "` producer
+prefix, optionally carrying the `<mcp-auth-required>` machine block the chat UI
+turns into a Connect card) is control flow too, and carries no `Error:` prefix.
+The predicate is prefix-only on purpose: a substring match would let one
+planted marker in a cell unmask a whole multi-row result. `McpManager.handleFailure` returns it in place of a
+raw failure whenever a call looks unauthorized — an expired OAuth token on a
+parked MCP input card is the everyday case — and interning it destroyed the
+Connect card and left the model narrating success over a masked digest.
+
+**Rendered answers**: `PrivacyRenderedAnswer` gains an optional `isError`,
+stamped when `v4_render_answer` rendered a dataset that is one control-flow
+cell (decided on the source cell, so the model's prose and list/table framing
+cannot hide it). The orchestrator forwards it to both answer paths as
+`answerIsError: true` (streaming `done` and `ChatTurnResult` /
+`SemanticAnswer`), so a channel can present the turn as a failure in its own
+wording instead of rendering the English error text as a successful result.
+Additive and optional, only ever set alongside
+`answerSource: 'privacy-render'`; `@omadia/channel-api`'s README documents
+it. `@omadia/plugin-api` 1.14.0 → 1.15.0 (added symbols, MINOR).
+
+Known limit, unchanged from #1105 and recorded on #1097: an **MCP** tool's
+`Error:` text is authored by the remote server (`renderToolResult` prefixes
+`Error: ` onto the server's own body), so the passthrough trusts foreign error
+text; and a passed-through result produces no receipt entry (only
+`internAndCount` and the operator bypass count), so the turn receipt does not
+report the passage — closing that needs a new `reason` on the
+`recordBypassedTool` contract.
+
+Deliberately NOT changed: `ToolDispatchService.maskErrorText`, which masks the
+message of an exception a handler THREW. Nothing sanitized that text — an ORM
+echoes the failing row, a driver echoes bound parameters — so the "error
+strings carry no PII by construction" argument holds for the `Error:`
+convention only. A test now pins, against the real privacy-guard service,
+that a thrown message which happens to start with `Error:` is still masked.
+Also deliberately NOT changed: the shape classifier. A classifier exemption for
+a one-row `Error:` scalar was tried and dropped — verbs re-classify their
+derived datasets, so `filter` + `select` could narrow any masked column to
+such a scalar and put it in cleartext; a regression test pins that it stays
+masked. On the sub-agent path, `bridgeTool`'s `Error: ${err.message}` wrapper
+now reaches the sub-agent's model raw, matching the chat path's policy for
+thrown exception text.
+
+### Fixed — cost-ledger rows are attributable to a turn, a session, and the call time (#1098)
+
+2026-09-21 — every LLM call writes one row into the `token_usage` ledger
+(`@omadia/usage-telemetry`), but the rows carried no attribution: `session_id`
+was NULL on every row, there was no `turn_id` column at all, and `created_at`
+recorded the flush tick, not the call — the recorder buffers and flushes on a
+5-second grid, so `DEFAULT NOW()` stamped every row of a flush with one
+transaction-start time. A single turn emits several rows (one per streaming
+iteration plus background extras / model- and persona-router calls), so "what
+did this turn/session/user cost?" could not be answered, and a time-window
+heuristic failed because rows of different turns landed on the same tick.
+
+Graph migration `0033_token_usage_attribution.sql` adds `turn_id TEXT NULL` (with
+a partial index) and `provider TEXT NULL` (mirroring `turn_receipts.provider`, so
+a provider fallback is visible in the ledger). The recorder now freezes the call
+time (`occurredAt`) at `recordUsage()` and writes it explicitly to `created_at`
+instead of leaning on `DEFAULT NOW()` at flush. Turn attribution is read from the
+orchestrator's per-turn `AsyncLocalStorage` context via a `setUsageContextProvider`
+hook (the telemetry package sits below the orchestrator and cannot import it), so
+the seams inside the orchestrator's own turn scope (streaming iterations, model-
+and persona-router calls, extras hooks) pick up `turn_id`/`session_id` without
+threading ids through each call site. Only that scope counts
+(`usageContextFromTurn`): the placeholder scopes routes and adapters open around
+a turn (`http-chat-<scope>`, or `''` on channel, routine and canvas turns) read
+as "no turn", so their rows stay NULL instead of carrying a plausible but wrong
+id. The subscription runtime (`CliChatAgent`) never opens an orchestrator scope
+and passes its own per-turn id explicitly; ids passed on a `UsageRecord` always
+win. Not yet attributed: the verifier scorers (they run after the turn scope
+closed) and `claude-cli-completion` rows, which stay NULL. Off-turn callers
+(background jobs) keep NULL ids rather than throwing. `session_id` maps to the
+turn's `sessionScope` — best-effort, since unscoped HTTP turns share
+`http-default` (see #445), so group on `turn_id`. Regression tests
+(`test/costLedger/`) cover turn/session attribution, placeholder scopes writing
+NULL, two turns separable within one flush window (including on the CLI path),
+the call time surviving the flush, the provider column at each seam, and the
+no-context NULL path. Deploy graph migration 0033 before this code: the INSERT
+names the new columns, so an older schema drops every usage batch. The
+`/api/usage` missing role check is out of scope and tracked separately.
+
 ### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
 
 2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`
@@ -137,6 +446,40 @@ it would bring back the `ENVIRONMENT_FALLBACK` IntlError flood (one per
 rendered table row on `/admin/datasets`) that #821 added it to silence. A guard
 test pins both halves, and `timeZone.request.test.ts` runs the request config
 against stubbed cookies, so a config that stops reading the cookie fails.
+
+### Fixed — plan-runner process-reuse settings are reachable, and a bad threshold can no longer disable similarity (#1103)
+
+2026-09-22 — the plan-runner plugin read two setup keys its manifest never
+declared, `reuseProcesses` and `processReuseThreshold`. The store only renders
+fields declared under `setup.fields`, so both values were unreachable from the
+UI: process reuse was on with a fixed 0.6 threshold and no way to change
+either. Both fields are now declared (`harness-plugin-plan-runner/manifest.yaml`),
+and `test/planRunnerConfigManifestDrift.test.ts` pins the invariant by scanning
+the package's `src/` for every literal config key read through
+`ctx.config.get(...)` / `ctx.config.require(...)` and asserting the manifest
+declares it — `require()` is included because an undeclared key there throws
+`MissingConfigError` at activation rather than returning `undefined`. The
+guard's allow-list of kernel-injected synthetic fields imports
+`PRIVACY_MODE_CONFIG_KEY` and `PRIVACY_BYPASS_SCOPES_CONFIG_KEY` from
+`@omadia/plugin-api` instead of repeating the strings, so a kernel-side rename
+cannot silently re-open the drift.
+
+`processReuseThreshold` is a string field (the manifest loader has no decimal
+type) constrained by a `0–1` pattern. The pattern is not the only write path:
+`PATCH /api/v1/admin/runtime/installed/:id/config` blind-merges the JSON body
+and profile apply stores the profile's YAML `config` as-is — neither re-runs
+`checkSetupFieldPattern`, and both keep the raw JSON/YAML type — so
+out-of-contract values could still reach the plugin, and the old
+`Number.parseFloat` + `Number.isFinite` guard passed them through. `"0,6"`
+(decimal comma) parsed to the prefix `0` — finite, in range, and therefore
+invisible to a range check — which reuses **every** retrieved process
+regardless of similarity; `"5"` silently disabled reuse while the startup log
+printed a plausible threshold. Parsing now range-checks a stored number as-is,
+rejects any string that is not a complete numeric literal, and rejects anything
+outside 0–1 or of another type, falling back to the 0.6 default
+(`parseProcessReuseThreshold`, which never throws, so a bad value cannot fail
+activation) — what the field's help text promises. A rejected, operator-set
+value is logged at activation instead of being swapped for 0.6 silently.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

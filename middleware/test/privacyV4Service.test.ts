@@ -176,6 +176,100 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(receipt.pseudonymProjectionUsed, false);
   });
 
+  /**
+   * #1097 — a render of a dataset that is one control-flow cell (a tool error,
+   * an MCP auth prompt) is a rendered FAILURE. The stashed answer says so, so the
+   * orchestrator can put `answerIsError` on the wire and channels can present
+   * it as an error instead of success prose wrapped around an error string.
+   *
+   * Reaching the store at all takes the `internToolResultV4` path directly:
+   * the dispatch seams keep such results out of the shield entirely (the
+   * primary fix); a masked thrown exception is one route that still lands
+   * here.
+   */
+  it('flags a rendered tool error as isError', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-err';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'manage_routine',
+      rawResult: 'Error: routines are unavailable in this session.',
+    });
+    const srcId = datasetIdOf(interned.digestText);
+
+    await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: srcId, columns: ['value'], format: 'scalar' },
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    assert.ok(
+      answer.text.includes('Error: routines are unavailable'),
+      'the render still materializes what the model asked for',
+    );
+    assert.equal(answer.isError, true, 'a rendered error must be flagged as one');
+  });
+
+  it('flags a list render wrapped in success prose as isError (#1097 repro 2)', async () => {
+    // The issue's own reproduction: the model rendered the interned error as a
+    // one-item list under "ein Treffer gefunden". The flag is decided on the
+    // source cell, so neither the prose nor the list framing hides it.
+    const svc = createPrivacyGuardService();
+    const turnId = 't-err-list';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'query_knowledge_graph',
+      rawResult:
+        'Error: embeddings not configured — use `search_turns` for keyword-based search instead.',
+    });
+    const srcId = datasetIdOf(interned.digestText);
+
+    await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: {
+        datasetId: srcId,
+        columns: [{ field: 'value', label: 'Treffer' }],
+        format: 'list',
+        prose: 'Semantische Suche nach "Nordwind" — ein Treffer gefunden.',
+      },
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    assert.ok(answer.text.startsWith('Semantische Suche'), 'the prose leads the render');
+    assert.equal(answer.isError, true, 'a list render of an error must be flagged as one');
+  });
+
+  it('leaves isError unset for an ordinary rendered answer', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-ok';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    const srcId = datasetIdOf(interned.digestText);
+
+    await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: srcId, columns: ['employee', 'days'], format: 'table' },
+    });
+
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer);
+    assert.equal(answer.isError, undefined, 'an ordinary answer carries no error flag');
+  });
+
   it('takeRenderedAnswerV4 clears the stash after taking', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-clear';
@@ -245,5 +339,60 @@ describe('PrivacyGuardService — identityValuesOnWire (Slice 2B)', () => {
     const receipt = await svc.finalizeTurn(turnId, 'Wer hat den meisten Urlaub?');
     assert.ok(receipt);
     assert.equal(receipt.identityValuesOnWire, 0);
+  });
+});
+
+/**
+ * #1097 — a control-flow-looking cell is never a cleartext channel. The shape
+ * classifier masks every free-text string (only S1–S5 yield cleartext), and a
+ * verb re-classifies its derived dataset with that same classifier. An
+ * exemption for "a 1×1 `Error:` scalar" was tried and removed: filter + select
+ * narrow any helpdesk dataset to exactly such a scalar, and the name behind the
+ * prefix then went to the model in the digest.
+ */
+describe('PrivacyGuardService — control-flow text is never a cleartext channel (#1097)', () => {
+  it('keeps a verb-derived 1x1 `Error:` cell masked', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-launder';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'helpdesk.tickets',
+      rawResult: JSON.stringify([
+        { id: 'T-1001', description: 'Error: Login fuer Max Mustermann' },
+        { id: 'T-1002', description: 'x' },
+      ]),
+    });
+
+    const filtered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_filter',
+      input: {
+        datasetId: datasetIdOf(interned.digestText),
+        predicate: { op: 'eq', field: 'id', value: 'T-1001' },
+      },
+    });
+    const selected = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_select',
+      input: { datasetId: datasetIdOf(filtered.resultText), columns: ['description'] },
+    });
+
+    const digest = JSON.parse(
+      selected.resultText.slice(selected.resultText.indexOf('{')),
+    ) as { rowCount: number; fields: Array<{ path: string; classification: string }> };
+    assert.equal(digest.rowCount, 1, 'the verbs narrowed the dataset to one cell');
+    assert.equal(
+      digest.fields.find((f) => f.path === 'description')?.classification,
+      'sensitive-masked',
+      'narrowing a masked column to a 1x1 `Error:` scalar must not unmask it',
+    );
+    assert.equal(
+      selected.resultText.includes('Max Mustermann'),
+      false,
+      'the name behind the `Error:` prefix leaked into the digest',
+    );
   });
 });

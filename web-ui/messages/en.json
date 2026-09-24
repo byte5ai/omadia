@@ -1605,6 +1605,12 @@
       "factPrivateBlocks": "'<private>' blocks",
       "factHintTags": "'<palaia-hint>' tags"
     },
+    "turnIncomplete": {
+      "heading": "This turn did not finish",
+      "body": "The actions listed below did run — but the assistant could not produce an answer afterwards, so your question is still unanswered. Repeat the question; only repeat the actions themselves if you are sure they should run a second time.",
+      "bodyNoTools": "Some actions had already run when this turn failed, and the assistant could not produce an answer afterwards, so your question is still unanswered. Repeat the question; check with your operator before repeating anything that changes data.",
+      "completedTools": "Completed actions:"
+    },
     "errorUpstreamErrorPage": "The server returned an error page instead of a response (HTTP 500). Something answered, so the fault is server-side — check the middleware logs or report this to your operator.",
     "errorCorrelationRef": "Reference for support: {id}",
     "routing": {

@@ -56,6 +56,14 @@ function makeFakePool(opts: {
   return { pool, queries };
 }
 
+// #1096 — both eviction orders must rank tail-only Turns (session-tail
+// chatter, never knowledge) ahead of the `type_weight × decay_score` term.
+// Otherwise the quotas, which do count them, push out older significant
+// Turns to make room for "ok"/"danke" rows: `getSession` marks every turn
+// accessed, so decay_score ties and eviction degrades to oldest-first.
+const TAIL_ONLY_FIRST =
+  /ORDER BY COALESCE\(\(properties->>'tailOnly'\)::boolean, FALSE\) DESC,\s*\(\s*CASE entry_type/;
+
 describe('runGcSweep', () => {
   const baseOpts = {
     tenantId: 'tenant-x',
@@ -93,7 +101,7 @@ describe('runGcSweep', () => {
 
     const deleteSql = queries[1]?.sql ?? '';
     assert.ok(/DELETE FROM graph_nodes/i.test(deleteSql));
-    assert.ok(/ORDER BY \(\s*CASE entry_type/.test(deleteSql));
+    assert.ok(TAIL_ONLY_FIRST.test(deleteSql), 'tail-only rows rank first (#1096)');
     assert.ok(/decay_score ASC/.test(deleteSql));
     // Excess: 60 - 50 = 10
     assert.equal(queries[1]?.params[5], 10);
@@ -118,6 +126,10 @@ describe('runGcSweep', () => {
     assert.equal(queries.length, 2);
     assert.ok(/WITH ranked AS/i.test(queries[1]?.sql ?? ''));
     assert.ok(/cum_chars/.test(queries[1]?.sql ?? ''));
+    assert.ok(
+      TAIL_ONLY_FIRST.test(queries[1]?.sql ?? ''),
+      'tail-only rows rank first in the cumulative window (#1096)',
+    );
   });
 
   it('runs both phases when both quotas are exceeded', async () => {
