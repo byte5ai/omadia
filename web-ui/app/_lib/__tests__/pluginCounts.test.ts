@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
-import { countReadiness, isInstalled, isReady } from '../pluginCounts';
-import type { Plugin, PluginInstallState, PluginReadiness } from '../storeTypes';
+import {
+  countReadiness,
+  isInstalled,
+  isOperatorInstalled,
+  isReady,
+} from '../pluginCounts';
+import type {
+  Plugin,
+  PluginInstallOrigin,
+  PluginInstallState,
+  PluginReadiness,
+} from '../storeTypes';
 
-type Countable = Pick<Plugin, 'install_state' | 'readiness' | 'source'>;
+type Countable = Pick<
+  Plugin,
+  'install_state' | 'readiness' | 'source' | 'install_origin'
+>;
+
+function o(
+  install_state: PluginInstallState,
+  install_origin?: PluginInstallOrigin,
+): Countable {
+  return {
+    install_state,
+    ...(install_origin ? { install_origin } : {}),
+  } as Countable;
+}
 
 function p(
   install_state: PluginInstallState,
@@ -137,5 +160,46 @@ describe('countReadiness', () => {
 
   it('is zero/zero for an empty catalog', () => {
     expect(countReadiness([])).toEqual({ installed: 0, ready: 0 });
+  });
+});
+
+
+describe('isOperatorInstalled (#1089)', () => {
+  it('counts an operator install and not a bundled one', () => {
+    // The whole bug in two lines: a fresh Compose deployment holds 16 entries
+    // the kernel wrote at boot, and the onboarding step read them as work the
+    // operator had done.
+    expect(isOperatorInstalled(o('installed', 'operator'))).toBe(true);
+    expect(isOperatorInstalled(o('installed', 'bundled'))).toBe(false);
+  });
+
+  it('counts update-available the same way isInstalled does', () => {
+    expect(isOperatorInstalled(o('update-available', 'operator'))).toBe(true);
+    expect(isOperatorInstalled(o('update-available', 'bundled'))).toBe(false);
+  });
+
+  it('never counts a plugin that is not installed at all', () => {
+    expect(isOperatorInstalled(o('available', 'operator'))).toBe(false);
+    expect(isOperatorInstalled(o('incompatible', 'operator'))).toBe(false);
+  });
+
+  it('falls back to isInstalled when the server sends no origin', () => {
+    // An older middleware omits the field. Reporting "nothing installed" there
+    // would be a worse lie than the pre-ticked step: it would pop the profile
+    // modal over a fully configured deployment.
+    expect(isOperatorInstalled(o('installed'))).toBe(true);
+    expect(isOperatorInstalled(o('update-available'))).toBe(true);
+    expect(isOperatorInstalled(o('available'))).toBe(false);
+  });
+
+  it('leaves isInstalled alone — the health tile still counts built-ins', () => {
+    const catalog = [
+      o('installed', 'bundled'),
+      o('installed', 'bundled'),
+      o('installed', 'operator'),
+      o('available'),
+    ];
+    expect(catalog.filter(isInstalled).length).toBe(3);
+    expect(catalog.filter(isOperatorInstalled).length).toBe(1);
   });
 });

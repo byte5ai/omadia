@@ -129,6 +129,14 @@ export interface PluginPermissionsSummary {
   acquires_oauth?: boolean;
 }
 
+/**
+ * #1089 — who put the plugin into the runtime registry: `bundled` is the
+ * kernel's boot auto-install, `operator` a deliberate install (hub, ZIP
+ * upload, or profile apply). Mirrors `PluginInstallOrigin` in
+ * `middleware/src/api/admin-v1.ts`.
+ */
+export type PluginInstallOrigin = 'bundled' | 'operator';
+
 export type PluginInstallState =
   | 'available'
   | 'installed'
@@ -243,6 +251,10 @@ export interface Plugin {
   permissions_summary: PluginPermissionsSummary;
   integrations_summary: string[];
   install_state: PluginInstallState;
+  /** #1089 — who installed it. Present only for an installed plugin on a
+   *  middleware that records the field; absent means "this server cannot tell
+   *  me", which `isOperatorInstalled` reads as the pre-#1089 behaviour. */
+  install_origin?: PluginInstallOrigin;
   incompatibility_reasons?: string[];
   depends_on: string[];
   /** Manifest-declared background jobs. Always present (defaults to []). */

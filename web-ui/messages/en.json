@@ -954,7 +954,7 @@
     "ariaClose": "Close",
     "kicker": "First-time setup",
     "title": "Pick a profile — operational in <60 seconds",
-    "intro": "This middleware is still empty ({count, plural, one {# plugin} other {# plugins}} installed). Pick a curated profile — the plugins will be registered in the correct capability order. Secrets like API keys are set afterwards per plugin, on its detail page.",
+    "intro": "You have not installed any plugins yet — the packages already running came with the image. Pick a curated profile and its plugins are registered in the correct capability order. Secrets like API keys are set afterwards per plugin, on its detail page.",
     "exportPrefix": "Already set up?",
     "exportLink": "Export profile as YAML",
     "exportSuffix": "and import it into another deployment.",
