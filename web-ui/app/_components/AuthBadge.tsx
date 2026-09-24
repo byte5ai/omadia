@@ -135,7 +135,7 @@ export function AuthBadge(): React.ReactElement | null {
         <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[color:var(--accent)]/15 font-mono text-[10px] font-semibold uppercase text-[color:var(--accent)]">
           {initials}
         </span>
-        <span className="hidden text-xs text-[color:var(--fg-strong)] sm:inline">
+        <span className="hidden text-xs text-[color:var(--fg-strong)] xl:inline">
           {firstName(user.display_name) || user.email}
         </span>
         <svg

@@ -2,7 +2,7 @@
 
 import { Moon, Palette, Sun } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 
 import { getUiPrefs, putUiPrefs } from '../_lib/api';
 import {
@@ -72,7 +72,6 @@ const selectClass =
   'focus:border-[color:var(--accent)] focus-visible:border-[color:var(--accent)]';
 
 export function ThemeControls(): React.ReactElement {
-  const t = useTranslations('themeControls');
   const palette = useSyncExternalStore(subscribeToRootAttrs, readPalette, () => 'lagoon' as const);
   const theme = useSyncExternalStore(subscribeToRootAttrs, readTheme, () => 'system' as const);
 
@@ -141,8 +140,95 @@ export function ThemeControls(): React.ReactElement {
     persist(readPalette(), next);
   }
 
+  const selects = (
+    <ThemeSelects palette={palette} theme={theme} onPalette={applyPalette} onTheme={applyTheme} />
+  );
+
   return (
-    <div className="flex items-center gap-2">
+    <>
+      {/* xl+: the two selects sit inline in the header row. */}
+      <div data-theme-inline className="hidden items-center gap-2 xl:flex">
+        {selects}
+      </div>
+      {/* Below xl they collapse into one icon menu (#1073): inline they pushed
+          the header past the desktop shell's ~1100px window and covered HELP. */}
+      <ThemeMenu>{selects}</ThemeMenu>
+    </>
+  );
+}
+
+/** Icon-triggered panel holding the theme selects below xl (#1073). A
+ *  `group`, not a `menu`: it holds form controls, not menu items. Closes on an
+ *  outside mousedown and on Escape (focus returns to the trigger), mirroring
+ *  the Nav/AuthBadge dropdowns. Only mounted while open. */
+function ThemeMenu({ children }: { readonly children: React.ReactNode }): React.ReactElement {
+  const t = useTranslations('themeControls');
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const onMouseDown = (e: MouseEvent): void => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative xl:hidden">
+      {/* eslint-disable-next-line no-restricted-syntax -- icon-only header trigger, same chrome as the issue button */}
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="rounded p-1.5 text-[color:var(--fg-muted)] transition hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
+        title={t('menuAriaLabel')}
+        aria-label={t('menuAriaLabel')}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={panelId}
+      >
+        <Palette className="h-4 w-4" aria-hidden />
+      </button>
+      {open ? (
+        <div
+          id={panelId}
+          role="group"
+          aria-label={t('menuAriaLabel')}
+          className="absolute right-0 top-full z-50 mt-2 flex flex-col gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-3 shadow-lg"
+        >
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface ThemeSelectsProps {
+  readonly palette: PaletteName;
+  readonly theme: Appearance;
+  readonly onPalette: (next: PaletteName) => void;
+  readonly onTheme: (next: Appearance) => void;
+}
+
+/** The palette + appearance selects; rendered inline at xl+ and in the
+ *  collapsed panel below. State lives in ThemeControls, so both share it. */
+function ThemeSelects({ palette, theme, onPalette, onTheme }: ThemeSelectsProps): React.ReactElement {
+  const t = useTranslations('themeControls');
+  return (
+    <>
       <label className="relative inline-flex items-center" aria-label={t('paletteAriaLabel')}>
         <Palette
           className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
@@ -150,7 +236,7 @@ export function ThemeControls(): React.ReactElement {
         />
         <select
           value={palette}
-          onChange={(e) => applyPalette(e.target.value as PaletteName)}
+          onChange={(e) => onPalette(e.target.value as PaletteName)}
           className={selectClass}
         >
           {PALETTES.map((p) => (
@@ -175,7 +261,7 @@ export function ThemeControls(): React.ReactElement {
         )}
         <select
           value={theme}
-          onChange={(e) => applyTheme(e.target.value as Appearance)}
+          onChange={(e) => onTheme(e.target.value as Appearance)}
           className={selectClass}
         >
           {APPEARANCES.map((m) => (
@@ -185,6 +271,6 @@ export function ThemeControls(): React.ReactElement {
           ))}
         </select>
       </label>
-    </div>
+    </>
   );
 }
