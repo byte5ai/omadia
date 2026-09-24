@@ -23,7 +23,26 @@ const MESSAGES_DIR = path.resolve(HERE, '..', '..', '..', 'messages');
 const EVERY_TURN_CLAIMS: readonly RegExp[] = [
   /\b(every|each)\s+(completed\s+)?turn\s+(writes|persists)\b/i,
   /jeder\s+abgeschlossene\s+turn/i,
+  // Genitive form ("der Receipt jedes abgeschlossenen Turns"), unless it is
+  // immediately narrowed by a relative clause ("…, in dem der Shield …").
+  /jedes\s+abgeschlossenen\s+turns\b(?!,\s*in\s+dem)/i,
 ];
+
+/**
+ * Per-locale wording the page must carry: the subtitle names the condition
+ * (shield activity) and the empty state says that turns without it write no
+ * receipt. Both went unguarded before — a revert to the old copy has to fail.
+ */
+const REQUIRED_COPY: Readonly<Record<string, { subtitle: RegExp; empty: RegExp }>> = {
+  en: {
+    subtitle: /every completed turn in which the privacy shield acted/i,
+    empty: /write no receipt/i,
+  },
+  de: {
+    subtitle: /jeden abgeschlossenen Turn, in dem der Privacy Shield aktiv war/i,
+    empty: /schreiben keinen Receipt/i,
+  },
+};
 
 interface ReceiptsCopy {
   readonly subtitle?: unknown;
@@ -61,4 +80,14 @@ describe('operatorReceipts copy (#1081)', () => {
     expect(typeof copy.empty).toBe('string');
     expect((copy.empty as string).trim().length).toBeGreaterThan(0);
   });
+
+  it.each(Object.entries(REQUIRED_COPY))(
+    '%s copy states the shield-activity rule',
+    (locale, required) => {
+      const entry = locales.find((l) => l.locale === locale);
+      expect(entry, `missing ${locale} catalog`).toBeDefined();
+      expect(entry?.copy.subtitle as string).toMatch(required.subtitle);
+      expect(entry?.copy.empty as string).toMatch(required.empty);
+    },
+  );
 });

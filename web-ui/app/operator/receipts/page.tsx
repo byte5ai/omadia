@@ -12,7 +12,8 @@ import { ReceiptsList } from './_components/ReceiptsList';
  *
  * A turn writes its PII-free receipt to the middleware's `turn_receipts`
  * store only when the privacy shield acted in it: it interned a dataset,
- * recorded a bypass, produced structured output, or masked the prompt
+ * recorded a bypass or a connected tool's structured output, or masked the
+ * prompt
  * (`finalizeTurn()` in harness-plugin-privacy-guard `src/service.ts`
  * returns no receipt otherwise, and the orchestrator persists only when one
  * exists). Turns without shield activity leave no row (#1081). This page is
