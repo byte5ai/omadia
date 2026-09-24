@@ -55,6 +55,14 @@ behaves as before. `desktop/src/shellLocale.ts` is now the only place that
 reads the OS locale; a source-census test keeps it that way. Electron's own
 `role:` menu entries still follow the OS language.
 
+Still not following the UI language, and outside this fix: the tray menu
+(`desktop/src/tray.ts`, hard-coded English), the data-dir picker and its
+cloud-sync warning (`desktop/src/ipc.ts`, hard-coded English), and the loading
+and setup-wizard pages (`desktop/src/renderer/wizard-i18n.js`, keyed off
+`navigator.language`). The last one is now a visible mismatch: a boot-failure or
+recovery dialog follows the persisted UI language while the loading page behind
+it follows the OS. Tracked in `docs/middleware-agent-handoff.md` §13.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
