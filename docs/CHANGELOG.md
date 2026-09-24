@@ -36,6 +36,80 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — tool errors and MCP auth prompts are no longer interned as datasets (#1097)
+
+2026-09-22 — completes the `Error:`-passthrough fix that #1105 started. A tool
+result following the orchestrator's `Error:` tool-error convention is
+control-flow text the model must read, not a data row: interning it hides the
+failure behind a masked digest (so the model cannot act on the hint the error
+carries and cannot self-correct) and registers a renderable one-row dataset
+that a later `v4_render_answer` materializes as if the error were data. #1105
+closed the two seams its reproductions hit — `Orchestrator.dispatchTool` (web
+chat) and `ToolDispatchService.afterDispatch` (public API). Two intern sites
+were left:
+
+- `LocalSubAgent.dispatch` — a tool failing inside a sub-agent handed that
+  sub-agent's own model a `[masked]` digest. The `is_error` flag on the
+  `tool_result` block is derived from the same prefix, so interning also
+  cleared the machine-readable error signal.
+- `Orchestrator.guardReplayResult` — a failed MCP input replay comes back from
+  `McpManager.callTool` as an `Error: …` string (the manager never throws) and
+  was interned like a personnel row.
+
+Both now return the string verbatim, with the guard in the same position as the
+two existing ones: after the intern-exemption allowlist and the operator
+bypass, before interning. Behaviour for successful results is unchanged — each
+regression test carries a control case asserting an ordinary result is still
+interned. An end-to-end chat-path test drives the issue's own reproduction
+(`search_turns_semantic` without an embedding client) and pins that the error
+reaches the model verbatim with `is_error` set, and that the `search_turns`
+fallback it names is dispatched and its data result interned.
+
+The `Error:` prefix check that #1105 introduced was also the wrong shape for a
+second carrier, so all four seams now share one predicate,
+`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`): an
+**MCP auth prompt** (anchored to its exact `🔒 The MCP server "` producer
+prefix, optionally carrying the `<mcp-auth-required>` machine block the chat UI
+turns into a Connect card) is control flow too, and carries no `Error:` prefix.
+The predicate is prefix-only on purpose: a substring match would let one
+planted marker in a cell unmask a whole multi-row result. `McpManager.handleFailure` returns it in place of a
+raw failure whenever a call looks unauthorized — an expired OAuth token on a
+parked MCP input card is the everyday case — and interning it destroyed the
+Connect card and left the model narrating success over a masked digest.
+
+**Rendered answers**: `PrivacyRenderedAnswer` gains an optional `isError`,
+stamped when `v4_render_answer` rendered a dataset that is one control-flow
+cell (decided on the source cell, so the model's prose and list/table framing
+cannot hide it). The orchestrator forwards it to both answer paths as
+`answerIsError: true` (streaming `done` and `ChatTurnResult` /
+`SemanticAnswer`), so a channel can present the turn as a failure in its own
+wording instead of rendering the English error text as a successful result.
+Additive and optional, only ever set alongside
+`answerSource: 'privacy-render'`; `@omadia/channel-api`'s README documents
+it. `@omadia/plugin-api` 1.14.0 → 1.15.0 (added symbols, MINOR).
+
+Known limit, unchanged from #1105 and recorded on #1097: an **MCP** tool's
+`Error:` text is authored by the remote server (`renderToolResult` prefixes
+`Error: ` onto the server's own body), so the passthrough trusts foreign error
+text; and a passed-through result produces no receipt entry (only
+`internAndCount` and the operator bypass count), so the turn receipt does not
+report the passage — closing that needs a new `reason` on the
+`recordBypassedTool` contract.
+
+Deliberately NOT changed: `ToolDispatchService.maskErrorText`, which masks the
+message of an exception a handler THREW. Nothing sanitized that text — an ORM
+echoes the failing row, a driver echoes bound parameters — so the "error
+strings carry no PII by construction" argument holds for the `Error:`
+convention only. A test now pins, against the real privacy-guard service,
+that a thrown message which happens to start with `Error:` is still masked.
+Also deliberately NOT changed: the shape classifier. A classifier exemption for
+a one-row `Error:` scalar was tried and dropped — verbs re-classify their
+derived datasets, so `filter` + `select` could narrow any masked column to
+such a scalar and put it in cleartext; a regression test pins that it stays
+masked. On the sub-agent path, `bridgeTool`'s `Error: ${err.message}` wrapper
+now reaches the sub-agent's model raw, matching the chat path's policy for
+thrown exception text.
+
 ### Fixed — cost-ledger rows are attributable to a turn, a session, and the call time (#1098)
 
 2026-09-21 — every LLM call writes one row into the `token_usage` ledger

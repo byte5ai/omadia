@@ -501,6 +501,26 @@ a silent `fly secrets set`. Without any secret the import falls back to the old
 irreversible masking and says so in the `[dataset-imported]` fact, so the model
 does not promise real values in an export it cannot deliver.
 
+### 6c. Control-flow tool results pass the shield unmasked (#1105, #1097)
+
+A tool result that is control flow — the `Error:` tool-error convention, or an
+MCP auth prompt — reaches the model verbatim instead of being interned, so the
+model can read the hint and self-correct. Four seams apply it, each after the
+intern exemption and the operator bypass and before interning:
+`Orchestrator.dispatchTool`, `Orchestrator.guardReplayResult`,
+`ToolDispatchService.afterDispatch` and `LocalSubAgent.dispatch`. All four call
+one predicate, `isControlFlowToolResult` (`@omadia/plugin-api`), which is
+**prefix-anchored only**: `Error:` or the exact `🔒 The MCP server "` producer
+prefix. It never matches a substring, so a marker planted in one cell cannot
+unmask a multi-row result such as a decrypted `query_dataset` page (§6b).
+Known limits: remote MCP error
+bodies and `Error: ${err.message}` wrappers (`bridgeTool`) pass through as
+foreign or unsanitized text, matching the chat path's thrown-error policy; a
+passthrough writes no receipt entry. The shape classifier has **no**
+control-flow exemption — verbs re-classify derived datasets, so one would turn
+`filter` + `select` into a cleartext channel — and `ToolDispatchService`
+still masks a thrown exception's message even when it starts with `Error:`.
+
 ## 7. Conductor generic webhooks (#437)
 
 Inbound endpoints (`POST /api/hooks/:endpointId`) and outbound subscriptions

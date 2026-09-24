@@ -200,7 +200,7 @@ relevant to a plain chat integration:
 | `type` | Meaning |
 |---|---|
 | `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the concatenated deltas can differ from `done.answer` — the server MAY replace the answer before `done` (see `done.answerSource`), and it adds the AI-disclosure paragraph to `done.answer` only, never as a delta. |
-| `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
+| `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas; `answerIsError: true` then marks that render as a failure rather than a result. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
 
@@ -226,6 +226,14 @@ when `answerSource` is set, or it drops the AI-disclosure paragraph on the
 first turn of every conversation. `answerSource` only tells you *why* the two
 differ; it is additive and optional, and a client that ignores it and always
 renders `done.answer` is already correct.
+
+A server-rendered answer can also be a **failure**: the model asked the shield
+to render a result that is in fact a tool error or an authorization prompt. The
+`done` event then carries `answerIsError: true` alongside
+`answerSource: "privacy-render"`. Use it to present the turn as an error in
+your own wording instead of showing the raw English error text as a successful
+result. Absent means "not known to be an error" — it is never `false`, and a
+client that ignores it keeps today's behaviour.
 
 Note: `agent_bound` — an event some other omadia channel routes emit — is
 **not** emitted on this route. `CoreApi.handleTurnStream` (what this plugin
