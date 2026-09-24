@@ -10,11 +10,13 @@
  *
  * Model refs (#1083): a class ref (`class:frontier`) is stored VERBATIM — the
  * same as the runtime config PATCH does — so the agent follows the provider's
- * catalog instead of being pinned to today's frontier model. The consumers
- * resolve it with `resolveConfiguredModel` / `resolveModelRefStrict` (#1079) —
- * the orchestrator, verifier and extras once at activation (the assignment
- * reactivates the plugin), the sub-agents and the issue reformulation per
- * call. It fails closed only when the provider serves no model at all.
+ * catalog instead of being pinned to today's frontier model. The consumers of
+ * the keys written here resolve it with `resolveConfiguredModel` /
+ * `resolveModelRefStrict` (#1079): the orchestrator, verifier and extras once
+ * at activation (the assignment reactivates the plugin; a catalog change that
+ * moves the class reactivates it again, see classRefReactivation.ts), the
+ * issue reformulation (`issuesRouter`, reading `orchestrator_model`) per call.
+ * It fails closed only when the provider serves no model at all.
  * Provider-qualified ids and legacy aliases are still normalised to the bare
  * vendor `modelId`.
  */

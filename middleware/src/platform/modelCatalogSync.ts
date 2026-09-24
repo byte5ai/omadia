@@ -59,6 +59,11 @@ export interface ModelCatalogSyncDeps {
   readonly log?: (message: string) => void;
   readonly warn?: (message: string) => void;
   readonly now?: () => Date;
+  /** Called right before a discovered set replaces a provider's models; the
+   *  returned function runs once the swap succeeded. Lets plugins that
+   *  resolved a class ref at activation follow the catalog (#1083). A failure
+   *  in it is logged, never fails the sync. */
+  readonly beforeModelsSwap?: (providerId: string) => () => Promise<void>;
 }
 
 export interface ModelCatalogSync {
@@ -192,6 +197,7 @@ export function createModelCatalogSync(deps: ModelCatalogSyncDeps): ModelCatalog
       modelsSource: 'discovered',
       modelsDiscoveredAt: at,
     };
+    const afterSwap = deps.beforeModelsSwap?.(providerId);
     try {
       // Transactional: a rejected set (alias collision, invariant breach)
       // restores the previous models inside `register`.
@@ -200,6 +206,13 @@ export function createModelCatalogSync(deps: ModelCatalogSyncDeps): ModelCatalog
       const error = err instanceof Error ? err.message : String(err);
       warn(`${providerId}: discovered set rejected by the registry — keeping the current ${String(currentCount)} model(s): ${error}`);
       return finish({ ...base, status: 'failed', models: currentCount, dropped: outcome.dropped, error });
+    }
+    if (afterSwap !== undefined) {
+      try {
+        await afterSwap();
+      } catch (err) {
+        warn(`${providerId}: post-swap hook failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     log(
       `${providerId}: ${String(outcome.models.length)} model(s) from ${String(listed.length)} listed (dropped: ${summariseDrops(outcome.dropped)}); defaults ${describeDefaults(next)}`,

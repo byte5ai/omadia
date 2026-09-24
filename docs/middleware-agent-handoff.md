@@ -1249,14 +1249,23 @@ Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
 heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie über
 `resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079) — Orchestrator,
 Verifier und Extras einmal bei der Aktivierung (das Assignment reaktiviert das
-Plugin), die Sub-Agents und die Issue-Umformulierung (`issuesRouter`) pro
-Aufruf. Kann der Provider gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+Plugin), die Issue-Umformulierung (`issuesRouter`, liest `orchestrator_model`)
+pro Aufruf. Die Sub-Agents lesen keinen dieser Keys (`SUB_AGENT_MODEL` bzw. das
+Manifest) und lösen in `DynamicAgentRuntime.activate()` auf. Verschiebt die
+Model-Discovery (`modelCatalogSync`: Boot-Lauf, periodischer Refresh, „Modelle
+aktualisieren", Key-Verifikation) das Ziel einer Klasse, reaktiviert
+`classRefReactivation.ts` genau die aktiven LLM-Plugins, deren Klassen-Ref
+dadurch auf ein anderes Modell zeigt — ein Lauf während der Boot-Aktivierung
+wird gesammelt und danach nachgeholt. Kann der Provider gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
 POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
 (`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
 `modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
 der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
-gespeicherte Ref) plus `resolvedModel` (dieselbe Auflösung wie zur Laufzeit,
-`null` wenn nichts gesetzt ist) und pro Provider `classDefaults` (Klasse →
+gespeicherte Ref) plus `resolvedModel` (derselbe Resolver wie zur Laufzeit,
+gegen den AKTUELLEN Katalog; Plugins, die bei der Aktivierung auflösen, behalten
+ihr Modell bis zur nächsten Reaktivierung — die Discovery-Reaktivierung oben
+hält beides deckungsgleich; `null` wenn nichts gesetzt ist oder der Ref nicht
+auflösbar ist) und pro Provider `classDefaults` (Klasse →
 `modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
 beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
 Provider-Wechsel einen Klassen-Ref bei.

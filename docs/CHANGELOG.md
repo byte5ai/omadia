@@ -54,7 +54,11 @@ now stores a class ref as given — like the runtime config PATCH already did �
 instead of normalising it to a concrete id, returns `resolvedModel`, and
 rejects a class ref the provider cannot serve with any model with
 `400 providers.model_class_unavailable`. Qualified ids and aliases are still
-normalised. The in-app issue reporter's reformulation now resolves the
+normalised. The orchestrator, verifier and background scorer resolve a class
+ref once, at activation; when live model discovery (boot, the periodic refresh,
+"Refresh models") moves what a class resolves to, the plugins whose class ref
+now points at another model are reactivated, so the model they run matches the
+label. The in-app issue reporter's reformulation now resolves the
 orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
