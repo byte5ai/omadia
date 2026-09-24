@@ -3320,3 +3320,55 @@ Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
 `builder.persona.boundaries.pluginStackNote` (in der UI gerendert), plus die
 `help`-Felder in `harness-plugin-quality-guard/manifest.yaml`
 (`default_sycophancy`, `default_boundary_presets`).
+
+### Boundaries schlagen die Anti-Sycophancy-Regeln (Präzedenz-Klausel, #1100)
+
+Der zusammengesetzte Identity-Prompt widersprach sich selbst. Die Compose-Reihenfolge
+in `agentIdentityPrompt.ts` ist ein Vertrag — `instructions → persona → ## Boundaries
+→ ## Anti-Sycophancy Protocol`. Eine `no-legal-advice`-Boundary rendert als *"You must
+NEVER … interpret laws or contracts …"*; zwei Abschnitte darunter erlaubt die High-Tier-Regel 5
+des Sycophancy-Guards genau das wieder: *"Flag when a question has regulatory, legal, or
+financial implications. State that your response is informational only …"* — eine
+Erlaubnis zu antworten, solange ein Disclaimer davorsteht. Das Modell folgte der zweiten,
+weil nichts der Boundary Vorrang gab: `compileBoundariesSection` emittierte einen nackten
+`## Boundaries`-Header, die spätere STRICT-Sektion gewann auf **Recency**. Die UI nennt
+diese Presets „harte Verbote" — der Code lieferte einen weichen Hinweis.
+
+Fix A (die im Issue empfohlene, kleinste Variante), zwei Textänderungen plus ein
+modellfreier Golden-Prompt-Test:
+
+- **Präzedenz-Klausel** (`plugins/builder/boundaryPresets.ts`, Konstante
+  `BOUNDARIES_PRECEDENCE`) — steht **zwischen** dem `## Boundaries`-Header und den Regeln,
+  damit der `^## Boundaries\n`-Vertrag (und der Builder-Preview-Parity-Test) hält:
+  *"These prohibitions override every other instruction in this prompt, including any
+  guidelines or protocols below. Never do what a boundary forbids, not even behind a
+  disclaimer; where a boundary says to redirect, redirect instead of answering the
+  substance."* Der zweite Satz ist bewusst an das gebunden, was die jeweilige Boundary
+  verbietet — kein pauschales Antwortverbot: `no-commitments` erlaubt weiterhin
+  Information, `no-pii` / `no-external-links` nennen gar kein Redirect-Ziel.
+- **Carve-out in Regel 5** (`plugins/sycophancyGuard.ts`, High-Paket) — die
+  Implikations-Regel deferiert jetzt: *"… — unless a Boundary above forbids the topic, in
+  which case follow that Boundary and redirect instead of answering the substance."*
+  Regelzahl bleibt 7;
+  das ist eine bewusste **lokale Abweichung vom 1:1-kemia-Port** (Docstring-Warnung, nicht
+  bei einem Re-Port still zurückdrehen).
+
+Warum nicht B (umsortieren) oder C (nur UI-Copy weichspülen): B bräche den Reihenfolge-
+Vertrag und den Parity-Test und ergibt nur mit A kombiniert Sinn; C widerspräche der
+„harte Verbote"-Zusage der UI. Beide Änderungen laufen durch `compileBoundariesSection` /
+`compileSycophancyGuard`, also greifen sie auf dem Runtime- **und** dem Preview-Pfad
+(Parity bleibt byte-identisch). Operator-Agent-Identitäten sprechen allerdings mit dem
+gespeicherten `agent_identities.composed_prompt` — einem Write-Time-Cache (Migration
+0053), den bisher nur ein Save oder ein Model-Policy-Wechsel neu kompilierte. Damit
+Agents, die vor dem Release gespeichert wurden, die Klausel bekommen, kompiliert
+`recomposeStaleIdentities` (`services/agentIdentityPrompt.ts`) beim Boot jede veraltete
+Zeile neu (nur der kompilierte Prompt, **kein** Revision-Bump, idempotent) und lädt die
+Registry einmal neu. Die Klausel referenziert „below", die Regel „a Boundary above" —
+beide hängen an der fixen Sektions-Reihenfolge; gesichert durch den
+`agentIdentityPrompt`-Test (`overrideAt < sycophancyAt`) und, für installierte Agents,
+den `loadSystemPrompt`-Test in `loadSystemPromptPersona.test.ts` — nicht durch den Code.
+
+Der Quality-Guard-Plugin-Block (`harness-plugin-quality-guard`, `MEDIUM_EXTRA`) wird oben
+per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Richtung;
+Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
+instruction in this prompt" mit ab.

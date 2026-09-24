@@ -75,6 +75,47 @@ no-context NULL path. Deploy graph migration 0033 before this code: the INSERT
 names the new columns, so an older schema drops every usage batch. The
 `/api/usage` missing role check is out of scope and tracked separately.
 
+### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
+
+2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`
+received a self-contradicting system prompt: the boundary forbade interpreting
+laws, and high-tier rule 5 two sections below licensed an "informational only"
+answer behind a disclaimer. The model followed the later rule. The
+`## Boundaries` section now opens with a precedence clause (boundaries override
+every other instruction, including the protocols below; never do what a
+boundary forbids, not even behind a disclaimer), and rule 5 defers to a
+Boundary that forbids the topic. Agents with boundaries may therefore refuse
+more strictly than before. Operator-agent identities speak from the stored
+`agent_identities.composed_prompt`, a write-time cache, so the middleware now
+recompiles stale stored prompts once at boot (`recomposeStaleIdentities`, no
+revision bump, idempotent) and reloads the registry; agents saved before this
+release pick up the clause without being re-saved. The same boot pass also
+applies #1101's verbatim custom-boundary-line change to stored operator
+agents, so their legacy bare-action custom lines render as written from that
+first boot on.
+
+### Changed — custom boundary lines are spliced verbatim (#1101)
+
+2026-09-24 — custom boundary lines (`quality.boundaries.custom`, edited as
+"Own prohibitions" on an operator agent's Limits tab, as custom boundaries
+in the Agent Builder, or in AGENT.md) no longer get a hardcoded
+`You must NOT: ` prefix. Each line reaches the prompt exactly as
+written, which is how the Quality Guard plugin already splices
+`default_boundary_custom`, so a line now means the same thing on both
+surfaces. The prefix turned a line written as a rule into a double negative:
+`Give no investment advice.` compiled to `You must NOT: Give no investment
+advice.`
+
+Lines saved under the old contract as a bare action (`promise refunds`) are
+now spliced as-is and read as an instruction, not a prohibition. Rewrite them
+as complete rules (`Never promise refunds.`). Operator agents
+(`/operator/agents`) run on the prompt compiled when their identity was last
+saved (`agent_identities.composed_prompt`); the boot-time recompose added with
+#1100 (entry above) recompiles stale stored prompts once, so they pick the
+change up on the first boot after the upgrade without being re-saved. Builder
+and AGENT.md agents compile their prompt when they load and pick the change up
+on the next restart.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
@@ -778,6 +819,14 @@ any values.
 hours after it shipped. The mirror is caught up, the stale section is named
 honestly, and the header now says the refresh is manual and how to tell in one
 command whether the file is behind.
+
+**Error messages name the log file instead of the tray (OM-63, refs #888).**
+The loading screen and the setup wizard sent a stuck user to "tray → Open Logs",
+a menu-bar control that was invisible while the tray icon was missing. They now
+print the real log file path, which `main.ts` hands to every renderer page as a
+`log` query parameter, so it still arrives when the preload bridge is the thing
+that failed. A failed first-run setup shows the path next to the reported error,
+and the tray wording is only the fallback when no path was passed.
 
 Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
