@@ -20,12 +20,16 @@
  * `error_code` / `error_detail` (migration 0060, byte5ai/omadia#897) travel
  * WITH `last_error`: the runner writes the typed failure it holds next to
  * the human-facing sentence, so nothing downstream has to parse English.
- * {@link AgentTeamsIdentityStore.update} enforces the pairing — any
- * `last_error` write also writes both columns (the given values or NULL), so
- * a new sentence can never sit next to a stale code. The code vocabulary is
- * the runner's closed `TeamsProvisioningErrorCode` union; this platform
- * module stores it opaquely (`platform/` never imports from `services/`),
- * and the read path validates it against the union.
+ * {@link AgentTeamsIdentityStore.update} writes all three columns together
+ * and SEALS the code to its sentence (a fingerprint inside `error_detail`,
+ * `teamsProvisioningErrorSeal.ts`). The seal, not the write path, is what
+ * readers rely on: an older build without these columns (a rollback across
+ * 0060) rewrites `last_error` alone, and the fingerprint mismatch then makes
+ * the row read like a pre-0060 one instead of pairing a stale code with a
+ * new sentence. The code vocabulary is the runner's closed
+ * `TeamsProvisioningErrorCode` union; this platform module stores it
+ * opaquely (`platform/` never imports from `services/`), and the read path
+ * validates it against the union.
  *
  * NO SECRET MATERIAL. The row carries only app_id / tenant_id /
  * teams_app_id / teams_app_external_id — the bot's client secret stays in
@@ -42,6 +46,7 @@
 import type { Pool } from 'pg';
 
 import type { TeamsTargetKind } from './teamsInstallTarget.js';
+import { sealTeamsErrorDetail } from './teamsProvisioningErrorSeal.js';
 
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of migration 0049, verbatim.
@@ -115,7 +120,9 @@ export interface AgentTeamsIdentityRecord {
    */
   readonly errorCode: string | null;
   /** Typed arguments of {@link errorCode} (scopes / fields / Retry-After /
-   *  consent URL / reason), parsed JSONB. Validated on read, never trusted. */
+   *  consent URL / reason) plus the seal binding them to {@link lastError},
+   *  parsed JSONB. Read through `pairedTeamsErrorOf` and validated, never
+   *  trusted as stored. */
   readonly errorDetail: unknown;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -159,9 +166,10 @@ export interface AgentTeamsIdentityUpdate {
    * Structured form of {@link lastError} (migration 0060, #897). Only read
    * TOGETHER with `lastError`: a patch that writes `lastError` writes these
    * two columns as well (absent → NULL), and a patch without `lastError`
-   * ignores them. That is what keeps a sentence and its code from drifting
-   * apart, and it is why every existing `lastError: null` clear also clears
-   * the code without having to say so.
+   * ignores them, so every `lastError: null` clear also clears the code. A
+   * coded write stores `errorDetail` sealed to the sentence (never NULL);
+   * that seal is what protects readers from a stale code left behind by a
+   * build that writes `last_error` alone.
    */
   readonly errorCode?: string | null;
   readonly errorDetail?: unknown;
@@ -358,18 +366,23 @@ export class AgentTeamsIdentityStore {
       add('teams_app_external_id', patch.teamsAppExternalId);
     }
     if (patch.lastError !== undefined) {
-      // The pairing invariant (#897): the sentence and its structured form
-      // are one write. A clear clears all three; a sentence without a code
-      // (a caller that predates the columns) stores NULL, which the read path
-      // treats exactly like a pre-0060 row.
-      const failing = patch.lastError !== null;
+      // #897: the sentence and its structured form are one write. A clear
+      // clears all three; a sentence without a code stores NULL for both,
+      // which the read path treats exactly like a pre-0060 row. A coded
+      // sentence stores its arguments SEALED with the sentence's fingerprint
+      // — the only thing that still holds when a build unaware of these
+      // columns later rewrites `last_error` on its own.
+      const code =
+        patch.lastError !== null && patch.errorCode != null && patch.errorCode !== ''
+          ? patch.errorCode
+          : null;
       add('last_error', patch.lastError);
-      add('error_code', failing ? (patch.errorCode ?? null) : null);
+      add('error_code', code);
       // Serialized explicitly rather than handed to node-pg as an object:
       // node-pg turns a JS array into a Postgres ARRAY literal, not JSON.
       const detail =
-        failing && patch.errorDetail !== undefined && patch.errorDetail !== null
-          ? (JSON.stringify(patch.errorDetail) ?? null)
+        code !== null && patch.lastError !== null
+          ? JSON.stringify(sealTeamsErrorDetail(patch.lastError, patch.errorDetail))
           : null;
       values.push(detail);
       sets.push(`error_detail = $${String(values.length)}::jsonb`);

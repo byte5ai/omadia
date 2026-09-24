@@ -2662,6 +2662,27 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Teams-Provisioning: Legacy-Classifier für `last_error` entfernen (#897 follow-up)
+
+`classifyTeamsProvisioningError()` (`services/teamsProvisioningJob.ts`) liest seit Migration
+0060 nur noch Zeilen ohne vertrauenswürdigen `error_code`: solche von vor 0060 und solche,
+deren `last_error` ein Build ohne die neuen Spalten überschrieben hat (Rollback über 0060).
+Löschbar, sobald kein Build von vor #897 mehr gegen eine migrierte DB laufen kann **und**
+keine Zeile ohne passendes Siegel mehr existiert:
+
+```sql
+SELECT count(*) FROM agent_teams_identities
+ WHERE last_error IS NOT NULL
+   AND (error_code IS NULL
+        OR error_detail->>'sentenceSha256'
+           IS DISTINCT FROM encode(sha256(convert_to(last_error, 'UTF8')), 'hex'));
+-- muss 0 sein
+```
+
+Dann fallen auch der Präfix-Fallback im Config-Sync-Cleanup und die
+Round-Trip-Tests in `test/teamsProvisioningLastError.test.ts` weg; die Satz-Präfixe dürfen
+danach frei umformuliert werden.
+
 ### Gedächtnis-Provider wird bei Neuzuweisung nicht neu aufgelöst (OM-102 follow-up)
 
 `TODO(OM-102 follow-up)` in
@@ -3274,7 +3295,7 @@ zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft desha
 strukturiertes `last_error_detail`:
 `{ code, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?, raw }`.
 `code` ist die geschlossene Union `TeamsProvisioningErrorCode` in
-`services/teamsProvisioningJob.ts` (12 Codes: `consent_missing`, `rsc_permissions_mismatch`,
+`services/teamsProvisioningJob.ts` (11 Codes: `consent_missing`, `rsc_permissions_mismatch`,
 `arm_not_configured`, `throttled`, `config_sync_failed`, `bot_handle_unavailable`,
 `delegated_sign_in_required`, `delegated_consent_required`, `delegated_token_expired`,
 `device_code_flow_failed`, `unknown`). Das web-ui rendert aus dem Objekt über i18n-Keys; den
@@ -3283,27 +3304,42 @@ Rohsatz höchstens als technisches Detail. **Niemand parst `last_error`.**
 Seit Migration 0060 schreibt der Runner den Fehler **strukturiert mit**: `error_code TEXT` +
 `error_detail JSONB` auf `agent_teams_identities`, im selben UPDATE wie `last_error`, an der
 Stelle, an der er den typisierten Fehler noch in der Hand hat. Je Code gibt es einen
-`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut; `recordError` nimmt
-nur einen Clear oder eine ganze `TeamsProvisioningFailure` — ein Satz ohne Code kompiliert
-nicht. Der Store erzwingt die Paarung: jeder `lastError`-Write schreibt beide Spalten mit
-(Werte oder NULL), jeder Clear leert alle drei.
+`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut. Der Store-Port des
+Runners (`TeamsIdentityJobUpdate`) nimmt als Fehlerteil nur einen Clear oder eine ganze
+`TeamsProvisioningFailure` — ein Satz ohne Code kompiliert auf keinem Runner-Schreibpfad.
+Der Store schreibt alle drei Spalten gemeinsam (jeder Clear leert alle drei) und
+**versiegelt** den Code: `error_detail` trägt neben den Argumenten einen SHA-256 des Satzes
+(reservierter Key `sentenceSha256`, `platform/teamsProvisioningErrorSeal.ts`), ist bei
+einem Code also nie NULL.
 
-Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter Code → Spalten, jedes Feld
-validiert (Consent-URL nur absolut https, Listen nur Strings, Retry-After nur endliche
-Zahl ≥ 0). **Kein/unbekannter Code** (Zeile vor 0060, oder Code eines neueren Builds nach
-Rollback) → Fallback auf `classifyTeamsProvisioningError()` über den Satz. Der Classifier
-ist damit nur noch der Legacy-Pfad und kann weg, sobald keine Zeilen von vor 0060 mehr
-existieren. `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
+Warum das Siegel: Die Spalten gemeinsam zu schreiben garantiert nur der Build ab #897. Ein
+älterer Build gegen eine DB, die schon auf 0060 steht (automatischer Rollback des Updaters
+nach rotem Health-Gate, siehe `sidecars/updater/README.md`), schreibt `last_error` allein —
+seine Clears lassen den Code stehen, sein nächster Fehlersatz landet neben dem alten Code.
+Leser vertrauen dem Code deshalb nur, solange das Siegel zum aktuellen Satz passt
+(`trustedTeamsProvisioningErrorOf()`); sonst gilt die Zeile als Legacy-Zeile. Garantie: Ein
+Code wird nie gegen einen Satz gelesen, mit dem er nicht geschrieben wurde.
+
+Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter, versiegelter Code →
+Spalten, jedes Feld validiert (Consent-URL nur absolut https, Listen nur Strings,
+Retry-After nur endliche Zahl ≥ 0). **Kein, unbekannter oder veralteter Code** (Zeile vor
+0060, Code eines neueren Builds, oder Satz von einem älteren Build neben einem alten Code)
+→ Fallback auf `classifyTeamsProvisioningError()` über den Satz. Dieselbe Regel gilt für das
+Aufräumen der eigenen `config_sync_failed`-Warnung im Runner (Code wenn vertrauenswürdig,
+sonst Präfix). Der Classifier ist damit nur noch der Legacy-Pfad (Roadmap §13). `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
 kodiert.
 
-**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 12 gewachsen, jede
+**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 11 gewachsen, jede
 Erweiterung bräuchte DROP/ADD CHECK (0056 existiert nur für CHECK-Idempotenz). Vor allem
 schreibt `recordError` `state` und Fehler in *einem* best-effort-UPDATE, das Store-Fehler
 schluckt — ein Code außerhalb eines CHECK würde den terminalen `state='failed'`-Write still
 verlieren (#915-Klasse). Die TS-Union plus Read-Validierung ist die einzige Quelle.
 
 Tests: `test/teamsProvisioningErrorCode.test.ts` (jeder Fehlerpfad schreibt einen Code;
-Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; Read-Validierung),
+Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; veralteter Code
+neben dem Satz eines älteren Builds wird ignoriert; Read-Validierung),
+`test/agentTeamsIdentityStore.pg.test.ts` (Siegel auf echtem Postgres, simulierter
+Alt-Build-Write),
 `test/teamsProvisioningLastError.test.ts` (Legacy-Round-Trip Producer ↔ Classifier).
 
 ## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)

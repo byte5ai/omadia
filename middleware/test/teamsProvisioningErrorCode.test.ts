@@ -2,11 +2,17 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
+  sealTeamsErrorDetail,
+  TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY,
+} from '../src/platform/teamsProvisioningErrorSeal.js';
+import {
   classifyTeamsProvisioningError,
+  configSyncFailedDetail,
   consentMissingDetail,
   isTeamsProvisioningErrorCode,
   teamsProvisioningErrorDetailOf,
   TeamsProvisioningJobRunner,
+  trustedTeamsProvisioningErrorOf,
   type ProvisionTeamsIdentityRequest,
   type TeamsAppPackageAssets,
   type TeamsIdentityJobRecord,
@@ -14,7 +20,10 @@ import {
   type TeamsIdentityJobUpdate,
   type TeamsProvisionerPort,
 } from '../src/services/teamsProvisioningJob.js';
-import { projectTeamsIdentityErrorDetail } from '../src/routes/operatorAgents.js';
+import {
+  projectTeamsConsent,
+  projectTeamsIdentityErrorDetail,
+} from '../src/routes/operatorAgents.js';
 
 /**
  * byte5ai/omadia#897 — the runner persists the STRUCTURED failure.
@@ -25,12 +34,15 @@ import { projectTeamsIdentityErrorDetail } from '../src/routes/operatorAgents.js
  * and the read path takes the columns and only falls back to the classifier
  * for a row that has no code.
  *
- * Three things are pinned here:
+ * Four things are pinned here:
  *   1. every failure path the runner can take writes a code, and what the
  *      columns decode to is exactly what the classifier would have decoded
  *      from the same sentence (the wire contract did not move);
  *   2. the sentence is no longer load-bearing — a reworded one keeps its code;
- *   3. the stored columns are validated on the way out, never trusted.
+ *   3. a code is trusted only for the sentence it was sealed with — a build
+ *      that predates 0060 (a rollback) rewrites `last_error` alone, and the
+ *      stale code it leaves behind must not decide anything;
+ *   4. the stored columns are validated on the way out, never trusted.
  */
 
 const REQUEST: ProvisionTeamsIdentityRequest = { agentId: 'agent-1', teamId: 'team-42' };
@@ -53,8 +65,8 @@ interface MemoryStore extends TeamsIdentityJobStore {
   row: TeamsIdentityJobRecord;
 }
 
-/** Mirrors the real store's pairing invariant: a `lastError` write also
- *  writes both structured columns (given values or null). */
+/** Mirrors the real store: a `lastError` write also writes both structured
+ *  columns — a coded sentence with its arguments sealed to it, else null. */
 function makeStore(): MemoryStore {
   const store: MemoryStore = {
     row: {
@@ -74,15 +86,19 @@ function makeStore(): MemoryStore {
       return store.row.agentId === agentId ? store.row : undefined;
     },
     async update(_agentId, patch: TeamsIdentityJobUpdate) {
-      const failing = patch.lastError !== undefined && patch.lastError !== null;
+      const coded =
+        patch.lastError !== undefined && patch.lastError !== null && patch.errorCode != null;
       store.row = {
         ...store.row,
         ...(patch.state !== undefined ? { state: patch.state } : {}),
         ...(patch.lastError !== undefined
           ? {
               lastError: patch.lastError,
-              errorCode: failing ? (patch.errorCode ?? null) : null,
-              errorDetail: failing ? (patch.errorDetail ?? null) : null,
+              errorCode: coded ? patch.errorCode : null,
+              errorDetail:
+                coded && patch.lastError != null
+                  ? sealTeamsErrorDetail(patch.lastError, patch.errorDetail)
+                  : null,
             }
           : {}),
       };
@@ -240,7 +256,10 @@ describe('the runner persists the structured code (#897)', () => {
 
       assert.ok(row.lastError, 'the human sentence is still written');
       assert.equal(row.errorCode, scenario.code);
-      assert.deepEqual(row.errorDetail, scenario.detail);
+      assert.deepEqual(
+        trustedTeamsProvisioningErrorOf(row.lastError, row.errorCode, row.errorDetail)?.args,
+        scenario.detail ?? {},
+      );
       // Parity: the columns decode to exactly what the classifier reads out
       // of the same sentence — the wire contract of last_error_detail does
       // not depend on which path produced it.
@@ -270,14 +289,20 @@ const LEGACY_FREE_ROW = {
   teamsAppExternalId: null,
   lastError: REWORDED,
   errorCode: 'consent_missing',
-  errorDetail: { scopes: ['A', 'B'] },
+  errorDetail: sealTeamsErrorDetail(REWORDED, { scopes: ['A', 'B'] }),
 } as const;
+
+/** What a reader decodes for `sentence` when the columns were written
+ *  with it (sealed) — the normal new-build row. */
+function readSealed(sentence: string, code: unknown, args: unknown) {
+  return teamsProvisioningErrorDetailOf(sentence, code, sealTeamsErrorDetail(sentence, args));
+}
 
 describe('a reworded sentence keeps its meaning (#897)', () => {
   it('teamsProvisioningErrorDetailOf reads the code, not the prose', () => {
     // The classifier alone would call this `unknown` — no prefix, no brackets.
     assert.equal(classifyTeamsProvisioningError(REWORDED).code, 'unknown');
-    assert.deepEqual(teamsProvisioningErrorDetailOf(REWORDED, 'consent_missing', { scopes: ['A', 'B'] }), {
+    assert.deepEqual(readSealed(REWORDED, 'consent_missing', { scopes: ['A', 'B'] }), {
       code: 'consent_missing',
       scopes: ['A', 'B'],
       raw: REWORDED,
@@ -305,6 +330,77 @@ describe('a reworded sentence keeps its meaning (#897)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A stale code next to a sentence an older build wrote (rollback across 0060)
+// ---------------------------------------------------------------------------
+
+describe('a code is trusted only for the sentence it was sealed with (#897)', () => {
+  // A pre-0060 build updates `last_error` alone: it never touches the two
+  // columns, so the previous failure's code and seal stay on the row.
+  const earlier = consentMissingDetail(['Application.ReadWrite.All']);
+  const staleConsent = {
+    errorCode: 'consent_missing',
+    errorDetail: sealTeamsErrorDetail(earlier, { scopes: ['Application.ReadWrite.All'] }),
+  } as const;
+
+  it('the route projection classifies the older build\'s sentence instead', () => {
+    const oldBuildSentence = configSyncFailedDetail('teams_bots was not valid JSON');
+    const row = { ...LEGACY_FREE_ROW, state: 'installed', lastError: oldBuildSentence, ...staleConsent };
+    assert.deepEqual(
+      projectTeamsIdentityErrorDetail(row),
+      classifyTeamsProvisioningError(oldBuildSentence),
+    );
+    assert.equal(projectTeamsIdentityErrorDetail(row)?.code, 'config_sync_failed');
+    // The consent verdict of an installed identity is not dragged back to
+    // `missing` by a code that belongs to an earlier failure.
+    assert.deepEqual(projectTeamsConsent(row), {
+      status: 'granted',
+      missing_scopes: [],
+      source: 'provisioning_state',
+    });
+  });
+
+  it('holds for older-build sentences the classifier calls unknown', () => {
+    for (const oldBuildSentence of [
+      'enqueue_failed: the job registry refused the job',
+      'socket hang up (gave up after 5 attempts)',
+      'graph applications 400 bad request (deterministic — not retried)',
+    ]) {
+      const row = { ...LEGACY_FREE_ROW, lastError: oldBuildSentence, ...staleConsent };
+      assert.deepEqual(projectTeamsIdentityErrorDetail(row), {
+        code: 'unknown',
+        raw: oldBuildSentence,
+      });
+      assert.notEqual(projectTeamsConsent(row).status, 'missing');
+    }
+  });
+
+  it('a code without a seal, or with a foreign one, is not trusted', () => {
+    const sentence = consentMissingDetail(['X']);
+    for (const errorDetail of [
+      null,
+      { scopes: ['X'] },
+      { scopes: ['X'], [TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY]: 'not-a-hash' },
+      sealTeamsErrorDetail(`${sentence} `, { scopes: ['X'] }),
+    ]) {
+      assert.equal(
+        trustedTeamsProvisioningErrorOf(sentence, 'consent_missing', errorDetail),
+        undefined,
+      );
+    }
+    assert.deepEqual(
+      trustedTeamsProvisioningErrorOf(sentence, 'consent_missing', sealTeamsErrorDetail(sentence, { scopes: ['X'] })),
+      { code: 'consent_missing', args: { scopes: ['X'] } },
+    );
+  });
+
+  it('the seal never reaches the wire', () => {
+    const detail = projectTeamsIdentityErrorDetail(LEGACY_FREE_ROW);
+    assert.ok(detail !== null);
+    assert.ok(!JSON.stringify(detail).includes(TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Stored columns are validated on the way out
 // ---------------------------------------------------------------------------
 
@@ -314,7 +410,7 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
   it('falls back to the classifier for a NULL or an unknown code', () => {
     for (const code of [null, undefined, 'enqueue_failed', 'a_code_from_a_newer_build', 7]) {
       assert.deepEqual(
-        teamsProvisioningErrorDetailOf(raw, code, { scopes: ['ignored'] }),
+        readSealed(raw, code, { scopes: ['ignored'] }),
         classifyTeamsProvisioningError(raw),
       );
     }
@@ -323,7 +419,7 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
   it('drops a consent URL that is not absolute https', () => {
     for (const adminConsentUrl of ['javascript:alert(1)', 'http://x.example', '/relative', 42]) {
       assert.deepEqual(
-        teamsProvisioningErrorDetailOf('s', 'delegated_consent_required', {
+        readSealed('s', 'delegated_consent_required', {
           scopes: ['AppCatalog.Submit'],
           adminConsentUrl,
         }),
@@ -333,21 +429,21 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
   });
 
   it('turns a non-list into [] and drops non-string entries', () => {
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'consent_missing', { scopes: 'A' }), {
+    assert.deepEqual(readSealed('s', 'consent_missing', { scopes: 'A' }), {
       code: 'consent_missing',
       scopes: [],
       raw: 's',
     });
     assert.deepEqual(
-      teamsProvisioningErrorDetailOf('s', 'arm_not_configured', { fields: ['a', 1, null, 'b'] }),
+      readSealed('s', 'arm_not_configured', { fields: ['a', 1, null, 'b'] }),
       { code: 'arm_not_configured', fields: ['a', 'b'], raw: 's' },
     );
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'consent_missing', null), {
+    assert.deepEqual(readSealed('s', 'consent_missing', null), {
       code: 'consent_missing',
       scopes: [],
       raw: 's',
     });
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'consent_missing', ['A']), {
+    assert.deepEqual(readSealed('s', 'consent_missing', ['A']), {
       code: 'consent_missing',
       scopes: [],
       raw: 's',
@@ -356,12 +452,12 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
 
   it('omits a Retry-After hint that is not a finite, non-negative number', () => {
     for (const retryAfterSeconds of [-1, '5', Number.NaN, Number.POSITIVE_INFINITY]) {
-      assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'throttled', { retryAfterSeconds }), {
+      assert.deepEqual(readSealed('s', 'throttled', { retryAfterSeconds }), {
         code: 'throttled',
         raw: 's',
       });
     }
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'throttled', { retryAfterSeconds: 0 }), {
+    assert.deepEqual(readSealed('s', 'throttled', { retryAfterSeconds: 0 }), {
       code: 'throttled',
       retryAfterSeconds: 0,
       raw: 's',
@@ -369,12 +465,12 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
   });
 
   it('keeps config_sync_failed.reason a string and device-code reason optional', () => {
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'config_sync_failed', { reason: 3 }), {
+    assert.deepEqual(readSealed('s', 'config_sync_failed', { reason: 3 }), {
       code: 'config_sync_failed',
       reason: '',
       raw: 's',
     });
-    assert.deepEqual(teamsProvisioningErrorDetailOf('s', 'device_code_flow_failed', { reason: '' }), {
+    assert.deepEqual(readSealed('s', 'device_code_flow_failed', { reason: '' }), {
       code: 'device_code_flow_failed',
       raw: 's',
     });
@@ -382,7 +478,7 @@ describe('teamsProvisioningErrorDetailOf validates what it reads (#897)', () => 
 
   it('carries no arguments for codes that have none, whatever is stored', () => {
     assert.deepEqual(
-      teamsProvisioningErrorDetailOf('s', 'bot_handle_unavailable', { scopes: ['x'], reason: 'y' }),
+      readSealed('s', 'bot_handle_unavailable', { scopes: ['x'], reason: 'y' }),
       { code: 'bot_handle_unavailable', raw: 's' },
     );
   });

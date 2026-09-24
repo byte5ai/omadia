@@ -70,6 +70,7 @@ import type { ChannelDirectoryRegistry } from '../src/channels/channelDirectoryR
 import type { ConversationRosterRegistry } from '../src/channels/rosterRegistry.js';
 import type { ConversationParticipant, ConversationRoster } from '@omadia/channel-sdk';
 import type { TeamsTargetKind } from '../src/platform/teamsInstallTarget.js';
+import { sealTeamsErrorDetail } from '../src/platform/teamsProvisioningErrorSeal.js';
 import {
   armNotConfiguredDetail,
   consentMissingDetail,
@@ -452,7 +453,12 @@ class FakeTeamsIdentityStore {
   recordEnqueueFailure(agentId: string, message: string): Promise<void> {
     this.enqueueFailures.push({ agentId, message });
     const row = this.rows.get(agentId);
-    if (row) row.lastError = `enqueue_failed: ${message}`;
+    if (row) {
+      // As the real store (#897): coded `unknown` and sealed to the sentence.
+      row.lastError = `enqueue_failed: ${message}`;
+      row.errorCode = 'unknown';
+      row.errorDetail = sealTeamsErrorDetail(row.lastError, null);
+    }
     return Promise.resolve();
   }
   /** #900 — mirrors AgentTeamsIdentityStore.clearTeamInstall. */
@@ -464,6 +470,8 @@ class FakeTeamsIdentityStore {
     row.state = 'catalog_uploaded';
     row.teamId = null;
     row.lastError = null;
+    row.errorCode = null;
+    row.errorDetail = null;
     return Promise.resolve(row);
   }
 }
@@ -2703,7 +2711,7 @@ describe('createOperatorAgentsRouter', () => {
       teamsAppExternalId: null,
       lastError: raw,
       errorCode: 'consent_missing',
-      errorDetail: { scopes: ['A', 'B'] },
+      errorDetail: sealTeamsErrorDetail(raw, { scopes: ['A', 'B'] }),
     });
     const res = await fetch(`${baseUrl}/sales/teams-identity`);
     assert.equal(res.status, 200);
@@ -2720,6 +2728,34 @@ describe('createOperatorAgentsRouter', () => {
     // projection is.
     assert.ok(!('error_code' in body.identity));
     assert.ok(!('error_detail' in body.identity));
+  });
+
+  it('GET /:slug/teams-identity ignores a STALE code an older build left next to its sentence (#897)', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    // A pre-0060 build (rollback) wrote this sentence with `last_error` alone;
+    // the code + seal still belong to the consent failure before it.
+    const oldBuildSentence = 'enqueue_failed: queue down';
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'failed',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: oldBuildSentence,
+      errorCode: 'consent_missing',
+      errorDetail: sealTeamsErrorDetail(consentMissingDetail(['A']), { scopes: ['A'] }),
+    });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { identity: { last_error_detail: unknown } };
+    assert.deepEqual(body.identity.last_error_detail, {
+      code: 'unknown',
+      raw: oldBuildSentence,
+    });
   });
 
   it('GET /:slug/teams-identity: last_error_detail covers arm/throttled/unknown, null when clean', async () => {
@@ -3612,9 +3648,26 @@ describe('createOperatorAgentsRouter', () => {
         ...base,
         lastError: 'Admin consent is missing',
         errorCode: 'consent_missing',
-        errorDetail: { scopes: ['Group.Read.All'] },
+        errorDetail: sealTeamsErrorDetail('Admin consent is missing', {
+          scopes: ['Group.Read.All'],
+        }),
       }),
       { status: 'missing', missing_scopes: ['Group.Read.All'], source: 'last_error' },
+    );
+    // …but only for the sentence it was sealed with: an older build (a
+    // rollback across 0060) that rewrote `last_error` alone leaves a STALE
+    // consent code behind, and that must not pull an installed identity back
+    // to `missing`.
+    assert.deepEqual(
+      projectTeamsConsent({
+        ...base,
+        lastError: 'config_sync_failed: [x] — the Teams identity is provisioned and installed',
+        errorCode: 'consent_missing',
+        errorDetail: sealTeamsErrorDetail(consentMissingDetail(['Group.Read.All']), {
+          scopes: ['Group.Read.All'],
+        }),
+      }),
+      { status: 'granted', missing_scopes: [], source: 'provisioning_state' },
     );
   });
 

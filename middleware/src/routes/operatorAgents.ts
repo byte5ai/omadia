@@ -1325,7 +1325,7 @@ function startProvisioningRun(
       );
       void deps.store
         .recordEnqueueFailure?.(agent.id, refused)
-        .catch(() => undefined);
+        .catch((persistErr: unknown) => logEnqueueFailurePersistError(agent.slug, persistErr));
     })
     .catch((err: unknown) => {
       console.error(
@@ -1337,8 +1337,18 @@ function startProvisioningRun(
           agent.id,
           err instanceof Error ? err.message : String(err),
         )
-        .catch(() => undefined);
+        .catch((persistErr: unknown) => logEnqueueFailurePersistError(agent.slug, persistErr));
     });
+}
+
+/** Persisting the enqueue failure is best-effort, but a failure to persist it
+ *  leaves the status endpoint looking like a healthy just-enqueued row — so
+ *  it is logged, never swallowed. */
+function logEnqueueFailurePersistError(slug: string, err: unknown): void {
+  console.error(
+    `[operator-agents] persisting the teams provisioning enqueue failure for '${slug}' failed:`,
+    err,
+  );
 }
 
 /**

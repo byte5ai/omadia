@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { TimerSeam } from '../src/plugins/jobScheduler.js';
+import { sealTeamsErrorDetail } from '../src/platform/teamsProvisioningErrorSeal.js';
 import {
   armNotConfiguredDetail,
   botHandleUnavailableDetail,
@@ -12,6 +13,7 @@ import {
   consentMissingDetail,
   throttledDetail,
   TeamsProvisioningJobRunner,
+  trustedTeamsProvisioningErrorOf,
   type ProvisionTeamsIdentityRequest,
   type TeamsAppPackageAssets,
   type TeamsIdentityJobRecord,
@@ -94,13 +96,17 @@ function makeStore(overrides: Partial<TeamsIdentityJobRecord> = {}): MemoryStore
         ...(patch.teamsAppExternalId !== undefined
           ? { teamsAppExternalId: patch.teamsAppExternalId }
           : {}),
-        // The real store's pairing invariant (#897): a `lastError` write also
-        // writes the structured columns — given values, or null.
+        // As the real store (#897): a `lastError` write also writes the
+        // structured columns — a coded sentence with its arguments SEALED to
+        // it, anything else null.
         ...(patch.lastError !== undefined
           ? {
               lastError: patch.lastError,
               errorCode: patch.lastError === null ? null : (patch.errorCode ?? null),
-              errorDetail: patch.lastError === null ? null : (patch.errorDetail ?? null),
+              errorDetail:
+                patch.lastError === null || patch.errorCode == null
+                  ? null
+                  : sealTeamsErrorDetail(patch.lastError, patch.errorDetail),
             }
           : {}),
       };
@@ -108,6 +114,11 @@ function makeStore(overrides: Partial<TeamsIdentityJobRecord> = {}): MemoryStore
     },
   };
   return store;
+}
+
+/** The row's persisted code + arguments as a reader sees them (#897). */
+function trustedOf(row: TeamsIdentityJobRecord | undefined) {
+  return trustedTeamsProvisioningErrorOf(row?.lastError, row?.errorCode, row?.errorDetail);
 }
 
 interface StubProvisioner extends TeamsProvisionerPort {
@@ -578,7 +589,7 @@ describe('TeamsProvisioningJobRunner — connector error policy', () => {
     // #897 — this branch writes the store directly (not via recordError), and
     // still carries the structured code next to the sentence.
     assert.equal(store.row?.errorCode, 'arm_not_configured');
-    assert.deepEqual(store.row?.errorDetail, {
+    assert.deepEqual(trustedOf(store.row)?.args, {
       fields: ['azureSubscriptionId', 'azureResourceGroup'],
     });
     // The registration survives — nothing is torn down.
@@ -1045,7 +1056,7 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     assert.equal(detail.reason, 'teams_bots setup field is not valid JSON');
     // #897 — the same reason, persisted structured.
     assert.equal(store.row?.errorCode, 'config_sync_failed');
-    assert.deepEqual(store.row?.errorDetail, {
+    assert.deepEqual(trustedOf(store.row)?.args, {
       reason: 'teams_bots setup field is not valid JSON',
     });
   });
@@ -1110,16 +1121,19 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
   });
 
   it('retires its own warning by CODE even when the sentence was reworded (#897)', async () => {
+    // No `config_sync_failed:` prefix any more — only the code says so.
+    const reworded = 'The Teams channel config could not be written automatically.';
     const { runner, store } = makeRunner({
       storeOverrides: {
         state: 'installed',
         appId: 'app-1',
         tenantId: 'tenant-1',
         teamsAppId: 'catalog-1',
-        // No `config_sync_failed:` prefix any more — only the code says so.
-        lastError: 'The Teams channel config could not be written automatically.',
+        lastError: reworded,
         errorCode: 'config_sync_failed',
-        errorDetail: { reason: 'teams_bots was not valid JSON' },
+        errorDetail: sealTeamsErrorDetail(reworded, {
+          reason: 'teams_bots was not valid JSON',
+        }),
       },
       syncBotConfig: async () => ({ status: 'synced' }),
     });
@@ -1139,12 +1153,59 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
         teamsAppId: 'catalog-1',
         lastError: lookalike,
         errorCode: 'unknown',
+        errorDetail: sealTeamsErrorDetail(lookalike, null),
       },
       syncBotConfig: async () => ({ status: 'synced' }),
     });
     await runner.enqueue(REQUEST);
     assert.equal(store.row?.lastError, lookalike);
     assert.equal(store.row?.errorCode, 'unknown');
+  });
+
+  // A build that predates 0060 (the updater's automatic rollback) rewrites
+  // `last_error` ALONE: the code and seal of the previous failure stay on the
+  // row. The seal no longer matches, so the code must not decide anything.
+  it('ignores a STALE code next to a sentence an older build wrote: clears its own warning by prefix (#897)', async () => {
+    const earlier = consentMissingDetail(['Application.ReadWrite.All']);
+    const oldBuildSentence = configSyncFailedDetail('teams_bots was not valid JSON');
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        lastError: oldBuildSentence,
+        errorCode: 'consent_missing',
+        errorDetail: sealTeamsErrorDetail(earlier, {
+          scopes: ['Application.ReadWrite.All'],
+        }),
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    assert.equal(store.row?.lastError, null);
+    assert.equal(store.row?.errorCode, null);
+  });
+
+  it('ignores a STALE config_sync_failed code: an older build\'s unrelated error survives (#897)', async () => {
+    const earlier = configSyncFailedDetail('teams_bots was not valid JSON');
+    const oldBuildSentence = 'enqueue_failed: the job registry refused the job';
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        lastError: oldBuildSentence,
+        errorCode: 'config_sync_failed',
+        errorDetail: sealTeamsErrorDetail(earlier, {
+          reason: 'teams_bots was not valid JSON',
+        }),
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    assert.equal(store.row?.lastError, oldBuildSentence);
   });
 
   it('is a no-op when no sync port is wired (the pre-#910 manual path)', async () => {
@@ -1571,7 +1632,7 @@ describe('TeamsProvisioningJobRunner — catalog replication window', () => {
     assert.ok(!lastError.includes('replicate'), lastError);
     // #897 — the code is persisted, not left for a reader to parse.
     assert.equal(store.row?.errorCode, 'rsc_permissions_mismatch');
-    assert.equal(store.row?.errorDetail, null);
+    assert.deepEqual(trustedOf(store.row)?.args, {});
   });
 
   it('a run that SKIPPED the upload treats the same bare 400 as terminal', async () => {

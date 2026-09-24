@@ -31,7 +31,18 @@ import {
   TEAMS_PROVISIONING_STATES,
   type TeamsProvisioningState,
 } from '../src/platform/agentTeamsIdentityStore.js';
-import type { TeamsIdentityJobStore } from '../src/services/teamsProvisioningJob.js';
+import {
+  TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY,
+  teamsErrorSentenceFingerprint,
+} from '../src/platform/teamsProvisioningErrorSeal.js';
+import {
+  classifyTeamsProvisioningError,
+  consentMissingDetail,
+  isTeamsProvisioningErrorCode,
+  teamsProvisioningErrorDetailOf,
+  trustedTeamsProvisioningErrorOf,
+  type TeamsIdentityJobStore,
+} from '../src/services/teamsProvisioningJob.js';
 import type { OperatorTeamsIdentityStore } from '../src/routes/operatorAgents.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -257,8 +268,14 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
     assert.equal(row?.state, 'pending');
     assert.equal(row?.lastError, 'enqueue_failed: queue down');
     // #897 — coded explicitly, so the row never depends on the classifier.
+    // The literal lives in platform/, which cannot import the runner's union
+    // — so pin here that it IS a member, and that a reader trusts it.
     assert.equal(row?.errorCode, 'unknown');
-    assert.equal(row?.errorDetail, null);
+    assert.ok(isTeamsProvisioningErrorCode(row?.errorCode));
+    assert.deepEqual(
+      trustedTeamsProvisioningErrorOf(row?.lastError, row?.errorCode, row?.errorDetail),
+      { code: 'unknown', args: {} },
+    );
   });
 
   it('update round-trips error_code + error_detail (JSONB) with last_error (#897)', async () => {
@@ -269,11 +286,17 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
       errorCode: 'consent_missing',
       errorDetail: { scopes: ['A', 'B'] },
     });
+    const sealed = {
+      scopes: ['A', 'B'],
+      [TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY]: teamsErrorSentenceFingerprint(
+        'consent_missing: admin consent required for scopes [A, B]',
+      ),
+    };
     assert.equal(written.errorCode, 'consent_missing');
-    assert.deepEqual(written.errorDetail, { scopes: ['A', 'B'] });
+    assert.deepEqual(written.errorDetail, sealed);
     const read = await store.getByAgentId('agent-1');
     assert.equal(read?.errorCode, 'consent_missing');
-    assert.deepEqual(read?.errorDetail, { scopes: ['A', 'B'] });
+    assert.deepEqual(read?.errorDetail, sealed);
     const { rows } = await pool.query<{ t: string }>(
       `SELECT jsonb_typeof(error_detail) AS t FROM agent_teams_identities WHERE agent_id = 'agent-1'`,
     );
@@ -299,7 +322,76 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
     });
     const untouched = await store.update('agent-1', { state: 'installed' });
     assert.equal(untouched.errorCode, 'config_sync_failed');
-    assert.deepEqual(untouched.errorDetail, { reason: 'x' });
+    assert.deepEqual(
+      trustedTeamsProvisioningErrorOf(
+        untouched.lastError,
+        untouched.errorCode,
+        untouched.errorDetail,
+      ),
+      { code: 'config_sync_failed', args: { reason: 'x' } },
+    );
+  });
+
+  it('a coded write never stores a NULL error_detail — the seal is always there (#897)', async () => {
+    await store.ensureForAgent({ agentId: 'agent-1', botSlug: 'hr-bot', displayName: 'HR Bot' });
+    const row = await store.update('agent-1', {
+      lastError: 'bot_handle_unavailable: taken',
+      errorCode: 'bot_handle_unavailable',
+    });
+    assert.deepEqual(row.errorDetail, {
+      [TEAMS_ERROR_SENTENCE_FINGERPRINT_KEY]: teamsErrorSentenceFingerprint(
+        'bot_handle_unavailable: taken',
+      ),
+    });
+  });
+
+  // The rollback case: a build from before #897 runs against a database that
+  // is already on 0060 (the updater's automatic rollback leaves migrations
+  // applied). Its store writes `last_error` ALONE — the statement below is
+  // exactly what origin/main's `update()` issues — so the previous failure's
+  // code stays on the row next to a sentence it was never written with.
+  it('an older build rewriting last_error alone leaves a code that no reader trusts (#897)', async () => {
+    await store.ensureForAgent({ agentId: 'agent-1', botSlug: 'hr-bot', displayName: 'HR Bot' });
+    await store.update('agent-1', {
+      state: 'installed',
+      lastError: consentMissingDetail(['A']),
+      errorCode: 'consent_missing',
+      errorDetail: { scopes: ['A'] },
+    });
+    const oldBuild = (lastError: string | null) =>
+      pool.query(
+        'UPDATE agent_teams_identities SET last_error = $2, updated_at = now() WHERE agent_id = $1',
+        ['agent-1', lastError],
+      );
+
+    // (1) an older build's failure sentence lands next to the stale code
+    for (const sentence of [
+      'enqueue_failed: queue down',
+      'config_sync_failed: [x] — the Teams identity is provisioned and installed',
+      'socket hang up (gave up after 5 attempts)',
+    ]) {
+      await oldBuild(sentence);
+      const row = await store.getByAgentId('agent-1');
+      assert.equal(row?.errorCode, 'consent_missing', 'the stale code is really there');
+      assert.equal(
+        trustedTeamsProvisioningErrorOf(row?.lastError, row?.errorCode, row?.errorDetail),
+        undefined,
+      );
+      assert.deepEqual(
+        teamsProvisioningErrorDetailOf(sentence, row?.errorCode, row?.errorDetail),
+        classifyTeamsProvisioningError(sentence),
+      );
+    }
+
+    // (2) an older build's clear, then the SAME sentence again: the old seal
+    // matches, and the code does describe that sentence — still correct.
+    await oldBuild(null);
+    await oldBuild(consentMissingDetail(['A']));
+    const again = await store.getByAgentId('agent-1');
+    assert.deepEqual(
+      trustedTeamsProvisioningErrorOf(again?.lastError, again?.errorCode, again?.errorDetail),
+      { code: 'consent_missing', args: { scopes: ['A'] } },
+    );
   });
 
   it('clearTeamInstall and resetForRetry clear the structured columns too (#897)', async () => {

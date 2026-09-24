@@ -27,7 +27,7 @@
 -- NO CHECK CONSTRAINT ON `error_code`, ON PURPOSE
 -- ------------------------------------------------
 -- 0049 (`state`) and 0054 (`target_kind`) use CHECKs, but those vocabularies
--- are stable and drive control flow. This one has grown from 4 to 12 codes in
+-- are stable and drive control flow. This one has grown from 4 to 11 codes in
 -- a few weeks, and every addition would need a DROP/ADD CHECK migration (0056
 -- exists only to repair CHECK idempotency). More importantly, the runner
 -- writes `state` and the error in ONE best-effort UPDATE that swallows store
@@ -38,9 +38,24 @@
 -- path validates the stored value against it (an unknown code falls back to
 -- the classifier).
 --
--- INVARIANT (enforced by `AgentTeamsIdentityStore.update`, not by SQL): any
--- write of `last_error` also writes both columns — the provided values or
--- NULL — so a new sentence can never pair with a stale code.
+-- WHAT A READER MAY RELY ON (enforced in TypeScript, not by SQL)
+-- ----------------------------------------------------------------
+-- NOT that the three columns are always written together. Builds from #897
+-- on do that (`AgentTeamsIdentityStore.update`), but an OLDER build running
+-- against a database already on 0060 — the updater's automatic rollback
+-- after a failed health gate leaves migrations applied
+-- (`sidecars/updater/README.md`, "What rollback does not undo") — writes
+-- `last_error` alone: its clears keep the stale code, and its next failure
+-- sentence lands next to it.
+--
+-- So every coded write also stores, inside `error_detail`, a SHA-256 of the
+-- exact sentence it describes (reserved key `sentenceSha256`,
+-- `platform/teamsProvisioningErrorSeal.ts`); a coded row therefore never has
+-- a NULL `error_detail`. Readers trust `error_code` only while that
+-- fingerprint matches the row's current `last_error`; a mismatch, a missing
+-- fingerprint or a NULL code reads exactly like a pre-0060 row (the sentence
+-- classifier decides). The guarantee is: a code is never read against a
+-- sentence it was not written with, whichever build wrote the sentence.
 --
 -- Idempotent by construction (ADD COLUMN IF NOT EXISTS), because schema CI
 -- double-applies every file in this series.

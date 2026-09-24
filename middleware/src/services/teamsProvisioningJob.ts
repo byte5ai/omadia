@@ -82,6 +82,7 @@ import type {
   BackgroundJobHandle,
 } from '../platform/backgroundJobRegistry.js';
 import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
+import { pairedTeamsErrorOf } from '../platform/teamsProvisioningErrorSeal.js';
 import {
   isChatTarget,
   type TeamsTargetKind,
@@ -137,27 +138,39 @@ export interface TeamsIdentityJobRecord {
    * this port like every other additive field: a store or test double that
    * predates the columns still satisfies it, and absent means "legacy row" —
    * readers fall back to classifying the sentence. Opaque here because it is
-   * stored data; {@link teamsProvisioningErrorDetailOf} validates it.
+   * stored data: readers go through {@link trustedTeamsProvisioningErrorOf},
+   * which trusts it only while its seal matches {@link lastError}.
    */
   readonly errorCode?: string | null;
   readonly errorDetail?: unknown;
 }
 
-export interface TeamsIdentityJobUpdate {
+/** The non-error fields a runner patch may carry. */
+interface TeamsIdentityJobFields {
   readonly state?: TeamsProvisioningState;
   readonly appId?: string;
   readonly appObjectId?: string | null;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
   readonly teamsAppExternalId?: string;
-  /** `null` clears a previous error — and, by the store's pairing
-   *  invariant, the two structured columns below with it. */
-  readonly lastError?: string | null;
-  /** The code and typed arguments of a non-null {@link lastError} (#897).
-   *  Only meaningful together with it; see {@link TeamsProvisioningFailure}. */
-  readonly errorCode?: TeamsProvisioningErrorCode | null;
-  readonly errorDetail?: TeamsProvisioningErrorArgs | null;
 }
+
+/**
+ * One runner write. The error part is either absent, a clear
+ * (`lastError: null` — the store clears both structured columns with it), or
+ * a whole {@link TeamsProvisioningFailure} from a `*Failure` builder (#897).
+ * A non-null `lastError` without its `errorCode` does not compile on ANY
+ * runner write path, not only through `recordError`.
+ */
+export type TeamsIdentityJobUpdate = TeamsIdentityJobFields &
+  (
+    | {
+        readonly lastError?: null;
+        readonly errorCode?: undefined;
+        readonly errorDetail?: undefined;
+      }
+    | TeamsProvisioningFailure
+  );
 
 /** The runner writes state/last_error EXCLUSIVELY through this port. */
 export interface TeamsIdentityJobStore {
@@ -2316,12 +2329,19 @@ export class TeamsProvisioningJobRunner {
       // leave the operator staring at the warning that sent them here.
       // Scoped to the `config_sync_failed` code on purpose — an unrelated
       // error on the row is not this method's to clear. Read from the
-      // persisted code (#897); the sentence prefix is consulted only for a
-      // row written before migration 0060, which has no code.
+      // persisted code (#897) while its seal matches the sentence; the
+      // sentence prefix decides for a row whose code is absent, unknown or
+      // stale (pre-0060, or `last_error` rewritten by a build that predates
+      // the columns — a rollback across 0060).
+      const trusted = trustedTeamsProvisioningErrorOf(
+        row.lastError,
+        row.errorCode,
+        row.errorDetail,
+      );
       const ownWarning =
-        row.errorCode === 'config_sync_failed' ||
-        (row.errorCode == null &&
-          row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX) === true);
+        trusted !== undefined
+          ? trusted.code === 'config_sync_failed'
+          : row.lastError?.startsWith(CONFIG_SYNC_FAILED_PREFIX) === true;
       if (ownWarning) {
         await this.recordError(row.agentId, { lastError: null });
       }
@@ -2354,9 +2374,15 @@ export class TeamsProvisioningJobRunner {
 // builders below produce both from the same inputs, so the columns carry
 // exactly what the sentence says without anything having to parse it.
 //
-// The sentence classifier stays, as the read path for rows written BEFORE
-// 0060 (see teamsProvisioningErrorDetailOf). Its colocated round-trip tests
-// still hold the sentences to it until those rows are gone.
+// The store seals the columns to the sentence (a fingerprint inside
+// `error_detail`, platform/teamsProvisioningErrorSeal.ts). A build that
+// predates 0060 still writes `last_error` alone — after a rollback across the
+// migration — so readers trust the code only while the seal matches, and
+// otherwise classify the sentence exactly like a pre-0060 row.
+//
+// The sentence classifier stays, as the read path for those rows (see
+// teamsProvisioningErrorDetailOf). Its colocated round-trip tests still hold
+// the sentences to it until such rows can no longer be written.
 // ---------------------------------------------------------------------------
 
 /** Bracket filler used when the connector named no ARM field. Shared by the
@@ -2640,8 +2666,10 @@ function httpsUrlOrUndefined(value: unknown): string | undefined {
  * THE LEGACY PATH since #897. The runner now persists the code and its
  * arguments (`error_code` / `error_detail`, migration 0060), and readers go
  * through {@link teamsProvisioningErrorDetailOf}, which lands here only for a
- * row without a (known) code — one written before the migration, or by a
- * newer build after a rollback. Deletable once no pre-0060 rows remain.
+ * row without a trusted code — written before the migration, carrying a code
+ * this build does not know, or with a sentence rewritten by a build that
+ * predates the columns (the seal no longer matches). Deletable once no
+ * pre-0060 build can write to a migrated database any more.
  */
 export function classifyTeamsProvisioningError(
   raw: string,
@@ -2772,6 +2800,13 @@ type RecordErrorPatch =
   | { readonly state?: TeamsProvisioningState; readonly lastError: null }
   | ({ readonly state?: TeamsProvisioningState } & TeamsProvisioningFailure);
 
+/** A persisted code that is known to this build AND sealed to the row's
+ *  current sentence, with its arguments (seal removed). */
+export interface TrustedTeamsProvisioningError {
+  readonly code: TeamsProvisioningErrorCode;
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
 function failureOf(
   errorCode: TeamsProvisioningErrorCode,
   lastError: string,
@@ -2882,10 +2917,6 @@ export function unknownFailure(sentence: string): TeamsProvisioningFailure {
 
 // --- read side -------------------------------------------------------------
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 /** String entries of a stored list; anything else becomes `[]`. */
 function storedStrings(value: unknown): readonly string[] {
   return Array.isArray(value)
@@ -2894,37 +2925,55 @@ function storedStrings(value: unknown): readonly string[] {
 }
 
 /**
+ * The persisted code of one row, when it may be believed: known to this
+ * build and sealed to exactly `lastError`. `undefined` otherwise — a clean
+ * row, a pre-0060 row, a code from a newer build, or a sentence that a build
+ * predating 0060 rewrote next to a stale code (the seal no longer matches).
+ * Every reader of `error_code` goes through here; `undefined` means
+ * "classify the sentence", never "no error".
+ */
+export function trustedTeamsProvisioningErrorOf(
+  lastError: string | null | undefined,
+  errorCode: unknown,
+  errorDetail: unknown,
+): TrustedTeamsProvisioningError | undefined {
+  const paired = pairedTeamsErrorOf(lastError, errorCode, errorDetail);
+  if (paired === undefined || !isTeamsProvisioningErrorCode(paired.errorCode)) {
+    return undefined;
+  }
+  return { code: paired.errorCode, args: paired.errorArgs };
+}
+
+/**
  * The structured form of one identity's failure — what the operator route
  * publishes as `last_error_detail`.
  *
- * Reads the persisted `error_code` / `error_detail` (migration 0060) and
- * validates every field on the way out: the columns are stored data, and a
- * row edited by hand or written by another build must not be able to put a
- * non-https link or a non-numeric wait in front of an operator. A row
- * without a KNOWN code — written before the migration, or carrying a code
- * from a newer build after a rollback — falls back to
- * {@link classifyTeamsProvisioningError} on the sentence.
+ * Reads the persisted `error_code` / `error_detail` (migration 0060) when
+ * {@link trustedTeamsProvisioningErrorOf} vouches for them, and validates
+ * every field on the way out: the columns are stored data, and a row edited
+ * by hand or written by another build must not be able to put a non-https
+ * link or a non-numeric wait in front of an operator. Any other row falls
+ * back to {@link classifyTeamsProvisioningError} on the sentence.
  */
 export function teamsProvisioningErrorDetailOf(
   lastError: string,
   errorCode: unknown,
   errorDetail: unknown,
 ): TeamsProvisioningErrorDetail {
-  if (!isTeamsProvisioningErrorCode(errorCode)) {
-    return classifyTeamsProvisioningError(lastError);
-  }
-  const args = isRecord(errorDetail) ? errorDetail : {};
+  const trusted = trustedTeamsProvisioningErrorOf(lastError, errorCode, errorDetail);
+  if (trusted === undefined) return classifyTeamsProvisioningError(lastError);
+  const { code, args } = trusted;
   const raw = lastError;
-  switch (errorCode) {
+  switch (code) {
     case 'consent_missing':
     case 'delegated_sign_in_required':
-      return { code: errorCode, scopes: storedStrings(args['scopes']), raw };
+      return { code, scopes: storedStrings(args['scopes']), raw };
     case 'arm_not_configured':
-      return { code: errorCode, fields: storedStrings(args['fields']), raw };
+      return { code, fields: storedStrings(args['fields']), raw };
     case 'delegated_consent_required': {
       const url = httpsUrlOrUndefined(args['adminConsentUrl']);
       return {
-        code: errorCode,
+        code,
         scopes: storedStrings(args['scopes']),
         ...(url !== undefined ? { adminConsentUrl: url } : {}),
         raw,
@@ -2933,18 +2982,18 @@ export function teamsProvisioningErrorDetailOf(
     case 'throttled': {
       const wait = args['retryAfterSeconds'];
       const valid = typeof wait === 'number' && Number.isFinite(wait) && wait >= 0;
-      return { code: errorCode, ...(valid ? { retryAfterSeconds: wait } : {}), raw };
+      return { code, ...(valid ? { retryAfterSeconds: wait } : {}), raw };
     }
     case 'config_sync_failed': {
       const reason = args['reason'];
-      return { code: errorCode, reason: typeof reason === 'string' ? reason : '', raw };
+      return { code, reason: typeof reason === 'string' ? reason : '', raw };
     }
     case 'device_code_flow_failed': {
       const reason = args['reason'];
       const valid = typeof reason === 'string' && reason !== '';
-      return { code: errorCode, ...(valid ? { reason } : {}), raw };
+      return { code, ...(valid ? { reason } : {}), raw };
     }
     default:
-      return { code: errorCode, raw };
+      return { code, raw };
   }
 }

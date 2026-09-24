@@ -466,9 +466,11 @@ GET /api/v1/operator/agents/<agent-slug>/teams-identity
   config_sync_failed, bot_handle_unavailable, delegated_sign_in_required,
   delegated_consent_required, delegated_token_expired, device_code_flow_failed, unknown}`.
   Seit Migration `0060` (#897) wird er **persistiert, nicht geparst**: der Runner schreibt
-  `error_code`/`error_detail` im selben Write wie den Satz, die Route liest die Spalten
-  (validiert) und klassifiziert den Satz nur noch für Zeilen von vor `0060`. `last_error`
-  darf damit frei umformuliert werden.
+  `error_code`/`error_detail` im selben Write wie den Satz und versiegelt den Code mit
+  einem SHA-256 des Satzes. Die Route liest die Spalten (validiert), solange das Siegel
+  zum Satz passt, und klassifiziert den Satz sonst — für Zeilen von vor `0060` und für
+  Sätze, die ein älterer Build nach einem Rollback neben einen alten Code geschrieben hat.
+  `last_error` darf damit frei umformuliert werden.
   Clients rendern aus `code` plus typisierten Argumenten — nie durch Parsen des
   englischen Satzes. `config_sync_failed` ist die einzige **Warnung** in dieser Liste:
   die Identität ist gültig, nur der automatische `teams_bots`-Schreibvorgang nicht
