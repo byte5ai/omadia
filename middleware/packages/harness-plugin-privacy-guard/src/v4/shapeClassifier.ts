@@ -14,8 +14,6 @@
  * Contract: specs/001-privacy-shield-v4/contracts/shape-classifier.md
  */
 
-import { isControlFlowToolResult } from '@omadia/plugin-api';
-
 import {
   type Classification,
   type Classifier,
@@ -197,32 +195,6 @@ function collectFieldPaths(rows: ReadonlyArray<DatasetRow>): string[] {
   return paths;
 }
 
-/**
- * #1097 (defence in depth) — a 1×1 dataset whose single string cell is
- * control-flow text (the `Error:` tool-error convention, or an MCP auth
- * prompt) is not data, and masking it is what turned a tool failure into a
- * rendered "result": the model saw `[masked]`, could not learn the call
- * failed, and `v4_render_answer` materialized the error as a one-cell table.
- *
- * The dispatch seams keep such results OUT of the store entirely (that is the
- * primary fix); this is the second line for anything that reaches the shield
- * by another route. Deliberately the narrowest possible window — exactly one
- * row, exactly one field, typed `string`, and no detector hit — so it can
- * never become a cleartext channel for real rows.
- */
-function isControlFlowScalar(
-  rows: ReadonlyArray<DatasetRow>,
-  fields: ReadonlyArray<FieldClassification>,
-): boolean {
-  if (rows.length !== 1 || fields.length !== 1) return false;
-  const only = fields[0];
-  if (only === undefined || only.type !== 'string' || only.stats.detectorHit) {
-    return false;
-  }
-  const value = rows[0]?.[only.path];
-  return typeof value === 'string' && isControlFlowToolResult(value);
-}
-
 function classify(
   rows: ReadonlyArray<DatasetRow>,
   shape: DatasetShape,
@@ -239,14 +211,6 @@ function classify(
       detector,
     ),
   );
-  if (isControlFlowScalar(rows, fields)) {
-    const only = fields[0] as FieldClassification;
-    return {
-      fields: [{ ...only, classification: 'safe-cleartext' }],
-      rowCount: rows.length,
-      shape,
-    };
-  }
   return { fields, rowCount: rows.length, shape };
 }
 

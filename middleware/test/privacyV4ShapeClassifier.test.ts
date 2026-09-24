@@ -166,68 +166,6 @@ describe('ShapeClassifier — detector booster (one-way)', () => {
   });
 });
 
-// --- control-flow scalars (#1097) ------------------------------------------
-
-/**
- * #1097 defence in depth. The dispatch seams keep control-flow results out of
- * the store entirely; if one arrives by another route it must still not be
- * masked, because a masked 1×1 dataset is renderable and `v4_render_answer`
- * then materializes the failure as if it were a result.
- */
-describe('ShapeClassifier — control-flow scalars (#1097)', () => {
-  it('leaves a 1x1 `Error:` scalar in cleartext', () => {
-    const s = classifyRows([
-      { value: 'Error: embeddings not configured — use `search_turns` instead.' },
-    ]);
-    assert.equal(field(s, 'value').type, 'string');
-    assert.equal(field(s, 'value').classification, 'safe-cleartext');
-  });
-
-  it('leaves a 1x1 MCP auth prompt in cleartext, block intact', () => {
-    const s = classifyRows([
-      {
-        value:
-          '🔒 The MCP server "Strava" needs authorization before it can be used. ' +
-          '<mcp-auth-required serverId="s-1" server="Strava"></mcp-auth-required>',
-      },
-    ]);
-    assert.equal(field(s, 'value').classification, 'safe-cleartext');
-  });
-
-  it('does NOT widen past one row — a second row masks again', () => {
-    const s = classifyRows([
-      { value: 'Error: one' },
-      { value: 'Erika Mustermann' },
-    ]);
-    assert.equal(
-      field(s, 'value').classification,
-      'sensitive-masked',
-      'the window is exactly one row — anything else is a dataset',
-    );
-  });
-
-  it('does NOT widen past one field — a second column masks again', () => {
-    const s = classifyRows([{ value: 'Error: one', employee: 'Erika Mustermann' }]);
-    assert.equal(field(s, 'value').classification, 'sensitive-masked');
-    assert.equal(field(s, 'employee').classification, 'sensitive-masked');
-  });
-
-  it('a detector hit still wins — the exemption never overrides the booster', () => {
-    const detector: DetectorBooster = (v) => v.includes('@');
-    const s = classifyRows(
-      [{ value: 'Error: user erika.mustermann@example.com is unknown' }],
-      detector,
-    );
-    assert.equal(field(s, 'value').stats.detectorHit, true);
-    assert.equal(field(s, 'value').classification, 'sensitive-masked');
-  });
-
-  it('control — an ordinary 1x1 prose scalar stays masked', () => {
-    const s = classifyRows([{ value: 'Erika Mustermann' }]);
-    assert.equal(field(s, 'value').classification, 'sensitive-masked');
-  });
-});
-
 // --- realistic shapes ------------------------------------------------------
 
 describe('ShapeClassifier — realistic shapes', () => {

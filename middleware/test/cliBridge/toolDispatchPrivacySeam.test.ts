@@ -2,7 +2,10 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { NativeToolRegistry } from '../../packages/harness-orchestrator/src/nativeToolRegistry.js';
-import type { PrivacyTurnHandle } from '../../packages/harness-orchestrator/src/privacyHandle.js';
+import {
+  createPrivacyTurnHandle,
+  type PrivacyTurnHandle,
+} from '../../packages/harness-orchestrator/src/privacyHandle.js';
 import {
   ToolDispatchService,
   type ToolDispatchCallerContext,
@@ -10,6 +13,10 @@ import {
 import { currentDispatchCaller } from '../../packages/harness-orchestrator/src/toolCallerContext.js';
 import { turnContext } from '../../packages/harness-orchestrator/src/turnContext.js';
 import type { DomainTool } from '../../packages/harness-orchestrator/src/tools/domainQueryTool.js';
+// Imported from SOURCE (like privacyV4Bypass.test.ts): the real classifier is
+// what the thrown-exception case below pins, so a change in `src/` must turn
+// it red without a rebuild.
+import { createPrivacyGuardService } from '../../packages/harness-plugin-privacy-guard/src/index.js';
 
 /**
  * #542 prerequisite — the privacy/trace seam in `ToolDispatchService`.
@@ -425,6 +432,41 @@ describe('ToolDispatchService — error-path privacy boundary (W4)', () => {
     );
     assert.match(result.content, /\[masked:email\]/, 'the masked digest should have replaced it');
     assert.equal(result.isError, true, 'masking must not swallow the error signal');
+  });
+
+  /**
+   * #1097 / triage AC3 — the same pin against the REAL privacy-guard service.
+   * The stub above redacts by string replace, so it stays green whatever the
+   * shape classifier does. This message carries no email, IBAN or phone — only
+   * a name and a salary, which only the classifier's deny-by-default rule
+   * masks. An `Error:`-prefix exemption in the classifier would put both on
+   * the wire.
+   */
+  it('still MASKS a thrown `Error:` message through the real privacy-guard service', async () => {
+    const turnHandle = createPrivacyTurnHandle({
+      service: createPrivacyGuardService(),
+      sessionId: 's-1097',
+      turnId: 't-1097-thrown',
+    });
+    const service = new ToolDispatchService({
+      nativeTools: throwingRegistryWith(
+        'odoo_search_partner',
+        "Error: Invalid field 'x' on record {'id':42,'name':'Erika Mustermann','salary':'7.450 EUR'}",
+      ),
+      domainTools: [],
+      privacy: () => turnHandle,
+    });
+
+    const result = await service.dispatch('odoo_search_partner', {});
+
+    assert.equal(result.isError, true, 'masking must not swallow the error signal');
+    assert.ok(result.content.includes('[privacy-shield-v4]'), 'the message was interned');
+    assert.equal(
+      result.content.includes('Erika Mustermann'),
+      false,
+      'a thrown `Error:` message leaked the person name past the real classifier',
+    );
+    assert.equal(result.content.includes('7.450 EUR'), false, 'the salary leaked');
   });
 
   it('marks a masked error as `origin: tool` so a consumer knows it had to cross the boundary', async () => {

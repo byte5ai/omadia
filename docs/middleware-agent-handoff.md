@@ -2492,20 +2492,24 @@ vor dem Internieren — und konsultieren **ein** Prädikat,
 `isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`).
 
 Das Prädikat deckt zwei Träger ab, denn der `Error:`-Präfix allein war zu eng:
-den **MCP-Auth-Prompt** (`🔒 …`, ggf. mit dem `<mcp-auth-required>`-Block, aus
-dem die Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
+den **MCP-Auth-Prompt** (verankert auf das exakte Produzenten-Präfix
+`🔒 The MCP server "`, ggf. mit dem `<mcp-auth-required>`-Block, aus dem die
+Chat-UI die Connect-Karte baut) liefert `McpManager.handleFailure`
 statt eines rohen Fehlers, sobald ein Call auth-förmig scheitert (Alltagsfall:
 abgelaufenes OAuth-Token auf einer geparkten MCP-Input-Karte). Interniert ging
 die Connect-Karte verloren und das Modell erzählte Erfolg über einem Digest.
+Das Prädikat prüft **nur Präfixe**, nie Teilstrings: ein Marker in einer
+Datenzelle darf kein mehrzeiliges Ergebnis entmaskieren.
 
-Zwei Verteidigungslinien dahinter, gleiches Prädikat: der **Shape-Classifier**
-(`v4/shapeClassifier.ts`) klassifiziert ein 1×1-Dataset, dessen einzige
-String-Zelle Control-Flow-Text ist, als `safe-cleartext` statt
-`sensitive-masked` (Fenster bewusst minimal: genau eine Zeile, genau ein Feld,
-Typ `string`, kein Detector-Hit); und ein **gerenderter Fehler** wird als
-solcher markiert — `PrivacyRenderedAnswer.isError`, vom Orchestrator als
-`answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Die Maskierung **geworfener** Exceptions (`maskErrorText`)
-bleibt bewusst unberührt: diesen Text hat niemand saniert (ein ORM echot die
+Ein **gerenderter Fehler** wird als solcher markiert —
+`PrivacyRenderedAnswer.isError` (entschieden an der Quell-Zelle: ein Dataset
+aus genau einer Control-Flow-Zelle), vom Orchestrator als
+`answerIsError: true` auf beide Antwortpfade gelegt (siehe §11-Kontrakt). Der
+**Shape-Classifier bleibt unverändert**: eine Ausnahme für 1×1-`Error:`-Skalare
+wäre ein Klartext-Kanal, weil Verben abgeleitete Datasets neu klassifizieren
+(`filter` + `select` verengen jede maskierte Spalte auf so einen Skalar). Die
+Maskierung **geworfener** Exceptions (`maskErrorText`) bleibt bewusst
+unberührt: diesen Text hat niemand saniert (ein ORM echot die
 Zeile, ein Treiber die gebundenen Parameter), das "Error-Strings enthalten
 konstruktionsbedingt keine PII"-Argument gilt nur für die Konvention.
 

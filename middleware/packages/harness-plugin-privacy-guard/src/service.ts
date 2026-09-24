@@ -39,7 +39,7 @@ import { isControlFlowToolResult } from '@omadia/plugin-api';
 import { createDatasetStore } from './v4/datasetStore.js';
 import { createShapeClassifier } from './v4/shapeClassifier.js';
 import { buildDigest, digestToToolResultText } from './v4/digest.js';
-import type { DatasetStore } from './v4/types.js';
+import type { Dataset, DatasetStore } from './v4/types.js';
 import { createVerbEngine } from './v4/verbs/index.js';
 import {
   RENDER_TOOL_SPEC,
@@ -206,6 +206,24 @@ function buildRenderSnapshotResultText(
     _note: V4_RENDER_NOTE,
   };
   return JSON.stringify(payload);
+}
+
+/**
+ * #1097 — true when a dataset is one control-flow string and nothing else (a
+ * tool error or MCP auth prompt that reached the store by a route the dispatch
+ * guards do not cover, e.g. a masked thrown exception). Decided on the SOURCE
+ * cell, not on the materialized text: the model's prose and the list/table
+ * framing around the value would hide the prefix.
+ */
+function isControlFlowDataset(dataset: Dataset | undefined): boolean {
+  if (dataset === undefined || dataset.rows.length !== 1) return false;
+  const cells = Object.values(dataset.rows[0] ?? {});
+  const only = cells[0];
+  return (
+    cells.length === 1 &&
+    typeof only === 'string' &&
+    isControlFlowToolResult(only)
+  );
 }
 
 export function createPrivacyGuardService(deps?: {
@@ -480,11 +498,13 @@ export function createPrivacyGuardService(deps?: {
         if (request.toolName === RENDER_TOOL_SPEC.name) {
           const directive = parseRenderDirective(request.input);
           const rendered = materialize(store, directive);
-          // #1097 — a render whose materialized text is control flow (a tool
-          // error, an MCP auth prompt) is a rendered FAILURE, not a result.
-          // Flag it so channels can display it as one instead of presenting
-          // the model's success prose over an error string.
-          const renderIsError = isControlFlowToolResult(rendered.text);
+          // #1097 — a render of control flow (a tool error, an MCP auth
+          // prompt) is a rendered FAILURE, not a result. Flag it so channels
+          // can display it as one instead of presenting the model's success
+          // prose over an error string.
+          const renderIsError = isControlFlowDataset(
+            store.get(directive.datasetId),
+          );
           renderedAnswers.set(request.turnId, {
             text: rendered.text,
             maskedValues: rendered.maskedValues,

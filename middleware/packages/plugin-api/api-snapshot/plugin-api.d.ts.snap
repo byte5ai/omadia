@@ -2424,8 +2424,7 @@ sendToPrincipal(request: TargetedSendRequest): Promise<TargetedSendResult>;
 
 // ===== toolControlFlowText.d.ts =====
 export declare const TOOL_ERROR_PREFIX = "Error:";
-export declare const MCP_AUTH_PROMPT_PREFIX = "\uD83D\uDD12";
-export declare const MCP_AUTH_REQUIRED_BLOCK = "<mcp-auth-required";
+export declare const MCP_AUTH_PROMPT_PREFIX = "\uD83D\uDD12 The MCP server \"";
 export declare function isControlFlowToolResult(result: string): boolean;
 
 // ===== topic.d.ts =====
