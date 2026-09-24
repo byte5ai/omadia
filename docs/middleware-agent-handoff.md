@@ -491,12 +491,31 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   Channels feature-detecten (`typeof core.registerWebSocket === 'function'`).
 - **Kernel** `src/channels/webSocketRegistry.ts`: spiegelt `ExpressRouteRegistry`
   (per-Channel-`active`-Flag; `deactivateChannel` lehnt neue Upgrades ab **und**
-  schließt Live-Sockets). Ein einzelner `ws.Server` im `noServer`-Modus;
-  `attach(server)` hängt sich an `server.on('upgrade')`. Pfad-/Active-Match →
-  Auth → `handleUpgrade`. **Single-Owner-Invariante:** die Registry ist der
-  einzige `upgrade`-Consumer des Prozesses (heute kein anderer); unbekannter
-  Pfad → `404` + `destroy`. Ein künftiger zweiter WS-Consumer müsste das zu
-  einer Delegations-Kette machen statt unmatched Sockets zu zerstören.
+  schließt Live-Sockets). `attach(server)` hängt sich an
+  `server.on('upgrade')`. Die Registry bleibt der **einzige** `upgrade`-Listener
+  des Prozesses, delegiert aber seit Epic #746 W1-1 über eine **Routen-Tabelle**
+  (Pfad → Route) mit zwei Arten; unbekannter Pfad → `404` + `destroy`:
+  - **Channel-Routen** (`register`, für Plugins nur via
+    `CoreApi.registerWebSocket`): Session-Cookie + Whitelist-Auth, Active-Gate
+    (`503`), `ChannelSocket`-Wrapper, gemeinsamer `ws.Server` mit
+    `maxPayload = CHANNEL_WS_MAX_PAYLOAD_BYTES` (**32 MiB**, vorher ws-Default
+    100 MiB). Herleitung: größter gültiger Canvas-Frame `canvas_list_put` =
+    50 × 262_144 Zeichen ≈ 12,5 MiB ASCII; der Desktop-Client kappt vor dem
+    Senden nicht, daher ~2,5× Reserve. Frame über dem Cap → Close `1009`.
+  - **Kernel-Routen** (`registerKernel(path, { authenticate, maxPayload, handler })`,
+    **nur Kernel-Code**, nicht auf `CoreApi`): eigener
+    `WebSocketAuthenticator<T>` (läuft **vor** dem `101`; `ok:false` → rohes
+    `401`/`403`, Exception → `401` fail-closed), **Pflicht**-`maxPayload`
+    (eigener `ws.Server` pro Route), Handler bekommt den rohen `ws`-Socket
+    (Ping/Pong, Binär-Frames, Backpressure) + Principal. Unabhängig vom
+    Channel-Lifecycle: `deactivateChannel` schließt keine Kernel-Sockets.
+    Erster Consumer: `/api/v1/satellites/ws` (W1-2).
+  - Pfad-Kollision Kernel↔Channel (beide Richtungen) und doppelte
+    Kernel-Registrierung werfen.
+  - Jeder akzeptierte Socket hat einen `'error'`-Listener: `ws` emittiert
+    `'error'` bei Protokollverletzungen (inkl. `maxPayload`-Überschreitung);
+    ohne Listener war das eine uncaught exception, die nur `processGuards`
+    abfing.
 - **Auth — vor dem Upgrade, nicht danach.** Der `upgrade`-Request trägt das
   Session-Cookie (`omadia_session`) in `req.headers.cookie`. Die Registry parst
   es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor) und ruft
@@ -519,7 +538,11 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
 `ws`-Client (authentifizierter Upgrade → Claims + Echo-Frame; ohne Cookie →
-`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`). Damit ist der
+`401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`; seit W1-1
+zusätzlich: Kernel-Route ignoriert Cookies und nutzt ihren Authenticator,
+`401`/`403`/Exception ohne `101`, `maxPayload` pro Route mit `1009` ohne
+uncaught exception, Kernel↔Channel-Pfadkollision wirft, `deactivateChannel`
+lässt Kernel-Sockets offen, 32-MiB-Default). Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 

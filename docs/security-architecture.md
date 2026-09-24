@@ -1037,6 +1037,12 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —
       operator routers belong under `/api/v1/admin/*` (§10).
+- [ ] A WebSocket route with its own authenticator is registered through
+      `WebSocketRegistry.registerKernel` from kernel code only, never exposed on
+      `CoreApi`. Plugins always get session-cookie and whitelist auth via
+      `CoreApi.registerWebSocket`. The authenticator rejects before the `101`
+      (raw 401/403, fail closed on throw), and the route sets an explicit
+      `maxPayload`.
 
 ---
 

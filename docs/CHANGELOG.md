@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — WebSocket frames capped at 32 MiB, per-route WebSocket auth (Refs #746)
+
+2026-09-24 — `WebSocketRegistry` (the process's only `upgrade` listener) is now
+a delegating route table instead of a single-owner, cookie-only handler. This is
+slice W1-1 of the Satellites epic and the prerequisite for the tunnel at
+`/api/v1/satellites/ws`.
+
+- **Behaviour tightening:** channel WebSockets (today: the omadia UI canvas)
+  accept inbound frames up to **32 MiB** (`CHANNEL_WS_MAX_PAYLOAD_BYTES`). They
+  previously inherited `ws`'s 100 MiB default. A larger frame closes the socket
+  with code **1009**. The cap comes from the largest frame the canvas channel
+  treats as valid (`canvas_list_put`, 50 × 262_144-character trees ≈ 12.5 MiB),
+  with headroom because the desktop client doesn't trim before sending.
+- **New kernel-only API:** `registerKernel(path, { authenticate, maxPayload,
+  handler })` gives a route its own pre-handshake authenticator (a rejected
+  peer gets a raw 401/403 and never a 101; a throwing authenticator fails
+  closed with 401), a required frame cap and the raw `ws` socket. Kernel routes
+  don't follow channel activation or deactivation. Plugins can't use it:
+  `CoreApi.registerWebSocket` keeps session-cookie and whitelist auth.
+- **Fixed:** accepted sockets had no `'error'` listener. A malformed or
+  oversized frame from an authenticated peer made `ws` emit an unhandled
+  `'error'`, which surfaced as an uncaught exception that only
+  `processGuards` absorbed.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
