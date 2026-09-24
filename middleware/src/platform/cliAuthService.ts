@@ -2,20 +2,28 @@
  * In-app CLI login flow (#309, Phase B) — drives `claude auth login` from the
  * Web UI so a self-hoster never needs a terminal.
  *
- * Two CLI generations, one flow (OM-73, #995):
+ * Two CLI generations, one flow (OM-73, #995; #1084):
  *
  *   1. Spawn `claude auth login --claudeai`. The CLI prints an OAuth URL
  *      ("… visit: https://claude.com/cai/oauth/authorize?…"). We capture it and
  *      hand it to the browser (leg OUT).
- *   2a. OLDER CLIs (verified against v2.1.187) then wait at a "Paste code here"
- *       stdin prompt. The operator authenticates in the browser, gets a code,
- *       the UI posts it back and we write it to stdin (leg IN). A wrong code
- *       returns "Invalid code" and the process stays alive to retry.
- *   2b. NEWER CLIs (v2.1.246+) finish the login through a localhost callback in
- *       the operator's browser and print NO code. The process exits 0 on its
- *       own. There is nothing to paste — so `startCliLogin` reports
- *       `codeEntry: false` and the UI polls `getActiveLogin` until the exit
- *       handler flips the session to `authorized`.
+ *   2a. The CLI bundled in the image (v2.1.187) prints "Opening browser…" and
+ *       "If the browser didn't open, visit: …" and then waits at a "Paste code
+ *       here if prompted" stdin prompt: its URL carries `code=true` and the
+ *       platform.claude.com callback, so the browser shows a code and nothing
+ *       reaches the CLI but stdin. The operator copies the code, the UI posts
+ *       it back and we write it to stdin (leg IN). A wrong code returns
+ *       "Invalid code" and the process stays alive to retry.
+ *   2b. NEWER CLIs (v2.1.246+) can finish the login through a localhost
+ *       callback in the operator's browser, print no code and exit 0 on their
+ *       own; they still print the same paste prompt as a fallback.
+ *
+ *   The paste prompt decides (#1084): whenever it appears, `startCliLogin`
+ *   reports `codeEntry: true` and the UI shows the code field. The UI polls
+ *   `getActiveLogin` in parallel in every mode, so a login finished through
+ *   the callback still resolves, and the polling-only view (no prompt seen)
+ *   still offers a fallback code field. The browser lines are printed by both
+ *   generations and carry no signal.
  *
  * Either way, once a login succeeds the `authorized` hook fires (OM-79, #994):
  * the subscription is connected but no orchestrator points at it yet, and the
@@ -129,24 +137,23 @@ function fireAuthorizedHook(cliId: string): void {
 }
 
 /**
- * Flow signatures in the CLI's opening output. Pinned against the strings the
- * claude 2.1.259 bundle actually prints (see test fixtures):
+ * The paste-prompt signature in the CLI's opening output. Both generations
+ * print one (see test fixtures):
  *
- *   Opening browser to sign in…
- *   Waiting for browser authorization…
- *   If the browser didn't open, visit: <url>
- *   Paste code here if prompted >
+ *   2.1.187 (bundled in the image)        2.1.259
+ *   Opening browser to sign in…           Opening browser to sign in…
+ *   If the browser didn't open, visit: …  Waiting for browser authorization…
+ *   Paste code here if prompted >         If the browser didn't open, visit: …
+ *                                         Paste code here if prompted >
  *
- * The newer CLI prints the callback lines AND a "Paste code here if prompted"
- * fallback together, so the paste prompt alone proves nothing. A code entry is
- * required only when a paste prompt appears WITHOUT any browser-callback line.
+ * #1084 — an earlier rule let the "Opening browser" / "If the browser didn't
+ * open" lines veto the prompt. 2.1.187 prints both and then waits ONLY on
+ * stdin, so the UI showed no code field and the login could not finish. A
+ * prompt now always means code entry; the UI polls alongside it, so a CLI that
+ * finishes through the browser callback instead still resolves.
  */
-const CALLBACK_SIGNATURE = /waiting for browser authorization|opening browser|if the browser didn.t open/i;
 const PASTE_SIGNATURE = /paste code here|enter the code|authorization code/i;
 
-function hasCallbackSignature(buf: string): boolean {
-  return CALLBACK_SIGNATURE.test(buf);
-}
 function hasPasteSignature(buf: string): boolean {
   return PASTE_SIGNATURE.test(buf);
 }
@@ -209,9 +216,10 @@ function append(session: LoginSession, chunk: string): void {
 export interface StartLoginResult {
   readonly sessionId: string;
   readonly verificationUrl: string;
-  /** OM-73 — whether this CLI expects a pasted code (older flow). `false`
-   *  means it finishes via a browser callback and the UI should poll the
-   *  login status instead of showing a code field. */
+  /** OM-73 / #1084 — whether the CLI printed a paste-code prompt. `true`
+   *  ⇒ the UI shows the code field (and polls alongside it); `false` ⇒ no
+   *  prompt was seen, the UI polls the login status and offers the code
+   *  field only as a secondary fallback. */
   readonly codeEntry: boolean;
   /** The login already completed before the UI could react (very fast browser
    *  callback). The UI can go straight to "connected". */
@@ -254,9 +262,9 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   active = session;
 
   session.lifetimeTimer = setTimeout(() => {
-    // Dispose any still-active session at lifetime — pending OR invalid (an
-    // "invalid code" leaves the child alive for a retry; if the operator walks
-    // away it must still be reaped). Authorized sessions already disposed.
+    // Dispose any still-active session at lifetime: a pending one (including
+    // after an "invalid code", which keeps the child alive and the session
+    // pending for a retry, #1084) and a terminal error kept for a polling UI.
     if (active === session) {
       if (session.status === 'pending') session.status = 'expired';
       disposeActive();
@@ -282,8 +290,8 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
     //   * non-zero → a real failure; keep the last output for the operator.
     // No ordering guarantee with `submitCliCode` (older flow): both may observe
     // `pending` and both call `markAuthorized`, which only transitions once and
-    // fires the hook once. A session already `authorized`/`invalid`/`error`
-    // is left as it is.
+    // fires the hook once. A session already `authorized`/`error` is left as
+    // it is.
     if (session.status === 'pending') {
       if (code === 0) {
         void confirmAuthorizedAfterExit(session);
@@ -321,19 +329,19 @@ export async function startCliLogin(cliId: string): Promise<StartLoginResult> {
   }
   session.verificationUrl = url;
 
-  // Decide which leg follows: a stdin code prompt (older CLI) or a browser
-  // callback (newer CLI). Resolve as soon as EITHER signature shows up so the
-  // start response is never held for the full probe window; the window only
-  // caps a CLI that prints the URL and nothing else. A callback line wins over
-  // a paste prompt (the 2.1.259 bundle prints both; the code is optional then).
+  // Does a stdin code prompt follow? Resolve as soon as the paste prompt shows
+  // up so the start response is never held for the full probe window; the
+  // window only caps a CLI that prints the URL and no prompt. Browser lines do
+  // NOT end the probe (#1084): the prompt can arrive in a later stdout chunk,
+  // and breaking on the first line would misread a prompting CLI as
+  // callback-only.
   const promptDeadline = Date.now() + io.codePromptProbeMs;
   while (Date.now() < promptDeadline) {
     if (session.status !== 'pending') break; // exited (authorized or error)
-    if (hasCallbackSignature(session.buffer) || hasPasteSignature(session.buffer)) break;
+    if (hasPasteSignature(session.buffer)) break;
     await delay(100);
   }
-  const codeEntry =
-    hasPasteSignature(session.buffer) && !hasCallbackSignature(session.buffer);
+  const codeEntry = hasPasteSignature(session.buffer);
   return {
     sessionId: session.id,
     verificationUrl: url,
@@ -377,7 +385,7 @@ async function confirmAuthorizedAfterExit(session: LoginSession): Promise<void> 
 
 /**
  * Write the operator's login code to the waiting process and report the result.
- * A wrong code keeps the session alive for another attempt.
+ * A wrong code keeps the session alive AND `pending` for another attempt.
  */
 export async function submitCliCode(
   sessionId: string,
@@ -432,7 +440,10 @@ export async function submitCliCode(
         return account ? { status: 'authorized', account } : { status: 'authorized' };
       }
       if (/invalid code/i.test(attemptOut)) {
-        session.status = 'invalid';
+        // #1084 — `invalid` is this attempt's result, not the session's state.
+        // Persisting it made `markAuthorized` (pending-only) refuse the correct
+        // retry, so the post-login hook (auto-assign, OM-79) never fired, and
+        // made the exit handler dispose the session instead of confirming it.
         return { status: 'invalid', error: 'Invalid code. Copy the full code and try again.' };
       }
       // exit 0 while still pending is being confirmed by the exit handler —

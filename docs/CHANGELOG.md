@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — subscription login on the shipped image shows the code field again (#1084)
+
+2026-09-24 — connecting a Claude subscription from **Admin → Providers →
+Subscriptions** dead-ended on every prebuilt image. The CLI bundled there
+(`claude` 2.1.187) prints `Opening browser to sign in…` and `If the browser
+didn't open, visit: …` and then waits at `Paste code here if prompted >` on
+stdin. `startCliLogin` treated those two browser lines as proof of a
+localhost-callback login (the rule came with #1013, which was checked against a
+host-installed 2.1.259, not the image's CLI), reported `codeEntry: false`, and
+the panel showed "no code to paste" plus Cancel. The browser displayed a code
+that could not be entered anywhere, and after the 5-minute poll a code field
+appeared for a session the server had already reaped. The unit fixture that
+should have caught it (`Please visit: …\nPaste code here >`) was not real CLI
+output.
+
+The paste prompt now decides alone: any prompt means `codeEntry: true`, for
+2.1.187 and 2.1.259 alike (the UI polls the login status in parallel, so a
+login that finishes through the browser callback still resolves). The probe no
+longer stops at the first browser line, so a prompt arriving in a later stdout
+chunk still counts. The polling view, used only when no prompt appeared, always
+carries a secondary "paste code instead" field. A poll that ends in timeout,
+`idle`, `expired` or `error` shows Retry instead of a dead field. A wrong code no
+longer marks the server session `invalid`: that status made `markAuthorized`
+refuse the correct retry, so the post-login auto-assign hook (OM-79) never ran
+and the exit handler dropped the session instead of confirming it. The fixtures
+are now the verbatim 2.1.187 output from the container.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
