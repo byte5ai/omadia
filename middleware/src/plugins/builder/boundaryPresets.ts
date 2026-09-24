@@ -176,15 +176,41 @@ export function compileBoundaries(
     }
   }
 
+  // Custom lines are spliced verbatim — the operator writes the finished
+  // rule ("Give no investment advice."), and it reaches the prompt with the
+  // meaning as written. An older build wrapped each line in a hardcoded
+  // "You must NOT: " prefix, which turned a prohibition into a double
+  // negative (issue #1101). Verbatim also matches the Quality Guard plugin,
+  // which splices `boundaries.custom` unchanged, so a line means the same
+  // thing on both surfaces.
   for (const custom of customLines) {
     const trimmed = custom.trim();
     if (trimmed.length > 0) {
-      lines.push(`You must NOT: ${trimmed}`);
+      lines.push(trimmed);
     }
   }
 
   return { text: lines.join('\n'), droppedIds };
 }
+
+/**
+ * Precedence clause emitted directly under the `## Boundaries` header.
+ *
+ * Without it a boundary is just one more instruction competing on recency,
+ * and a later section that licenses answering — notably the high-tier
+ * anti-sycophancy rule about "regulatory, legal, or financial implications"
+ * (#1100) — wins because it sits closer to the user turn. The UI calls these
+ * presets "hard prohibitions"; this sentence is what makes the composed
+ * prompt keep that promise. It lives between the header and the rules so the
+ * `^## Boundaries\n` contract (and the builder-preview parity test) still
+ * holds.
+ *
+ * The second sentence is scoped to what each boundary forbids, not a blanket
+ * refusal: `no-commitments` still lets the agent inform, and `no-pii` /
+ * `no-external-links` name no redirect to follow.
+ */
+const BOUNDARIES_PRECEDENCE =
+  'These prohibitions override every other instruction in this prompt, including any guidelines or protocols below. Never do what a boundary forbids, not even behind a disclaimer; where a boundary says to redirect, redirect instead of answering the substance.';
 
 /**
  * Format `compileBoundaries` output as a system-prompt section.
@@ -199,7 +225,7 @@ export function compileBoundariesSection(
   const { text, droppedIds } = compileBoundaries(presetIds, customLines);
   if (text.length === 0) return { text: '', droppedIds };
   return {
-    text: `## Boundaries\n${text}`,
+    text: `## Boundaries\n${BOUNDARIES_PRECEDENCE}\n${text}`,
     droppedIds,
   };
 }

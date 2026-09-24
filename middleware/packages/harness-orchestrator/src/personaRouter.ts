@@ -99,6 +99,7 @@ export async function routeTurnPersona(
     recordUsage({
       source: 'persona-router',
       model: classifierModel,
+      provider: provider.id,
       inputTokens: res.usage.inputTokens,
       outputTokens: res.usage.outputTokens,
       cacheReadTokens: res.usage.cacheReadTokens ?? 0,

@@ -980,7 +980,17 @@ export function warnIfEmptyInputSchema(
   );
 }
 
-async function loadSystemPrompt(
+/**
+ * Assemble an installed agent's system prompt from its package.
+ *
+ * SECTION ORDER IS A CONTRACT: `[header, persona, boundaries, sycophancy,
+ * citation, skill]`. The Boundaries precedence clause points at the
+ * "protocols below" and the high-tier sycophancy rule defers to "a Boundary
+ * above" (#1100) — swap the two and both cross-references lie.
+ *
+ * @internal Exported for tests only.
+ */
+export async function loadSystemPrompt(
   packageRoot: string,
   entry: PluginCatalogEntry,
   modelId: string,

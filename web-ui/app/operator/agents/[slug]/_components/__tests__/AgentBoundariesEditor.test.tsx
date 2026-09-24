@@ -22,4 +22,19 @@ describe('<AgentBoundariesEditor />', () => {
     expect(note).toBeInTheDocument();
     expect(note.textContent).toContain('Quality-Guard-Plugin');
   });
+
+  it('tells the operator custom lines reach the agent verbatim (#1101)', () => {
+    renderWithIntl(
+      <AgentBoundariesEditor value={empty} onChange={vi.fn()} />,
+      { locale: 'de' },
+    );
+    // No prefix is added any more, so the field must ask for finished rules.
+    expect(screen.getByLabelText('Eigene Verbote')).toHaveAttribute(
+      'placeholder',
+      'Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.',
+    );
+    expect(
+      screen.getByText(/als vollständiger Satz formuliert/),
+    ).toBeInTheDocument();
+  });
 });

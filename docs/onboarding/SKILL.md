@@ -82,7 +82,7 @@ matching asset is the one from the newest release that has it:
 |---|---|---|
 | macOS Apple Silicon | ends with `-arm64.dmg` | `omadia-0.1.0-arm64.dmg` |
 | macOS Intel | ends with `-x64.dmg` | `omadia-0.1.0-x64.dmg` |
-| Windows | matches `omadia.Setup.*.exe` | `omadia.Setup.0.1.0.exe` |
+| Windows | matches `omadia-Setup-*.exe` (older releases: `omadia.Setup.*.exe`) | `omadia-Setup-0.1.0.exe` |
 | Linux | ends with `.AppImage` | `omadia-0.1.0.AppImage` |
 
 Ignore `.blockmap`, `.yml`, `.zip`, and `.deb` assets for this flow — the `.dmg`,
@@ -105,7 +105,7 @@ flags — use the real `curl.exe` or the cmdlet below):
 
 ```powershell
 $releases = Invoke-RestMethod "https://api.github.com/repos/byte5ai/omadia/releases?per_page=20"
-$ExeUrl = ($releases.assets | Where-Object { $_.name -match '^omadia\.Setup\..*\.exe$' } |
+$ExeUrl = ($releases.assets | Where-Object { $_.name -match '^omadia[.-]Setup[.-].*\.exe$' } |
            Select-Object -First 1).browser_download_url
 ```
 

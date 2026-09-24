@@ -97,6 +97,18 @@ describe('<BoundariesSection />', () => {
     expect(note.textContent).toContain('Quality-Guard-Plugin');
   });
 
+  it('tells the author custom lines reach the agent verbatim (#1101)', () => {
+    render(<BoundariesSection draftId="draft-1" />);
+    // No prefix is added any more, so the field must ask for finished rules.
+    expect(screen.getByTestId('boundaries-custom')).toHaveAttribute(
+      'placeholder',
+      'Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.',
+    );
+    expect(
+      screen.getByText(/als vollständigen Satz formulieren/),
+    ).toBeInTheDocument();
+  });
+
   it('renders a warning badge when initialQuality contains unknown preset IDs', () => {
     render(
       <BoundariesSection
