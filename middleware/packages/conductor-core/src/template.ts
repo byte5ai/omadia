@@ -2,11 +2,11 @@
 // matching the package's character. A TemplateManifest is a complete WorkflowGraph
 // whose external references are replaced by `slot:<kind-singular>:<key>` placeholder
 // strings, plus a slot declaration; instantiation substitutes an operator-supplied
-// slot→entity mapping into the five ref fields and hands the result to the ordinary
+// slot→entity mapping into the six ref fields and hands the result to the ordinary
 // validate()/publish path.
 //
 // Substitution is a structural walk of designated fields — NEVER a string-replace
-// over serialized JSON. Ref placeholders live ONLY in the five ref fields. v2 adds
+// over serialized JSON. Ref placeholders live ONLY in the six ref fields. v2 adds
 // `slot:text:<key>` tokens inside the designated text fields (`step.prompt`,
 // `human.message` — see textSlots.ts), which remain explicitly DISJOINT from the
 // `{{ctx.path}}` run-context interpolation those fields also carry: text slots are
@@ -66,7 +66,7 @@ interface SlotField {
   set: (next: string) => void;
 }
 
-/** Enumerate the five ref fields that may carry placeholders. Structural — prompt and
+/** Enumerate the six ref fields that may carry placeholders. Structural — prompt and
  *  human.message are never visited. */
 function slotFields(graph: WorkflowGraph): SlotField[] {
   const fields: SlotField[] = [];
@@ -84,6 +84,10 @@ function slotFields(graph: WorkflowGraph): SlotField[] {
         fields.push({ nodeId: s.id, kind: 'roles', value: human.principal.ref, set: (next) => { human.principal.ref = next; } });
       }
       fields.push({ nodeId: s.id, kind: 'channels', value: human.channel, set: (next) => { human.channel = next; } });
+    }
+    const say = s.say;
+    if (say) {
+      fields.push({ nodeId: s.id, kind: 'channels', value: say.channel, set: (next) => { say.channel = next; } });
     }
   }
   for (const trigger of graph.triggers ?? []) {
@@ -156,7 +160,7 @@ export function templateManifestVersion(manifest: TemplateManifest): number {
 
 /**
  * Substitute the mapping into a deep clone of `manifest.graph` (the manifest is never
- * mutated) and return the resulting ordinary graph. Field-targeted: the five ref
+ * mutated) and return the resulting ordinary graph. Field-targeted: the six ref
  * fields, then `slot:text:<key>` tokens in the designated text fields (textSlots.ts).
  * Throws TypeError when a placeholder has no (non-empty) mapping value — for text
  * slots, no declared default either — or is malformed for its field; callers must
@@ -195,7 +199,7 @@ export function applyTemplateSlots(manifest: TemplateManifest, mapping: Template
  * 5. no malformed `slot:`-prefixed value in a ref field (wrong kind token / empty key);
  * 6. `version`, when present, is an integer ≥ 1 (absent = 1);
  * 7. strict mode (`{ strict: true }`, the distributed-manifest import gate for
- *    plugin/hub sources): any CONCRETE ref remaining in the five ref fields is an
+ *    plugin/hub sources): any CONCRETE ref remaining in the six ref fields is an
  *    error — distributed templates must declare every external ref as a slot
  *    (undeclared install-local refs are confusion/exfiltration vectors). Bundled
  *    and user-authored templates stay non-strict: pinning install-local refs
@@ -435,7 +439,7 @@ export interface InferTemplateOptions {
 
 /**
  * "Save as template": reverse the extractSlotRefs walk over a CONCRETE graph. Walks
- * the same five ref fields, collects each distinct concrete ref per kind, replaces
+ * the same six ref fields, collects each distinct concrete ref per kind, replaces
  * it with a `slot:<kind-singular>:<key>` placeholder (key slugified from the ref
  * value, de-duplicated with numeric suffixes) and declares one slot per distinct ref
  * with the ref value as its proposed label (authors edit labels in the UI). Refs

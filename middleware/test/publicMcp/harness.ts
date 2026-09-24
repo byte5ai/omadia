@@ -78,10 +78,14 @@ export function parseMcpJson(text: string): Record<string, unknown> {
   return JSON.parse(data.join('\n')) as Record<string, unknown>;
 }
 
-/** True when the sandbox refuses loopback listeners, so callers can self-skip. */
-export function isSandboxListenDenied(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'EPERM';
-}
+/**
+ * Re-exported so this harness's five consumers keep their import site, while
+ * the behaviour lives in ONE place (#1024). The local copy this replaces
+ * ignored `OMADIA_EXPECT_LOOPBACK`, so on a listener-denied runner
+ * `publicMcpPrivacy.e2e` and `publicMcpMaskingAssertion` passed green while
+ * asserting nothing about masking.
+ */
+export { isSandboxListenDenied } from '../_helpers/listenLoopback.js';
 
 export interface FakeKey {
   readonly token: string;

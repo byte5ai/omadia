@@ -36,6 +36,628 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
+
+2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
+readings as equivalent: concatenate the `text_delta` chunks, or read
+`done.answer`. Whenever Privacy Shield v4 renders the final answer server-side
+(`v4_render_answer`), the orchestrator swaps that text into the terminal `done`
+event after the model's own tokens have already streamed as `text_delta` — so
+the two readings disagreed, with no signal that the earlier deltas were void. A
+streaming client showed a success (or a plain-prose answer) the server had
+already thrown away.
+
+The `done` event (and `ChatTurnResult` / `SemanticAnswer` for the buffered
+path) now carries an optional `answerSource: 'model' | 'privacy-render'`. It is
+stamped `'privacy-render'` at both swap sites — streaming (`chatStream`) and
+buffered (`chatInContext`) — whenever `takeRenderedAnswerV4` returned a value,
+and omitted (meaning `'model'`) otherwise. `done.answer` is authoritative; a
+client that reconstructs the answer from deltas must overwrite it with
+`done.answer` whenever `answerSource` is present and not `'model'`. The
+`@omadia/channel-api` README no longer presents the two readings as
+interchangeable and states which one wins. No new event type was added; the
+field is additive and a client that ignores it and always renders `done.answer`
+is already correct.
+
+Also fixed the second defect the issue surfaced: a guarded tool that RETURNED a
+prose `Error:` string (the orchestrator's tool-error convention) was interned
+by Privacy Shield v4 as a one-row masked dataset, so the model never saw the
+error text and a later render materialized it as if it were data. The two
+dispatch seams (`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`)
+now pass a fulfilled `Error:` result through verbatim instead of interning it,
+so the model sees the failure and it can never become a renderable dataset.
+Thrown-exception masking (`maskErrorText`) is unchanged.
+
+### Fixed — public chat API validates its request contract strictly (#1109)
+
+2026-09-18 — two defects in `POST /api/public/v1/chat`
+(`packages/harness-channel-api/src/chatRouter.ts`) made the public contract
+unreliable. The request schema was a plain `z.object({ message, conversationId })`
+with no `.strict()`, so Zod silently stripped any other field: a caller sending
+`stream: false`, `userId`, `locale`, or a `conversationID` casing typo got a 200
+with the field discarded and no signal it was unsupported. And a valid JSON body
+sent with no `Content-Type` was never parsed by the global `express.json`, so it
+reached `safeParse` as `undefined` and answered `400 invalid_request` with
+"expected object, received undefined" — an error about the payload for what was
+really a missing header.
+
+The schema is now `.strict()`: unknown fields are rejected with `400
+invalid_request` and a top-level `message` naming the offending field(s), rather
+than stripped — which also keeps the door open to add a real `stream`/`locale`
+field later without breaking callers already sending it. And a request whose
+`Content-Type` is not `application/json` is rejected up front with `415
+unsupported_media_type` naming the required content type, before schema parsing.
+Both outcomes audit as `invalid_request`. Regression tests and the plugin README
+cover the new contract.
+
+### Fixed — routine card buttons keep working, and say when they run unscoped (#1029)
+
+2026-09-04 — follow-up to #1025, which scoped the routine smart-card handler
+from the per-turn context and refused when it was absent. That would have
+broken Pausieren, Aktivieren, Löschen and Jetzt auslösen for every user: the
+Teams adapter dispatches card clicks out-of-band, returning before the
+orchestrator turn, so the context is never captured on that path and every
+click would have answered "routines are unavailable in this session".
+
+`handleRoutineAction` now takes an optional `actor` from the channel, with
+documented precedence — explicit `actor`, then the turn context, then
+unscoped exactly as before #1025. The unscoped case is counted and logged at
+error level naming the action and routine id, because a hole you can see is
+better than silently scoping to nobody. Once the Teams adapter passes the
+tenant and `from.aadObjectId` it already holds on the activity, the fallback
+can be deleted.
+
+Two guards from #1024 and #1025 were also proving less than they claimed. The
+routine store's recording-pool assertions bound `tenant` and `user_id` but not
+`id`, so rewriting the scoped delete to drop the row predicate — deleting
+every routine that user owns — left the suite green; `id` is now bound too.
+And the sandbox-listen scan was name-and-literal shaped: a copy called
+anything, comparing `errno === -1`, using double quotes or `.includes`, or
+living in a `.js` file, passed it. Detection is behaviour-shaped now, with a
+test that proves each spelling is matched and that correct usage is not, plus
+a written note on what it still cannot see. Its directory scan also used
+`new URL(...).pathname`, which leaves percent-encoding intact — a checkout
+path needing decoding made the scan walk nothing and report zero offenders,
+failing open.
+
+### Fixed — knowing a routine id is no longer enough to pause, resume or delete it (#1025)
+
+2026-09-04 — `manage_routine` resolved the channel turn context for `create`
+and `list`, but `pause`, `resume` and `delete` passed a bare `id` to a runner
+whose store filtered on `WHERE id = $1` alone. Knowing an id was therefore
+enough to act on any tenant's routine. Ids are uuids and `list` is scoped, so
+an id had to leak rather than be enumerated, which is obscurity rather than
+authorization.
+
+All five actions now resolve the context and refuse without it, and the
+mutating ones carry the caller's `(tenant, userId)` into the SQL predicate, so
+another tenant's id reports not-found instead of acting — with the same error
+a genuinely absent id produces, so the failure is not an existence oracle. The
+scope is a required discriminated argument on the runner rather than an
+optional `owner?`: an optional scope is one a caller can forget, and forgetting
+it is exactly how this gap arose. Cross-tenant access is now a greppable
+`{ kind: 'operator' }` literal, used by the operators-only HTTP router.
+
+Two neighbours had the same gap and are fixed with it: the routine smart-card
+buttons are a second door onto the same mutations, and `triggerRoutineNow`
+delivers into the routine's own conversation, so an unscoped trigger let one
+principal push messages into another tenant's conversation. A related ordering
+bug also surfaced — `delete` unregistered the scheduler before deleting, so a
+cross-tenant id silently disarmed someone else's cron while the row survived,
+leaving a routine that looks active in `list` and never fires again.
+
+This also widens #1016's "absent context passes" rationale, which was
+documented as true for two of five actions and now holds for all five.
+
+### Fixed — a privacy and an auth suite can no longer delete themselves and report success (#1024)
+
+2026-09-04 — follow-up to #1017, which fixed one copy of this and revealed how
+far it had spread.
+
+Seven places in `middleware/test` had grown their own version of "the sandbox
+refused a loopback listener, so skip this test": three named
+`isSandboxListenDenied`, two named `isSandboxListenError`, two written inline.
+They did not agree. #1017 taught only the `cliBridge` copy to respect
+`OMADIA_EXPECT_LOOPBACK`, so on a runner where `bind(127.0.0.1:0)` returns
+`EPERM` the rest still swallowed the failure — including
+`publicMcpPrivacy.e2e`, `publicMcpMaskingAssertion` and
+`devEndpointsAuth.e2e`. A privacy-masking assertion and an auth e2e passing
+green while asserting nothing is the failure family `ci.yml` cites #640 and
+#752 for.
+
+All seven now call one helper in `test/_helpers/listenLoopback.ts`, next to the
+`listenLoopback` they already shared. It honours `OMADIA_EXPECT_LOOPBACK` (the
+CI signal from #1017) and `CI` (the signal the two `test/auth/**` suites had
+grown independently), so no site is weakened and a runner that sets either one
+gets the strict behaviour. `isDeniedListenError` exposes the error shape alone,
+for the two suites that raise a better diagnostic than a bare `EPERM`.
+
+The naming was the second half of the trap: same-named functions with different
+behaviour, while `.env.example` documents a flag that only one of them read.
+
+Guarded against regrowth by `test/sandboxListenGuard.test.ts`: unit cases for
+the helper's four outcomes, plus two greps over the whole test tree asserting
+that nothing else defines the predicate or compares an error code to `EPERM`
+inline. Proven by reverting one call site to its local copy — two assertions go
+red — rather than by observing a green run. The exemption list is two files and
+each is justified in place, because an exclusion list is where a guard goes
+blind. Two guards in this repo have already turned out to prove nothing.
+
+### Fixed — a stale turn context on the CLI path refuses instead of substituting a principal (#1016)
+
+2026-09-04 — closes the open half of #1016. The capture-timing bug was fixed
+earlier; the guard that cross-checks the restored context had no production
+caller, so it protected nothing.
+
+Channel adapters install the routine context with `AsyncLocalStorage.enterWith`,
+which has no scope exit. The value persists forward on the async chain, so a
+chain that begins a new turn without calling `captureRoutineTurn` again still
+carries the previous turn's `(tenant, userId)`. Before #993 the subscription-CLI
+path saw no context at all and `manage_routine` refused; once #993 restored the
+context across the process boundary, the same staleness meant acting **as the
+previous principal**.
+
+The guard now runs in production: the kernel publishes
+`createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+(`middleware/src/plugins/routines/turnOwnerGuard.ts`), the orchestrator plugin
+declares it under `optional_requires:` and resolves it with
+`ctx.services.getOptional`, and `buildOrchestratorForAgent` forwards it into
+`CliChatAgent`, whose loopback server calls it inside the restored context
+immediately before dispatch. It could not default inside the orchestrator
+package, because the store it reads lives in the application layer. Scope is the
+CLI runtime alone — the in-process path never crosses a process boundary, and
+among the shipped channels only the Teams adapter calls `captureRoutineTurn`, so
+it is the only one that installs a context this guard can find stale.
+
+**The manifest declaration is not paperwork.** `ctx.services.getOptional` is
+declaration-gated on the same terms as `get`: an undeclared name throws
+`ServiceNotDeclaredError`. The resolution sits near the top of `activate()`, so
+the first cut of this change — a `get` on a name no manifest declared — failed
+activation on every boot, which meant `chatAgent@1` was never published and every
+channel declaring `requires: ["chatAgent@^1"]` skipped activation. A guard meant
+to harden one dispatch took chat down instead. `optional_requires` is the right
+block because a host that publishes no such service must keep booting.
+
+It compares the restored context's `userId` against the turn's own; both are the
+same channel-native id written by the same adapter. A context the turn cannot
+vouch for, and a mismatch, both refuse. No context passes — narrower than it
+sounds: `manage_routine` refuses a missing context in `create` and `list` only,
+while `pause`, `resume` and `delete` never resolve context at all and pass a bare
+id to the runner, which does no tenant scoping. Passing here neither creates nor
+closes that hole (tracked separately); the reason to pass is that throwing would
+harden every context-free HTTP turn, and this guard's job is staleness, not
+authorization. The message the caller sees names neither principal, since it can
+reach the model; it carries a short correlation ref that also appears in the
+server log, so a report can be matched without naming anyone.
+
+Pinned by a wiring test that asserts the constructed agent carries the guard, not
+just that the guard function is correct: removing only the forward turns it red.
+The first round of this fix is the reason that distinction is now a test, and the
+declaration has its own drift guard tying the kernel constant, the package-side
+literal and the manifest entry together — three copies of one string in files
+that cannot import each other.
+
+### Fixed — a scaffolded plugin is correct in both locales (#1022)
+
+2026-09-04 — follow-up to #885. That change gave `identity.description` a
+locale map and fixed the 22 bundled manifests by hand, but left the generator
+feeding ONE input into both locales: every plugin the BuilderAgent scaffolded
+shipped its German text in the `en:` slot, which is the same defect four
+consecutive beta rounds had reported. Fixing the shipped manifests without
+fixing the generator left it one `create plugin` away.
+
+- `spec.description` is now explicitly the German store description, and
+  `spec.description_en` its English counterpart. The builder prompt asks for
+  both and states that the English one is neither optional nor a copy.
+- Both `template.yaml` files map each locale to its own field. The `en`
+  mapping is `description_en|description` — a new `|` fallback chain in
+  `resolveSource` (codegen) so a spec written before the field existed, or a
+  clone-from-installed of one, still generates instead of failing on an
+  unresolved placeholder.
+- The chain falls through on `undefined` only, never on `''`. An empty string
+  is a legitimate value: `spec.author` defaults to `''` (#225, no attribution)
+  and treating that as unresolved turned every author-less spec into a
+  `placeholder_residue` error. That regression was caught by the existing
+  codegen suite while this change was being built, and there is now a test
+  pinning it.
+- `lint_spec` warns (never blocks, since the fallback keeps the build green)
+  when `description_en` is missing or identical to the German text.
+- The `#885` boilerplate guard now also asserts the two locales resolve from
+  DIFFERENT sources, so mapping them back to one field turns tests red.
+- Both boilerplate `CLAUDE.md` tables dropped the "translate the `en:` line
+  afterwards" instruction, which is no longer true.
+
+### Fixed — both CLI spawn paths now carry the same gate (#1007, #1014, #1015, #1016, #1017)
+
+2026-09-03 — follow-ups from a post-merge security review of #1009. #991 closed
+the subscription-CLI process boundary on the chat path; the review found the
+gate was half-applied and unverified.
+
+- **#1007** — `platform/claudeCliAdapter.ts`, the second spawn site, ran with
+  the CLI's full default tool set, the operator's `settings.json` (including
+  `hooks`, which execute shell commands whenever a tool fires) and the
+  operator's MCP servers. Its prompts are assembled from end-user chat text and
+  uploaded documents, and the read-only built-ins never prompt for permission,
+  so injected text could read host files and return them inside a summary
+  omadia persists. The gate now lives in one module,
+  `harness-orchestrator/src/cliSpawnGate.ts`, and both sites build their argv
+  from it.
+- **#1014** — the deny list was hand-collected and missed 40 real tool names,
+  `Tmux` (a terminal) among them, plus every `self_hosted_runner_*`. It is now
+  a superset of the installed binary's own inventory and names all ten declared
+  aliases beside their canonical names, including `RunWorkflow` (alias of
+  `Workflow`, metadata declares `enablesCodeExecution`) and the MCP-resource
+  short forms, which a review caught still open. The drift guard mines the
+  binary and subtracts the deny list; its first version did the reverse and so
+  could not detect a deletion at all. Added `--restricted`, an empty `cwd` (the
+  CLI hardcodes `CLAUDE.md` discovery and only `--bare` skips it, but `--bare`
+  never reads OAuth), and an env **allowlist**, platform-branched for Windows,
+  replacing a scrub list that passed `NODE_OPTIONS` through.
+- **#1015** — the loopback MCP server dispatched any tool name it was sent, a
+  wider set than it advertises; it now refuses an unadvertised name. Teardown
+  killed the child *after* awaiting `server.stop()`, which waits for live
+  connections, so an abort path could hang a turn holding its semaphore permit;
+  the kill now comes first and `stop()` is bounded.
+- **#1016** — the turn's async context is captured at `chat()`/`chatStream()`
+  entry instead of inside the async generator's body, which runs at first
+  iteration and could belong to whoever iterated. Added an `assertTurnOwner`
+  hook so a stale `enterWith` chain fails closed instead of acting as the
+  previous principal. Wiring that hook to the app's routine context followed on
+  2026-09-04; see the entry at the top of `[Unreleased]`.
+- **#1017** — the gate is now verified behaviourally, not only by argv shape:
+  a live probe spawns the real binary with the production argv and asks it to
+  run a shell command. Measured on 2.1.259 — production gate: no tools;
+  pre-#991 argv: `Bash`. The deny-list test no longer checks the constant
+  against itself, and the loopback tests fail instead of silently skipping
+  where a sandbox blocks listeners (`OMADIA_EXPECT_LOOPBACK=1` in CI).
+
+### Fixed — a foreign tool call is now loud instead of invisible (#1008, #1017)
+
+2026-09-03 — post-merge review of #1009. The subscription-CLI agent marks a
+`tool_use` event `foreign` when the call did not go through omadia's loopback
+MCP server, i.e. when one of the CLI's own built-ins ran despite the OM-81
+spawn gate. The flag was written and never read: no log, no counter, and the
+matching `tool_result` was unmarked, so in the chat trace such a call looked
+exactly like an omadia tool call. The tripwire for "a built-in slipped
+through" was inert, which matters because the deny list behind it is still
+being widened.
+
+- The chat route now records every foreign call in `foreignToolMetrics`
+  (per tool name and per agent slug, same shape as `brokerMetrics`) and logs
+  it at error level. Unlike the broker's denial streaks this alerts on every
+  occurrence: the expected count is zero, so there is no benign steady state
+  to suppress.
+- The matching `tool_result` is stamped `foreign` too, correlated by
+  `tool_use` id, so the pair can no longer disagree.
+- The chat trace renders a foreign call with a translated label and a
+  `role="alert"` explanation saying omadia's permission rules did not apply.
+  The warning is carried by text, not by colour alone.
+- Receipts were left alone deliberately: `turnReceiptStore` is written by the
+  orchestrator at turn end, and the CLI path is a separate `ChatAgent` that
+  writes no receipt at all, so there is no per-turn record to stamp. Worth
+  revisiting if the CLI path ever gains one.
+
+### Fixed — the web-ui build no longer needs the Google Fonts CDN (#1019)
+
+2026-09-03 — a build-time font download took out a release. On `7a0d4675` the
+macOS x64 desktop build failed with `Turbopack build failed with 4 errors` and,
+four times, `next/font: error: Failed to fetch <family> from Google Fonts`. The
+cascade behaved exactly as the round-3 release fail-safe intends and is worth
+reading as a success: no x64 artifact, so `desktop-apps / mac-update-feed`
+failed with `FAIL: missing artifacts/omadia-installers-macos-latest/latest-mac.yml`,
+so `promote-release` failed, so the release stayed a draft and the previous
+version kept the `latest` flag. Nobody shipped a half-built release. But the
+release did not ship at all, and the cause was a font CDN being briefly
+unreachable from a CI runner.
+
+`next/font/google` self-hosts the faces it serves, which is why the running app
+never asked a CDN for a font. It downloads them at build time, though, so every
+build needed `fonts.googleapis.com`. The four faces now live in the repo at
+`web-ui/app/_fonts/` and load through `next/font/local`.
+
+- The vendored woff2 files are **byte-identical** to what `next/font/google`
+  downloaded before, verified by SHA-256 against the previous build's output, so
+  nothing about the rendered type changes. The weight ranges, `display: swap`,
+  the latin `unicode-range` and the preload split (Geist eager, prose/mono/
+  wordmark deferred) are carried over unchanged, and so are the CSS variable
+  names `_lib/theme.css` composes into `--font-sans` / `--font-serif` /
+  `--font-mono`.
+- 116 KB total for all four families, latin subset only, which is what
+  `layout.tsx` already asked for.
+- All four are SIL Open Font License 1.1; the license text ships next to each
+  file and `app/_fonts/LICENSES.md` records the provenance and update procedure.
+- Two guards so it cannot regress: an ESLint `no-restricted-imports` rule that
+  rejects `next/font/google` outright, and `app/_fonts/fonts.test.ts`, which
+  fails if the import returns, if a referenced woff2 is missing or is not really
+  a woff2, if a CSS variable is renamed, or if a license file is dropped.
+- Verified by building with all outbound HTTP forced through a dead proxy
+  (`HTTPS_PROXY=http://127.0.0.1:1`). The build succeeds, which is the whole
+  point.
+
+### Fixed — the plugin store speaks German (OM-50, #885)
+
+2026-09-03 — reported by Silvio Lange (TE Printline) in beta rounds 1, 2, 3 and
+again in round 4, and it was never the plumbing. `identity.description` has
+accepted a `{ en, de }` language map since #602, `adaptManifestV1` passes it
+along as `description_localized`, and both store render sites already resolve it
+with `pickLocalized`. What was missing was the content: not one of the 22
+bundled manifests declared a `de:` description, so a German business user
+choosing what to install read developer English.
+
+Worse, and previously unnoticed: eleven of those manifests held German text in
+the bare string, which the loader reads as **English**. An English-speaking
+operator was shown German, and the `en` slot had no English text at all to fall
+back to. The template in `docs/creating-plugins.md` was the source of that
+habit, since it literally read `description: "<Beschreibung DE>"`.
+
+All 22 bundled manifests now carry both languages, rewritten for a business
+reader rather than translated literally, following the project copy rules (no
+em dashes, no AI vocabulary, no capability names a customer has never heard of).
+`middleware/test/manifestDescriptionLocalized.test.ts` guards it: a new plugin
+without a German description fails the suite instead of the next beta report,
+and the test also pins the English resolution, the plain-string fallback and the
+German-only fallback.
+
+### Fixed — the desktop app has its own icon, and the tray icon is visible (#888)
+
+2026-09-03 — OM-53 / OM-63, reported in three consecutive beta rounds. "About
+omadia" showed Electron's default atom symbol and the menu-bar entry was
+guaranteed blank: `electron-builder.yml` named no `icon:` at all, and
+`tray.ts` fell back to `nativeImage.createEmpty()` because
+`assets/trayTemplate.png` had never existed. Neither silence failed a build.
+
+Since #1002 the tray was not only cosmetic. The readiness copy points a stuck
+user at Tray → Restart, which is unreachable when the tray has no artwork.
+
+- The app now ships `icon.icns` (macOS), `icon.ico` (Windows, 16 through 256),
+  a 1024px `icon.png` (Linux) and `trayTemplate.png` / `@2x` as real macOS
+  template images. All are generated from two committed SVGs by
+  `npm run icons`, so the artwork has a single source instead of six
+  hand-exported binaries that drift apart.
+- The icons are **derived from `logo-concepts/omadia-logo-concept.svg`**, not
+  designed: the mark's paths, radii and colours are copied verbatim. Replacing
+  `desktop/buildResources/icon.svg` and re-running `npm run icons` is the whole
+  swap, no code touched.
+- `electron-builder.yml` states each platform's icon explicitly. Convention
+  scanning falls back to Electron's own icon when a file is missing, which is
+  how this shipped three times; a named path fails the build instead.
+- `tray.ts` still falls back to an empty image rather than refusing to start,
+  but now logs a warning naming every path it tried.
+- Tests parse the PNG, ICNS and ICO headers directly (no `sips`, `iconutil` or
+  ImageMagick, none of which exist on a Linux runner) and assert that the
+  config names an icon per platform and that each named file exists.
+
+### Fixed — beta round 4 subscription hand-off (OM-73/76/77/79/80)
+
+2026-09-03 — Silvio Lange (TE Printline) round 4. The subscription path now
+carries a user from login to a working agent instead of stopping silently.
+
+- **OM-79** — after a successful `claude auth login`, the platform now points
+  every credential-less LLM plugin at the `claude-cli` provider automatically
+  (`autoAssignSubscriptionCli`, wired via a post-login hook in
+  `cliAuthService.setCliLoginAuthorizedHook`). Previously `llm_provider` stayed
+  on `anthropic`, the orchestrator asked the vault for a key it did not have,
+  and every operator surface answered 503 with no hint. A working API key is
+  never overridden. The assignment rules moved to `platform/providerAssignment.ts`
+  so the route and the hand-off share one implementation.
+- **OM-73** — `cliAuthService` now reads the login process's exit code. Claude
+  CLI v2.1.246+ finishes via a browser callback and exits 0 with no pasted code;
+  the old exit handler recorded that success as an error. `startCliLogin` reports
+  `codeEntry` so the UI shows the code field only for the older paste-code flow,
+  and a new `GET …/login/status` lets the UI poll the callback flow.
+- **OM-76 / OM-77** — `POST /api/chat` now returns `no_agents_active` (distinct
+  from `agent_unavailable`) when no orchestrator is active at all; the chat UI
+  shows a translated message linking to LLM access instead of a raw "HTTP 503"
+  and a "re-bind to default" that would 503 again.
+- **OM-80** — `LLM access` (`/admin/providers`) is now the first entry of the
+  ADMIN nav cluster.
+
+### Fixed — The subscription-CLI agent can no longer run shell commands on the user's machine
+
+2026-09-03 — Beta test round 4, OM-81 (#991). On the subscription path the
+agent loop runs inside the external `claude` CLI, and a tester asked the omadia
+chat to run `whoami && hostname`. The CLI did, with the user's OS rights, no
+confirmation, and none of omadia's gates (plugin grants, audience floor, privacy
+guard, `sandbox_execute_enabled`) involved. omadia had registered no shell tool;
+the call came from the CLI's own built-in `Bash`. `--allowedTools mcp__omadia__*`
+only pre-approves omadia's loopback tools, it never removed the built-ins.
+
+The spawn argv now closes the boundary four ways: `--tools ""` removes the
+CLI's built-in tool set (MCP tools stay), `--disallowedTools` carries a named,
+test-asserted deny list (`CLI_BUILTIN_TOOL_DENYLIST`) as a fallback for a CLI
+that ignores `--tools`, `--permission-mode dontAsk` denies anything not
+pre-approved instead of prompting a UI nobody sees, and `--setting-sources ""`
+keeps the operator's personal allow rules out of the session. Any tool call in
+the trace whose name is not `mcp__omadia__*` is marked `foreign`, so a CLI-native
+call can never read like an omadia call.
+
+### Fixed — On the subscription path the agent introduces itself as omadia, not as Claude Code
+
+2026-09-03 — OM-83 (#992). omadia's instructions were passed to the CLI with
+`--append-system-prompt`, so Claude Code's own prompt stayed the primary
+identity. The model told a user sitting in the omadia chat that it was "running
+in a CLI session in the middleware repo", advised them to "ask the same thing in
+an omadia chat", and offered to schedule the task in a different system. The
+prompt is now replaced via `--system-prompt`: the agent's persona comes first,
+followed by a fixed runtime note naming omadia and the only toolset the model
+actually has (the `mcp__omadia__*` MCP tools). A neutral default applies when no
+persona is configured, so the CLI's self-description never leaks through.
+
+### Fixed — omadia's own tools keep the user context when called through the loopback MCP server
+
+2026-09-03 — OM-82 (#993). Asked from the omadia chat to create a routine, the
+CLI-backed agent got `Error: cannot create routine outside a channel turn (no
+user context)` although the request came from a channel. On the subscription
+path a tool call reaches the middleware as an HTTP request from the external
+`claude` process, in a fresh async context, so every per-turn
+`AsyncLocalStorage` (`routineTurnContext`, `privacyHandle`, `toolIdempotency`,
+…) was undefined inside `dispatch()`. The loopback server now snapshots the
+async context it is constructed in (inside the turn) and runs every
+`tools/call` within it, so context-bound tools see the same tenant and user the
+in-process path sees. The `manage_routine` error for a genuinely missing
+context now reads as a runtime wiring fault instead of blaming the caller.
+
+### Fixed — dashboard and readiness banner read one runtime truth (#999, #1000, #1001, #1002, #1003)
+
+2026-09-03 — omadia beta test round 4 (TE Printline, OM-72/74/75/78/84). The
+dashboard said "LLM verbunden · 3 von 3 erledigt" while the readiness card two
+centimetres below said "LLM-Zugang fehlt". Both were right from their own
+viewpoint: the onboarding tick checked whether an access was *stored*, the card
+probed whether the orchestrator runtime *answered*. The tester had a working
+subscription login; the orchestrator was still assigned to `anthropic`, for
+which no key existed, so nothing ran — and the only text on screen told him to
+add the key or subscription he already had, and promised chat "sofort".
+
+**Onboarding step 1 follows the live runtime (#1001, OM-78).** Step 1 now ticks
+on the same probe the banner uses (`/operator/agents` answering instead of
+503ing), not on a stored key or CLI login. The counter can no longer reach
+"3 von 3" for a system that cannot run an agent. When an access exists but the
+runtime is down, the step names the missing orchestrator assignment and links
+straight to it instead of offering to connect an access again.
+
+**The CLI wording follows the assignment (#999, OM-74).** "Ein LLM-Anbieter ist
+verbunden und sein Schlüssel wurde geprüft" was shown to a subscription user who
+never stored a key. The done-copy now reads off what the orchestrator is
+actually assigned to: a keyless subscription CLI gets the CLI sentence, a
+key-based provider the key sentence.
+
+**The readiness banner names the cause (#1000, OM-75).** The operator-agents 503
+carries a new `cause` field — `no_llm_access` (no key, no OAuth, no CLI login
+anywhere), `no_assignment` (an access exists, the orchestrator points elsewhere)
+or `unknown` — computed from the same credential verdicts the providers page
+renders, without a network probe. The banner renders a distinct title, body and
+CTA for `no_assignment` ("Orchestrator nicht zugeordnet" → "Zuordnung öffnen")
+and for `unknown` ("Agent-Runtime antwortet nicht"), which by construction
+means access and assignment are set — e.g. a stored but rejected key — so the
+no-access sentence would be false there. A 503 without a cause (older
+middleware) keeps the no-access copy. The verdict is memoised for 8 s so a
+dashboard load with several probing widgets runs one credential lookup.
+
+**No more promises about a control that does not exist (#1002, OM-72).** The
+banner body no longer says chat is available "sofort" nor that routines need
+"einen Neustart der Middleware" — the web UI has no restart control, and the
+only one (Tray → Restart) sits behind an icon that is still missing (#888).
+
+**Embeddings are no longer silently off (#1003, OM-84).** A default install runs
+without an embedding provider, which disables process memory, semantic search
+and dedup; nothing in setup said so and the tester learned it from an agent
+failing mid-answer. New `GET /api/v1/admin/embedding-provider/status` answers
+from the registry alone (the existing `GET /` counts the corpus and is too
+heavy for a card rendered on every dashboard load). The dashboard gets a
+"Gedächtnis / Embeddings" health card linking to the embedding-provider setting,
+and the onboarding card names the limitation while no provider is published.
+
+API additions: `cause` on the `multi_orchestrator_unavailable` 503 of
+`/api/v1/operator/agents`; `GET /api/v1/admin/embedding-provider/status`
+(`capabilityPublished`, `activeProviderId`, `activeModel`, `installedProviderIds`).
+
+### Fixed — The desktop app no longer renames the user's Mac on every start
+
+2026-09-03 — Beta round 4, OM-70 (#1004). Since v0.142 the Mac of the tester
+had been counting up: `MacBook-Pro-von-Silvio-8.local`, then `-9`, then `-10`,
+one increment per omadia start, with macOS announcing each time that the local
+hostname was "already in use on this network". The culprit was our own LAN
+pairing advertiser (#293): `bonjour-service` publishes `_omadia._tcp` with the
+machine's own host name as SRV target and answers A queries for it, so macOS
+saw a second responder defending its `.local` name, treated it as a foreign
+device and yielded. In a company network that name carries file shares,
+printers, SSH targets, backups and MDM inventory.
+
+Two layers. The desktop supervisor now passes `OMADIA_UI_MDNS_ENABLED=false`
+to the kernel unless the user set the variable themselves; on a single-user
+machine there is nothing to discover. And the advertiser itself never claims
+the OS name any more: self-hosters advertise as `<instance>-<machine>.local`
+(capped at 63 octets, a valid DNS label) or an explicit `host`, so two
+responders on one device can no longer collide. The variable is documented in
+`middleware/.env.example`.
+
+### Fixed — Shell dialogs are attached to the window, and the recovery-key reminder waits for the page
+
+2026-09-03 — Beta round 4, OM-71 (#1005). Five of the seven native dialogs,
+among them all three about the vault recovery key, were shown without a parent
+window. On macOS that is an application-modal, free-floating dialog: the
+reminder on start was half covered by a system dialog and unreadable, and the
+one dialog that shows the key decrypting the local database could get lost
+behind other windows. Every dialog now goes through one helper that attaches
+it to the main window (a destroyed window falls back to the old behaviour
+rather than throwing over the key).
+
+The reminder also fired the moment `loadURL` resolved, over a page that still
+read "Lade Login…" — `loadURL` resolves on the document, not on a screen. The
+web UI now tells the shell when its first real screen is standing
+(`omadia:uiReady` via the preload bridge; `/login` and `/setup` report once
+their provider fetch has settled, every other page on hydration), and both the
+boot and the restart path wait for that ping before speaking. A 15-second
+fallback keeps the reminder for an older or crashed renderer: it exists to
+prevent silent data loss, so late beats never.
+
+### Fixed — MCP marketplace search now answers from the cached catalog when only the registry's search is broken
+
+2026-09-01 — Follow-up to the entry below, found by watching the deployed fix
+against the live registry. Failing fast was correct but not sufficient:
+`registry.modelcontextprotocol.io` serves `/v0/servers` in under a second (66
+servers) while `?search=` hangs to the full timeout. So browse worked, search
+showed an error card, and the operator still got no results — the reported
+symptom, just faster and better explained.
+
+`search()` now falls back to substring-filtering the browse page it already
+holds in cache whenever the server-side search fails at the transport level.
+That costs no network, and it is the difference between an error card and
+actual hits. When nothing is cached it still fails fast as before.
+
+Because a filter over one page is *not* the registry's ranking of its whole
+catalog, `search()` now returns a `scope` (`registry` | `cached-page`) that the
+route forwards and the UI renders as a `nur geladene Seite` badge beside the
+result count. Without it, "1 Treffer" would read as "the registry has one", and
+an operator would conclude a server is missing when it merely sits past the
+cached page. The `timeout` failure card also stopped claiming the host is
+"offline or blocked" — that is wrong when browsing works — and now points at
+clearing the search box to list the catalog instead.
+
+### Fixed — MCP marketplace search hung instead of failing, and told you nothing
+
+2026-09-01 — The Marketplace tab's search sat in "Katalog durchsuchen…"
+indefinitely and produced neither results nor an error. The trigger was
+external: `registry.modelcontextprotocol.io` — the registry seeded as `official`
+in migration `0010` — is black-holing packets (DNS resolves to 34.61.200.254,
+TCP times out). What made it read as a broken feature rather than a dead host
+was our own code spending **four** 15-second timeouts on it per search:
+`fetchCatalog` probed two candidate URLs, and when the server-side search threw,
+`search()` fell through to a local-filter fallback that re-ran the whole thing
+against the same dead host. Roughly 60 seconds of spinner, then a bare error
+string.
+
+Three changes in `middleware/src/services/mcpRegistryClient.ts`:
+
+- **Transport failures short-circuit.** `search()` rethrows a transport-level
+  error instead of retrying the same unreachable host through the local-filter
+  fallback. The distinction is load-bearing, so the classification was tightened
+  at the same time: only the `fetchImpl` call itself yields `transport_failed` /
+  `timeout`; status, body-read and `JSON.parse` failures stay on `http_error` /
+  `bad_catalog_shape` and still take the fallback — a registry answering 200
+  with HTML is answering, and may simply be ignoring the search param.
+- **The bare base-URL candidate is dropped for `kind = 'official'`.** Migration
+  `0013` assigns that kind to exactly `registry.modelcontextprotocol.io`, whose
+  base URL is a landing page, never a catalog. Operator-added registries default
+  to `generic` and keep the candidate.
+- **A 60-second negative cache.** Successes were cached, failures were not, so
+  each caller paid the full timeout. That was survivable while browsing sat
+  behind an explicit button; it is not now that the UI loads the catalog on its
+  own. `GET /mcp-registries/:id/catalog?refresh=1` drops both caches, so the
+  UI's Retry and Refresh still reach the host.
+
+The pane itself (`web-ui/app/admin/mcp/page.tsx`) was reworked in the same pass:
+the catalog loads on registry select instead of waiting for a button, search
+runs debounced as you type with in-flight requests aborted, registries are pills
+rather than a select, and failures render a typed card naming the registry and
+what to do about it. Results moved to a card grid with a result count and an
+explicit Refresh; registry removal moved out of the search row into a folded
+management panel behind a confirm dialog.
+
+**Note for operators:** this makes the outage legible and fast — it does not
+bring the official registry back. Use `smithery` (seeded, keyless to browse)
+until `registry.modelcontextprotocol.io` answers again.
+
 ### Fixed — omadia beta test round 3: the desktop shell (OM-50 to OM-69, #938)
 
 2026-08-28 — Silvio Lange (TE Printline GmbH) reached the application for the

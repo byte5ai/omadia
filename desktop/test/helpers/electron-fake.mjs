@@ -23,9 +23,19 @@ export const app = {
   },
   getName: () => 'omadia',
   getAppPath: () => root,
+  getLocale: () => locale,
   on: () => app,
   quit: () => {},
 };
+
+/**
+ * The shell resolves its language from `app.getLocale()` (OM-59, OM-91), so a
+ * test that asserts on dialog copy has to be able to move it.
+ */
+let locale = 'en-US';
+export function __setLocale(next) {
+  locale = next;
+}
 
 export const safeStorage = {
   isEncryptionAvailable: () => false,
@@ -46,7 +56,35 @@ function unavailable(name) {
   );
 }
 
-export const dialog = unavailable('dialog');
+/**
+ * `dialog` is opt-in: a test installs a handler with `__setDialogHandler`, and
+ * every `showMessageBox` call is forwarded to it with the exact arguments the
+ * production code passed (so a test can assert on the parent window, OM-71).
+ * Without a handler it throws like every other unstubbed surface.
+ */
+let dialogHandler = null;
+export function __setDialogHandler(handler) {
+  dialogHandler = handler;
+}
+export const dialog = {
+  showMessageBox: (...args) => {
+    if (dialogHandler === null) {
+      throw new Error('electron.dialog.showMessageBox is not stubbed; call __setDialogHandler first');
+    }
+    return dialogHandler(...args);
+  },
+};
+
+/** Records the last text written, so a "copy" button can be asserted on. */
+let clipboardText = null;
+export function __lastClipboardText() {
+  return clipboardText;
+}
+export const clipboard = {
+  writeText: (text) => {
+    clipboardText = text;
+  },
+};
 export const ipcMain = unavailable('ipcMain');
 export const Menu = unavailable('Menu');
 export const Tray = unavailable('Tray');
@@ -56,4 +94,15 @@ export const BrowserWindow = unavailable('BrowserWindow');
 export const contextBridge = unavailable('contextBridge');
 export const ipcRenderer = unavailable('ipcRenderer');
 
-export default { app, safeStorage, dialog, ipcMain, Menu, Tray, shell, nativeImage, BrowserWindow };
+export default {
+  app,
+  safeStorage,
+  dialog,
+  clipboard,
+  ipcMain,
+  Menu,
+  Tray,
+  shell,
+  nativeImage,
+  BrowserWindow,
+};

@@ -364,7 +364,7 @@ describe('office content-addressed cache (#645 AC#2)', () => {
 describe('office signed-url roundtrip', () => {
   function parse(url: string): { key: string; exp: number; sig: string } {
     const u = new URL(url);
-    const key = decodeURIComponent(u.pathname.replace(/^\/documents\//, ''));
+    const key = decodeURIComponent(u.pathname.replace(/^\/documents\/dl\//, ''));
     return {
       key,
       exp: Number(u.searchParams.get('exp')),

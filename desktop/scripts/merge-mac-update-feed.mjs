@@ -26,6 +26,8 @@
 // merge would break updates for every user at once.
 import fs from 'node:fs';
 
+import { isEntryPoint } from './isEntryPoint.mjs';
+
 const SCALARS = new Set(['version', 'path', 'sha512', 'releaseDate']);
 
 /** Strips one layer of YAML quoting. electron-builder quotes only releaseDate. */
@@ -147,7 +149,7 @@ export function mergeFeeds(primary, secondary) {
   return { scalars: { ...primary.scalars }, files };
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   const [primaryPath, secondaryPath, outPath] = process.argv.slice(2);
   if (!primaryPath || !secondaryPath || !outPath) {

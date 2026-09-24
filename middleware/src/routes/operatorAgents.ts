@@ -1,5 +1,6 @@
 import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
+import type { ModelPolicy } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -8,6 +9,16 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  AGENT_TO_AGENT_MODES,
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
+  parseAgentToAgentMode,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  validateModelPolicy,
+  type AgentToAgentMode,
+  type ModelPolicyValidationContext,
   type ChatSessionStore,
   type ConfigStore,
   type ContextMemoryMode,
@@ -31,10 +42,16 @@ import {
 } from '../services/teamsProvisioningJob.js';
 import {
   supportsChatInstall,
+  supportsChatUninstall,
   supportsTeamUninstall,
   type TeamsProvisionerAccessor,
+  type UninstallFromTeamOutcome,
 } from '../platform/teamsProvisionerService.js';
 import type { DelegatedTokenSet } from '../platform/teamsDelegatedSignIn.js';
+import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
+import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
+import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
   resetTeamsIdentity,
@@ -49,6 +66,7 @@ import {
 import {
   projectTeamsBotConfig,
   projectTeamsBotsConfigSyncStatus,
+  type TeamsBotsConfigSyncOutcome,
 } from '../services/teamsBotsConfigSync.js';
 import {
   AgentAvatarError,
@@ -175,6 +193,31 @@ void _contextMemoryModesPin;
 
 const ContextMemorySchema = z.object({
   mode: z.enum(CONTEXT_MEMORY_MODES),
+});
+
+// #1018 — the agent-to-agent switches. Same two-endpoint shape as
+// context-memory, for the same reason: a peer-talk switch must not ride along
+// on an unrelated rename.
+const AgentToAgentSchema = z.object({
+  mode: z.enum(AGENT_TO_AGENT_MODES),
+});
+const PeerChannelSchema = z.object({
+  enabled: z.boolean(),
+});
+/** `channel_key` values carry `:`/`@` (`19:…@thread.skype`) — path-segment safe
+ *  once URL-encoded, but bound it so a stray body cannot become a 64 KB key. */
+const PEER_CHANNEL_SEGMENT = z.string().trim().min(1).max(512);
+
+// #1033 — the model policy. Shape-checked here, semantically validated by
+// `validateModelPolicy` (catalogue, key, effort, fallback ≠ primary).
+const ModelRefSchema = z.object({
+  provider: z.string().trim().min(1).max(64),
+  model: z.string().trim().min(1).max(128),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
+});
+const ModelPolicySchema = z.object({
+  primary: z.union([z.literal('auto'), ModelRefSchema]),
+  fallback: z.union([z.literal('none'), z.literal('auto'), ModelRefSchema]),
 });
 
 const AgentPluginsSchema = z.object({
@@ -525,6 +568,18 @@ export interface OperatorTeamsIdentityDeps {
    * access to a log it does not own.
    */
   readonly eventWriter?: TeamsResetEventSink;
+  /**
+   * Remove this bot's `teams_bots` entry from the channel-teams plugin config
+   * — the teardown half of the automatic write the provisioning chain does
+   * (#910).
+   *
+   * Optional like every other capability here: a mount that never wired the
+   * automatic write has no entry the teardown put there, and the reset simply
+   * reports that step as skipped.
+   */
+  readonly unsyncBotConfig?: (
+    botSlug: string,
+  ) => Promise<TeamsBotsConfigSyncOutcome>;
 }
 
 /**
@@ -885,6 +940,17 @@ export interface TeamsAssignmentCapabilities {
   /** Install into a GROUP CHAT or 1:1 chat — requires a connector that
    *  publishes `installToChat` (M365 connector >= 0.7.0). */
   readonly chat_install: boolean;
+  /**
+   * Remove a CHAT install — requires `uninstallFromChat`, a different
+   * connector method from the one `uninstall` reports.
+   *
+   * SEPARATE FLAG, not a widening of `uninstall`, because the two directions
+   * arrived in different connector versions and a single boolean can only
+   * lie about one of them: reporting the team verdict for a chat row lights
+   * up a control that answers 501, and reporting the chat verdict for a team
+   * row greys out a removal that works.
+   */
+  readonly chat_uninstall: boolean;
   /** Why a `false` above is false, keyed by capability. */
   readonly unsupported_reason: Readonly<Record<string, string>>;
 }
@@ -904,6 +970,13 @@ export const TEAMS_UNINSTALL_UNSUPPORTED_REASON =
  *  a version skew an operator can fix, so the sentence names the version. */
 export const TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON =
   `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`;
+
+/** Reason text for the chat REMOVAL direction. Same version as the chat
+ *  install — `installToChat` and `uninstallFromChat` shipped together — but
+ *  its own sentence, because an operator reading it is looking at an install
+ *  they cannot remove, not one they cannot create. */
+export const TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON =
+  `the installed teamsProvisioner@1 publishes no uninstallFromChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then removing the app from a chat is a manual Teams step.`;
 
 /** Minimum connector that can tear a provisioning run down without making
  *  things worse — see `platform/teamsProvisionerCleanup.ts` on the purge. */
@@ -944,6 +1017,7 @@ export function teamsAssignmentCapabilities(
   canUninstall: boolean,
   canMultiTeam = false,
   canChatInstall = false,
+  canChatUninstall = false,
 ): TeamsAssignmentCapabilities {
   return {
     install: true,
@@ -951,12 +1025,16 @@ export function teamsAssignmentCapabilities(
     enumerate: false,
     multi_team: canMultiTeam,
     chat_install: canChatInstall,
+    chat_uninstall: canChatUninstall,
     unsupported_reason: {
       ...(canUninstall ? {} : { uninstall: TEAMS_UNINSTALL_UNSUPPORTED_REASON }),
       ...(canMultiTeam ? {} : { multi_team: MULTI_TEAM_UNSUPPORTED_REASON }),
       ...(canChatInstall
         ? {}
         : { chat_install: TEAMS_CHAT_INSTALL_UNSUPPORTED_REASON }),
+      ...(canChatUninstall
+        ? {}
+        : { chat_uninstall: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON }),
       ...STRUCTURAL_UNSUPPORTED_REASONS,
     },
   };
@@ -1248,6 +1326,55 @@ function startProvisioningRun(
     });
 }
 
+/**
+ * Carry the provisioned Teams name into the agent's own identity (#967).
+ *
+ * WHY HERE. This is the one moment an operator states what the bot is called.
+ * The name reaches the bot registration and the app package from the
+ * provisioning row; before this call it reached nothing else, so the agent
+ * kept speaking as the platform assistant — outwardly `Messias`, inwardly the
+ * platform's name. Seeding at the START of the chain rather than at its end
+ * means the very first package and the very first turn already agree, and a
+ * chain that fails at step two still leaves the operator's chosen name
+ * visible on the agent page.
+ *
+ * FROM THE STORED ROW, NOT THE REQUEST BODY. `ensureForAgent` is
+ * create-if-absent: a re-POST carrying a different `display_name` does NOT
+ * rename an existing Teams identity. Seeding from the body would therefore
+ * write a name the tenant does not use — re-creating the exact split this
+ * fixes, pointing the other way. The row's `displayName` is what the bot
+ * actually wears.
+ *
+ * NEVER FAILS THE REQUEST. Provisioning is the operator's actual intent; the
+ * name adoption is convergence on top of it. A failure is logged and the
+ * chain proceeds, in the same spirit as the `teams_bots` config sync.
+ */
+async function adoptProvisionedDisplayName(
+  identity: OperatorAgentIdentityDeps | undefined,
+  registry: OrchestratorRegistry,
+  agent: { readonly id: string; readonly slug: string },
+  displayName: string,
+): Promise<void> {
+  // No identity store wired (minimal mount, no DATABASE_URL): nothing to
+  // seed, and provisioning never depended on it.
+  if (!identity) return;
+  try {
+    const before = await identity.store.getByAgentId(agent.id);
+    const after = await identity.store.adoptDisplayName(agent.id, displayName);
+    // The store refuses an authored name, so an unchanged value means either
+    // "already named" or "already named exactly this" — neither is a change
+    // the running Agent needs to hear about. Only a real adoption reloads,
+    // because the name is part of this Agent's system prompt and a stored
+    // name nobody rebuilt for is a name the bot never says.
+    if ((before?.displayName ?? null) === (after?.displayName ?? null)) return;
+    await registry.reload();
+  } catch (err) {
+    console.warn(
+      `[operator-agents] could not adopt the provisioned Teams name for '${agent.slug}' into its identity: ${err instanceof Error ? err.message : String(err)} — provisioning continues; the operator can set the name on the agent's identity page`,
+    );
+  }
+}
+
 /** Derive a URL- and Azure-safe default bot slug from an agent slug.
  *  Bounds and charset follow channel-teams' BOT_SLUG_PATTERN (max 63); the
  *  dash-trim runs AFTER the length cut so a truncation can never leave a
@@ -1275,6 +1402,12 @@ export interface OperatorAgentIdentityStore {
   recompose(
     agentId: string,
     composed: AgentIdentityComposedPrompt,
+  ): Promise<AgentIdentityRecord | undefined>;
+  /** #967 — adopt the provisioned Teams name, ONLY when none is authored.
+   *  The refusal lives in the store's SQL; see `adoptDisplayName`. */
+  adoptDisplayName(
+    agentId: string,
+    displayName: string,
   ): Promise<AgentIdentityRecord | undefined>;
   setAvatar(
     agentId: string,
@@ -1401,9 +1534,51 @@ export function projectAgentIdentity(
  */
 function agentPersonaFamily(agent: {
   readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
 }): PersonaModelFamily {
+  // #1033 — an explicit primary in the model policy outranks model_routing.
+  const primary = agent.modelPolicy?.primary;
+  if (primary !== undefined && isModelRef(primary)) return inferFamilyFromModel(primary.model);
   const main = agent.modelRouting?.['main'];
   return inferFamilyFromModel(typeof main === 'string' ? main : '');
+}
+
+/**
+ * #1033 — EVERY family the agent may speak with: the primary's (see above)
+ * plus the fallback's when the policy names one. The persona is compiled for
+ * each, so a cross-family fallback never runs on a prompt whose deltas were
+ * computed against the other family. The primary's family comes first.
+ */
+function agentPersonaFamilies(agent: {
+  readonly modelRouting?: Record<string, unknown> | null;
+  readonly modelPolicy?: ModelPolicy;
+}): readonly PersonaModelFamily[] {
+  const primary = agentPersonaFamily(agent);
+  const fallback = agent.modelPolicy?.fallback;
+  if (fallback !== undefined && isModelRef(fallback)) {
+    const fam = inferFamilyFromModel(fallback.model);
+    if (fam !== primary) return [primary, fam];
+  }
+  return [primary];
+}
+
+/**
+ * Compile the identity prompt for every family in `families`; the FIRST
+ * family is the primary and becomes `text`/`family`, the map carries all.
+ */
+function composeForFamilies(
+  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
+  families: readonly PersonaModelFamily[],
+): { primary: ReturnType<typeof composeAgentIdentityPrompt>; family: PersonaModelFamily; byFamily: Record<string, string> } {
+  const byFamily: Record<string, string> = {};
+  let primary: ReturnType<typeof composeAgentIdentityPrompt> | undefined;
+  for (const family of families) {
+    const composed = composeAgentIdentityPrompt({ ...input, family });
+    if (!primary) primary = composed;
+    if (composed.text !== null) byFamily[family] = composed.text;
+  }
+  const first = families[0] ?? 'sonnet';
+  return { primary: primary ?? composeAgentIdentityPrompt({ ...input, family: first }), family: first, byFamily };
 }
 
 /**
@@ -1465,6 +1640,176 @@ export interface OperatorAgentsRouterOptions {
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
   readonly getAgentIdentity?: () => OperatorAgentIdentityDeps | undefined;
+  /**
+   * #1033 — what the model-policy write path validates against: the model
+   * catalogue and whether a provider is keyed, plus the orchestrator's active
+   * provider for the read-out. Late-bound like the others; the policy routes
+   * 503 while it returns undefined.
+   */
+  readonly getModelPolicyContext?: () =>
+    | (ModelPolicyValidationContext & { readonly activeProvider?: string })
+    | undefined;
+  /** OM-75 / OM-78 (#1000, #1001) — why the runtime is down. The readiness
+   *  banner probes `GET /` and reads `cause` off the 503 so it can name the
+   *  actual remedy (add access vs. assign the orchestrator). Optional: tests
+   *  and minimal mounts omit it and the 503 carries no `cause`. Must not
+   *  throw; a rejection degrades to `unknown`. */
+  readonly getReadinessCause?: () => Promise<RuntimeReadinessCause>;
+  /**
+   * #1018 — where this agent's bot can actually be heard (kernel table
+   * `teams_conversation_refs`, graph migration 0031). `GET /:slug/peer-channels`
+   * lists those chats as the ONLY candidates for enabling agent-to-agent talk:
+   * a chat the bot holds no reference to would be accepted and then never
+   * used, so it is not offered. Optional: without it the list carries no
+   * candidates (tests / minimal mounts, no DATABASE_URL).
+   */
+  readonly getPeerChatDirectory?: () => BotPresenceStore | undefined;
+  /**
+   * How a candidate chat gets a NAME instead of its id. Two sources, both
+   * owned by the channel plugin: the channel-key directory (group-chat topic
+   * via Graph, or the "A, B, +n" label the Teams plugin derives from the
+   * roster) and the live conversation roster (participant display names,
+   * backed by the persisted reference — so it answers right after a
+   * restart, when the in-memory directory is still empty). Optional: without
+   * either the picker shows the id.
+   */
+  readonly getChannelDirectory?: () => ChannelDirectoryRegistry | undefined;
+  readonly getConversationRosters?: () => ConversationRosterRegistry | undefined;
+}
+
+/** One chat the agent's own bot is present in — a candidate for enabling. */
+export interface PeerChatCandidate {
+  readonly channelType: string;
+  readonly channelKey: string;
+  /** What the operator knows the chat as: the topic, or the Teams-style
+   *  "A, B, +n" derived from its members. Null only when no source can name
+   *  it — the UI then shows the id. */
+  readonly label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  readonly kind: string | null;
+  /** Human participants' display names (capped), for the row detail. */
+  readonly members: readonly string[];
+  /** The OTHER agents whose bots are present — the possible discussion
+   *  partners. Bots without a live owning agent are not listed. */
+  readonly partners: readonly { slug: string; name: string }[];
+}
+
+/** `28:<app id>` — the Teams bot identity key; the app id is what the
+ *  reference table is keyed on. */
+const TEAMS_BOT_KEY = /^28:([0-9a-f-]+)$/i;
+
+/** Names shown per chat before the list collapses into "+n". Teams itself
+ *  names an untitled group chat after its first few members. */
+const CHAT_NAME_MEMBERS = 3;
+const CHAT_MEMBERS_CAP = 8;
+
+/** "Anna Meier, Ben Ott, +3" — the label Teams shows for an untitled group. */
+export function chatLabelFromMembers(members: readonly string[]): string | null {
+  const names = members.filter((m) => m.trim().length > 0);
+  if (names.length === 0) return null;
+  const head = names.slice(0, CHAT_NAME_MEMBERS).join(', ');
+  const rest = names.length - CHAT_NAME_MEMBERS;
+  return rest > 0 ? `${head}, +${rest}` : head;
+}
+
+interface ChatNameSources {
+  readonly directory?: ChannelDirectoryRegistry;
+  readonly rosters?: ConversationRosterRegistry;
+}
+
+/**
+ * Name one chat. Directory first — it carries the Graph topic and the
+ * plugin's own member-derived label, i.e. exactly what `/operator/channels`
+ * shows, so the two pages never disagree. The live roster is the fallback
+ * for the window after a restart in which the directory has not observed
+ * the chat yet: it reads the persisted reference and asks Teams for the
+ * members. Bots are dropped from the member list; they are the partners,
+ * listed separately.
+ */
+async function resolveChatName(
+  sources: ChatNameSources,
+  channelType: string,
+  conversationId: string,
+  directoryEntries: ReadonlyMap<string, { label: string; members?: readonly string[] }>,
+): Promise<{ label: string | null; members: readonly string[] }> {
+  const fromDirectory = directoryEntries.get(`${channelType}|${conversationId}`);
+  if (fromDirectory) {
+    return {
+      label: fromDirectory.label,
+      members: (fromDirectory.members ?? []).slice(0, CHAT_MEMBERS_CAP),
+    };
+  }
+  const roster = await sources.rosters?.getRoster(channelType, conversationId);
+  const members = (roster?.participants ?? [])
+    .filter((p) => !p.isBot)
+    .map((p) => p.userRef.displayName?.trim() ?? '')
+    .filter((n) => n.length > 0)
+    .slice(0, CHAT_MEMBERS_CAP);
+  return { label: chatLabelFromMembers(members), members };
+}
+
+/** The directory, read once per request and keyed like the candidates. */
+async function loadDirectoryEntries(
+  directory: ChannelDirectoryRegistry | undefined,
+): Promise<ReadonlyMap<string, { label: string; members?: readonly string[] }>> {
+  const out = new Map<string, { label: string; members?: readonly string[] }>();
+  if (!directory) return out;
+  for (const entry of await directory.listAll()) {
+    out.set(`${entry.channelType}|${entry.key}`, {
+      label: entry.label,
+      ...(entry.members !== undefined ? { members: entry.members } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * #1018 — the chats an operator may pick for agent-to-agent talk. Derived,
+ * never typed: the agent's own provisioned bots (channel identities) and the
+ * conversations each holds a reference in. A chat missing here is a chat the
+ * bot was never added to, and enabling it would change nothing — so the
+ * picker does not offer it. Personal (1:1) chats are skipped: a discussion
+ * needs a second bot, and a personal chat never has one.
+ */
+async function listPeerChatCandidates(
+  live: { store: ConfigStore; registry: OrchestratorRegistry },
+  agentId: string,
+  directory: BotPresenceStore | undefined,
+  names: ChatNameSources = {},
+): Promise<{ channelTypes: string[]; available: PeerChatCandidate[] }> {
+  const identities = (await live.store.listChannelIdentities()).filter((i) => i.agentId === agentId);
+  const channelTypes = Array.from(new Set(identities.map((i) => i.channelType))).sort();
+  if (!directory) return { channelTypes, available: [] };
+  const directoryEntries = await loadDirectoryEntries(names.directory);
+  const available: PeerChatCandidate[] = [];
+  const seen = new Set<string>();
+  for (const identity of identities) {
+    const appId = TEAMS_BOT_KEY.exec(identity.channelKey)?.[1]?.toLowerCase();
+    if (identity.channelType !== 'teams' || !appId) continue;
+    for (const conv of await directory.conversationsOf(appId)) {
+      if (conv.teamsType === 'personal' || seen.has(conv.conversationId)) continue;
+      seen.add(conv.conversationId);
+      const partners: { slug: string; name: string }[] = [];
+      for (const other of conv.botAppIds) {
+        if (other === appId) continue;
+        const owner = live.registry.identityForChannel(identity.channelType, `28:${other}`);
+        if (!owner || owner.agent.id === agentId || partners.some((p) => p.slug === owner.agent.slug)) continue;
+        partners.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug });
+      }
+      // The reference's own `conversation.name` is the cheapest source (a
+      // titled chat), then the plugin's directory / roster — see resolveChatName.
+      const named = await resolveChatName(names, identity.channelType, conv.conversationId, directoryEntries);
+      available.push({
+        channelType: identity.channelType,
+        channelKey: conv.conversationId,
+        label: conv.name ?? named.label,
+        kind: conv.teamsType,
+        members: named.members,
+        partners,
+      });
+    }
+  }
+  return { channelTypes, available };
 }
 
 export function createOperatorAgentsRouter(
@@ -1483,11 +1828,23 @@ export function createOperatorAgentsRouter(
   }
 
   function unavailable(res: Response): void {
-    res.status(503).json({
+    const body = {
       error: 'multi_orchestrator_unavailable',
       message:
         'orchestratorRegistry@1 is not published — DATABASE_URL must be set and the orchestrator plugin must be active.',
-    });
+    };
+    const readinessCause = options.getReadinessCause;
+    if (readinessCause === undefined) {
+      res.status(503).json(body);
+      return;
+    }
+    // The cause is a decoration on an error that is being sent regardless, so
+    // a failing lookup must never turn the 503 into a hung request or a 500.
+    void readinessCause()
+      .catch((): RuntimeReadinessCause => 'unknown')
+      .then((cause) => {
+        res.status(503).json({ ...body, cause });
+      });
   }
 
   function slugParam(req: Request, res: Response): string | undefined {
@@ -1602,6 +1959,9 @@ export function createOperatorAgentsRouter(
           active: active.has(a.id),
           memory_scope:
             live.registry.get(a.slug)?.memoryScope.slice() ?? [],
+          // #1033 W4 — what the dashboard card shows as "runs on".
+          effective_model: live.registry.get(a.slug)?.built?.effectiveModel ?? null,
+          model_policy: parseModelPolicy(a.modelPolicy ?? DEFAULT_MODEL_POLICY),
           plugins: (pluginsByAgent.get(a.id) ?? []).map((p) => ({
             id: p.pluginId,
             config: p.config,
@@ -1782,6 +2142,289 @@ export function createOperatorAgentsRouter(
     }
   });
 
+  // ── agent-to-agent switches (#1018) ──────────────────────────────────
+  // Two halves, AND-combined by the relay: the agent's own switch
+  // (`agents.agent_to_agent`) and one row per chat it may converse in
+  // (`agent_channel_policies`). Both deny-default. The relay re-reads them
+  // per utterance, so a flip here stops a running discussion at its next turn.
+  router.get('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const mode: AgentToAgentMode = parseAgentToAgentMode(agent.agentToAgent);
+      res.json({ slug: agent.slug, mode, modes: AGENT_TO_AGENT_MODES });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/agent-to-agent', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const body = AgentToAgentSchema.parse(req.body);
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const previous = parseAgentToAgentMode(agent.agentToAgent);
+      await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
+      await live.registry.reload();
+      if (previous !== body.mode) {
+        // Whether an agent may talk to peers is a reach decision an incident
+        // review wants to find — same audit prefix as context_memory.
+        console.warn(
+          `[security-audit] agent_to_agent ${previous} -> ${body.mode} for agent ${agent.slug}`,
+        );
+      }
+      res.json({ ok: true, mode: body.mode });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  // ── model policy (#1033) ─────────────────────────────────────────────
+  // Read + write as a pair like context-memory: which model answers under
+  // an agent's name is a cost / data-residency / quality decision that must
+  // not ride along on a rename.
+  router.get('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const policy = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const ctx = options.getModelPolicyContext?.();
+      const built = live.registry.get(agent.slug)?.built;
+      const resolved = resolveModelPolicyRuntime(policy, ctx?.activeProvider);
+      res.json({
+        slug: agent.slug,
+        policy,
+        // What `auto` currently resolves to, so the UI can say "Auto (Opus 4.8)".
+        effectiveModel: built?.effectiveModel ?? null,
+        activeProvider: ctx?.activeProvider ?? null,
+        // An explicit primary on another provider is honoured for its effort
+        // only until the multi-provider turn loop lands — the UI must say so.
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+        vision: {
+          ...(isModelRef(policy.primary)
+            ? { primary: ctx?.resolveModel(policy.primary.provider, policy.primary.model)?.vision ?? null }
+            : {}),
+          ...(isModelRef(policy.fallback)
+            ? { fallback: ctx?.resolveModel(policy.fallback.provider, policy.fallback.model)?.vision ?? null }
+            : {}),
+        },
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put('/:slug/model-policy', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    const ctx = options.getModelPolicyContext?.();
+    if (!ctx) {
+      res.status(503).json({
+        error: 'model_policy_unavailable',
+        message: 'the model catalogue is not available — the policy cannot be validated',
+      });
+      return;
+    }
+    try {
+      const raw = ModelPolicySchema.parse(req.body);
+      const policy = {
+        primary: raw.primary === 'auto' ? ('auto' as const) : parseModelRef(raw.primary)!,
+        fallback:
+          raw.fallback === 'none' || raw.fallback === 'auto'
+            ? raw.fallback
+            : parseModelRef(raw.fallback)!,
+      };
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const vision = await validateModelPolicy(policy, ctx);
+      const previous = parseModelPolicy(agent.modelPolicy ?? DEFAULT_MODEL_POLICY);
+      const updated = await live.store.updateAgent(agent.id, { modelPolicy: policy });
+      // The families the agent may speak with may have changed: recompile the
+      // persona for each of them so a fallback never runs on the wrong prompt.
+      // Deliberately does not bump the identity revision (nothing authored
+      // changed); absent identity store / row = nothing to recompose.
+      const identityDeps = options.getAgentIdentity?.();
+      if (identityDeps) {
+        const identity = await identityDeps.store.getByAgentId(agent.id);
+        if (identity) {
+          const compiled = composeForFamilies(
+            {
+              instructions: identity.instructions,
+              persona: identity.persona,
+              quality: identity.quality,
+            },
+            agentPersonaFamilies(updated),
+          );
+          await identityDeps.store.recompose(agent.id, {
+            text: compiled.primary.text,
+            family: compiled.family,
+            byFamily: compiled.byFamily,
+          });
+        }
+      }
+      await live.registry.reload();
+      if (JSON.stringify(previous) !== JSON.stringify(policy)) {
+        console.warn(
+          `[security-audit] model_policy ${JSON.stringify(previous)} -> ${JSON.stringify(policy)} for agent ${agent.slug}`,
+        );
+      }
+      const resolved = resolveModelPolicyRuntime(policy, ctx.activeProvider);
+      res.json({
+        ok: true,
+        policy,
+        vision: {
+          ...(vision.primaryVision !== undefined ? { primary: vision.primaryVision } : {}),
+          ...(vision.fallbackVision !== undefined ? { fallback: vision.fallbackVision } : {}),
+        },
+        ...(resolved.deferredProvider ? { deferredProvider: resolved.deferredProvider } : {}),
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.get('/:slug/peer-channels', async (req: Request, res: Response) => {
+    const live = svc();
+    if (!live) return unavailable(res);
+    try {
+      const slug = slugParam(req, res);
+      if (!slug) return;
+      const agent = await live.store.getAgentBySlug(slug);
+      if (!agent) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const [policies, candidates] = await Promise.all([
+        live.store.listAgentChannelPolicies(agent.id),
+        listPeerChatCandidates(live, agent.id, options.getPeerChatDirectory?.(), {
+          directory: options.getChannelDirectory?.(),
+          rosters: options.getConversationRosters?.(),
+        }),
+      ]);
+      res.json({
+        slug: agent.slug,
+        mode: parseAgentToAgentMode(agent.agentToAgent),
+        channels: policies.map((p) => ({
+          channelType: p.channelType,
+          channelKey: p.channelKey,
+          enabled: p.agentToAgent,
+          updatedAt: p.updatedAt.toISOString(),
+        })),
+        // Channel kinds this agent owns a bot on — the picker's first select.
+        // Empty means "no provisioned bot": nothing can be enabled yet.
+        channel_types: candidates.channelTypes,
+        // The chats that bot is actually in — the picker's second select.
+        available: candidates.available,
+      });
+    } catch (err) {
+      badRequest(res, err);
+    }
+  });
+
+  router.put(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const body = PeerChannelSchema.parse(req.body);
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const previous = await live.store.getAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        const row = await live.store.upsertAgentChannelPolicy({
+          channelType,
+          channelKey,
+          agentId: agent.id,
+          agentToAgent: body.enabled,
+        });
+        if ((previous?.agentToAgent ?? false) !== body.enabled) {
+          console.warn(
+            `[security-audit] agent_channel_policy ${channelType}/${channelKey} ${previous?.agentToAgent ?? 'unset'} -> ${body.enabled} for agent ${agent.slug}`,
+          );
+        }
+        res.json({
+          ok: true,
+          channelType: row.channelType,
+          channelKey: row.channelKey,
+          enabled: row.agentToAgent,
+        });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
+
+  router.delete(
+    '/:slug/peer-channels/:channelType/:channelKey',
+    async (req: Request, res: Response) => {
+      const live = svc();
+      if (!live) return unavailable(res);
+      try {
+        const channelType = PEER_CHANNEL_SEGMENT.parse(req.params['channelType']);
+        const channelKey = PEER_CHANNEL_SEGMENT.parse(req.params['channelKey']);
+        const slug = slugParam(req, res);
+        if (!slug) return;
+        const agent = await live.store.getAgentBySlug(slug);
+        if (!agent) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        const removed = await live.store.deleteAgentChannelPolicy(
+          channelType,
+          channelKey,
+          agent.id,
+        );
+        if (!removed) {
+          res.status(404).json({ error: 'not_found' });
+          return;
+        }
+        console.warn(
+          `[security-audit] agent_channel_policy ${channelType}/${channelKey} removed for agent ${agent.slug}`,
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        badRequest(res, err);
+      }
+    },
+  );
+
   // ── agent identity (#914) ───────────────────────────────────────────
   //
   // What a DEPLOYED agent is called, says about itself and looks like. Its
@@ -1836,13 +2479,13 @@ export function createOperatorAgentsRouter(
       // comes from the agent's own model routing — persona axes are deltas
       // against it, so composing against the wrong one would emit the wrong
       // traits.
-      const family = agentPersonaFamily(agent);
-      const composed = composeAgentIdentityPrompt({
-        instructions: body.instructions ?? null,
-        persona,
-        quality,
-        family,
-      });
+      // #1033 — one compile per family the policy names (primary first).
+      const compiled = composeForFamilies(
+        { instructions: body.instructions ?? null, persona, quality },
+        agentPersonaFamilies(agent),
+      );
+      const family = compiled.family;
+      const composed = compiled.primary;
       const identity = await deps.store.save(agent.id, {
         displayName: body.display_name ?? null,
         shortDescription: body.short_description ?? null,
@@ -1851,7 +2494,7 @@ export function createOperatorAgentsRouter(
         accentColor: body.accent_color ?? null,
         persona,
         quality,
-        composed: { text: composed.text, family },
+        composed: { text: composed.text, family, byFamily: compiled.byFamily },
       });
       // `instructions` is the opening section of this agent's system prompt,
       // so a saved edit that never reaches the running registry would be a
@@ -1859,9 +2502,32 @@ export function createOperatorAgentsRouter(
       // contract as every other write on this router; the diff decides whether
       // an Orchestrator is actually rebuilt.
       // Normalised on both sides: a first save has no `before` at all, and
-      // `undefined !== null` would rebuild every Agent whose operator merely
-      // typed a display name — dropping live sessions for a label change.
-      if ((before?.composed.text ?? null) !== (composed.text ?? null)) {
+      // `undefined !== null` would rebuild every Agent over a value that did
+      // not actually move.
+      //
+      // #967 — the display name is on this list now. It used to be excluded
+      // as "a label change, not worth dropping sessions", which was true
+      // while the name only reached the Teams manifest. It reaches the system
+      // prompt as well now (`AgentRow.identityName`), so leaving it out would
+      // store a rename the agent never speaks — the same silent no-op this
+      // reload exists to prevent for `instructions`.
+      const nameChanged =
+        (before?.displayName ?? '').trim() !== (body.display_name ?? '').trim();
+      // #967 follow-up — and the Steckbrief for exactly the same reason the
+      // name joined this list: both descriptions are part of the system prompt
+      // now (`AgentRow.identityShortDescription` / `…Long…`), so an edit that
+      // does not reload is an edit the agent never speaks. They used to be
+      // manifest-only, which is why they were not here before.
+      const descriptionChanged =
+        (before?.shortDescription ?? '').trim() !==
+          (body.short_description ?? '').trim() ||
+        (before?.longDescription ?? '').trim() !==
+          (body.long_description ?? '').trim();
+      if (
+        (before?.composed.text ?? null) !== (composed.text ?? null) ||
+        nameChanged ||
+        descriptionChanged
+      ) {
         await live.registry.reload();
       }
       // A save whose CONTENT did not change returns the stored row
@@ -1876,6 +2542,7 @@ export function createOperatorAgentsRouter(
           : ((await deps.store.recompose(agent.id, {
               text: composed.text,
               family,
+              byFamily: compiled.byFamily,
             })) ?? identity);
       const republish = await republishTeamsPackage(
         options.getTeamsIdentity?.(),
@@ -2267,6 +2934,14 @@ export function createOperatorAgentsRouter(
         }
         throw err;
       }
+      // #967 — before the run, so the first package and the first turn are
+      // built from an identity that already carries the operator's name.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        existing,
+        row.displayName,
+      );
       startProvisioningRun(deps, existing, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
@@ -2400,6 +3075,19 @@ export function createOperatorAgentsRouter(
     return (
       typeof deps.store.clearTeamInstall === 'function' &&
       supportsTeamUninstall(deps.getProvisioner?.())
+    );
+  }
+
+  /**
+   * The same question for a CHAT install, against the other connector method.
+   *
+   * The store half is identical — a removal that cannot be recorded is not a
+   * removal — so only the provisioner half differs.
+   */
+  function canUninstallChats(deps: OperatorTeamsIdentityDeps): boolean {
+    return (
+      typeof deps.store.clearTeamInstall === 'function' &&
+      supportsChatUninstall(deps.getProvisioner?.())
     );
   }
 
@@ -2755,6 +3443,9 @@ export function createOperatorAgentsRouter(
                 ? { delegatedTokens: deps.delegatedTokens }
                 : {}),
               ...(deps.eventWriter ? { events: deps.eventWriter } : {}),
+              ...(deps.unsyncBotConfig
+                ? { unsyncBotConfig: deps.unsyncBotConfig }
+                : {}),
             },
             agent.id,
             scope,
@@ -2828,6 +3519,7 @@ export function createOperatorAgentsRouter(
           canUninstallTeams(deps),
           deps.installs !== undefined,
           supportsChatInstall(deps.getProvisioner?.()),
+          canUninstallChats(deps),
         ),
         // Same choke point as GET /:slug/teams-identity — one byte-identical
         // channel-teams `teams_bots[]` entry across every team route.
@@ -2907,6 +3599,17 @@ export function createOperatorAgentsRouter(
         teamId: target.id,
         targetKind: target.kind,
       });
+      // #967 — same adoption as the provisioning POST, and for the agents
+      // that need it most: an identity provisioned BEFORE this existed has no
+      // name of its own, and installing it into a(nother) team is the next
+      // operator action that passes through here. Idempotent and guarded, so
+      // running it on an already-named identity costs one refused UPDATE.
+      await adoptProvisionedDisplayName(
+        options.getAgentIdentity?.(),
+        live.registry,
+        agent,
+        updated.displayName,
+      );
       startProvisioningRun(deps, agent, target.id, { targetKind: target.kind });
       res.status(202).json({
         ok: true,
@@ -2961,7 +3664,17 @@ export function createOperatorAgentsRouter(
       }
       const provisioner = deps.getProvisioner?.();
       const clearTeamInstall = deps.store.clearTeamInstall;
-      if (!supportsTeamUninstall(provisioner) || typeof clearTeamInstall !== 'function') {
+      const canTeam = supportsTeamUninstall(provisioner);
+      // The chat direction is a DIFFERENT connector method, and until now this
+      // route ignored it: a chat install was torn down by handing its
+      // `19:…@thread.v2` conversation id to `uninstallFromTeam`, which
+      // addresses `/teams/{id}/installedApps`. Graph answers that with a 400
+      // and the operator is left with an install no button can remove.
+      const canChat = supportsChatUninstall(provisioner);
+      // Neither direction available (or nowhere to record the removal) is the
+      // historical 501, unchanged — a connector that predates BOTH methods
+      // gets exactly the answer and the reason it got before.
+      if ((!canTeam && !canChat) || typeof clearTeamInstall !== 'function') {
         res.status(501).json({
           error: 'teams_uninstall_unsupported',
           message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
@@ -3032,23 +3745,57 @@ export function createOperatorAgentsRouter(
         return;
       }
 
-      const uninstall = provisioner?.uninstallFromTeam;
-      if (uninstall === undefined) {
-        // Unreachable after supportsTeamUninstall; narrows for the compiler
-        // without a non-null assertion.
-        res.status(501).json({
-          error: 'teams_uninstall_unsupported',
-          message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
-          min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
-          agent: agent.slug,
-          team_id: teamId,
+      // WHAT THIS INSTALL ACTUALLY IS, from what was recorded when it was
+      // made — the binding first, the identity row as the pre-0051 fallback,
+      // `'team'` last for a row written before migration 0054 knew about
+      // kinds. Never re-derived from the id: `resolveInstallTarget` reads
+      // strings a human typed, and this id was not typed by a human, it was
+      // stored by the run that installed it.
+      const installedKind: TeamsTargetKind =
+        binding?.targetKind ?? row.targetKind ?? 'team';
+      const removingChat = isChatTarget(installedKind);
+
+      // Both branches answer the same `{ outcome }` shape, so everything
+      // below this point — the binding drop, the state walk-back, the
+      // response — stays one code path for both kinds. The per-kind guards
+      // live inside the branches so the compiler narrows the method itself
+      // rather than trusting the boolean that was computed above.
+      let result: { readonly outcome: UninstallFromTeamOutcome };
+      if (removingChat) {
+        const uninstall = provisioner?.uninstallFromChat;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_chat_uninstall_unsupported',
+            message: TEAMS_CHAT_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          chatId: installedTeamId,
+          teamsAppId: installedAppId,
         });
-        return;
+      } else {
+        const uninstall = provisioner?.uninstallFromTeam;
+        if (uninstall === undefined) {
+          res.status(501).json({
+            error: 'teams_uninstall_unsupported',
+            message: TEAMS_UNINSTALL_UNSUPPORTED_REASON,
+            min_connector_version: TEAMS_UNINSTALL_MIN_CONNECTOR_VERSION,
+            agent: agent.slug,
+            team_id: teamId,
+            target_kind: installedKind,
+          });
+          return;
+        }
+        result = await uninstall.call(provisioner, {
+          teamId: installedTeamId,
+          teamsAppId: installedAppId,
+        });
       }
-      const result = await uninstall.call(provisioner, {
-        teamId: installedTeamId,
-        teamsAppId: installedAppId,
-      });
 
       // Drop THIS binding. The identity is only walked back to
       // `catalog_uploaded` when nothing is left bound: an agent still
@@ -3070,6 +3817,9 @@ export function createOperatorAgentsRouter(
         ok: true,
         agent: agent.slug,
         team_id: installedTeamId,
+        /** Which direction actually ran — a team removal and a chat removal
+         *  are different Graph calls and the response should not blur them. */
+        target_kind: installedKind,
         // 'already-absent' is the connector's idempotent success: the app was
         // not in the team. The binding is dropped either way — that is the
         // point of an idempotent remove.
@@ -3340,13 +4090,23 @@ export function createOperatorAgentsRouter(
         return;
       }
       const settings = await live.store.getPlatformSettings();
-      const via =
-        match.agent.id === settings.fallbackAgentId &&
-        !match.bindings.some(
-          (b) =>
-            b.channelType === body.channel_type &&
-            b.channelKey === body.channel_key,
-        )
+      // Order mirrors the resolver: a provisioned identity is checked first,
+      // so reporting it first is what keeps this tester an honest preview.
+      // Without this branch a provisioned bot whose agent also happens to be
+      // the platform fallback would be reported as "fallback" — the exact
+      // wrong explanation for the exact case operators come here to check.
+      const identity = live.registry.identityForChannel(
+        body.channel_type,
+        body.channel_key,
+      );
+      const via = identity
+        ? 'identity'
+        : match.agent.id === settings.fallbackAgentId &&
+            !match.bindings.some(
+              (b) =>
+                b.channelType === body.channel_type &&
+                b.channelKey === body.channel_key,
+            )
           ? 'fallback'
           : 'binding';
       res.json({

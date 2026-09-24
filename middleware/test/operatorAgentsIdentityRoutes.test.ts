@@ -164,6 +164,23 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
     return Promise.resolve(next);
   }
 
+  /** #967 — mirrors the store's SQL guard: an authored name is never
+   *  overwritten. Not exercised by these routes, but the port requires it. */
+  adoptDisplayName(
+    agentId: string,
+    displayName: string,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const existing = this.rows.get(agentId);
+    if (existing && (existing.displayName ?? '').trim().length > 0) {
+      return Promise.resolve(existing);
+    }
+    const name = displayName.trim();
+    if (name.length === 0) return Promise.resolve(existing);
+    const next = { ...(existing as AgentIdentityRecord), displayName: name };
+    this.rows.set(agentId, next);
+    return Promise.resolve(next);
+  }
+
   recompose(
     agentId: string,
     composed: AgentIdentityComposedPrompt,
@@ -630,15 +647,35 @@ describe('operator agent identity routes (#914)', () => {
     assert.equal(reloads, 1);
   });
 
-  it('does not reload when only the nameplate changed', async () => {
+  it('reloads the registry when the name changed (#967)', async () => {
     reloads = 0;
     await fetch(`${baseUrl}/sales/identity`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ display_name: 'Vertrieb' }),
     });
-    // A name is not a prompt — rebuilding every Agent for it would drop live
-    // sessions for a label change.
+    // This case used to assert the OPPOSITE, on the premise that "a name is
+    // not a prompt" — true while the display name only reached the Teams
+    // manifest. #967 gives it a path into the system prompt (it is the name
+    // the bot introduces itself with), so a rename that never reaches the
+    // registry is a rename the operator sees saved and never hears spoken.
+    // A rename is rare and deliberate; rolling sessions for it is the point.
+    assert.equal(reloads, 1);
+  });
+
+  it('does not reload when nothing about the identity changed', async () => {
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Vertrieb' }),
+    });
+    reloads = 0;
+    // The same values again: no prompt change, no name change, no rebuild.
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Vertrieb' }),
+    });
     assert.equal(reloads, 0);
   });
 

@@ -36,11 +36,22 @@ export class LlmProviderCatalog {
   >();
 
   /** Register (or idempotently replace) a provider and its models. Throws if the
-   *  models violate a registry invariant (collision with core/other ids etc.). */
+   *  models violate a registry invariant (collision with core/other ids etc.).
+   *  Transactional on replace: when the NEW set is rejected, the previous set
+   *  is put back so a bad discovery run can never leave a provider modelless. */
   register(desc: LlmProviderDescriptor): void {
     const existing = this.entries.get(desc.id);
     if (existing !== undefined) existing.disposeModels();
-    const disposeModels = registerExternalModels(desc.models);
+    let disposeModels: () => void;
+    try {
+      disposeModels = registerExternalModels(desc.models);
+    } catch (err) {
+      if (existing !== undefined) {
+        const restored = registerExternalModels(existing.desc.models);
+        this.entries.set(desc.id, { desc: existing.desc, disposeModels: restored });
+      }
+      throw err;
+    }
     this.entries.set(desc.id, { desc, disposeModels });
   }
 

@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.orchestrator"
-  description: "Core chat orchestrator: the Orchestrator class itself (agentic tool-loop against Anthropic Claude), the seven native tools (memory, query_knowledge_graph, chat_participants, ask_user_choice, suggest_follow_ups, find_free_slots, book_meeting), the chat-API HTTP route and the VerifierService wrapper that binds verifier@1 to the live Orchestrator + toSemanticAnswer converter. Erstmaliger Konsument der TurnHookRegistry: ContextRetriever wandert zu onBeforeTurn, FactExtractor zu onAfterTurn (fire-and-forget). Konsumiert die plugin-owned Capabilities `knowledgeGraph` (hard requires; query_knowledge_graph + KG-Lookups), `memoryStore` (memory tool), `embeddingClient` (semantic search), `entityRefBus` (turn-scoped entity tracking), `contextRetriever` + `factExtractor` + `topicDetector` (orchestrator-extras hooks), `verifier` (Bundle: pipeline + store + mode + maxRetries) sowie optional `microsoft365.graph` (find_free_slots + book_meeting via delegated OBO-exchange). Published `chatAgent@1` als Bundle-Capability `{ agent: ChatAgent, raw: Orchestrator }` — Channel-Plugins (Teams, Telegram, HTTP) konsumieren `agent.chat()` / `agent.chatStream()` für ihre Connector-Loops."
+  description:
+    en: "Runs the chat itself. It decides which tools an agent uses in each turn, brings memory and the knowledge graph into the answer, and has the result checked before it goes out. Every channel, from Teams to the web interface, talks to this plugin."
+    de: "Führt den Chat aus. Es entscheidet in jedem Zug, welche Werkzeuge ein Agent nutzt, zieht Gedächtnis und Wissensgraph hinzu und lässt das Ergebnis prüfen, bevor es herausgeht. Jeder Kanal, von Teams bis zur Weboberfläche, spricht mit diesem Plugin."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -47,8 +49,31 @@ requires:
 # the service per dispatch and answers with a clear error string when no
 # provider is live. Listing it as a hard require would block chat entirely
 # on installs that never transcribe.
+#
+# #1016 — routineTurnOwnerGuard@1 is the per-turn owner guard for the
+# subscription-CLI runtime, published by the KERNEL (not by a plugin) because
+# the store it reads (`routineTurnContext`) lives in the application layer.
+# OPTIONAL by the same reasoning as transcription@1: a host that publishes no
+# such service keeps the pre-#1016 behaviour, so a hard require would block
+# chat on every such install. Declaring it is not optional though —
+# `ctx.services.getOptional` is declaration-gated on exactly the same terms as
+# `get`, and an undeclared name throws `ServiceNotDeclaredError` out of
+# `activate()`, which takes chatAgent@1 down with it.
+#
+# #1018 — chatPeerAgents@1 is the kernel-published resolver for the peer
+# AGENTS the calling agent may see in the current chat (presence + the
+# agent-to-agent policy both live in kernel-owned tables). Resolved per call
+# by `get_chat_participants`; absent → the roster stays humans-only.
+#
+# #1033 — llmProviderPool@1 is the kernel's shared provider pool (+ health /
+# cooldown). When published, this plugin runs its turns through it so the
+# operator surfaces and the turn loop see ONE breaker state; absent → the
+# plugin builds a private pool, which behaves the same minus the sharing.
 optional_requires:
   - "transcription@1"
+  - "routineTurnOwnerGuard@1"
+  - "chatPeerAgents@1"
+  - "llmProviderPool@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime
@@ -79,17 +104,10 @@ setup:
       help: "Anthropic-API-Key für die Haupt-Claude-Loop des Orchestrators. Ohne Key publiziert das Plugin KEIN `chatAgent@1` — Kernel + Channels degradieren auf no-chat. Geteilt mit @omadia/orchestrator-extras + @omadia/verifier (gleicher Anthropic-Account). Bootstrap migriert ANTHROPIC_API_KEY aus dem legacy .env in den Vault. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "orchestrator_model"
       label: "Orchestrator Model"
-      type: "enum"
+      type: "string"
       required: false
-      default: "claude-opus-4-8"
-      enum:
-        - value: "claude-opus-4-8"
-          label: "Claude Opus 4.8 (Default — höchste Reasoning-Tiefe)"
-        - value: "claude-opus-4-7"
-          label: "Claude Opus 4.7 (vorherige Generation)"
-        - value: "claude-sonnet-4-6"
-          label: "Claude Sonnet 4.6 (schneller, günstiger)"
-      help: "Anthropic-Model-ID für die Orchestrator-Haupt-Loop. Als Dropdown gepflegt, damit keine ungültige Model-ID (→ 404 not_found_error) eingetragen werden kann. Migriert aus ORCHESTRATOR_MODEL."
+      default: "class:frontier"
+      help: "Modell-Referenz für die Orchestrator-Haupt-Loop: eine Klasse (class:frontier | class:balanced | class:fast — folgt automatisch dem aktuellsten Modell des aktiven Providers), ein Alias (opus / sonnet / haiku) oder eine konkrete Vendor-ID. Die Auswahl passiert normalerweise auf der Admin-Seite »Modelle«; der Katalog dort wird live aus der Provider-API gelesen. Migriert aus ORCHESTRATOR_MODEL."
     - key: "orchestrator_max_tokens"
       label: "Max Output Tokens"
       type: "string"
@@ -100,6 +118,11 @@ setup:
       type: "string"
       required: false
       help: "Hard cap auf den agentic tool-loop pro Turn. Bei Erschöpfung wird KEIN roher Fehler mehr geworfen — der Orchestrator erzwingt eine letzte tool-freie Iteration und gibt eine Best-Effort-Antwort. Default: 100 (auch Floor — niedrigere installierte Werte werden hochgesetzt). Round-Loops werden separat vom Loop-Guard abgefangen. Migriert aus MAX_TOOL_ITERATIONS."
+    - key: "cli_turn_seconds"
+      label: "Zeitlimit pro Turn (Sekunden)"
+      type: "string"
+      required: false
+      help: "OM-104 — Wall-Clock-Budget für EINEN Turn auf dem Abo-Weg (Provider `claude-cli`). Leer oder 0 = nicht gesetzt: dann greifen die Umgebungsvariable OMADIA_CLI_SPAWN_TIMEOUT_MS und danach der Default von 600 Sekunden. Ein gesetzter Wert gewinnt gegen beide. Betrifft nur den Abo-Weg; die In-Process-Loop begrenzt `max_turn_seconds`."
     - key: "orchestrator_model_routing"
       label: "Per-Turn Model-Routing (Haiku-Triage)"
       type: "boolean"
@@ -169,7 +192,7 @@ setup:
       label: "KI-Kennzeichnung: Stufe je Kanal"
       type: "string"
       required: false
-      help: "Optionale Overrides pro Kanal, kompakt als 'kanal=stufe' kommagetrennt. Stufen: standard, concise, off. Beispiel: 'telegram=concise,slack=off'. WIRKSAM sind Overrides heute nur für Kanäle, die pro Turn eine Kanal-Art auflösen: teams, telegram, slack. Die Werte email und web werden zwar akzeptiert, greifen aktuell aber NICHT — solche Turns tragen (noch) keine auflösbare Kanal-Art und nutzen wie discord/whatsapp/canvas/HTTP die globale Stufe (sichere Richtung: Kennzeichnung bleibt aktiv). Ungültige Einträge werden mit Warnung ignoriert."
+      help: "Optionale Overrides pro Kanal, kompakt als 'kanal=stufe' kommagetrennt. Stufen: standard, concise, off. Beispiel: 'telegram=concise,api=off'. WIRKSAM sind Overrides heute nur für Kanäle, die pro Turn eine Kanal-Art auflösen: teams, telegram, slack, api. Die Werte email und web werden zwar akzeptiert, greifen aktuell aber NICHT — solche Turns tragen (noch) keine auflösbare Kanal-Art und nutzen wie discord/whatsapp/canvas/HTTP die globale Stufe (sichere Richtung: Kennzeichnung bleibt aktiv). Ungültige Einträge werden mit Warnung ignoriert."
     - key: "ai_disclosure_locale"
       label: "KI-Kennzeichnung: Sprache"
       type: "enum"

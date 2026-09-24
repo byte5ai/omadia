@@ -103,6 +103,7 @@ import {
   supportsCatalogRemoval,
   supportsDeletedAppRegistrationLookup,
 } from '../platform/teamsProvisionerCleanup.js';
+import type { TeamsBotsConfigSyncOutcome } from './teamsBotsConfigSync.js';
 
 // ---------------------------------------------------------------------------
 // Vocabulary
@@ -121,6 +122,7 @@ export const TEAMS_RESET_STEPS = [
   'catalog_removed',
   'bot_deleted',
   'app_deleted',
+  'config_unsynced',
   'identity_reset',
   'identity_deleted',
 ] as const;
@@ -255,6 +257,12 @@ export const TEAMS_RESET_DETAILS = {
    * the connector.
    */
   appTraceRequired: 'app_trace_required',
+  /** No `unsyncBotConfig` is wired on this mount, so the `teams_bots` entry
+   *  was never written automatically either (#910) and there is nothing this
+   *  teardown is responsible for removing. */
+  configUnsyncUnavailable: 'config_unsync_unavailable',
+  /** channel-teams is not installed, so there is no config to clean. */
+  configPluginNotInstalled: 'config_plugin_not_installed',
 } as const;
 
 /** Prefixes for the failure details, mirroring the runner's convention of a
@@ -264,6 +272,7 @@ export const TEAMS_RESET_FAILURE_PREFIXES = {
   bot: 'bot_deletion_failed:',
   appDelete: 'app_deletion_failed:',
   appPurge: 'app_purge_failed:',
+  config: 'config_unsync_failed:',
   identity: 'identity_reset_failed:',
 } as const;
 
@@ -421,6 +430,21 @@ export interface TeamsIdentityResetOptions {
     read(): Promise<DelegatedTokenSet | undefined>;
     write?(tokens: DelegatedTokenSet): Promise<void>;
   };
+  /**
+   * Remove this bot's `teams_bots` entry from the channel-teams plugin config
+   * — the counterpart of the automatic write the chain performs (#910).
+   *
+   * Injected rather than imported for the same reason as `buildBotHandle`:
+   * this module must not reach into the plugin registry itself, and a test
+   * needs to observe the call without standing up an installed registry.
+   *
+   * ABSENT IS A LEGITIMATE MOUNT, not a degraded one. A deployment that never
+   * wired the automatic write has no entry this teardown put there, so there
+   * is nothing to take back out — reported as `skipped`, never as a failure.
+   */
+  readonly unsyncBotConfig?: (
+    botSlug: string,
+  ) => Promise<TeamsBotsConfigSyncOutcome>;
   /** Progress log. Absent = the teardown runs identically, silently. */
   readonly events?: TeamsResetEventSink;
   /** Wall clock, injectable — read only to decide whether the delegated
@@ -577,7 +601,30 @@ export async function resetTeamsIdentity(
     return halt('app_deleted', app.detail ?? 'app_deletion_failed');
   }
 
-  // ── Step 4 — the row and the recorded bindings ──────────────────────────
+  // ── Step 4 — the channel-teams `teams_bots` entry ───────────────────────
+  //
+  // The chain WRITES this entry automatically (#910), so the teardown that
+  // undoes the chain has to take it back out. Without this, a "full reset"
+  // left channel-teams configured with a bot whose Entra registration had
+  // just been purged: every inbound activity for it failed authentication,
+  // and the next run appended a second entry under the same slug beside the
+  // corpse.
+  //
+  // AFTER the registration is gone, deliberately. The entry is a pointer to
+  // that registration, and removing the pointer first would leave a live bot
+  // that nothing routes to if the app deletion then failed.
+  //
+  // THE ONE STEP THAT MAY FAIL WITHOUT STOPPING THE TEARDOWN, and the only
+  // one that has earned that: it is a plugin config value, not an Azure
+  // object. Halting here would leave the identity row pointing at an app that
+  // is already deleted — strictly worse than a stale config entry, which the
+  // next provisioning run overwrites in place anyway (`upsertTeamsBotEntry`
+  // matches on the slug). The failure is still reported as a failed step, so
+  // the timeline says what happened rather than quietly swallowing it.
+  await emit('config_unsynced', 'started');
+  await finish(await unsyncBotConfigEntry(opts, row));
+
+  // ── Step 5 — the row and the recorded bindings ──────────────────────────
   //
   // The ONLY step the two scopes disagree about. Everything above ran
   // identically, which is the point: a full reset is the same teardown with a
@@ -757,6 +804,60 @@ async function removeCatalogEntry(
       step,
       outcome: 'failed',
       detail: `${TEAMS_RESET_FAILURE_PREFIXES.catalog}${errorMessage(err)}`,
+    };
+  }
+}
+
+/**
+ * Take the bot out of the channel-teams `teams_bots` list.
+ *
+ * TOTAL, and every non-removal is a SUCCESS with a name: no hook wired, no
+ * plugin installed, nothing there to remove. The only `failed` here is a
+ * write that actually threw — and even that does not stop the teardown (see
+ * the call site).
+ *
+ * Addressed by SLUG, never by app id: by the time a teardown reaches this
+ * point the registration is already deleted and purged, so the entry that
+ * most needs removing is precisely the one whose id no longer resolves.
+ */
+async function unsyncBotConfigEntry(
+  opts: TeamsIdentityResetOptions,
+  row: TeamsResetIdentityRecord,
+): Promise<TeamsResetStepReport> {
+  const step = 'config_unsynced' as const;
+  const unsync = opts.unsyncBotConfig;
+  if (unsync === undefined) {
+    return {
+      step,
+      outcome: 'skipped',
+      detail: TEAMS_RESET_DETAILS.configUnsyncUnavailable,
+    };
+  }
+  try {
+    const outcome = await unsync(row.botSlug);
+    if (outcome.status === 'synced') return { step, outcome: 'removed' };
+    if (outcome.status === 'unchanged') {
+      // No entry under this slug — the desired end state, reached by somebody
+      // else or by a previous attempt. Same success the Azure steps report.
+      return {
+        step,
+        outcome: 'already-absent',
+        detail: TEAMS_RESET_DETAILS.nothingToRemove,
+      };
+    }
+    return {
+      step,
+      outcome: 'skipped',
+      detail:
+        outcome.reason === 'plugin_not_installed'
+          ? TEAMS_RESET_DETAILS.configPluginNotInstalled
+          : TEAMS_RESET_DETAILS.configUnsyncUnavailable,
+    };
+  } catch (err) {
+    return {
+      step,
+      outcome: 'failed',
+      detail: `${TEAMS_RESET_FAILURE_PREFIXES.config}${errorMessage(err)}`,
     };
   }
 }

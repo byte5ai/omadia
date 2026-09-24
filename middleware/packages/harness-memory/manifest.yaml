@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.memory"
-  description: "Stellt einen DB-losen, RAM-basierten /memories-Speicher (InMemoryMemoryStore), den Anthropic-nativen memory-Tool-Handler und einen Dev-Memory-Browser bereit. Default-Provider des Kernel-Service 'memoryStore' (Drop-in-Alternative: @omadia/memory-postgres)."
+  description:
+    en: "Gives agents a working memory that lives in the application itself, with no database to set up, plus a view to look through it. Use it instead of Memory (Postgres), only one of the two can be active."
+    de: "Gibt Agenten ein Arbeitsgedächtnis, das in der Anwendung selbst liegt und keine Datenbank braucht, samt einer Ansicht zum Durchsehen. Nutze es alternativ zu Memory (Postgres), aktiv sein darf immer nur eines von beiden."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

@@ -26,6 +26,7 @@ const KG_NEON_ID = '@omadia/knowledge-graph-neon';
 const KG_INMEMORY_ID = '@omadia/knowledge-graph-inmemory';
 const EMBEDDINGS_ID = '@omadia/embeddings';
 const EMBEDDINGS_OPENAI_ID = '@omadia/embedding-adapter-openai';
+const EMBEDDINGS_LOCAL_ID = '@omadia/embedding-adapter-local';
 
 /**
  * ServiceRegistry name under which `@omadia/knowledge-graph-neon` publishes
@@ -199,7 +200,17 @@ export function buildKgHealth(
   // adapter gates on a VAULT-stored api_key, which this registry-only projection
   // cannot read — installing it already requires filling that secret in the
   // setup flow, so "active" is the closest honest signal available here.
-  const providerConfigured = ollamaEmbeddings || isActive(EMBEDDINGS_OPENAI_ID);
+  //
+  // OM-84 (#1003): the keyless local adapter gates on MODEL WEIGHTS BEING ON
+  // DISK, which this projection cannot read either — same shape as the vault
+  // key, same resolution. It matters that it is counted at all: this adapter
+  // exists precisely so a subscription user has a provider, and leaving it out
+  // here would report "embeddings off" for the one setup that was built to
+  // turn them on.
+  const providerConfigured =
+    ollamaEmbeddings ||
+    isActive(EMBEDDINGS_OPENAI_ID) ||
+    isActive(EMBEDDINGS_LOCAL_ID);
   // A configured provider whose vectors the gate refuses writes NOTHING. That
   // is not "embeddings on with a caveat", it is embeddings off.
   const gateBlocked = gate !== undefined && !gate.vectorWritesAllowed;

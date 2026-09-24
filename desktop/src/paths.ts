@@ -85,6 +85,27 @@ export function embeddedDbDir(): string {
   return dir;
 }
 
+/**
+ * Where the keyless embedding adapter keeps its model weights (OM-97).
+ *
+ * NOT under the middleware tree: the adapter's old default was
+ * `<middleware>/var/embedding-models`, which in a packaged app is inside
+ * `Resources/omadia/` — i.e. inside the SIGNED bundle. Writing ~129 MB of
+ * weights there invalidates the macOS code signature and Gatekeeper then
+ * refuses the next launch, with a reinstall as the only recovery.
+ *
+ * `userData` rather than `dataRoot()` on purpose, for the same reason
+ * {@link snapshotDir} falls back to it: this is bulk, re-downloadable cache,
+ * and an operator who parked their data dir in a cloud-synced folder should
+ * not have a sync client carrying (or forking a conflict copy of) a model
+ * they can re-fetch in a minute (#934).
+ */
+export function embeddingModelsDir(): string {
+  const dir = path.join(app.getPath('userData'), 'embedding-models');
+  ensureDir(dir);
+  return dir;
+}
+
 /** Encrypted secrets blob (vault master key + provider API keys). */
 export function secretsFile(): string {
   return path.join(dataRoot(), 'secrets.enc');

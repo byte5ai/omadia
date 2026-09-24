@@ -60,6 +60,13 @@ export interface AgentIdentityComposedPrompt {
   readonly text: string | null;
   /** Which model family the persona deltas were computed against. */
   readonly family: string | null;
+  /**
+   * #1033 — the compiled prompt for EVERY family the agent's model policy
+   * names (`{ opus: "...", sonnet: "..." }`), `text` being the entry for
+   * `family`. A cross-family fallback picks from here. Absent on rows
+   * written before migration 0059.
+   */
+  readonly byFamily?: Readonly<Record<string, string>>;
 }
 
 /** The authored text of an identity. `null` = not authored, inherit. */
@@ -205,7 +212,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 
 /** Everything except the three BYTEA columns. */
 const META_COLUMNS =
-  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, avatar_etag, revision, created_at, updated_at';
+  'agent_id, display_name, short_description, long_description, instructions, accent_color, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
 
 interface AgentIdentityMetaRow {
   agent_id: string;
@@ -218,10 +225,20 @@ interface AgentIdentityMetaRow {
   quality: QualityConfig | null;
   composed_prompt: string | null;
   composed_family: string | null;
+  /** #1033 — absent on a DB that predates migration 0059. */
+  composed_prompts?: Record<string, unknown> | null;
   avatar_etag: string | null;
   revision: number;
   created_at: Date;
   updated_at: Date;
+}
+
+function composedByFamily(raw: unknown): Readonly<Record<string, string>> | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const entries = Object.entries(raw as Record<string, unknown>).filter(
+    (e): e is [string, string] => typeof e[1] === 'string',
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
@@ -237,6 +254,9 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
     composed: {
       text: row.composed_prompt,
       family: row.composed_family,
+      ...(composedByFamily(row.composed_prompts) !== undefined
+        ? { byFamily: composedByFamily(row.composed_prompts) }
+        : {}),
     },
     // `revision` is an INT; `pg` hands INT4 back as a number, but a driver
     // that ever changes its mind must not turn the manifest version into
@@ -302,6 +322,68 @@ export class AgentIdentityStore {
    * that changes without a content change is the model family — see
    * {@link recompose}.
    */
+  /**
+   * Give an agent the name it already wears OUTWARD, but only if it has no
+   * name of its own yet (byte5ai/omadia#967).
+   *
+   * Teams provisioning asks the operator for a display name, writes it onto
+   * the bot registration and into the app package, and — before this method —
+   * nowhere else. The bot was then called `Messias` in the tenant while its
+   * identity stayed unauthored, so the prompt fell through to the platform
+   * assistant and the bot introduced itself under the platform's name. One
+   * bot, two names, and the mismatch is the first thing a user sees.
+   *
+   * NEVER OVERWRITES AN AUTHORED NAME. That is the whole point of the method
+   * existing instead of a `save()` from the caller: an operator who wrote a
+   * name (and a persona, and a tone) must not lose it because someone re-ran
+   * provisioning. Losing curated work is strictly worse than the mismatch
+   * this repairs.
+   *
+   * THE GUARD IS THE `WHERE`, NOT A READ. A read-then-write from the route
+   * would leave a window in which a concurrent identity save is clobbered.
+   * `ON CONFLICT … DO UPDATE … WHERE` evaluates the predicate against the
+   * CURRENT row inside the same statement, so the refusal is atomic and the
+   * worst a race can do is decide the order, never lose a write.
+   *
+   * BLANK COUNTS AS UNSET, exactly as {@link resolveAgentIdentity} reads it:
+   * a row whose `display_name` is `''` resolves to the registry name today,
+   * so filling it takes nothing away. A row with an actual name is refused.
+   *
+   * NO REVISION BUMP. The Teams manifest already renders this name — it falls
+   * back to the provisioning row's `display_name`, which is the value being
+   * adopted — so the package is byte-identical and a re-publish would buy
+   * nothing. What DOES change is the system prompt, and that travels through
+   * the registry rebuild, not through the manifest version.
+   *
+   * Returns the row as it now stands: the seeded one, or the authored one
+   * left untouched. `undefined` only when the refusal met no row at all,
+   * which cannot happen (the INSERT would have created it).
+   */
+  async adoptDisplayName(
+    agentId: string,
+    displayName: string,
+  ): Promise<AgentIdentityRecord | undefined> {
+    const name = nonEmpty(displayName);
+    // Nothing to adopt. Seeding a blank would create an empty row whose only
+    // effect is to switch the manifest onto the revision-based version.
+    if (name === null) return this.getByAgentId(agentId);
+    const res = await this.pool.query<AgentIdentityMetaRow>(
+      `INSERT INTO agent_identities (agent_id, display_name)
+       VALUES ($1, $2)
+       ON CONFLICT (agent_id) DO UPDATE SET
+         display_name = EXCLUDED.display_name,
+         updated_at   = now()
+       WHERE agent_identities.display_name IS NULL
+          OR btrim(agent_identities.display_name) = ''
+       RETURNING ${META_COLUMNS}`,
+      [agentId, name],
+    );
+    const row = res.rows[0];
+    // No RETURNING row = the WHERE refused the update: this agent already has
+    // an authored name. Report what is actually stored rather than nothing.
+    return row ? mapRow(row) : this.getByAgentId(agentId);
+  }
+
   async save(
     agentId: string,
     input: AgentIdentitySaveInput,
@@ -319,13 +401,14 @@ export class AgentIdentityStore {
       input.quality === null ? null : JSON.stringify(input.quality),
       input.composed.text,
       input.composed.family,
+      input.composed.byFamily ? JSON.stringify(input.composed.byFamily) : null,
     ];
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
          instructions, accent_color, persona, quality,
-         composed_prompt, composed_family
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         composed_prompt, composed_family, composed_prompts
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
        ON CONFLICT (agent_id) DO UPDATE SET
          display_name      = EXCLUDED.display_name,
          short_description = EXCLUDED.short_description,
@@ -336,6 +419,7 @@ export class AgentIdentityStore {
          quality           = EXCLUDED.quality,
          composed_prompt   = EXCLUDED.composed_prompt,
          composed_family   = EXCLUDED.composed_family,
+         composed_prompts  = EXCLUDED.composed_prompts,
          revision          = agent_identities.revision + 1,
          updated_at        = now()
        RETURNING ${META_COLUMNS}`,
@@ -361,11 +445,17 @@ export class AgentIdentityStore {
   ): Promise<AgentIdentityRecord | undefined> {
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `UPDATE agent_identities SET
-         composed_prompt = $2,
-         composed_family = $3
+         composed_prompt  = $2,
+         composed_family  = $3,
+         composed_prompts = $4::jsonb
        WHERE agent_id = $1
        RETURNING ${META_COLUMNS}`,
-      [agentId, composed.text, composed.family],
+      [
+        agentId,
+        composed.text,
+        composed.family,
+        composed.byFamily ? JSON.stringify(composed.byFamily) : null,
+      ],
     );
     const row = res.rows[0];
     return row ? mapRow(row) : undefined;

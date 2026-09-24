@@ -1,4 +1,9 @@
-import { resolveModelRef } from '@omadia/llm-provider';
+import {
+  isClassRef,
+  listModelsByProvider,
+  modelForClass,
+  resolveModelRef,
+} from '@omadia/llm-provider';
 
 import type { ModelRoutingConfig as RuntimeModelRouting } from '../modelRouter.js';
 
@@ -17,11 +22,11 @@ import type { ModelRoutingConfig as RuntimeModelRouting } from '../modelRouter.j
  * unit-testable without a DB.
  */
 
-// Must be an id the registry actually serves: `validateModelRef` rejects an
-// unregistered ref, so the code's own default must agree with its write-
-// validation. The registered Haiku is the dated id (alias `haiku`); the
-// undated `claude-haiku-4-5` is NOT in the registry (issue #296 nit).
-const DEFAULT_CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
+// A CLASS ref, not a model id: the registry resolves it to whatever the
+// active provider currently serves as its fast model (live-discovered or
+// seed), so this default never goes stale when a vendor ships a new
+// generation. `validateModelRef` accepts class refs.
+const DEFAULT_CLASSIFIER_MODEL = 'class:fast';
 
 /**
  * Hard fallback orchestrator model — the last tier of the per-instance model
@@ -33,10 +38,42 @@ const DEFAULT_CLASSIFIER_MODEL = 'claude-haiku-4-5-20251001';
  *   3. this constant — so an empty / misconfigured platform default never yields
  *      an empty model id (which would 404 on every turn).
  *
- * Must be a currently-served model id, kept in sync with `ORCHESTRATOR_MODEL`
- * (middleware/src/config.ts) and the plugin's install-config fallback.
+ * A CLASS ref, deliberately not a model id: `resolveConfiguredModel` turns it
+ * into the active provider's current frontier model at build time, so the
+ * platform default follows the live catalog instead of a hard-coded version.
+ * Kept in sync with `ORCHESTRATOR_MODEL` (middleware/src/config.ts).
  */
-export const DEFAULT_ORCHESTRATOR_MODEL = 'claude-opus-4-8';
+export const DEFAULT_ORCHESTRATOR_MODEL = 'class:frontier';
+
+/** Preference order when a class ref cannot be served exactly (a provider
+ *  with no model of that class): the nearest class, then anything served. */
+const CLASS_FALLBACK_ORDER = ['frontier', 'balanced', 'fast'] as const;
+
+/**
+ * Resolve a CONFIGURED model ref — class ref (`class:frontier`), legacy alias
+ * (`opus`), provider-qualified id or bare vendor id — to the bare `modelId`
+ * to send to `providerId`. Unlike `resolveModelIdForProvider` a class ref is
+ * never passed through raw: the vendor API would 404 on it. When the provider
+ * serves no model of the requested class, the nearest class's default is used,
+ * then the first model the provider serves at all. Returns `undefined` only
+ * when the ref is empty or the registry knows nothing about the provider.
+ */
+export function resolveConfiguredModel(
+  ref: string | null | undefined,
+  providerId: string | undefined,
+): string | undefined {
+  const trimmed = ref?.trim();
+  if (!trimmed) return undefined;
+  const resolved = resolveModelIdForProvider(trimmed, providerId);
+  if (resolved !== undefined && !isClassRef(resolved)) return resolved;
+  if (!isClassRef(trimmed)) return resolved;
+  const provider = providerId ?? 'anthropic';
+  for (const cls of CLASS_FALLBACK_ORDER) {
+    const hit = modelForClass(cls, provider);
+    if (hit !== undefined) return hit.modelId;
+  }
+  return listModelsByProvider(provider)[0]?.modelId;
+}
 
 /**
  * Resolve a model ref to the active provider's concrete bare `modelId`

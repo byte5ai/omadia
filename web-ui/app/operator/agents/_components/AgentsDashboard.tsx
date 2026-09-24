@@ -24,6 +24,7 @@ import {
   setFallbackAgent,
   triggerAgentReload,
   FALLBACK_AGENT_SLUG,
+  isModelRef,
   type OperatorAgentDto,
   type OperatorAgentsListDto,
   type PluginCatalogEntryDto,
@@ -540,6 +541,22 @@ function AgentCard(props: {
                 bindings: agent.bindings.length,
               })}
             </span>
+            {/* #1033 — which model answers under this agent's name, at a glance. */}
+            {agent.model_policy !== undefined && (
+              <span className="block text-xs text-[color:var(--fg-muted)]">
+                {t('agentCardModel', {
+                  primary: isModelRef(agent.model_policy.primary)
+                    ? `${agent.model_policy.primary.provider}:${agent.model_policy.primary.model}`
+                    : t('agentCardModelAuto', { model: agent.effective_model ?? 'none' }),
+                  fallback:
+                    agent.model_policy.fallback === 'none'
+                      ? 'none'
+                      : isModelRef(agent.model_policy.fallback)
+                        ? `${agent.model_policy.fallback.provider}:${agent.model_policy.fallback.model}`
+                        : t('agentCardModelAuto', { model: agent.effective_model ?? 'none' }),
+                })}
+              </span>
+            )}
           </span>
         </button>
         <div className="flex flex-col items-end gap-2">

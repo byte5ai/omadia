@@ -62,3 +62,47 @@ describe('evaluatePredicate', () => {
     expect(evaluatePredicate(p, scope)).toBe(evaluatePredicate(p, scope));
   });
 });
+
+// `valuePath` — compare against another dot-path instead of a literal. A budget
+// the caller chooses cannot be a number frozen into the graph at authoring
+// time: with only `value`, "stop after N turns" forces one N on every run of a
+// pattern, which is how the first agent-discussion cut capped every exchange at
+// seven whether or not it was still improving.
+describe('evaluatePredicate — valuePath', () => {
+  const budgets: EvalScope = {
+    ctx: { turns: 3, maxTurns: 16, label: 'main', other: 'main' },
+    stepResult: { count: 20 },
+  };
+
+  it('compares two ctx paths', () => {
+    expect(evaluatePredicate({ op: 'lt', path: 'ctx.turns', valuePath: 'ctx.maxTurns' }, budgets)).toBe(true);
+    expect(evaluatePredicate({ op: 'gt', path: 'ctx.turns', valuePath: 'ctx.maxTurns' }, budgets)).toBe(false);
+  });
+
+  it('compares across scopes', () => {
+    expect(evaluatePredicate({ op: 'gt', path: 'stepResult.count', valuePath: 'ctx.turns' }, budgets)).toBe(true);
+  });
+
+  it('supports equality against a path', () => {
+    expect(evaluatePredicate({ op: 'eq', path: 'ctx.label', valuePath: 'ctx.other' }, budgets)).toBe(true);
+    expect(evaluatePredicate({ op: 'ne', path: 'ctx.label', valuePath: 'ctx.other' }, budgets)).toBe(false);
+  });
+
+  it('STOPS a loop when the budget is missing — never runs on a value that does not exist', () => {
+    // The failure mode of a guard is a runaway loop, so an absent ceiling must
+    // not read as an infinite one. False for every op, `ne` included, which
+    // would otherwise invert into "keep going".
+    expect(evaluatePredicate({ op: 'lt', path: 'ctx.turns', valuePath: 'ctx.nope' }, budgets)).toBe(false);
+    expect(evaluatePredicate({ op: 'ne', path: 'ctx.turns', valuePath: 'ctx.nope' }, budgets)).toBe(false);
+    expect(evaluatePredicate({ op: 'eq', path: 'ctx.turns', valuePath: 'ctx.nope' }, budgets)).toBe(false);
+  });
+
+  it('prefers valuePath over a literal when a graph declares both', () => {
+    expect(evaluatePredicate({ op: 'lt', path: 'ctx.turns', value: 1, valuePath: 'ctx.maxTurns' }, budgets)).toBe(true);
+  });
+
+  it('leaves literal comparisons untouched', () => {
+    expect(evaluatePredicate({ op: 'lt', path: 'ctx.turns', value: 16 }, budgets)).toBe(true);
+    expect(evaluatePredicate({ op: 'ne', path: 'ctx.label', value: 'other' }, budgets)).toBe(true);
+  });
+});

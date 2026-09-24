@@ -14,6 +14,7 @@ import { createShapeClassifier } from '@omadia/plugin-privacy-guard/dist/v4/shap
 import { buildDigest } from '@omadia/plugin-privacy-guard/dist/v4/digest.js';
 import { createVerbEngine } from '@omadia/plugin-privacy-guard/dist/v4/verbs/index.js';
 import {
+  MAX_CHAT_ROWS,
   MaterializerError,
   materialize,
 } from '@omadia/plugin-privacy-guard/dist/v4/materializer.js';
@@ -298,5 +299,84 @@ describe('Materializer — display polish', () => {
     assert.ok(text.includes('| Rang | Mitarbeiter |'));
     // First data row is rank 1 — Anna Rüsche (30 days, the max).
     assert.ok(text.split('\n')[2]?.startsWith('| 1 | Anna Rüsche'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Row cap — a 953-row table once took a whole Teams turn down ("Broken
+// Markdown" after the channel clipped it at 25k chars). The materializer now
+// stops at MAX_CHAT_ROWS and says exactly how many rows it left out.
+// ---------------------------------------------------------------------------
+
+/** `n` rows with a masked name and a safe number. */
+function manyRows(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    employee: `Person Nummer ${String(i + 1)}`,
+    days: i + 1,
+  }));
+}
+
+describe('Materializer — chat row cap', () => {
+  it('renders every row and no footer when the dataset fits', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(MAX_CHAT_ROWS));
+    const r = materialize(store, { datasetId, columns: cols('employee', 'days'), format: 'table' });
+    assert.equal(r.rowCount, MAX_CHAT_ROWS);
+    assert.equal(r.renderedRowCount, MAX_CHAT_ROWS);
+    assert.ok(!r.text.includes('weitere Zeile'));
+    assert.equal(r.structuredTable?.rows.length, MAX_CHAT_ROWS);
+  });
+
+  it('caps a table at MAX_CHAT_ROWS and names the omitted count', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(953));
+    const r = materialize(store, { datasetId, columns: cols('employee', 'days'), format: 'table' });
+    assert.equal(r.rowCount, 953, 'rowCount stays the number the answer is about');
+    assert.equal(r.renderedRowCount, MAX_CHAT_ROWS);
+    const lines = r.text.split('\n');
+    // header + separator + 50 rows, then a blank line and the footer.
+    assert.equal(lines.filter((l) => l.startsWith('| ')).length, MAX_CHAT_ROWS + 2);
+    assert.ok(r.text.includes(`… ${String(953 - MAX_CHAT_ROWS)} weitere Zeilen nicht angezeigt (${String(MAX_CHAT_ROWS)} von 953)`));
+    assert.ok(r.text.includes('Excel'));
+    assert.ok(r.text.includes('Person Nummer 50'));
+    assert.ok(!r.text.includes('Person Nummer 51'));
+    // The structured (canvas) table is capped the same way.
+    assert.equal(r.structuredTable?.rows.length, MAX_CHAT_ROWS);
+  });
+
+  it('caps a list the same way', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(51));
+    const r = materialize(store, { datasetId, columns: cols('employee'), format: 'list' });
+    assert.equal(r.renderedRowCount, 50);
+    assert.equal(r.text.split('\n').filter((l) => l.startsWith('- ')).length, 50);
+    assert.ok(r.text.includes('… 1 weitere Zeile nicht angezeigt (50 von 51)'), 'singular form');
+  });
+
+  it('never caps a scalar', () => {
+    const { store, engine } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(200));
+    const c = engine.count(datasetId);
+    const r = materialize(store, { datasetId: c.datasetId, columns: cols('count'), format: 'scalar' }, { maxRows: 1 });
+    assert.equal(r.text, '200');
+  });
+
+  it('reports only the rendered masked values, not the omitted ones', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(60));
+    const r = materialize(store, { datasetId, columns: cols('employee'), format: 'table' }, { maxRows: 10 });
+    assert.equal(r.maskedValues.length, 10);
+    assert.ok(!r.maskedValues.includes('Person Nummer 11'));
+  });
+
+  it('honours an explicit maxRows and rejects a non-positive one', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(5));
+    const r = materialize(store, { datasetId, columns: cols('days'), format: 'table' }, { maxRows: 2 });
+    assert.equal(r.renderedRowCount, 2);
+    assert.throws(
+      () => materialize(store, { datasetId, columns: cols('days'), format: 'table' }, { maxRows: 0 }),
+      MaterializerError,
+    );
   });
 });

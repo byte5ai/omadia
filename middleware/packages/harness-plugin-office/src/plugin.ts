@@ -112,7 +112,19 @@ export async function activate(ctx: PluginContext): Promise<OfficePluginHandle> 
   );
 
   const router = createDocumentsRouter({ store, secret: signingSecret });
-  const disposeRoute = ctx.routes.register('/documents', router);
+  // `auth: 'custom'` — the router authenticates every request itself via the
+  // HMAC-signed, expiring URL (`verifyDocumentSig`), exactly like a presigned
+  // S3 link. The kernel default (`'session'`) would additionally demand an
+  // operator session, and the people who click these links — Teams/Telegram
+  // users — never have one: every download answered `auth.missing`. Reachable
+  // without a session only while the operator has granted `/documents/dl`
+  // (manifest `permissions.public_paths` + `PUT /installed/:id/public-paths`);
+  // until then the kernel keeps the session gate in front, fail-closed. The
+  // `/dl` segment exists because a public-path claim must be at least two
+  // segments deep — `/documents` alone is refused as too broad a surface.
+  const disposeRoute = ctx.routes.register('/documents/dl', router, {
+    auth: 'custom',
+  });
 
   ctx.log(
     `[office] ready (bucket=${tigrisBucket}, tenant=${tenantId}, dataset=lazy, privacyNow=${ctx.services.has(PRIVACY_REDACT_SERVICE_NAME) ? 'yes' : 'not-yet'})`,

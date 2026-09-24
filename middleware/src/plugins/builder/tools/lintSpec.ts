@@ -105,9 +105,54 @@ export const lintSpecTool: BuilderTool<Input, Result> = {
     //    only runs on the success path.
     issues.push(...lintAccessorPermissions(spec, draft.slots));
 
+    // 6. #1022 — the English store description. Warning, not error: the
+    //    codegen fallback keeps an older spec buildable, so blocking here
+    //    would break clone-from-installed for no gain. But a plugin that
+    //    ships German in the `en:` slot is the #885 defect, so say so.
+    issues.push(...lintEnglishDescription(spec.description, spec.description_en));
+
     return { ok: issues.every((i) => i.severity !== 'error'), issues };
   },
 };
+
+/**
+ * #1022 — `identity.description` is a locale map, and the `en:` side must
+ * not be German. Codegen falls back to `spec.description` when
+ * `spec.description_en` is absent, which keeps the build green but ships
+ * the German text as the English description — exactly what #885 fixed 22
+ * times by hand.
+ */
+function lintEnglishDescription(
+  description: string,
+  descriptionEn: string | undefined,
+): LintIssue[] {
+  if (descriptionEn === undefined) {
+    return [
+      {
+        severity: 'warning',
+        code: 'missing_english_description',
+        message:
+          'spec.description_en is not set — the generated manifest falls back to ' +
+          'the German description for its English locale, so the Hub shows German ' +
+          'to English-speaking operators. Set spec.description_en.',
+        path: '/description_en',
+      },
+    ];
+  }
+  if (descriptionEn.trim() === description.trim()) {
+    return [
+      {
+        severity: 'warning',
+        code: 'untranslated_english_description',
+        message:
+          'spec.description_en is identical to spec.description. The English ' +
+          'locale needs an English sentence, not a copy of the German one.',
+        path: '/description_en',
+      },
+    ];
+  }
+  return [];
+}
 
 function lintNameCollision(
   name: string,

@@ -9,6 +9,7 @@ import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
+import { appendTranscript } from './transcript.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -151,6 +152,47 @@ export class ConductorRunExecutor {
   }
 
   /**
+   * The run's trigger, in the shape effects consume.
+   *
+   * Tolerant on purpose: a run that cannot be read back yields an EMPTY meta,
+   * which effects treat as "not channel-triggered" — the same answer a manual
+   * run gives. That is the safe direction here because the origin rule refuses
+   * on a channel trigger it cannot attribute; an unreadable run must not be
+   * turned into a channel trigger by accident.
+   */
+  private async triggerMetaFor(
+    runId: string,
+  ): Promise<{ triggerKind?: TriggerKind; triggerEventId?: string; workflowId?: string | null }> {
+    const run = await this.runStore.get(runId);
+    if (!run) return {};
+    const source = run.triggerSource;
+    const eventId =
+      typeof source === 'object' && source !== null && !Array.isArray(source)
+        ? (source as Record<string, unknown>)['eventId']
+        : undefined;
+    // The workflow behind the run's version — a `say` step's floor is checked
+    // against it. Same tolerance as above: an unreadable version yields null,
+    // and the say service then finds no matching attachment and stays silent
+    // rather than posting on an unproven authority.
+    // A dry run rehearses; it must not speak into a live conversation. Leaving
+    // the workflow id off is how that is enforced — the say service refuses a
+    // turn that belongs to no workflow.
+    const workflowId = run.isDryRun
+      ? null
+      : await this.workflowStore
+          .getVersion(run.workflowVersionId)
+          .then((v) => v?.workflowId ?? null)
+          .catch(() => null);
+    return {
+      ...(run.triggerKind ? { triggerKind: run.triggerKind } : {}),
+      ...(typeof eventId === 'string' && eventId !== ''
+        ? { triggerEventId: eventId }
+        : {}),
+      workflowId,
+    };
+  }
+
+  /**
    * Drive a run forward from `startStepId`. Human steps open an await and park. Every step/park
    * write is fenced on `lease` (the driver's claimed_by token): if a resume worker has taken the
    * run over (because this drive stalled past staleMs), the next write throws RunLeaseLostError and
@@ -166,6 +208,15 @@ export class ConductorRunExecutor {
     let context: JsonObject = { ...startContext };
     let currentStepId: string | null = startStepId;
     let seq = (await this.runStore.stepsForRun(runId)).length;
+    // How this run began, read ONCE here rather than threaded through the five
+    // `driveFrom` callers — three of them are resume paths that already hold
+    // the run, and a sixth parameter on a private method is a worse seam than
+    // one read per drive (an agent step costs an LLM turn; this costs a row).
+    //
+    // Effects need it to tell a run started by a message to a bot from one a
+    // human or a schedule started: only the first has an addressed identity
+    // whose permissions the work must stay inside.
+    const triggerMeta = await this.triggerMetaFor(runId);
 
     try {
       while (currentStepId && seq < MAX_STEPS) {
@@ -264,8 +315,8 @@ export class ConductorRunExecutor {
         let exec;
         try {
           exec = step.kind === 'agent'
-            ? await this.effects.runAgentStep(step, context, { runId })
-            : await this.effects.runActionStep(step, context, { runId });
+            ? await this.effects.runAgentStep(step, context, { runId, ...triggerMeta })
+            : await this.effects.runActionStep(step, context, { runId, ...triggerMeta });
         } catch (err) {
           this.log(`[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
           await this.runStore.recordStepAndAdvance({
@@ -277,6 +328,7 @@ export class ConductorRunExecutor {
 
         const decision = nextStep(graph, stepId, exec.result, context);
         context = this.accumulate(context, stepId, exec.result);
+        context = appendTranscript(context, step, exec.result);
         currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease);
         if (currentStepId) seq += 1;
       }

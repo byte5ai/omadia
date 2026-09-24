@@ -55,6 +55,268 @@ tool (`createGraphLookupTool(scope)`), not the raw graph client. The scope:
 - Survives prompt-injection attempts that ask the sub-agent to "use a
   different user id" — the tool simply does not accept an override.
 
+## 3a. Subscription-CLI process boundary (#991, #992, #993)
+
+On the subscription path (`claude-cli` provider, Shape 3) the agent loop does
+not run in the middleware. `CliChatAgent` spawns the official `claude` CLI as a
+child process and hands it omadia's tools over a per-turn loopback MCP server
+(`mcp__omadia__*`). Everything omadia enforces in-process — plugin grants,
+audience floor, privacy guard, `sandbox_execute_enabled` — sits in front of
+*omadia's* tools. The CLI's own built-in tools (Bash, Edit, Write, Read,
+WebFetch, WebSearch, Agent, …) sit behind them, run with the user's OS rights,
+and are one prompt injection away from any mail, document or web page the agent
+reads. Beta test round 4 demonstrated exactly that: the agent ran
+`whoami && hostname` on the tester's Mac on request, with no gate involved.
+
+`--allowedTools mcp__omadia__*` alone was insufficient because it is a
+**pre-approval** list, not a restriction: it only says which tools may run
+without prompting. It never removed the built-ins, and `--strict-mcp-config`
+limits MCP servers only.
+
+**Both** spawn sites carry the gate since #1007. It is defined once, in
+`middleware/packages/harness-orchestrator/src/cliSpawnGate.ts`, and applied by
+`cliChatAgent.ts` (Shape 3, tools over the loopback server) and
+`middleware/src/platform/claudeCliAdapter.ts` (Shape 2, single-shot
+completions: session summary, fact extraction, classifier, verifier-judge).
+The second site was missed by #991 and was the more exposed of the two: its
+prompts are assembled from end-user chat text and uploaded documents, and the
+read-only built-ins never prompt for permission, so injected text could read
+host files and return them inside a summary omadia persists. It also loaded
+the operator's `settings.json` (hence `hooks`) and their MCP servers. It now
+uses the same flags plus an mcp-config declaring no servers, since it serves no
+tools and therefore pre-approves nothing.
+
+The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
+`test/cliBridge/cliChatAgent.test.ts`:
+
+| Flag | What it closes |
+|---|---|
+| `--tools ""` | Removes the CLI's built-in tool set; only MCP tools remain. Primary lever. |
+| `--disallowedTools <CLI_BUILTIN_TOOL_DENYLIST>` | Names every built-in explicitly; the fallback for a CLI that ignores `--tools`. The list is an exported constant so the test asserts the contract, not the intent. |
+| `--permission-mode dontAsk` | Anything not pre-approved is denied outright. There is no human at a permission prompt in an omadia chat. |
+| `--setting-sources ""` | Loads no user/project/local `settings.json`. Otherwise the host user's `~/.claude` settings apply, including `hooks` (shell commands that run on every tool call) and personal allow rules. Credentials are unaffected: the CLI reads them from `CLAUDE_CONFIG_DIR`, not from settings. |
+| `--strict-mcp-config --mcp-config <0600 file>` | Only omadia's loopback server; no MCP servers from the user's own config. |
+| `--allowedTools mcp__omadia__*` | Pre-approves omadia's tools so the turn does not stall on a prompt. |
+| `--system-prompt <omadia prompt>` | Replaces the CLI's default prompt. With `--append-system-prompt` the model kept Claude Code's identity, treated the CLI toolbox as its own and told users in the omadia chat to "go to omadia" (#992). `composeCliSystemPrompt()` always states the runtime and the only toolset the model has. |
+| `--restricted` (#1014, version-gated since OM-85) | Removes the code-running built-ins and WebFetch unless `--tools` names them, ignores user/project/local settings files, and confines the file tools. Additive belt over `--tools ""`. Chosen over `--bare`, which also skips `CLAUDE.md` discovery but reads neither OAuth nor the keychain — it would break the keyless subscription login outright. **Passed only when the installed CLI is ≥ 2.1.248** (`resolveCliVersion()` probes `claude --version`, cached 5 min; `supportsRestrictedFlag()`): older CLIs do not ignore an unknown flag, they exit 1 with `unknown option`, which killed every turn on a 2.1.246 install (OM-85). On every spawn, regardless of version, the env twin `CLAUDE_CODE_RESTRICTED=1` is set — a CLI that knows it gets the same boundary, one that does not ignores the key. **Deliberate trade-off:** an unknown or unparsable version means the flag is left out, i.e. one protective layer fewer (the three layers `--tools ""`, `--disallowedTools`, `dontAsk` still hold), rather than a dead subscription path. A CLI that rejects one of *our* flags surfaces as `CliIncompatibleError` (`code: cli_incompatible`) with the update instruction, not as a failed answer. |
+| `cwd` = empty temp dir (#1014) | The CLI **hardcodes** `CLAUDE.md` / `AGENTS.md` discovery and only `--bare` skips it, so no flag closes this. Without a `cwd` the child inherited the middleware process's directory and any `CLAUDE.md` at or above it joined a prompt built from user content. Both sites now spawn in a per-turn temp dir holding nothing but the mcp-config. |
+| Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
+
+### Why the deny list is generated, not written (#1014)
+
+The first version was hand-collected and missed 40 real tool names, `Tmux`
+among them — a terminal, the exact class the gate exists to remove — plus
+every `self_hosted_runner_*`, of which `spawn_local` starts local sessions. It
+also listed `KillShell` and `BashOutput`, which are **aliases** in 2.1.259, not
+canonical names, so those entries may have matched nothing.
+`CLI_BUILTIN_TOOL_DENYLIST` is now a superset of the installed binary's own
+inventory (2.1.259 ships 78 built-ins plus 105 `mcp__…` names in one array)
+and lists all ten declared aliases alongside their canonical names.
+
+Two of those aliases were missed until a review caught them: `RunWorkflow`
+(alias of `Workflow`, and its metadata declares `enablesCodeExecution`, so it
+was an open code-execution path) and the three MCP-resource short forms
+`ListMcpResources` / `ReadMcpResource` / `ReadMcpResourceDir`.
+
+**The drift guard mines the binary and subtracts the deny list, not the other
+way round.** Its first version could not detect drift at all: it built its
+candidate set out of `CLI_BUILTIN_TOOL_DENYLIST` plus extras that were already
+in the deny list, then filtered for names not in the deny list, which is empty
+by construction. A reviewer replayed it with `Read` removed, with `WebFetch`
+removed and with 40 further names removed, and it stayed green every time — 55
+of 100 entries were deletable with nothing going red. The guard now parses the
+inventory array and the tool-metadata `aliases:[…]` arrays out of the binary,
+subtracts the constant, and fails on any remainder. It also asserts that the
+mining found something, so "nothing drifted" can no longer be confused with
+"nothing was parsed". Verified by planting omissions: removing `Read`,
+`WebFetch`, `Tmux`, `ReadMcpResource` or `RunWorkflow` each turns the suite
+red, and restoring them turns it green.
+
+Not every entry is a 2.1.259 tool. The list is deliberately a superset so an
+upgrade cannot open a hole between releases; `JavaScript` is one such entry and
+is **not** a tool in 2.1.259 — the only `"JavaScript"` strings in the binary
+are bundled highlight.js language metadata.
+
+### The gate is verified behaviourally, not just by argv shape (#1017)
+
+Every other assertion here is "we passed the flag", and the incident that
+started this was a flag that did not mean what we thought. So
+`test/cliBridge/cliGateLiveProbe.test.ts` spawns the real binary with the real
+production argv and asks it to run a shell command. Measured on 2.1.259
+(2026-09-03), same prompt and model in both runs:
+
+| argv | tools used |
+|---|---|
+| production gate | none |
+| pre-#991 (`--allowedTools` only) | `Bash` |
+
+That settles the open question from #1017 — `--tools ""` does mean "no built-in
+tools" in practice, not only in the help text — and the pre-gate argv
+reproduces the original OM-81 finding on demand. The probe is opt-in
+(`OMADIA_CLI_LIVE_PROBE=1`) because it spends subscription quota.
+
+Two further pieces make the boundary observable and keep omadia's own tools
+working across it:
+
+- **Foreign tool marking.** `StreamJsonParser` sets `foreign: true` on every
+  `tool_use` event whose name is not `mcp__omadia__*`. The built-ins are
+  removed at spawn time; if one ever surfaces anyway it can never read like an
+  omadia tool in the trace.
+- **Turn context across the process hop (#993).** A tool call on this path
+  arrives as an HTTP request from the external process, in a fresh async
+  context, so `AsyncLocalStorage` values the channel set around `chat()`
+  (today `routineTurnContext`) were undefined inside `dispatch()` and
+  `manage_routine` reported "no user context" to a user who was in a channel.
+  `LoopbackMcpServer` takes `AsyncLocalStorage.snapshot()` when it is
+  constructed — inside the turn, in `CliChatAgent.runLifecycle` — and runs
+  every `tools/call` inside that snapshot. The snapshot carries whatever stores
+  are active at construction, so a future store needs no change here; a
+  `CliChatAgent`-level test guards against hoisting server creation out of the
+  turn.
+
+  Two corrections from #1016. The capture now happens at `chat()` /
+  `chatStream()` entry, not in the generator body: `runLifecycle` is an async
+  generator, so its body runs at the first `.next()` and a snapshot taken there
+  belongs to whoever iterated, not to the caller. `chatStream` is therefore a
+  plain method returning a generator rather than an `async *` method. And
+  restoring a context is not the same as trusting it — `routineTurnContext` is
+  entered with `enterWith`, which has no scope exit, so a stale chain can carry
+  an older turn's identity. Before #993 that failed closed ("no user context",
+  the tool refused); afterwards the same staleness would mean acting as the
+  previous principal. `LoopbackMcpServerDeps.assertTurnOwner` restores the
+  refusal: it runs inside the restored context immediately before dispatch and
+  throws on mismatch.
+
+  That hook is now wired end to end. The implementation cannot default inside
+  the orchestrator package, because the store it reads (`routineTurnContext`)
+  lives in the application layer, so the chain is: the kernel publishes
+  `createRoutineTurnOwnerGuard()` as the service `routineTurnOwnerGuard`
+  (`middleware/src/plugins/routines/turnOwnerGuard.ts`); the orchestrator plugin
+  **declares** it under `optional_requires:` in its manifest and resolves it
+  with `ctx.services.getOptional`; and `buildOrchestratorForAgent` forwards it
+  into `CliChatAgent` as `turnOwnerGuard` — the CLI runtime only, since that is
+  the one path where a tool call crosses a process boundary. Among the shipped
+  channels only the Teams adapter calls `captureRoutineTurn`, so it is the only
+  one that installs a context this guard can find stale.
+
+  **The declaration is part of the mechanism, not bookkeeping.** Both
+  `services.get` and `services.getOptional` run `assertServiceGranted`, which
+  throws `ServiceNotDeclaredError` for a name in none of `requires:`,
+  `optional_requires:` or `provides:`. This resolution sits near the top of
+  `activate()`, so the first cut of the wiring — a `get` on an undeclared name —
+  threw on every boot, `toolPluginRuntime` recorded an activation failure,
+  `chatAgent@1` was never published, and every channel declaring
+  `requires: ["chatAgent@^1"]` skipped activation. A guard intended to harden
+  one dispatch took chat down on every channel instead. `optional_requires` is
+  the correct block, and `getOptional` the matching verb, because a host that
+  publishes no such service must keep booting with the pre-#1016 behaviour. The
+  legacy allowlist table is explicitly not the remedy: its docblock declares it
+  a closed, dated set where a new row is a regression.
+
+  The guard compares the restored context's `userId` against the turn's own;
+  both are the same channel-native id written by the same adapter, so they agree
+  for a turn that owns its context and disagree exactly when the chain is stale.
+  Context present but the turn names no owner ⇒ refuse, that being the stale
+  shape; mismatch ⇒ refuse; no context ⇒ pass. When this guard landed, that
+  last row was narrower than the obvious phrasing: `manage_routine` refused a
+  missing context in `create` and `list` only. #1025 closed the rest, so all
+  five actions now resolve context and refuse without it. The reason to pass
+  is still that throwing would harden every context-free HTTP turn, this
+  guard's job being staleness rather than authorization. The refusal names
+  neither principal (it reaches the model) and carries a short correlation ref
+  that also appears in the server log, so a user's report can be matched to a
+  log line without either side naming anyone.
+
+  Reviewer note, two parts. The wiring is pinned by `buildOrchestrator.test.ts`,
+  which asserts the constructed `CliChatAgent` carries the guard — the first
+  round shipped a correct guard with no caller, so a test on the guard function
+  alone does not cover the risk. And the service name exists three times in
+  files that cannot import each other (kernel constant, package-side literal,
+  manifest entry), so `routineTurnOwnerGuardGrant.test.ts` ties them together;
+  drift there would look exactly like the supported "no provider installed"
+  state. `pluginServiceGrantCoverage.test.ts` catches the undeclared half
+  repo-wide.
+- **A routine id is not an authorization (#1025).** `manage_routine` resolved
+  the turn context for `create` and `list` but not for `pause`, `resume` and
+  `delete`, which passed a bare `args.id` to a runner whose store filtered on
+  `WHERE id = $1` alone. Knowing an id was therefore enough to pause, resume
+  or delete any tenant's routine. Ids are uuids and `list` is scoped, so an id
+  had to leak rather than be enumerated — obscurity, not authorization.
+
+  Three things changed. The scope is a required, discriminated argument on the
+  runner (`{ kind: 'channel-user', tenant, userId }` or `{ kind: 'operator' }`)
+  rather than an optional `owner?`, because an optional scope is one a caller
+  can forget and forgetting it is how this arose; a cross-tenant operation is
+  now a greppable `operator` literal instead of an omission. The predicate
+  itself lives in the SQL (`AND tenant = $n AND user_id = $n`), so it cannot
+  be raced by a read-then-act caller and cannot be bypassed by a caller that
+  never supplied a scope. And a scoped miss raises the same
+  `RoutineNotFoundError` as a genuinely absent id, so the error channel is not
+  an existence oracle.
+
+  Two neighbours were the same class of gap and are fixed with it. The
+  smart-card actions in `integration.ts` are a second door onto the same
+  mutations and were equally unscoped — the card carries the id, so a replayed
+  payload reached pause/resume/trigger/delete for any row. And
+  `triggerRoutineNow` delivers into the routine's *own* `conversationRef`, so
+  an unscoped trigger let one principal push messages into another tenant's
+  conversation on demand. The operator HTTP router stays deliberately
+  cross-tenant, stated once as `OPERATOR_SCOPE`. Precisely: it sits behind
+  `requireAuth`, which verifies the session JWT and, for Entra sessions, the
+  `ADMIN_ALLOWED_EMAILS` whitelist — it checks neither role nor tenant, so
+  the gate is "any valid operator session", not "operators-only" as an
+  earlier draft of this entry claimed.
+
+  **The card path needed a different answer (#1029).** Scoping the smart-card
+  handler from the turn context alone would have broken all four buttons in
+  production. The Teams adapter dispatches card clicks out-of-band —
+  `handleMessage` takes the routine branch and returns before
+  `runOrchestratorTurn`, so `captureRoutineTurn` never fires and the context
+  is always absent there. Refusing on absence is an outage, not a safe
+  default. The contract therefore takes an optional `actor` from the channel,
+  with documented precedence: explicit `actor`, then the turn context, then
+  UNSCOPED as before #1025 — counted by `unscopedActionMetrics` and logged at
+  error level naming the action and id. A hole you can see beats scoping to
+  nobody, and the counter is what tells an operator the adapter-side fix has
+  shipped: the count stops rising and the fallback can be deleted. Teams
+  already holds both fields on the activity (tenant id and
+  `from.aadObjectId`); passing them is the adapter-side follow-up.
+
+  The test for that path deliberately does NOT wrap the call in
+  `routineTurnContext.run`. That wrapper is what made the first version pass
+  while production would have answered "routines are unavailable in this
+  session" on every click.
+
+  One ordering bug surfaced while scoping `delete`: the runner unregistered
+  the scheduler *before* deleting, so a cross-tenant id silently disarmed
+  someone else's cron while the row survived — a routine that still looks
+  active in `list` and never fires again, which is harder to notice than a
+  deleted row. Unregistration now happens only after the scoped delete
+  reports a row was removed.
+
+  Reviewer note: the layer tests stub the store, so they prove the callers
+  *pass* a scope, not that the store *uses* it. Measured — with the SQL
+  predicate removed, all 14 layer tests stayed green. `routineScoping.test.ts`
+  therefore also drives the real `RoutineStore` against a recording pool and
+  follows each `$n` the SQL names into its bound value, which is what makes a
+  dropped predicate fail. Planted-omission results: tool scope dropped 2 red,
+  store predicate dropped 1 red, delete ordering flipped 1 red.
+- **Only advertised tools are dispatchable (#1015).** `tools/call` used to
+  forward any name into `dispatch()`. The dispatchable set is wider than the
+  advertised one — handler-only registrations stay dispatchable but
+  unadvertised, and readiness-gated tools are filtered out of the advertised
+  list — and since the CLI runs with `--allowedTools mcp__omadia__*`, which
+  pre-approves the whole namespace, this handler is the only place that can
+  tell them apart. It now rejects an unadvertised name with
+  `McpError(MethodNotFound)` before dispatching.
+- **Teardown cannot hang a turn (#1015).** The child is killed *before*
+  `server.stop()` is awaited, and `stop()` calls `closeAllConnections()` before
+  `close()` under a 2s race. Previously `stop()` was awaited first and only
+  called `close()`, which waits for live connections: on an abort path the
+  child was still running and holding a keep-alive socket, so the await could
+  block indefinitely, the kill escalation never ran, and the turn hung holding
+  its semaphore permit while a bearer-gated server kept listening.
+
 ## 4. Plugin install surface
 
 Plugins are installed as signed ZIPs uploaded through the operator UI, not
@@ -135,6 +397,21 @@ in object storage and served via HMAC-signed URLs with a short TTL
 URLs are scoped to a tenant prefix so that bucket browsing does not reveal
 other tenants' keys.
 
+**No operator session is required to open one — by design.** The people who
+click these links are channel users (Teams, Telegram) who are never logged into
+the middleware. Since Epic #470 C6 every plugin route sits behind the kernel's
+session gate by default, which made every `/documents/…` and `/diagrams/…`
+download answer `auth.missing`. Both routers therefore register with
+`auth: 'custom'` — they authenticate each request themselves via the HMAC
+signature and expiry, exactly like a presigned S3 URL — beneath the prefixes
+`/documents/dl` and `/diagrams/dl`, declared in their manifests'
+`permissions.public_paths` (a claim must be at least two segments deep, hence
+`/dl`). The prefix is only served session-less once the operator has granted
+it (`PUT /api/v1/admin/runtime/installed/:id/public-paths`); until then the
+kernel keeps the session gate in front, fail-closed. What the link buys is
+what it always bought: whoever holds it can fetch that one object until it
+expires; there is no per-tenant or per-session authorisation on top.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -143,6 +420,86 @@ history are convenience layers, not security layers. They:
 - Honour the same scope filters as the underlying graph queries.
 - Do not extend a credential's lifetime beyond the originating request.
 - Are flushed on process restart; they are not a substitute for persistence.
+
+## 6a. Dataset link keys — a deliberate identity handle inside the Privacy Shield
+
+Uploaded CSV/XLSX rows are PII-masked irreversibly at import, and the surrogate a
+value receives depends on that file's value set. Two uploads of the same people
+therefore share no identity, and the C0 baseline does not detect names at all —
+a `Name` column is clear at rest yet masked downstream by the v4 shape
+classifier, which then refuses it as a verb key. Cross-file de-duplication was
+impossible without letting the model see names.
+
+The resolution is `datasetLinkKey.ts`: every string column gets a companion
+`__k_<column>` = `HMAC-SHA256(secret, ownerOmadiaUserId ‖ "\n" ‖ normalize(raw))`,
+truncated to 16 hex chars with a guaranteed digit. The model **does** see this
+handle in clear — that is the point, and it is a deliberate weakening relative to
+"irreversible per file". What keeps it inside the shield:
+
+- **Not invertible, not guess-testable.** Without the process-held secret a key
+  neither reveals nor confirms a value. Filters on `__k_*` in `query_dataset`
+  are refused server-side, so the model cannot pair a chosen value with its key.
+- **Keyed per user, not per tenant.** Datasets are owner-scoped everywhere
+  (`queryDatasetRows(datasetId, ownerId)`, route session id, orchestrator
+  `resolvedOmadiaUserId` — one id space). A per-user key adds no linkability the
+  owner did not already have; a tenant-wide key would. Consequence to keep in
+  mind: the user-id string is part of the MAC input, so an identity merge or a
+  future dataset-sharing feature de-links older uploads — by design, not by bug.
+- **Classification rules untouched.** The key clears as `safe-cleartext` via the
+  existing S5 `id` rule; `requireSafe` in the verb engine is unchanged. Masked
+  columns are still never keys.
+- **Secret lifecycle.** `DATASET_LINK_KEY_SECRET`, or HKDF from `VAULT_KEY`
+  (`omadia/dataset-link-key/v1`) when unset. Rotating either re-keys every
+  future import; older datasets stop linking with newer ones. No key material
+  is ever written to a dataset.
+- **Residual.** A pre-existing `query_rows` filter oracle on clear-at-rest
+  columns (`contains` on `Name`) can, in principle, associate a probed row with
+  its now-stable handle. The handle is worthless outside this user's datasets.
+
+### 6b. Uploaded PII cells: encrypted at rest, cleartext only server-side
+
+Until this change a cell the import scan flagged was **masked irreversibly**
+(#430/#727): the surrogate was persisted, the real value gone. That made every
+downstream use wrong for the person entitled to the data — a merged contact
+list showed `lukas.becker@example.net` in every row (each cell got the first
+pseudonym candidate) and the Excel export of it was worthless.
+
+The shield's boundary is the **model**, not the server. Flagged cells are now
+stored as `enc1:<base64url(iv ‖ tag ‖ ciphertext)>` — AES-256-GCM under
+`HKDF(dataset secret, "omadia/dataset-cell-encryption/v1")`, with the owner id
+and column name as AAD, so a ciphertext cannot be replayed into another user's
+dataset or another column. Who gets cleartext:
+
+| Reader | Sees |
+|---|---|
+| `query_dataset` **behind** the Privacy Shield (turn carries a privacy handle ⇒ result is interned) | real values — into the turn store; the model gets a digest, `v4_render_answer`/`create_xlsx` resolve them server-side |
+| `query_dataset` **without** a guard (result would reach the model in clear) | re-masked on read, one pseudonym map per page |
+| owner's `GET /api/v1/datasets/:id/rows` | real values (it is their data) |
+| any reader without the key | `[verschlüsselt — Schlüssel nicht verfügbar]`, never garbage, never a throw |
+
+Two things this rests on: (1) `query_dataset` is **not** intern-exempt
+(`privacyInternPolicy.ts`) — the day it becomes exempt, the "behind the shield"
+branch above is a leak; the test `datasetCellCrypto.test.ts` pins the reveal
+condition to the presence of the turn's privacy handle, which is the same
+signal the orchestrator uses to intern — and when that interning THROWS, the
+orchestrator withholds this tool's rows instead of falling open to the raw
+result as it does for other tools (`dispatchTool`, `QUERY_DATASET_TOOL_NAME`
+branch): the rows carry cleartext precisely because interning was expected.
+(2) The v4 shape classifier now runs the C0 baseline's identity types (e-mail,
+IBAN, phone, address, id number — deliberately not `date`/`amount`, which must
+stay filterable) as its one-way `detector` booster: a digits-only phone column
+would otherwise clear as an `id` handle, and a small dataset's digest inlines
+every value of a safe column. (3) The `[dataset-imported]` fact promises real
+values in render/export only when a privacy handle is active in the turn;
+without one it says plainly that exports show surrogates.
+
+Unchanged: names (C0 does not detect them) are stored in clear as before;
+rows imported before this change hold irreversible surrogates and pass through
+untouched. Rotating the secret (or `VAULT_KEY` when no explicit secret is set)
+makes existing ciphertexts unreadable — an operational decision to announce, not
+a silent `fly secrets set`. Without any secret the import falls back to the old
+irreversible masking and says so in the `[dataset-imported]` fact, so the model
+does not promise real values in an export it cannot deliver.
 
 ## 7. Conductor generic webhooks (#437)
 
@@ -570,6 +927,48 @@ source and requires the suite to go red.
 
 ---
 
+## 10a. A tenant-scoped check may not authorise a table-wide statement (OM-98, Cato-Audit Runde 5)
+
+The knowledge graph keeps every tenant in the SAME physical tables —
+`graph_nodes` and `processes` carry a `tenant_id` **column**, not a schema or a
+database per tenant (`middleware/packages/harness-knowledge-graph-neon/src/migrations/0001_graph_init.sql`).
+Any `ALTER TABLE … DROP COLUMN` on them is therefore a cross-tenant statement,
+whoever triggered it.
+
+The non-destructive vector-column rebuild (the OM-98 "reactivate a provider
+stuck behind a width mismatch" path) checked its precondition with
+`WHERE tenant_id = $1` and executed without one. A tenant that had never
+embedded anything read as *empty*, and that verdict authorised dropping every
+other tenant's embeddings. Two properties now hold instead, and both are the
+general rule, not a one-off patch:
+
+1. **The precondition is scoped like the statement it guards.** The emptiness
+   probe is table-wide, with no `tenant_id` predicate
+   (`vectorCorpusEmptiness.ts`, `vectorColumnCatalog.ts::hasAnyVectorTableWide`).
+2. **The precondition is re-taken where the statement runs.** It is evaluated
+   inside the DDL transaction, after
+   `LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE` — the advisory lock the run holds
+   does not exclude `embeddingBackfill`, which writes vectors without taking it,
+   so a check in its own transaction was a second race rather than a fix for
+   the first. A probe that cannot be taken refuses as `emptiness-unknown`,
+   which is deliberately NOT `corpus-not-empty`: a lock timeout must not read
+   as "your corpus is populated, confirm the discard".
+
+Serialisation follows the same scoping rule. The rebuild holds a **global**
+advisory lock (`LOCK_NS_COLUMN_REBUILD`, key `vector-column-migration`) in
+addition to the tenant-scoped registry lock, because two tenants holding two
+different tenant keys could otherwise rewrite the same physical column at once.
+A hand-written migration in the `0005_turn_embeddings_768.sql` style takes
+neither lock — run it with the middleware stopped.
+
+Tests: `middleware/test/embeddingColumnMigrationGuard.test.ts` (fake driver:
+the scoped and table-wide probes answer differently on purpose, so a regression
+changes the verdict rather than staying green) and
+`middleware/test/embeddingModelGateMigrationGuards.pg.test.ts` (real Postgres:
+an empty tenant beside a populated neighbour, and the global lock).
+
+---
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:
@@ -582,6 +981,21 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 - [ ] Any new proxy route validates the response shape before returning it
       to the agent (defends against prompt injection from upstream).
 - [ ] Any new sub-agent tool is scope-locked at construction time.
+- [ ] A change to either CLI spawn argv keeps the deny gate (`--tools ""`,
+      `--disallowedTools`, `--permission-mode dontAsk`, `--setting-sources ""`,
+      `--restricted` where the CLI version allows it plus the
+      `CLAUDE_CODE_RESTRICTED=1` env twin, `--strict-mcp-config`,
+      `--system-prompt`), the empty `cwd`, the env allowlist, and their tests
+      (§3a). Both sites build argv from `cliSpawnGate.ts` — a new spawn site
+      must use it too, not copy the flags — and pass the resolved CLI version
+      into it (OM-85): a new flag that an older CLI may not know needs the same
+      version gate, never an unconditional argv entry.
+- [ ] A new CLI version has been run against the deny-list drift guard
+      (`cliSpawnGate.test.ts`) **on a machine where that version is installed**,
+      and ideally the live probe (`OMADIA_CLI_LIVE_PROBE=1`), before the
+      version is rolled out (§3a). The guard skips when no binary is present,
+      so ticking this on a machine without the new CLI proves nothing — check
+      the test reported the version you are rolling out.
 - [ ] No new entry in `auth/publicPaths.ts` unless the route authenticates
       itself, and then only the narrowest regex covering that one route (§10).
 - [ ] No operator surface is mounted inside a `DEV_ENDPOINTS_ENABLED` block —

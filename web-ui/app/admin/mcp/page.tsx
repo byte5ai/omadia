@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useTranslations } from 'next-intl';
 
@@ -45,6 +45,7 @@ import {
   type McpConfigField,
   type McpCallLogEntry,
   type McpCatalogEntry,
+  type McpCatalogScope,
   type McpGrantMatrixRow,
   type McpOrchestrator,
   type McpPluginCandidate,
@@ -1038,24 +1039,73 @@ function ToolTestForm({
 
 // ── Marketplace (issue #455) ─────────────────────────────────────────────────
 
+/** Search-as-you-type debounce. Long enough that typing a word costs one
+ *  registry round-trip instead of six, short enough that the list feels live. */
+const CATALOG_SEARCH_DEBOUNCE_MS = 400;
+
+/** How many placeholder cards the loading grid shows. Purely cosmetic — it just
+ *  has to look like "a list is coming", not predict the real result count. */
+const CATALOG_SKELETON_ROWS = 6;
+
+/**
+ * Classify a catalog failure into the three things an operator can actually do
+ * something about. `code` comes from the route's JSON body (`McpRegistryError`
+ * codes), so this stays a lookup rather than message-sniffing.
+ *
+ * The distinction is not cosmetic: "the host never answered" (the official
+ * registry black-holing packets) needs a different reaction — pick another
+ * registry — than "the registry answered with something unparseable".
+ */
+type CatalogErrorKind = 'timeout' | 'unreachable' | 'generic';
+
+function catalogErrorKind(err: unknown): CatalogErrorKind {
+  if (!(err instanceof ApiError)) return 'generic';
+  if (err.code === 'timeout') return 'timeout';
+  // Only genuinely transport-level codes claim "unreachable". `http_error` /
+  // `bad_catalog_shape` mean the registry answered badly, which is a different
+  // problem with a different remedy.
+  if (err.code === 'transport_failed' || err.code === 'blocked_host') return 'unreachable';
+  return 'generic';
+}
+
+interface CatalogFailure {
+  kind: CatalogErrorKind;
+  detail: string;
+}
+
 function MarketplacePane(): React.ReactElement {
   const t = useTranslations('adminMcp');
   const [registries, setRegistries] = useState<McpRegistryInfo[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [entries, setEntries] = useState<McpCatalogEntry[] | null>(null);
   const [query, setQuery] = useState('');
+  /** The query the currently displayed `entries` were fetched for — so the
+   *  result header never claims a count for a query the user has since edited. */
+  const [appliedQuery, setAppliedQuery] = useState('');
+  /** Provenance of the displayed hits — a 'cached-page' result is a substring
+   *  filter over the browse page, not the registry's ranking of its catalog. */
+  const [scope, setScope] = useState<McpCatalogScope>('registry');
+  const [loading, setLoading] = useState(false);
+  const [failure, setFailure] = useState<CatalogFailure | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [connected, setConnected] = useState<string | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<McpRegistryInfo | null>(null);
   const [regName, setRegName] = useState('');
   const [regUrl, setRegUrl] = useState('');
   const [regToken, setRegToken] = useState('');
+
+  /** Monotonic request id. Debounced typing plus a slow registry means an older
+   *  response can land after a newer one; without this the list would flicker
+   *  back to stale results. Only the newest sequence is allowed to render. */
+  const seq = useRef(0);
 
   const refreshRegistries = useCallback(async () => {
     try {
       const list = (await listMcpRegistries()).registries;
       setRegistries(list);
-      setSelected((prev) => prev ?? list[0]?.id ?? null);
+      setSelected((prev) => (prev && list.some((r) => r.id === prev) ? prev : (list[0]?.id ?? null)));
       setError(null);
     } catch (err) {
       setError(errText(err));
@@ -1066,20 +1116,65 @@ function MarketplacePane(): React.ReactElement {
     void refreshRegistries();
   }, [refreshRegistries]);
 
-  async function browse(): Promise<void> {
+  const runSearch = useCallback(
+    async (
+      registryId: string,
+      q: string,
+      opts?: { refresh?: boolean; signal?: AbortSignal },
+    ): Promise<void> => {
+      const mine = ++seq.current;
+      setLoading(true);
+      setFailure(null);
+      setConnected(null);
+      try {
+        const found = await searchMcpCatalog(registryId, q, {
+          ...(opts?.refresh === true ? { refresh: true } : {}),
+          ...(opts?.signal ? { signal: opts.signal } : {}),
+        });
+        if (seq.current !== mine) return;
+        setEntries(found.entries);
+        setScope(found.scope ?? 'registry');
+        setAppliedQuery(q);
+      } catch (err) {
+        // An abort is this component superseding its own request, not a
+        // registry problem — it must not paint the failure card.
+        if (opts?.signal?.aborted === true || seq.current !== mine) return;
+        setEntries(null);
+        setFailure({ kind: catalogErrorKind(err), detail: errText(err) });
+      } finally {
+        if (seq.current === mine) setLoading(false);
+      }
+    },
+    [],
+  );
+
+  /**
+   * The catalog loads itself: selecting a registry browses it immediately and
+   * typing re-queries after a pause. The old pane sat empty until the operator
+   * found the "Browse catalog" button, which made an already-slow registry look
+   * broken rather than slow.
+   *
+   * The cleanup aborts an in-flight request as well as cancelling a pending
+   * debounce: against a registry that takes the full server-side timeout to
+   * fail, dropping only the response would leave every superseded keystroke
+   * and pill click running to completion.
+   */
+  useEffect(() => {
     if (!selected) return;
-    setBusy('browse');
-    setError(null);
-    setConnected(null);
-    try {
-      setEntries((await searchMcpCatalog(selected, query)).entries);
-    } catch (err) {
-      setError(errText(err));
-      setEntries(null);
-    } finally {
-      setBusy(null);
-    }
-  }
+    const registryId = selected;
+    const q = query.trim();
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => {
+        void runSearch(registryId, q, { signal: controller.signal });
+      },
+      q === '' ? 0 : CATALOG_SEARCH_DEBOUNCE_MS,
+    );
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [selected, query, runSearch]);
 
   async function connect(entry: McpCatalogEntry): Promise<void> {
     if (!selected) return;
@@ -1095,115 +1190,152 @@ function MarketplacePane(): React.ReactElement {
     }
   }
 
+  const activeRegistry = (registries ?? []).find((r) => r.id === selected) ?? null;
+  const registryLabel = activeRegistry?.name ?? '';
+  const canRemove = !!activeRegistry && (registries ?? []).length > 1;
+
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
-        <label className="flex flex-col gap-1 text-xs">
-          {t('marketplace.registry')}
-          <select
-            value={selected ?? ''}
-            onChange={(e) => {
-              setSelected(e.target.value || null);
-              setEntries(null);
-            }}
-            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
-          >
-            {(registries ?? []).map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex grow flex-col gap-1 text-xs">
-          {t('marketplace.search')}
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void browse();
-            }}
-            className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
-          />
-        </label>
-        <Button size="sm" busy={busy === 'browse'} onClick={() => void browse()}>
-          {t('marketplace.browse')}
-        </Button>
-        {selected && registries && registries.length > 1 ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              void deleteMcpRegistry(selected).then(() => {
-                setSelected(null);
-                setEntries(null);
-                return refreshRegistries();
-              })
-            }
-          >
-            {t('marketplace.removeRegistry')}
-          </Button>
-        ) : null}
+    <div className="flex flex-col gap-4">
+      {/* Search is the primary action, so it gets the full width and the top
+          slot — the registry picker below it is the qualifier, not the verb. */}
+      <div className="relative">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[color:var(--fg-muted)]"
+        >
+          ⌕
+        </span>
+        <input
+          type="search"
+          value={query}
+          aria-label={t('marketplace.search')}
+          placeholder={t('marketplace.searchPlaceholder')}
+          onChange={(e) => setQuery(e.target.value)}
+          className="w-full rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 py-2.5 pl-9 pr-24 text-sm outline-none transition-colors focus:border-[color:var(--accent)]"
+        />
+        <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+          {query !== '' ? (
+            <Button size="sm" variant="ghost" onClick={() => setQuery('')}>
+              {t('marketplace.clearSearch')}
+            </Button>
+          ) : null}
+          {loading ? (
+            <span className="pr-1 text-xs text-[color:var(--fg-muted)]">
+              {t('marketplace.searching')}
+            </span>
+          ) : null}
+        </div>
       </div>
 
-      <details className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
-        <summary className="cursor-pointer text-xs text-[color:var(--fg-muted)]">
-          {t('marketplace.addRegistry')}
-        </summary>
-        <div className="mt-2 flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-xs">
-            {t('marketplace.registryName')}
-            <input
-              value={regName}
-              onChange={(e) => setRegName(e.target.value)}
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
-            />
-          </label>
-          <label className="flex grow flex-col gap-1 text-xs">
-            {t('marketplace.registryUrl')}
-            <input
-              value={regUrl}
-              onChange={(e) => setRegUrl(e.target.value)}
-              placeholder="https://…"
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs">
-            {t('marketplace.registryToken')}
-            <input
-              type="password"
-              value={regToken}
-              onChange={(e) => setRegToken(e.target.value)}
-              className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
-            />
-          </label>
-          <Button
-            size="sm"
-            busy={busy === 'addRegistry'}
-            onClick={() => {
-              setBusy('addRegistry');
-              setError(null);
-              void addMcpRegistry({
-                name: regName.trim(),
-                url: regUrl.trim(),
-                ...(regToken.trim() !== ''
-                  ? { authKind: 'bearer' as const, token: regToken.trim() }
-                  : {}),
-              })
-                .then(() => {
-                  setRegName('');
-                  setRegUrl('');
-                  setRegToken('');
-                  return refreshRegistries();
+      {/* Registries as pills: with two or three sources the whole choice is
+          visible at once, and switching is one click instead of open-select-pick. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-[color:var(--fg-muted)]">{t('marketplace.registry')}</span>
+        {(registries ?? []).map((r) => {
+          const active = r.id === selected;
+          return (
+            <Button
+              key={r.id}
+              size="sm"
+              pill
+              variant={active ? 'primary' : 'ghost'}
+              aria-pressed={active}
+              onClick={() => {
+                setSelected(r.id);
+                setEntries(null);
+                setConnected(null);
+                // Without this the previous registry's error card survives the
+                // debounce window and is re-labelled with the NEW registry's
+                // name — an accusation against a host never contacted.
+                setFailure(null);
+              }}
+            >
+              {r.name}
+            </Button>
+          );
+        })}
+        <span className="grow" />
+        <Button size="sm" variant="ghost" onClick={() => setManageOpen((v) => !v)}>
+          {t('marketplace.manageRegistries')}
+        </Button>
+      </div>
+
+      {/* Registry management is administration, not discovery — it stays folded
+          away so it cannot be mistaken for part of the search flow, and the
+          destructive action lives in here rather than beside the search box. */}
+      {manageOpen ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
+          <div className="text-xs text-[color:var(--fg-muted)]">{t('marketplace.addRegistry')}</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-col gap-1 text-xs">
+              {t('marketplace.registryName')}
+              <input
+                value={regName}
+                onChange={(e) => setRegName(e.target.value)}
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
+              />
+            </label>
+            <label className="flex grow flex-col gap-1 text-xs">
+              {t('marketplace.registryUrl')}
+              <input
+                value={regUrl}
+                onChange={(e) => setRegUrl(e.target.value)}
+                placeholder="https://…"
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs">
+              {t('marketplace.registryToken')}
+              <input
+                type="password"
+                value={regToken}
+                onChange={(e) => setRegToken(e.target.value)}
+                className="rounded-md border border-[color:var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:border-[color:var(--accent)]"
+              />
+            </label>
+            <Button
+              size="sm"
+              busy={busy === 'addRegistry'}
+              disabled={regName.trim() === '' || regUrl.trim() === ''}
+              onClick={() => {
+                setBusy('addRegistry');
+                setError(null);
+                void addMcpRegistry({
+                  name: regName.trim(),
+                  url: regUrl.trim(),
+                  ...(regToken.trim() !== ''
+                    ? { authKind: 'bearer' as const, token: regToken.trim() }
+                    : {}),
                 })
-                .catch((err: unknown) => setError(errText(err)))
-                .finally(() => setBusy(null));
-            }}
-          >
-            {t('marketplace.addRegistryConfirm')}
-          </Button>
+                  .then(() => {
+                    setRegName('');
+                    setRegUrl('');
+                    setRegToken('');
+                    return refreshRegistries();
+                  })
+                  .catch((err: unknown) => setError(errText(err)))
+                  .finally(() => setBusy(null));
+              }}
+            >
+              {t('marketplace.addRegistryConfirm')}
+            </Button>
+          </div>
+          {canRemove && activeRegistry ? (
+            <div className="flex items-center justify-between gap-3 border-t border-[color:var(--border)] pt-3">
+              <span className="text-xs text-[color:var(--fg-muted)]">
+                {t('marketplace.removeRegistryBody', { name: activeRegistry.name })}
+              </span>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => setConfirmRemove(activeRegistry)}
+              >
+                {t('marketplace.removeRegistry')}
+              </Button>
+            </div>
+          ) : null}
         </div>
-      </details>
+      ) : null}
 
       {error ? <div className="text-sm text-[color:var(--danger)]">{error}</div> : null}
       {connected ? (
@@ -1212,68 +1344,206 @@ function MarketplacePane(): React.ReactElement {
         </div>
       ) : null}
 
-      {entries ? (
-        entries.length === 0 ? (
-          <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.noResults')}</div>
-        ) : (
-          <div className="flex flex-col gap-2">
+      {/* ── Result region ─────────────────────────────────────────────────── */}
+      {loading && entries === null ? (
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3" aria-busy="true">
+          {Array.from({ length: CATALOG_SKELETON_ROWS }, (_, i) => (
+            <div
+              key={i}
+              className="h-28 animate-pulse rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/30"
+            />
+          ))}
+        </div>
+      ) : failure ? (
+        <div className="flex flex-col gap-2 rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-4">
+          <div className="text-sm text-[color:var(--danger)]">
+            {failure.kind === 'timeout'
+              ? t('marketplace.errorTimeout', { name: registryLabel })
+              : failure.kind === 'unreachable'
+                ? t('marketplace.errorUnreachable', { name: registryLabel })
+                : t('marketplace.errorGeneric', { name: registryLabel })}
+          </div>
+          <div className="text-xs text-[color:var(--fg-muted)]">
+            {failure.kind === 'generic'
+              ? failure.detail
+              : failure.kind === 'timeout'
+                ? t('marketplace.errorTimeoutHint')
+                : t('marketplace.errorUnreachableHint')}
+          </div>
+          <div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                if (selected) void runSearch(selected, query.trim(), { refresh: true });
+              }}
+            >
+              {t('marketplace.retry')}
+            </Button>
+          </div>
+        </div>
+      ) : entries === null ? (
+        <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.hint')}</div>
+      ) : entries.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-[color:var(--border)] p-6 text-center">
+          <div className="text-sm text-[color:var(--fg-muted)]">
+            {appliedQuery === ''
+              ? t('marketplace.noResults')
+              : t('marketplace.noResultsFor', { query: appliedQuery })}
+          </div>
+          <div className="mt-1 text-xs text-[color:var(--fg-muted)]">
+            {t('marketplace.noResultsHint')}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {/* Two independently long strings on one line overlapped the grid
+              below once either wrapped, so they stack until there is room. */}
+          <div className="flex flex-col gap-1 text-xs text-[color:var(--fg-muted)] sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+            <span className="flex shrink-0 items-center gap-1">
+              {appliedQuery === ''
+                ? t('marketplace.resultCount', { count: entries.length, name: registryLabel })
+                : t('marketplace.resultCountFor', {
+                    count: entries.length,
+                    query: appliedQuery,
+                    name: registryLabel,
+                  })}
+              {/* Neither `selected` nor `query` changes on a re-run, so the
+                  auto-load effect will not refire — and the server holds a
+                  5-minute catalog cache. Without this there is no way to see
+                  a server published upstream a minute ago. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                busy={loading}
+                busyLabel={t('marketplace.searching')}
+                onClick={() => {
+                  if (selected) void runSearch(selected, appliedQuery, { refresh: true });
+                }}
+              >
+                {t('marketplace.refresh')}
+              </Button>
+              {/* Say so when these hits are a filter over the browse page
+                  rather than the registry's own search: otherwise "1 Treffer"
+                  reads as "the registry has one", and the operator concludes a
+                  server is missing when it is merely past the cached page. */}
+              {scope === 'cached-page' && appliedQuery !== '' ? (
+                <span
+                  title={t('marketplace.scopeCachedPageWhy')}
+                  className="whitespace-nowrap rounded border border-[color:var(--warning)]/50 px-1.5 py-0.5 text-[10px] text-[color:var(--warning)]"
+                >
+                  {t('marketplace.scopeCachedPage')}
+                </span>
+              ) : null}
+            </span>
+            <span className="sm:text-right">{t('marketplace.hintShort')}</span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
             {entries.map((entry) => (
               <div
                 key={entry.id}
-                className="flex items-start justify-between gap-3 rounded-md border border-[color:var(--border)] px-3 py-2"
+                className="flex flex-col gap-2 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/30 p-3 transition-colors hover:border-[color:var(--border-strong)]"
               >
                 <div className="min-w-0">
-                  <div className="text-sm">
+                  <div className="truncate text-sm font-medium" title={entry.name}>
                     {entry.name}
-                    {entry.version ? (
-                      <span className="text-xs text-[color:var(--fg-muted)]"> · v{entry.version}</span>
-                    ) : null}
                   </div>
-                  {entry.description ? (
-                    <div className="text-xs text-[color:var(--fg-muted)]">{entry.description}</div>
+                  {entry.version ? (
+                    <div className="text-[10px] text-[color:var(--fg-muted)]">v{entry.version}</div>
                   ) : null}
-                  <div className="mt-1 flex flex-wrap gap-2 text-[10px]">
-                    {entry.license ? (
-                      <span className="text-[color:var(--fg-muted)]">{entry.license}</span>
-                    ) : (
-                      <span className="text-[color:var(--warning)]">{t('marketplace.unlicensed')}</span>
-                    )}
-                    {entry.author ? (
-                      <span className="text-[color:var(--fg-muted)]">@{entry.author}</span>
-                    ) : null}
-                    {entry.transport ? (
-                      <span className="text-[color:var(--fg-muted)]">{entry.transport}</span>
-                    ) : (
-                      <span className="text-[color:var(--fg-muted)]">{t('marketplace.browseOnly')}</span>
-                    )}
-                    {entry.transport === 'http' || entry.transport === 'sse' ? (
-                      <span className="text-[color:var(--warning)]">{t('marketplace.authHintRemote')}</span>
-                    ) : entry.transport === 'stdio' ? (
-                      <span className="text-[color:var(--fg-muted)]">{t('marketplace.authHintLocal')}</span>
-                    ) : null}
-                  </div>
                 </div>
-                <span
-                  className="shrink-0"
-                  title={!entry.transport ? t('marketplace.browseOnlyHint') : undefined}
-                >
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    busy={busy === `connect:${entry.id}`}
-                    disabled={!entry.transport}
-                    onClick={() => void connect(entry)}
+                {entry.description ? (
+                  <p className="line-clamp-3 text-xs text-[color:var(--fg-muted)]">
+                    {entry.description}
+                  </p>
+                ) : null}
+                {/* Badges must never wrap inside their own border — a long
+                    label breaking mid-pill spilled the text past the outline. */}
+                <div className="mt-auto flex flex-wrap items-center gap-1.5 text-[10px]">
+                  <span className="whitespace-nowrap rounded border border-[color:var(--border)] px-1.5 py-0.5 text-[color:var(--fg-muted)]">
+                    {entry.transport ?? t('marketplace.browseOnly')}
+                  </span>
+                  {entry.license ? (
+                    <span className="whitespace-nowrap rounded border border-[color:var(--border)] px-1.5 py-0.5 text-[color:var(--fg-muted)]">
+                      {entry.license}
+                    </span>
+                  ) : (
+                    <span
+                      title={t('marketplace.unlicensed')}
+                      className="whitespace-nowrap rounded border border-[color:var(--warning)]/50 px-1.5 py-0.5 text-[color:var(--warning)]"
+                    >
+                      {t('marketplace.unlicensedShort')}
+                    </span>
+                  )}
+                  {entry.author ? (
+                    <span className="truncate text-[color:var(--fg-muted)]">@{entry.author}</span>
+                  ) : null}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  {(() => {
+                    const authHint =
+                      entry.transport === 'http' || entry.transport === 'sse'
+                        ? t('marketplace.authHintRemote')
+                        : entry.transport === 'stdio'
+                          ? t('marketplace.authHintLocal')
+                          : '';
+                    // Truncated rather than wrapped so it cannot push past the
+                    // card edge; the full sentence stays available on hover.
+                    return (
+                      <span
+                        title={authHint === '' ? undefined : authHint}
+                        className="min-w-0 truncate text-[10px] text-[color:var(--fg-muted)]"
+                      >
+                        {authHint}
+                      </span>
+                    );
+                  })()}
+                  <span
+                    className="shrink-0"
+                    title={!entry.transport ? t('marketplace.browseOnlyHint') : undefined}
                   >
-                    {t('marketplace.connect')}
-                  </Button>
-                </span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      busy={busy === `connect:${entry.id}`}
+                      disabled={!entry.transport}
+                      onClick={() => void connect(entry)}
+                    >
+                      {t('marketplace.connect')}
+                    </Button>
+                  </span>
+                </div>
               </div>
             ))}
           </div>
-        )
-      ) : (
-        <div className="text-sm text-[color:var(--fg-muted)]">{t('marketplace.hint')}</div>
+        </div>
       )}
+
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        title={t('marketplace.removeRegistry')}
+        body={
+          confirmRemove
+            ? t('marketplace.removeRegistryBody', { name: confirmRemove.name })
+            : undefined
+        }
+        confirmLabel={t('marketplace.removeRegistry')}
+        cancelLabel={t('cancel')}
+        tone="danger"
+        onCancel={() => setConfirmRemove(null)}
+        onConfirm={() => {
+          const target = confirmRemove;
+          setConfirmRemove(null);
+          if (!target) return;
+          void deleteMcpRegistry(target.id)
+            .then(() => {
+              setSelected(null);
+              setEntries(null);
+              return refreshRegistries();
+            })
+            .catch((err: unknown) => setError(errText(err)));
+        }}
+      />
     </div>
   );
 }

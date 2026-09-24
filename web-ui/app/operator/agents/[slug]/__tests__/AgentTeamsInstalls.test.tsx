@@ -61,9 +61,12 @@ function capabilities(
     enumerate: false,
     multi_team: false,
     chat_install: false,
+    chat_uninstall: false,
     unsupported_reason: {
       uninstall:
         'the installed teamsProvisioner@1 publishes no uninstallFromTeam method',
+      chat_uninstall:
+        'the installed teamsProvisioner@1 publishes no uninstallFromChat method',
       enumerate: 'teamsProvisioner@1 publishes no installation-listing method',
       multi_team: 'agent_teams_identities stores ONE team_id per agent',
     },

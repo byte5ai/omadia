@@ -41,6 +41,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
 import express from 'express';
+import type { ModelInfo } from '@omadia/llm-provider';
 
 import {
   ConfigValidationError,
@@ -51,6 +52,7 @@ import {
 } from '@omadia/orchestrator';
 import {
   CONTEXT_MEMORY_MODES,
+  chatLabelFromMembers,
   createOperatorAgentsRouter,
   defaultTeamsBotSecretRef,
   projectInstalledTeams,
@@ -63,6 +65,11 @@ import {
   type OperatorTeamsInstallRecord,
 } from '../src/routes/operatorAgents.js';
 import type { TeamsProvisionerAccessor } from '../src/platform/teamsProvisionerService.js';
+import type { BotPresenceStore } from '../src/conductor/botPresenceStore.js';
+import type { ChannelDirectoryRegistry } from '../src/channels/channelDirectoryRegistry.js';
+import type { ConversationRosterRegistry } from '../src/channels/rosterRegistry.js';
+import type { ConversationParticipant, ConversationRoster } from '@omadia/channel-sdk';
+import type { TeamsTargetKind } from '../src/platform/teamsInstallTarget.js';
 import {
   armNotConfiguredDetail,
   consentMissingDetail,
@@ -78,6 +85,31 @@ import {
 } from '../src/services/teamsBotsConfigSync.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
+/** #1033 — the model catalogue the policy routes validate against. */
+const POLICY_CATALOG: Record<string, ModelInfo | undefined> = {
+  'anthropic:claude-opus-4-8': {
+    id: 'anthropic:claude-opus-4-8',
+    provider: 'anthropic',
+    modelId: 'claude-opus-4-8',
+    label: 'Opus',
+    class: 'frontier',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: true,
+    effortLevels: ['low', 'medium', 'high', 'xhigh'],
+  },
+  'openai:gpt-5.5': {
+    id: 'openai:gpt-5.5',
+    provider: 'openai',
+    modelId: 'gpt-5.5',
+    label: 'GPT',
+    class: 'frontier',
+    maxTokens: 1,
+    contextWindow: 1,
+    vision: false,
+  },
+};
+
 interface AgentMem {
   id: string;
   slug: string;
@@ -88,6 +120,18 @@ interface AgentMem {
   /** W5 memory-ACL rollout mode (#899). Optional exactly like the real
    *  `AgentRow`, so a row seeded without it models a pre-0050 agent. */
   contextMemory?: 'off' | 'enforce' | 'enforce-strict';
+  /** #1018 — optional like the real row; absent models a pre-0058 agent. */
+  agentToAgent?: 'off' | 'on';
+  /** #1033 — optional like the real row; absent models a pre-0059 agent. */
+  modelPolicy?: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+interface PeerPolicyMem {
+  channelType: string;
+  channelKey: string;
+  agentId: string;
+  agentToAgent: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -123,9 +167,15 @@ class FakeConfigStore {
   plugins = new Map<string, PluginMem>(); // key: agentId|pluginId
   bindings = new Map<string, BindingMem>(); // key: type|key
   fallbackId: string | null = null;
+  /** Provisioned bot identities (`28:<app id>` per agent) — what the
+   *  peer-chat picker derives its candidates from. */
+  identities: Array<{ channelType: string; channelKey: string; agentId: string }> = [];
 
   listAgents(): Promise<AgentMem[]> {
     return Promise.resolve(Array.from(this.agents.values()));
+  }
+  listChannelIdentities(): Promise<Array<{ channelType: string; channelKey: string; agentId: string }>> {
+    return Promise.resolve(this.identities.slice());
   }
   listAllAgentPlugins(): Promise<PluginMem[]> {
     return Promise.resolve(Array.from(this.plugins.values()));
@@ -183,6 +233,8 @@ class FakeConfigStore {
       privacyProfile: 'strict' | 'default';
       status: 'enabled' | 'disabled';
       contextMemory: 'off' | 'enforce' | 'enforce-strict';
+      agentToAgent: 'off' | 'on';
+      modelPolicy: Record<string, unknown>;
     }>,
   ): Promise<AgentMem> {
     const row = this.agents.get(id);
@@ -190,6 +242,43 @@ class FakeConfigStore {
     const updated: AgentMem = { ...row, ...patch, updatedAt: new Date() };
     this.agents.set(id, updated);
     return Promise.resolve(updated);
+  }
+  // #1018 — per-(channel, agent) peer policies. key: type|key|agentId
+  peerPolicies = new Map<string, PeerPolicyMem>();
+  listAgentChannelPolicies(agentId: string): Promise<PeerPolicyMem[]> {
+    return Promise.resolve(
+      Array.from(this.peerPolicies.values()).filter((p) => p.agentId === agentId),
+    );
+  }
+  getAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<PeerPolicyMem | undefined> {
+    return Promise.resolve(this.peerPolicies.get(`${channelType}|${channelKey}|${agentId}`));
+  }
+  upsertAgentChannelPolicy(input: {
+    channelType: string;
+    channelKey: string;
+    agentId: string;
+    agentToAgent: boolean;
+  }): Promise<PeerPolicyMem> {
+    const key = `${input.channelType}|${input.channelKey}|${input.agentId}`;
+    const prev = this.peerPolicies.get(key);
+    const row: PeerPolicyMem = {
+      ...input,
+      createdAt: prev?.createdAt ?? new Date(),
+      updatedAt: new Date(),
+    };
+    this.peerPolicies.set(key, row);
+    return Promise.resolve(row);
+  }
+  deleteAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<boolean> {
+    return Promise.resolve(this.peerPolicies.delete(`${channelType}|${channelKey}|${agentId}`));
   }
   deleteAgent(id: string): Promise<void> {
     this.agents.delete(id);
@@ -299,6 +388,10 @@ interface TeamsIdentityMem {
   tenantId: string | null;
   teamsAppId: string | null;
   teamsAppExternalId: string | null;
+  /** Migration 0054 — what `teamId` actually addresses. Optional, exactly
+   *  like the router's port, so a row seeded without it still reads as the
+   *  historical `'team'`. */
+  targetKind?: TeamsTargetKind;
   lastError: string | null;
   /** Optional exactly like the router's port — a row seeded without
    *  timestamps must stay assignable to `OperatorTeamsIdentityRecord`. */
@@ -390,6 +483,32 @@ class FakeTeamsProvisioner {
     readonly value: { readonly teamId: string; readonly teamsAppId: string };
   }> {
     this.calls.push({ ...input });
+    if (this.error) return Promise.reject(this.error);
+    return Promise.resolve({ outcome: this.outcome, value: { ...input } });
+  }
+}
+
+/**
+ * A connector that can remove a CHAT install too — `uninstallFromChat`, a
+ * different Graph endpoint from `uninstallFromTeam` (`/chats/{id}` versus
+ * `/teams/{id}`).
+ *
+ * A SUBCLASS rather than a flag on the base, so the base keeps modelling the
+ * connector that installs into chats but cannot remove from them — the exact
+ * skew the route has to feature-detect, and the state in which handing a chat
+ * id to `uninstallFromTeam` produced a 400 from Graph.
+ */
+class FakeTeamsChatProvisioner extends FakeTeamsProvisioner {
+  chatCalls: Array<{ chatId: string; teamsAppId: string }> = [];
+
+  uninstallFromChat(input: {
+    readonly chatId: string;
+    readonly teamsAppId: string;
+  }): Promise<{
+    readonly outcome: 'uninstalled' | 'already-absent';
+    readonly value: { readonly chatId: string; readonly teamsAppId: string };
+  }> {
+    this.chatCalls.push({ ...input });
     if (this.error) return Promise.reject(this.error);
     return Promise.resolve({ outcome: this.outcome, value: { ...input } });
   }
@@ -513,9 +632,15 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 class FakeRegistry {
   reloadCalls = 0;
   invalidateCalls: Array<{ slug: string; mode: 'drain' | 'kill' }> = [];
+  /** Live owners of bot keys — the partner names the peer-chat picker shows. */
+  owners = new Map<string, { id: string; slug: string; name: string }>();
 
   list() {
     return [];
+  }
+  identityForChannel(channelType: string, channelKey: string) {
+    const agent = this.owners.get(`${channelType}|${channelKey}`);
+    return agent ? { agent } : undefined;
   }
   get(slug: string) {
     return { memoryScope: [`agent:fake:${slug}:*`, 'core'] };
@@ -556,6 +681,13 @@ describe('createOperatorAgentsRouter', () => {
   /** Migration 0053 — `undefined` keeps the pre-0053 response shape every
    *  existing case pins; the timeline cases bind it per test. */
   let teamsEvents: FakeTeamsEventStore | undefined;
+  /** #1018 — the presence directory the peer-chat picker reads. `undefined`
+   *  models no DATABASE_URL: the list then carries no candidates. */
+  let peerChats: BotPresenceStore | undefined;
+  /** Chat names: what the channel directory lists, and what the live roster
+   *  answers per `channelType|conversationId`. `undefined` = source absent. */
+  let chatDirectory: Array<{ channelType: string; key: string; label: string; members?: string[] }> | undefined;
+  let chatRosters: Record<string, ConversationRoster | undefined> | undefined;
 
   before(async () => {
     store = new FakeConfigStore();
@@ -578,6 +710,23 @@ describe('createOperatorAgentsRouter', () => {
         getAgentGraphStore: () => graph as unknown as AgentGraphStore,
         // #910 — read live, like every other getter here.
         getInstalledRegistry: () => installedPlugins,
+        // #1018 — the chats each bot is in; per-test fixture, undefined = no DB.
+        getPeerChatDirectory: () => peerChats,
+        // …and their names: directory entries + live rosters, both per test.
+        getChannelDirectory: () =>
+          chatDirectory ? ({ listAll: async () => chatDirectory } as unknown as ChannelDirectoryRegistry) : undefined,
+        getConversationRosters: () =>
+          chatRosters
+            ? ({
+                getRoster: async (channelType: string, id: string) => chatRosters?.[`${channelType}|${id}`],
+              } as unknown as ConversationRosterRegistry)
+            : undefined,
+        // #1033 — a two-provider catalogue; only anthropic holds a key.
+        getModelPolicyContext: () => ({
+          resolveModel: (provider: string, model: string) => POLICY_CATALOG[`${provider}:${model}`],
+          usable: async (provider: string) => provider === 'anthropic',
+          activeProvider: 'anthropic',
+        }),
         // W1a (#860) — getters read the CURRENT fakes so afterEach resets apply.
         getTeamsIdentity: () => ({
           store: teamsStore,
@@ -605,6 +754,10 @@ describe('createOperatorAgentsRouter', () => {
     graph = new FakeGraphStore();
     registry.reloadCalls = 0;
     registry.invalidateCalls = [];
+    registry.owners = new Map();
+    peerChats = undefined;
+    chatDirectory = undefined;
+    chatRosters = undefined;
     teamsStore = new FakeTeamsIdentityStore();
     teamsRunner = new FakeTeamsRunner();
     provisionerInstalled = true;
@@ -613,6 +766,310 @@ describe('createOperatorAgentsRouter', () => {
     teamsInstalls = undefined;
     resolveTeamName = undefined;
     teamsEvents = undefined;
+  });
+
+  // ── model policy (#1033) ─────────────────────────────────────────────
+  describe('model policy (#1033)', () => {
+    it('GET /:slug/model-policy defaults to auto/none with the active provider', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { policy: unknown; activeProvider: string; vision: unknown };
+      assert.deepEqual(body.policy, { primary: 'auto', fallback: 'none' });
+      assert.equal(body.activeProvider, 'anthropic');
+      assert.deepEqual(body.vision, {});
+    });
+
+    it('PUT /:slug/model-policy persists a validated policy, reports vision, reloads', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          primary: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'xhigh' },
+          fallback: 'auto',
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { ok: boolean; vision: { primary?: boolean } };
+      assert.equal(body.ok, true);
+      assert.equal(body.vision.primary, true);
+      assert.deepEqual((await store.getAgentBySlug('public'))?.modelPolicy, {
+        primary: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'xhigh' },
+        fallback: 'auto',
+      });
+      assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('PUT /:slug/model-policy rejects an unkeyed provider (409, like every config validation) and persists nothing', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: { provider: 'openai', model: 'gpt-5.5' }, fallback: 'none' }),
+      });
+      // ConfigValidationError → 409 on this router (the same code a duplicate
+      // slug or a cross-provider routing pick gets); a malformed BODY is 400.
+      assert.equal(res.status, 409);
+      assert.equal((await store.getAgentBySlug('public'))?.modelPolicy, undefined);
+      assert.equal(registry.reloadCalls, 0);
+    });
+
+    it('PUT /:slug/model-policy rejects an effort the model does not declare and a malformed body', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const undeclared = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'auto', fallback: { provider: 'anthropic', model: 'claude-opus-4-8', effort: 'max' } }),
+      });
+      // `max` is outside the contract vocabulary → the zod shape check (400).
+      assert.equal(undeclared.status, 400);
+      const outsideDeclared = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'auto', fallback: { provider: 'openai', model: 'gpt-5.5', effort: 'high' } }),
+      });
+      // In the vocabulary, but the model declares no levels → validation (409).
+      assert.equal(outsideDeclared.status, 409);
+      const malformed = await fetch(`${baseUrl}/public/model-policy`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ primary: 'sometimes' }),
+      });
+      assert.equal(malformed.status, 400);
+    });
+
+    it('GET /:slug/model-policy reads an unrecognised stored shape as the default', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, modelPolicy: { primary: 'best', fallback: 'none' } });
+      const res = await fetch(`${baseUrl}/public/model-policy`);
+      assert.deepEqual(((await res.json()) as { policy: unknown }).policy, { primary: 'auto', fallback: 'none' });
+    });
+  });
+
+  // ── agent-to-agent switches (#1018) ─────────────────────────────────
+  describe('agent-to-agent switches (#1018)', () => {
+    it('GET /:slug/agent-to-agent defaults to off and advertises the union', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { slug: 'public', mode: 'off', modes: ['off', 'on'] });
+    });
+
+    it('GET /:slug/agent-to-agent reads an unknown persisted value as off', async () => {
+      const agent = await store.createAgent({ slug: 'public', name: 'Public' });
+      store.agents.set(agent.id, { ...agent, agentToAgent: 'maybe' as never });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`);
+      assert.equal(((await res.json()) as { mode: string }).mode, 'off');
+    });
+
+    it('PUT /:slug/agent-to-agent persists the mode and reloads the registry', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'on' }),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { ok: true, mode: 'on' });
+      assert.equal((await store.getAgentBySlug('public'))?.agentToAgent, 'on');
+      assert.equal(registry.reloadCalls, 1);
+    });
+
+    it('PUT /:slug/agent-to-agent rejects a mode outside the union with 400', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const res = await fetch(`${baseUrl}/public/agent-to-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'always' }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it('peer-channels: PUT upserts, GET lists, DELETE removes; 404 for unknown pair', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      // Teams group-chat keys carry `:` and `@` — they must survive the path.
+      const key = encodeURIComponent('19:9cdb0cd5@thread.skype');
+      const put = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      assert.equal(put.status, 200);
+      assert.deepEqual(await put.json(), {
+        ok: true,
+        channelType: 'teams',
+        channelKey: '19:9cdb0cd5@thread.skype',
+        enabled: true,
+      });
+
+      const list = await fetch(`${baseUrl}/public/peer-channels`);
+      const body = (await list.json()) as {
+        mode: string;
+        channels: Array<{ channelType: string; channelKey: string; enabled: boolean }>;
+      };
+      assert.equal(body.mode, 'off');
+      assert.equal(body.channels.length, 1);
+      assert.equal(body.channels[0]?.channelKey, '19:9cdb0cd5@thread.skype');
+      assert.equal(body.channels[0]?.enabled, true);
+
+      const off = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: false }),
+      });
+      assert.equal(((await off.json()) as { enabled: boolean }).enabled, false);
+
+      const del = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, { method: 'DELETE' });
+      assert.equal(del.status, 200);
+      const gone = await fetch(`${baseUrl}/public/peer-channels/teams/${key}`, { method: 'DELETE' });
+      assert.equal(gone.status, 404);
+    });
+
+    it('peer-channels: a non-boolean body is 400, an unknown agent is 404', async () => {
+      await store.createAgent({ slug: 'public', name: 'Public' });
+      const bad = await fetch(`${baseUrl}/public/peer-channels/teams/x`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: 'yes' }),
+      });
+      assert.equal(bad.status, 400);
+      const missing = await fetch(`${baseUrl}/nope/peer-channels`);
+      assert.equal(missing.status, 404);
+    });
+
+    it('peer-channels: GET offers only the chats the agent\'s own bot is in, with the partners present', async () => {
+      // Two provisioned agents. `hr` is in a group chat with `messias`, in a
+      // channel alone, and in a personal chat — the operator must be able to
+      // pick the first two and never see the third (no second bot can ever
+      // be there). A chat `hr` was never added to is not a candidate at all.
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      const messias = await store.createAgent({ slug: 'messias', name: 'Messias' });
+      store.identities = [
+        { channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id },
+        { channelType: 'teams', channelKey: '28:bbbb', agentId: messias.id },
+      ];
+      registry.owners.set('teams|28:aaaa', { id: hr.id, slug: 'hr', name: 'Karen' });
+      registry.owners.set('teams|28:bbbb', { id: messias.id, slug: 'messias', name: 'Messias' });
+      const asked: string[] = [];
+      peerChats = {
+        botAppIdsIn: async () => [],
+        conversationsOf: async (appId) => {
+          asked.push(appId);
+          if (appId !== 'aaaa') return [];
+          const at = new Date('2026-09-07T10:00:00Z');
+          return [
+            { conversationId: '19:sales@thread.skype', teamsType: 'groupChat', name: 'Sales sync', updatedAt: at, botAppIds: ['aaaa', 'bbbb', 'cccc'] },
+            { conversationId: '19:ops@thread.tacv2', teamsType: 'channel', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+            { conversationId: 'a:1', teamsType: 'personal', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          ];
+        },
+      };
+
+      const res = await fetch(`${baseUrl}/hr/peer-channels`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        channel_types: string[];
+        available: Array<{ channelType: string; channelKey: string; label: string | null; kind: string | null; members: string[]; partners: Array<{ slug: string; name: string }> }>;
+      };
+      assert.deepEqual(asked, ['aaaa'], 'only the agent\'s own bot is looked up');
+      assert.deepEqual(body.channel_types, ['teams']);
+      assert.deepEqual(body.available, [
+        // `cccc` has no live owner — an unowned bot is not a partner anyone can name.
+        { channelType: 'teams', channelKey: '19:sales@thread.skype', label: 'Sales sync', kind: 'groupChat', members: [], partners: [{ slug: 'messias', name: 'Messias' }] },
+        { channelType: 'teams', channelKey: '19:ops@thread.tacv2', label: null, kind: 'channel', members: [], partners: [] },
+      ]);
+
+      // No bot of its own → no channel kind, no candidate: the UI says so
+      // instead of offering an empty picker.
+      const none = await fetch(`${baseUrl}/messias/peer-channels`);
+      const noneBody = (await none.json()) as { channel_types: string[]; available: unknown[] };
+      assert.deepEqual(noneBody.channel_types, ['teams']);
+      assert.deepEqual(noneBody.available, []);
+      store.identities = [];
+      const noBot = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as { channel_types: string[]; available: unknown[] };
+      assert.deepEqual(noBot, { ...noBot, channel_types: [], available: [] });
+    });
+
+    it('peer-channels: an untitled chat is named from the directory, else from the live roster — never left as an id when a name exists', async () => {
+      // Marcel's field test: the picker showed `19:9cdb0cd5…@thread.skype`
+      // although /operator/channels names that chat. The name lives with
+      // the channel plugin; the picker must ask it — directory first (same
+      // label the channels page shows), roster as the post-restart fallback.
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      store.identities = [{ channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id }];
+      const at = new Date('2026-09-07T10:00:00Z');
+      peerChats = {
+        botAppIdsIn: async () => [],
+        conversationsOf: async () => [
+          { conversationId: '19:dir@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:roster@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:titled@thread.skype', teamsType: 'groupChat', name: 'Budget 2027', updatedAt: at, botAppIds: ['aaaa'] },
+          { conversationId: '19:unknown@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
+        ],
+      };
+      chatDirectory = [
+        { channelType: 'teams', key: '19:dir@thread.skype', label: 'Teams · Sales sync', members: ['Anna Meier', 'Ben Ott'] },
+        // Same key on another channel type must not leak across.
+        { channelType: 'telegram', key: '19:roster@thread.skype', label: 'wrong channel' },
+      ];
+      const person = (id: string, displayName: string, isBot = false): ConversationParticipant => ({
+        userRef: { kind: 'teams' as ConversationParticipant['userRef']['kind'], id, displayName },
+        isBot,
+      });
+      chatRosters = {
+        'teams|19:roster@thread.skype': {
+          conversationType: 'group',
+          partial: false,
+          participants: [person('u1', 'Carla Diaz'), person('u2', 'Dieter Fink'), person('b1', 'Karen', true), person('u3', 'Eva Gross'), person('u4', 'Finn Hahn')],
+        },
+      };
+
+      const body = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as {
+        available: Array<{ channelKey: string; label: string | null; members: string[] }>;
+      };
+      const byKey = new Map(body.available.map((c) => [c.channelKey, c]));
+      // Directory wins and carries its members verbatim.
+      assert.deepEqual(byKey.get('19:dir@thread.skype'), { ...byKey.get('19:dir@thread.skype'), label: 'Teams · Sales sync', members: ['Anna Meier', 'Ben Ott'] });
+      // Roster fallback: humans only (the bot is a partner, not a member),
+      // Teams-style "first three, +rest" label.
+      assert.deepEqual(byKey.get('19:roster@thread.skype'), {
+        ...byKey.get('19:roster@thread.skype'),
+        label: 'Carla Diaz, Dieter Fink, Eva Gross, +1',
+        members: ['Carla Diaz', 'Dieter Fink', 'Eva Gross', 'Finn Hahn'],
+      });
+      // A titled chat keeps its own title.
+      assert.equal(byKey.get('19:titled@thread.skype')?.label, 'Budget 2027');
+      // Nothing knows this one: id it is, and the UI says so.
+      assert.deepEqual(byKey.get('19:unknown@thread.skype'), { ...byKey.get('19:unknown@thread.skype'), label: null, members: [] });
+    });
+
+    it('chatLabelFromMembers mirrors how Teams names an untitled group chat', () => {
+      assert.equal(chatLabelFromMembers([]), null);
+      assert.equal(chatLabelFromMembers(['  ']), null);
+      assert.equal(chatLabelFromMembers(['Anna']), 'Anna');
+      assert.equal(chatLabelFromMembers(['Anna', 'Ben', 'Cid']), 'Anna, Ben, Cid');
+      assert.equal(chatLabelFromMembers(['Anna', 'Ben', 'Cid', 'Dan', 'Eve']), 'Anna, Ben, Cid, +2');
+    });
+
+    it('peer-channels: GET without a presence directory still lists the enabled rows, just no candidates', async () => {
+      const hr = await store.createAgent({ slug: 'hr', name: 'Karen' });
+      store.identities = [{ channelType: 'teams', channelKey: '28:aaaa', agentId: hr.id }];
+      const key = encodeURIComponent('19:x@thread.skype');
+      await fetch(`${baseUrl}/hr/peer-channels/teams/${key}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const body = (await (await fetch(`${baseUrl}/hr/peer-channels`)).json()) as {
+        channels: unknown[];
+        channel_types: string[];
+        available: unknown[];
+      };
+      assert.equal(body.channels.length, 1);
+      assert.deepEqual(body.channel_types, ['teams']);
+      assert.deepEqual(body.available, []);
+    });
   });
 
   // ── W5 memory-ACL rollout switch (#899) ─────────────────────────────
@@ -1170,6 +1627,29 @@ describe('createOperatorAgentsRouter', () => {
       'index.ts must pass getAgentGraphStore to createOperatorAgentsRouter — without it every GET /:slug/grants 503s',
     );
     assert.match(mount, /new AgentGraphStore\(graphPool\)/, 'the option must construct the real store from graphPool');
+    // OM-75 / OM-78 (#1000, #1001) — without this the readiness banner never
+    // learns WHY the runtime is down and falls back to the no-access copy.
+    assert.match(
+      mount,
+      /getReadinessCause:/,
+      'index.ts must pass getReadinessCause to createOperatorAgentsRouter — without it the 503 carries no cause',
+    );
+    // #1018 — without this the peer-chat picker has nothing to offer and the
+    // operator is back to typing conversation ids.
+    assert.match(
+      mount,
+      /getPeerChatDirectory:/,
+      'index.ts must pass getPeerChatDirectory to createOperatorAgentsRouter — without it GET /:slug/peer-channels lists no candidate chats',
+    );
+    assert.match(
+      indexSource,
+      /createBotPresenceStore\(graphPool/,
+      'the peer-chat directory must be the real presence store over graphPool',
+    );
+    // Without these the picker names chats by id — the very thing the field
+    // test rejected — because the names live with the channel plugin.
+    assert.match(mount, /getChannelDirectory:\s*\(\)\s*=>\s*channelDirectoryRegistry/, 'index.ts must hand the channel directory to the peer-chat picker');
+    assert.match(mount, /getConversationRosters:\s*\(\)\s*=>\s*conversationRosterRegistry/, 'index.ts must hand the roster registry to the peer-chat picker');
   });
 
   it('index.ts wires syncBotConfig into the provisioning runner (wiring pin, #910)', async () => {
@@ -2810,6 +3290,126 @@ describe('createOperatorAgentsRouter', () => {
     assert.deepEqual(teamsStore.clearTeamInstalls, []);
   });
 
+  // ── DELETE for a CHAT install ───────────────────────────────────────
+  // The route used to hand every recorded id to `uninstallFromTeam`, so a
+  // chat install was addressed as `/teams/19:…@thread.v2/installedApps` —
+  // a shape Graph rejects. Group chats are a primary use case, which made
+  // this "installed and unremovable".
+
+  const CHAT_ID = '19:aaaaaaaabbbbccccddddeeeeffff0000@thread.v2';
+
+  it('DELETE /:slug/teams/:teamId uses uninstallFromChat for a chat install', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: CHAT_ID,
+      targetKind: 'group-chat',
+    });
+    const fake = new FakeTeamsChatProvisioner();
+    provisioner = fake;
+
+    const res = await deleteTeam('sales', CHAT_ID);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      team_id: string;
+      target_kind: string;
+      outcome: string;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.team_id, CHAT_ID);
+    // The response names the direction that ran — a team removal and a chat
+    // removal are different calls and must not read the same.
+    assert.equal(body.target_kind, 'group-chat');
+    assert.equal(body.outcome, 'uninstalled');
+
+    // THE POINT: the chat endpoint, keyed `chatId`, and the team endpoint
+    // never touched.
+    assert.deepEqual(fake.chatCalls, [
+      { chatId: CHAT_ID, teamsAppId: 'teams-app-789' },
+    ]);
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, [agent.id]);
+  });
+
+  it('DELETE /:slug/teams/:teamId still uses uninstallFromTeam for a team install', async () => {
+    // The other half of the branch: a connector that CAN do both must not
+    // start routing team removals through the chat endpoint.
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      targetKind: 'team',
+    });
+    const fake = new FakeTeamsChatProvisioner();
+    provisioner = fake;
+
+    const res = await deleteTeam('sales', 'aaaaaaaa-0000-4000-8000-000000000001');
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { target_kind: string };
+    assert.equal(body.target_kind, 'team');
+    assert.deepEqual(fake.chatCalls, []);
+    assert.deepEqual(fake.calls, [
+      { teamId: 'aaaaaaaa-0000-4000-8000-000000000001', teamsAppId: 'teams-app-789' },
+    ]);
+  });
+
+  it('DELETE /:slug/teams/:teamId → 501 for a chat when the connector has no uninstallFromChat', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id, {
+      state: 'installed',
+      teamId: CHAT_ID,
+      targetKind: 'group-chat',
+    });
+    // The seeded FakeTeamsProvisioner publishes only the TEAM method.
+    const fake = provisioner as FakeTeamsProvisioner;
+
+    const res = await deleteTeam('sales', CHAT_ID);
+    assert.equal(res.status, 501);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      target_kind: string;
+    };
+    assert.equal(body.error, 'teams_chat_uninstall_unsupported');
+    assert.equal(body.target_kind, 'group-chat');
+    assert.match(body.message, /uninstallFromChat/);
+    // Refused, never approximated: handing the chat id to the team endpoint
+    // is exactly the bug, so nothing may have been called and the row stands.
+    assert.deepEqual(fake.calls, []);
+    assert.deepEqual(teamsStore.clearTeamInstalls, []);
+    assert.equal(teamsStore.rows.get(agent.id)?.teamId, CHAT_ID);
+    assert.equal(teamsStore.rows.get(agent.id)?.state, 'installed');
+  });
+
+  it('GET /:slug/teams reports chat_uninstall separately from uninstall', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    seedIdentity(agent.id);
+
+    // Team-only connector: one direction true, the other false with a reason.
+    const teamOnly = (await (await fetch(`${baseUrl}/sales/teams`)).json()) as {
+      capabilities: Record<string, unknown> & {
+        unsupported_reason: Record<string, string>;
+      };
+    };
+    assert.equal(teamOnly.capabilities['uninstall'], true);
+    assert.equal(teamOnly.capabilities['chat_uninstall'], false);
+    assert.match(
+      teamOnly.capabilities.unsupported_reason['chat_uninstall'] ?? '',
+      /uninstallFromChat/,
+    );
+
+    provisioner = new FakeTeamsChatProvisioner();
+    const both = (await (await fetch(`${baseUrl}/sales/teams`)).json()) as {
+      capabilities: Record<string, unknown> & {
+        unsupported_reason: Record<string, string>;
+      };
+    };
+    assert.equal(both.capabilities['chat_uninstall'], true);
+    assert.equal(both.capabilities.unsupported_reason['chat_uninstall'], undefined);
+    assert.equal(agent.slug, 'sales');
+  });
+
   it('GET /:slug/teams reports uninstall: false against a connector that is too old', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     seedIdentity(agent.id);
@@ -3082,6 +3682,68 @@ describe('createOperatorAgentsRouter', () => {
         `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
       );
       assert.equal(res.status, 503);
+      // Without a cause resolver the payload is exactly what it always was.
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'multi_orchestrator_unavailable');
+      assert.equal('cause' in body, false);
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  // OM-75 / OM-78 (#1000, #1001) — the readiness banner reads `cause` off this
+  // 503 to tell "no access at all" from "access exists, orchestrator not
+  // assigned to it". A failing resolver must degrade, never hang or 500.
+  it('503 carries the readiness cause when a resolver is wired', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => undefined,
+        getRegistry: () => undefined,
+        getChatSessionStore: () => undefined,
+        getReadinessCause: async () => 'no_assignment',
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      const addr = s.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
+      );
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['error'], 'multi_orchestrator_unavailable');
+      assert.equal(body['cause'], 'no_assignment');
+    } finally {
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('503 degrades the cause to unknown when the resolver rejects', async () => {
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/operator/agents',
+      createOperatorAgentsRouter({
+        getConfigStore: () => undefined,
+        getRegistry: () => undefined,
+        getChatSessionStore: () => undefined,
+        getReadinessCause: async () => {
+          throw new Error('vault exploded');
+        },
+      }),
+    );
+    const s = await listenLoopback(app);
+    try {
+      const addr = s.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${String(addr.port)}/api/v1/operator/agents`,
+      );
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as Record<string, unknown>;
+      assert.equal(body['cause'], 'unknown');
     } finally {
       await new Promise<void>((r) => s.close(() => r()));
     }

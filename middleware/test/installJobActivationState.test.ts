@@ -41,6 +41,7 @@ import { describe, it } from 'node:test';
 import { InstallService } from '../src/plugins/installService.js';
 import {
   InMemoryInstalledRegistry,
+  blockActivation,
   type InstalledAgent,
   type InstalledRegistry,
 } from '../src/plugins/installedRegistry.js';
@@ -264,6 +265,12 @@ function makeStickyActiveHarness(
     },
     remove: async (id: string) => {
       installed.delete(id);
+    },
+    markActivationBlocked: async (id: string, error: string) => {
+      const current = installed.get(id);
+      if (current) {
+        installed.set(id, blockActivation(current, error, new Date().toISOString()));
+      }
     },
     markActivationFailed: async (id: string, error: string) => {
       const current = installed.get(id);
@@ -642,6 +649,8 @@ void describe('#825 — a registry that records no status', () => {
         installed.add(e.id);
       },
       remove: async () => {},
+      // Deliberately ignore status writes: this fixture isolates thrown hooks.
+      markActivationBlocked: async () => {},
       markActivationFailed: async () => {},
       markActivationSucceeded: async () => {},
       updateConfig: async () => {},

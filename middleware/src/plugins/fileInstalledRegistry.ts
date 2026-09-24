@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import type { AgentId } from '../api/admin-v1.js';
 import {
+  blockActivation,
   CIRCUIT_BREAKER_THRESHOLD,
   type InstalledAgent,
   type InstalledRegistry,
@@ -97,6 +98,14 @@ export class FileInstalledRegistry implements InstalledRegistry {
       next.status = 'errored';
     }
     this.agents.set(id, next);
+    await this.persist();
+  }
+
+  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+    this.ensureLoaded();
+    const current = this.agents.get(id);
+    if (!current) return;
+    this.agents.set(id, blockActivation(current, error, new Date().toISOString()));
     await this.persist();
   }
 

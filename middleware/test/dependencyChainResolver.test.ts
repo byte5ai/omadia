@@ -7,7 +7,7 @@ import {
 } from '../src/plugins/dependencyChainResolver.js';
 import type { Plugin, PluginKind } from '../src/api/admin-v1.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
-import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { InMemoryInstalledRegistry, type InstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { RegistryClient } from '../src/plugins/registryClient.js';
 import type {
   PackageUploadService,
@@ -74,7 +74,6 @@ function harness(opts: {
 } {
   const present = new Map<string, string[]>(Object.entries(opts.local));
   const remoteMap = new Map<string, string[]>(Object.entries(opts.remote ?? {}));
-  const installedSet = new Set<string>(opts.installed ?? []);
   const fetched: string[] = [];
 
   const catalog = {
@@ -84,9 +83,16 @@ function harness(opts: {
       [...present].map(([id, d]) => ({ plugin: mkPlugin(id, d), manifest: {} })),
   } as unknown as PluginCatalog;
 
-  const registry = {
-    has: (id: string) => installedSet.has(id),
-  } as unknown as InstalledRegistry;
+  const registry: InstalledRegistry = new InMemoryInstalledRegistry();
+  for (const id of opts.installed ?? []) {
+    void registry.register({
+      id,
+      installed_version: '1.0.0',
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: {},
+    });
+  }
 
   const client = {
     hasRegistries: () => remoteMap.size > 0,

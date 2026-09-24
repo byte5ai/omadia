@@ -300,6 +300,15 @@ export const REGISTRATION_CREATED_DETAIL = 'registration_created';
  *  watching a stalled panel actually needs. */
 export const DELEGATED_UPLOAD_DETAIL = 'delegated_upload';
 
+/** `detail` of the `retrying` event emitted while the install step waits for a
+ *  catalog entry this same run has just published to become referenceable.
+ *
+ *  Its own vocabulary rather than the generic retry detail: "attempt 2 of 5,
+ *  next in 8s" and "the catalog entry is seconds old, waiting for it to
+ *  replicate" send an operator to different places, and only the second one
+ *  ends by itself. */
+export const AWAITING_CATALOG_REPLICATION_DETAIL = 'awaiting_catalog_replication';
+
 /** `detail` of the `progress` event for a silent token rotation. Worth a line
  *  because it is the one moment the run pauses for a reason that is NOT a
  *  fault and that the operator would otherwise never see. */
@@ -634,6 +643,86 @@ function isDeterministicRequestFailure(err: unknown): boolean {
   return status >= 400 && status < 500 && !TIME_DEPENDENT_CLIENT_STATUSES.has(status);
 }
 
+/**
+ * The connector step labels whose request references the catalog entry — the
+ * only two steps of the chain that can be told about an object Graph itself
+ * created moments earlier.
+ *
+ * Matched as the connector emits them (`ProvisioningRequestError.step`); the
+ * `endsWith` in {@link isCatalogReplicationFailure} keeps a future
+ * `users/…/teamwork` direction from needing a fourth entry here.
+ */
+const CATALOG_DEPENDENT_INSTALL_STEPS: readonly string[] = [
+  'chats.installedApps.add',
+  'teams.installedApps.add',
+];
+
+/**
+ * A 400 that names its reason is a VERDICT and stays terminal even inside the
+ * replication window — re-asking cannot change a permission set or a consent.
+ *
+ * Deliberately short and deliberately about CONFIGURATION: these are the
+ * conditions a second, third and fourth attempt would reproduce exactly.
+ * `ResourceSpecificPermissionsMismatch` is already lifted to its own typed
+ * error upstream; it is listed anyway so an older connector that reports it as
+ * a bare `ProvisioningRequestError` also fails on attempt 1.
+ */
+const TERMINAL_INSTALL_400_MARKERS: readonly string[] = [
+  'ResourceSpecificPermissionsMismatch',
+  'Forbidden',
+  'Unauthorized',
+  'AccessDenied',
+  'consent',
+  'permission',
+];
+
+/**
+ * Is this the read-your-writes race that makes an operator press the button
+ * twice (byte5ai/omadia#916, same shape, different API)?
+ *
+ * WHY A BARE 400 IS NOT ENOUGH ON ITS OWN, and how the two are separated.
+ * `POST /appCatalogs/teamsApps` answers 201 from the app-catalog service,
+ * while `POST /chats/{id}/installedApps` is served by the Teams app service —
+ * a different backing store, with no read-your-writes guarantee across the
+ * two. For a few seconds the catalog entry provably exists and provably
+ * cannot be referenced, and Graph reports that as a 400 with no error code
+ * worth the name. A misconfigured install answers 400 as well, so the STATUS
+ * cannot separate them. Three gates do:
+ *
+ *   1. THE STEP — only the two install verbs, the only ones that dereference
+ *      a just-created catalog id.
+ *   2. THE BODY — a 400 that names a configuration reason
+ *      ({@link TERMINAL_INSTALL_400_MARKERS}) is a verdict and is excluded
+ *      here, so a real misconfiguration still fails on attempt 1.
+ *   3. THE RUN'S OWN HISTORY — see `catalogPublishedInRun`. A replication race
+ *      is only POSSIBLE when this same run published the entry. A resumed run
+ *      that skipped step 4 (the entry is minutes or days old) gets the old
+ *      terminal behaviour, because for it a 400 really is a verdict.
+ *
+ * Gate 3 is what makes this safe rather than a blanket "retry 400s": a
+ * configuration error is 400 whether or not we just uploaded, but a
+ * replication 400 cannot occur without a fresh upload. The residual
+ * false-positive — a genuine config error on a run that did publish — costs a
+ * bounded handful of seconds and then fails with a detail that says the
+ * replication window was exhausted, which is strictly more information than
+ * today's bare 400.
+ */
+function isCatalogReplicationFailure(err: unknown): boolean {
+  if (!(err instanceof Error) || err.name !== 'ProvisioningRequestError') return false;
+  if ((err as Error & { status?: unknown }).status !== 400) return false;
+  const step = (err as Error & { step?: unknown }).step;
+  if (
+    typeof step !== 'string' ||
+    !CATALOG_DEPENDENT_INSTALL_STEPS.some((known) => step.endsWith(known))
+  ) {
+    return false;
+  }
+  const message = err.message.toLowerCase();
+  return !TERMINAL_INSTALL_400_MARKERS.some((marker) =>
+    message.includes(marker.toLowerCase()),
+  );
+}
+
 function isProvisionerUnavailable(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -815,6 +904,18 @@ export interface TeamsProvisioningJobOptions {
   readonly baseRetryDelayMs?: number;
   /** Backoff cap (default 5 min). */
   readonly maxRetryDelayMs?: number;
+  /**
+   * Extra install attempts spent waiting for a catalog entry this run just
+   * published to become referenceable (default 4).
+   *
+   * Small on purpose. Graph closes this window in seconds; a budget large
+   * enough to hide a real misconfiguration would be the wrong trade, because
+   * the cost of guessing wrong is paid on every genuinely broken run.
+   */
+  readonly catalogReplicationAttempts?: number;
+  /** Delay between those attempts (default 4s), capped by
+   *  {@link maxRetryDelayMs} like every other delay in this runner. */
+  readonly catalogReplicationDelayMs?: number;
   /** Test seam — defaults to real timers. */
   readonly timers?: TimerSeam;
   /** #910 — the finishing move that makes the bot live. Absent means the
@@ -856,6 +957,13 @@ export interface TeamsProvisioningJobOptions {
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BASE_RETRY_DELAY_MS = 5_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
+/** 4 extra install attempts, 4s apart — ~16s of tolerance for the catalog
+ *  replication window. Sized against the field report (a second run started
+ *  by hand, i.e. tens of seconds later, always succeeded) and against the
+ *  opposite risk: a genuinely misconfigured install must still reach the
+ *  operator quickly, so this is bounded in seconds, not minutes. */
+const DEFAULT_CATALOG_REPLICATION_ATTEMPTS = 4;
+const DEFAULT_CATALOG_REPLICATION_DELAY_MS = 4_000;
 /** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
  *  to ~1 ms and burn the whole retry budget instantly. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
@@ -876,6 +984,8 @@ export class TeamsProvisioningJobRunner {
   private readonly maxAttempts: number;
   private readonly baseRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
+  private readonly catalogReplicationAttempts: number;
+  private readonly catalogReplicationDelayMs: number;
   private readonly timers: TimerSeam;
   private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
   private readonly installs: TeamsInstallJobStore | undefined;
@@ -913,6 +1023,23 @@ export class TeamsProvisioningJobRunner {
    *  {@link inFlight}, so an agent id is a sufficient key. */
   private readonly currentStep = new Map<string, TeamsProvisioningStep>();
   /**
+   * Agents whose CURRENT run published or re-published the catalog entry
+   * itself — gate 3 of {@link isCatalogReplicationFailure}.
+   *
+   * This is the causal evidence that a read-your-writes race is even possible.
+   * A resumed run that found `teams_app_id` already set and skipped step 4 is
+   * NOT in this set, so for it an install 400 keeps the old terminal
+   * behaviour: the entry is old, and an old entry that cannot be referenced is
+   * a verdict, not a race. Keyed by agent id like {@link currentStep} — one
+   * run per agent is guaranteed by {@link inFlight} — and cleared per run in
+   * {@link markSettled}, never left to accumulate.
+   */
+  private readonly catalogPublishedInRun = new Set<string>();
+  /** Replication retries already spent by the current run's install step.
+   *  Its OWN budget, deliberately not the chain's `maxAttempts`: this wait is
+   *  seconds of eventual consistency, not a failing chain. */
+  private readonly catalogReplicationRetries = new Map<string, number>();
+  /**
    * Agents held by an operation that is NOT a provisioning run — today only
    * the teardown (`services/teamsIdentityReset.ts`), reserved through
    * {@link acquireExclusive}.
@@ -942,6 +1069,14 @@ export class TeamsProvisioningJobRunner {
     this.maxRetryDelayMs = Math.min(
       opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
       MAX_TIMER_DELAY_MS,
+    );
+    this.catalogReplicationAttempts = Math.max(
+      0,
+      opts.catalogReplicationAttempts ?? DEFAULT_CATALOG_REPLICATION_ATTEMPTS,
+    );
+    this.catalogReplicationDelayMs = Math.min(
+      opts.catalogReplicationDelayMs ?? DEFAULT_CATALOG_REPLICATION_DELAY_MS,
+      this.maxRetryDelayMs,
     );
     this.timers = opts.timers ?? REAL_TIMERS;
     this.syncBotConfig = opts.syncBotConfig;
@@ -1195,6 +1330,11 @@ export class TeamsProvisioningJobRunner {
   private markSettled(agentId: string): void {
     const entry = this.inFlight.get(agentId);
     if (entry) entry.settled = true;
+    // Per-run bookkeeping dies with the run: the next run re-establishes its
+    // own evidence, and a stale entry here would let a resumed run inherit a
+    // replication window it never opened.
+    this.catalogPublishedInRun.delete(agentId);
+    this.catalogReplicationRetries.delete(agentId);
   }
 
   /** Stop accepting work and release every pending retry delay. An
@@ -1252,8 +1392,20 @@ export class TeamsProvisioningJobRunner {
       try {
         return await this.advance(request);
       } catch (err) {
+        const waitsBefore = this.catalogReplicationRetries.get(request.agentId) ?? 0;
         const outcome = await this.handleFailure(request, err, attempt);
         if (outcome) return outcome;
+        // A REPLICATION WAIT IS NOT A CHAIN ATTEMPT. The chain did not get a
+        // different answer to the same question; it got the same answer about
+        // an object that did not exist yet. Giving the attempt back keeps the
+        // five chain attempts available for real failures — otherwise a run
+        // that spent four waits would have one attempt left to survive a
+        // throttle. Terminating: the replication budget is finite and this
+        // counter only ever grows, so the compensation happens a bounded
+        // number of times and the loop then advances normally.
+        if ((this.catalogReplicationRetries.get(request.agentId) ?? 0) > waitsBefore) {
+          attempt -= 1;
+        }
         // else: retry delay already awaited — loop again.
       }
     }
@@ -1373,11 +1525,51 @@ export class TeamsProvisioningJobRunner {
 
     const throttle = throttleHintOf(err);
 
+    // BEFORE the deterministic branch, because this IS a deterministic-looking
+    // 4xx — it is the one whose input is not actually identical next time: the
+    // catalog entry it dereferences is still replicating. See
+    // isCatalogReplicationFailure for how it is told apart from a verdict.
+    if (throttle === undefined && this.catalogPublishedInRun.has(agentId)) {
+      const spent = this.catalogReplicationRetries.get(agentId) ?? 0;
+      if (isCatalogReplicationFailure(err) && spent < this.catalogReplicationAttempts) {
+        this.catalogReplicationRetries.set(agentId, spent + 1);
+        const delayMs = this.catalogReplicationDelayMs;
+        this.log(
+          `[teams-provisioning] ${agentId} install rejected with 400 while the catalog entry ` +
+            `is still replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms`,
+        );
+        // Its own detail, not the generic retry one: this wait ends by itself,
+        // and the operator should be told to sit still rather than to look for
+        // a broken configuration. `attempt` here counts WAITS, not chain
+        // attempts — {@link attemptLoop} gives the chain attempt back, so a
+        // run that spends its whole replication budget and then hits a REAL
+        // failure still has all five chain attempts to report it.
+        await this.emit(agentId, this.currentStep.get(agentId) ?? 'run', 'retrying', {
+          attempt: spent + 1,
+          detail: AWAITING_CATALOG_REPLICATION_DETAIL,
+        });
+        await this.sleep(delayMs);
+        return undefined;
+      }
+    }
+
     if (throttle === undefined && isDeterministicRequestFailure(err)) {
       // A 4xx on identical input is a verdict, not a hiccup — see
       // isDeterministicRequestFailure. Stop now, keep the reached state's
       // evidence, and report the real reason on attempt 1.
-      const detail = `${errorMessage(err)} (deterministic — not retried)`;
+      //
+      // Reaching here with a spent replication budget means the wait did not
+      // help, which is itself the finding: say so, so the operator learns
+      // something a bare 400 never told them.
+      const exhausted =
+        (this.catalogReplicationRetries.get(agentId) ?? 0) >=
+          this.catalogReplicationAttempts && isCatalogReplicationFailure(err);
+      const detail = exhausted
+        ? `${errorMessage(err)} (still refused after waiting ` +
+          `${this.catalogReplicationAttempts} times for the catalog entry to replicate — ` +
+          `treat as a configuration error, not a timing one)`
+        : `${errorMessage(err)} (deterministic — not retried)`;
       await this.recordError(agentId, { state: 'failed', lastError: detail });
       return { status: 'failed', agentId, reason: 'error', detail };
     }
@@ -1559,6 +1751,8 @@ export class TeamsProvisioningJobRunner {
         teamsAppExternalId: assets.externalId,
         lastError: null,
       });
+      // A republish is an upload like any other — same window, same gate.
+      this.catalogPublishedInRun.add(agentId);
       // Deliberately NO early return. The chain's own step 5 installs the
       // refreshed app into the requested team, records the binding (#919)
       // and re-asserts the plugin config — a republish that returned here
@@ -1728,6 +1922,11 @@ export class TeamsProvisioningJobRunner {
         teamsAppId,
         lastError: null,
       });
+      // Gate 3 of isCatalogReplicationFailure: this run just put the entry
+      // there (uploaded it, or resolved one so fresh the lookup was the first
+      // thing that could see it), so an install 400 in the next few seconds is
+      // allowed to be a replication race rather than a verdict.
+      this.catalogPublishedInRun.add(agentId);
       await this.emit(agentId, 'catalog_uploaded', 'succeeded');
     } else {
       await this.emit(agentId, 'package_built', 'succeeded', {

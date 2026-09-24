@@ -67,6 +67,10 @@ const NAV: readonly NavItem[] = [
     kind: 'cluster',
     key: 'adminCluster',
     children: [
+      // OM-80 — LLM access holds the orchestrator↔provider assignment without
+      // which no agent runs, yet it had no menu entry (reachable only via the
+      // dashboard status card). First position: it is the setup prerequisite.
+      { kind: 'link', href: '/admin/providers', key: 'llmAccess' },
       { kind: 'link', href: '/admin', key: 'admin' },
       { kind: 'link', href: '/system', key: 'system' },
       // Orchestrators and Conductor moved here from the top level — they're

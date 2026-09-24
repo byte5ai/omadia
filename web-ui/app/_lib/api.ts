@@ -115,6 +115,39 @@ function maybeNavigateToLogin(status: number): void {
   window.location.assign(`/login?return=${encodeURIComponent(returnPath)}`);
 }
 
+/**
+ * Ceiling for a SERVER-rendered `getJson` (OM-96).
+ *
+ * A beta tester reported that the DASHBOARD nav item "does not navigate": the
+ * page stayed, the active marker stayed. The nav was innocent. `app/page.tsx`
+ * is `force-dynamic` and awaits six of these calls, and there was no root
+ * `loading.tsx` — so with one middleware endpoint accepting the connection and
+ * never answering, the RSC payload for `/` never arrived, the soft navigation
+ * never committed, and the old page simply stayed on screen forever. Verified
+ * by pointing MIDDLEWARE_URL at a TCP stub that accepts and never replies.
+ *
+ * An unbounded server fetch is the part that turns a slow endpoint into a dead
+ * app, so bound it. Ten seconds is an order of magnitude above a healthy
+ * loopback call and well under "the user has given up": past it, the page is
+ * already broken and a rejected promise is strictly more useful than a hang —
+ * `page.tsx` collects these with `allSettled`, so one dead endpoint costs one
+ * dashboard card instead of the whole render.
+ *
+ * Browser-side calls are deliberately left alone: they do not gate a
+ * navigation, and some of them legitimately outlive this budget.
+ */
+export const RSC_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * The abort signal a server-side fetch should carry. A caller that passed its
+ * own signal owns the lifetime and keeps it — never silently override it.
+ */
+export function rscTimeoutSignal(init?: RequestInit): AbortSignal | undefined {
+  if (init?.signal) return init.signal;
+  if (typeof window !== 'undefined') return undefined;
+  return AbortSignal.timeout(RSC_FETCH_TIMEOUT_MS);
+}
+
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(botApi(path), {
@@ -124,6 +157,7 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...forwarded,
       ...(init?.headers ?? {}),
     },
+    signal: rscTimeoutSignal(init),
     cache: 'no-store',
     credentials: 'include',
   });
@@ -377,6 +411,10 @@ export interface AdminProvider {
   /** Legacy: "a key is on file" — i.e. `status !== 'no_key'`. Retained for
    *  backwards compatibility; it does NOT mean the key works. */
   connected: boolean;
+  /** #1033 — present only while the fallback circuit breaker is open for
+   *  this provider: agents with a fallback route straight to it until
+   *  `until`, when the primary is probed again. */
+  cooldown?: { until: string; since: string; reason: string };
   /** Data-protection hints for the UI (data-driven; defaulted server-side).
    *  `requiresAvvDisclosure`: show the Art. 28 DSGVO third-party disclosure.
    *  `euHosted`: provider is hosted in the EU (no third-country transfer). */
@@ -399,6 +437,19 @@ export interface AdminProvider {
    *  ChatGPT"), so the UI renders a connect button + device-code modal instead
    *  of a vault key field. Absent on pre-#294 middleware payloads. */
   oauthConnect?: boolean;
+  /** Where this provider's model list came from. `discovered` = fetched live
+   *  from the vendor's list-models API; `seed`/absent = the static fallback
+   *  list that ships with the provider definition. Absent on pre-discovery
+   *  middleware payloads. */
+  modelsSource?: 'seed' | 'discovered';
+  /** ISO timestamp of the discovery run. Present only alongside
+   *  `modelsSource === 'discovered'`; absent on pre-discovery middleware
+   *  payloads and whenever the static seed list is active. */
+  modelsDiscoveredAt?: string;
+  /** Vendor model ids the last discovery run hid because no `classify` rule
+   *  matches them — typically a brand-new model family. Present only when
+   *  there are some; absent on older middleware payloads. */
+  unclassifiedModels?: string[];
   models: AdminProviderModel[];
 }
 
@@ -438,6 +489,33 @@ export async function getProviders(): Promise<ProvidersResponse> {
   return getJson<ProvidersResponse>('/v1/admin/providers');
 }
 
+/**
+ * OM-100b — the outcome of the last chat turn this middleware process ran.
+ *
+ * Every other Systemstatus card answers a configuration question ("is a
+ * credential present", "is an agent configured"). All of them were green
+ * through a beta round in which every turn died in the CLI bridge, because
+ * none of them asks whether a turn actually comes back. `null` means no turn
+ * has run since the process started — an honest unknown, not a green light.
+ */
+export type LastTurnErrorCode =
+  | 'cli_incompatible'
+  | 'cli_timeout'
+  | 'orchestrator_failure';
+
+export interface LastTurnOutcome {
+  status: 'ok' | 'failed';
+  at: number;
+  errorCode?: LastTurnErrorCode;
+  errorMessage?: string;
+  cliVersion?: string;
+  minCliVersion?: string;
+}
+
+export async function getLastTurn(): Promise<{ lastTurn: LastTurnOutcome | null }> {
+  return getJson<{ lastTurn: LastTurnOutcome | null }>('/v1/admin/last-turn');
+}
+
 export async function assignProvider(
   body: AssignProviderRequest,
 ): Promise<AssignProviderResponse> {
@@ -458,6 +536,33 @@ export async function verifyProvider(
 ): Promise<ProviderVerification> {
   return postJson<ProviderVerification>(
     `/v1/admin/providers/${encodeURIComponent(providerId)}/verify`,
+    {},
+  );
+}
+
+export interface ModelRefreshResult {
+  providerId: string;
+  status:
+    | 'discovered'
+    | 'unknown-provider'
+    | 'no-discovery-rules'
+    | 'no-adapter'
+    | 'no-credentials'
+    | 'empty'
+    | 'failed';
+  models: number;
+  dropped: Array<{ modelId: string; reason: string }>;
+  at: string;
+  error?: string;
+}
+
+/** Force a live refresh of one provider's model catalogue. The request itself
+ *  succeeds for all known-provider outcomes; callers must inspect `status`. */
+export async function refreshProviderModels(
+  providerId: string,
+): Promise<ModelRefreshResult> {
+  return postJson<ModelRefreshResult>(
+    `/v1/admin/providers/${encodeURIComponent(providerId)}/refresh-models`,
     {},
   );
 }
@@ -543,9 +648,21 @@ export async function getCliBackends(force = false): Promise<CliBackendsResponse
 export interface CliLoginStart {
   sessionId: string;
   verificationUrl: string;
+  /** OM-73 — `false` when the CLI finishes via a browser callback and prints no
+   *  code; the UI then polls the login status instead of showing a code field.
+   *  Absent on pre-OM-73 middleware — treat `undefined` as `true` (old flow). */
+  codeEntry?: boolean;
+  /** The login may already be authorized by the time start returns. */
+  status?: CliLoginStatus;
 }
 
-export type CliLoginStatus = 'pending' | 'authorized' | 'invalid' | 'expired' | 'error';
+export type CliLoginStatus =
+  | 'idle'
+  | 'pending'
+  | 'authorized'
+  | 'invalid'
+  | 'expired'
+  | 'error';
 
 export interface CliCodeResult {
   status: CliLoginStatus;
@@ -556,6 +673,13 @@ export interface CliCodeResult {
 /** Start the in-app CLI login flow (spawns `claude auth login`, returns the URL). */
 export async function startCliLogin(id: string): Promise<CliLoginStart> {
   return postJson<CliLoginStart>(`/v1/admin/cli-backends/${encodeURIComponent(id)}/login/start`, {});
+}
+
+/** OM-73 — poll the login status (browser-callback flow, no pasted code). */
+export async function getCliLoginStatus(id: string): Promise<CliCodeResult> {
+  return getJson<CliCodeResult>(
+    `/v1/admin/cli-backends/${encodeURIComponent(id)}/login/status`,
+  );
 }
 
 /** Submit the login code the operator's browser returned. */
@@ -4248,6 +4372,28 @@ export interface EmbeddingProviderDrift {
   gateModelId: string;
 }
 
+/**
+ * Why no `embeddingClient@1` is published (OM-99).
+ *
+ * `no-active-provider` — nothing is activated at all.
+ * `missing-credentials` — a KEYED adapter is active without a key/base URL.
+ * `missing-weights` — the keyless adapter is active, its model is not on disk.
+ * `not-published` — weights are there, yet nothing was published: the adapter
+ *   stood down because a sibling already held the service, or activation failed.
+ */
+export type EmbeddingCapabilityGap =
+  | 'no-active-provider'
+  | 'missing-credentials'
+  | 'missing-weights'
+  | 'not-published';
+
+export interface EmbeddingWidthCollision {
+  providerDimensions: number | null;
+  columnDimensions: number | null;
+  /** `null` when the corpus could not be counted — treat as "cannot tell". */
+  columnsEmpty: boolean | null;
+}
+
 export interface EmbeddingProviderState {
   providers: EmbeddingProviderOption[];
   activeProviderId: string | null;
@@ -4255,6 +4401,25 @@ export interface EmbeddingProviderState {
   /** Optional so older middleware builds still satisfy this type. */
   providerDrift?: EmbeddingProviderDrift | null;
   capabilityPublished: boolean;
+  /**
+   * OM-99 — WHY `embeddingClient@1` is missing, in terms of the adapter that
+   * is actually installed. `null` when nothing is missing; optional so older
+   * middleware builds still satisfy this type.
+   *
+   * The page used to word every case as "running but not configured (API key
+   * or base URL missing)", which is plainly false for the KEYLESS adapter —
+   * it has neither by design, and its real states are "model weights missing"
+   * and "another adapter already owns the capability".
+   */
+  capabilityGap?: EmbeddingCapabilityGap | null;
+  /**
+   * OM-98 — the gate refuses vector writes because the provider's width and
+   * the columns' width disagree. Distinct from `capabilityGap`: the adapter IS
+   * publishing, it is the WRITES that are blocked. `columnsEmpty: true` means
+   * the columns can be rebuilt at the right width without losing anything,
+   * which is what `reactivateEmbeddingProvider` does.
+   */
+  widthCollision?: EmbeddingWidthCollision | null;
   /** `graph_embedding_model` — what the stored vectors were produced with. */
   corpus: { modelId: string; dimensions: number; clearPending: boolean } | null;
   columns: EmbeddingVectorColumn[];
@@ -4295,6 +4460,60 @@ export async function getEmbeddingProvider(): Promise<EmbeddingProviderState> {
 }
 
 /**
+ * OM-84 (#1003) — the cheap readiness summary behind the dashboard's
+ * "memory / embeddings" health card. Unlike `getEmbeddingProvider` it does not
+ * count the stored corpus, so it is safe to call on every dashboard load.
+ */
+export interface EmbeddingProviderStatus {
+  /** `embeddingClient@1` is published — memory, semantic search and dedup work. */
+  capabilityPublished: boolean;
+  activeProviderId: string | null;
+  activeModel: { modelId: string; dimensions: number } | null;
+  installedProviderIds: string[];
+  /**
+   * OM-102 — the three LLM-backed memory features. They hang off the extras
+   * plugin's LLM provider, NOT off the embedding client, so the card could
+   * previously read "OK" while fact extraction and topic detection were both
+   * silently off (the abo-install case from beta round 5).
+   *
+   * Optional: a middleware that predates OM-102 simply omits the field.
+   */
+  memoryFeatures?: MemoryFeatureStatus;
+}
+
+export type MemoryFeatureState = 'active' | 'disabled';
+
+export type MemoryFeatureName =
+  | 'factExtractor'
+  | 'topicDetector'
+  | 'scratchReaper';
+
+/** Closed cause set. Each code has a translated label in `messages/*.json`;
+ *  backend free text never becomes primary UI copy (web-ui i18n rule). */
+export type MemoryFeatureReason =
+  | 'no_llm_provider'
+  | 'no_embedding_provider'
+  | 'no_graph_pool'
+  | 'disabled_by_config'
+  | 'plugin_inactive';
+
+export interface MemoryFeatureStatus {
+  factExtractor: MemoryFeatureState;
+  topicDetector: MemoryFeatureState;
+  scratchReaper: MemoryFeatureState;
+  /** The LLM provider the features resolved to, when any did. */
+  providerId?: string;
+  /** Cause per disabled feature; an active feature has no entry. */
+  reasons?: Partial<Record<MemoryFeatureName, MemoryFeatureReason>>;
+  /** English diagnostics (the provider chain that was tried). Secondary only. */
+  detail?: string;
+}
+
+export async function getEmbeddingProviderStatus(): Promise<EmbeddingProviderStatus> {
+  return getJson<EmbeddingProviderStatus>('/v1/admin/embedding-provider/status');
+}
+
+/**
  * Switch the active embedding provider, live.
  *
  * DESTRUCTIVE: the stored vectors are discarded and re-embedded, one paid
@@ -4323,6 +4542,110 @@ export async function switchEmbeddingProvider(
   return postJson<SwitchEmbeddingProviderResult>(
     '/v1/admin/embedding-provider/switch',
     { pluginId, confirmDiscardVectors },
+  );
+}
+
+/** What the reactivation did about the provider-relative dedup threshold. */
+export interface EmbeddingDedupThresholdResult {
+  applied: boolean;
+  value: number | null;
+  previous: string | null;
+  reason: 'applied' | 'operator-set' | 'no-recommendation' | 'no-knowledge-graph';
+}
+
+export interface ReactivateEmbeddingProviderResult extends EmbeddingProviderState {
+  ok: true;
+  reactivated: string;
+  gateReevaluated?: boolean;
+  gateWarning?: string;
+  /** `null` when nothing was published, so nothing was configured either. */
+  dedupThreshold?: EmbeddingDedupThresholdResult | null;
+}
+
+/**
+ * OM-98 — re-activate the ACTIVE provider and re-gate it, without a switch.
+ *
+ * This is the button for the two states a subscription install actually
+ * reaches: the keyless adapter finished downloading its weights and needs to
+ * be re-activated to publish `embeddingClient@1`, and/or the governed vector
+ * columns are the wrong width but EMPTY, which the gate may rebuild because it
+ * loses nothing. Both used to require a provider SWITCH, and #1053 removes the
+ * second provider at boot — so there was nothing to switch to.
+ *
+ * NEVER destructive. A populated corpus answers 409
+ * `embeddingProvider.corpus_not_empty` and points at
+ * {@link switchEmbeddingProvider}, which is the path that carries the discard
+ * confirmation. Other inline-surfaceable failures: 409
+ * `embeddingProvider.no_active_provider`, 409
+ * `embeddingProvider.switch_in_progress`, 500
+ * `embeddingProvider.reactivate_failed`, 500
+ * `embeddingProvider.gate_reevaluation_failed`.
+ */
+export async function reactivateEmbeddingProvider(): Promise<ReactivateEmbeddingProviderResult> {
+  return postJson<ReactivateEmbeddingProviderResult>(
+    '/v1/admin/embedding-provider/reactivate',
+    {},
+  );
+}
+
+/** How far a keyless-embedder weight download has got. */
+export type LocalEmbeddingFetchState = 'idle' | 'running' | 'done' | 'failed';
+
+/**
+ * OM-84 follow-up — the keyless adapter's weights are deliberately not
+ * bundled (~135 MB in four installers, for a provider a keyed deployment never
+ * activates), so until they are fetched it publishes nothing. This is what the
+ * page needs to offer the download instead of printing a shell command at
+ * someone who has no terminal in the flow.
+ */
+export interface LocalEmbeddingModelState {
+  /** Where the adapter looks for the weights. */
+  modelDir: string;
+  /** Empty ⇒ the adapter can publish `embeddingClient@1`. */
+  missingFiles: string[];
+  totalBytes: number;
+  job: {
+    state: LocalEmbeddingFetchState;
+    downloadedBytes: number;
+    totalBytes: number;
+    currentFile: string | null;
+    /** Set only in `failed`, and kept until the next run. */
+    error: string | null;
+  };
+}
+
+/**
+ * `null` when the keyless adapter is not active — the middleware answers 404,
+ * which is a different fact from "its weights are missing" and the page shows
+ * neither a button nor an error for it.
+ */
+export async function getLocalEmbeddingModel(): Promise<LocalEmbeddingModelState | null> {
+  try {
+    return await getJson<LocalEmbeddingModelState>(
+      '/v1/admin/embedding-provider/local-model',
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+}
+
+export interface StartLocalEmbeddingFetchResult extends LocalEmbeddingModelState {
+  ok: true;
+  /** `false` with `reason: 'already-complete'` when nothing was missing. */
+  started: boolean;
+  reason?: 'already-complete';
+}
+
+/**
+ * Start the download. Returns immediately (the middleware answers 202) — poll
+ * {@link getLocalEmbeddingModel} for progress. A second call while one runs
+ * answers 409 `embeddingProvider.local_model_busy`.
+ */
+export async function startLocalEmbeddingModelFetch(): Promise<StartLocalEmbeddingFetchResult> {
+  return postJson<StartLocalEmbeddingFetchResult>(
+    '/v1/admin/embedding-provider/local-model/fetch',
+    {},
   );
 }
 

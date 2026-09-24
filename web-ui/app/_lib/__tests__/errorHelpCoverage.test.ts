@@ -128,6 +128,21 @@ const FORWARDED_CODE_SOURCES = [
     literal: /:\s*'(runtime\.json_file_[a-z_]+)'/g,
     minCodes: 7,
   },
+  {
+    /**
+     * OM-79 (#994) — `POST /admin/providers/assignment` used to hold the
+     * assignment rules inline; they moved to `platform/providerAssignment.ts`
+     * so the subscription-login hand-off applies the same fail-closed checks.
+     * The route now forwards `result.code` wholesale; the literals live in
+     * `applyProviderAssignment`'s failure returns (`code: 'providers.…'`).
+     */
+    route: 'adminProviders.ts',
+    forwards: 'code: result.code',
+    source: ['middleware', 'src', 'platform', 'providerAssignment.ts'],
+    /** `code: 'providers.tool_incompatible',` */
+    literal: /code:\s*'(providers\.[a-z_]+)'/g,
+    minCodes: 6,
+  },
 ] as const;
 
 /**
@@ -152,6 +167,12 @@ const ACKNOWLEDGED_NON_LITERAL_CODE: Readonly<
     {
       expr: 'code: err.code',
       why: 'a thrown InstallError — followed via FORWARDED_CODE_SOURCES',
+    },
+  ],
+  'adminProviders.ts': [
+    {
+      expr: 'code: result.code',
+      why: 'an applyProviderAssignment failure (OM-79) — followed via FORWARDED_CODE_SOURCES',
     },
   ],
   'runtime.ts': [

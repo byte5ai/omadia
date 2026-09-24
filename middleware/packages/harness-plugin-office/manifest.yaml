@@ -6,7 +6,9 @@ identity:
   version: "0.1.1"
   kind: "tool"
   domain: "productivity.office"
-  description: "Erzeugt .xlsx/.docx-Dokumente deterministisch aus JSON-Descriptoren, legt sie in Tigris ab und liefert signierte /documents-URLs, die Channels als Datei-Anhang rendern."
+  description:
+    en: "Creates Excel and Word files from structured data and returns a download link that a channel can attach to its answer."
+    de: "Erzeugt Excel- und Word-Dateien aus strukturierten Daten und liefert einen Download-Link, den ein Kanal an seine Antwort anhängen kann."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -93,5 +95,12 @@ permissions:
     outbound: []
   filesystem:
     scratch: false
+  # Signed download URLs (`/documents/dl/<key>?exp=&sig=`) are opened by
+  # channel users who have no operator session. The route authenticates itself
+  # via the HMAC signature; this declaration lets it be served without the
+  # kernel's session gate — once the operator grants it. Two segments because a
+  # one-segment claim is refused as too broad.
+  public_paths:
+    - "/documents/dl"
 
 integrations: []

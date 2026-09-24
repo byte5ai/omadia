@@ -86,6 +86,19 @@ export function ReceiptsList({ initial }: ReceiptsListProps): React.ReactElement
                     {t('modelLabel')}: {item.model}
                   </span>
                 ) : null}
+                {item.provider ? (
+                  <span className="text-[color:var(--fg-muted)]">
+                    {t('providerLabel')}: {item.provider}
+                  </span>
+                ) : null}
+                {item.fallbackUsed ? (
+                  <span
+                    className="rounded border border-[color:var(--warning)] px-1.5 text-[color:var(--warning)]"
+                    title={t('fallbackUsedTitle')}
+                  >
+                    {t('fallbackUsedLabel')}
+                  </span>
+                ) : null}
                 <span className="text-[color:var(--fg-muted)]">
                   {t('summaryCounts', {
                     masked: item.receipt.fieldsMasked,

@@ -6,7 +6,9 @@ identity:
   version: "0.1.0"
   kind: "extension"
   domain: "core.knowledge-graph"
-  description: "In-memory KnowledgeGraph provider plugin. No persistence, no embeddings, no Postgres — every node/edge lives in process RAM and disappears on restart. Provider der Capabilities `knowledgeGraph@1` und `entityRefBus@1`. Operator wählt diesen Provider via RequiresWizard wenn keine Neon-Datenbank verfügbar ist (Empty-Middleware-Demo, lokales Dev, CI). Mutual exclusion mit @omadia/knowledge-graph-neon — nur einer der beiden Provider darf gleichzeitig in installed.json stehen, der Capability-Resolver duldet keine zwei aktiven Provider für `knowledgeGraph@1`."
+  description:
+    en: "Keeps the knowledge graph in memory only, with no database and no embeddings. Everything is gone after a restart, which suits a demo, local development or a test run. Only one knowledge graph provider can be active."
+    de: "Hält den Wissensgraphen nur im Arbeitsspeicher, ohne Datenbank und ohne Embeddings. Nach einem Neustart ist alles weg, was für eine Demo, für lokale Entwicklung oder für einen Testlauf passt. Aktiv sein darf immer nur ein Wissensgraph-Anbieter."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

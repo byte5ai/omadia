@@ -21,6 +21,9 @@ export interface BuilderModel {
   maxTokens: number;
   description: string;
   aliases: readonly string[];
+  /** #1033 — effort levels the model honours; absent = no effort knob. */
+  effortLevels?: readonly string[];
+  effortDefault?: string;
 }
 
 /** Generic chat-transcript entry. Refined in B.4 with tool-use events. */

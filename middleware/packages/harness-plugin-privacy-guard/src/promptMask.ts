@@ -166,25 +166,79 @@ const C0_PATTERNS: readonly C0Pattern[] = [
 
 /** The deterministic C0 regex baseline (#361). Confidence is always 1 —
  *  every match is a hard pattern hit. Never throws. */
+/** The C0 baseline as a synchronous scan — the same patterns `createBaselineDetector`
+ *  runs, without the async detector envelope. */
+export function detectBaselineSync(text: string): PromptPiiSpan[] {
+  const spans: PromptPiiSpan[] = [];
+  for (const { type, re } of C0_PATTERNS) {
+    // Fresh regex state per call (global flag carries lastIndex).
+    const pattern = new RegExp(re.source, re.flags);
+    for (const match of text.matchAll(pattern)) {
+      if (match.index === undefined || match[0].length === 0) continue;
+      spans.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        type,
+        confidence: 1,
+      });
+    }
+  }
+  return spans;
+}
+
+/**
+ * True when the C0 baseline finds any PII shape (e-mail, IBAN, phone, address,
+ * amount, date, id number) in `value`. Built for the v4 shape classifier's
+ * one-way `detector` booster: a column of bare phone numbers is all digits and
+ * would otherwise clear as an `id` handle — and a small dataset's digest
+ * inlines every value of a safe column. With real values now flowing from
+ * uploaded tables into the turn store, that is exactly the column that must
+ * not clear.
+ */
+export function baselineHasPii(value: string): boolean {
+  return detectBaselineSync(value).length > 0;
+}
+
+/** The C0 types that identify a PERSON. `date` and `amount` are deliberately
+ *  not here: an ISO-date or a money column is exactly what the verb engine
+ *  must keep filterable/sortable — masking it would kill "Rechnungen der
+ *  letzten 3 Monate" server-side for every plugin. */
+const IDENTITY_PII_TYPES: ReadonlySet<string> = new Set([
+  'email',
+  'iban',
+  'phone',
+  'address',
+  'idnum',
+]);
+
+/**
+ * `baselineHasPii` narrowed to identity types — the booster the v4 shape
+ * classifier actually wants. A digits-only phone column is caught; a date or
+ * amount column keeps its `safe-cleartext` verdict and its predicates.
+ */
+export function baselineHasIdentityPii(value: string): boolean {
+  // Fast path: a bare ISO date/datetime is never an identity, however many
+  // digit runs the phone pattern finds in it ("01-10" starts with `\b0`).
+  if (ISO_DATE_VALUE.test(value.trim())) return false;
+  const spans = detectBaselineSync(value);
+  const dates = spans.filter((s) => s.type === 'date');
+  return spans.some(
+    (s) =>
+      IDENTITY_PII_TYPES.has(s.type) &&
+      // A phone/idnum hit that lies entirely inside a date span IS the date.
+      !dates.some((d) => d.start <= s.start && d.end >= s.end),
+  );
+}
+
+/** Same shape the v4 classifier's S3 rule accepts as a `date`. */
+const ISO_DATE_VALUE =
+  /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
 export function createBaselineDetector(): PromptPiiDetector {
   return {
     id: 'c0-regex',
     async detect(text: string): Promise<readonly PromptPiiSpan[]> {
-      const spans: PromptPiiSpan[] = [];
-      for (const { type, re } of C0_PATTERNS) {
-        // Fresh regex state per call (global flag carries lastIndex).
-        const pattern = new RegExp(re.source, re.flags);
-        for (const match of text.matchAll(pattern)) {
-          if (match.index === undefined || match[0].length === 0) continue;
-          spans.push({
-            start: match.index,
-            end: match.index + match[0].length,
-            type,
-            confidence: 1,
-          });
-        }
-      }
-      return spans;
+      return detectBaselineSync(text);
     },
   };
 }
@@ -575,9 +629,24 @@ export async function maskPrompt(
   }
   const spans = dedupSpans(text, detected);
   if (spans.length === 0) {
+    // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
+    //
+    // The turn's map already holds every real value masked by earlier calls,
+    // and this text may well repeat one of them — a follow-up question naming
+    // the same person, an attachment tail, a retry after the C1 detector
+    // degraded. Returning the raw text here handed that value straight to the
+    // wire, and the service's post-mask assertion (which checks the WHOLE
+    // turn's map) then had to block the turn: correctly, because the value
+    // really was about to leak, but the operator sees only "prompt masking
+    // failed" on a message that looks harmless.
+    //
+    // So the known-value sweep runs even with zero fresh spans. It is the same
+    // sweep as below and it can only ADD masking — it substitutes values this
+    // turn already decided are PII, and never touches anything else.
+    const carried = existingMap ?? { forward: new Map(), reverse: new Map() };
     return {
-      maskedText: text,
-      map: existingMap ?? { forward: new Map(), reverse: new Map() },
+      maskedText: sweepKnownValues(text, carried),
+      map: carried,
       spans,
     };
   }
@@ -595,16 +664,30 @@ export async function maskPrompt(
     if (surrogate === undefined) continue;
     masked = masked.slice(0, span.start) + surrogate + masked.slice(span.end);
   }
-  // Belt and braces: a detected value may occur AGAIN at a position no
-  // detector flagged (e.g. an email repeated mid-sentence in a shape the
-  // regex misses after boundary extension). Sweep every known real value —
-  // including ones from earlier calls this turn via `existingMap` — longest
-  // first, so the service's post-mask `findIdentityLeaks` assertion is a
-  // true invariant, not a coin flip.
+  return { maskedText: sweepKnownValues(masked, map), map, spans };
+}
+
+/**
+ * Replace every real value the turn's map knows about, longest first.
+ *
+ * Belt and braces for the span pass: a detected value may occur AGAIN at a
+ * position no detector flagged (an email repeated mid-sentence in a shape the
+ * regex misses after boundary extension), and a value masked EARLIER in the
+ * turn may reappear in a later text this pass's detectors say nothing about.
+ * Both are the same operation, so both run through this one function — that is
+ * what makes the service's post-mask `findIdentityLeaks` assertion a true
+ * invariant rather than a coin flip.
+ *
+ * Longest first, because a shorter known value may be a substring of a longer
+ * one's surrogate; doing the long ones first leaves the short sweep to clean up
+ * whatever it re-introduced, never the other way round.
+ */
+function sweepKnownValues(text: string, map: PseudonymMap): string {
+  let masked = text;
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
     if (masked.includes(real)) masked = masked.split(real).join(surrogate);
   }
-  return { maskedText: masked, map, spans };
+  return masked;
 }

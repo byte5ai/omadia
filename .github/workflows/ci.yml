@@ -130,6 +130,13 @@ jobs:
       # everyone to re-run — the habit that let #549 break main.
       - name: Test (node --test via tsx)
         run: npm run test
+        env:
+          # #1017 — the loopback MCP tests bind a localhost listener. Where a
+          # sandbox denies that, they used to skip themselves, so the whole
+          # file could pass green while asserting nothing about the CLI spawn
+          # gate. This flag turns that skip into a failure: on a runner that
+          # can listen, a skip now means the test is broken, not the sandbox.
+          OMADIA_EXPECT_LOOPBACK: '1'
 
       # #764 — the workspace packages carry their own test suites, and until
       # this step NO workflow ran them: `npm run test` above globs only
@@ -169,6 +176,18 @@ jobs:
       # otherwise be tested nowhere. No install step — it has no dependencies.
       - name: Test — updater sidecar (node --test)
         run: npm run test:updater
+
+      # PII-detector sidecar (#361). Python, therefore outside every glob
+      # above — until now it was tested nowhere, which is how a shipped
+      # IPv4-only bind and a CPU-dependent broken model export both reached
+      # production unnoticed. The suite is stdlib-only and imports `server`
+      # WITHOUT gliner/onnxruntime (the model import is deferred into
+      # `load_model`), so it needs no install step and no model download:
+      # chunking, span merging, request validation, the dual-stack bind, and
+      # the startup selftest's rejection logic all run in milliseconds.
+      - name: Test — PII-detector sidecar (python unittest)
+        working-directory: middleware
+        run: python3 -m unittest sidecars/pii-detector/test_server.py -v
 
       # Anti-silent-skip guard (#565). The pg suites self-skip when the DB
       # is unreachable, so a broken/renamed service would once again pass
@@ -436,7 +455,15 @@ jobs:
   audit:
     name: audit (high+critical block)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 5 minutes was too tight for the middleware workspace. A `timeout-minutes`
+    # kill is reported as "cancelled", not "failure" — so it read as the upstream
+    # registry outage the step comment below genuinely describes, and every
+    # re-run looked like the reasonable response. It was the budget: five
+    # consecutive cancels on one PR (2026-09-04) plus one each on the two before
+    # it, while the web-ui half of the same matrix always passed. The step
+    # installs npm@latest and then audits a workspace with 40+ packages; 12
+    # gives real headroom while still catching a job that has genuinely hung.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:

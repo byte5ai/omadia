@@ -197,25 +197,36 @@ export async function countVectors(
 
 /**
  * Does the corpus still hold vectors in ANY of the columns about to be
- * dropped? This is the predicate the anti-oscillation cooldown rests on, so it
- * spans every target rather than just the first — a tenant whose vectors live
- * only in `processes` would otherwise read as "nothing to lose".
+ * dropped? This spans every target rather than just the first — a corpus whose
+ * vectors live only in `processes` would otherwise read as "nothing to lose".
+ *
+ * Cato-Audit Runde 5 / OM-98: TABLE-WIDE, with no `tenant_id` predicate. The
+ * operation it guards is a shared-table `DROP COLUMN`, so the only honest
+ * scope for its precondition is the whole table. It used to filter by tenant,
+ * which let an empty tenant authorise the destruction of every other tenant's
+ * embeddings.
+ *
+ * EXISTS rather than `count(*)`, and that matters where it is used as the
+ * in-transaction gate: there is no index serving `embedding IS NOT NULL` (an
+ * HNSW index cannot), so a count is a full scan of a table whose writers are
+ * blocked for the duration. EXISTS short-circuits on the first row, so the
+ * dangerous answer — "there ARE vectors" — is the cheap one, and a large
+ * populated corpus refuses immediately instead of timing out into a
+ * fail-closed refusal that pushes the operator at the destructive path.
  */
-export async function hasAnyVector(
+export async function hasAnyVectorTableWide(
   client: PoolClient,
   targets: ReadonlyArray<VectorColumnTarget>,
-  tenantId: string,
 ): Promise<boolean> {
   if (targets.length === 0) return false;
   const probes = targets
     .map(
       (t) =>
-        `EXISTS (SELECT 1 FROM ${quoteIdent(t.table)} WHERE tenant_id = $1 AND ${quoteIdent(t.column)} IS NOT NULL)`,
+        `EXISTS (SELECT 1 FROM ${quoteIdent(t.table)} WHERE ${quoteIdent(t.column)} IS NOT NULL)`,
     )
     .join('\n          OR ');
   const result = await client.query<{ has_vectors: boolean }>(
     `SELECT (${probes}) AS has_vectors`,
-    [tenantId],
   );
   return result.rows[0]?.has_vectors === true;
 }

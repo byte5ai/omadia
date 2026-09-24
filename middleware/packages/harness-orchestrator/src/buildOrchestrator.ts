@@ -14,9 +14,15 @@
  * than once in one process.
  */
 
-import type { ChatAgent, DisclosureSeenStore, GrantStore } from '@omadia/channel-sdk';
+import type {
+  ChatAgent,
+  ChatTurnInput,
+  DisclosureSeenStore,
+  GrantStore,
+} from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
+import type { ModelRef } from '@omadia/plugin-api';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -75,6 +81,7 @@ import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger } from './sessionLogger.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
+import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 import { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
@@ -91,6 +98,13 @@ export interface AgentRuntimeConfig {
   readonly model: string;
   /** Optional per-turn Sonnet/Opus routing (see {@link OrchestratorOptions}). */
   readonly modelRouting?: ModelRoutingConfig;
+  /** #1033 — reasoning effort the agent's model policy pins; absent = vendor default. */
+  readonly effort?: EffortLevel;
+  /** #1033 W3 — see the matching {@link OrchestratorOptions} fields. */
+  readonly primaryRef?: ModelRef;
+  readonly fallbackRef?: ModelRef;
+  readonly identityByFamily?: Readonly<Record<string, string>>;
+  readonly fallbackVisionSupported?: boolean;
   readonly maxTokens: number;
   readonly maxToolIterations: number;
   /** Optional round-loop guard thresholds (see {@link OrchestratorOptions}). */
@@ -98,6 +112,16 @@ export interface AgentRuntimeConfig {
   readonly loopRepeatHard?: number;
   /** Optional per-turn wall-clock budget in seconds (0 / omitted = off). */
   readonly maxTurnSeconds?: number;
+  /**
+   * OM-104 — wall-clock budget of one CLI-owned turn, in seconds. Only the
+   * subscription (`claude-cli`) runtime reads it; the in-process runtime is
+   * bounded by {@link maxTurnSeconds} instead. Omitted / 0 means "not set by
+   * the operator", which leaves the `OMADIA_CLI_SPAWN_TIMEOUT_MS` environment
+   * override and then the 600 s default in charge. Setting beats environment
+   * beats default, so an operator who raises it on the LLM-access page is not
+   * silently overruled by a stale deployment variable.
+   */
+  readonly cliTurnSeconds?: number;
   /** #445 — sticky Direct Line for this Agent (see {@link OrchestratorOptions}). */
   readonly directLineSticky?: boolean;
   /** Wave 8 — this Agent's direct-answer persona-skill candidates, resolved
@@ -119,6 +143,34 @@ export interface AgentRuntimeConfig {
    */
   readonly identityInstructions?: string;
   /**
+   * #967 — the name this Agent answers to (`agent_identities.display_name`),
+   * already trimmed and non-empty when present.
+   *
+   * A LAYER, NOT A SLOT. Unlike {@link identityInstructions}, this does not
+   * replace the assistant identity — it is appended to whichever identity text
+   * ends up applying. The name is one fact about the Agent; the identity is
+   * everything else it should do, and an operator who only typed a name into
+   * the Teams provisioning form has not asked to discard the platform's
+   * behaviour text along with its name.
+   *
+   * Absent → the identity text is used verbatim, exactly as before.
+   */
+  readonly identityName?: string;
+  /**
+   * #967 follow-up — this Agent's authored SELF-DESCRIPTION
+   * (`agent_identities.short_description` / `.long_description`, the operator's
+   * "Steckbrief" tab), already trimmed and non-empty when present.
+   *
+   * LAYERS, LIKE THE NAME, NOT SLOTS. They say what the Agent IS; they never
+   * replace what it was told to DO. See `withAgentIdentity` for the full
+   * precedence and for why the accent colour and avatar are excluded.
+   *
+   * Absent → nothing is added and the prompt is byte-identical, which is what
+   * keeps every Agent that predates the Steckbrief exactly where it was.
+   */
+  readonly identityShortDescription?: string;
+  readonly identityLongDescription?: string;
+  /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
    *
@@ -135,6 +187,30 @@ export interface AgentRuntimeConfig {
    * behaves exactly as it does today until an operator flips this.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /**
+   * The plugin ids this Agent is actually granted (`agent_plugins`, enabled
+   * only) — the authorisation set, enforced at DISPATCH time.
+   *
+   * WHY AT DISPATCH AND NOT ONLY AT REGISTRATION. The per-Agent tool surface
+   * is assembled by withholding un-granted tools when an orchestrator is
+   * hydrated (`scopeDomainToolsToPlugins`). That is one place, reached by
+   * several paths — boot hydrate, post-boot install reconcile, rebuild,
+   * sub-agent hydration — and any path that forgets to scope turns a
+   * registration bug into a PERMISSION bug: the tool is simply there, and the
+   * model will use it. An agent granted nothing answered with the HR
+   * integration that way.
+   *
+   * So the grant is re-checked where the tool is actually invoked. A tool that
+   * should never have been registered on this instance still cannot run.
+   * Registration decides what the model is OFFERED; this decides what it may
+   * ACTUALLY DO, and only the second one is a security boundary.
+   *
+   * ABSENT MEANS UNGATED, deliberately: the legacy single-Agent boot path has
+   * no per-Agent grant set and is the whole deployment's orchestrator. Adding
+   * an empty array there would disable every tool it has. Only the registry,
+   * which knows each Agent's rows, passes this.
+   */
+  readonly grantedPluginIds?: readonly string[];
 }
 
 /**
@@ -145,6 +221,10 @@ export interface AgentRuntimeConfig {
  */
 export interface OrchestratorDeps {
   readonly provider: LlmProvider;
+  /** #1033 W3 — resolves any provider a model policy names (primary on
+   *  another provider, fallback). Absent ⇒ every agent runs on `provider`
+   *  and no policy hop is possible, the pre-W3 behaviour. */
+  readonly providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
   readonly knowledgeGraph: KnowledgeGraph;
   readonly memoryStore: MemoryStore;
   readonly entityRefBus: EntityRefBus;
@@ -194,6 +274,26 @@ export interface OrchestratorDeps {
    * plugin's tools are always available (pre-#474 behaviour).
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
+  /**
+   * #1018 — resolves the peer AGENTS the calling agent may see in the current
+   * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
+   * Kernel-published (`chatPeerAgents@1`); absent ⇒ the roster stays
+   * humans-only, the pre-#1018 behaviour.
+   */
+  readonly chatPeerAgents?: ChatPeerAgentsProvider;
+  /**
+   * #1016 — per-turn owner guard for the subscription-CLI runtime, published
+   * by the kernel as `routineTurnOwnerGuard`.
+   *
+   * Only the CLI agent runtime uses it: that is the one path where a tool call
+   * arrives from another process and has its async context restored, so a
+   * stale `enterWith` chain could dispatch under the previous principal.
+   * Absent (legacy hosts, unit tests) ⇒ the context is restored without a
+   * cross-check, which is the pre-#1016 behaviour.
+   */
+  readonly turnOwnerGuard?: (
+    input: ChatTurnInput,
+  ) => (() => void) | undefined;
   readonly contextRetriever?: ContextRetriever;
   readonly sessionBriefing?: SessionBriefingService;
   readonly factExtractor?: FactExtractor;
@@ -276,6 +376,157 @@ export interface BuiltOrchestrator {
   /** Same as `config.modelRouting` — surfaced so callers can describe the
    *  per-turn routing the Agent is on without inspecting the orchestrator. */
   readonly effectiveModelRouting?: ModelRoutingConfig;
+}
+
+/**
+ * Fold an Agent's own name into the identity text it speaks with (#967).
+ *
+ * THE PROBLEM THIS SOLVES. `assistantIdentity` is the opening section of the
+ * system prompt, and a deployment's platform identity introduces the platform's
+ * assistant by name. A bot provisioned into Teams as `Messias` therefore went
+ * on introducing itself under that platform name: outwardly one bot, inwardly
+ * another, which reads to a user as two different things wearing one avatar.
+ *
+ * APPENDED, NEVER SUBSTITUTED. The identity text is prose an operator wrote;
+ * there is no reliable way to find and replace a name inside it, and trying
+ * would corrupt text that merely mentions the name. Stating the name last is
+ * both safe and unambiguous — the closing instruction is the one that binds.
+ *
+ * ONLY THE NAME. No description, no persona, no tone: those belong to the
+ * operator's identity form, and inventing them here would put words in an
+ * agent's mouth that nobody authored. An Agent that has a name and nothing
+ * else keeps every behaviour it had, and answers to its name.
+ *
+ * A blank or absent name returns the identity byte-for-byte, which is what
+ * keeps the prompt (and its cache key) unchanged for every Agent that never
+ * authored one.
+ */
+export function withAgentName(
+  identity: string | undefined,
+  name: string | undefined,
+): string | undefined {
+  const trimmedName = name?.trim();
+  if (!trimmedName) return identity;
+  const nameLine = `Dein Name ist ${trimmedName}. Stelle dich unter diesem Namen vor und verwende ihn, wenn du von dir sprichst — er gilt auch dann, wenn oben ein anderer Name für dich genannt wird.`;
+  const trimmedIdentity = identity?.trim();
+  return trimmedIdentity ? `${trimmedIdentity}\n\n${nameLine}` : nameLine;
+}
+
+/**
+ * Fold an Agent's authored SELF-DESCRIPTION into the identity text (#967
+ * follow-up) — the operator's "Steckbrief" tab: short and long description.
+ *
+ * THE PROBLEM THIS SOLVES. These two fields described the agent everywhere a
+ * human looked — the Teams store listing, the app package, the operator UI —
+ * and nowhere the agent could read. An operator who wrote "HR-Assistentin für
+ * Urlaub und Zeiterfassung" got a bot that rendered that sentence in a catalog
+ * and could not say it when asked what it does. The identity tabs are a promise
+ * that what you type is what the agent becomes; this is the half of that
+ * promise that was missing.
+ *
+ * APPENDED, NEVER SUBSTITUTED — same rule as {@link withAgentName}, and for a
+ * stronger reason here. `instructions` (via `composed_prompt`) REPLACES the
+ * platform identity outright, which is deliberate and stays (#914): it is the
+ * operator saying "this agent behaves like THIS instead". A description is not
+ * that. It says what the agent is, not how it works, so it can only ever be an
+ * addition — folding it into the replacing slot would let a one-line Steckbrief
+ * silently delete a deployment's whole configured behaviour.
+ *
+ * VERBATIM, UNDER A LABEL. The text is the operator's own; nothing is
+ * paraphrased, summarised or expanded. The labels exist because raw prose
+ * pasted after a system prompt reads as an instruction rather than as a fact
+ * about the agent — the label is framing, not content, and an unauthored field
+ * contributes no label and no line. Nothing is invented for an empty field.
+ *
+ * BOTH, WHEN BOTH ARE THERE. Short and long are not two drafts of one text —
+ * the Teams manifest caps them at 80 and 4000 characters precisely because they
+ * answer different questions ("what is this?" vs "what can it do?"). An agent
+ * asked either question should be able to answer it, so neither is dropped in
+ * favour of the other. Identical values are the operator's own repetition and
+ * are left alone rather than silently de-duplicated.
+ */
+export function withAgentSelfDescription(
+  identity: string | undefined,
+  descriptions: {
+    readonly shortDescription?: string | undefined;
+    readonly longDescription?: string | undefined;
+  },
+): string | undefined {
+  const short = descriptions.shortDescription?.trim();
+  const long = descriptions.longDescription?.trim();
+  const lines: string[] = [];
+  if (short) lines.push(`Kurzbeschreibung deiner Rolle: ${short}`);
+  if (long) lines.push(`Ausführliche Beschreibung deiner Rolle: ${long}`);
+  if (lines.length === 0) return identity;
+  const block = lines.join('\n\n');
+  const trimmedIdentity = identity?.trim();
+  return trimmedIdentity ? `${trimmedIdentity}\n\n${block}` : block;
+}
+
+/**
+ * The whole per-Agent identity layer, composed in ONE place so the precedence
+ * is stated once and cannot drift between callers (#914 / #967).
+ *
+ * THE ORDER IS THE CONTRACT:
+ *
+ *  1. BASE — the platform-wide `assistantIdentity`, REPLACED outright by the
+ *     Agent's own `identityInstructions` when it authored any. That value is
+ *     already `COALESCE(composed_prompt, instructions)`, so the Charakter
+ *     (persona axes) and Grenzen (boundary presets + sycophancy guard) tabs are
+ *     compiled into it upstream by `composeAgentIdentityPrompt` — they are NOT
+ *     unused columns, and nothing here needs to re-derive them. Replacing is
+ *     deliberate and unchanged: it is the operator saying "behave like this
+ *     instead of like the platform default".
+ *
+ *  2. APPENDED — the Steckbrief (short, then long description). Facts about the
+ *     agent, layered ON TOP of whichever text step 1 produced, because a
+ *     description must never be able to delete configured behaviour.
+ *
+ *  3. APPENDED LAST — the name. Last word deliberately: an operator's prose (or
+ *     the platform identity) may mention some other name, and the closing
+ *     instruction is the one that binds. This is why the name goes AFTER the
+ *     descriptions and not directly after the identity text — a long
+ *     description that names a predecessor bot must still lose to the name the
+ *     agent actually wears.
+ *
+ * CONFLICT RULE, in one sentence: later text wins over earlier text, and
+ * nothing appended can remove what step 1 established.
+ *
+ * DELIBERATELY EXCLUDED. `accent_color` and the avatar are rendering decisions
+ * — they exist so a human can tell two bots apart at a glance in Teams. A model
+ * cannot act on either, and describing them in a prompt ("deine Akzentfarbe ist
+ * #3B82F6") would spend tokens on a fact that can only produce noise, or worse,
+ * invite the agent to talk about its own styling. They stay presentation-only
+ * on purpose, not by oversight.
+ *
+ * An Agent that authored nothing gets the platform identity back byte for byte,
+ * which is what keeps every pre-#914 deployment (and its prompt-cache key)
+ * exactly where it was.
+ */
+export function withAgentIdentity(
+  baseIdentity: string | undefined,
+  authored: {
+    readonly identityInstructions?: string | undefined;
+    readonly identityName?: string | undefined;
+    readonly identityShortDescription?: string | undefined;
+    readonly identityLongDescription?: string | undefined;
+  },
+): string | undefined {
+  // Step 1 — replace. A blank authored value is not an identity, so it falls
+  // through rather than silencing the opening section of the system prompt.
+  const base = authored.identityInstructions?.trim() || baseIdentity;
+  // Steps 2 and 3 — append, descriptions before the name.
+  return withAgentName(
+    withAgentSelfDescription(base, {
+      ...(authored.identityShortDescription !== undefined
+        ? { shortDescription: authored.identityShortDescription }
+        : {}),
+      ...(authored.identityLongDescription !== undefined
+        ? { longDescription: authored.identityLongDescription }
+        : {}),
+    }),
+    authored.identityName,
+  );
 }
 
 /**
@@ -380,7 +631,9 @@ export function buildOrchestratorForAgent(
 
   // Native-tool instances (channel-coupled UI cards + calendar). The calendar
   // tools are present only when the Microsoft 365 accessor is available.
-  const chatParticipantsTool = new ChatParticipantsTool();
+  const chatParticipantsTool = new ChatParticipantsTool(
+    deps.chatPeerAgents ? { peerAgents: deps.chatPeerAgents } : {},
+  );
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
   const findFreeSlotsTool = deps.microsoft365
@@ -421,11 +674,25 @@ export function buildOrchestratorForAgent(
       console.warn(`[security-audit] ${JSON.stringify(event)}`);
     };
 
-  // #914 — per-Agent identity beats the platform default. A blank authored
-  // value is not an identity, so it falls through rather than silencing the
-  // opening section of the system prompt.
-  const agentAssistantIdentity =
-    config.identityInstructions?.trim() || deps.assistantIdentity;
+  // #914 / #967 — this Agent's authored identity, layered over the platform
+  // default. `withAgentIdentity` owns the whole precedence (replace, then
+  // append the Steckbrief, then append the name last); see its doc comment for
+  // why each field sits where it does and why the accent colour and avatar are
+  // deliberately not in it.
+  const assistantIdentityWithName = withAgentIdentity(deps.assistantIdentity, {
+    ...(config.identityInstructions !== undefined
+      ? { identityInstructions: config.identityInstructions }
+      : {}),
+    ...(config.identityName !== undefined
+      ? { identityName: config.identityName }
+      : {}),
+    ...(config.identityShortDescription !== undefined
+      ? { identityShortDescription: config.identityShortDescription }
+      : {}),
+    ...(config.identityLongDescription !== undefined
+      ? { identityLongDescription: config.identityLongDescription }
+      : {}),
+  });
 
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
@@ -434,6 +701,15 @@ export function buildOrchestratorForAgent(
     provider: deps.provider,
     model: config.model,
     ...(config.modelRouting ? { modelRouting: config.modelRouting } : {}),
+    ...(config.effort !== undefined ? { effort: config.effort } : {}),
+    // #1033 W3 — the policy's providers, resolved through the shared pool.
+    ...(deps.providerPool ? { providerPool: deps.providerPool } : {}),
+    ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
+    ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
+    ...(config.identityByFamily ? { identityByFamily: config.identityByFamily } : {}),
+    ...(config.fallbackVisionSupported !== undefined
+      ? { fallbackVisionSupported: config.fallbackVisionSupported }
+      : {}),
     ...(config.directLineSticky ? { directLineSticky: true } : {}),
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }
@@ -453,6 +729,9 @@ export function buildOrchestratorForAgent(
       ? { maxTurnSeconds: config.maxTurnSeconds }
       : {}),
     domainTools: [],
+    ...(config.grantedPluginIds
+      ? { grantedPluginIds: config.grantedPluginIds }
+      : {}),
     nativeToolRegistry: deps.nativeToolRegistry,
     memoryToolHandler,
     memoryBinder,
@@ -510,9 +789,20 @@ export function buildOrchestratorForAgent(
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     // #914 — the Agent's own behaviour text wins over the platform-wide one.
     // Resolved once, here, so the two call sites below cannot disagree about
-    // which identity this Agent speaks with.
-    ...(agentAssistantIdentity
-      ? { assistantIdentity: agentAssistantIdentity }
+    // which identity this Agent speaks with. #967 folds the Agent's name into
+    // that same resolved value for the same reason.
+    ...(assistantIdentityWithName
+      ? { assistantIdentity: assistantIdentityWithName }
+      : {}),
+    // #967 — the SAME authored name, handed over separately as well. The
+    // prompt is not the only place an Agent states who it is: the Art. 50
+    // marking names the assistant too and is resolved behind the model, where
+    // the prompt is deliberately out of reach. Without this it had only the
+    // platform-wide `ai_disclosure_assistant_name` — one string for every
+    // Agent — so each provisioned bot signed its answers with whichever single
+    // name the operator had typed there.
+    ...(config.identityName?.trim()
+      ? { identityName: config.identityName.trim() }
       : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
@@ -567,9 +857,24 @@ export function buildOrchestratorForAgent(
       bundle: {
         agent: new CliChatAgent({
           dispatch,
+          // #1102 — surface the choice card / follow-up chips / slot picker a
+          // kernel-native tool scheduled this turn on the `done` event, so the
+          // subscription-CLI path renders them like the API-key path.
+          drainTurnCards: () => orchestrator.drainCliTurnCards(),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
-          ...(agentAssistantIdentity
-            ? { systemPrompt: agentAssistantIdentity }
+          ...(assistantIdentityWithName
+            ? { systemPrompt: assistantIdentityWithName }
+            : {}),
+          // #1016 — without this forward the guard exists but nothing installs
+          // it, and a stale routine context dispatches under the previous
+          // principal instead of being refused.
+          ...(deps.turnOwnerGuard
+            ? { turnOwnerGuard: deps.turnOwnerGuard }
+            : {}),
+          // OM-104 — operator-set turn budget. Only forwarded when actually
+          // configured, so an unset field leaves the ENV override reachable.
+          ...(config.cliTurnSeconds !== undefined && config.cliTurnSeconds > 0
+            ? { spawnTimeoutMs: Math.trunc(config.cliTurnSeconds * 1000) }
             : {}),
         }),
         raw: orchestrator,

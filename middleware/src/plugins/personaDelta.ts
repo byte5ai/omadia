@@ -31,7 +31,7 @@ import {
 /**
  * Anthropic model-family identifiers as we group them in the orchestrator.
  * The Builder lets users pick `haiku | sonnet | opus`; the runtime maps
- * those onto the actual model id (sonnet → claude-sonnet-4-6, …) but
+ * those onto the actual model id (sonnet → claude-sonnet-5, …) but
  * persona-delta only cares about the family tier.
  */
 export type PersonaModelFamily = 'sonnet' | 'opus' | 'haiku';

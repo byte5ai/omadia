@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -9,6 +9,7 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   InMemoryInstalledRegistry,
   type InstalledAgent,
+  type InstalledRegistry,
 } from '../src/plugins/installedRegistry.js';
 import { FileInstalledRegistry } from '../src/plugins/fileInstalledRegistry.js';
 
@@ -78,6 +79,169 @@ describe('InstalledRegistry.markActivationFailed (with unresolvedRequires)', () 
     assert.equal(reg.get('does-not-exist'), undefined);
   });
 });
+
+interface RegistryFixture {
+  registry: InstalledRegistry;
+  read(id: string): Promise<InstalledAgent | undefined>;
+}
+
+const registryBackends: ReadonlyArray<{
+  name: string;
+  create(t: TestContext): Promise<RegistryFixture>;
+}> = [
+  {
+    name: 'InMemoryInstalledRegistry',
+    async create() {
+      const registry = new InMemoryInstalledRegistry();
+      return { registry, read: async (id) => registry.get(id) };
+    },
+  },
+  {
+    name: 'FileInstalledRegistry',
+    async create(t) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'omadia-reg-block-'));
+      t.after(() => fs.rm(dir, { recursive: true, force: true }));
+      const file = path.join(dir, 'installed.json');
+      const registry = new FileInstalledRegistry(file);
+      await registry.load();
+      return {
+        registry,
+        async read(id) {
+          // Every assertion reads a fresh instance, so memory-only writes fail.
+          const reloaded = new FileInstalledRegistry(file);
+          await reloaded.load();
+          return reloaded.get(id);
+        },
+      };
+    },
+  },
+];
+
+for (const backend of registryBackends) {
+  describe(`${backend.name} terminal blocks and counted failures (OM-87)`, () => {
+    it('blocks immediately, bounds the error, stamps time and preserves metadata', async (t) => {
+      const { registry, read } = await backend.create(t);
+      const original = {
+        ...activeAgent('a'),
+        config: { region: 'eu' },
+        last_activated_at: '2026-04-29T01:00:00.000Z',
+      };
+      await registry.register(original);
+      const before = Date.now();
+      const error = `duplicate provider: ${'x'.repeat(600)}`;
+      await registry.markActivationBlocked('a', error);
+      const blocked = await read('a');
+      assert.ok(blocked);
+      assert.equal(blocked.status, 'errored');
+      assert.equal(blocked.activation_failure_count, CIRCUIT_BREAKER_THRESHOLD);
+      assert.equal(blocked.last_activation_error, error.slice(0, 500));
+      assert.ok(blocked.last_activation_error_at);
+      const at = Date.parse(blocked.last_activation_error_at);
+      assert.ok(at >= before && at <= Date.now());
+      assert.equal(Object.hasOwn(blocked, 'unresolved_requires'), false);
+      assert.equal(blocked.installed_at, original.installed_at);
+      assert.equal(blocked.installed_version, original.installed_version);
+      assert.equal(blocked.last_activated_at, original.last_activated_at);
+      assert.deepEqual(blocked.config, original.config);
+      assert.equal(original.status, 'active', 'does not mutate the old entry');
+    });
+
+    it('clears a stale requires-list when replacing a counted failure with a block', async (t) => {
+      const { registry, read } = await backend.create(t);
+      await registry.register(activeAgent('a'));
+      await registry.markActivationFailed('a', 'missing dependency', ['missing@^1']);
+      await registry.markActivationBlocked('a', 'duplicate provider');
+      const blocked = await read('a');
+      assert.ok(blocked);
+      assert.equal(blocked.status, 'errored');
+      assert.equal(Object.hasOwn(blocked, 'unresolved_requires'), false);
+    });
+
+    for (const previous of [0, 1, CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_THRESHOLD + 4]) {
+      it(`repeated blocks keep a stable counter starting at ${previous}`, async (t) => {
+        const { registry, read } = await backend.create(t);
+        await registry.register({ ...activeAgent('a'), activation_failure_count: previous });
+        await registry.markActivationBlocked('a', 'first conflict');
+        const first = await read('a');
+        await registry.markActivationBlocked('a', 'current conflict');
+        const second = await read('a');
+        assert.ok(first);
+        assert.ok(second);
+        assert.equal(first.activation_failure_count, Math.max(previous, CIRCUIT_BREAKER_THRESHOLD));
+        assert.equal(second.activation_failure_count, first.activation_failure_count);
+        assert.equal(second.status, 'errored');
+        assert.equal(second.last_activation_error, 'current conflict');
+        assert.ok(Date.parse(second.last_activation_error_at!) >= Date.parse(first.last_activation_error_at!));
+        assert.equal(Object.hasOwn(second, 'unresolved_requires'), false);
+      });
+    }
+
+    it('unknown ids are no-ops for blocked and both counted call shapes', async (t) => {
+      const { registry, read } = await backend.create(t);
+      const original = activeAgent('a');
+      await registry.register(original);
+      await registry.markActivationBlocked('unknown', 'conflict');
+      await registry.markActivationFailed('unknown', 'transient');
+      await registry.markActivationFailed('unknown', 'missing', ['missing@^1']);
+      assert.equal(await read('unknown'), undefined);
+      assert.deepEqual(await read('a'), original);
+    });
+
+    for (const requires of [undefined, ['missing@^1']]) {
+      it(`preserves counted failures ${requires ? 'with requires' : 'without requires'}`, async (t) => {
+        const { registry, read } = await backend.create(t);
+        await registry.register(activeAgent('a'));
+        const error = `activation failed: ${'x'.repeat(600)}`;
+        for (let attempt = 1; attempt <= CIRCUIT_BREAKER_THRESHOLD + 1; attempt++) {
+          const before = Date.now();
+          if (requires) await registry.markActivationFailed('a', error, requires);
+          else await registry.markActivationFailed('a', error);
+          const failed = await read('a');
+          assert.ok(failed);
+          assert.equal(failed.activation_failure_count, attempt);
+          assert.equal(failed.status, attempt < CIRCUIT_BREAKER_THRESHOLD ? 'active' : 'errored');
+          assert.equal(failed.last_activation_error, error.slice(0, 500));
+          assert.ok(failed.last_activation_error_at);
+          assert.ok(Date.parse(failed.last_activation_error_at) >= before);
+          assert.deepEqual(failed.unresolved_requires, requires);
+        }
+      });
+    }
+
+    it('counted failures copy requires and still remove them for absent or empty lists', async (t) => {
+      const { registry, read } = await backend.create(t);
+      for (const replacement of [undefined, []]) {
+        await registry.register(activeAgent('a'));
+        const requires = ['missing@^1'];
+        await registry.markActivationFailed('a', 'missing', requires);
+        requires.push('later@^1');
+        assert.deepEqual((await read('a'))?.unresolved_requires, ['missing@^1']);
+        await registry.markActivationFailed('a', 'changed', replacement);
+        assert.equal((await read('a'))?.unresolved_requires, undefined);
+        assert.equal((await read('a'))?.activation_failure_count, 2);
+        assert.equal((await read('a'))?.status, 'active');
+      }
+    });
+
+    it('clearing a block restores active and resets the next transient failure to one', async (t) => {
+      const { registry, read } = await backend.create(t);
+      await registry.register(activeAgent('a'));
+      await registry.markActivationBlocked('a', 'conflict');
+      await registry.clearActivationError('a');
+      assert.deepEqual(await read('a'), activeAgent('a'));
+      await registry.markActivationFailed('a', 'transient');
+      assert.equal((await read('a'))?.activation_failure_count, 1);
+      assert.equal((await read('a'))?.status, 'active');
+      await registry.markActivationSucceeded('a');
+      const success = await read('a');
+      assert.ok(success?.last_activated_at);
+      assert.equal(success.activation_failure_count, undefined);
+      assert.equal(success.last_activation_error, undefined);
+      assert.equal(success.last_activation_error_at, undefined);
+      assert.equal(success.unresolved_requires, undefined);
+    });
+  });
+}
 
 describe('InstalledRegistry.markActivationSucceeded', () => {
   it('clears unresolved_requires alongside the other error fields', async () => {

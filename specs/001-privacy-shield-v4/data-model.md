@@ -126,7 +126,8 @@ Dataset. The LLM calls verbs as individual tool calls (D7).
 ```ts
 type VerbName =
   | 'filter' | 'sort' | 'group' | 'aggregate'
-  | 'top_n' | 'select' | 'count' | 'join';
+  | 'top_n' | 'select' | 'count' | 'join'
+  | 'union' | 'distinct';
 
 interface VerbInvocation {
   verb: VerbName;

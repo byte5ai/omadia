@@ -384,6 +384,16 @@ export function AgentTeamsInstalls({
                 // the confusion this feature removes — so every entry names
                 // its own kind.
                 const kind = parseInstalledTargetKind(team);
+                // PER ROW, not per panel. Removing from a team and removing
+                // from a chat are different connector methods that arrived in
+                // different versions, so one flag for the whole list has to be
+                // wrong about one of the two kinds — a chat row with a live
+                // button that answers 501, or a team row greyed out because
+                // the connector cannot do chats.
+                const canRemove =
+                  kind === 'team'
+                    ? data.capabilities.uninstall
+                    : data.capabilities.chat_uninstall;
                 return (
                   <div
                     key={team.team_id}
@@ -441,7 +451,7 @@ export function AgentTeamsInstalls({
                       className="ml-auto"
                       size="sm"
                       variant="danger"
-                      disabled={!data.capabilities.uninstall || inFlight}
+                      disabled={!canRemove || inFlight}
                       busy={busy === `uninstall:${team.team_id}`}
                       busyLabel={t('uninstallBusy')}
                       onClick={() => setConfirmUninstall(team)}
@@ -452,8 +462,16 @@ export function AgentTeamsInstalls({
                 );
               })
             )}
-            {!data.capabilities.uninstall ? (
+            {/* One note per capability that is actually relevant to what is
+                listed: a deployment with only team installs must not be told
+                about a chat method it never reaches for, and vice versa. */}
+            {!data.capabilities.uninstall &&
+            installed.some((team) => parseInstalledTargetKind(team) === 'team') ? (
               <CapabilityNote {...unsupportedReason(data, 'uninstall')} />
+            ) : null}
+            {!data.capabilities.chat_uninstall &&
+            installed.some((team) => parseInstalledTargetKind(team) !== 'team') ? (
+              <CapabilityNote {...unsupportedReason(data, 'chat_uninstall')} />
             ) : null}
           </div>
 

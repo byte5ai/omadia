@@ -21,7 +21,10 @@
  * `applyEgressFilter` + Phase A.2 final-scrub for spontaneous-PII
  * protection — same safety net the legacy path enjoys.
  *
- * See docs/harness-platform/PHASE-C-DESIGN-server-side-templates.md
+ * Phase C design note: `docs/harness-platform/` is a gitignored local
+ * tree, so the original citation resolved for nobody else. The shape this
+ * module validates IS the contract — see `parseRoutineOutputTemplate`
+ * below and `routineTemplateRenderer.ts` for how each section renders.
  * for the full architecture, schema migration, and slice plan.
  */
 

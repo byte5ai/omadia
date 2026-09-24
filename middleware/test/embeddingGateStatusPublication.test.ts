@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { createEmbeddingGateStatus } from '@omadia/knowledge-graph-neon/dist/gateStatusPublication.js';
 
 import { buildKgHealth } from '../src/health/kgHealth.js';
-import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { InMemoryInstalledRegistry, type InstalledRegistry } from '../src/plugins/installedRegistry.js';
 
 /**
  * #440 — the gate runs once, at activation. What it describes does NOT stay
@@ -17,16 +17,21 @@ import type { InstalledRegistry } from '../src/plugins/installedRegistry.js';
 const KG_NEON = '@omadia/knowledge-graph-neon';
 const EMBEDDINGS = '@omadia/embeddings';
 
-/** Minimal stand-in for the installed registry: buildKgHealth only calls get(). */
+/** Seed the real registry so status writes keep the same contract as reads. */
 function registry(
   entries: ReadonlyArray<{ id: string; config?: Record<string, unknown> }>,
 ): InstalledRegistry {
-  const byId = new Map(
-    entries.map((e) => [e.id, { status: 'active', config: e.config ?? {} }]),
-  );
-  return {
-    get: (id: string) => byId.get(id),
-  } as unknown as InstalledRegistry;
+  const installed = new InMemoryInstalledRegistry();
+  for (const entry of entries) {
+    void installed.register({
+      id: entry.id,
+      installed_version: '1.0.0',
+      installed_at: '2026-09-10T00:00:00Z',
+      status: 'active',
+      config: entry.config ?? {},
+    });
+  }
+  return installed;
 }
 
 const OWED_MATCH = {
@@ -299,6 +304,8 @@ describe('embedding gate status publication (#440)', () => {
             column: 'embedding',
             previousDimensions: 768,
             newDimensions: 1536,
+            indexes: [],
+            attemptsReset: 0,
             discardedVectors: 7,
           },
         ],

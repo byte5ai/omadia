@@ -30,6 +30,36 @@ const eslintConfig = [
     },
   },
   {
+    // Font-CDN gate. `next/font/google` self-hosts at runtime but DOWNLOADS at
+    // build time, so a runner that cannot reach fonts.googleapis.com fails the
+    // whole build. That took out the macOS x64 desktop build on `7a0d4675`,
+    // which cost the release its x64 artifact, `mac-update-feed` and
+    // `promote-release`. Faces are vendored as woff2 in `app/_fonts/` and
+    // loaded with `next/font/local`; adding a family means adding a file there.
+    files: ['**/*.{ts,tsx,js,jsx,mjs}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'next/font/google',
+              message:
+                'Downloads fonts at build time, so the build needs the font CDN. Vendor the woff2 into app/_fonts/ and use next/font/local — see app/_fonts/index.ts.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['next/font/google/*'],
+              message:
+                'Downloads fonts at build time, so the build needs the font CDN. Vendor the woff2 into app/_fonts/ and use next/font/local — see app/_fonts/index.ts.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Lume Button gate (issue #290). Raw <button> drifts back in with every
     // new feature; the material layer keeps the look but not the §6.4 press
     // feel, and per-call className soup re-diverges from the §4.2 variants.

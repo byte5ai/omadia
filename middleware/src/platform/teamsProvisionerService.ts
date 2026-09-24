@@ -69,6 +69,10 @@ import {
   TARGET_DIRECTORY_METHOD_NAMES,
   type TeamsTargetDirectoryMethods,
 } from './teamsTargetDirectory.js';
+import {
+  TEAMS_BOT_SLUG_RE,
+  teamsBotMessagingPath,
+} from './teamsMessagingPath.js';
 
 /** Service-registry key (bare, unversioned). */
 export const TEAMS_PROVISIONER_SERVICE_NAME = 'teamsProvisioner';
@@ -913,8 +917,14 @@ export function requireTeamsProvisioner(
  * channel-teams' per-bot route (`/api/teams/:botSlug/messages`, 0.20.0), so
  * the charset is deliberately conservative: URL-safe, no separators that
  * could re-shape the path.
+ *
+ * Taken from `teamsMessagingPath.ts` rather than declared here, because the
+ * same charset decides which slugs this builder will mint AND which ones the
+ * requireAuth exemption admits. Two copies would let the provisioner hand Azure
+ * an endpoint the session gate then rejects — which is precisely the outage
+ * those shared constants were extracted to make unrepresentable.
  */
-const BOT_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BOT_SLUG_RE = TEAMS_BOT_SLUG_RE;
 
 /**
  * Build the messaging endpoint handed to Azure for one bot:
@@ -958,5 +968,5 @@ export function buildTeamsBotMessagingEndpoint(
     );
   }
   const basePath = base.pathname.replace(/\/+$/, '');
-  return `${base.origin}${basePath}/api/teams/${encodeURIComponent(botSlug)}/messages`;
+  return `${base.origin}${basePath}${teamsBotMessagingPath(botSlug)}`;
 }

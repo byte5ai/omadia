@@ -835,3 +835,41 @@ test('stream() accumulates parallel tool calls (index 0 and 1)', async () => {
 test('createOpenAiProvider requires a client or apiKey', () => {
   assert.throws(() => createOpenAiProvider({}), /client.*apiKey|apiKey.*client/);
 });
+
+// ---------------------------------------------------------------------------
+// #1033 — effort
+// ---------------------------------------------------------------------------
+
+test('effort maps to reasoning_effort on native OpenAI', async () => {
+  const captured: Captured = {};
+  const provider = createOpenAiProvider({ client: mockClient(captured, completion()) });
+  await provider.complete({
+    model: 'gpt-5.4',
+    maxTokens: 64,
+    effort: 'high',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal(captured.params?.['reasoning_effort'], 'high');
+});
+
+test('effort is dropped (not errored) on OpenAI-compatible servers, noted once per model', async () => {
+  const captured: Captured = {};
+  const logs: unknown[][] = [];
+  const provider = createOpenAiProvider({
+    client: mockClient(captured, completion()),
+    id: 'openai-compatible',
+    log: (...args: unknown[]) => logs.push(args),
+  });
+  const req = {
+    model: 'mistral-large',
+    maxTokens: 64,
+    effort: 'high' as const,
+    messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'Hi' }] }],
+  };
+  await provider.complete(req);
+  await provider.complete(req);
+  assert.equal(captured.params?.['reasoning_effort'], undefined);
+  const notes = logs.filter((l) => String(l[0]).includes('effort'));
+  assert.equal(notes.length, 1, 'one note per model, not one per turn');
+  assert.match(String(notes[0]?.[0]), /mistral-large/);
+});

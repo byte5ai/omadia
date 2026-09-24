@@ -13,6 +13,7 @@ import {
   postAuthLogin,
   type AuthProviderSummary,
 } from '../_lib/api';
+import { signalDesktopUiReady } from '../_lib/desktopShell';
 
 type State =
   | { kind: 'loading' }
@@ -79,6 +80,12 @@ function LoginPageInner(): React.ReactElement {
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // OM-71 — the desktop shell waits for this before showing its own dialogs.
+  // "Loading login…" is not a screen; the first non-loading state is.
+  useEffect(() => {
+    if (state.kind !== 'loading') signalDesktopUiReady();
+  }, [state.kind]);
 
   useEffect(() => {
     let cancelled = false;

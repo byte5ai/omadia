@@ -177,7 +177,15 @@ export class ConductorEphemeralRunService {
     try {
       // Reserved context keys are executor-owned: a caller-seeded
       // `stepAttempts` would stretch loop budgets, `steps` would fake history.
-      const { stepAttempts: _ignoredAttempts, steps: _ignoredSteps, ...payload } = input.payload ?? {};
+      // A seeded `transcript`/`transcriptText` would let a caller fabricate a
+      // conversation the agents never had — and the next speaker would answer it.
+      const {
+        stepAttempts: _ignoredAttempts,
+        steps: _ignoredSteps,
+        transcript: _ignoredTranscript,
+        transcriptText: _ignoredTranscriptText,
+        ...payload
+      } = input.payload ?? {};
       const run = await this.deps.executor.startRun({
         slug,
         payload,

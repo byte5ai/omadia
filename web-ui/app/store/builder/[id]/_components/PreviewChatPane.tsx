@@ -262,7 +262,14 @@ export function PreviewChatPane({
         if (ev.type === 'turn_done') break;
         if (ev.type === 'error') {
           console.warn(`[builder.preview.chat] provider error (${ev.code})`, ev.message);
-          setError(humanizeProviderError(ev.message, t('error.providerGeneric')));
+          // OM-101 — a missing LLM access is not a provider error to be
+          // paraphrased; the raw text was "API key is invalid" for a key the
+          // operator never needed. Name what is actually missing instead.
+          setError(
+            ev.code === 'builder.llm_access_missing'
+              ? t('error.llmAccessMissing')
+              : humanizeProviderError(ev.message, t('error.providerGeneric')),
+          );
           break;
         }
       }

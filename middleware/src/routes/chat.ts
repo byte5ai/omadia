@@ -12,6 +12,13 @@ import type {
 
 import type { AgentResolver } from '../agents/resolveAgentForTool.js';
 import { sessionIdentity } from '../auth/sessionIdentity.js';
+import { recordForeignToolCall } from '../platform/foreignToolMetrics.js';
+import {
+  recordTurnFailure,
+  recordTurnSuccess,
+} from '../platform/lastTurnOutcome.js';
+import type { ManageRoutineContext } from '../plugins/routines/manageRoutineTool.js';
+import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -152,10 +159,88 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
 }
 
 /**
+ * OM-82 — the HTTP chat channel identifier for routines.
+ *
+ * No proactive sender is registered for it (senders come from channel plugins
+ * such as Teams), so `manage_routine`'s `create` still refuses here — but with
+ * "no proactive sender registered for channel 'web'", which names the actual
+ * limitation, instead of the runtime-wiring error the tester saw. `list`,
+ * `pause`, `resume` and `delete` work from the web chat once the principal
+ * arrives, which is the bulk of what the tool is asked for.
+ */
+const HTTP_ROUTINE_CHANNEL = 'web';
+
+/**
+ * OM-82 (#993, #1016) — the missing PRODUCER of the routines principal.
+ *
+ * `#993` taught the loopback dispatch to restore the caller's async context
+ * across the CLI process boundary and `#1016` taught it to refuse a stale one.
+ * Both hardened the transport of a value the HTTP chat route never installed:
+ * the only writer of `routineTurnContext` in the whole tree is
+ * `RoutinesIntegration.captureRoutineTurn`, which only the out-of-tree Teams
+ * adapter calls. So on the web chat `routineTurnContext.current()` was
+ * `undefined` for the entire turn and `manage_routine` refused every action.
+ *
+ * Returns `undefined` when no principal resolved. That is deliberate: the
+ * `#1016` owner guard REFUSES a dispatch whose restored context has a userId
+ * the turn does not, so installing an anonymous context would turn a graceful
+ * "no user context" into a hard guard failure.
+ *
+ * The identity is the SESSION's, never `resolveUserId(req)` — for the reason
+ * `chatTurnContext` already documents above. `resolveUserId` falls through to
+ * the client-sent `x-user-id` header, and `manage_routine` scopes `pause` /
+ * `resume` / `delete` to the context's `(tenant, userId)` (#1025), so keying
+ * the principal on that header would let any caller name a victim and manage
+ * their routines. The `#1016` guard cannot catch it either: both sides of its
+ * comparison would come from the same forged header and would match.
+ */
+function httpRoutineContext(
+  req: Request,
+  sessionScope: string,
+): ManageRoutineContext | undefined {
+  const userId = req.session?.omadia_user_id;
+  if (!userId || !USER_ID_RE.test(userId)) return undefined;
+  return {
+    tenant: process.env['GRAPH_TENANT_ID'] ?? 'default',
+    userId,
+    channel: HTTP_ROUTINE_CHANNEL,
+    // The web chat has no channel-native delivery handle; the session scope is
+    // the closest stable correlation id a later sender could key on.
+    conversationRef: { kind: 'http-chat', sessionScope },
+    // Cold-start outreach to OTHER people is a channel-governance decision; the
+    // web chat has no such governance source, so it stays closed.
+    canTargetOthers: false,
+  };
+}
+
+/** Run `fn` under the routines principal when one resolved, unchanged otherwise. */
+function withRoutinePrincipal<T>(
+  ctx: ManageRoutineContext | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return ctx ? routineTurnContext.run(ctx, fn) : fn();
+}
+
+/**
  * NDJSON framing: one JSON event per line. Easier to parse than SSE, works
  * with a plain fetch+ReadableStream on the browser side, and survives any
  * reverse proxy that handles chunked responses correctly.
  */
+/**
+ * #1008 — is this `tool_use` event flagged foreign?
+ *
+ * Read structurally rather than off the `ChatStreamEvent` union on purpose.
+ * The flag is set by `cliChatAgent` and declared on the channel-sdk event
+ * type, but this route resolves that type through the built package: a tree
+ * whose `dist/` predates the declaration would fail to compile against a
+ * direct `event.foreign`, which is a build-order accident, not a contract
+ * change. The wire contract is "the property is present and true", and that
+ * is exactly what this asks.
+ */
+function isForeignToolUse(event: object): boolean {
+  return (event as { foreign?: unknown }).foreign === true;
+}
+
 function writeEvent(res: Response, event: unknown): void {
   res.write(`${JSON.stringify(event)}\n`);
 }
@@ -171,6 +256,13 @@ export interface CreateChatRouterOptions {
   /** Phase A — the no-pick default slug. Returns the platform fallback
    *  Agent's slug, or `undefined` when no fallback is configured. */
   getDefaultSlug: () => string | undefined;
+  /** OM-76 (#996) — is ANY Agent active right now? When this answers `false`
+   *  the 503 carries `no_agents_active` instead of `agent_unavailable`: the
+   *  requested slug is not "deleted or disabled", there simply is no
+   *  orchestrator running (fresh install, no LLM provider assigned). The UI
+   *  must not offer "re-bind to default" in that state — the default is the
+   *  very thing that is missing. Optional so older mounts keep the old code. */
+  hasActiveAgents?: () => boolean;
   /** Phase A — chat session store, for snapshot capture on the first
    *  turn of a session. */
   chatSessionStore?: ChatSessionStore;
@@ -232,6 +324,15 @@ async function resolveAgentForRequest(
 
   const chatAgent = options.resolveChatAgent(effectiveSlug);
   if (!chatAgent) {
+    if (options.hasActiveAgents?.() === false) {
+      res.status(503).json({
+        error: 'no_agents_active',
+        message:
+          'no orchestrator is active. Assign an LLM provider (API key or subscription CLI) under LLM access.',
+        slug: effectiveSlug,
+      });
+      return undefined;
+    }
     res.status(503).json({
       error: 'agent_unavailable',
       message: `agent "${effectiveSlug}" is not currently active`,
@@ -273,15 +374,21 @@ export function createChatRouter(
       const sessionScope = resolveScope(parsed.data);
       // W4-1: the whole turn runs inside the identity scope. `run` (not
       // `enter`) because a plain async call's own async chain bounds it.
-      const result = await turnContext.run(
-        chatTurnContext(req, sessionScope),
+      // OM-82: the routines principal wraps it on the OUTSIDE, so the CLI
+      // bridge's `AsyncLocalStorage.snapshot()` captures both.
+      const result = await withRoutinePrincipal(
+        httpRoutineContext(req, sessionScope),
         () =>
-          chat.chat({
-            userMessage: parsed.data.message,
-            sessionScope,
-            ...(userId ? { userId } : {}),
-          }),
+          turnContext.run(chatTurnContext(req, sessionScope), () =>
+            chat.chat({
+              userMessage: parsed.data.message,
+              sessionScope,
+              ...(userId ? { userId } : {}),
+            }),
+          ),
       );
+      // OM-100b: a turn that came back is the only proof the runtime works.
+      recordTurnSuccess();
       // Snapshot capture (Phase A) — first turn pins the session to the
       // resolved Agent. Subsequent turns use the pinned snapshot via
       // resolveAgentForRequest above; this is a no-op then.
@@ -324,7 +431,12 @@ export function createChatRouter(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chat] orchestrator failure:', err);
-      res.status(500).json({ error: 'orchestrator_failure', message });
+      // OM-100b: classify before responding so the status card can name the
+      // remedy (e.g. `cli_incompatible` → update the CLI) instead of echoing.
+      const outcome = recordTurnFailure(err);
+      res
+        .status(500)
+        .json({ error: 'orchestrator_failure', code: outcome.errorCode, message });
     }
   });
 
@@ -379,6 +491,15 @@ export function createChatRouter(
     let toolCallsThisIter = 0;
     let phase: 'thinking' | 'streaming' | 'tool_running' | 'idle' = 'idle';
     let tokensStreamedThisIter = 0;
+    /**
+     * #1008 — tool_use ids the CLI agent flagged `foreign`, so the matching
+     * `tool_result` can be stamped too. Without this the pair is
+     * inconsistent: the call is marked and its result looks like any other,
+     * which is exactly the ambiguity OM-81 set out to remove. Bounded by the
+     * tool calls of ONE turn, and the whole handler scope dies with the
+     * response, so there is nothing to evict.
+     */
+    const foreignToolUseIds = new Set<string>();
     const safeWrite = (event: unknown): void => {
       if (!clientGone) writeEvent(res, event);
     };
@@ -472,6 +593,18 @@ export function createChatRouter(
       // before the first token lands.
       safeWrite({ type: 'agent_bound', slug: effectiveSlug });
 
+      // OM-82: `run`, not `enter`. `turnContext` needs `runGenerator` because
+      // ITS generator is created inside the orchestrator and resumed by
+      // whoever calls `.next()`; this one is created AND drained right here,
+      // inside the scope below, so a plain `run` covers every `.next()` and
+      // still exits cleanly. `enterWith` would leave the principal on this
+      // request's async chain with no scope exit — a leak the in-process
+      // runtime has no owner guard to catch (#1016 guards the CLI agent only).
+      const routinePrincipal = httpRoutineContext(req, resolveScope(parsed.data));
+      // OM-100b: an error EVENT ends the stream normally — neither runtime
+      // throws for a failed turn — so the outcome has to be read off the wire.
+      let streamError: string | undefined;
+      await withRoutinePrincipal(routinePrincipal, async () => {
       // W4-1: `runGenerator`, NOT `run`/`enter`. `enterWith` binds the store to
       // the async resource executing at that instant, and an async generator is
       // resumed in the async context of whoever called `.next()` — so the
@@ -506,6 +639,14 @@ export function createChatRouter(
           toolCallsThisIter += 1;
           phase = 'tool_running';
           lastActivityAt = Date.now();
+          // #1017 item 4 — the `foreign` flag was dead: set by the CLI agent,
+          // read by nobody. A foreign call means one of the CLI's own
+          // built-ins ran despite the spawn gate, so it gets an error-level
+          // log and a counter, not just a field on the wire.
+          if (isForeignToolUse(event)) {
+            foreignToolUseIds.add(event.id);
+            recordForeignToolCall(event.name, effectiveSlug);
+          }
           if (agentResolver) {
             const agent = agentResolver(event.name);
             if (agent) {
@@ -515,16 +656,35 @@ export function createChatRouter(
           }
         } else if (event.type === 'tool_result') {
           lastActivityAt = Date.now();
+          if (foreignToolUseIds.has(event.id)) {
+            safeWrite({ ...event, foreign: true });
+            continue;
+          }
         } else if (event.type === 'text_delta') {
           lastActivityAt = Date.now();
         }
+        if (event.type === 'error') {
+          streamError = event.message;
+        }
         safeWrite(event);
+      }
+      });
+      // OM-100b: "the generator drained" is not the same as "the turn worked".
+      // Both runtimes report a failed turn by yielding an `error` event and
+      // then completing, so a bare drain would have recorded every dead turn
+      // in the round-5 beta as a success — the exact false green this signal
+      // exists to remove.
+      if (streamError === undefined) {
+        recordTurnSuccess();
+      } else {
+        recordTurnFailure(new Error(streamError));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[chat/stream] orchestrator failure:', err);
+      const outcome = recordTurnFailure(err);
       if (!clientGone) {
-        writeEvent(res, { type: 'error', message });
+        writeEvent(res, { type: 'error', code: outcome.errorCode, message });
       }
     } finally {
       clearInterval(heartbeatTimer);

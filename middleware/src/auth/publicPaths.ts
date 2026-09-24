@@ -19,6 +19,7 @@
 
 import { CIMD_METADATA_PATH } from '../services/mcpCimd.js';
 import { PUBLIC_MCP_PATH } from '../mcp/publicMcpPath.js';
+import { TEAMS_MESSAGING_PATH_RE } from '../platform/teamsMessagingPath.js';
 
 /** Escape a literal path for embedding in a RegExp, so the shared constant —
  *  not a hand-retyped pattern — is what the allowlist actually matches. */
@@ -39,6 +40,30 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // Bot Framework webhook for channel-teams: the adapter validates the
   // Bot-issued JWT inside the handler; Teams never sends a session cookie.
   /^\/api\/messages(?:\/|$|\?)/,
+  // The SAME Bot Framework webhook, reached by its slug-addressed spellings —
+  // `/api/teams/messages` (default-bot alias) and `/api/teams/<botSlug>/messages`
+  // (that one bot's own credentials), both shipped in channel-teams 0.20.0.
+  //
+  // The entry above was written when `/api/messages` was the only webhook there
+  // was. The multi-bot routes arrived without it being extended, so every
+  // PROVISIONED bot 401'd here — `auth.missing`, the blanket OB-106 guard
+  // refusing a Bot-Framework bearer token because it is not an operator session
+  // cookie — before its handler ever ran, while the legacy bot on
+  // `/api/messages` kept working. That is the whole reason a freshly
+  // provisioned Teams bot was silent.
+  //
+  // Its authentication is the Bot Framework's, not this list's absence: the
+  // handler calls `adapter.process`, which validates the Bot-issued JWT against
+  // exactly that bot's app id and password before any turn runs. An anonymous
+  // POST gets the adapter's own "Unauthorized Access. Request is not
+  // authorized" 401 — the same answer `/api/messages` has always given.
+  //
+  // Built from the SHARED pattern, per the NOTE above and for the same reason as
+  // CIMD_METADATA_PATH / PUBLIC_MCP_PATH: the URL core hands to Azure
+  // (`buildTeamsBotMessagingEndpoint`) and the URL core exempts are now one
+  // definition and cannot drift apart again. It admits the two messaging shapes
+  // and NOT the `/api/teams` namespace — see `platform/teamsMessagingPath.ts`.
+  TEAMS_MESSAGING_PATH_RE,
   // Epic #459 W9 — generic MCP-server OAuth callback (bugfix). Same shape as
   // the spec-005 kernel OAuth broker callback above: the provider (Notion,
   // etc.) redirects the operator's browser back here after consent, and the

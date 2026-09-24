@@ -25,6 +25,7 @@ import {
   UnknownChannelError,
   type JobSchedulerLike,
   type OrchestratorLike,
+  type RoutineActorScope,
 } from '../src/plugins/routines/routineRunner.js';
 import { RoutineNameConflictError } from '../src/plugins/routines/routineStore.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
@@ -34,6 +35,7 @@ import type {
   CreateRoutineInput,
   RecordRunInput,
   Routine,
+  RoutineOwner,
   RoutineStatus,
   RoutineStore,
 } from '../src/plugins/routines/routineStore.js';
@@ -165,16 +167,33 @@ class InMemoryRoutineStore implements RoutineStore {
     ).length;
   }
 
-  async setStatus(id: string, status: RoutineStatus): Promise<Routine | null> {
+  async setStatus(
+    id: string,
+    status: RoutineStatus,
+    owner?: RoutineOwner,
+  ): Promise<Routine | null> {
     const existing = this.rows.get(id);
     if (!existing) return null;
+    // #1025 — mirror the SQL predicate: an owner that does not match makes
+    // the row invisible, exactly as `WHERE id = $1 AND tenant = $3 AND
+    // user_id = $4` would. A stub that ignored `owner` would let a scoping
+    // regression pass every runner test.
+    if (owner && (existing.tenant !== owner.tenant || existing.userId !== owner.userId)) {
+      return null;
+    }
     const updated: Routine = { ...existing, status, updatedAt: new Date() };
     this.rows.set(id, updated);
     return updated;
   }
 
-  async delete(id: string): Promise<boolean> {
+  async delete(id: string, owner?: RoutineOwner): Promise<boolean> {
     this.deleteCalls += 1;
+    const existing = this.rows.get(id);
+    if (!existing) return false;
+    // #1025 — same owner predicate as setStatus, see the note there.
+    if (owner && (existing.tenant !== owner.tenant || existing.userId !== owner.userId)) {
+      return false;
+    }
     return this.rows.delete(id);
   }
 
@@ -284,6 +303,17 @@ class StubSender implements ProactiveSender {
 const VALID_CRON = '*/30 * * * *';
 const TENANT = 'tenant-A';
 const USER = 'user-1';
+
+/**
+ * #1025 — the scope every routine mutation now requires. These tests own
+ * their rows as (TENANT, USER), so scoping as that channel user exercises
+ * the same predicate production uses instead of the operator bypass.
+ */
+const OWNER_SCOPE: RoutineActorScope = {
+  kind: 'channel-user',
+  tenant: TENANT,
+  userId: USER,
+};
 
 interface Harness {
   store: InMemoryRoutineStore;
@@ -621,7 +651,7 @@ describe('RoutineRunner — createRoutine', () => {
   it('still reports a conflict when the existing same-name routine is paused', async () => {
     const h = makeHarness();
     const first = await h.runner.createRoutine(baseInput);
-    await h.runner.pauseRoutine(first.id);
+    await h.runner.pauseRoutine(first.id, OWNER_SCOPE);
 
     await assert.rejects(
       () => h.runner.createRoutine(baseInput),
@@ -671,7 +701,7 @@ describe('RoutineRunner — pause / resume / delete', () => {
     const r = await h.runner.createRoutine(baseInput);
     assert.equal(h.scheduler.list().length, 1);
 
-    const updated = await h.runner.pauseRoutine(r.id);
+    const updated = await h.runner.pauseRoutine(r.id, OWNER_SCOPE);
     assert.equal(updated.status, 'paused');
     assert.equal(h.scheduler.list().length, 0);
     assert.equal(h.store.rows.size, 1);
@@ -680,9 +710,9 @@ describe('RoutineRunner — pause / resume / delete', () => {
   it('resume re-registers a paused routine', async () => {
     const h = makeHarness();
     const r = await h.runner.createRoutine(baseInput);
-    await h.runner.pauseRoutine(r.id);
+    await h.runner.pauseRoutine(r.id, OWNER_SCOPE);
 
-    const resumed = await h.runner.resumeRoutine(r.id);
+    const resumed = await h.runner.resumeRoutine(r.id, OWNER_SCOPE);
     assert.equal(resumed.status, 'active');
     assert.equal(h.scheduler.list().length, 1);
   });
@@ -690,11 +720,11 @@ describe('RoutineRunner — pause / resume / delete', () => {
   it('pause / resume / delete throw RoutineNotFoundError on unknown id', async () => {
     const h = makeHarness();
     await assert.rejects(
-      () => h.runner.pauseRoutine('missing'),
+      () => h.runner.pauseRoutine('missing', OWNER_SCOPE),
       RoutineNotFoundError,
     );
     await assert.rejects(
-      () => h.runner.resumeRoutine('missing'),
+      () => h.runner.resumeRoutine('missing', OWNER_SCOPE),
       RoutineNotFoundError,
     );
   });
@@ -702,7 +732,7 @@ describe('RoutineRunner — pause / resume / delete', () => {
   it('delete clears both the row and the scheduler entry', async () => {
     const h = makeHarness();
     const r = await h.runner.createRoutine(baseInput);
-    const ok = await h.runner.deleteRoutine(r.id);
+    const ok = await h.runner.deleteRoutine(r.id, OWNER_SCOPE);
     assert.equal(ok, true);
     assert.equal(h.store.rows.size, 0);
     assert.equal(h.scheduler.list().length, 0);
@@ -830,7 +860,7 @@ describe('RoutineRunner — run-once delivery path', () => {
     });
     const routine = await h.runner.createRoutine(baseInput);
 
-    await h.runner.triggerRoutineNow(routine.id);
+    await h.runner.triggerRoutineNow(routine.id, OWNER_SCOPE);
 
     assert.equal(stub.calls.length, 1);
     assert.equal(sender.calls.length, 1);
@@ -1349,7 +1379,7 @@ describe('live chat-agent resolution (issue #473)', () => {
     // and let resumeRoutine do the scheduler registration (it only warns
     // on a missing sender).
     const row = await h.store.create(baseInput);
-    await h.runner.resumeRoutine(row.id);
+    await h.runner.resumeRoutine(row.id, OWNER_SCOPE);
 
     await h.scheduler.fire(row.id);
 

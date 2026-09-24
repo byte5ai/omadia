@@ -1072,3 +1072,151 @@ describe('teams identity reset — the tenant sign-in', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The `teams_bots` entry the provisioning chain writes automatically (#910).
+ *
+ * A teardown that leaves it behind is the one failure mode that is INVISIBLE
+ * in Azure and still breaks the tenant: channel-teams keeps an adapter for a
+ * bot whose registration was just purged, every inbound activity for it fails
+ * authentication, and the operator sees a "reset" that did not reset.
+ */
+describe('teams identity reset — the channel-teams config entry', () => {
+  it('removes the entry, by slug, after the registration is gone', async () => {
+    const store = memoryStore({});
+    const provisioner = stubProvisioner();
+    const dropped: string[] = [];
+
+    const result = await resetTeamsIdentity(
+      options(store, provisioner, {
+        unsyncBotConfig: async (botSlug: string) => {
+          // ORDER IS PART OF THE CONTRACT: the entry points at the
+          // registration, so it may only go once the registration has.
+          assert.ok(
+            provisioner.calls.some((c) => c.startsWith('deleteAppRegistration:')),
+            'the app must already be deleted when the entry is removed',
+          );
+          dropped.push(botSlug);
+          return { status: 'synced', botSlug };
+        },
+      }),
+      'agent-1',
+    );
+
+    assert.deepEqual(dropped, ['acme']);
+    assert.deepEqual(outcomeOf(result.steps, 'config_unsynced'), {
+      step: 'config_unsynced',
+      outcome: 'removed',
+    });
+    assert.equal(result.status, 'reset');
+  });
+
+  it('reports an absent entry as a success, not as a failure', async () => {
+    const store = memoryStore({});
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner(), {
+        unsyncBotConfig: async (botSlug: string) => ({
+          status: 'unchanged',
+          botSlug,
+        }),
+      }),
+      'agent-1',
+    );
+    assert.equal(outcomeOf(result.steps, 'config_unsynced')?.outcome, 'already-absent');
+    assert.equal(result.status, 'reset');
+  });
+
+  it('skips when no hook is wired, and names which of the two reasons', async () => {
+    // A mount that never wired the automatic write has no entry this teardown
+    // put there. Reported, not hidden — an operator comparing two deployments
+    // should see WHY one of them cleaned nothing.
+    const withoutHook = await resetTeamsIdentity(
+      options(memoryStore({}), stubProvisioner()),
+      'agent-1',
+    );
+    assert.deepEqual(outcomeOf(withoutHook.steps, 'config_unsynced'), {
+      step: 'config_unsynced',
+      outcome: 'skipped',
+      detail: TEAMS_RESET_DETAILS.configUnsyncUnavailable,
+    });
+
+    const withoutPlugin = await resetTeamsIdentity(
+      options(memoryStore({}), stubProvisioner(), {
+        unsyncBotConfig: async () => ({
+          status: 'skipped',
+          reason: 'plugin_not_installed',
+        }),
+      }),
+      'agent-1',
+    );
+    assert.equal(
+      outcomeOf(withoutPlugin.steps, 'config_unsynced')?.detail,
+      TEAMS_RESET_DETAILS.configPluginNotInstalled,
+    );
+  });
+
+  it('does NOT stop the teardown when the config write fails', async () => {
+    // The one step allowed to fail without halting, and the reason is
+    // asymmetric damage: halting here leaves the identity row pointing at an
+    // app that is already deleted and purged, which is strictly worse than a
+    // stale config entry the next run overwrites in place.
+    const store = memoryStore({});
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner(), {
+        unsyncBotConfig: async () => {
+          throw new Error('plugin registry is down');
+        },
+      }),
+      'agent-1',
+    );
+
+    const step = outcomeOf(result.steps, 'config_unsynced');
+    assert.equal(step?.outcome, 'failed');
+    assert.match(String(step?.detail), /^config_unsync_failed:/);
+    // The row still went back to pending — the teardown finished.
+    assert.equal(result.status, 'reset');
+    assert.equal(store.resetCalls, 1);
+  });
+
+  it('runs for the full reset too, before the row is dropped', async () => {
+    const store = memoryStore({});
+    const seen: string[] = [];
+    const result = await resetTeamsIdentity(
+      options(store, stubProvisioner(), {
+        unsyncBotConfig: async (botSlug: string) => {
+          // The row is what holds the slug, so the entry has to go while it
+          // is still readable.
+          assert.equal(store.deleteCalls, 0);
+          seen.push(botSlug);
+          return { status: 'synced', botSlug };
+        },
+      }),
+      'agent-1',
+      'identity',
+    );
+    assert.deepEqual(seen, ['acme']);
+    assert.equal(store.deleteCalls, 1);
+    assert.equal(result.status, 'reset');
+  });
+
+  it('is not reached when an earlier step halted the teardown', async () => {
+    // The entry names a live bot as long as the registration is alive.
+    // Removing it after a failed app deletion would take the bot off the air
+    // while leaving it in Azure — the worst of both.
+    let called = 0;
+    const result = await resetTeamsIdentity(
+      options(memoryStore({}), stubProvisioner({ failOn: 'catalog' }), {
+        unsyncBotConfig: async (botSlug: string) => {
+          called += 1;
+          return { status: 'synced', botSlug };
+        },
+      }),
+      'agent-1',
+    );
+    assert.equal(result.status, 'incomplete');
+    assert.equal(called, 0);
+    assert.equal(outcomeOf(result.steps, 'config_unsynced'), undefined);
+  });
+});

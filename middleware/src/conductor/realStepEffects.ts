@@ -1,6 +1,7 @@
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
+import type { ConductorSayOutcome, ConductorSayService } from './sayService.js';
 import type { StepEffects, StepExecution, StepMeta } from './stepEffects.js';
 
 /** Resolve a dot-path over a plain object root (for prompt interpolation). */
@@ -67,6 +68,10 @@ export interface RealStepEffectsDeps {
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
   /** Per-step hard budget in ms. MUST be < the resume worker's staleMs (default 900_000). 0 disables. */
   stepTimeoutMs?: number;
+  /** Publishes a `say` step's answer into the run's bound conversation. Absent
+   *  (no database / no channel plugin) = agent dialogue degrades to silent
+   *  turns: the run still works, nothing reaches the chat. */
+  say?: ConductorSayService;
   log?: (msg: string) => void;
 }
 
@@ -93,11 +98,41 @@ export class RealStepEffects implements StepEffects {
   }
 
   async runAgentStep(step: Step, context: JsonObject, meta: StepMeta): Promise<StepExecution> {
-    const slug = step.agentId;
-    if (!slug) throw new Error(`agent step '${step.id}' has no agentId (Agent slug)`);
+    // The agent may be named by the RUN rather than by the graph
+    // (`agentId: "{{ctx.speaker}}"`). That is what lets a single step serve a
+    // rotating cast: two participants, or five, without a step per voice and
+    // without a slot per participant frozen into the pattern.
+    const rawSlug = step.agentId;
+    if (!rawSlug) throw new Error(`agent step '${step.id}' has no agentId (Agent slug)`);
+    const slug = renderTemplate(rawSlug, { ctx: context, steps: asObject(context.steps) }).trim();
+    if (!slug) {
+      throw new Error(
+        `agent step '${step.id}' resolved '${rawSlug}' to an empty agent slug — the run context does not name a speaker`,
+      );
+    }
 
     const registry = this.deps.getRegistry();
     if (!registry) throw new Error('orchestrator registry is unavailable (no graphPool / registry not built)');
+
+    // WORK STARTED BY A MESSAGE TO A BOT RUNS AS THAT BOT'S AGENT. FULL STOP.
+    //
+    // A person addresses one bot in a group chat. If a workflow triggered by
+    // that message runs as a DIFFERENT agent, the answer carries that agent's
+    // permissions while wearing the addressed bot's name — and nobody in the
+    // chat can see the substitution. Observed in production: a message to an
+    // agent with no plugin grants at all produced live HR data, because the
+    // workflow behind it was configured to run as the platform fallback, which
+    // is granted every installed plugin.
+    //
+    // This is deliberately NOT a warning and NOT a capability intersection.
+    // Both leave the outcome depending on how somebody configured a graph, and
+    // the rule has to hold regardless of configuration: the addressed bot's
+    // agent runs, or nothing runs.
+    //
+    // Scoped to CHANNEL triggers. A manual, scheduled or webhook run has no
+    // addressed bot, no impersonation risk, and keeps behaving exactly as
+    // before — which is why the rule keys on the trigger, not on the step.
+    assertChannelOriginAllows(step, context, meta, registry, this.deps.log);
 
     const entry = registry.get(slug);
     if (!entry) {
@@ -110,14 +145,33 @@ export class RealStepEffects implements StepEffects {
       : `Conductor workflow step "${step.id}". Run your configured task. Run context: ${JSON.stringify(context)}`;
 
     this.deps.log?.(`[conductor] agent step '${step.id}' → Agent '${slug}' (run ${meta.runId})`);
-    const answer = await withTimeout(
-      entry.built.bundle.agent.chat({
-        userMessage,
-        sessionScope: `conductor:${meta.runId}:${step.id}`,
-      }),
-      this.stepTimeoutMs,
-      `agent step '${step.id}'`,
-    );
+
+    // A publishing step is one people are watching for. Show that this agent is
+    // composing while it works — the turn regularly runs twenty seconds, and
+    // silence in a chat reads as nothing happening. Stopped in `finally` so a
+    // thrown turn never leaves the dots running.
+    const stopTyping =
+      step.say && this.deps.say
+        ? this.deps.say.startTyping({
+            agentSlug: slug,
+            channelType: step.say.channel,
+            conversationId: typeof context.conversationId === 'string' ? context.conversationId : '',
+          })
+        : () => undefined;
+
+    let answer;
+    try {
+      answer = await withTimeout(
+        entry.built.bundle.agent.chat({
+          userMessage,
+          sessionScope: `conductor:${meta.runId}:${step.id}`,
+        }),
+        this.stepTimeoutMs,
+        `agent step '${step.id}'`,
+      );
+    } finally {
+      stopTyping();
+    }
 
     // #330 C3 — structured verdicts: mirror of the action-step's `data` field.
     // A fenced ```json block in the agent's answer becomes `result.data`, so
@@ -125,10 +179,50 @@ export class RealStepEffects implements StepEffects {
     // Tolerant by design: missing/broken JSON just means no `data` — a guard
     // like `ne stepResult.data.dodMet true` then keeps the bounded loop going.
     const data = extractFencedJson(answer.text);
+    // The agent-dialogue seam: without `say` an agent step's prose never leaves
+    // the run context (which is why two agent bots could not converse). With
+    // it, the turn is published into the run's bound conversation — and the
+    // OUTCOME is recorded on the step, so a silent failure can never read as a
+    // delivered utterance.
+    const said = step.say ? await this.publish(step, context, meta, slug, answer.text) : undefined;
     return {
-      result: { text: answer.text, ...(data !== undefined ? { data } : {}) },
+      result: {
+        text: answer.text,
+        ...(data !== undefined ? { data } : {}),
+        ...(said !== undefined ? { said: said.said, ...(said.said ? {} : { sayError: said.reason }) } : {}),
+      },
       actor: { kind: 'agent', agentSlug: slug },
     };
+  }
+
+  /** Never throws — a chat we could not reach must not fail the run. */
+  private async publish(
+    step: Step,
+    context: JsonObject,
+    meta: StepMeta,
+    slug: string,
+    text: string,
+  ): Promise<ConductorSayOutcome> {
+    const say = step.say!;
+    if (!this.deps.say) {
+      return { said: false, reason: 'no_provider', message: 'no say service wired (no database / no channel plugin)' };
+    }
+    const conversationId = typeof context.conversationId === 'string' ? context.conversationId : '';
+    return this.deps.say
+      .say({
+        workflowId: meta.workflowId ?? null,
+        runId: meta.runId,
+        agentSlug: slug,
+        speaker: say.speaker ?? slug,
+        channelType: say.channel,
+        conversationId,
+        text,
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.log?.(`[conductor] say step '${step.id}' failed: ${message}`);
+        return { said: false as const, reason: 'channel_error' as const, message };
+      });
   }
 
   async runActionStep(step: Step, _context: JsonObject, meta: StepMeta): Promise<StepExecution> {
@@ -167,5 +261,84 @@ export function extractFencedJson(text: string, maxBytes = 16_384): JsonValue | 
     return JSON.parse(last) as JsonValue;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Channel events whose payload identifies the bot a person addressed.
+ *
+ * A prefix list rather than a wildcard: a channel that does NOT carry an
+ * addressed bot must not be silently treated as if it did, because the rule
+ * below would then refuse every run it starts. Adding a channel here is a
+ * deliberate statement that its events name their bot.
+ */
+const CHANNEL_EVENT_PREFIXES: readonly string[] = ['teams.'];
+
+/** The addressed bot's routing key, as the channel put it in the payload. */
+function addressedBotKey(context: JsonObject): string | undefined {
+  const raw = context['botId'];
+  return typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : undefined;
+}
+
+/**
+ * Refuse an agent step whose run began with a message to a DIFFERENT bot.
+ *
+ * Three outcomes, and the middle one is the point:
+ *
+ *  - not a channel trigger → allowed, unchanged (manual, schedule, webhook).
+ *  - channel trigger, bot unknown → REFUSED. A channel run whose origin cannot
+ *    be established is exactly the case that must not be guessed: the plugin
+ *    builds that omit the bot id are the ones that produced the impersonation,
+ *    so treating "unknown" as "fine" would keep the hole open for precisely
+ *    the deployments that have it.
+ *  - channel trigger, bot known → the step must BE that bot's agent.
+ */
+function assertChannelOriginAllows(
+  step: Step,
+  context: JsonObject,
+  meta: StepMeta,
+  registry: OrchestratorRegistry,
+  log?: (msg: string) => void,
+): void {
+  const eventId = meta.triggerEventId;
+  const isChannelTrigger =
+    (meta.triggerKind === 'event' || meta.triggerKind === 'webhook') &&
+    eventId !== undefined &&
+    CHANNEL_EVENT_PREFIXES.some((p) => eventId.startsWith(p));
+  if (!isChannelTrigger) return;
+
+  const botKey = addressedBotKey(context);
+  if (botKey === undefined) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — run started by '${String(eventId)}' ` +
+        `but the payload names no addressed bot, so its permissions cannot be established`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run: the channel event '${String(eventId)}' does not identify ` +
+        `the bot it was addressed to, so the step's permissions cannot be bound to it`,
+    );
+  }
+
+  const owner = registry.identityForChannel('teams', botKey);
+  if (!owner) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' resolves to no active agent`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run: the addressed bot '${botKey}' resolves to no active Agent`,
+    );
+  }
+
+  if (owner.agent.slug !== step.agentId) {
+    log?.(
+      `[conductor] agent step '${step.id}' refused — addressed bot '${botKey}' belongs to Agent ` +
+        `'${owner.agent.slug}' but the step is configured to run as '${String(step.agentId)}'`,
+    );
+    throw new Error(
+      `agent step '${step.id}' cannot run as '${String(step.agentId)}': the message was addressed to ` +
+        `Agent '${owner.agent.slug}'. Work started by a message to a bot runs with that bot's ` +
+        `permissions only — configure this step for '${owner.agent.slug}', or trigger the workflow ` +
+        `another way.`,
+    );
   }
 }

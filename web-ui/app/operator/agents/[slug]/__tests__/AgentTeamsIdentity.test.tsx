@@ -24,10 +24,11 @@ import { AgentTeamsIdentity } from '../_components/AgentTeamsIdentity';
  *   - Raw API bodies never reach the UI (web-ui i18n hard rule).
  */
 
-const { mockGet, mockProvision, mockResetIdentity } = vi.hoisted(() => ({
+const { mockGet, mockProvision, mockResetIdentity, mockTargets } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockProvision: vi.fn(),
   mockResetIdentity: vi.fn(),
+  mockTargets: vi.fn(),
 }));
 
 // Spread the real module so the error-code parser and the last_error narrower
@@ -41,6 +42,10 @@ vi.mock('../../../../_lib/agents', async (importOriginal) => ({
   // network. Its own behaviour is pinned in `AgentTeamsIdentityReset.test.tsx`;
   // what THIS file cares about is what the panel does once the row is gone.
   resetAgentTeamsIdentity: mockResetIdentity,
+  // The create form offers the tenant's teams and chats now, instead of asking
+  // for a GUID from memory. Stubbed here; the picker's own behaviour lives in
+  // `TeamsTargetPicker.test.tsx`.
+  getAgentTeamsTargets: mockTargets,
 }));
 
 function statusDto(
@@ -77,9 +82,23 @@ function apiError(status: number, code: string): ApiError {
   );
 }
 
+/** One team the operator can pick, so the create form has a real choice. */
+const CREATE_TEAM_ID = '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c';
+
 beforeEach(() => {
   mockGet.mockReset();
   mockProvision.mockReset();
+  mockTargets.mockReset();
+  mockTargets.mockResolvedValue({
+    ok: true,
+    agent: 'sales-bot',
+    provisioner_installed: true,
+    teams: {
+      available: true,
+      items: [{ id: CREATE_TEAM_ID, displayName: 'Acme Team' }],
+    },
+    chats: { available: false, reason: 'sign_in_required' },
+  });
   mockResetIdentity.mockReset();
   mockResetIdentity.mockResolvedValue({
     ok: true,
@@ -105,7 +124,16 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     ).toBeTruthy();
     expect(screen.getByLabelText(/Bot slug/)).toBeTruthy();
     expect(screen.getByLabelText(/Display name/)).toBeTruthy();
-    expect(screen.getByLabelText(/Target team ID/)).toBeTruthy();
+    // The FIRST provisioning is where an operator has nothing to copy from, so
+    // it gets the same pick-or-type control as every other target question —
+    // not a bare id field that sends them hunting for a GUID in Teams.
+    expect(screen.getByLabelText(/Target ID/)).toBeTruthy();
+    // …and the tenant's own teams are offered, so the id can be PICKED. The
+    // options themselves live behind the combobox (its behaviour is pinned in
+    // `TeamsTargetPicker.test.tsx`); what matters here is that this panel asks
+    // for the directory at all, which it never used to.
+    expect(await screen.findByText('Pick a team from the list')).toBeTruthy();
+    expect(mockTargets).toHaveBeenCalledWith('sales-bot');
     // "No identity yet" is the form's trigger, not a failure.
     expect(screen.queryByRole('alert')).toBeNull();
   });
@@ -123,16 +151,20 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     renderWithIntl(<AgentTeamsIdentity slug="sales-bot" />);
 
     const user = userEvent.setup();
+    // A TEAM, not the `19:…@thread.tacv2` channel id this test used to send:
+    // that is a channel, never an install target, and the shared field now
+    // refuses it here exactly as it always did on the retarget form — which is
+    // the whole point of sharing the control.
     await user.type(
-      await screen.findByLabelText(/Target team ID/),
-      '19:meeting@thread.tacv2',
+      await screen.findByLabelText(/Target ID/),
+      CREATE_TEAM_ID,
     );
     await user.click(screen.getByRole('button', { name: 'Start provisioning' }));
 
     // Empty optional fields are omitted so the server derives them.
     await waitFor(() =>
       expect(mockProvision).toHaveBeenCalledWith('sales-bot', {
-        team_id: '19:meeting@thread.tacv2',
+        team_id: CREATE_TEAM_ID,
       }),
     );
     expect(
@@ -294,7 +326,7 @@ describe('AgentTeamsIdentity (#860 W2a)', () => {
     await user.type(await screen.findByLabelText(/Bot slug/), 'taken-slug');
     // `team_id` is required by the server, so the form requires it too — the
     // submit button stays disabled until it is filled in.
-    await user.type(screen.getByLabelText(/Target team ID/), '19:team-a');
+    await user.type(screen.getByLabelText(/Target ID/), CREATE_TEAM_ID);
     await user.click(screen.getByRole('button', { name: 'Start provisioning' }));
 
     const alert = await screen.findByRole('alert');

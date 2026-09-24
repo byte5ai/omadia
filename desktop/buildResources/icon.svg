@@ -1,0 +1,30 @@
+<svg width="236" height="236" viewBox="0 0 236 236" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">omadia app icon</title>
+  <desc id="desc">The omadia mark: a ring crossed by two agent paths, with byte5 blue, dark blue and magenta nodes.</desc>
+
+  <!--
+    DERIVED, NOT DESIGNED. Every path, radius and colour below is copied verbatim
+    from the mark group of `logo-concepts/omadia-logo-concept.svg` (the `<g
+    transform="translate(114 92)">` block). Nothing was restyled and no colour
+    was invented, so a designer can replace this one file with a real icon and
+    re-run `npm run icons` without touching any code.
+
+    Two deliberate composition choices, because an app icon is not a page:
+      * The concept's #F4F7FA presentation backdrop is NOT inherited. The mark
+        was drawn on a white disc, so the icon sits on a white rounded square.
+      * The canvas is 236 square, which centres the mark's own 190-unit extent
+        (x/y 23..213) with ~10% padding — the margin macOS expects of an icon
+        that gets masked into a squircle. The mark keeps its original geometry.
+  -->
+  <rect width="236" height="236" rx="52" fill="#FFFFFF"/>
+
+  <circle cx="118" cy="118" r="94" fill="#FFFFFF" stroke="#D3DDE5" stroke-width="2"/>
+  <path d="M118 37C162.735 37 199 73.2649 199 118C199 162.735 162.735 199 118 199C73.2649 199 37 162.735 37 118C37 73.2649 73.2649 37 118 37Z" stroke="#004B73" stroke-width="18"/>
+  <path d="M118 37C146.607 37 171.75 51.8406 186.141 74.2543" stroke="#009FE3" stroke-width="18" stroke-linecap="round"/>
+  <path d="M74 188L188 74" stroke="#009FE3" stroke-width="18" stroke-linecap="round"/>
+  <path d="M71 73L165 167" stroke="#004B73" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="188" cy="74" r="17" fill="#EA5172"/>
+  <circle cx="74" cy="188" r="13" fill="#009FE3"/>
+  <circle cx="71" cy="73" r="13" fill="#004B73"/>
+  <circle cx="165" cy="167" r="13" fill="#004B73"/>
+</svg>

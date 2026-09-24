@@ -28,6 +28,31 @@
         "available": "{count, plural, one {# orchestrator available} other {# orchestrators available}}",
         "none": "No orchestrator configured"
       },
+      "embeddings": {
+        "title": "Memory / embeddings",
+        "active": "Active: {model}",
+        "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
+        "unknown": "Status unavailable",
+        "memory": {
+          "allActive": "Memory features active",
+          "allActiveWithProvider": "Memory features active (LLM: {provider})",
+          "off": "Off: {features}",
+          "featureWithReason": "{feature} ({reason})",
+          "feature": {
+            "factExtractor": "fact extraction",
+            "topicDetector": "topic detection",
+            "scratchReaper": "scratch reaper"
+          },
+          "reason": {
+            "no_llm_provider": "no LLM provider assigned",
+            "no_embedding_provider": "no embedding provider",
+            "no_graph_pool": "no graph storage",
+            "disabled_by_config": "disabled by configuration",
+            "plugin_inactive": "plugin not active",
+            "unknown": "reason unknown"
+          }
+        }
+      },
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# plugin installed} other {# plugins installed}}",
@@ -39,6 +64,17 @@
         "summary": "{enabled} of {total} connected · {tools} tools",
         "summaryPending": "{enabled} of {total} connected · {tools} tools · {pending} need Discover",
         "none": "No MCP servers yet"
+      },
+      "lastTurn": {
+        "title": "Last turn",
+        "okStatus": "Succeeded",
+        "unknownStatus": "Unknown",
+        "ok": "The last chat turn was answered successfully.",
+        "none": "No turn has run since this process started.",
+        "cliIncompatible": "The installed Claude CLI ({installed}) does not support an option omadia requires. Update to {required} or newer.",
+        "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
+        "failure": "The last turn failed: {message}",
+        "unknownVersion": "unknown version"
       }
     },
     "quick": {
@@ -113,8 +149,15 @@
         "title": "Connect an LLM",
         "description": "Without a connected LLM no orchestrator can run. Connect an API provider or a subscription CLI first.",
         "doneViaProvider": "An LLM provider is connected and its key has been verified.",
-        "doneViaCli": "You are logged into a subscription CLI — that is enough to run orchestrators."
+        "doneViaCli": "You are logged into a subscription CLI and the orchestrator runs on it.",
+        "doneViaOauth": "A subscription is connected and the agent runtime runs on it.",
+        "doneViaRuntime": "The agent runtime runs on {label}.",
+        "doneViaRuntimeNoLabel": "The agent runtime is running.",
+        "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
+        "assignOrchestrator": "Assign the orchestrator"
       },
+      "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
+      "embeddingsCta": "Set up an embedding provider",
       "heading": "Get started",
       "kicker": "Setup",
       "applied": "Installed",
@@ -203,7 +246,7 @@
         },
         "datasets": {
           "title": "Datasets",
-          "description": "Import CSVs as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
+          "description": "Import CSV and Excel files as structured datasets agents can query, inspect the inferred schema and rows, and delete them again."
         },
         "bulkPromote": {
           "title": "Bulk Promotion",
@@ -346,6 +389,10 @@
         "modelDefault": "(default)",
         "platformDefault": "(platform default: {model})",
         "effectiveModel": "Active: {model}",
+        "modelPolicy": "Policy: {primary} · fallback {fallback}.",
+        "modelPolicyAuto": "Auto",
+        "modelPolicyNone": "none",
+        "modelPolicyEdit": "Edit on the agent page →",
         "skillBody": "Skill body (Markdown)",
         "skillFileReadOnly": "File-backed skill — read-only here.",
         "transport": "Transport",
@@ -445,7 +492,8 @@
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
     "help": "Help",
-    "teamsSignIn": "Teams sign-in"
+    "teamsSignIn": "Teams sign-in",
+    "llmAccess": "LLM access"
   },
   "conductor": {
     "title": "Conductor",
@@ -787,6 +835,9 @@
     "scopeLabel": "Scope",
     "channelLabel": "Channel",
     "modelLabel": "Model",
+    "providerLabel": "Provider",
+    "fallbackUsedLabel": "fallback",
+    "fallbackUsedTitle": "This turn ran on the agent's fallback model because the primary was unavailable.",
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} masked · {datasets} datasets",
     "loadMore": "Load more",
@@ -840,6 +891,7 @@
   },
   "layout": {
     "logoAriaLabel": "omadia · Home",
+    "loading": "Loading page…",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Admin UI for the omadia agent platform (local).",
     "tagline": "an Agentic OS"
@@ -1076,6 +1128,10 @@
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
+      },
+      "discovery_unavailable": {
+        "what": "Live model discovery is not wired on this server, so the model list cannot be refreshed from the provider API.",
+        "next": "The provider keeps its shipped model list. Restart the middleware after updating it, or ask an administrator to enable discovery."
       },
       "unknown_plugin": {
         "what": "That plugin is not one this page can assign a provider to.",
@@ -1321,8 +1377,13 @@
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
-    "body": "The agent runtime is offline — usually because no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings; chat, agents, channels and skills come online right away. Routines additionally need one middleware restart.",
+    "body": "The agent runtime is offline: no LLM API key or subscription is connected yet. Add an API key or connect an existing Claude/Codex subscription in the LLM access settings, then assign the orchestrator to that access. This card disappears once the runtime is up.",
+    "titleNoAssignment": "Orchestrator not assigned",
+    "bodyNoAssignment": "An LLM access exists, but the orchestrator is not assigned to a provider that has access yet. In LLM access, under Assignment, pick the connected provider for the orchestrator, for a subscription \"Claude (subscription CLI)\". The runtime starts afterwards without a restart.",
+    "titleUnknown": "Agent runtime not responding",
+    "bodyUnknown": "Access and assignment are set, but the agent runtime still does not respond. Check the stored access under LLM access.",
     "cta": "Open LLM access",
+    "ctaNoAssignment": "Open assignment",
     "dismiss": "Later"
   },
   "agentDetailsModal": {
@@ -1355,6 +1416,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy error (HTTP {status}). Check the middleware logs.",
+    "errorAgentUnavailable": "This session's orchestrator is no longer active. Re-bind it below, or pick another.",
+    "errorNoAgentsActive": "No orchestrator is running yet. Assign an LLM provider under LLM access, then try again.",
     "errorAborted": "Aborted.",
     "errorProviderGeneric": "Something went wrong while talking to the AI provider. Please try again.",
     "errorProviderAuth": "The AI provider rejected the stored API key. Check it under Admin → LLM access with “Test key” and store a new one if needed.",
@@ -1400,6 +1463,8 @@
     },
     "inputLabel": "input",
     "outputLabel": "output",
+    "foreignToolBadge": "foreign tool",
+    "foreignToolExplain": "This call did not run through omadia. The subscription CLI used one of its own built-in tools, so omadia's permission rules did not apply to it. Please report this to your operator.",
     "persona": {
       "title": "Persona",
       "matched": "Answering as {name}",
@@ -1546,7 +1611,9 @@
       "classifierTooltip": "Triage classifier: {classifier} → {bucket} → {model}",
       "bucketSimple": "simple",
       "bucketComplex": "complex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback model",
+      "providerFallbackTooltip": "The primary model was unavailable — this answer came from the agent's fallback ({model} on {provider})."
     }
   },
   "privacyReceipt": {
@@ -1653,7 +1720,10 @@
     "unavailableTitle": "This session's Orchestrator is no longer available",
     "unavailableBody": "The Orchestrator \"{slug}\" was deleted or disabled. Pick how to recover this session.",
     "actionReSnapshot": "Re-bind to standard",
-    "actionDelete": "Delete session"
+    "actionDelete": "Delete session",
+    "noAgentsTitle": "No orchestrator is running",
+    "noAgentsBody": "No LLM provider is assigned to an orchestrator yet, so no agent can answer. Open LLM access and assign an API key or a subscription CLI.",
+    "actionOpenLlmAccess": "Open LLM access"
   },
   "skills": {
     "metaTitle": "Skills · omadia",
@@ -1774,6 +1844,7 @@
       "multi_orchestrator_unavailable": "The multi-orchestrator runtime is not available.",
       "not_found": "This orchestrator does not exist anymore — reload the page.",
       "plugin_not_assigned": "This plugin is not assigned to the orchestrator anymore — reload the page.",
+      "model_policy_unavailable": "The model catalogue is not available right now — the policy cannot be validated. Try again in a moment.",
       "unknown": "Request failed: {detail}"
     },
     "statusEnabled": "enabled",
@@ -1809,7 +1880,29 @@
     "memoryWriteTooltip": "Plugin's memory write scope",
     "networkLabel": "Network:",
     "configShow": "Config",
-    "configHide": "Close",
+    "configOverrideBadgeTooltip": "Fields overridden for this orchestrator",
+    "pluginConfig": {
+      "title": "Configuration — {plugin}",
+      "close": "Close",
+      "done": "Done",
+      "overrideSummary": "{set} of {total} overridden",
+      "introMixed": "Overridden fields apply to this orchestrator only; every other field keeps the store configuration.",
+      "introAllFromStore": "Nothing is overridden — this plugin runs entirely on the store configuration.",
+      "resetAll": "Clear all overrides",
+      "filterPlaceholder": "Filter fields …",
+      "filterEmpty": "No field matches that filter.",
+      "badgeSecret": "Secret · Vault",
+      "badgeConfig": "Config",
+      "badgeSecretTitle": "Secret — encrypted in the per-agent vault",
+      "badgeConfigTitle": "Config — non-sensitive value in the instance configuration",
+      "noPasswordWarning": "No account password belongs here. What is expected is a technical key from the provider console.",
+      "statusOverridden": "overrides the store configuration",
+      "statusFromStore": "from the store configuration",
+      "statusFromStoreWithDefault": "from the store configuration · default: {default}",
+      "notSet": "not set",
+      "reset": "Reset to the store value",
+      "unsavedHint": "Changes take effect once you hit Save above."
+    },
     "orphanPluginBadge": "no longer installed",
     "bindingsAdd": "Add binding",
     "bindingsRemove": "Remove",
@@ -1823,6 +1916,8 @@
     "routingTesterMatched": "→ Orchestrator \"{slug}\" (via {via})",
     "routingTesterNoMatch": "No match — and no standard orchestrator configured.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} plugins attached · {bindings} bindings",
+    "agentCardModel": "model: {primary}{fallback, select, none {} other { · fallback: {fallback}}}",
+    "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sessions:",
     "pluginsAvailable": "Available",
     "pluginsAvailableToAttach": "Available to attach",
@@ -1918,6 +2013,81 @@
         "unknown": "Loading grants failed: {detail}"
       }
     },
+    "modelPolicy": {
+      "heading": "Model",
+      "hint": "Which model answers under this agent's name, and which one steps in when it is unavailable. Everything offered here comes from the providers installed on this host and the keys configured under Providers.",
+      "loading": "Loading the model policy…",
+      "primary": {
+        "label": "Primary"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
+      "auto": "Auto",
+      "autoResolves": "What the platform resolves today: {model}",
+      "autoUnknown": "What the platform resolves today (not built yet)",
+      "none": "None",
+      "noneHint": "If the primary is unavailable, the turn fails — today's behaviour.",
+      "specific": "Specific model",
+      "providerLabel": "Provider",
+      "modelLabel": "Model",
+      "effortLabel": "Effort",
+      "effortDefault": "Default effort",
+      "effort": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high",
+        "xhigh": "extra high"
+      },
+      "providerNoKey": "{provider} (no key)",
+      "configureProvider": "Configure in Providers →",
+      "sameRef": "Fallback and primary are the same model — pick a different fallback or None.",
+      "sameProvider": "Same provider as the primary — a provider outage affects both.",
+      "deferred": "The primary names {provider}, but the host currently runs {active} and has no pool for {provider} — the effort applies, the model switch does not.",
+      "fallbackNoVision": "The fallback model cannot read images — on a turn with attachments the primary is used without a fallback.",
+      "primaryNoVision": "The primary model cannot read images.",
+      "summaryAuto": "Auto ({model})",
+      "summaryNoFallback": "Runs on {primary} · no fallback",
+      "summaryWithFallback": "Runs on {primary} · falls back to {fallback}",
+      "save": "Save",
+      "saving": "Saving",
+      "unchanged": "No unsaved change."
+    },
+    "peers": {
+      "heading": "Agent-to-agent conversation",
+      "hint": "Whether this agent may hold a topic discussion with other agents, and in which chats. Both switches must be on: the agent's own, and one per chat. Every participant posts under its own bot; a flip here stops a running discussion at this agent's next turn.",
+      "loading": "Loading the peer settings…",
+      "stateUnknown": "Current: unknown",
+      "stateSummary": "Current: {mode} · {chats, plural, =0 {no chats enabled} one {# chat enabled} other {# chats enabled}}",
+      "modes": {
+        "off": "Off",
+        "on": "On"
+      },
+      "modeHints": {
+        "off": "The agent never talks to other agents. The default.",
+        "on": "The agent may join discussions with other agents — in the chats enabled below."
+      },
+      "chatsHeading": "Enabled chats",
+      "chatsHint": "One row per chat. Only chats this agent's own bot is actually in are offered — add the bot to a Teams group chat first and it appears here. The relay only ever considers bots that are present.",
+      "chatsEmpty": "No chat enabled yet.",
+      "chatEnabled": "enabled",
+      "chatDisabled": "disabled",
+      "remove": "Remove",
+      "channelTypeLabel": "Channel",
+      "add": "Enable chat",
+      "adding": "Adding",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Choose a chat…",
+      "chatSelectNone": "No chat available",
+      "noKnownChats": "This bot is not in any group chat that is not already listed. Add the bot to a Teams group chat; it then shows up here.",
+      "noBot": "This agent has no bot of its own yet. Provision a Teams identity first — without a bot there is no chat to enable.",
+      "chatOption": "{chat} · with {partners}",
+      "chatOptionNoPartners": "{chat} · no other bot present",
+      "chatPartners": "Bots present: {partners}",
+      "chatPartnersNone": "No other bot present — a discussion needs a second one.",
+      "chatNotPresent": "The bot is not (or no longer) in this chat; the row has no effect.",
+      "chatMembers": "Participants: {members}"
+    },
     "contextMemory": {
       "heading": "Chat-context memory",
       "hint": "Controls whether this orchestrator keeps one shared memory tree or a separate tree per chat context (team, channel, direct message). Off is the default and matches the behaviour before this feature existed.",
@@ -1996,7 +2166,8 @@
         "uninstall": "Removing the app from a team needs Microsoft 365 connector 0.4.0 or newer. The connector installed here is older and publishes no uninstall — upgrade the plugin, or have a Teams administrator remove the app manually.",
         "enumerate": "The connector cannot list installs, so this view reports what the provisioning record proves rather than what Teams currently holds.",
         "multi_team": "One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.",
-        "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target."
+        "chat_install": "Installing into a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or choose a team as the target.",
+        "chat_uninstall": "Removing the app from a chat needs the Microsoft 365 connector 0.7.0 or newer. The connector installed here is older — update the plugin, or remove the app inside the chat manually."
       },
       "unsupportedTechnical": "Server reason: {detail}",
       "notice": {
@@ -2058,7 +2229,7 @@
       "avatarHint": "PNG, JPEG or WebP up to 2 MB. It becomes the 192×192 colour icon of the Teams package; a 32×32 outline icon follows only if the picture has transparent areas, otherwise the default outline stays.",
       "fields": {
         "displayName": "Display name",
-        "displayNameHint": "What the agent is called in Teams. Leave it empty to use the registry name.",
+        "displayNameHint": "What the agent is called in Teams — and the name it introduces itself with in chat. Leave it empty to use the registry name.",
         "accentColor": "Accent colour",
         "accentColorHint": "As #RRGGBB. Colours the Teams app package.",
         "shortDescription": "Short description",
@@ -2111,6 +2282,7 @@
       "boundaries": {
         "presetsHeading": "Limits from the library",
         "presetsHint": "Hard prohibitions. They land as their own prompt section, below the character.",
+        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
         "unknownPresets": "Unknown presets stay stored but do not apply: {ids}",
         "categories": {
           "data": "Data",
@@ -2286,7 +2458,10 @@
           "reason": "Reported by Microsoft: {reason}",
           "next": "Check that the Microsoft 365 connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them. Retrying changes nothing without that adjustment."
         },
-        "rsc_permissions_mismatch": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing. Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        "rsc_permissions_mismatch": {
+          "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
+          "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        }
       },
       "teamsBot": {
         "heading": "Teams channel plugin configuration",
@@ -2335,7 +2510,7 @@
           "connector_unavailable": "Without an active M365 connector there is no team list — type the id into the field below.",
           "connector_unsupported": "The installed connector cannot list teams. A list appears here after an upgrade; until then type the id below.",
           "sign_in_required": "The team list needs the tenant sign-in. Sign in once, or type the id below.",
-          "scope_missing": "The stored sign-in does not yet carry the {scope} permission. Signing in again unlocks the list.",
+          "scope_missing": "The stored sign-in is missing a permission the team list needs. Signing in again unlocks the list.",
           "consent_required": "The tenant has not consented to listing teams. Until it does, type the id below.",
           "lookup_failed": "The team list could not be loaded just now. Reload the page, or type the id below.",
           "sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more, or type the id below."
@@ -2374,6 +2549,7 @@
         "catalog_removed": "Catalog entry",
         "bot_deleted": "Azure bot",
         "app_deleted": "App registration",
+        "config_unsynced": "Teams bot entry",
         "identity_reset": "Database row",
         "identity_deleted": "Identity"
       },
@@ -2392,6 +2568,8 @@
         "app_absent_unpurgeable": "The app registration is already gone but could no longer be looked up in the recycle bin. It may still hold the name for up to 30 days — pick a different bot slug if in doubt.",
         "app_provably_gone": "The app registration is gone and is not in the recycle bin either — the name is free again.",
         "arm_not_configured": "Without ARM configured, no bot service was ever created.",
+        "config_unsync_unavailable": "This deployment does not write the teams_bots entry automatically, so there was none for the reset to remove.",
+        "config_plugin_not_installed": "The Teams channel is not installed, so there is no configuration to clean up.",
         "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
         "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
       },
@@ -2406,6 +2584,16 @@
       "slugConfirmLabel": "Type the bot slug \"{slug}\" to confirm:",
       "slugMismatch": "That is not the bot slug of this identity.",
       "resultCompleteIdentity": "Identity deleted. The orchestrator can be created again with a new bot slug and display name."
+    },
+    "detailTabs": {
+      "aria": "Agent settings",
+      "identity": "Identity",
+      "model": "Model",
+      "peers": "Conversations",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Tools",
+      "memory": "Memory"
     }
   },
   "builder": {
@@ -2668,7 +2856,8 @@
         "unknownTurn": "Unknown error during builder turn",
         "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
         "choiceSaveFailedDetail": "Could not save selection: {message}",
-        "choiceSaveFailed": "Could not save selection."
+        "choiceSaveFailed": "Could not save selection.",
+        "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
       },
       "inputLabel": "Builder message",
       "scrollToBottomAriaLabel": "Jump to latest message",
@@ -2728,7 +2917,8 @@
         "error": {
           "connectionLost": "Connection lost: {message}",
           "unknownTurn": "Unknown error during the preview turn",
-          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again."
+          "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
+          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {
@@ -2944,6 +3134,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} selected",
+        "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
         "save": "Save boundaries",
@@ -3491,6 +3682,8 @@
     "providers": {
       "heading": "Providers",
       "modelCount": "{count, plural, one {# model} other {# models}}",
+      "cooldown": "Fallback active · retry {time}",
+      "cooldownTitle": "The provider failed a moment ago ({reason}). Agents with a fallback model route straight to it until the cooldown ends, then the primary is probed again.",
       "connected": "connected",
       "notConnected": "no key",
       "unverified": "key stored, not verified",
@@ -3499,6 +3692,17 @@
       "verifiedAt": "verified {time}",
       "testKey": "Test key",
       "testing": "Testing …",
+      "refreshModels": "Refresh models",
+      "refreshingModels": "Refreshing …",
+      "modelsDiscovered": "{count, plural, one {# model from the provider API} other {# models from the provider API}}",
+      "modelsRefreshNoCredentials": "No API key stored — the model list cannot be fetched.",
+      "modelsRefreshFailed": "Fetch failed: {error}",
+      "modelsRefreshFailedUnknown": "Fetch failed.",
+      "modelsRefreshEmpty": "The provider API returned no usable chat models — keeping the current list.",
+      "modelsRefreshUnsupported": "This provider does not support live discovery.",
+      "modelsSourceLive": "live · {at}",
+      "modelsSourceSeed": "seed list",
+      "unclassifiedModels": "{count, plural, one {# model} other {# models}} hidden (no discovery rule): {models}",
       "addKey": "Add key",
       "changeKey": "Change key",
       "removeKey": "Remove key",
@@ -3560,11 +3764,12 @@
     "explainer": {
       "heading": "Subscription vs API key",
       "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
-      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page."
+      "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM providers page.",
+      "featureNote": "One gap versus an API key: on the subscription path the assistant has no long-term memory yet, so it will not remember facts across chats. Knowledge-graph lookups, choice cards, follow-up buttons and calendar all work as usual."
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
-    "selectModelLink": "Once logged in, select a CLI model for an agent in LLM providers",
+    "selectModelLink": "After you sign in, assign the orchestrator to this CLI under LLM access — otherwise no agent runs. omadia sets this for you automatically when no other provider is configured",
     "detected": {
       "heading": "Detected CLIs"
     },
@@ -3592,6 +3797,8 @@
       "retry": "Try again",
       "failed": "Sign-in failed. Try again.",
       "stillPending": "Not signed in yet. Open the link, approve access, then submit the code again.",
+      "callbackWait": "Approve access in the browser. This CLI finishes the sign-in on its own, no code to paste — this page updates when it is done.",
+      "callbackTimedOut": "The sign-in did not complete in time. Start again, approve access in the browser, and keep this page open.",
       "manualSummary": "Prefer the terminal?",
       "step1": "Make sure the CLI is installed (bundled in the omadia image, or install it):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",
@@ -3624,6 +3831,13 @@
       "conflict": "Another CLI install is already running on this server. Wait for it to finish, then try again.",
       "retry": "Try again",
       "manualSummary": "Prefer to install manually?"
+    },
+    "turnBudget": {
+      "label": "Time limit per turn (seconds)",
+      "help": "How long a single turn may run on the subscription path. Leave empty for the {default}-second default, or the value from OMADIA_CLI_SPAWN_TIMEOUT_MS.",
+      "save": "Save",
+      "saved": "Saved",
+      "invalid": "Enter a whole number between {min} and {max}."
     }
   },
   "createIssue": {
@@ -4177,7 +4391,6 @@
     "marketplace": {
       "registry": "Registry",
       "search": "Search",
-      "browse": "Browse catalog",
       "hint": "Pick a registry and browse its catalog. Connected servers arrive disabled: run Discover, review the verdicts, then enable.",
       "noResults": "No catalog entries match.",
       "connect": "Connect",
@@ -4192,7 +4405,27 @@
       "removeRegistry": "Remove registry",
       "registryName": "Name",
       "registryUrl": "URL",
-      "registryToken": "Bearer token (optional)"
+      "registryToken": "Bearer token (optional)",
+      "searchPlaceholder": "Search the catalog — e.g. postgres, github, slack",
+      "clearSearch": "Clear",
+      "searching": "Searching…",
+      "manageRegistries": "Manage registries",
+      "retry": "Try again",
+      "resultCount": "{count, plural, one {# server} other {# servers}} in {name}",
+      "resultCountFor": "{count, plural, one {# match} other {# matches}} for \"{query}\" in {name}",
+      "hintShort": "Imports arrive disabled — run Discover first.",
+      "noResultsFor": "Nothing in this catalog matches \"{query}\".",
+      "noResultsHint": "Try a shorter term, or switch to another registry above.",
+      "errorTimeout": "The registry \"{name}\" did not answer in time.",
+      "errorUnreachable": "The registry \"{name}\" could not be reached.",
+      "errorGeneric": "The catalog of \"{name}\" could not be read.",
+      "errorUnreachableHint": "The registry host is down or blocked from this installation. Pick another registry above, or try again in a moment.",
+      "removeRegistryBody": "Remove the registry \"{name}\"? Servers already imported from it stay.",
+      "unlicensedShort": "unlicensed",
+      "refresh": "Refresh",
+      "scopeCachedPage": "cached page only",
+      "scopeCachedPageWhy": "This registry’s own search did not answer, so these hits are a text match over the catalog page already loaded — servers further into the catalog are not covered. Use Refresh to try the registry’s search again.",
+      "errorTimeoutHint": "The registry accepted the connection but did not finish answering in time. Its browse listing may still work — clear the search box to list the catalog, or try again."
     },
     "grants": {
       "grantHeading": "Grant tools to an orchestrator",
@@ -4426,7 +4659,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Token consumption and LLM costs per model, source and time. Captures every Anthropic call — orchestrator, sub-agents and the Haiku background tasks.",
+    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4449,7 +4682,11 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache"
+    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "subscription": {
+      "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
+      "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
+    }
   },
   "adminUsers": {
     "loading": "Loading …",
@@ -4958,10 +5195,10 @@
   },
   "adminDatasets": {
     "title": "Knowledge · Datasets",
-    "intro": "Import a CSV as a structured dataset, read back the schema omadia inferred from it, and delete it again. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
-    "uploadHeading": "Import CSV",
+    "intro": "Import a CSV or Excel file as a structured dataset, read back the schema omadia inferred from it, and delete it again. An Excel workbook becomes one dataset per sheet. Agents reach a dataset through the <code>query_dataset</code> tool — filtered and aggregated server-side, never as a whole table pulled into a turn. A dataset is visible only to the account that imported it, so this list is yours, not the instance's.",
+    "uploadHeading": "Import table",
     "fields": {
-      "file": "CSV file",
+      "file": "CSV or Excel file",
       "nameOptional": "Name (optional)"
     },
     "placeholders": {
@@ -4998,9 +5235,9 @@
     "nextPage": "Next",
     "errors": {
       "tooLarge": "The file exceeds the {maxMb} MB upload limit.",
-      "notCsv": "Only CSV files are supported so far.",
-      "noFile": "No file arrived — pick a CSV first.",
-      "importFailed": "The CSV could not be imported. {detail}",
+      "notCsv": "Only CSV and Excel files (.xlsx, .xlsm) are supported.",
+      "noFile": "No file arrived — pick a CSV or Excel file first.",
+      "importFailed": "The file could not be imported. {detail}",
       "notFound": "This dataset no longer exists — it may have been deleted in another tab.",
       "generic": "The request failed (HTTP {status}).",
       "unexpected": "The request failed. {detail}"
@@ -5071,6 +5308,25 @@
     "providerDriftTitle": "Provider drift",
     "providerDriftBody": "The registry hands out {activeModelId}, but the verdict governing the knowledge graph was computed against {gateModelId}. Nothing is broken — swapping an adapter through the plugin pages does not re-run the dimension gate. Switch the provider here to re-gate, so the corpus and the verdict describe the same model again.",
     "capabilityMissing": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "capabilityMissingCredentials": "The active adapter publishes no client — it is running but not configured (missing API key or base URL).",
+    "capabilityMissingWeights": "The active adapter is the keyless one — it needs neither an API key nor a base URL. What is missing are the model weights on this machine. Download them above, then reactivate the provider.",
+    "capabilityMissingNoProvider": "No embedding provider is active. Without one there is no process memory, no semantic search and no duplicate detection.",
+    "capabilityMissingNotPublished": "The active adapter stood down: its model weights are complete, but it published no client. Usually a second adapter already holds the capability — uninstall it or blank its credentials, then reactivate here.",
+    "widthCollisionTitle": "Width collision with the vector columns",
+    "widthCollisionBody": "The active model emits {provider}-dimensional vectors while the vector columns are {columns} wide. The knowledge graph refuses vector writes while that is true — full-text search keeps working.",
+    "widthCollisionEmpty": "The columns are empty. Rebuilding them at the matching width therefore discards nothing and needs no provider switch.",
+    "widthCollisionPopulated": "The columns hold stored vectors. A rebuild would discard them — use the provider switch below, which asks for that confirmation.",
+    "widthCollisionUnknown": "Whether the columns are empty could not be established. Nothing is rebuilt without that answer.",
+    "rebuildColumns": "Rebuild vector columns",
+    "reactivateButton": "Reactivate provider",
+    "reactivating": "Reactivating …",
+    "reactivatePublished": "Provider reactivated. It now publishes an embedding client — memory, semantic search and duplicate detection are running.",
+    "reactivateNotPublished": "Provider reactivated, but it still publishes no embedding client. The reasons are above.",
+    "reactivateCorpusNotEmpty": "The vector columns still hold embeddings. This action never discards anything — use the provider switch below, which asks for the discard confirmation.",
+    "reactivateNoProvider": "No embedding provider is active, so there is nothing to reactivate.",
+    "reactivateInProgress": "An embedding-provider change is already running. Wait for it to finish, then reload the page.",
+    "dedupApplied": "Set the knowledge graph's duplicate-detection threshold to {value} — the value this model needs. Effective the next time the knowledge-graph plugin starts.",
+    "dedupOperatorSet": "Left the duplicate-detection threshold at {current}, because it is set. {recommended} would fit this model.",
     "corpusTitle": "Stored corpus",
     "corpusModel": "Recorded model",
     "corpusDimensions": "Recorded width",
@@ -5104,6 +5360,7 @@
     "discardTitle": "This discards the stored corpus",
     "discardCount": "{count, plural, =0 {Nothing is stored right now, so no vectors are lost.} one {# stored vector will be discarded and re-embedded.} other {# stored vectors will be discarded and re-embedded.}}",
     "discardUnknown": "The number of stored vectors could not be read. Assume the whole corpus is discarded and re-embedded.",
+    "discardAllTenants": "The rebuild drops and re-adds the vector column itself, and that column is shared: the knowledge graph keeps every tenant in the same physical tables. Every tenant's embeddings go, not only the ones counted above, and every one of them is re-earned by the backfill sweep.",
     "costWarning": "Re-embedding calls the provider once per row. Against a paid API that costs real money.",
     "confirmLabel": "I understand that the stored vectors are discarded and re-embedded.",
     "switchButton": "Switch provider",
@@ -5114,7 +5371,15 @@
     "unknownTargetError": "That plugin is not an installed embeddingClient@1 provider.",
     "alreadyActiveError": "That provider is already the active one.",
     "targetUnavailableError": "The target could not take over, so the previous provider was restored. Configure it first (API key, base URL), then try again.",
-    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights."
+    "forbiddenError": "Not authorized (403) — switching the embedding provider requires admin rights.",
+    "localModelTitle": "Keyless embedder: model not downloaded yet",
+    "localModelBody": "This provider computes without an API key and without a separate server — but the model weights ({size} MB) are deliberately not shipped in the installer and have to be fetched once. Everything runs offline afterwards.",
+    "localModelFetch": "Download the model now",
+    "localModelStarting": "Starting …",
+    "localModelProgress": "Downloading … {done} of {total} MB ({file})",
+    "localModelFailed": "The download failed: {message}",
+    "localModelReady": "The model weights are complete. The next time this provider activates it publishes `embeddingClient@1` — memory, semantic search and duplicate detection then work.",
+    "localModelThreshold": "Important: this model’s cosine scale is not the knowledge graph default. Set `process_dedup_threshold` to 0.45 — at the 0.90 default duplicate detection never fires, and it fails silently."
   },
   "graph": {
     "page": {
@@ -5362,7 +5627,7 @@
       "metaTitle": "Routines · omadia",
       "kicker": "Routines",
       "title": "Cron jobs & routines.",
-      "intro": "User-owned recurring agent invocations. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
+      "intro": "Your own recurring agent runs. They are created in the chat (manage_routine tool); here you can see everything at a glance and pause or delete.",
       "summaryTotal": "Total",
       "summaryActive": "Active",
       "summaryPaused": "Paused",

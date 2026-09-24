@@ -8,6 +8,15 @@
 FROM node:22.23.2-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# npm's registry fetches are retried harder than the default (2 attempts, short
+# backoff) because a dropped connection here fails the whole image build: the
+# web-ui edge image died on `npm error code ECONNRESET` mid-`npm ci` while the
+# very same commit built fine in the other pipeline minutes later. Retrying in
+# npm is strictly cheaper than re-running a Docker job by hand, and it applies
+# to `npm rebuild` / `npm install` in this stage too.
+ENV NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 RUN npm ci --no-audit --no-fund
 
 # --- builder ----------------------------------------------------------------

@@ -22,7 +22,23 @@ export type JsonObject = { [key: string]: JsonValue };
 export interface ComparePredicate {
   op: 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte';
   path: string;
-  value: JsonValue;
+  value?: JsonValue;
+  /**
+   * Compare against another dot-path instead of a literal.
+   *
+   * A budget the CALLER chooses cannot be a literal baked into the graph: a
+   * discussion that should run as long as it stays productive needs its own
+   * ceiling in the run context, not a number frozen at authoring time. With
+   * only `value`, "stop after N turns" forces one N for every run of that
+   * pattern — which is how the first cut ended up capping every discussion at
+   * seven regardless of whether it was still going somewhere.
+   *
+   * Exactly one of `value` / `valuePath` is meaningful; `valuePath` wins when
+   * both are present. An unresolvable path yields `undefined`, which the
+   * ordering comparisons treat as "not comparable" (false) — a missing budget
+   * therefore ENDS a loop rather than running it forever.
+   */
+  valuePath?: string;
 }
 
 /** True iff the dot-path resolves to a defined value. */
@@ -129,6 +145,26 @@ export interface HumanStepConfig {
   strictApproval?: boolean;
 }
 
+/**
+ * Publish an agent step's answer INTO a conversation (the agent-dialogue
+ * primitive). Without it an agent step's prose stays in the run context and
+ * nobody in the chat ever sees it — which is exactly why two agent bots could
+ * not hold a topic conversation: Microsoft Teams does not deliver one bot's
+ * message to another bot, so the conversation has to be relayed server-side
+ * and projected into the chat by the kernel.
+ *
+ * `channel` is the channel TYPE ('teams'), slot-able in a pattern as
+ * `slot:channel:<key>`. The target conversation is NOT part of the graph — it
+ * comes from the run context (`ctx.conversationId`), and the effect side
+ * authorizes it against the run's own ephemeral attachment.
+ */
+export interface StepSayConfig {
+  /** Channel type to publish through, e.g. 'teams'. */
+  channel: string;
+  /** Display name shown before the utterance; defaults to the step's agent slug. */
+  speaker?: string;
+}
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -152,6 +188,8 @@ export interface Step {
   human?: HumanStepConfig;
   /** required when kind='timer' (#330 C3). */
   timer?: TimerStepConfig;
+  /** kind='agent' only: publish this step's answer into the run's bound conversation. */
+  say?: StepSayConfig;
   /** the step's exit postcondition; absent ≡ always met. */
   postcondition?: Predicate;
   /** id of the transition fired when the postcondition is unmet, or when no happy-path
@@ -217,6 +255,7 @@ export type ValidationCode =
   | 'agent_step_missing_agent'
   | 'action_step_missing_action'
   | 'human_step_missing_config'
+  | 'say_requires_agent_step'
   | 'unknown_agent_ref'
   | 'unknown_action_ref'
   | 'unknown_role_ref'

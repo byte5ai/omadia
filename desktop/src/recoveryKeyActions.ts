@@ -21,6 +21,7 @@
  * still caught on the next start. The proper fix is one line in that IPC
  * handler, and it is commented there so whoever works in `ipc.ts` finds it.
  */
+import type { BrowserWindow } from 'electron';
 import { exportRecoveryKey } from './secrets';
 import { log, logFile } from './log';
 import { describeError } from './bootFailure';
@@ -32,17 +33,17 @@ import {
 } from './shellDialogs';
 import type { ShellTranslate } from './shellStrings';
 
-export async function showRecoveryKeyAction(t: ShellTranslate): Promise<void> {
+export async function showRecoveryKeyAction(win: BrowserWindow, t: ShellTranslate): Promise<void> {
   let key: string;
   try {
     key = exportRecoveryKey();
   } catch (err) {
     log.error(`[main] recovery key unavailable: ${describeError(err)}`);
-    await showRecoveryKeyUnavailable(t, describeError(err), logFile());
+    await showRecoveryKeyUnavailable(win, t, describeError(err), logFile());
     return;
   }
 
-  await showRecoveryKey(t, key);
+  await showRecoveryKey(win, t, key);
 
   // Recorded AFTER the dialog closes, and guarded: `writeSetup` is a bare
   // `writeFileSync`, so a read-only directory or a full disk would otherwise
@@ -57,8 +58,14 @@ export async function showRecoveryKeyAction(t: ShellTranslate): Promise<void> {
   }
 }
 
-/** Ask once, for a boot-verified install that has never displayed the key. */
-export async function maybeRemindRecoveryKey(t: ShellTranslate): Promise<void> {
+/**
+ * Ask once, for a boot-verified install that has never displayed the key.
+ *
+ * Callers await the UI-ready gate first (OM-71): the reminder used to appear
+ * over "Loading login…" because `loadURL` resolves on the document, not on the
+ * screen the user is going to see.
+ */
+export async function maybeRemindRecoveryKey(win: BrowserWindow, t: ShellTranslate): Promise<void> {
   if (!needsRecoveryKeyReminder()) return;
-  if ((await showRecoveryReminder(t)) === 'show-now') await showRecoveryKeyAction(t);
+  if ((await showRecoveryReminder(win, t)) === 'show-now') await showRecoveryKeyAction(win, t);
 }

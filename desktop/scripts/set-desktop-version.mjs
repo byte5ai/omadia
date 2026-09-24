@@ -17,6 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isEntryPoint } from './isEntryPoint.mjs';
+
 const VERSION_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const desktopPackageJsonPath = path.join(here, '..', 'package.json');
@@ -46,7 +48,7 @@ export function setPackageVersion(packageJsonText, version) {
   return `${JSON.stringify(pkg, null, 2)}\n`;
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain = isEntryPoint(import.meta.url);
 if (isMain) {
   const tag = process.argv[2];
   if (!tag) {

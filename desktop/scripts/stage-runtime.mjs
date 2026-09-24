@@ -11,6 +11,12 @@
 // shipped bundle.
 import fs from 'node:fs';
 import path from 'node:path';
+
+import {
+  hostTriple,
+  pruneUnloadableOnnxPayloads,
+} from './prune-onnx-payloads.mjs';
+import { ensureOwnerWritable, findReadOnlyEntries } from './normalize-file-modes.mjs';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -195,6 +201,17 @@ console.log(
   `[stage-runtime] pruned ${pruneBuildTimeOnlyFiles(mwDest)} build-time-only file(s) (*.d.ts, *.ts, *.map)`,
 );
 
+// --- drop the onnxruntime payloads this platform can never load ----------
+// See `prune-onnx-payloads.mjs` for why each of the three rules is safe. It is
+// a separate module so it can be exercised against a throwaway tree.
+{
+  const { bytes, files } = pruneUnloadableOnnxPayloads(mwDest);
+  console.log(
+    `[stage-runtime] pruned ${files} unloadable onnxruntime file(s), ` +
+      `${(bytes / 1024 / 1024).toFixed(0)} MB (kept the ${hostTriple()} native build)`,
+  );
+}
+
 // --- prune symlinks that escape the staged tree --------------------------
 // `fs.cpSync({ dereference: true })` does not materialise EVERY symlink: npm's
 // `node_modules/.bin/*` entries survive the copy as ABSOLUTE links back into the
@@ -265,6 +282,44 @@ if (stillDangling !== 0) {
   console.error(
     `[stage-runtime] FATAL: ${stillDangling} escaping symlink(s) survived the prune — ` +
       'refusing to stage a tree that macOS codesign cannot walk.',
+  );
+  process.exit(1);
+}
+
+// --- no read-only entries may ship (OM-86) ------------------------------
+// Squirrel strips the quarantine xattr from every file of a downloaded update;
+// on a 0444 file that write fails with EACCES and the WHOLE update is aborted.
+// One such file (Homebrew's pgvector dylib, copied mode-preserving) blocked
+// every macOS self-update from 0.152.0 on. Add the owner-write bit wherever it
+// is missing, then gate on a clean re-scan — the same shape as the symlink
+// gate above, for the same reason: a guard that only fixes cannot notice when
+// the fix stopped working.
+const { fixed, unreadable: fixUnreadable } = ensureOwnerWritable(runtime);
+if (fixed.length > 0) {
+  console.log(`[stage-runtime] made ${fixed.length} read-only entr${fixed.length === 1 ? 'y' : 'ies'} owner-writable:`);
+  for (const rel of fixed) console.log(`  ${rel}`);
+}
+const { offenders: stillReadOnly, unreadable: scanUnreadable } = findReadOnlyEntries(runtime);
+// Cato-Audit Runde 5 / OM-86 follow-up: a path the walk could not read is NOT
+// a path it found clean. Both walks used to swallow those errors and return an
+// empty list, so an unreadable directory produced a green gate over an
+// uninspected subtree — the same silent pass, one level up. Checked before the
+// offender list because an incomplete scan makes that list meaningless.
+const unreadable = [...new Set([...fixUnreadable, ...scanUnreadable])];
+if (unreadable.length !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${unreadable.length} path${unreadable.length === 1 ? '' : 's'} under the staged ` +
+      'tree could not be inspected for the owner-write bit — refusing to stage a tree the OM-86 gate ' +
+      'could not fully scan:',
+  );
+  for (const rel of unreadable) console.error(`  ${rel}`);
+  process.exit(1);
+}
+if (stillReadOnly.length !== 0) {
+  console.error(
+    `[stage-runtime] FATAL: ${stillReadOnly.length} read-only entr${stillReadOnly.length === 1 ? 'y' : 'ies'} ` +
+      `survived normalisation (${stillReadOnly.slice(0, 5).join(', ')}) — refusing to stage a tree ` +
+      'the macOS updater cannot install.',
   );
   process.exit(1);
 }

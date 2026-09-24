@@ -159,7 +159,11 @@ describe('ManageRoutineTool — create', () => {
       cron: '0 9 * * 1',
       prompt: 'p',
     });
-    assert.match(result, /^Error: cannot create routine outside a channel/);
+    // OM-82 (#993) — the message no longer blames the caller ("outside a
+    // channel turn"); a subscription-CLI user IS in a channel and the context
+    // was dropped crossing the loopback boundary. It now reads as a runtime fault.
+    assert.match(result, /^Error: routines are unavailable in this session/);
+    assert.doesNotMatch(result, /outside a channel/);
     assert.equal(calls.length, 0);
   });
 

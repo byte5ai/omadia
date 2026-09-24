@@ -231,6 +231,63 @@ describe('runOneTurn — in-band error on a 200 stream (#403)', () => {
 });
 
 /**
+ * OM-76 / OM-77 (#996, #997) — a 503 from the chat route used to reach the
+ * bubble as the server's English sentence (`agent "default" is not currently
+ * active`) or, worse, as a bare "HTTP 503". Both codes now map to a catalogue
+ * key and flag the recovery banner with the cause.
+ */
+describe('runOneTurn — 503 agent codes are translated, never raw (OM-76/77)', () => {
+  function json503(body: Record<string, unknown>): Response {
+    return new Response(JSON.stringify(body), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  it('no_agents_active → errorNoAgentsActive + banner reason', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+
+    const sessionId = await drive(
+      store,
+      json503({
+        error: 'no_agents_active',
+        message: 'no orchestrator is active. Assign an LLM provider under LLM access.',
+        slug: 'default',
+      }),
+    );
+
+    const record = latest().get(sessionId);
+    expect(record?.phase).toBe('error');
+    expect(record?.error).toBe('errorNoAgentsActive');
+    expect(record?.error).not.toMatch(/HTTP 503|is not currently active|no orchestrator is active/);
+    expect(record?.agentUnavailableReason).toBe('no_agents_active');
+    expect(record?.agentUnavailableSlug).toBe('default');
+  });
+
+  it('agent_unavailable → errorAgentUnavailable + banner reason', async () => {
+    const { latest } = captureStore();
+    const store = latest();
+
+    const sessionId = await drive(
+      store,
+      json503({
+        error: 'agent_unavailable',
+        message: 'agent "sales" is not currently active',
+        slug: 'sales',
+      }),
+    );
+
+    const record = latest().get(sessionId);
+    expect(record?.phase).toBe('error');
+    expect(record?.error).toBe('errorAgentUnavailable');
+    expect(record?.error).not.toMatch(/HTTP 503|is not currently active/);
+    expect(record?.agentUnavailableReason).toBe('agent_unavailable');
+    expect(record?.agentUnavailableSlug).toBe('sales');
+  });
+});
+
+/**
  * #617 — a turn whose session is NOT the active one used to write into the
  * void: every store write went through the active-session mutator, so the
  * answer arrived in the tab marker but never in the transcript. These tests drive a real

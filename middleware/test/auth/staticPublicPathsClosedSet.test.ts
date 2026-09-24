@@ -11,6 +11,12 @@ import { createRequireAuth } from '../../src/auth/requireAuth.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { CIMD_METADATA_PATH } from '../../src/services/mcpCimd.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
+import { teamsBotMessagingPath } from '../../src/platform/teamsMessagingPath.js';
+import {
+  isDeniedListenError,
+  isSandboxListenDenied,
+  loopbackRequired,
+} from '../_helpers/listenLoopback.js';
 
 /**
  * Epic #470 C12 — `STATIC_PUBLIC_PATHS` is a CLOSED set of CORE-owned entries.
@@ -66,6 +72,18 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   {
     path: '/api/messages',
     why: 'Bot Framework webhook — the adapter validates the Bot-issued JWT in the handler',
+  },
+  {
+    // Built from the shared builder, for the reason stated above this array:
+    // this path exists in exactly one place (platform/teamsMessagingPath.ts),
+    // which is what keeps the provisioned URL and the exemption in step.
+    path: teamsBotMessagingPath('hr-bot'),
+    why:
+      'the SAME Bot Framework webhook by its slug-addressed spellings ' +
+      '(/api/teams/messages and /api/teams/<botSlug>/messages, channel-teams ' +
+      '0.20.0) — one exemption, one adapter, two URL shapes. Reachability and ' +
+      'the fact that it does NOT open the /api/teams namespace are pinned in ' +
+      'teamsMessagingPublicPath.test.ts',
   },
   {
     path: '/api/v1/operator/mcp-oauth/callback',
@@ -180,17 +198,21 @@ describe('publicPaths — a path off the closed set 401s before routing (#470 C1
       // Some sandboxes refuse loopback listeners. Locally we self-skip so the
       // rest of the file still runs, but in CI that would silently delete the
       // entire 401 half of this closed-set guard while the job stayed green.
-      if (err instanceof Error && 'code' in err && err.code === 'EPERM') {
-        if (process.env.CI) {
-          throw new Error(
-            'CI must allow a loopback listener for staticPublicPathsClosedSet.test.ts. ' +
-              'Without bind(127.0.0.1:0) the five unauthenticated 401 assertions ' +
-              'would be skipped, which would hide a regression in the closed public-path set.',
-            { cause: err },
-          );
-        }
+      //
+      // #1024 — the EPERM check and the "is loopback required here" decision
+      // now come from the one shared helper, so this suite cannot drift away
+      // from the six others that make the same call.
+      if (isSandboxListenDenied(err)) {
         sandboxDeniedListen = true;
         return;
+      }
+      if (loopbackRequired() && isDeniedListenError(err)) {
+        throw new Error(
+          'CI must allow a loopback listener for staticPublicPathsClosedSet.test.ts. ' +
+            'Without bind(127.0.0.1:0) the five unauthenticated 401 assertions ' +
+            'would be skipped, which would hide a regression in the closed public-path set.',
+          { cause: err },
+        );
       }
       throw err;
     }

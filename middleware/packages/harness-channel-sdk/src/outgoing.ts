@@ -22,6 +22,22 @@ export type { CaptureDisclosure, PrivacyReceipt, RecalledContext };
 export type { AiDisclosure } from './aiDisclosure.js';
 
 /**
+ * #1105 — provenance of a turn's final answer (`SemanticAnswer.text` /
+ * `done.answer`).
+ *
+ * `'model'` (the default; an omitted field means this) — the answer is the
+ * model's own text, the same tokens streamed as `text_delta`.
+ *
+ * `'privacy-render'` — the answer was materialized server-side by Privacy
+ * Shield v4 (`v4_render_answer`) from ground-truth values the model never
+ * saw. It can DIVERGE from the `text_delta` chunks streamed earlier in the
+ * turn: those deltas are a live preview and are superseded by the final
+ * answer. A streaming client that reconstructs the answer from deltas MUST
+ * treat the final answer as authoritative whenever this is not `'model'`.
+ */
+export type AnswerSource = 'model' | 'privacy-render';
+
+/**
  * The top-level shape the orchestrator hands to a connector for rendering.
  * Every field except `text` is optional; a plain text reply is a valid
  * SemanticAnswer. Connectors that cannot render a richer primitive (e.g. a
@@ -108,6 +124,15 @@ export interface SemanticAnswer {
    * produced no server-materialized answer or exposed no masked field.
    */
   maskedValues?: readonly string[];
+
+  /**
+   * #1105 — `'privacy-render'` when `text` was materialized server-side by
+   * Privacy Shield v4 this turn (the streaming sibling is `done.answerSource`).
+   * Omitted / `'model'` for the ordinary case. Non-streaming channels render
+   * `text` directly so this is informational for them; it exists so a channel
+   * that also exposes the raw stream can reconcile the two. See `AnswerSource`.
+   */
+  answerSource?: AnswerSource;
 
   /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a

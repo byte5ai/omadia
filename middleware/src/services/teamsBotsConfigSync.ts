@@ -288,6 +288,29 @@ export function upsertTeamsBotEntry(
   return { document: { entries, form: doc.form }, changed: true };
 }
 
+/**
+ * Take this bot's entry OUT of the list, carrying every other entry over by
+ * reference.
+ *
+ * The exact counterpart of {@link upsertTeamsBotEntry}, and it matches on the
+ * SLUG alone — never on the app id. A reset exists precisely because the
+ * identity's `app_id` is about to stop being true (or already has), so an
+ * entry is stale exactly when it names a slug whose registration is gone,
+ * whatever id it happens to carry. Matching on the id would leave behind the
+ * one entry that most needs removing: the one already pointing at a purged
+ * app.
+ */
+export function removeTeamsBotEntry(
+  doc: TeamsBotsConfigDocument,
+  botSlug: string,
+): TeamsBotsUpsertResult {
+  const entries = doc.entries.filter((entry) => entrySlug(entry) !== botSlug);
+  if (entries.length === doc.entries.length) {
+    return { document: doc, changed: false };
+  }
+  return { document: { entries, form: doc.form }, changed: true };
+}
+
 // ---------------------------------------------------------------------------
 // The sync itself
 // ---------------------------------------------------------------------------
@@ -393,6 +416,57 @@ async function syncOnce(
   // bounce a plugin that is serving traffic.
   await deps.reactivate?.(pluginId);
   return { status: 'synced', botSlug: projection.botSlug };
+}
+
+/**
+ * Remove this bot's `teams_bots` entry and reload the plugin — the teardown
+ * counterpart of {@link syncTeamsBotConfig}.
+ *
+ * WHY A RESET NEEDS THIS. The provisioning chain writes the entry
+ * automatically (#910), so the reset that undoes the chain has to take it back
+ * out; otherwise a "full reset" leaves channel-teams configured with a bot
+ * whose Entra registration has just been purged. That bot then fails
+ * authentication on every inbound activity, and the next provisioning run
+ * appends a SECOND entry beside the corpse under the same slug.
+ *
+ * Takes the SLUG, not an identity record, because by the time the teardown
+ * gets here the row's `app_id` may already be cleared — and the slug is the
+ * key the list is addressed by anyway.
+ *
+ * Never throws for "nothing to remove": an absent entry is the desired end
+ * state, reported as `unchanged`, exactly like a no-op sync.
+ */
+export function dropTeamsBotConfig(
+  deps: TeamsBotsConfigSyncDeps,
+  botSlug: string,
+): Promise<TeamsBotsConfigSyncOutcome> {
+  return serialized(() => dropOnce(deps, botSlug));
+}
+
+async function dropOnce(
+  deps: TeamsBotsConfigSyncDeps,
+  botSlug: string,
+): Promise<TeamsBotsConfigSyncOutcome> {
+  const slug = botSlug.trim();
+  if (slug === '') return { status: 'skipped', reason: 'identity_incomplete' };
+
+  const pluginId = deps.pluginId ?? CHANNEL_TEAMS_PLUGIN_ID;
+  const registry = deps.getInstalledRegistry();
+  if (!registry) return { status: 'skipped', reason: 'registry_unavailable' };
+
+  const installed = registry.get(pluginId);
+  if (!installed) return { status: 'skipped', reason: 'plugin_not_installed' };
+
+  const doc = readTeamsBotsConfig(installed.config[TEAMS_BOTS_CONFIG_KEY]);
+  const { document, changed } = removeTeamsBotEntry(doc, slug);
+  if (!changed) return { status: 'unchanged', botSlug: slug };
+
+  await registry.updateConfig(pluginId, {
+    ...installed.config,
+    [TEAMS_BOTS_CONFIG_KEY]: serializeTeamsBotsConfig(document),
+  });
+  await deps.reactivate?.(pluginId);
+  return { status: 'synced', botSlug: slug };
 }
 
 // ---------------------------------------------------------------------------

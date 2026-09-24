@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -9,19 +10,85 @@ import type {
   ChatTurnInput,
   ChatStreamEvent,
   ChatStreamObserver,
+  FollowUpOption,
+  PendingUserChoice,
   SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type {
   DispatchableToolSpec,
   ToolDispatchService,
 } from './toolDispatchService.js';
+import type { PendingSlotCard } from './tools/findFreeSlotsTool.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
+import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
+import {
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+  classifyUnknownOptionFailure,
+  resolveCliVersion,
+} from './cliSpawnGate.js';
 
 const DEFAULT_CLI_BINARY = 'claude';
 const DEFAULT_MODEL = 'sonnet';
-const DEFAULT_SPAWN_TIMEOUT_MS = 120_000;
+/**
+ * OM-104 — the wall-clock budget of one CLI-owned turn. It used to be a
+ * hard-coded 120 s with no way to raise it, while a single call to omadia's
+ * own `query_seo_analyst` sub-agent takes 69–75 s: two of those and the turn
+ * was guaranteed dead, on an agent loop configured for up to 100 iterations.
+ * 10 minutes is a budget the platform's own tools fit into; the idle timeout
+ * below still catches a CLI that stopped producing output.
+ */
+const DEFAULT_SPAWN_TIMEOUT_MS = 600_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
+/** Environment override for {@link DEFAULT_SPAWN_TIMEOUT_MS}, in milliseconds. */
+export const CLI_SPAWN_TIMEOUT_ENV_KEY = 'OMADIA_CLI_SPAWN_TIMEOUT_MS';
+
+/**
+ * The turn timeout to use: an explicit dependency wins, then a positive
+ * integer in {@link CLI_SPAWN_TIMEOUT_ENV_KEY}, then the default. Anything
+ * else in the variable (empty, `0`, `abc`) is ignored rather than turned
+ * into a zero-second budget.
+ */
+export function resolveCliSpawnTimeoutMs(
+  explicit: number | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+
+  const raw = env[CLI_SPAWN_TIMEOUT_ENV_KEY];
+  const parsed = raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SPAWN_TIMEOUT_MS;
+}
+
+/**
+ * OM-94 — the sink for the three facts a failed turn used to keep to itself:
+ * that a CLI was spawned (argv shape, never the prompt), how it exited, and
+ * the first line it wrote to stderr. The reporter attached the log file the
+ * update dialog asks for, and it contained none of them.
+ */
+export interface CliSpawnLogger {
+  info(message: string, meta?: Readonly<Record<string, unknown>>): void;
+  warn(message: string, meta?: Readonly<Record<string, unknown>>): void;
+}
+
+const consoleSpawnLogger: CliSpawnLogger = {
+  info: (message, meta) =>
+    console.info(`[cli-chat-agent] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}`),
+  warn: (message, meta) =>
+    console.warn(`[cli-chat-agent] ${message}${meta ? ` ${JSON.stringify(meta)}` : ''}`),
+};
+
+/** First non-empty stderr line, for a log entry that stays one line. */
+function firstLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+}
 const FORCE_KILL_DELAY_MS = 2_000;
 const DEFAULT_MAX_CONCURRENT_TURNS = 3;
 
@@ -34,30 +101,111 @@ const EMPTY_USAGE: CliUsage = {
   numTurns: 0,
 };
 
-export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
-  // Direct API keys / tokens — would switch the CLI off the subscription.
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'OPENAI_API_KEY',
-  'GEMINI_API_KEY',
-  'GOOGLE_API_KEY',
-  // Routing/header overrides — could redirect to a metered gateway/proxy.
-  'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_CUSTOM_HEADERS',
-  // Alternate-backend switches — would bill Bedrock/Vertex, not the sub.
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'CLOUD_ML_REGION',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'AWS_DEFAULT_REGION',
+/**
+ * The spawn gate now lives in `cliSpawnGate.ts` so both CLI spawn sites share
+ * one definition (#1007). Re-exported here because `@omadia/orchestrator`
+ * consumers and the platform's `scrubbedEnv()` already import these names
+ * from this module.
+ */
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  CLI_ENV_SCRUB_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildGatedCliEnv,
+} from './cliSpawnGate.js';
+
+/**
+ * OM-83 (#992) — the runtime context every CLI-backed turn carries in its
+ * system prompt. Appended AFTER the caller's persona so identity stays with
+ * omadia's text; it exists because `--system-prompt` drops the CLI's default
+ * prompt entirely (intended: the CLI's self-description made the model believe
+ * it was "Claude Code in the middleware repo" and route users out of omadia),
+ * so the model has to be told here what runtime it is in and which tools it has.
+ */
+const CLI_RUNTIME_CONTEXT = [
+  'You are running inside omadia, an enterprise agent platform, as the assistant of an omadia chat channel.',
+  'You are not Claude Code and you are not in a terminal, repository or IDE; the person you talk to is already inside omadia.',
+  `Your only tools are the omadia tools served over MCP (names starting with ${OMADIA_MCP_TOOL_PREFIX}).`,
+  'You have no shell, file, web or scheduling tools of your own; never claim to run commands or to act in another system.',
+].join(' ');
+
+const DEFAULT_CLI_SYSTEM_PROMPT = 'You are a helpful, precise assistant.';
+
+/**
+ * Issue #1102 — the kernel-native capabilities that DON'T exist on the CLI
+ * provider unless they are advertised over the loopback MCP server this turn.
+ *
+ * On the subscription-CLI path a kernel native that carries neither a spec nor
+ * a handler never reaches the CLI (see `toolDispatchService.listDispatchable
+ * ToolSpecs`), so the model is offered no tool AND no hint that the tool is
+ * missing — and it answers as if the action had happened ("Gespeichert!" with
+ * `tools=0`). This table drives an honesty sentence that names exactly the
+ * capabilities the model does NOT have, keyed on the tool's wire name so the
+ * sentence shrinks automatically as Stage 2 advertises more of them: a tool in
+ * the advertised set is truthfully present and is dropped from the list.
+ *
+ * The phrases are infinitive so they slot into "you cannot <phrase>".
+ */
+const KERNEL_NATIVE_CAPABILITY_PHRASES: ReadonlyArray<
+  readonly [toolName: string, phrase: string]
+> = [
+  ['memory', 'remember facts across turns (long-term memory)'],
+  ['query_knowledge_graph', 'look things up in the knowledge graph'],
+  ['ask_user_choice', 'offer interactive choice buttons'],
+  ['suggest_follow_ups', 'offer follow-up suggestion buttons'],
+  ['find_free_slots', 'check calendar availability'],
+  ['book_meeting', 'book calendar meetings'],
+  ['get_chat_participants', 'list the participants of this chat'],
 ];
+
+/**
+ * The capability phrases for every kernel-native tool NOT in `advertisedTool
+ * Names`. Returns `[]` once all of them are advertised, which is the honest
+ * end-state after Stage 2 parity (bar `get_chat_participants`, which stays
+ * channel-bound). Names are compared verbatim — the advertised specs carry the
+ * un-prefixed wire name (`ask_user_choice`, not `mcp__omadia__ask_user_choice`).
+ */
+export function absentKernelCapabilities(
+  advertisedToolNames: Iterable<string>,
+): string[] {
+  const advertised = new Set(advertisedToolNames);
+  return KERNEL_NATIVE_CAPABILITY_PHRASES.filter(
+    ([name]) => !advertised.has(name),
+  ).map(([, phrase]) => phrase);
+}
+
+/** Joins phrases into an English list: "a", "a and b", "a, b or c". */
+function joinPhrases(phrases: readonly string[]): string {
+  if (phrases.length <= 1) return phrases[0] ?? '';
+  return `${phrases.slice(0, -1).join(', ')} or ${phrases[phrases.length - 1]}`;
+}
+
+/**
+ * Compose the `--system-prompt` value: the caller's persona (or a neutral
+ * default when none is configured), the omadia runtime context, and — when any
+ * kernel-native capability is absent this turn (#1102) — an honesty sentence
+ * naming what the model CANNOT do, so it stops inventing durable side effects
+ * it never performed.
+ */
+export function composeCliSystemPrompt(
+  persona: string | undefined,
+  absentCapabilities?: readonly string[],
+): string {
+  const base = typeof persona === 'string' && persona.trim().length > 0
+    ? persona.trimEnd()
+    : DEFAULT_CLI_SYSTEM_PROMPT;
+  const prompt = `${base}\n\n${CLI_RUNTIME_CONTEXT}`;
+  if (absentCapabilities === undefined || absentCapabilities.length === 0) {
+    return prompt;
+  }
+  const honesty =
+    `In this mode you cannot ${joinPhrases(absentCapabilities)}. ` +
+    'If the user asks for one of these, say plainly that it is not available ' +
+    'in this mode; never claim to have done it.';
+  return `${prompt}\n\n${honesty}`;
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -68,6 +216,27 @@ export interface CliUsage {
   readonly cacheCreationInputTokens: number;
   readonly costUsd: number;
   readonly numTurns: number;
+}
+
+/**
+ * OM-103 — one subscription turn, in the ledger's vocabulary.
+ *
+ * `recordUsage` is fire-and-forget and no-ops until a pool is wired, so this
+ * is safe on every host (in-memory KG boots, unit tests) and can never fail a
+ * turn. Kept a free function so the parser stays a pure NDJSON reader.
+ */
+function recordCliTurnUsage(model: string, usage: CliUsage): void {
+  recordUsage({
+    source: CLI_CHAT_USAGE_SOURCE,
+    model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadInputTokens,
+    cacheCreationTokens: usage.cacheCreationInputTokens,
+    // The subscription is a flat fee; nothing is billed per call.
+    costUsd: 0,
+    referenceCostUsd: usage.costUsd,
+  });
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -292,6 +461,10 @@ export class StreamJsonParser {
         id,
         name,
         input: block.input,
+        // OM-81 — a call that did not come through omadia's loopback server is
+        // one of the CLI's own tools. They are removed at spawn time; if one
+        // still shows up it must never read like an omadia tool in the trace.
+        ...(name.startsWith(OMADIA_MCP_TOOL_PREFIX) ? {} : { foreign: true as const }),
       });
     }
 
@@ -393,15 +566,76 @@ export interface CliChatAgentDeps {
     readonly dispatch: ToolDispatchService;
     readonly bearer: string;
     readonly tools: readonly DispatchableToolSpec[];
+    readonly runInTurnContext?: <T>(fn: () => T) => T;
+    readonly assertTurnOwner?: () => void;
   }) => LoopbackMcpServer;
+  /**
+   * #1016 — a guard that throws when the async context restored around a
+   * loopback dispatch does not belong to this turn.
+   *
+   * The factory is called at `chat()`/`chatStream()` entry, so the guard it
+   * returns can close over who the turn actually belongs to and compare that
+   * against whatever the restored context reports at dispatch time. Returning
+   * `undefined` means "no guard for this turn".
+   *
+   * Wired in production by `buildOrchestratorForAgent` from the kernel's
+   * `routineTurnOwnerGuard` service — the implementation has to live in the
+   * application layer because the store it reads (`routineTurnContext`) does,
+   * which is why this stays a seam rather than a default. Left unset (unit
+   * tests, hosts that publish no such service) the context is restored but not
+   * cross-checked.
+   */
+  readonly turnOwnerGuard?: (input: ChatTurnInput) => (() => void) | undefined;
+
   readonly cliBinary?: string;
   readonly model?: string;
   readonly systemPrompt?: string;
   readonly buildEnv?: () => NodeJS.ProcessEnv;
   readonly spawnFn?: typeof nodeSpawn;
+  /** Overrides {@link CLI_SPAWN_TIMEOUT_ENV_KEY} and the default (OM-104). */
   readonly spawnTimeoutMs?: number;
   readonly idleTimeoutMs?: number;
   readonly maxConcurrentTurns?: number;
+  /**
+   * OM-85 — resolves the installed CLI's version before each spawn so the
+   * gate can leave `--restricted` off a CLI that would reject it. Defaults to
+   * a cached `claude --version` probe; a test injects a constant.
+   */
+  readonly resolveCliVersion?: (binary: string) => Promise<string | undefined>;
+  /** OM-94 — where spawn, exit code and first stderr line are recorded. */
+  readonly logger?: CliSpawnLogger;
+  /**
+   * Issue #1102 — drain the interactive-card state a kernel-native tool left on
+   * the orchestrator this turn (choice card, follow-up chips, calendar slot
+   * picker, OAuth-consent flag), so it can be attached to the `done` event and
+   * actually render in web chat and channels. The CLI owns its own loop, so it
+   * calls this once after the subprocess terminates. Wired by
+   * `buildOrchestratorForAgent` to `orchestrator.drainCliTurnCards()`; left
+   * unset (unit tests, tool-less hosts) the CLI simply surfaces no cards, as
+   * before.
+   */
+  readonly drainTurnCards?: () => CliTurnCards;
+}
+
+/**
+ * Issue #1102 — the per-turn interactive cards a subscription-CLI turn can
+ * produce, mirrored onto the `done` event. All optional: a turn that scheduled
+ * nothing drains an empty object.
+ */
+export interface CliTurnCards {
+  readonly pendingUserChoice?: PendingUserChoice;
+  readonly followUpOptions?: FollowUpOption[];
+  readonly pendingSlotCard?: PendingSlotCard;
+  readonly pendingOAuthConsent?: boolean;
+}
+
+/**
+ * The caller's async context, captured at the public entry point of a turn,
+ * plus the optional owner guard built for that same turn (#1016).
+ */
+interface CapturedTurnContext {
+  readonly runInTurnContext: <T>(fn: () => T) => T;
+  readonly assertTurnOwner?: () => void;
 }
 
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
@@ -414,8 +648,24 @@ export class CliChatAgent implements ChatAgent {
     );
   }
 
+  /**
+   * #1016 — capture the caller's async context HERE, at the public entry, not
+   * inside `runLifecycle`.
+   *
+   * `runLifecycle` is an async generator: its body does not run when the
+   * generator is created, it runs when someone calls the first `.next()`. A
+   * snapshot taken in the body therefore freezes whatever context is ambient
+   * at first iteration, which is not necessarily the context `chat()` was
+   * called in. Taking it here binds the snapshot to the actual caller.
+   */
+  private captureTurnContext(input: ChatTurnInput): CapturedTurnContext {
+    const runInTurnContext = AsyncLocalStorage.snapshot();
+    const guard = this.deps.turnOwnerGuard?.(input);
+    return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
+  }
+
   public async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
       const step = await lifecycle.next();
@@ -435,12 +685,32 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
-  public async *chatStream(
+  /**
+   * Deliberately NOT an async generator (#1016). An `async *` method's body
+   * runs on the first `.next()`, so capturing the async context inside it
+   * would snapshot whoever iterates rather than whoever called. This plain
+   * method captures synchronously at call time and hands the result to the
+   * generator below.
+   */
+  public chatStream(
     input: ChatTurnInput,
+    observer?: ChatStreamObserver,
+  ): AsyncGenerator<ChatStreamEvent> {
+    return this.streamTurn(input, this.captureTurnContext(input), observer);
+  }
+
+  private async *streamTurn(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
     _observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    const lifecycle = this.runLifecycle(input);
+    const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
+    // #1102 — the interactive cards are drained exactly once per turn: on the
+    // `done` event when there is one, otherwise in `finally` (so an errored or
+    // aborted turn still clears the tool state and cannot leak a stale card
+    // into the next turn).
+    let cardsDrained = false;
 
     try {
       while (true) {
@@ -450,7 +720,12 @@ export class CliChatAgent implements ChatAgent {
           return;
         }
 
-        yield step.value;
+        if (step.value.type === 'done' && !cardsDrained) {
+          cardsDrained = true;
+          yield { ...step.value, ...(this.deps.drainTurnCards?.() ?? {}) };
+        } else {
+          yield step.value;
+        }
       }
     } catch (error) {
       yield {
@@ -458,6 +733,11 @@ export class CliChatAgent implements ChatAgent {
         message: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      if (!cardsDrained) {
+        // Clear any card state a failed turn left behind; the result is
+        // discarded (there is no `done` event to carry it).
+        this.deps.drainTurnCards?.();
+      }
       if (!finished) {
         await lifecycle.return(undefined);
       }
@@ -496,6 +776,7 @@ export class CliChatAgent implements ChatAgent {
 
   private async *runLifecycle(
     input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
   ): AsyncGenerator<ChatStreamEvent, StreamJsonParser | undefined> {
     const parser = new StreamJsonParser();
     const tools = this.deps.dispatch.listDispatchableToolSpecs();
@@ -506,6 +787,8 @@ export class CliChatAgent implements ChatAgent {
         readonly dispatch: ToolDispatchService;
         readonly bearer: string;
         readonly tools: readonly DispatchableToolSpec[];
+        readonly runInTurnContext?: <T>(fn: () => T) => T;
+        readonly assertTurnOwner?: () => void;
       }) => new LoopbackMcpServer(serverDeps));
 
     let server: LoopbackMcpServer | undefined;
@@ -587,6 +870,12 @@ export class CliChatAgent implements ChatAgent {
         dispatch: this.deps.dispatch,
         bearer,
         tools,
+        // #1016 — the context captured at the public entry, not whatever is
+        // ambient here in the generator body.
+        runInTurnContext: turnContext.runInTurnContext,
+        ...(turnContext.assertTurnOwner
+          ? { assertTurnOwner: turnContext.assertTurnOwner }
+          : {}),
       });
       handle = await server.start();
 
@@ -594,30 +883,66 @@ export class CliChatAgent implements ChatAgent {
       const configPath = join(tempDir, 'mcp-config.json');
       await writeFile(configPath, this.buildMcpConfig(handle.url, bearer), { mode: 0o600 });
 
+      const cliBinary = this.deps.cliBinary ?? DEFAULT_CLI_BINARY;
+      // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
+      const cliVersion = await (this.deps.resolveCliVersion ?? resolveCliVersion)(cliBinary);
+      const spawnTimeoutMs = resolveCliSpawnTimeoutMs(this.deps.spawnTimeoutMs);
+      const logger = this.deps.logger ?? consoleSpawnLogger;
+
       const argv = [
         '-p',
         '--output-format',
         'stream-json',
         '--include-partial-messages',
         '--verbose',
-        '--strict-mcp-config',
-        '--mcp-config',
-        configPath,
-        '--allowedTools',
-        'mcp__omadia__*',
+        // OM-81 (#991, #1007, #1014) — the permission boundary, defined once in
+        // `cliSpawnGate.ts` and shared with the completion adapter so a spawn
+        // site cannot carry half of it. See that module for what each flag is
+        // for and for what these flags do NOT close.
+        ...buildCliToolGateArgv({
+          mcpConfigPath: configPath,
+          allowedTools: `${OMADIA_MCP_TOOL_PREFIX}*`,
+          ...(cliVersion !== undefined ? { cliVersion } : {}),
+        }),
         '--model',
         this.deps.model ?? DEFAULT_MODEL,
+        // OM-83 (#992) — replace, do not append. With `--append-system-prompt`
+        // the CLI's own identity stayed primary and the model told users it
+        // was "Claude Code in the middleware repo", sending them out of the
+        // omadia chat they were already in.
+        '--system-prompt',
+        composeCliSystemPrompt(
+          this.deps.systemPrompt,
+          // #1102 — derive the honesty sentence from what THIS turn actually
+          // advertised, so it names only genuinely-absent capabilities.
+          absentKernelCapabilities(tools.map((tool) => tool.name)),
+        ),
       ];
 
-      if (typeof this.deps.systemPrompt === 'string' && this.deps.systemPrompt.length > 0) {
-        argv.push('--append-system-prompt', this.deps.systemPrompt);
-      }
+      // OM-94 — the argv shape without the prompt (which travels on stdin) and
+      // without the deny list (104 names that never change between turns).
+      logger.info('spawning claude CLI', {
+        binary: cliBinary,
+        cliVersion: cliVersion ?? 'unknown',
+        restrictedFlag: argv.includes('--restricted'),
+        model: this.deps.model ?? DEFAULT_MODEL,
+        spawnTimeoutMs,
+        idleTimeoutMs: this.deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
+        tools: tools.length,
+      });
 
       child = (this.deps.spawnFn ?? nodeSpawn)(
-        this.deps.cliBinary ?? DEFAULT_CLI_BINARY,
+        cliBinary,
         argv,
         {
           env: this.buildEnv(),
+          // #1014 — the CLI hardcodes CLAUDE.md / AGENTS.md discovery and only
+          // `--bare` skips it (and `--bare` never reads OAuth, so it would
+          // break the subscription login). Without a cwd the child inherited
+          // the middleware process's directory, so any CLAUDE.md at or above
+          // it was injected into a turn that also carries end-user text. The
+          // temp dir holds nothing but the mcp-config we just wrote.
+          cwd: tempDir,
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       ) as ChildProcessWithoutNullStreams;
@@ -661,10 +986,18 @@ export class CliChatAgent implements ChatAgent {
       });
 
       overallTimer = setTimeout(() => {
+        logger.warn('claude CLI turn timed out', { spawnTimeoutMs, stderr: firstLine(stderr) });
         failRuntime(
-          new Error(`CLI timed out after ${this.deps.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS}ms`),
+          new Error(
+            // OM-100b — `lastTurnOutcome.classifyTurnError` matches this
+            // wording to tell a budget overrun apart from a generic failure.
+            // Changing "CLI timed out after <n>ms" degrades that card to a
+            // nameless error; change both together.
+            `CLI timed out after ${spawnTimeoutMs}ms ` +
+              `(raise ${CLI_SPAWN_TIMEOUT_ENV_KEY} for turns that run several tools)`,
+          ),
         );
-      }, this.deps.spawnTimeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS);
+      }, spawnTimeoutMs);
 
       resetIdleTimer();
 
@@ -706,10 +1039,25 @@ export class CliChatAgent implements ChatAgent {
       }
 
       if (closeInfo?.signal !== null && closeInfo?.signal !== undefined) {
+        logger.warn('claude CLI exited with signal', {
+          signal: closeInfo.signal,
+          stderr: firstLine(stderr),
+        });
         throw new Error(`CLI exited with signal ${closeInfo.signal}`);
       }
 
       if ((closeInfo?.code ?? 0) !== 0) {
+        // OM-94 — this is the line the log file never had.
+        logger.warn('claude CLI exited with non-zero code', {
+          code: closeInfo?.code,
+          cliVersion: cliVersion ?? 'unknown',
+          stderr: firstLine(stderr),
+        });
+        // OM-85 — say what to do, not just what happened.
+        const incompatible = classifyUnknownOptionFailure(stderr, cliVersion);
+        if (incompatible !== undefined) {
+          throw incompatible;
+        }
         const stderrSuffix = stderr.trim().length > 0 ? `: ${stderr.trim()}` : '';
         throw new Error(`CLI exited with code ${String(closeInfo?.code)}${stderrSuffix}`);
       }
@@ -717,6 +1065,15 @@ export class CliChatAgent implements ChatAgent {
       if (!parser.sawTerminalResult()) {
         throw new Error('claude-cli exited without a terminal result line');
       }
+
+      // OM-103 — the CLI has reported its token usage on every terminal result
+      // line since the parser was written, and nothing ever read it. That is
+      // why ADMIN → Nutzung & Kosten showed "0 Calls" after a dozen
+      // subscription turns: the ledger only had capture points on the metered
+      // API path. `costUsd: 0` is not a placeholder — a subscription turn
+      // genuinely costs nothing per call — and the CLI's own `total_cost_usd`
+      // is kept beside it as the informational reference.
+      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage());
 
       return parser;
     } finally {
@@ -733,14 +1090,13 @@ export class CliChatAgent implements ChatAgent {
         this.turnSemaphore.release();
       }
 
-      if (server !== undefined) {
-        try {
-          await server.stop();
-        } catch {
-          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
-        }
-      }
-
+      // #1015 — kill the child BEFORE stopping the loopback server, not after.
+      // `stop()` waits for live connections to end; on the timeout/abort path
+      // the child is still running and may hold a keep-alive socket to that
+      // server, so awaiting `stop()` first could block indefinitely and the
+      // SIGTERM/SIGKILL escalation below would never run. The turn then hung
+      // holding its semaphore permit while a bearer-gated server stayed
+      // listening past its intended window.
       if (child !== undefined) {
         // Bind to a non-undefined local so the SIGKILL closure below keeps the
         // narrowed type — TS cannot prove the outer `let child` is still defined
@@ -770,6 +1126,14 @@ export class CliChatAgent implements ChatAgent {
         }
       }
 
+      if (server !== undefined) {
+        try {
+          await server.stop();
+        } catch {
+          // Stop errors are best-effort cleanup only; preserving the primary failure is more useful.
+        }
+      }
+
       if (tempDir !== undefined) {
         await rm(tempDir, { recursive: true, force: true });
       }
@@ -777,14 +1141,12 @@ export class CliChatAgent implements ChatAgent {
   }
 
   private buildEnv(): NodeJS.ProcessEnv {
-    const env = this.deps.buildEnv?.() ?? { ...process.env };
-
-    // Subscription-authenticated CLI runs must not inherit API-key or proxy overrides from the
-    // host process, otherwise tests become flaky and production can silently switch auth modes.
-    for (const key of CLI_ENV_SCRUB_KEYS) {
-      delete env[key];
-    }
-
-    return env;
+    // #1014 — allowlist, not scrub list. The scrub list removed credentials and
+    // billing switches but passed everything else through, including
+    // `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and
+    // the `CLAUDE_CODE_*` feature switches. The policy applies to an injected
+    // `buildEnv` too, so a test cannot prove a laxer environment than
+    // production runs with.
+    return buildGatedCliEnv(this.deps.buildEnv?.() ?? process.env);
   }
 }

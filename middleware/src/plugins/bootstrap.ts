@@ -10,7 +10,10 @@ import { parseCapabilityRef } from '@omadia/plugin-api';
 
 import type { Config } from '../config.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
-import { findCapabilityProvidersInCatalog } from './capabilityResolver.js';
+import {
+  findActiveProviderCollision,
+  findCapabilityProvidersInCatalog,
+} from './capabilityResolver.js';
 import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -19,6 +22,8 @@ import type { UploadedPackageStore } from './uploadedPackageStore.js';
 const DIAGRAMS_TOOL_ID = '@omadia/diagrams';
 const OFFICE_TOOL_ID = '@omadia/plugin-office';
 const EMBEDDINGS_TOOL_ID = '@omadia/embeddings';
+/** #1041 — the keyless (in-process) embedder; the OTHER `embeddingClient@1`. */
+const EMBEDDINGS_LOCAL_ID = '@omadia/embedding-adapter-local';
 const MEMORY_TOOL_ID = '@omadia/memory';
 const MEMORY_POSTGRES_ID = '@omadia/memory-postgres';
 const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
@@ -28,14 +33,12 @@ const UI_ORCHESTRATOR_TOOL_ID = '@omadia/ui-orchestrator';
 /** Providers whose API keys are mirrored into the canvas plugin's scope. */
 const MIRRORED_PROVIDERS = ['anthropic', 'openai', 'mistral'] as const;
 
-// S+11-2b: KG providers are operator-managed (RequiresWizard / install UI).
-// Both sibling plugins declare `provides: knowledgeGraph@1` —
-// mutual exclusion, only one may live in installed.json at a time.
-// `bootstrapKnowledgeGraphFromEnv` picks one based on DATABASE_URL;
-// the catch-all `bootstrapBuiltInPackages` explicitly skips both sibling IDs
-// so it does not register the other provider with `config={}` alongside the
-// chosen one (which would blow up on the first activate step with a
-// "duplicate-provider" throw from `ctx.services.provide`).
+// S+11-2b / OM-87: KG providers are operator-managed (RequiresWizard / install
+// UI); `bootstrapKnowledgeGraphFromEnv` handles the initial backend selection.
+// This list is the opt-in policy, including when no provider is active: the
+// catch-all must not make that selection with `config={}`. Capability safety
+// belongs to its generic `findActiveProviderCollision` check, which applies to
+// every auto-install candidate, not to a list of known provider IDs (#1053).
 //
 // The legacy plugin ID `de.byte5.tool.knowledge-graph` (now a deprecated
 // shell, S+11-2b) is skipped by the catch-all too — `bootstrapKnowledgeGraphFromEnv`
@@ -50,16 +53,16 @@ const KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
 ]);
 
 /**
- * Both memoryStore providers — `@omadia/memory` (inmemory, DB-less fallback)
+ * OM-87: Both memoryStore providers — `@omadia/memory` (inmemory, DB-less fallback)
  * and `@omadia/memory-postgres` (Postgres, sharp default when DATABASE_URL is
  * set) — declare `provides:
  * memoryStore@1` (mutual exclusion). `bootstrapMemoryFromEnv` is the SOLE
  * authoritative installer for them: it selects the backend, installs the
- * chosen provider, and removes the other. The built-in catch-all must skip
- * BOTH — otherwise, when Postgres is selected, the catch-all would re-install
- * the just-removed `@omadia/memory` (it sees it as "not registered"), leaving
- * both active and crashing capability resolution with a duplicate-provider
- * error at activate time.
+ * chosen provider, and removes the other. The built-in catch-all skips BOTH
+ * as opt-in policy: backend choice belongs to this installer and the operator
+ * UI, even when neither provider is active. Its generic collision check is
+ * the safety net for all capabilities (#1053); this list does not implement
+ * a second, memoryStore-specific collision rule.
  */
 const MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL = new Set<string>([
   MEMORY_TOOL_ID,
@@ -502,6 +505,36 @@ export async function bootstrapEmbeddingsFromEnv(
 ): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
+  // Mutual exclusion for `embeddingClient@1` — the same rule memoryStore and
+  // knowledgeGraph already have, and for the same reason: the capability
+  // resolver THROWS on two active providers, and a throw there is a fatal
+  // startup error, not a degraded plugin. Before #1041 there was only one
+  // embedder; now the keyless in-process one (`@omadia/embedding-adapter-local`)
+  // is an extension built-in without a secret field, which is exactly the shape
+  // the catch-all auto-installs — next to an already-installed Ollama adapter.
+  //
+  // A both-active state is not a valid operator state, so self-heal it here,
+  // BEFORE the catch-all: keep the Ollama adapter when it is actually
+  // configured (a base URL from env or from the operator), otherwise keep the
+  // keyless one. The removed side stays installable from the admin page —
+  // `findActiveProviderCollision` refuses the install with a clear 409 while
+  // the other is active, which is the operator-facing form of this rule.
+  const ollamaEntry = deps.registry.get(EMBEDDINGS_TOOL_ID);
+  const localEntry = deps.registry.get(EMBEDDINGS_LOCAL_ID);
+  if (
+    ollamaEntry?.status === 'active' &&
+    localEntry?.status === 'active'
+  ) {
+    const ollamaConfigured =
+      Boolean(deps.config.OLLAMA_BASE_URL) ||
+      typeof ollamaEntry.config?.['ollama_base_url'] === 'string';
+    const loserId = ollamaConfigured ? EMBEDDINGS_LOCAL_ID : EMBEDDINGS_TOOL_ID;
+    await deps.registry.remove(loserId);
+    log(
+      `[bootstrap] ⚐ both ${EMBEDDINGS_TOOL_ID} and ${EMBEDDINGS_LOCAL_ID} were active — removed ${loserId} (only one embeddingClient@1 provider may be active; ${ollamaConfigured ? 'Ollama is configured' : 'Ollama has no base URL'})`,
+    );
+  }
+
   if (deps.registry.has(EMBEDDINGS_TOOL_ID)) {
     const entry = deps.registry.get(EMBEDDINGS_TOOL_ID);
     if (entry && deps.config.OLLAMA_BASE_URL) {
@@ -542,6 +575,21 @@ export async function bootstrapEmbeddingsFromEnv(
   if (!catalogEntry) {
     log(
       `[bootstrap] cannot migrate ${EMBEDDINGS_TOOL_ID}: not in plugin catalog (built-in package not picked up?)`,
+    );
+    return;
+  }
+
+  // Same rule as the catch-all below: an operator who runs on the keyless
+  // adapter must not wake up to a second, env-driven Ollama install next to
+  // it — that is the both-active state this function just learned to heal.
+  const collision = findActiveProviderCollision(
+    EMBEDDINGS_TOOL_ID,
+    deps.catalog,
+    deps.registry,
+  );
+  if (collision) {
+    log(
+      `[bootstrap] ${EMBEDDINGS_TOOL_ID} not auto-installed — '${collision.capability}' is already provided by active ${collision.ownerId}`,
     );
     return;
   }
@@ -1227,27 +1275,25 @@ export async function bootstrapBuiltInPackages(
   const store = deps.builtInStore;
   if (!store) return;
 
-  // Note: memoryStore mutual exclusion (and self-heal of a prior both-active
-  // state) is handled authoritatively by `bootstrapMemoryFromEnv`, which runs
-  // before this catch-all and removes the non-selected provider. Here we only
-  // ensure the catch-all never auto-installs the opt-in Postgres provider
-  // (see the skip below).
+  // OM-87: `bootstrapMemoryFromEnv` owns backend selection and self-healing
+  // before this catch-all. Both skip-lists below preserve that operator-managed
+  // opt-in policy; every remaining auto-install candidate passes through the
+  // same generic capability collision check before registration.
 
   for (const pkg of store.list()) {
     if (deps.registry.has(pkg.id)) continue;
-    // S+11-2b: KG providers are operator-managed (mutual exclusion + Wizard);
-    // `bootstrapKnowledgeGraphFromEnv` has already installed the matching
-    // provider. The catch-all must not register the OTHER one alongside —
-    // otherwise duplicate-provider throw at activate time.
+    // S+11-2b / OM-87: The Wizard and `bootstrapKnowledgeGraphFromEnv` own KG
+    // selection. This opt-in policy applies even without an active provider;
+    // the generic check below owns capability collision safety.
     if (KNOWLEDGE_GRAPH_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
       log(
         `[bootstrap] built-in ${pkg.id} skipped — KG-Provider sind operator-managed (siehe bootstrapKnowledgeGraphFromEnv + RequiresWizard)`,
       );
       continue;
     }
-    // Opt-in memoryStore alternative: the selected provider is already
-    // installed by bootstrapMemoryFromEnv; auto-installing the other one
-    // too would collide on memoryStore@1. Operator opts in via UI.
+    // OM-87: Memory backend selection belongs to `bootstrapMemoryFromEnv`
+    // and the operator UI. Both alternatives stay outside catch-all policy
+    // even when the generic collision check would allow installation.
     if (MEMORY_STORE_PROVIDER_IDS_SKIP_AUTO_INSTALL.has(pkg.id)) {
       log(
         `[bootstrap] built-in ${pkg.id} skipped — opt-in memoryStore alternative (operator installs via UI for the inmemory→Postgres cutover)`,
@@ -1271,6 +1317,24 @@ export async function bootstrapBuiltInPackages(
     if (hasRequiredSecret) {
       log(
         `[bootstrap] built-in ${pkg.id} needs setup (required secret field) — skipping auto-install`,
+      );
+      continue;
+    }
+
+    // OM-87 / #1053: This is the sole capability-collision safety net for
+    // auto-install, reached by every built-in that survives the policy/setup
+    // guards above. The skip-lists express opt-in policy, not collision rules.
+    // New providers (the keyless embedder of #1041 was the first to hit this)
+    // therefore need no new ID-specific guard. The admin install path runs
+    // the same check and answers 409 until the active provider is uninstalled.
+    const collision = findActiveProviderCollision(
+      pkg.id,
+      deps.catalog,
+      deps.registry,
+    );
+    if (collision) {
+      log(
+        `[bootstrap] built-in ${pkg.id} skipped — '${collision.capability}' is already provided by active ${collision.ownerId} (install it from the admin page after uninstalling the other)`,
       );
       continue;
     }
