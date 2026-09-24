@@ -57,13 +57,51 @@ export interface AskObserver {
 }
 
 /**
+ * Per-call options for `ask()`. Threaded as the optional third argument
+ * so existing callers (`subAgent.ask(question)` / `subAgent.ask(q, observer)`)
+ * keep working unchanged.
+ */
+export interface AskOptions {
+  /**
+   * Name of a tool that *must* be invoked at least once during this turn.
+   * Catches the OB-31 "promise without delivery" pattern (model emits
+   * Build-Ankündigung text, ends turn, never calls `fill_slot`).
+   * Phase-detection (when to set this) lives in the calling agent — the
+   * sub-agent stays domain-agnostic. How it is enforced depends on the
+   * implementation; see {@link Askable}.
+   */
+  expectedTurnToolUse?: string;
+  /**
+   * Cap on escalations triggered by `expectedTurnToolUse`. Default 1. Bound
+   * exists so a stubbornly mute model cannot generate an infinite
+   * escalation loop. After the budget is exhausted we return whatever text
+   * the model gave us.
+   */
+  maxEscalations?: number;
+}
+
+/**
  * Any object that can answer a natural-language question. Both the local
  * sub-agents and any future remote-agent client satisfy this — the orchestrator
- * doesn't care which. `observer` is optional so remote agents without
- * introspection support remain compatible.
+ * doesn't care which. `observer` and `options` are optional so remote agents
+ * without introspection support remain compatible.
+ *
+ * `options.expectedTurnToolUse` is enforced per implementation:
+ * - `LocalSubAgent` (API path) forces the call: when the model would end the
+ *   turn without it, it runs up to `maxEscalations` extra iterations with
+ *   `tool_choice: { type: 'tool', name }` plus a reminder message.
+ * - `createCliSubAgent` (subscription path, #1072) cannot force anything: the
+ *   `claude` CLI owns the loop and has no `tool_choice`. It checks after the
+ *   turn instead. If the expected tool was not called, it re-prompts EXACTLY
+ *   ONCE with the original question, the first answer and an explicit
+ *   instruction to call the tool (or to say concretely why not), then returns
+ *   that answer whether or not the tool was called — a warning is logged when
+ *   it still was not. `maxEscalations: 0` disables the re-prompt; any value of
+ *   1 or more means one re-prompt. A failing re-prompt fails the whole
+ *   `ask()`, as a failing escalation iteration does in `LocalSubAgent`.
  */
 export interface Askable {
-  ask(question: string, observer?: AskObserver): Promise<string>;
+  ask(question: string, observer?: AskObserver, options?: AskOptions): Promise<string>;
 }
 
 /**
