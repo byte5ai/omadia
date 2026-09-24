@@ -34,9 +34,11 @@ import { PlanProgressCard } from '../_components/chat/PlanProgressCard';
 import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
+import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { Markdown } from '../_components/Markdown';
 import { resetChatSession, steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
+import { parseTurnIncomplete } from '../_lib/turnIncomplete';
 import {
   deriveTitle,
   newSessionId,
@@ -943,7 +945,26 @@ export function MessageRow({
   // <mcp-auth-required> block into the final answer text — strip it from the
   // prose (it renders as the Connect card via McpAuthRequiredList instead).
   const authFromNote = parseMcpAuthRequired(rawNote);
-  const delegatedNote = authFromNote.cleaned;
+  // #1094 — a DEGRADED turn: the tools it names really did commit, but the
+  // turn threw before any answer existed. The `done` event carries the facts
+  // (`message.degradedTurn`); parsing the answer covers a session restored
+  // from the server-side mirror, where only the text survives. Either way the
+  // machine marker is stripped here — the warning card says it in the user's
+  // language, instead of the hardcoded English pseudo-answer this replaced.
+  const incompleteFromText = parseTurnIncomplete(authFromNote.cleaned);
+  const degradedTurn =
+    message.degradedTurn ??
+    (incompleteFromText
+      ? {
+          committedTools: incompleteFromText.committedTools,
+          ...(incompleteFromText.correlationId
+            ? { correlationId: incompleteFromText.correlationId }
+            : {}),
+        }
+      : undefined);
+  const delegatedNote = incompleteFromText
+    ? incompleteFromText.cleaned
+    : authFromNote.cleaned;
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -957,7 +978,11 @@ export function MessageRow({
             ? 'bg-[color:var(--bg-inverse)] text-[color:var(--fg-on-dark)]'
             : message.error
               ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] ring-1 ring-[color:var(--danger-edge)]'
-              : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
+              : // #1094 — a degraded turn is not an error, but it must not
+                // look like an ordinary answer either.
+                degradedTurn
+                ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
+                : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
       >
         {isUser ? (
@@ -987,6 +1012,15 @@ export function MessageRow({
             )}
             {message.delegatedAnswer && (
               <DelegatedAnswerCard answer={message.delegatedAnswer} />
+            )}
+            {degradedTurn && (
+              <TurnIncompleteNotice
+                committedTools={degradedTurn.committedTools}
+                hasAnswerText={delegatedNote.length > 0}
+                {...(degradedTurn.correlationId
+                  ? { correlationId: degradedTurn.correlationId }
+                  : {})}
+              />
             )}
             {delegatedNote.length > 0 ? (
               /* §2.7: agent narration renders in the prose register

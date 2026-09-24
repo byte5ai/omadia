@@ -163,3 +163,79 @@ describe('applyStreamEvent — foreign tool calls (#1008)', () => {
     expect(next.messages[1]?.tools?.[0]?.output).toBe('silviolange');
   });
 });
+
+/**
+ * #1094 — a turn that throws after a tool already committed arrives as `done`
+ * (an `error` would make the next turn re-invoke the committed tool, #506).
+ * The fold has to keep that turn distinguishable from a real answer, and the
+ * machine marker the orchestrator sends in `answer` must never reach the
+ * bubble — the old behavior was an English pseudo-success rendered as prose.
+ */
+describe('applyStreamEvent — degraded turns (#1094)', () => {
+  const MARKER =
+    '<turn-incomplete tools="memory,manage_widget" ref="turn-token-1"></turn-incomplete>';
+
+  it('records the degraded state from the live event', () => {
+    // The live shape: the orchestrator expands the marker into the localized
+    // notice at the delivery boundary, so `answer` is prose and the machine
+    // truth rides the event fields.
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer:
+        'Dieser Turn wurde nicht abgeschlossen. Diese Aktionen waren bereits ausgeführt und sind wirksam: memory, manage_widget.\n\nDiese Antwort wurde von einem KI-System erzeugt.',
+      toolCalls: 2,
+      iterations: 2,
+      degraded: true,
+      committedTools: ['memory', 'manage_widget'],
+      correlationId: 'turn-token-1',
+    });
+
+    const next = applied(mutateById, session('bg'));
+    const folded = next.messages[1];
+    expect(folded?.degradedTurn?.committedTools).toEqual([
+      'memory',
+      'manage_widget',
+    ]);
+    expect(folded?.degradedTurn?.correlationId).toBe('turn-token-1');
+    expect(folded?.content).toContain('Dieser Turn wurde nicht abgeschlossen');
+    // A degraded turn is not an error — the bubble must not flip to the
+    // failure styling, which would contradict the committed side effect.
+    expect(folded?.error).toBeUndefined();
+  });
+
+  it('recovers the degraded state from the persisted marker (server-side mirror)', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: MARKER,
+      toolCalls: 2,
+      iterations: 2,
+    });
+
+    const folded = applied(mutateById, session('bg')).messages[1];
+    expect(folded?.degradedTurn?.committedTools).toEqual([
+      'memory',
+      'manage_widget',
+    ]);
+    expect(folded?.degradedTurn?.correlationId).toBe('turn-token-1');
+    expect(folded?.content).toBe('');
+  });
+
+  it('leaves an ordinary answer untouched', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'the authoritative answer',
+      toolCalls: 1,
+      iterations: 1,
+    });
+
+    const folded = applied(mutateById, session('bg')).messages[1];
+    expect(folded?.degradedTurn).toBeUndefined();
+    expect(folded?.content).toBe('the authoritative answer');
+  });
+});

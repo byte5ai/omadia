@@ -172,6 +172,11 @@ export class VerifierService implements ChatAgent {
         // fact claims to verify. Suppress the verifier pass entirely so the
         // Smart-Card doesn't get adorned with a stray badge.
         if (event.pendingUserChoice) skipVerification = true;
+        // #1094 — same reasoning for a degraded turn: its `answer` is the
+        // composed turn-incomplete notice (or a server-rendered v4 answer),
+        // not model prose, so there is nothing to fact-check. Without this the
+        // verifier would stamp a "verified" badge onto a turn that failed.
+        if (event.degraded) skipVerification = true;
       }
     }
 

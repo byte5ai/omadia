@@ -192,3 +192,83 @@ describe('POST /api/v1/datasets', () => {
     await other.close();
   });
 });
+
+/**
+ * #1093 — the id comes straight from the URL path and used to be bound
+ * against the `uuid` column `datasets.id`, so `GET /api/v1/datasets/foo`
+ * answered **500 `dataset.internal_error`** with the raw Postgres text
+ * (`invalid input syntax for type uuid: "foo"`) in the body, where a 404 is
+ * the correct answer. `NeonKnowledgeGraph` now rejects a non-uuid id before
+ * the query (see `neonDatasetIdGuard1093.test.ts`); `mapErrorToHttp` keeps a
+ * `22P02` case so any OTHER path into a uuid column cannot leak a 500 + a
+ * database error message either.
+ */
+function pgError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+async function makeThrowingHarness(err: unknown): Promise<Harness> {
+  const graph = {
+    getDataset: (): Promise<never> => Promise.reject(err),
+    queryDatasetRows: (): Promise<never> => Promise.reject(err),
+    deleteDataset: (): Promise<never> => Promise.reject(err),
+  } as unknown as InMemoryKnowledgeGraph;
+  return makeHarness('user-1', graph);
+}
+
+describe('/api/v1/datasets/:id — non-uuid id (#1093)', () => {
+  it('404s (not 500) and leaks no database text when the backend reports 22P02', async () => {
+    const h = await makeThrowingHarness(
+      pgError('22P02', 'invalid input syntax for type uuid: "ds_0000"'),
+    );
+    try {
+      for (const [path, init] of [
+        ['/ds_0000', undefined],
+        ['/ds_0000/rows', undefined],
+        ['/ds_0000', { method: 'DELETE' }],
+      ] as const) {
+        const res = await fetch(`${h.baseUrl}${path}`, init);
+        assert.equal(res.status, 404, path);
+        const body = (await res.json()) as { code: string; message?: string };
+        assert.equal(body.code, 'dataset.not_found', path);
+        assert.doesNotMatch(
+          JSON.stringify(body),
+          /invalid input syntax/,
+          `${path} must not echo the database error`,
+        );
+      }
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('does NOT turn a 22P02 on the collection endpoints into a 404', async () => {
+    // There is no path id on `GET /` — a 22P02 there comes from somewhere
+    // else in the handler and is a real server fault, not a missing dataset.
+    const graph = {
+      listDatasets: (): Promise<never> =>
+        Promise.reject(pgError('22P02', 'invalid input syntax for type uuid: "x"')),
+    } as unknown as InMemoryKnowledgeGraph;
+    const h = await makeHarness('user-1', graph);
+    try {
+      const res = await fetch(h.baseUrl);
+      assert.equal(res.status, 500);
+      const body = (await res.json()) as { code: string };
+      assert.equal(body.code, 'dataset.internal_error');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('still 500s for a genuine backend failure', async () => {
+    const h = await makeThrowingHarness(new Error('connection terminated'));
+    try {
+      const res = await fetch(`${h.baseUrl}/11111111-2222-3333-4444-555555555555`);
+      assert.equal(res.status, 500);
+      const body = (await res.json()) as { code: string };
+      assert.equal(body.code, 'dataset.internal_error');
+    } finally {
+      await h.close();
+    }
+  });
+});

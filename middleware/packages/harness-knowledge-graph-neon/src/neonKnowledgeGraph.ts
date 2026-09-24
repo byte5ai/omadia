@@ -106,6 +106,7 @@ import {
   type TurnSearchHit,
   type Visibility,
   type EmbeddingClient,
+  normalizeDatasetUuid,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -462,6 +463,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // #584 WS I — speaker-attributed transcript-ingest turns. Passthrough
         // prop; ordinary Q&A turns never carry it.
         ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
+        // #1096 — session-continuity record: readable through getSession (the
+        // orchestrator's context tail), filtered out of every recall query
+        // below. Written unconditionally, including the `false`: upsert MERGES
+        // properties, so an omitted flag would leave a stale `true` on a turn
+        // that a replay (capture_level=off) or a backfill re-ingests as real
+        // knowledge — invisible to recall for good, with nothing to clear it.
+        tailOnly: turn.tailOnly === true,
       });
       const turnUuid = await this.upsertNode(client, {
         externalId: turnExtId,
@@ -519,7 +527,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // Resolved fresh: the gate can have re-enabled vector writes since this
       // instance was constructed. `embedAndStoreTurn` re-resolves for itself,
       // so this check only avoids scheduling obvious no-op work.
-      if (this.currentEmbeddingClient()) {
+      // #1096 — a tail-only turn is never a recall candidate, so an embedding
+      // for it would be spend with no reader. This is the cost half of the
+      // capture filter's job, kept intact while the session record is not.
+      if (!turn.tailOnly && this.currentEmbeddingClient()) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
@@ -679,11 +690,21 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { datasetId, rowCount: input.rows.length, graphNodeId };
   }
 
+  /**
+   * #1093 — `datasets.id` is a `uuid` column, so a non-uuid id raises
+   * Postgres `22P02` before the id/tenant predicate is evaluated, which no
+   * caller can tell apart from a real failure. An id that cannot address a
+   * row is simply "no row"; the normaliser accepts every spelling Postgres
+   * does, so nothing that used to resolve stops resolving. Validating here
+   * (rather than comparing `id::text = $2`) keeps the primary-key index.
+   */
   private async loadDatasetRow(datasetId: string): Promise<DatasetRow | null> {
+    const id = normalizeDatasetUuid(datasetId);
+    if (id === undefined) return null;
     const result = await this.pool.query<DatasetRow>(
       `SELECT id, name, source_file_name, owner_omadia_user_id, row_count, columns, created_at
        FROM datasets WHERE tenant_id = $1 AND id = $2`,
-      [this.tenantId, datasetId],
+      [this.tenantId, id],
     );
     return result.rows[0] ?? null;
   }
@@ -753,7 +774,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const normalized = validateDatasetQueryOptions(columns, opts);
     const columnTypeByName = new Map(columns.map((c) => [c.name, c.type]));
 
-    const params: unknown[] = [datasetId];
+    // The id as STORED, not as spelled by the caller — `dataset_rows
+    // .dataset_id` is a `uuid` column too, and the caller may have passed an
+    // equivalent-but-different spelling (#1093).
+    const params: unknown[] = [dataset.id];
     const whereClauses = normalized.filters.map((f) => {
       const colType = columnTypeByName.get(f.column);
       if (colType === undefined) {
@@ -822,6 +846,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     datasetId: string,
     actor: AclMutationOptions,
   ): Promise<boolean> {
+    // Same guard as `loadDatasetRow` — this method reads `datasets` by id on
+    // its own rather than going through it. A non-uuid id owns nothing, so
+    // "deleted nothing" is the honest answer.
+    const id = normalizeDatasetUuid(datasetId);
+    if (id === undefined) return false;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -832,7 +861,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       }>(
         `SELECT id, owner_omadia_user_id, graph_node_external_id
          FROM datasets WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-        [this.tenantId, datasetId],
+        [this.tenantId, id],
       );
       const row = result.rows[0];
       if (!row || row.owner_omadia_user_id !== actor.actorOmadiaUserId) {
@@ -1856,6 +1885,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ($2::text IS NULL OR user_id = $2)
         AND ($4::text IS NULL OR scope <> $4)
         AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+        -- #1096 — tail-only turns are conversation, not knowledge: the
+        -- session tail reads them, cross-session recall must not.
+        AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
         -- Per-orchestrator isolation: when a prefix is given, restrict to the
         -- Agent's own scopes. The 'default::' branch also admits legacy
         -- unqualified rows (no '::' separator) so pre-isolation data stays
@@ -1997,6 +2029,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($3::text IS NULL OR user_id = $3)
           AND ($4::text IS NULL OR scope <> $4)
           AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+          -- #1096 — see searchTurns. Tail-only turns carry no embedding
+          -- either, so this only guards the lexical leg.
+          AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
           -- Per-orchestrator isolation (see searchTurns): own prefix, plus
           -- legacy unqualified rows for the default Agent.
           AND ($14::text IS NULL
@@ -5208,6 +5243,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND t.type = 'Turn'
           AND ($3::text IS NULL OR t.user_id = $3)
           AND ($4::text IS NULL OR t.scope <> $4)
+          -- #1096 — see searchTurns. A tail-only ingest writes no entityRefs,
+          -- so this only guards backfilled or legacy CAPTURED edges.
+          AND COALESCE((t.properties->>'tailOnly')::boolean, FALSE) = FALSE
           -- Per-orchestrator isolation: the entity NODE stays global (shared
           -- vocabulary), but entity-anchored recall only surfaces turns of
           -- the active Agent. Closes the cross-agent entity-recall leak.

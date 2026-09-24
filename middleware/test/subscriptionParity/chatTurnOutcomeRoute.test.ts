@@ -32,7 +32,7 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
 const SLUG = 'general';
 
 /** What the fake agent should do on the next turn. */
-let behaviour: 'ok' | 'stream_error' | 'throw' = 'ok';
+let behaviour: 'ok' | 'stream_error' | 'degraded_done' | 'throw' = 'ok';
 
 function scriptedChatAgent(): ChatAgent {
   return {
@@ -50,6 +50,21 @@ function scriptedChatAgent(): ChatAgent {
         yield {
           type: 'error',
           message: 'CLI timed out after 600000ms without finishing',
+        } as unknown as ChatStreamEvent;
+        return;
+      }
+      if (behaviour === 'degraded_done') {
+        // #1094 — a tool committed, then the turn threw. The terminal event is
+        // `done` (#506), but it is marked degraded and carries the cause.
+        yield {
+          type: 'done',
+          answer: 'Dieser Turn wurde nicht abgeschlossen.',
+          toolCalls: 1,
+          iterations: 2,
+          degraded: true,
+          committedTools: ['manage_widget'],
+          correlationId: 'c-1094',
+          runTrace: { status: 'error', error: 'boom: provider hard-failed' },
         } as unknown as ChatStreamEvent;
         return;
       }
@@ -111,6 +126,21 @@ describe('OM-100b — chat routes record the turn outcome', () => {
     const outcome = getLastTurnOutcome();
     assert.equal(outcome?.status, 'failed');
     assert.equal(outcome?.errorCode, 'cli_timeout');
+  });
+
+  it('records a degraded `done` as a failure, naming the tools, token and cause (#1094)', async () => {
+    behaviour = 'degraded_done';
+    await post(`${baseUrl}/chat/stream`);
+
+    const outcome = getLastTurnOutcome();
+    assert.equal(outcome?.status, 'failed', 'a degraded turn recorded as the last turn ok');
+    assert.match(outcome?.errorMessage ?? '', /manage_widget/);
+    assert.match(outcome?.errorMessage ?? '', /correlationId=c-1094/);
+    assert.match(
+      outcome?.errorMessage ?? '',
+      /boom: provider hard-failed/,
+      'the status card drops the cause the run trace carries',
+    );
   });
 
   it('records a thrown turn as a failure on the non-streaming route', async () => {

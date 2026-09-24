@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useState, useTransition } from 'react';
-import { useTranslations } from 'next-intl';
+import { useFormatter, useTranslations } from 'next-intl';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, Check, Pencil, Trash2, Undo2, X } from 'lucide-react';
@@ -39,6 +39,7 @@ function modelShortLabel(id: BuilderModelId): string {
 
 export function DraftRow({ draft, deleted = false }: DraftRowProps): React.ReactElement {
   const t = useTranslations('builder.drafts.row');
+  const format = useFormatter();
   const router = useRouter();
   const statusLabel: Record<DraftSummary['status'], string> = {
     draft: t('status.draft'),
@@ -189,7 +190,7 @@ export function DraftRow({ draft, deleted = false }: DraftRowProps): React.React
             {modelShortLabel(draft.codegenModel)}
           </span>
           <span className="font-mono-num">
-            {t('lastUpdated', { relative: formatRelative(draft.updatedAt, t) })}
+            {t('lastUpdated', { relative: formatRelative(draft.updatedAt, t, format) })}
           </span>
           {draft.publishedAgentId ? (
             <span className="font-mono-num text-[color:var(--fg-subtle)]">
@@ -259,6 +260,7 @@ function humanizeError(err: unknown): string {
 function formatRelative(
   timestamp: number,
   t: ReturnType<typeof useTranslations<'builder.drafts.row'>>,
+  format: ReturnType<typeof useFormatter>,
 ): string {
   const diffMs = Date.now() - timestamp;
   const mins = Math.floor(diffMs / 60_000);
@@ -268,7 +270,11 @@ function formatRelative(
   if (hours < 24) return t('relative.hours', { count: hours });
   const days = Math.floor(hours / 24);
   if (days < 7) return t('relative.days', { count: days });
-  return new Date(timestamp).toLocaleDateString('de-DE', {
+  // #1091 / #679-I6: this was a `toLocaleDateString` with a hardcoded German
+  // locale tag — a German-formatted date inside the English UI, in the
+  // machine's own zone, so neither the language switcher nor the operator's
+  // time zone reached this one line.
+  return format.dateTime(new Date(timestamp), {
     day: '2-digit',
     month: 'short',
     year: 'numeric',

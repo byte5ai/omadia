@@ -2,7 +2,12 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { NextIntlClientProvider } from 'next-intl';
-import { getLocale, getMessages, getTranslations } from 'next-intl/server';
+import {
+  getLocale,
+  getMessages,
+  getTimeZone,
+  getTranslations,
+} from 'next-intl/server';
 
 import { AuthBadge } from './_components/AuthBadge';
 import { CreateIssueButton } from './_components/CreateIssueButton';
@@ -10,6 +15,7 @@ import { LocaleSwitcher } from './_components/LocaleSwitcher';
 import { Nav } from './_components/Nav';
 import { ThemeControls } from './_components/ThemeControls';
 import { SessionWatcher } from './_components/SessionWatcher';
+import { TimeZoneSync } from './_components/TimeZoneSync';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { DesktopUiReady } from './_components/DesktopUiReady';
 import { StreamRunner } from './_components/StreamRunner';
@@ -57,6 +63,10 @@ export default async function RootLayout({
 }): Promise<React.ReactElement> {
   const locale = await getLocale();
   const messages = await getMessages();
+  // The zone this response was rendered in (issue #1091). Stamped onto <html>
+  // like `data-palette` so `TimeZoneSync` can tell whether the page in front of
+  // the operator is already correct, and skip the refresh when it is.
+  const timeZone = await getTimeZone();
   const t = await getTranslations('layout');
   const jar = await cookies();
   // Plugin-contributed menu entries, resolved for this locale server-side so
@@ -70,6 +80,7 @@ export default async function RootLayout({
       lang={locale}
       className={fontVariables}
       data-palette={palette}
+      data-timezone={timeZone}
       {...(theme ? { 'data-theme': theme } : {})}
       suppressHydrationWarning
     >
@@ -117,6 +128,10 @@ export default async function RootLayout({
                   Background-stream state surfaces in-context on the chat tab
                   (issue #286, Lume §7.4/§7.6), not in a floating toast. */}
               <StreamRunner />
+              {/* Headless — mirrors the browser's IANA zone into a cookie so
+                  the RSC request config renders timestamps in the operator's
+                  zone rather than the container's (issue #1091). */}
+              <TimeZoneSync />
               <SessionWatcher />
               <RuntimeReadinessBanner />
               <DesktopUiReady />

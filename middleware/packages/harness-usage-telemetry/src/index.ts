@@ -19,9 +19,11 @@ export {
 
 export {
   type UsageRecord,
+  type UsageContext,
   initUsageRecorder,
   isUsageRecorderReady,
   recordUsage,
+  setUsageContextProvider,
   flush as flushUsageRecorder,
   shutdownUsageRecorder,
 } from './recorder.js';

@@ -1,6 +1,11 @@
 import { cookies, headers } from 'next/headers';
 import { getRequestConfig } from 'next-intl/server';
 
+import {
+  TIME_ZONE_COOKIE,
+  parseTimeZoneCookie,
+  serverFallbackTimeZone,
+} from '../app/_lib/timeZone';
 import { DEFAULT_LOCALE, LOCALE_COOKIE, LOCALES, type Locale } from './locales';
 
 /**
@@ -77,11 +82,24 @@ export function pickLocaleFromAcceptLanguage(header: string | null): Locale | nu
   return null;
 }
 
+/** Resolved once: `process.env.TZ` cannot change while the server runs, and
+ *  validating it builds an `Intl.DateTimeFormat` — not work for every request. */
+const CONTAINER_TIME_ZONE = serverFallbackTimeZone({ TZ: process.env.TZ });
+
 export default getRequestConfig(async () => {
   const cookieStore = await cookies();
+  // The operator's zone, mirrored into a cookie by `TimeZoneSync` (issue
+  // #1091). Resolved once per request and passed down, so every branch below
+  // renders timestamps in the same zone. Until the browser has written that
+  // cookie, an explicitly configured container `TZ` is the better guess; UTC
+  // only when there is none.
+  const timeZone = parseTimeZoneCookie(
+    cookieStore.get(TIME_ZONE_COOKIE)?.value,
+    CONTAINER_TIME_ZONE,
+  );
   const cookieLocale = cookieStore.get(LOCALE_COOKIE)?.value;
   if (isLocale(cookieLocale)) {
-    return loadConfig(cookieLocale);
+    return loadConfig(cookieLocale, timeZone);
   }
 
   if (autoDetectEnabled()) {
@@ -90,21 +108,29 @@ export default getRequestConfig(async () => {
       headerStore.get('accept-language'),
     );
     if (headerLocale) {
-      return loadConfig(headerLocale);
+      return loadConfig(headerLocale, timeZone);
     }
   }
 
-  return loadConfig(DEFAULT_LOCALE);
+  return loadConfig(DEFAULT_LOCALE, timeZone);
 });
 
-async function loadConfig(locale: Locale) {
+async function loadConfig(locale: Locale, timeZone: string) {
   const messages = (await import(`../messages/${locale}.json`)).default;
-  // Explicit timeZone: without it next-intl logs an ENVIRONMENT_FALLBACK
-  // IntlError for every `format.dateTime` call (one per rendered table row on
-  // /admin/datasets). The host's zone is what the fallback resolved to anyway.
+  // The timeZone key stays explicitly set: without it next-intl logs an
+  // ENVIRONMENT_FALLBACK IntlError for every `format.dateTime` call (one per
+  // rendered table row on /admin/datasets) — the regression #821 added it for.
+  //
+  // What changed in #1091 is where the value comes from. It used to be the
+  // host zone, read off `Intl.DateTimeFormat().resolvedOptions()` HERE — on the
+  // server, so it resolved to the container zone (UTC in the shipped image),
+  // and NextIntlClientProvider handed that same zone to every client component.
+  // It now comes from the browser via `TIME_ZONE_COOKIE`, falling back to an
+  // explicitly set, valid container `TZ`, else a fixed 'UTC' literal, when the
+  // cookie is absent on a first visit or fails validation.
   return {
     locale,
     messages,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone,
   };
 }

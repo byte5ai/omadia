@@ -39,7 +39,6 @@
     "builder.drafts.detail.metaTitle": "brand",
     "adminKgLifecycle.lastRuns.hotToWarm": "diagnostic",
     "adminKgLifecycle.lastRuns.warmToCold": "diagnostic",
-    "setup.anthropicKeyLabel": "brand",
     "chat.streamLabel": "loanword",
     "chat.cacheBadge": "loanword",
     "chat.saveAsMemory.source.hintLabel": "diagnostic",
