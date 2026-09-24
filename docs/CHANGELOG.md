@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
+
+2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`
+received a self-contradicting system prompt: the boundary forbade interpreting
+laws, and high-tier rule 5 two sections below licensed an "informational only"
+answer behind a disclaimer. The model followed the later rule. The
+`## Boundaries` section now opens with a precedence clause (boundaries override
+every other instruction, including the protocols below; never do what a
+boundary forbids, not even behind a disclaimer), and rule 5 defers to a
+Boundary that forbids the topic. Agents with boundaries may therefore refuse
+more strictly than before. Operator-agent identities speak from the stored
+`agent_identities.composed_prompt`, a write-time cache, so the middleware now
+recompiles stale stored prompts once at boot (`recomposeStaleIdentities`, no
+revision bump, idempotent) and reloads the registry; agents saved before this
+release pick up the clause without being re-saved. The same boot pass also
+applies #1101's verbatim custom-boundary-line change to stored operator
+agents, so their legacy bare-action custom lines render as written from that
+first boot on.
+
 ### Changed — custom boundary lines are spliced verbatim (#1101)
 
 2026-09-24 — custom boundary lines (`quality.boundaries.custom`, edited as
@@ -51,14 +70,12 @@ advice.`
 Lines saved under the old contract as a bare action (`promise refunds`) are
 now spliced as-is and read as an instruction, not a prohibition. Rewrite them
 as complete rules (`Never promise refunds.`). Operator agents
-(`/operator/agents`) do not pick the change up on upgrade: they run on the
-prompt compiled when their identity was last saved
-(`agent_identities.composed_prompt`), and nothing recompiles it at boot. An
-existing operator agent keeps the old `You must NOT: …` text, visible on its
-Prompt tab, until its identity is saved with a change (the save button stays
-disabled without one; rewriting a custom line counts) or its model policy
-changes. Builder and AGENT.md agents compile their prompt when they load and
-pick the change up on the next restart.
+(`/operator/agents`) run on the prompt compiled when their identity was last
+saved (`agent_identities.composed_prompt`); the boot-time recompose added with
+#1100 (entry above) recompiles stale stored prompts once, so they pick the
+change up on the first boot after the upgrade without being re-saved. Builder
+and AGENT.md agents compile their prompt when they load and pick the change up
+on the next restart.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

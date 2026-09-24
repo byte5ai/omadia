@@ -1,6 +1,5 @@
 import { Router, raw } from 'express';
 import type { Request, Response } from 'express';
-import type { ModelPolicy } from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -88,10 +87,9 @@ import {
   type QualityConfig,
 } from '../plugins/builder/agentSpec.js';
 import {
-  composeAgentIdentityPrompt,
-  inferFamilyFromModel,
+  agentPersonaFamilies,
+  composeForFamilies,
 } from '../services/agentIdentityPrompt.js';
-import type { PersonaModelFamily } from '../plugins/personaDelta.js';
 
 /**
  * Phase B — minimal projection of a plugin's catalog entry surfaced to the
@@ -1522,63 +1520,6 @@ export function projectAgentIdentity(
       has_avatar: resolved.hasAvatar,
     },
   };
-}
-
-/**
- * Which persona family this agent's persona deltas are computed against.
- *
- * `model_routing.main` is the operator's per-agent model choice; without one
- * the agent runs on the platform default, which this router does not know —
- * and {@link inferFamilyFromModel} answers `sonnet` for an unknown id, the
- * documented safe middle ground for the delta math.
- */
-function agentPersonaFamily(agent: {
-  readonly modelRouting?: Record<string, unknown> | null;
-  readonly modelPolicy?: ModelPolicy;
-}): PersonaModelFamily {
-  // #1033 — an explicit primary in the model policy outranks model_routing.
-  const primary = agent.modelPolicy?.primary;
-  if (primary !== undefined && isModelRef(primary)) return inferFamilyFromModel(primary.model);
-  const main = agent.modelRouting?.['main'];
-  return inferFamilyFromModel(typeof main === 'string' ? main : '');
-}
-
-/**
- * #1033 — EVERY family the agent may speak with: the primary's (see above)
- * plus the fallback's when the policy names one. The persona is compiled for
- * each, so a cross-family fallback never runs on a prompt whose deltas were
- * computed against the other family. The primary's family comes first.
- */
-function agentPersonaFamilies(agent: {
-  readonly modelRouting?: Record<string, unknown> | null;
-  readonly modelPolicy?: ModelPolicy;
-}): readonly PersonaModelFamily[] {
-  const primary = agentPersonaFamily(agent);
-  const fallback = agent.modelPolicy?.fallback;
-  if (fallback !== undefined && isModelRef(fallback)) {
-    const fam = inferFamilyFromModel(fallback.model);
-    if (fam !== primary) return [primary, fam];
-  }
-  return [primary];
-}
-
-/**
- * Compile the identity prompt for every family in `families`; the FIRST
- * family is the primary and becomes `text`/`family`, the map carries all.
- */
-function composeForFamilies(
-  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
-  families: readonly PersonaModelFamily[],
-): { primary: ReturnType<typeof composeAgentIdentityPrompt>; family: PersonaModelFamily; byFamily: Record<string, string> } {
-  const byFamily: Record<string, string> = {};
-  let primary: ReturnType<typeof composeAgentIdentityPrompt> | undefined;
-  for (const family of families) {
-    const composed = composeAgentIdentityPrompt({ ...input, family });
-    if (!primary) primary = composed;
-    if (composed.text !== null) byFamily[family] = composed.text;
-  }
-  const first = families[0] ?? 'sonnet';
-  return { primary: primary ?? composeAgentIdentityPrompt({ ...input, family: first }), family: first, byFamily };
 }
 
 /**
