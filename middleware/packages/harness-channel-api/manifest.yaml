@@ -49,6 +49,16 @@ channel:
   # `chatAgent` like every other non-Omadia-UI channel (see IncomingTurn's
   # channelType doc).
 
+# #1106 — the kernel-published registry this channel contributes its
+# ChannelKeyDirectory to, so each active API key becomes a bindable row in
+# /operator/channels. `optional_requires`, not `requires`: the KERNEL provides
+# it (a hard `requires` names a capability some plugin must provide and would
+# be unresolvable), and a kernel too old to publish it must still let this
+# channel activate — routing by `channelKey` works either way; only the
+# dashboard listing is lost.
+optional_requires:
+  - "channelDirectoryRegistry@1"
+
 permissions:
   filesystem:
     scratch: false

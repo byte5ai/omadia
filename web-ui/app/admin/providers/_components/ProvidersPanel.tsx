@@ -398,6 +398,17 @@ function ProviderRow({
                 })
               : t('providers.modelsSourceSeed')}
           </span>
+          {p.unclassifiedModels !== undefined && p.unclassifiedModels.length > 0 && (
+            <span
+              className="text-[11px] text-[color:var(--warning)]"
+              title={p.unclassifiedModels.join(', ')}
+            >
+              {t('providers.unclassifiedModels', {
+                count: p.unclassifiedModels.length,
+                models: p.unclassifiedModels.join(', '),
+              })}
+            </span>
+          )}
         </span>
         <span className="flex items-center gap-3">
           <ConnectionChip provider={p} now={now} t={t} />

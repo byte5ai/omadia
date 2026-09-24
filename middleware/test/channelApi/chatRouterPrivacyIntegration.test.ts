@@ -178,5 +178,14 @@ describe('channelApi/chatRouter — real orchestrator + real privacy-guard', () 
       typeof done?.['answer'] === 'string' && (done['answer'] as string).includes(RAW_EMAIL),
       'the answer streamed back to the API caller must restore the real email',
     );
+
+    // (4) #1107 — the same `done` event exposes `receiptId`, the correlation id
+    // an API caller hands to their operator to locate the persisted receipt
+    // (`GET /api/v1/operator/receipts/:id`). Present because a receipt was
+    // written for this masked turn.
+    assert.ok(
+      typeof done?.['receiptId'] === 'string' && (done['receiptId'] as string).length > 0,
+      'the API stream must expose a receiptId when a receipt was written',
+    );
   });
 });

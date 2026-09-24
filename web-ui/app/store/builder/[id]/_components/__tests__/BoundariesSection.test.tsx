@@ -90,6 +90,13 @@ describe('<BoundariesSection />', () => {
     });
   });
 
+  it('renders the note that plugin defaults stack on top of these boundaries', () => {
+    render(<BoundariesSection draftId="draft-1" />);
+    const note = screen.getByTestId('boundaries-plugin-stack-note');
+    expect(note).toBeInTheDocument();
+    expect(note.textContent).toContain('Quality-Guard-Plugin');
+  });
+
   it('renders a warning badge when initialQuality contains unknown preset IDs', () => {
     render(
       <BoundariesSection

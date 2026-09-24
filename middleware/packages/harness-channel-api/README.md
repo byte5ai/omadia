@@ -191,10 +191,28 @@ relevant to a plain chat integration:
 
 | `type` | Meaning |
 |---|---|
-| `text_delta` | Incremental chunk of the assistant's answer text. Concatenate these to reconstruct the streamed answer as it's produced. |
-| `done` | Terminal event on success. Carries the full `answer` string plus `toolCalls` / `iterations` counters — read `done.answer` if you only want the final text and don't care about incremental deltas. |
+| `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the server MAY replace the answer before `done` (see `done.answerSource`), in which case the concatenated deltas are stale and do not match `done.answer`. |
+| `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
+
+### `text_delta` vs `done.answer` — which one wins
+
+They are **not** interchangeable. `done.answer` is authoritative; the
+concatenated `text_delta` chunks are a live preview of the model's text and
+may be superseded server-side before the turn ends. The `done` event carries
+an optional `answerSource` field to tell the two apart:
+
+- absent or `"model"` — `answer` is the model's own streamed text; it equals
+  the concatenated deltas.
+- `"privacy-render"` — Privacy Shield materialized the final `answer`
+  server-side from ground truth (the model never saw those values). The
+  earlier deltas are stale and will not match; render `done.answer`.
+
+A client that reconstructs the answer from deltas should overwrite it with
+`done.answer` whenever `answerSource` is present and not `"model"`. The field
+is additive and optional — a client that ignores it and always renders
+`done.answer` is already correct.
 
 Note: `agent_bound` — an event some other omadia channel routes emit — is
 **not** emitted on this route. `CoreApi.handleTurnStream` (what this plugin
@@ -213,6 +231,35 @@ will ever appear on the stream afterward.
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
 gone.
+
+## Correlating a turn with its privacy receipt
+
+When the omadia instance runs on the Postgres backend and the privacy shield
+recorded activity during a turn, the turn's `done` event carries a `receiptId`:
+
+```
+{"type":"done","answer":"…","toolCalls":1,"iterations":2,"receiptId":"3f2a…-uuid"}
+```
+
+`receiptId` is the key of the persisted privacy-receipt row
+(`turn_receipts.turn_id`). An operator can resolve it directly:
+
+```bash
+curl -H "cookie: omadia_session=<operator-token>" \
+  https://<your-omadia-host>/api/v1/operator/receipts/<receiptId>
+```
+
+Notes:
+
+- `receiptId` is **only** present when a receipt was actually written. A row
+  is written solely when the privacy shield masked or otherwise processed
+  something this turn, so a tool-free turn produces no receipt and no
+  `receiptId`. Treat its absence as "nothing to correlate", not an error.
+- It is **distinct** from any `turnId` on the event (the knowledge-graph turn
+  node id, `turn:<scope>:<time>`). Only `receiptId` resolves through the
+  operator receipts route.
+- Receipts written for this channel carry `channel = "api"`, so operators can
+  tell external-integration traffic apart from every other channel.
 
 ## Rate limiting
 
