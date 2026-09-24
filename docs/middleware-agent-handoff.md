@@ -3334,11 +3334,14 @@ terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn
 `expectedTurnToolUse` lässt sich auf der CLI nicht erzwingen (kein `tool_choice`). Stattdessen
 Nachprüfung nach dem Turn: fehlt das Tool, genau **ein** Re-Prompt mit Originalfrage, erster
 Antwort und der Anweisung, `mcp__omadia__<tool>` aufzurufen oder konkret zu begründen, warum
-nicht; bereits ausgeführte Tool-Calls werden genannt und sollen nicht wiederholt werden. Der
+nicht; bereits ausgeführte Tool-Calls werden genannt. Weil der zweite Spawn deren Ergebnisse
+nicht sieht, darf er lesende Calls erneut ausführen, zustandsändernde aber nicht. Der
 Re-Prompt reitet in `userMessage`, nicht in `priorTurns` (dort würde auf 600 Zeichen gekürzt).
 Fehlt das Tool danach immer noch → Warnung, Antwort wird trotzdem zurückgegeben.
 `maxEscalations: 0` schaltet den Re-Prompt ab. Ein fehlschlagender Re-Prompt lässt das ganze
-`ask()` scheitern (Parität zu `LocalSubAgent`; das Builder-UI zeigt `builder.ask_failed`).
+`ask()` scheitern (Parität zu `LocalSubAgent`; das Builder-UI zeigt `builder.ask_failed`); der
+Fehler nennt das erwartete Tool und die schon gelaufenen Tools (`cause` = Originalfehler), deren
+Seiteneffekte bestehen bleiben.
 
 Rest-Unschärfen: Der Re-Prompt-Spawn nutzt den System-Prompt vom Turn-Start und sieht
 Spec-Patches des ersten Spawns nicht; Token-Zahlen stammen nur aus Text-Deltas (die CLI

@@ -92,8 +92,15 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
         ]);
         // A failing re-prompt propagates, as a failing escalation iteration
         // does in LocalSubAgent: the first answer is, by definition, the
-        // "promise without delivery" the obligation exists to stop.
-        const second = await runSpawn(bridge, reprompt);
+        // "promise without delivery" the obligation exists to stop. It is
+        // wrapped so the log says a first pass already completed (its tool
+        // side effects remain) and which tools it ran.
+        let second: string;
+        try {
+          second = await runSpawn(bridge, reprompt);
+        } catch (err) {
+          throw rePromptError(label, expected, [...bridge.calledTools], err);
+        }
         if (!bridge.calledTools.has(expected)) {
           console.warn(
             `[cli-sub-agent ${label}] expectedTurnToolUse '${expected}' still not called after one re-prompt — returning the answer as is`,
@@ -107,6 +114,20 @@ export function createCliSubAgent(options: CliSubAgentOptions): Askable {
   };
 }
 
+function rePromptError(
+  label: string,
+  expected: string,
+  alreadyCalled: readonly string[],
+  cause: unknown,
+): Error {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  const ran = alreadyCalled.length > 0 ? alreadyCalled.join(', ') : 'none';
+  return new Error(
+    `[cli-sub-agent ${label}] re-prompt for expectedTurnToolUse '${expected}' failed after a completed first pass (tools already run: ${ran}): ${reason}`,
+    { cause },
+  );
+}
+
 function bareToolName(name: string | undefined): string | undefined {
   if (name === undefined || name.length === 0) return undefined;
   return name.startsWith(OMADIA_MCP_TOOL_PREFIX)
@@ -118,8 +139,10 @@ function bareToolName(name: string | undefined): string | undefined {
  * The one re-prompt for a missed `expectedTurnToolUse`. It rides the user
  * message, not `priorTurns`: the replay truncates user text to 600 chars and
  * the builder's contextual message is longer. The CLI spawn is stateless, so
- * the original question and the first answer travel with it; the tool calls
- * that already ran must not be repeated. German like the API-path reminder in
+ * the original question and the first answer travel with it. The second
+ * spawn cannot see what the first spawn's tool calls returned, so only calls
+ * that change state are off limits; read-only calls may run again when the
+ * model needs their result. German like the API-path reminder in
  * `LocalSubAgent`.
  */
 function composeObligationReprompt(
@@ -143,9 +166,11 @@ function composeObligationReprompt(
   ];
   if (alreadyCalled.length > 0) {
     lines.push(
-      `Diese Tool-Calls aus dem vorherigen Durchlauf wurden bereits ausgeführt — wiederhole sie nicht: ${alreadyCalled
+      `Diese Tool-Calls liefen bereits im vorherigen Durchlauf: ${alreadyCalled
         .map((name) => `\`${OMADIA_MCP_TOOL_PREFIX}${name}\``)
-        .join(', ')}.`,
+        .join(', ')}. ` +
+        'Ihre Ergebnisse siehst du hier nicht mehr. Lesende Calls darfst du erneut ausführen, wenn du ihr Ergebnis brauchst. ' +
+        'Wiederhole keine Calls, die Zustand ändern: deren Wirkung besteht bereits.',
     );
   }
   return lines.join('\n');

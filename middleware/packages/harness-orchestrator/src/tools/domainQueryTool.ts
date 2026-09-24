@@ -98,7 +98,11 @@ export interface AskOptions {
  *   that answer whether or not the tool was called — a warning is logged when
  *   it still was not. `maxEscalations: 0` disables the re-prompt; any value of
  *   1 or more means one re-prompt. A failing re-prompt fails the whole
- *   `ask()`, as a failing escalation iteration does in `LocalSubAgent`.
+ *   `ask()`, as a failing escalation iteration does in `LocalSubAgent`; the
+ *   error names the expected tool and the tools the first pass already ran,
+ *   whose side effects remain. The re-prompt tells the model it may repeat
+ *   read-only calls (the stateless second spawn cannot see their results) but
+ *   not calls that change state.
  */
 export interface Askable {
   ask(question: string, observer?: AskObserver, options?: AskOptions): Promise<string>;

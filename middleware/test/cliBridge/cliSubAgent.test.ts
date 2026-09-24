@@ -429,6 +429,28 @@ describe('createCliSubAgent expectedTurnToolUse post-turn check (#1072)', () => 
     );
   });
 
+  it('lets the re-prompt re-run read-only calls but not state-changing ones', async (t) => {
+    t.mock.method(console, 'warn', () => undefined);
+    const { agent, inputs } = scriptedSubAgent([
+      {
+        events: [
+          { type: 'tool_use', id: 'r', name: `${PREFIX}read_reference`, input: {} },
+          { type: 'tool_result', id: 'r', output: 'ref body', durationMs: 4 },
+        ],
+        answer: 'Referenz gelesen, ich baue gleich.',
+      },
+      fillSlotSpawn('Slot gefüllt.', 'tu_2'),
+    ]);
+
+    await agent.ask('bau', undefined, opts);
+
+    const reprompt = inputs[1]?.userMessage ?? '';
+    assert.ok(reprompt.includes(`${PREFIX}read_reference`), 'lists the earlier call');
+    assert.ok(reprompt.includes('Lesende Calls darfst du erneut ausführen'), 'allows read-only re-runs');
+    assert.ok(reprompt.includes('Wiederhole keine Calls, die Zustand ändern'), 'forbids state changes');
+    assert.ok(!reprompt.includes('wiederhole sie nicht'), 'no blanket ban on repeating calls');
+  });
+
   it('returns the re-prompt answer and warns when the tool is still not called', async (t) => {
     const warn = t.mock.method(console, 'warn', () => undefined);
     const { agent, inputs } = scriptedSubAgent([
@@ -456,12 +478,27 @@ describe('createCliSubAgent expectedTurnToolUse post-turn check (#1072)', () => 
 
   it('propagates a failing re-prompt', async (t) => {
     t.mock.method(console, 'warn', () => undefined);
+    const cause = new Error('re-prompt spawn failed');
     const { agent } = scriptedSubAgent([
-      { answer: 'Mache ich.' },
-      { throws: new Error('re-prompt spawn failed') },
+      {
+        events: [
+          { type: 'tool_use', id: 'r', name: `${PREFIX}read_slot`, input: {} },
+          { type: 'tool_result', id: 'r', output: 'slot', durationMs: 2 },
+        ],
+        answer: 'Mache ich.',
+      },
+      { throws: cause },
     ]);
 
-    await assert.rejects(agent.ask('bau', undefined, opts), /re-prompt spawn failed/);
+    await assert.rejects(agent.ask('bau', undefined, opts), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /re-prompt spawn failed/);
+      assert.match(err.message, /fill_slot/);
+      assert.match(err.message, /first pass/);
+      assert.match(err.message, /read_slot/);
+      assert.equal(err.cause, cause);
+      return true;
+    });
   });
 
   it('does not re-prompt with maxEscalations: 0', async () => {
