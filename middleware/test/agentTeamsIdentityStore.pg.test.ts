@@ -55,6 +55,8 @@ const MIGRATION_FILES = [
   '0051_agent_teams_installs.sql',
   '0054_agent_teams_target_kind.sql',
   '0055_agent_teams_app_object_id.sql',
+  // 0060 adds `error_code` / `error_detail` (#897), both in the SELECT list.
+  '0060_agent_teams_error_code.sql',
 ] as const;
 
 const SCHEMA = `w1a_teams_ident_${String(process.pid)}`;
@@ -254,6 +256,69 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
     const row = await store.getByAgentId('agent-1');
     assert.equal(row?.state, 'pending');
     assert.equal(row?.lastError, 'enqueue_failed: queue down');
+    // #897 — coded explicitly, so the row never depends on the classifier.
+    assert.equal(row?.errorCode, 'unknown');
+    assert.equal(row?.errorDetail, null);
+  });
+
+  it('update round-trips error_code + error_detail (JSONB) with last_error (#897)', async () => {
+    await store.ensureForAgent({ agentId: 'agent-1', botSlug: 'hr-bot', displayName: 'HR Bot' });
+    const written = await store.update('agent-1', {
+      state: 'failed',
+      lastError: 'consent_missing: admin consent required for scopes [A, B]',
+      errorCode: 'consent_missing',
+      errorDetail: { scopes: ['A', 'B'] },
+    });
+    assert.equal(written.errorCode, 'consent_missing');
+    assert.deepEqual(written.errorDetail, { scopes: ['A', 'B'] });
+    const read = await store.getByAgentId('agent-1');
+    assert.equal(read?.errorCode, 'consent_missing');
+    assert.deepEqual(read?.errorDetail, { scopes: ['A', 'B'] });
+    const { rows } = await pool.query<{ t: string }>(
+      `SELECT jsonb_typeof(error_detail) AS t FROM agent_teams_identities WHERE agent_id = 'agent-1'`,
+    );
+    assert.equal(rows[0]?.t, 'object', 'stored as a JSON object, not a string or array literal');
+  });
+
+  it('a last_error write without a code NULLs both columns — no stale code (#897)', async () => {
+    await store.ensureForAgent({ agentId: 'agent-1', botSlug: 'hr-bot', displayName: 'HR Bot' });
+    await store.update('agent-1', {
+      lastError: 'throttled: 429 (gave up after 2 attempts; retry after 5s)',
+      errorCode: 'throttled',
+      errorDetail: { retryAfterSeconds: 5 },
+    });
+    const next = await store.update('agent-1', { lastError: 'something else' });
+    assert.equal(next.lastError, 'something else');
+    assert.equal(next.errorCode, null);
+    assert.equal(next.errorDetail, null);
+    // A patch WITHOUT last_error leaves all three untouched.
+    await store.update('agent-1', {
+      lastError: 'config_sync_failed: [x]',
+      errorCode: 'config_sync_failed',
+      errorDetail: { reason: 'x' },
+    });
+    const untouched = await store.update('agent-1', { state: 'installed' });
+    assert.equal(untouched.errorCode, 'config_sync_failed');
+    assert.deepEqual(untouched.errorDetail, { reason: 'x' });
+  });
+
+  it('clearTeamInstall and resetForRetry clear the structured columns too (#897)', async () => {
+    for (const clear of [
+      (id: string) => store.clearTeamInstall(id),
+      (id: string) => store.resetForRetry(id),
+    ]) {
+      await store.ensureForAgent({ agentId: 'agent-1', botSlug: 'hr-bot', displayName: 'HR Bot' });
+      await store.update('agent-1', {
+        state: 'failed',
+        lastError: 'arm_not_configured: [f]',
+        errorCode: 'arm_not_configured',
+        errorDetail: { fields: ['f'] },
+      });
+      const row = await clear('agent-1');
+      assert.equal(row.lastError, null);
+      assert.equal(row.errorCode, null);
+      assert.equal(row.errorDetail, null);
+    }
   });
 
   it('listResumable returns interrupted runs only (non-terminal, with a team target)', async () => {

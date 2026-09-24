@@ -17,6 +17,16 @@
  * values mirror the CHECK constraint of migration 0049 exactly, and both the
  * runner and the operator router import it from here.
  *
+ * `error_code` / `error_detail` (migration 0060, byte5ai/omadia#897) travel
+ * WITH `last_error`: the runner writes the typed failure it holds next to
+ * the human-facing sentence, so nothing downstream has to parse English.
+ * {@link AgentTeamsIdentityStore.update} enforces the pairing — any
+ * `last_error` write also writes both columns (the given values or NULL), so
+ * a new sentence can never sit next to a stale code. The code vocabulary is
+ * the runner's closed `TeamsProvisioningErrorCode` union; this platform
+ * module stores it opaquely (`platform/` never imports from `services/`),
+ * and the read path validates it against the union.
+ *
  * NO SECRET MATERIAL. The row carries only app_id / tenant_id /
  * teams_app_id / teams_app_external_id — the bot's client secret stays in
  * the M365 connector's vault (opaque ref `teams_bot_password:<appId>`,
@@ -95,6 +105,18 @@ export interface AgentTeamsIdentityRecord {
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
   readonly lastError: string | null;
+  /**
+   * Machine-readable code of {@link lastError} (migration 0060, #897) — a
+   * `TeamsProvisioningErrorCode` when the runner wrote it, `null` on a clean
+   * row and on a row written before the migration (the read path then falls
+   * back to classifying the sentence). Typed opaquely here: the vocabulary
+   * belongs to the runner, and a stored value from a newer build must not
+   * make this row unreadable.
+   */
+  readonly errorCode: string | null;
+  /** Typed arguments of {@link errorCode} (scopes / fields / Retry-After /
+   *  consent URL / reason), parsed JSONB. Validated on read, never trusted. */
+  readonly errorDetail: unknown;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -133,6 +155,16 @@ export interface AgentTeamsIdentityUpdate {
   readonly teamsAppExternalId?: string | null;
   /** `null` clears a previous error. */
   readonly lastError?: string | null;
+  /**
+   * Structured form of {@link lastError} (migration 0060, #897). Only read
+   * TOGETHER with `lastError`: a patch that writes `lastError` writes these
+   * two columns as well (absent → NULL), and a patch without `lastError`
+   * ignores them. That is what keeps a sentence and its code from drifting
+   * apart, and it is why every existing `lastError: null` clear also clears
+   * the code without having to say so.
+   */
+  readonly errorCode?: string | null;
+  readonly errorDetail?: unknown;
 }
 
 /** The requested bot slug is already held by ANOTHER agent's identity. */
@@ -178,7 +210,7 @@ export class AgentTeamsIdentityStateError extends Error {
 // ---------------------------------------------------------------------------
 
 const COLUMNS =
-  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, app_object_id, tenant_id, teams_app_id, teams_app_external_id, last_error, created_at, updated_at';
+  'agent_id, bot_slug, display_name, state, team_id, target_kind, app_id, app_object_id, tenant_id, teams_app_id, teams_app_external_id, last_error, error_code, error_detail, created_at, updated_at';
 
 interface AgentTeamsIdentityRow {
   agent_id: string;
@@ -193,6 +225,8 @@ interface AgentTeamsIdentityRow {
   teams_app_id: string | null;
   teams_app_external_id: string | null;
   last_error: string | null;
+  error_code: string | null;
+  error_detail: unknown;
   created_at: Date;
   updated_at: Date;
 }
@@ -215,6 +249,8 @@ function mapRow(row: AgentTeamsIdentityRow): AgentTeamsIdentityRecord {
     teamsAppId: row.teams_app_id,
     teamsAppExternalId: row.teams_app_external_id,
     lastError: row.last_error,
+    errorCode: row.error_code,
+    errorDetail: row.error_detail,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -321,7 +357,23 @@ export class AgentTeamsIdentityStore {
     if (patch.teamsAppExternalId !== undefined) {
       add('teams_app_external_id', patch.teamsAppExternalId);
     }
-    if (patch.lastError !== undefined) add('last_error', patch.lastError);
+    if (patch.lastError !== undefined) {
+      // The pairing invariant (#897): the sentence and its structured form
+      // are one write. A clear clears all three; a sentence without a code
+      // (a caller that predates the columns) stores NULL, which the read path
+      // treats exactly like a pre-0060 row.
+      const failing = patch.lastError !== null;
+      add('last_error', patch.lastError);
+      add('error_code', failing ? (patch.errorCode ?? null) : null);
+      // Serialized explicitly rather than handed to node-pg as an object:
+      // node-pg turns a JS array into a Postgres ARRAY literal, not JSON.
+      const detail =
+        failing && patch.errorDetail !== undefined && patch.errorDetail !== null
+          ? (JSON.stringify(patch.errorDetail) ?? null)
+          : null;
+      values.push(detail);
+      sets.push(`error_detail = $${String(values.length)}::jsonb`);
+    }
     sets.push('updated_at = now()');
     const res = await this.pool.query<AgentTeamsIdentityRow>(
       `UPDATE agent_teams_identities SET ${sets.join(', ')} WHERE agent_id = $1 RETURNING ${COLUMNS}`,
@@ -437,9 +489,18 @@ export class AgentTeamsIdentityStore {
 
   /** Persist an enqueue failure so the status endpoint can show WHY nothing
    *  is running (the POST handler calls this best-effort from its
-   *  fire-and-forget catch). State is deliberately untouched. */
+   *  fire-and-forget catch). State is deliberately untouched.
+   *
+   *  Coded `'unknown'` explicitly (#897) — the operator UI has no dedicated
+   *  message for it (the ops runbook sends operators to the raw prefix), and
+   *  writing the code here means no new row depends on the sentence
+   *  classifier. The value is a member of the runner's
+   *  `TeamsProvisioningErrorCode` union in `services/teamsProvisioningJob.ts`. */
   async recordEnqueueFailure(agentId: string, message: string): Promise<void> {
-    await this.update(agentId, { lastError: `enqueue_failed: ${message}` });
+    await this.update(agentId, {
+      lastError: `enqueue_failed: ${message}`,
+      errorCode: 'unknown',
+    });
   }
 
   /**

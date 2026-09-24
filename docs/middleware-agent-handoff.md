@@ -3268,22 +3268,43 @@ Der Job-Runner erlaubt genau einen Run pro Agent (`teamsProvisioningJob.ts:381-4
 zweiter Enqueue für ein *anderes* Team wird `rejected`. Das Script prüft deshalb vorab auf
 `running` und bricht ab, statt in einen Team-Konflikt zu laufen.
 
-### `last_error_detail` — Klassifikation serverseitig
+### `last_error_detail` — persistiert, nicht geparst (#897)
 
 `GET …/teams-identity` liefert zusätzlich zu `last_error` (englischer Satz) ein
 strukturiertes `last_error_detail`:
-`{ code: 'consent_missing' | 'arm_not_configured' | 'throttled' | 'unknown', scopes?, fields?, retry_after_seconds?, raw }`.
-Klassifiziert wird in `classifyTeamsProvisioningError()` — **direkt neben den Producern**,
-die die Sätze schreiben (`services/teamsProvisioningJob.ts`). Additiv, keine
-Schema-Änderung, keine Migration. Das web-ui rendert aus dem Objekt über i18n-Keys; den
-Rohsatz höchstens als technisches Detail. **Niemand sonst parst `last_error`.**
-Round-Trip-Test: `test/teamsProvisioningLastError.test.ts` — wer eine Meldung umformuliert
-und den Parser vergisst, bricht einen Test in derselben Ecke des Codes, statt still die
-Operator-UI in Produktion zu verschlechtern.
+`{ code, scopes?, fields?, retryAfterSeconds?, adminConsentUrl?, reason?, raw }`.
+`code` ist die geschlossene Union `TeamsProvisioningErrorCode` in
+`services/teamsProvisioningJob.ts` (12 Codes: `consent_missing`, `rsc_permissions_mismatch`,
+`arm_not_configured`, `throttled`, `config_sync_failed`, `bot_handle_unavailable`,
+`delegated_sign_in_required`, `delegated_consent_required`, `delegated_token_expired`,
+`device_code_flow_failed`, `unknown`). Das web-ui rendert aus dem Objekt über i18n-Keys; den
+Rohsatz höchstens als technisches Detail. **Niemand parst `last_error`.**
 
-**Follow-up (nicht in dieser Wave):** Der Runner sollte den Code von Anfang an strukturiert
-persistieren; das braucht eine Migration auf `agent_teams_identities` und damit eine eigene
-Unit.
+Seit Migration 0060 schreibt der Runner den Fehler **strukturiert mit**: `error_code TEXT` +
+`error_detail JSONB` auf `agent_teams_identities`, im selben UPDATE wie `last_error`, an der
+Stelle, an der er den typisierten Fehler noch in der Hand hat. Je Code gibt es einen
+`*Failure`-Builder, der Satz und Argumente aus denselben Eingaben baut; `recordError` nimmt
+nur einen Clear oder eine ganze `TeamsProvisioningFailure` — ein Satz ohne Code kompiliert
+nicht. Der Store erzwingt die Paarung: jeder `lastError`-Write schreibt beide Spalten mit
+(Werte oder NULL), jeder Clear leert alle drei.
+
+Gelesen wird über `teamsProvisioningErrorDetailOf()`: bekannter Code → Spalten, jedes Feld
+validiert (Consent-URL nur absolut https, Listen nur Strings, Retry-After nur endliche
+Zahl ≥ 0). **Kein/unbekannter Code** (Zeile vor 0060, oder Code eines neueren Builds nach
+Rollback) → Fallback auf `classifyTeamsProvisioningError()` über den Satz. Der Classifier
+ist damit nur noch der Legacy-Pfad und kann weg, sobald keine Zeilen von vor 0060 mehr
+existieren. `enqueue_failed` (Store-Write) bleibt bewusst `unknown` und wird explizit so
+kodiert.
+
+**Kein CHECK auf `error_code`:** Die Union ist in Wochen von 4 auf 12 gewachsen, jede
+Erweiterung bräuchte DROP/ADD CHECK (0056 existiert nur für CHECK-Idempotenz). Vor allem
+schreibt `recordError` `state` und Fehler in *einem* best-effort-UPDATE, das Store-Fehler
+schluckt — ein Code außerhalb eines CHECK würde den terminalen `state='failed'`-Write still
+verlieren (#915-Klasse). Die TS-Union plus Read-Validierung ist die einzige Quelle.
+
+Tests: `test/teamsProvisioningErrorCode.test.ts` (jeder Fehlerpfad schreibt einen Code;
+Parität Spalten ↔ Classifier; umformulierter Satz behält die Bedeutung; Read-Validierung),
+`test/teamsProvisioningLastError.test.ts` (Legacy-Round-Trip Producer ↔ Classifier).
 
 ## Abo-Parität: der Weg ohne API-Key (Runde 5, Wave 3)
 

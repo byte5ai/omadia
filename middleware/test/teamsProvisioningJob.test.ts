@@ -94,7 +94,15 @@ function makeStore(overrides: Partial<TeamsIdentityJobRecord> = {}): MemoryStore
         ...(patch.teamsAppExternalId !== undefined
           ? { teamsAppExternalId: patch.teamsAppExternalId }
           : {}),
-        ...(patch.lastError !== undefined ? { lastError: patch.lastError } : {}),
+        // The real store's pairing invariant (#897): a `lastError` write also
+        // writes the structured columns — given values, or null.
+        ...(patch.lastError !== undefined
+          ? {
+              lastError: patch.lastError,
+              errorCode: patch.lastError === null ? null : (patch.errorCode ?? null),
+              errorDetail: patch.lastError === null ? null : (patch.errorDetail ?? null),
+            }
+          : {}),
       };
       return store.row;
     },
@@ -567,6 +575,12 @@ describe('TeamsProvisioningJobRunner — connector error policy', () => {
       store.row?.lastError?.includes('re-run'),
       'last_error must tell the operator how to proceed',
     );
+    // #897 — this branch writes the store directly (not via recordError), and
+    // still carries the structured code next to the sentence.
+    assert.equal(store.row?.errorCode, 'arm_not_configured');
+    assert.deepEqual(store.row?.errorDetail, {
+      fields: ['azureSubscriptionId', 'azureResourceGroup'],
+    });
     // The registration survives — nothing is torn down.
     assert.equal(store.row?.appId, 'app-123');
   });
@@ -1029,6 +1043,11 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     const detail = classifyTeamsProvisioningError(lastError);
     assert.equal(detail.code, 'config_sync_failed');
     assert.equal(detail.reason, 'teams_bots setup field is not valid JSON');
+    // #897 — the same reason, persisted structured.
+    assert.equal(store.row?.errorCode, 'config_sync_failed');
+    assert.deepEqual(store.row?.errorDetail, {
+      reason: 'teams_bots setup field is not valid JSON',
+    });
   });
 
   it('re-asserts the config on a re-run of an ALREADY installed identity', async () => {
@@ -1088,6 +1107,44 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     });
     await runner.enqueue(REQUEST);
     assert.equal(store.row?.lastError, stale);
+  });
+
+  it('retires its own warning by CODE even when the sentence was reworded (#897)', async () => {
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        // No `config_sync_failed:` prefix any more — only the code says so.
+        lastError: 'The Teams channel config could not be written automatically.',
+        errorCode: 'config_sync_failed',
+        errorDetail: { reason: 'teams_bots was not valid JSON' },
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    assert.equal(store.row?.lastError, null);
+    assert.equal(store.row?.errorCode, null);
+    assert.equal(store.row?.errorDetail, null);
+  });
+
+  it('the persisted code wins over a sentence that merely looks like its warning (#897)', async () => {
+    const lookalike = configSyncFailedDetail('looks like ours');
+    const { runner, store } = makeRunner({
+      storeOverrides: {
+        state: 'installed',
+        appId: 'app-1',
+        tenantId: 'tenant-1',
+        teamsAppId: 'catalog-1',
+        lastError: lookalike,
+        errorCode: 'unknown',
+      },
+      syncBotConfig: async () => ({ status: 'synced' }),
+    });
+    await runner.enqueue(REQUEST);
+    assert.equal(store.row?.lastError, lookalike);
+    assert.equal(store.row?.errorCode, 'unknown');
   });
 
   it('is a no-op when no sync port is wired (the pre-#910 manual path)', async () => {
@@ -1512,6 +1569,9 @@ describe('TeamsProvisioningJobRunner — catalog replication window', () => {
     const lastError = String(store.row?.lastError);
     assert.ok(lastError.includes('rsc_permissions_mismatch'), lastError);
     assert.ok(!lastError.includes('replicate'), lastError);
+    // #897 — the code is persisted, not left for a reader to parse.
+    assert.equal(store.row?.errorCode, 'rsc_permissions_mismatch');
+    assert.equal(store.row?.errorDetail, null);
   });
 
   it('a run that SKIPPED the upload treats the same bare 400 as terminal', async () => {

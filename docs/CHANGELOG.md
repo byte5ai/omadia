@@ -36,6 +36,21 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — Teams provisioning persists a structured error code (#897)
+
+2026-09-24 — the Teams provisioning runner recorded failures only as an English
+sentence in `agent_teams_identities.last_error`, and
+`GET /api/v1/operator/agents/:slug/teams-identity` rebuilt `last_error_detail`
+by parsing that sentence (prefixes, the first `[...]` group, `; retry after Ns`).
+Migration **0060** (`0060_agent_teams_error_code.sql`) adds `error_code TEXT` and
+`error_detail JSONB`; the runner now writes the code and its typed arguments in
+the same UPDATE as the sentence, while it still holds the typed error. The route
+reads the columns (validated on the way out) and falls back to the sentence
+classifier only for rows written before 0060. The config-sync stale-warning
+cleanup now also matches on the code instead of the sentence prefix. No backfill
+and no CHECK constraint (see the migration header); the wire shape of
+`last_error_detail` is unchanged.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a

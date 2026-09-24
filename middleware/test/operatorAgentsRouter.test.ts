@@ -393,6 +393,11 @@ interface TeamsIdentityMem {
    *  historical `'team'`. */
   targetKind?: TeamsTargetKind;
   lastError: string | null;
+  /** Migration 0060 (#897) — the persisted structured form of `lastError`.
+   *  Optional like the router's port: a row seeded without them is a
+   *  pre-0060 row, classified from its sentence. */
+  errorCode?: string | null;
+  errorDetail?: unknown;
   /** Optional exactly like the router's port — a row seeded without
    *  timestamps must stay assignable to `OperatorTeamsIdentityRecord`. */
   createdAt?: Date;
@@ -2681,6 +2686,42 @@ describe('createOperatorAgentsRouter', () => {
     });
   });
 
+  it('GET /:slug/teams-identity reads last_error_detail from the persisted code (#897)', async () => {
+    const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
+    // Reworded: no `consent_missing:` prefix, no brackets. The classifier
+    // would call this `unknown`; the persisted columns say what it is.
+    const raw = 'Admin consent is missing';
+    teamsStore.rows.set(agent.id, {
+      agentId: agent.id,
+      botSlug: 'sales-bot',
+      displayName: 'Sales Bot',
+      state: 'failed',
+      teamId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: raw,
+      errorCode: 'consent_missing',
+      errorDetail: { scopes: ['A', 'B'] },
+    });
+    const res = await fetch(`${baseUrl}/sales/teams-identity`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      identity: { last_error: string; last_error_detail: unknown };
+    };
+    assert.equal(body.identity.last_error, raw);
+    assert.deepEqual(body.identity.last_error_detail, {
+      code: 'consent_missing',
+      scopes: ['A', 'B'],
+      raw,
+    });
+    // The raw columns are never part of the payload — only their validated
+    // projection is.
+    assert.ok(!('error_code' in body.identity));
+    assert.ok(!('error_detail' in body.identity));
+  });
+
   it('GET /:slug/teams-identity: last_error_detail covers arm/throttled/unknown, null when clean', async () => {
     const agent = await store.createAgent({ slug: 'sales', name: 'Sales' });
     const base: OperatorTeamsIdentityRecord = {
@@ -3562,6 +3603,17 @@ describe('createOperatorAgentsRouter', () => {
     // A recorded consent failure wins over the state.
     assert.deepEqual(
       projectTeamsConsent({ ...base, lastError: consentMissingDetail(['Group.Read.All']) }),
+      { status: 'missing', missing_scopes: ['Group.Read.All'], source: 'last_error' },
+    );
+    // #897 — the verdict rides on the persisted code, not on the sentence's
+    // wording: a reworded message without the prefix is still `missing`.
+    assert.deepEqual(
+      projectTeamsConsent({
+        ...base,
+        lastError: 'Admin consent is missing',
+        errorCode: 'consent_missing',
+        errorDetail: { scopes: ['Group.Read.All'] },
+      }),
       { status: 'missing', missing_scopes: ['Group.Read.All'], source: 'last_error' },
     );
   });
