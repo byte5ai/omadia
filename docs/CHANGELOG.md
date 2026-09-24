@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
+
+Every dynamic sub-agent on an Anthropic host failed its first real call with
+`404 not_found_error: model: class:frontier`. `SUB_AGENT_MODEL` defaults to the
+class ref `class:frontier`, and `DynamicAgentRuntime` resolved it only in the
+non-Anthropic branch — on the default provider the config string went verbatim
+to api.anthropic.com. Activation succeeded and the tools registered, so the
+failure only surfaced at call time. The provider + model selection now lives in
+`selectSubAgentHost` and resolves the ref on every provider branch through the
+orchestrator's own resolver (`resolveConfiguredModel`, moved into
+`@omadia/llm-provider` and re-exported by `@omadia/orchestrator`) via the new
+`resolveModelRefStrict`. If the registry holds no model at all for the provider
+(its catalog entry was unregistered), the bundled provider's pinned seed model
+for that class is used; with no seed either, activation fails with an error that
+names `SUB_AGENT_MODEL` (or the manifest's `llm.prefers.model`) instead of
+sending a class ref to the vendor. The same guarantee now covers plugin
+`ctx.llm` requests, `VERIFIER_MODEL` (which is also mapped to the configured
+`llm_provider` now, and on an unresolvable ref leaves `verifier@1` unpublished)
+and the orchestrator-extras' fact-extractor / topic-classifier models. Pinning
+`SUB_AGENT_MODEL` to a concrete id is no longer needed as a workaround.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
