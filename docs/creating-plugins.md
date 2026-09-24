@@ -106,7 +106,9 @@ identity:
   domain: "<domain>"               # z.B. coaching, m365.sharepoint, whatsapp — lowercase, dotted
   name: "<Anzeigename>"
   version: "0.1.0"                 # SemVer; === package.json "version"
-  description: "<Beschreibung DE>"
+  description:                     # Sprachkarte (OM-50 / #885). Eine blanke
+    en: "<description EN>"         # Zeichenkette wird als ENGLISCH gelesen —
+    de: "<Beschreibung DE>"        # deutscher Text dort landet im en-Slot.
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"
@@ -153,6 +155,20 @@ permissions:
 - `string`/`secret`-Felder können `multiline: true` setzen → Install-Drawer rendert
   eine Textarea (z.B. für PEM-Keys). Ältere Cores ignorieren das Flag (Fallback:
   Wert base64-encoden und im Plugin dekodieren).
+- `identity.description` ist eine **Sprachkarte** (`en:` / `de:`), genau wie
+  `setup.guide` und `setup.fields[].label`. Eine blanke Zeichenkette bleibt
+  erlaubt, wird aber als **englisch** gelesen: deutscher Text an dieser Stelle
+  landet im `en`-Slot und erscheint englischsprachigen Nutzern als Beschreibung
+  (OM-50 / #885). Der Weg in die Oberfläche: `manifestLoader.adaptManifestV1`
+  löst `en` nach `Plugin.description` auf (Suche, Hub, ältere Konsumenten) und
+  hängt die vollständige Karte als `description_localized` an, `routes/store.ts`
+  gibt sie weiter, und `PluginCard` bzw. `store/[id]` wählen daraus mit
+  `pickLocalized` die Sprache des Nutzers. Fallback-Kette:
+  angeforderte Sprache → `en` → `de` → erster vorhandener Eintrag.
+  Für die deutschen Texte gelten die Copy-Regeln des Projekts: keine Gedankenstriche,
+  kein KI-Vokabular, ganze Sätze für Fachanwender statt Entwickler-Jargon.
+  `middleware/test/manifestDescriptionLocalized.test.ts` hält das für alle
+  mitgelieferten Plugins fest.
 
 ---
 

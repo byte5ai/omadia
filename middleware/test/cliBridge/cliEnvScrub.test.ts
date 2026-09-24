@@ -28,6 +28,9 @@ const EXPECTED_SCRUB_KEYS = [
   'AWS_PROFILE',
   'AWS_REGION',
   'AWS_DEFAULT_REGION',
+  // #1014 — `NODE_OPTIONS` can `--require` arbitrary code into the child, so
+  // it belongs with the credentials rather than with the harmless env.
+  'NODE_OPTIONS',
 ] as const;
 
 describe('CLI env scrubbing', () => {
@@ -35,11 +38,23 @@ describe('CLI env scrubbing', () => {
     assert.deepEqual([...CLI_ENV_SCRUB_KEYS].sort(), [...EXPECTED_SCRUB_KEYS].sort());
   });
 
-  it('CliChatAgent.buildEnv strips every scrubbed key and preserves unrelated env', () => {
+  /**
+   * #1014 — the policy changed from "remove the dangerous names" to "keep only
+   * the needed ones", so an unrelated variable no longer survives into the
+   * child. That is the point: the deny list could only ever remove what
+   * somebody had thought of, and it had not thought of `NODE_OPTIONS`.
+   *
+   * This test used to assert the opposite (`MARKER` survives). It is inverted
+   * deliberately, not relaxed: the scrub keys must still all be gone, and now
+   * everything outside the allowlist must be gone too.
+   */
+  it('CliChatAgent.buildEnv keeps only allowlisted env, scrub keys included', () => {
     const rawEnv = Object.fromEntries(
       EXPECTED_SCRUB_KEYS.map((key) => [key, `${key.toLowerCase()}-secret`]),
     ) as NodeJS.ProcessEnv;
     rawEnv['MARKER'] = 'keep-me';
+    rawEnv['PATH'] = '/usr/bin';
+    rawEnv['CLAUDE_CONFIG_DIR'] = '/Users/tester/.claude';
 
     const agent = new CliChatAgent({
       dispatch: {
@@ -52,7 +67,11 @@ describe('CLI env scrubbing', () => {
     for (const key of CLI_ENV_SCRUB_KEYS) {
       assert.equal(env[key], undefined, `${key} must be scrubbed`);
     }
-    assert.equal(env['MARKER'], 'keep-me');
+    // Not allowlisted, so not passed on — even though it is harmless.
+    assert.equal(env['MARKER'], undefined, 'a non-allowlisted var must not reach the child');
+    // Allowlisted, because the CLI cannot run or authenticate without them.
+    assert.equal(env['PATH'], '/usr/bin');
+    assert.equal(env['CLAUDE_CONFIG_DIR'], '/Users/tester/.claude');
   });
 });
 

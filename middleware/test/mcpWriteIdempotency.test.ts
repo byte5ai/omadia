@@ -25,6 +25,7 @@ import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeT
 import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
 import { ToolIdempotencyStore } from '../packages/harness-orchestrator/src/toolIdempotency.js';
 import type { WriteCapability } from '../packages/plugin-api/src/writeCapabilities.js';
+import { isSandboxListenDenied } from './_helpers/listenLoopback.js';
 
 /**
  * #542 prerequisite — duplicate-write protection across the MCP transport retry.
@@ -67,11 +68,9 @@ function forwardableHeaders(headers: IncomingHttpHeaders): Record<string, string
   return out;
 }
 
-function isSandboxListenError(error: unknown): boolean {
-  return (
-    error instanceof Error && 'code' in error && (error as { code?: string }).code === 'EPERM'
-  );
-}
+// #1024 — the local `isSandboxListenError` this replaces ignored
+// `OMADIA_EXPECT_LOOPBACK`, so a listener-denied runner skipped the
+// duplicate-write protection proof and still reported success.
 
 function serverConfig(url: string): McpServerConfig {
   return {
@@ -234,7 +233,7 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
       servers.push(server);
       return handle.url;
     } catch (error) {
-      if (isSandboxListenError(error)) {
+      if (isSandboxListenDenied(error)) {
         t.skip('sandbox blocks loopback listeners on 127.0.0.1');
         return undefined;
       }

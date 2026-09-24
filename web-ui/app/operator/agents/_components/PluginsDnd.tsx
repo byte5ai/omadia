@@ -21,14 +21,13 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { useLocale, useTranslations } from 'next-intl';
+import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { pickLocalized } from '@/app/_lib/localized';
+import { countOverrides, PluginConfigModal } from './PluginConfigModal';
 import type {
   OperatorAgentDto,
   PluginCatalogEntryDto,
-  PluginSetupFieldDto,
 } from '../../../_lib/agents';
 
 const AVAILABLE_ID = '__available';
@@ -245,6 +244,33 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
     });
   }
 
+  /**
+   * Drop one key from the per-orchestrator override map so the plugin falls
+   * back to the store-level install config for that field. Deleting is not the
+   * same as writing `''` — the server treats a present key as an override.
+   */
+  function resetConfigKey(pluginId: string, fieldKey: string): void {
+    setSelected((prev) => {
+      const cur = prev.get(pluginId);
+      if (!cur) return prev;
+      const next = new Map(prev);
+      const config = { ...cur.config };
+      delete config[fieldKey];
+      next.set(pluginId, { ...cur, config });
+      return next;
+    });
+  }
+
+  function resetPluginConfig(pluginId: string): void {
+    setSelected((prev) => {
+      const cur = prev.get(pluginId);
+      if (!cur) return prev;
+      const next = new Map(prev);
+      next.set(pluginId, { ...cur, config: {} });
+      return next;
+    });
+  }
+
   function submit(): void {
     const out: Array<{
       id: string;
@@ -289,6 +315,15 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
   }
 
   const activeEntry = activeId ? catalogById.get(activeId) : undefined;
+  // The config dialog is per-(orchestrator × plugin) and therefore meaningless
+  // on the fallback, which always runs the store config — `storeConfigOnly`
+  // already hides the trigger, this keeps a stale `expanded` id from reopening
+  // it if the agent becomes the fallback while the page is mounted.
+  const configEntry =
+    expanded && !props.isFallback ? catalogById.get(expanded) : undefined;
+  const configSelection = configEntry
+    ? selected.get(configEntry.id)
+    : undefined;
 
   return (
     <div>
@@ -341,10 +376,9 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => attach(row.id)}
-                  expanded={false}
-                  onToggleExpanded={() => undefined}
+                  overrideCount={0}
+                  onOpenConfig={() => undefined}
                   onToggleEnabled={() => undefined}
-                  onSetConfigKey={() => undefined}
                 />
               );
             })}
@@ -370,13 +404,13 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
                   storeConfigOnly={props.isFallback}
                   disabled={props.disabled}
                   onAttach={() => undefined}
-                  expanded={expanded === row.id}
-                  onToggleExpanded={() =>
-                    setExpanded((prev) => (prev === row.id ? null : row.id))
-                  }
+                  overrideCount={countOverrides(
+                    entry.setup_fields,
+                    selection.config,
+                  )}
+                  onOpenConfig={() => setExpanded(row.id)}
                   onToggleEnabled={() => toggleEnabled(row.id)}
                   onDetach={() => detach(row.id)}
-                  onSetConfigKey={(fk, v) => setConfigKey(row.id, fk, v)}
                 />
               );
             })}
@@ -444,6 +478,21 @@ export function PluginsDnd(props: PluginsDndProps): React.ReactElement {
           ) : null}
         </DragOverlay>
       </DndContext>
+      {/* Rendered at the root, not inside the tile: a dialog nested in a
+          `useSortable` node inherits the drag transform and the column's
+          overflow, which clipped it and let a pointer-down on an input start
+          a drag. */}
+      {configEntry && configSelection && (
+        <PluginConfigModal
+          entry={configEntry}
+          values={configSelection.config}
+          disabled={props.disabled}
+          onChange={(fk, v) => setConfigKey(configEntry.id, fk, v)}
+          onReset={(fk) => resetConfigKey(configEntry.id, fk)}
+          onResetAll={() => resetPluginConfig(configEntry.id)}
+          onClose={() => setExpanded(null)}
+        />
+      )}
     </div>
   );
 }
@@ -561,15 +610,12 @@ function DraggablePluginTile(props: {
    *  fallback — fallback always uses the store-config. */
   storeConfigOnly: boolean;
   disabled: boolean;
-  expanded: boolean;
+  /** How many setup fields this orchestrator overrides — 0 = pure store config. */
+  overrideCount: number;
   onAttach: () => void;
   onDetach?: () => void;
-  onToggleExpanded: () => void;
+  onOpenConfig: () => void;
   onToggleEnabled: () => void;
-  onSetConfigKey: (
-    key: string,
-    value: string | boolean | number | string[],
-  ) => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const { entry } = props;
@@ -701,9 +747,17 @@ function DraggablePluginTile(props: {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={props.onToggleExpanded}
+                    onClick={props.onOpenConfig}
                   >
-                    {props.expanded ? t('configHide') : t('configShow')}
+                    {t('configShow')}
+                    {props.overrideCount > 0 && (
+                      <span
+                        title={t('configOverrideBadgeTooltip')}
+                        className="rounded bg-[color:var(--accent)]/12 px-1.5 text-[10px] font-semibold text-[color:var(--accent)]"
+                      >
+                        {props.overrideCount}
+                      </span>
+                    )}
                   </Button>
                 )}
                 <Button
@@ -718,14 +772,6 @@ function DraggablePluginTile(props: {
             )}
           </div>
         </div>
-        {attached && props.expanded && hasFields && (
-          <PluginConfigForm
-            fields={entry.setup_fields}
-            values={props.selection?.config ?? {}}
-            disabled={props.disabled}
-            onChange={props.onSetConfigKey}
-          />
-        )}
       </div>
     </div>
   );
@@ -745,144 +791,5 @@ function KindBadge({ kind }: { kind: string }): React.ReactElement {
     >
       {kind}
     </span>
-  );
-}
-
-function PluginConfigForm(props: {
-  fields: readonly PluginSetupFieldDto[];
-  values: Record<string, unknown>;
-  disabled: boolean;
-  onChange: (
-    key: string,
-    value: string | boolean | number | string[],
-  ) => void;
-}): React.ReactElement {
-  return (
-    <div className="border-t border-[color:var(--border)] bg-[color:var(--bg-soft)]/50 px-3 py-2">
-      <div className="grid gap-2 sm:grid-cols-2">
-        {props.fields.map((f) => (
-          <PluginConfigField
-            key={f.key}
-            field={f}
-            value={props.values[f.key]}
-            disabled={props.disabled}
-            onChange={(v) => props.onChange(f.key, v)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PluginConfigField(props: {
-  field: PluginSetupFieldDto;
-  value: unknown;
-  disabled: boolean;
-  onChange: (value: string | boolean | number | string[]) => void;
-}): React.ReactElement {
-  const { field, value, disabled, onChange } = props;
-  const locale = useLocale();
-  // #602 (OM-17) — `label` / `help` arrive as `{ <locale>: text }` maps from
-  // the manifest loader. Rendering the map object straight into JSX threw
-  // React #31 and replaced the whole orchestrator page with the route error
-  // boundary the moment "Config" was clicked. `key` is the loader's own
-  // fallback for a label-less field, so it is the right last resort here too.
-  const label = pickLocalized(field.label, locale) ?? field.key;
-  const help = pickLocalized(field.help, locale);
-  const isSecret = field.type === 'secret' || field.type === 'password';
-  const isHostList = field.type === 'host_list';
-  const isEnum = field.type === 'enum' && (field.enum?.length ?? 0) > 0;
-  const isBool = field.type === 'boolean';
-  const isNumber = field.type === 'number';
-
-  return (
-    <label className="flex flex-col gap-0.5">
-      <span className="text-[10px] uppercase tracking-wide text-[color:var(--fg-muted)]">
-        {label}
-        {help && (
-          <span className="ml-1 text-[color:var(--fg-subtle)]">— {help}</span>
-        )}
-      </span>
-      {isSecret ? (
-        <input
-          type="password"
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          autoComplete="off"
-          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
-          placeholder={typeof field.default === 'string' ? field.default : ''}
-        />
-      ) : isEnum ? (
-        <select
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
-        >
-          <option value="">—</option>
-          {field.enum?.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      ) : isBool ? (
-        <input
-          type="checkbox"
-          checked={value === true || value === 'true'}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.checked)}
-          className="mt-1"
-        />
-      ) : isNumber ? (
-        <input
-          type="number"
-          value={
-            typeof value === 'number'
-              ? value
-              : value === undefined
-                ? ''
-                : Number(value)
-          }
-          disabled={disabled}
-          onChange={(e) =>
-            onChange(e.target.value === '' ? 0 : Number(e.target.value))
-          }
-          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
-        />
-      ) : isHostList ? (
-        <textarea
-          value={
-            Array.isArray(value)
-              ? value.join('\n')
-              : typeof value === 'string'
-                ? value
-                : ''
-          }
-          disabled={disabled}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(/\n/)
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0),
-            )
-          }
-          rows={3}
-          placeholder="hostname.example.com"
-          className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-xs"
-        />
-      ) : (
-        <input
-          type={field.type === 'url' ? 'url' : 'text'}
-          value={typeof value === 'string' ? value : ''}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={typeof field.default === 'string' ? field.default : ''}
-          className="rounded border border-[color:var(--border)] px-2 py-1 text-xs"
-        />
-      )}
-    </label>
   );
 }

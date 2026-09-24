@@ -40,12 +40,22 @@ const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   timeoutMs: 1_500,
 });
 
-const MIGRATION_PATH = resolve(
+const MIGRATIONS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..',
   'migrations',
-  '0049_agent_teams_identities.sql',
 );
+
+/** The files that build the table this store reads, in order. 0054 adds
+ *  `target_kind`, which is part of the store's SELECT list. */
+const MIGRATION_FILES = [
+  '0049_agent_teams_identities.sql',
+  // 0051 creates `agent_teams_installs`, which 0054 also alters — applying
+  // 0054 without it fails on a relation that does not exist.
+  '0051_agent_teams_installs.sql',
+  '0054_agent_teams_target_kind.sql',
+  '0055_agent_teams_app_object_id.sql',
+] as const;
 
 const SCHEMA = `w1a_teams_ident_${String(process.pid)}`;
 
@@ -63,16 +73,21 @@ describe('W1a AgentTeamsIdentityStore against a real Postgres', { skip: !pgAvail
       max: 2,
       options: `-c search_path=${SCHEMA}`,
     });
-    const migration = await readFile(MIGRATION_PATH, 'utf8');
-    // Applied TWICE on purpose — the migrations README requires every file
-    // to be re-applicable (the schema CI gate double-applies).
-    await pool.query(migration);
-    await pool.query(migration);
+    for (const file of MIGRATION_FILES) {
+      const migration = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
+      // Applied TWICE on purpose — the migrations README requires every file
+      // to be re-applicable (the schema CI gate double-applies).
+      await pool.query(migration);
+      await pool.query(migration);
+    }
     store = new AgentTeamsIdentityStore(pool);
   });
 
   beforeEach(async () => {
-    await pool.query('TRUNCATE agent_teams_identities');
+    // CASCADE because `agent_teams_installs` (0051) carries a foreign key
+    // into this table — the same reason the event-store suite truncates with
+    // it.
+    await pool.query('TRUNCATE agent_teams_identities CASCADE');
   });
 
   after(async () => {

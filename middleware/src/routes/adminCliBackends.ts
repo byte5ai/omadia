@@ -8,7 +8,8 @@
  *  GET  /                       → { backends, generatedAt } (`?refresh=1` to bust cache)
  *  POST /:id/install            → 202 { status:'started' } | 200 { alreadyInstalled } (runtime npm install)
  *  GET  /:id/install/status     → { status: idle|running|succeeded|failed, … }
- *  POST /:id/login/start        → { sessionId, verificationUrl } (spawns `claude auth login`)
+ *  POST /:id/login/start        → { sessionId, verificationUrl, codeEntry, status } (spawns `claude auth login`)
+ *  GET  /:id/login/status       → { status, account?, error? } (poll the browser-callback flow)
  *  POST /:id/login/code         → { status, account? } (writes the pasted code to stdin)
  *  POST /:id/login/cancel       → { ok }
  *  POST /:id/logout             → { ok }
@@ -26,6 +27,7 @@ import {
   submitCliCode,
   cancelCliLogin,
   cliLogout,
+  getActiveLogin,
 } from '../platform/cliAuthService.js';
 import {
   startCliInstall,
@@ -83,6 +85,22 @@ export function createAdminCliBackendsRouter(): Router {
     } catch (err) {
       res.status(400).json({ error: 'login_start_failed', message: errMessage(err) });
     }
+  });
+
+  // OM-73 — poll target for the browser-callback flow (newer CLI prints no
+  // code, finishes on its own). Reports the live login status so the UI can
+  // wait for `authorized` / `error` without a code field.
+  router.get('/:id/login/status', (_req: Request, res: Response) => {
+    const login = getActiveLogin();
+    if (!login) {
+      res.json({ status: 'idle' });
+      return;
+    }
+    res.json({
+      status: login.status,
+      ...(login.account ? { account: login.account } : {}),
+      ...(login.error ? { error: login.error } : {}),
+    });
   });
 
   router.post('/:id/login/code', async (req: Request, res: Response) => {

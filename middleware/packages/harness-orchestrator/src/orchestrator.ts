@@ -43,7 +43,7 @@ import {
 } from './securityScreener.js';
 import { recordScreenOutcome } from './securityScreenMetrics.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -127,15 +127,20 @@ import { sortByToolName } from './toolOrdering.js';
 import { parseAttachmentsInfo } from './attachmentsInfo.js';
 import {
   checkVisionEmbeddable,
+  detectTabularFormat,
   extractAttachmentText,
-  isCsvAttachment,
+  type TabularFormat,
 } from './attachmentExtract.js';
-import { importCsvDataset } from './datasetImport.js';
+import {
+  importTabularDataset,
+  type ImportTabularDatasetResult,
+} from './datasetImportTabular.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
   MemorableKind,
   NudgeRegistry,
+  NativeToolSpec,
   NudgeStateStore,
   PalaiaExcerpt,
   PalaiaExcerptExtractor,
@@ -181,6 +186,9 @@ import {
   type StickyScopeClassification,
 } from './directLineSticky.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
+// #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
+// shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
+import type { CliTurnCards } from './cliChatAgent.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
 import {
@@ -199,7 +207,38 @@ import type {
   AnthropicParams,
   SeamMessage,
 } from './llmProviderSeam.js';
-import { streamMessageEvents } from './streaming.js';
+import { completeWithFallback, streamMessageEvents } from './streaming.js';
+import type { ModelRef } from '@omadia/plugin-api';
+import type { LlmProviderPool } from '@omadia/llm-provider';
+
+/**
+ * #1033 W3 — where a turn runs. Resolved once per turn by
+ * `Orchestrator.resolveTurnExecution`; after a hop the fallback becomes the
+ * execution (`afterFallback`) for every further iteration of the tool loop.
+ */
+interface TurnFallback {
+  readonly provider: LlmProvider;
+  readonly model: string;
+  readonly effort?: EffortLevel;
+  /** The persona prompt compiled for the fallback's family, when it differs. */
+  readonly identity?: string;
+}
+interface TurnExecution {
+  readonly provider: LlmProvider;
+  readonly model: string;
+  readonly effort?: EffortLevel;
+  readonly identity?: string;
+  readonly fallback?: TurnFallback;
+}
+
+/** #1033 W3 — does the wire history carry an image block? (vision gate) */
+function messagesCarryImages(messages: ReadonlyArray<{ content: unknown }>): boolean {
+  return messages.some(
+    (m) =>
+      Array.isArray(m.content) &&
+      m.content.some((b) => typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'image'),
+  );
+}
 import { steeringBus } from './steeringBus.js';
 import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
 import {
@@ -248,7 +287,7 @@ import { RoleSourceRegistry as RoleSourceRegistryImpl } from '@omadia/channel-sd
  * will append to the same registry in later phases — the dispatch paths
  * (isNative checks) use `this.nativeTools.has(name)`, not this list.
  */
-const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
+export const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   'memory',
   'query_knowledge_graph',
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -257,6 +296,110 @@ const KERNEL_NATIVE_TOOL_NAMES: readonly string[] = [
   FIND_FREE_SLOTS_TOOL_NAME,
   BOOK_MEETING_TOOL_NAME,
 ];
+
+/** A kernel-native tool instance the loopback handler delegates to. */
+interface KernelNativeHandleable {
+  handle(input: unknown): Promise<string>;
+}
+
+/**
+ * Issue #1102 — the per-turn tool instances a full-form kernel-native
+ * registration delegates to. A field is `undefined` when this Agent was built
+ * without that capability; the tool is then registered marker-only, exactly as
+ * before. Keys are required (not `?`) so a new kernel native cannot be added to
+ * the wiring table and silently forgotten at the call site.
+ */
+export interface KernelNativeInstances {
+  knowledgeGraphTool: KernelNativeHandleable | undefined;
+  askUserChoiceTool: KernelNativeHandleable | undefined;
+  suggestFollowUpsTool: KernelNativeHandleable | undefined;
+  findFreeSlotsTool: KernelNativeHandleable | undefined;
+  bookMeetingTool: KernelNativeHandleable | undefined;
+}
+
+/**
+ * The kernel natives that get a real spec + handler on the loopback/CLI path.
+ *
+ * `memory` and `get_chat_participants` are deliberately absent:
+ *  - `memory` resolves a per-turn `MemoryBinder` handler in the in-process loop
+ *    (the axis that keeps team A's notes out of team B, see `dispatchToolInner`);
+ *    that binding is not resolved on the loopback path, so advertising the
+ *    build-time handler would risk crossing the tenant boundary. Wiring it
+ *    safely is a follow-up; until then Stage 1's honesty sentence tells the CLI
+ *    model it has no memory here (#1102).
+ *  - `get_chat_participants` stays channel-bound, as the issue specifies.
+ */
+const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
+  readonly name: string;
+  readonly spec: NativeToolSpec;
+  readonly pick: (i: KernelNativeInstances) => KernelNativeHandleable | undefined;
+}> = [
+  {
+    name: KNOWLEDGE_GRAPH_TOOL_NAME,
+    spec: knowledgeGraphToolSpec,
+    pick: (i) => i.knowledgeGraphTool,
+  },
+  {
+    name: ASK_USER_CHOICE_TOOL_NAME,
+    spec: askUserChoiceToolSpec,
+    pick: (i) => i.askUserChoiceTool,
+  },
+  {
+    name: SUGGEST_FOLLOW_UPS_TOOL_NAME,
+    spec: suggestFollowUpsToolSpec,
+    pick: (i) => i.suggestFollowUpsTool,
+  },
+  {
+    name: FIND_FREE_SLOTS_TOOL_NAME,
+    spec: findFreeSlotsToolSpec,
+    pick: (i) => i.findFreeSlotsTool,
+  },
+  {
+    name: BOOK_MEETING_TOOL_NAME,
+    spec: bookMeetingToolSpec,
+    pick: (i) => i.bookMeetingTool,
+  },
+];
+
+/** The spec objects {@link registerKernelNativeTools} puts into the native
+ *  registry. `buildToolsList()` advertises these itself, so its native-registry
+ *  loop must skip them (by identity — a plugin spec with the same name is a
+ *  genuine collision and goes through the dedupe instead). */
+const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
+  KERNEL_NATIVE_FULL_FORM.map((f) => f.spec),
+);
+
+/**
+ * Register the kernel-native tools into `registry`, giving each of the wired
+ * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
+ * MCP server actually advertises AND dispatches it on the subscription-CLI
+ * path (#1102). The rest stay marker-only — dispatchable by the in-process
+ * loop's own branches, invisible to the CLI, exactly as before.
+ *
+ * A name already present in `registry` (a plugin got there first) is left
+ * untouched, matching the previous loop's `has()` guard.
+ */
+export function registerKernelNativeTools(
+  registry: NativeToolRegistry,
+  instances: KernelNativeInstances,
+): void {
+  const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
+  for (const name of KERNEL_NATIVE_TOOL_NAMES) {
+    if (registry.has(name)) {
+      continue;
+    }
+    const full = fullByName.get(name);
+    const instance = full?.pick(instances);
+    if (full && instance) {
+      registry.register(name, {
+        spec: full.spec,
+        handler: (input: unknown) => instance.handle(input),
+      });
+    } else {
+      registry.register(name);
+    }
+  }
+}
 
 // `DiagramAttachment` was moved to `@omadia/channel-sdk` in S+10-2; see
 // the import block at the top. Re-exported below from this module's barrel
@@ -281,9 +424,9 @@ export interface AiDisclosureSetup {
   readonly level: AiDisclosureLevel;
   /**
    * Per-channel level overrides, keyed by `ChannelKind` (`teams` | `telegram` |
-   * `slack` | `email` | `web`). A turn whose channel does not resolve to a
-   * `ChannelKind` falls back to {@link level} — the safe direction (the marking
-   * stays active). NOTE: today only `teams`/`slack`/`telegram` are ever
+   * `slack` | `email` | `web` | `api`). A turn whose channel does not resolve to
+   * a `ChannelKind` falls back to {@link level} — the safe direction (the marking
+   * stays active). NOTE: today only `teams`/`slack`/`telegram`/`api` are ever
    * populated as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`
    * is the sole setter of `channelIdentity`); `email` and `web` turns carry none
    * yet (as do discord / whatsapp / canvas-custom / HTTP-dev) and therefore use
@@ -316,6 +459,27 @@ export interface OrchestratorOptions {
    * every turn uses `model` (routing off). See {@link routeTurnModel}.
    */
   modelRouting?: ModelRoutingConfig;
+  /**
+   * #1033 — reasoning effort pinned by the agent's model policy, sent on every
+   * request of this agent (the adapter maps it to its vendor's parameter or
+   * ignores it). Absent = the vendor's default.
+   */
+  effort?: EffortLevel;
+  /**
+   * #1033 W3 — the multi-provider turn loop. `providerPool` resolves any
+   * provider the policy names; `primaryRef` (when it names a provider other
+   * than `provider`'s) moves the whole turn there; `fallbackRef` is the one
+   * hop taken when the primary fails before producing output (or is in
+   * cooldown). `identityByFamily` supplies the persona prompt compiled for
+   * the fallback's model family, so a cross-family hop never speaks a prompt
+   * composed for the other family. `fallbackVisionSupported: false` withholds
+   * the hop on a turn that carries images.
+   */
+  providerPool?: Pick<LlmProviderPool, 'get' | 'health'>;
+  primaryRef?: ModelRef;
+  fallbackRef?: ModelRef;
+  identityByFamily?: Readonly<Record<string, string>>;
+  fallbackVisionSupported?: boolean;
   maxTokens: number;
   /**
    * #504/#505 (round-6 codex review) — the ACTIVE model's vision capability
@@ -361,6 +525,15 @@ export interface OrchestratorOptions {
   maxTurnSeconds?: number;
   /** One delegation tool per Managed Agent domain (accounting, hr, …). */
   domainTools: DomainTool[];
+  /**
+   * The plugin ids this Agent is granted. Present ⇒ a domain tool owned by a
+   * plugin NOT in this set is refused at dispatch, whatever put it on this
+   * instance. Absent ⇒ ungated (the legacy single-Agent orchestrator, which
+   * legitimately holds the whole deployment's tools).
+   * See `AgentRuntimeConfig.grantedPluginIds` for why this is re-checked here
+   * rather than trusted from registration.
+   */
+  grantedPluginIds?: readonly string[];
   /**
    * #332 Layer 2 — Direct Line delivery policy. `'strict'` (default) relays a
    * directed specialist's verbatim answer with no orchestrator generation;
@@ -684,6 +857,24 @@ export interface OrchestratorOptions {
    * the concrete agent roster is still rendered live from `domainTools`.
    */
   assistantIdentity?: string;
+  /**
+   * #967 — this Agent's own authored name (`agent_identities.display_name`),
+   * already folded into {@link assistantIdentity} by `withAgentName`.
+   *
+   * Supplied SEPARATELY as well because the system prompt is not the only
+   * surface that states a name: the AI-Act Art. 50 marking names the assistant
+   * too, and it is deliberately resolved behind the model (see
+   * `resolveTurnDisclosure`) where the prompt is out of reach by design. Without
+   * this field that line has only the platform-wide
+   * `ai_disclosure_assistant_name` to go on — ONE operator-typed string for the
+   * whole deployment, which in a multi-agent deployment is right for at most
+   * one Agent and signs every other Agent's answers with a stranger's name.
+   *
+   * An override, not a replacement: absent (or blank) falls through to the
+   * operator's configured name, so a single-Agent deployment that set one is
+   * completely unaffected.
+   */
+  identityName?: string;
   /**
    * Wave 8 — skills attached to this Agent as direct-answer persona
    * candidates. When non-empty, each turn runs a Haiku classifier
@@ -1292,6 +1483,30 @@ export const SECURITY_QUARANTINE_NOTICE =
   'Diese Eingabe wurde vom Sicherheits-Screening zurückgehalten und nicht verarbeitet. / This input was withheld by security screening and was not processed.';
 
 /**
+ * Shown when the model's safety classifiers decline the turn
+ * (`stop_reason: "refusal"`, HTTP 200 — Fable 5.x, Opus 5+, Sonnet 5). The API
+ * then returns no text or only a fragment; without this the user saw an empty
+ * reply that looked like a platform bug. DE-first with an EN line, same shape
+ * as {@link SECURITY_QUARANTINE_NOTICE}.
+ */
+export const MODEL_REFUSAL_NOTICE =
+  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell. / The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+
+/**
+ * The turn's final answer text. A refusal is made explicit: an empty answer
+ * becomes {@link MODEL_REFUSAL_NOTICE}, a partial one (refusal mid-stream)
+ * gets the notice appended so the fragment is not mistaken for a full answer.
+ */
+export function finalAnswerText(
+  textParts: readonly string[],
+  stopReason: string | null | undefined,
+): string {
+  const text = textParts.join('\n\n').trim();
+  if (stopReason !== 'refusal') return text;
+  return text === '' ? MODEL_REFUSAL_NOTICE : `${text}\n\n${MODEL_REFUSAL_NOTICE}`;
+}
+
+/**
  * #579 — fail-open evidence. Fold the untrusted-data marker into the turn's
  * `extraSystemHint` (a non-cached system block, wire-only — NOT persisted to the
  * session log, honouring "persist raw, disclose at boundary"), so an
@@ -1405,15 +1620,30 @@ function buildSystemPrompt(
 
 Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf.
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit \`create_xlsx\` und derselben \`datasetId\`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+
+b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
+
+   **Verboten**, weil du es nicht wissen kannst: „der Privacy Shield greift hier nicht", „der Inhalt liegt im Klartext vor", „die Daten wurden anonymisiert", „das ist DSGVO-konform", „bei Datei-Uploads gibt es keinen Schutz" — und jede andere Aussage darüber, was das System mit den Daten getan oder nicht getan hat, die nicht wörtlich in einem der genannten Blöcke steht.
+
+   Ein **falscher Alarm ist schlimmer als gar kein Hinweis**: der User handelt danach. Steht kein \`PRIVACY STATUS\` dabei, sag „dazu liegt mir keine Angabe vor" oder schweig zum Thema — rate nicht, und leite nichts aus früheren Gesprächen, Transkripten oder deinem Allgemeinwissen ab. Das Verhalten des Systems ändert sich mit Releases; ein Transkript von letzter Woche ist **kein** Beleg für heute.
+
+   Ungefragte Datenschutz-Hinweise („⚠️ Datenschutz-Hinweis", „DSGVO-Rechtsgrundlage beachten") gehören nicht in deine Antwort, außer der User fragt danach oder ein Block sagt dir ausdrücklich, dass etwas nicht verarbeitet wurde.
 
 c) **Join-Back-Rezept für Rankings/Aggregate mit Namen:** \`v4_aggregate\`/\`v4_group\`/\`v4_join\` arbeiten nur über **safe (nicht-maskierte)** Schlüssel — Gruppieren nach einem maskierten Namen ist nicht möglich, ein Aggregat verliert daher die Namens-Spalte. Um sie zurückzuholen:
    1. Hole **beide** Datasets: die Transaktionsdaten (z.B. Urlaubsanträge) UND das Stammdaten-Directory (z.B. Mitarbeiterliste mit \`employee_id\` + Name) — das sind in der Regel zwei Fach-Agent-Aufrufe.
    2. \`v4_aggregate\` die Transaktionen über den safe Schlüssel (z.B. \`employee_id\`).
    3. \`v4_join\` das Aggregat mit dem Directory auf \`employee_id\` → jede Zeile trägt wieder den Namen.
    4. \`v4_sort\`/\`v4_top_n\`, dann \`v4_render_answer\` mit \`columns: ["employee", …]\`.
+
+d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabellen tragen pro Textspalte eine **Schlüsselspalte \`__k_<Spalte>\`** — ein stabiler, identitätsfreier Schlüssel: derselbe Wert (Name, E-Mail, Firma) ergibt in **jeder** Datei dieses Users denselben Schlüssel, unabhängig von Groß-/Kleinschreibung und Leerzeichen. Diese Spalten sind safe und dürfen als Verb-Schlüssel dienen — die Namensspalte selbst nicht. Rezept:
+   1. \`query_dataset\` → \`query_rows\` je Datei (bei mehr als 200 Zeilen mit \`offset\` weiterblättern) — jedes Ergebnis liefert eine \`datasetId\` im Digest.
+   2. \`v4_union\` über alle Teile (bei abweichenden Spaltennamen \`renameRight\`, z.B. \`{"Phone":"Telefon"}\`).
+   3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
+   4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
+   Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
 `
     : '';
 
@@ -1802,6 +2032,14 @@ export class Orchestrator {
   private readonly provider: LlmProvider;
   private readonly model: string;
   private readonly modelRouting: ModelRoutingConfig | undefined;
+  /** #1033 — see {@link OrchestratorOptions.effort}. */
+  private readonly effort: EffortLevel | undefined;
+  /** #1033 W3 — see the matching {@link OrchestratorOptions} fields. */
+  private readonly providerPool: Pick<LlmProviderPool, 'get' | 'health'> | undefined;
+  private readonly primaryRef: ModelRef | undefined;
+  private readonly fallbackRef: ModelRef | undefined;
+  private readonly identityByFamily: Readonly<Record<string, string>> | undefined;
+  private readonly fallbackVisionSupported: boolean | undefined;
   /** Wave 8 — direct-answer persona candidates; empty when none attached. */
   private readonly personaSkills: readonly OrchestratorPersonaSkill[];
   private readonly maxTokens: number;
@@ -1820,6 +2058,8 @@ export class Orchestrator {
   /** W5 — per-chat-context binder; overrides `memoryToolHandler` per turn. */
   private readonly memoryBinder: MemoryBinder | undefined;
   private readonly domainToolsByName: Map<string, DomainTool>;
+  /** `undefined` = ungated. A Set for O(1) checks on the dispatch path. */
+  private readonly grantedPluginIds: ReadonlySet<string> | undefined;
   /** #332 Layer 2 — Direct Line delivery policy (default `'strict'`). */
   private readonly directLineMode: DirectLineMode;
   /** #332 Layer 2 — directive prefix (default `'#'`). */
@@ -1863,6 +2103,21 @@ export class Orchestrator {
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
+  /**
+   * #1033 W0 — what each in-flight turn actually ran on, keyed by turn id.
+   * Written where the turn model is resolved (both the buffered and the
+   * streaming loop), read once by `persistTurnReceipt` so the receipt names
+   * the routed model and its provider — not the configured default, which is
+   * what `turn_receipts.model` used to record. The fallback path (W3) flips
+   * `fallbackUsed` on the same entry. Bounded: entries are consumed at
+   * persist, and a turn that never reaches a receipt is evicted FIFO once the
+   * map outgrows the cap, so a long-running process cannot leak turn ids.
+   */
+  private readonly turnAttribution = new Map<
+    string,
+    { model: string; provider: string; fallbackUsed: boolean }
+  >();
+  private static readonly TURN_ATTRIBUTION_CAP = 512;
   /** Slice 2.5 — cross-plugin runtime-config lookup (see OrchestratorOptions). */
   private readonly pluginConfigGet:
     | ((agentId: string, configKey: string) => unknown | undefined)
@@ -1889,6 +2144,9 @@ export class Orchestrator {
   /** Operator persona — first line(s) of the system prompt. See
    *  `OrchestratorOptions.assistantIdentity` / `DEFAULT_ASSISTANT_IDENTITY`. */
   private readonly assistantIdentity: string;
+  /** #967 — this Agent's own authored name. See
+   *  `OrchestratorOptions.identityName`. */
+  private readonly identityName: string | undefined;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -1926,6 +2184,12 @@ export class Orchestrator {
     this.provider = options.provider;
     this.model = options.model;
     this.modelRouting = options.modelRouting;
+    this.effort = options.effort;
+    this.providerPool = options.providerPool;
+    this.primaryRef = options.primaryRef;
+    this.fallbackRef = options.fallbackRef;
+    this.identityByFamily = options.identityByFamily;
+    this.fallbackVisionSupported = options.fallbackVisionSupported;
     this.personaSkills = options.personaSkills ?? [];
     this.maxTokens = options.maxTokens;
     this.visionSupported = options.visionSupported;
@@ -1939,6 +2203,9 @@ export class Orchestrator {
     this.memoryToolHandler = options.memoryToolHandler;
     this.memoryBinder = options.memoryBinder;
     this.domainToolsByName = new Map(options.domainTools.map((t) => [t.name, t]));
+    this.grantedPluginIds = options.grantedPluginIds
+      ? new Set(options.grantedPluginIds)
+      : undefined;
     this.directLineMode = options.directLineMode ?? 'strict';
     this.directLinePrefix = options.directLinePrefix ?? '#';
     this.directLineSticky = options.directLineSticky ?? false;
@@ -2004,6 +2271,7 @@ export class Orchestrator {
     this.graphTenantId = options.graphTenantId;
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
+    this.identityName = options.identityName?.trim() || undefined;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -2019,11 +2287,16 @@ export class Orchestrator {
     this.turnHookRegistry = options.turnHookRegistry;
 
     this.nativeTools = options.nativeToolRegistry;
-    for (const name of KERNEL_NATIVE_TOOL_NAMES) {
-      if (!this.nativeTools.has(name)) {
-        this.nativeTools.register(name);
-      }
-    }
+    // #1102 — the wired five get a spec + handler so the loopback MCP server
+    // advertises and dispatches them on the subscription-CLI path; memory and
+    // get_chat_participants stay marker-only (see registerKernelNativeTools).
+    registerKernelNativeTools(this.nativeTools, {
+      knowledgeGraphTool: this.knowledgeGraphTool,
+      askUserChoiceTool: this.askUserChoiceTool,
+      suggestFollowUpsTool: this.suggestFollowUpsTool,
+      findFreeSlotsTool: this.findFreeSlotsTool,
+      bookMeetingTool: this.bookMeetingTool,
+    });
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -2182,7 +2455,18 @@ export class Orchestrator {
     if (!stateStore) return;
 
     const sessionScope = input.sessionScope ?? '';
-    const agentId = 'orchestrator';
+    // THIS Agent, not the literal `'orchestrator'` this used to be. The state
+    // store keys cooldowns and open-emission follow-ups on `(agentId,
+    // nudgeId)`, so a shared constant made every Agent in the process share
+    // one nudge budget: agent A emitting a nudge put it on cooldown for agent
+    // B, and B's follow-up matched A's open emission. Single-agent
+    // deployments are unaffected — `this.agentId` defaults to `'default'` and
+    // there is only ever one of them.
+    //
+    // Existing rows keyed `'orchestrator'` are simply no longer read, which
+    // resets cooldowns once. That is the cheap direction of the error: a nudge
+    // fires again, rather than being suppressed by a key nobody owns.
+    const agentId = this.agentId;
     // OB-77 — append THIS iteration's entries onto the turn-cumulative
     // trace BEFORE running the pipeline so the multi-domain trigger sees
     // every tool the agent has used so far in this turn (sub-agents
@@ -2741,6 +3025,36 @@ export class Orchestrator {
   }
 
   /**
+   * Issue #1102 — drain the interactive-card state a subscription-CLI turn left
+   * on the kernel-native tool instances, so the CliChatAgent can attach it to
+   * its `done` event and the card / chips / slot-picker actually render.
+   *
+   * On the in-process path the same four drains run inline at every turn-loop
+   * exit (see the `done` assembly). The CLI owns its own loop, so it calls this
+   * ONCE after its subprocess terminates. Draining also clears the instances,
+   * so the next CLI turn starts clean — same contract as the in-process drains.
+   *
+   * Privacy restore (`restorePendingChoiceForUser` / `restoreFollowUpsForUser`)
+   * is intentionally NOT applied: the CLI path does not run the orchestrator's
+   * per-turn privacy shield in-band, so there is no turn handle to un-mask
+   * surrogates against. The values are whatever the tool handlers stored, which
+   * is the same input the CLI model itself produced. Surfacing masked values is
+   * a follow-up that belongs with the CLI path's privacy-shield integration.
+   */
+  public drainCliTurnCards(): CliTurnCards {
+    const pendingUserChoice = this.drainPendingChoice();
+    const followUpOptions = this.drainFollowUps();
+    const pendingSlotCard = this.drainPendingSlotCard();
+    const pendingOAuthConsent = this.drainConsentRequired();
+    return {
+      ...(pendingUserChoice ? { pendingUserChoice } : {}),
+      ...(followUpOptions ? { followUpOptions } : {}),
+      ...(pendingSlotCard ? { pendingSlotCard } : {}),
+      ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+    };
+  }
+
+  /**
    * Install the per-turn SSO context on the calendar tools before the tool
    * loop, and remove it after — so a tool invocation on a subsequent turn
    * without an assertion can't accidentally reuse a stale token.
@@ -3037,7 +3351,9 @@ export class Orchestrator {
       result,
       result.aiDisclosure
         ? {
-            ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+            ...(input.sessionScope
+              ? { scope: this.disclosureFoldScope(input.sessionScope) }
+              : {}),
             seen: this.disclosureSeen,
           }
         : undefined,
@@ -3086,12 +3402,50 @@ export class Orchestrator {
       source,
       ...(setup?.locale ? { locale: setup.locale } : {}),
     };
+    // #967 — THIS Agent's authored name outranks the platform-wide
+    // `ai_disclosure_assistant_name`. The setup field is one string for the
+    // whole deployment, so with several provisioned bots alive it can be
+    // correct for at most one of them and makes every other bot sign its
+    // answers as that one. Same precedence the system prompt already uses
+    // (`config.identityInstructions || deps.assistantIdentity`), applied to
+    // the one other surface that states a name.
+    //
+    // Reading the Agent's OWN name here does not reopen the AC2 hole the
+    // doc-comment above guards: `identityName` is a single operator-authored
+    // name from `agent_identities`, not the prompt, so a branded persona still
+    // cannot reach in and suppress or reword the marking.
+    const assistantName = this.identityName ?? setup?.assistantName;
     return resolveAiDisclosure({
       policy,
       ...(setup?.locale ? { locale: setup.locale } : {}),
-      ...(setup?.assistantName ? { assistantName: setup.assistantName } : {}),
+      ...(assistantName ? { assistantName } : {}),
       ...(setup?.operatorNote ? { operatorNote: setup.operatorNote } : {}),
     });
+  }
+
+  /**
+   * #644 / #967 — the first-turn fold-dedup key for a conversation.
+   *
+   * Agent-QUALIFIED, because the store behind it is process-wide (one
+   * `InMemoryDisclosureSeenStore` in the shared `OrchestratorDeps`, deliberately
+   * so a rebuild does not re-mark an ongoing conversation) while a conversation
+   * scope is NOT exclusive to one Agent. Several provisioned bots share one
+   * Teams group chat — the deployment `identityForChannel` exists to serve — so
+   * on the raw scope the first bot to answer consumed the marking slot for
+   * every other bot in the room, and their answers went out unmarked.
+   *
+   * Same `<agentSlug>::<scope>` convention, and the same reasoning, as
+   * `graphScopeFor`, which agent-qualifies the KG scope built from this
+   * identical `sessionScope`; this was the one remaining consumer of it that
+   * still keyed on the raw value.
+   *
+   * A key change re-marks each live conversation once after the upgrade. That
+   * is the direction #644 asks for on any doubt ("an undeterminable scope folds
+   * rather than omits") — one repeated marking is a non-event, a missing one is
+   * the compliance gap.
+   */
+  private disclosureFoldScope(sessionScope: string | undefined): string | undefined {
+    return sessionScope === undefined ? undefined : `${this.agentId}::${sessionScope}`;
   }
 
   /**
@@ -3112,7 +3466,9 @@ export class Orchestrator {
     if (!aiDisclosure) return done;
     const { text } = applyAiDisclosure(done.answer, {
       disclosure: aiDisclosure,
-      ...(input.sessionScope ? { scope: input.sessionScope } : {}),
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
       seen: this.disclosureSeen,
     });
     return { ...done, answer: text, aiDisclosure };
@@ -3489,6 +3845,10 @@ export class Orchestrator {
             result = {
               ...result,
               answer: v4Rendered.text,
+              // #1105 — see the streaming twin: mark the server-rendered
+              // answer so `toSemanticAnswer` / clients can tell it apart from
+              // the model's own text.
+              answerSource: 'privacy-render',
               ...(v4Rendered.maskedValues.length > 0
                 ? { maskedValues: v4Rendered.maskedValues }
                 : {}),
@@ -3539,19 +3899,120 @@ export class Orchestrator {
    * failure (`persistFailures`) and this logs it greppably — the exact
    * inversion of the RunTrace defect (#684), where the drop was invisible.
    */
+  /** #1033 W0 — see `turnAttribution`. Same entry point for both loops. */
+  private recordTurnAttribution(
+    turnId: string,
+    model: string,
+    providerId: string = this.provider.id,
+    fallbackUsed = false,
+  ): void {
+    if (!this.turnAttribution.has(turnId) && this.turnAttribution.size >= Orchestrator.TURN_ATTRIBUTION_CAP) {
+      const oldest = this.turnAttribution.keys().next().value;
+      if (oldest !== undefined) this.turnAttribution.delete(oldest);
+    }
+    this.turnAttribution.set(turnId, { model, provider: providerId, fallbackUsed });
+  }
+
+  /** #1033 W3 — the persona family a model id belongs to (mirrors the
+   *  middleware's `inferFamilyFromModel`: unknown ids read as sonnet). */
+  private static familyOf(model: string): string {
+    const m = model.toLowerCase();
+    if (m.includes('opus')) return 'opus';
+    if (m.includes('haiku')) return 'haiku';
+    return 'sonnet';
+  }
+
+  /**
+   * #1033 W3 — where THIS turn runs, and where it may hop to.
+   *
+   * Resolved once per turn, before the first model call, so every iteration
+   * of the tool loop is stable. The primary is `this.provider`/`turnModel`
+   * unless the policy pins a primary on another provider the pool can
+   * serve. The fallback is withheld when it would be the same provider+model
+   * as the primary (nothing to hop to), when the pool cannot serve it (no
+   * key), or when the turn carries images the fallback model cannot read.
+   */
+  private async resolveTurnExecution(
+    turnModel: string,
+    hasImages: boolean,
+  ): Promise<TurnExecution> {
+    let provider = this.provider;
+    let model = turnModel;
+    let effort = this.effort;
+    if (this.primaryRef && this.providerPool && this.primaryRef.provider !== this.provider.id) {
+      const resolved = await this.providerPool.get(this.primaryRef.provider).catch(() => undefined);
+      if (resolved) {
+        provider = resolved;
+        model = this.primaryRef.model;
+        effort = this.primaryRef.effort ?? effort;
+      } else {
+        console.warn(
+          `[orchestrator] agent '${this.agentId}': primary provider '${this.primaryRef.provider}' is not available (no key?) — running on '${this.provider.id}'`,
+        );
+      }
+    }
+    let fallback: TurnFallback | undefined;
+    if (this.fallbackRef && this.providerPool) {
+      if (hasImages && this.fallbackVisionSupported === false) {
+        console.warn(
+          `[orchestrator] agent '${this.agentId}': fallback model '${this.fallbackRef.model}' cannot read images — no fallback on this turn`,
+        );
+      } else {
+        const fbProvider =
+          this.fallbackRef.provider === provider.id
+            ? provider
+            : await this.providerPool.get(this.fallbackRef.provider).catch(() => undefined);
+        if (fbProvider && !(fbProvider.id === provider.id && this.fallbackRef.model === model)) {
+          const family = Orchestrator.familyOf(this.fallbackRef.model);
+          fallback = {
+            provider: fbProvider,
+            model: this.fallbackRef.model,
+            ...(this.fallbackRef.effort !== undefined ? { effort: this.fallbackRef.effort } : {}),
+            ...(family !== Orchestrator.familyOf(model) && this.identityByFamily?.[family]
+              ? { identity: this.identityByFamily[family] }
+              : {}),
+          };
+        }
+      }
+    }
+    return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
+  }
+
+  /** #1033 W3 — after the hop, the fallback IS the execution for the rest of the turn. */
+  private static afterFallback(exec: TurnExecution): TurnExecution {
+    const fb = exec.fallback;
+    if (!fb) return exec;
+    return {
+      provider: fb.provider,
+      model: fb.model,
+      ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+      ...(fb.identity !== undefined ? { identity: fb.identity } : {}),
+    };
+  }
+
   private async persistTurnReceipt(
     turnId: string,
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
   ): Promise<void> {
     const store = this.turnReceiptStore?.();
+    // Consume the attribution whether or not a store is wired: the entry has
+    // no other reader and must not outlive the turn.
+    const ran = this.turnAttribution.get(turnId);
+    this.turnAttribution.delete(turnId);
     if (!store) return;
     try {
       await store.record({
         turnId,
         sessionScope: input.sessionScope,
         channel: input.channelIdentity?.channelKind,
-        model: this.model,
+        // #1033 W0 — the model the turn ran on. `this.model` is the
+        // configured default and was the wrong value for every triage-routed
+        // turn; without a recorded attribution it stays the honest fallback
+        // rather than a guess.
+        model: ran?.model ?? this.model,
+        provider: ran?.provider ?? this.provider.id,
+        fallbackUsed: ran?.fallbackUsed ?? false,
         receipt,
       });
     } catch (err) {
@@ -4395,9 +4856,12 @@ export class Orchestrator {
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
+    // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
-    traceCollector?.recordModel(turnModel, this.provider.id);
+    traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -4412,17 +4876,23 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
-        const baseParams = {
-          model: turnModel,
-          max_tokens: this.maxTokens,
-          system: buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
+        // #1033 W3 — the system prompt for a given persona: the routed
+        // persona skill outranks everything; otherwise the execution's own
+        // identity (the fallback family's compiled prompt after a hop).
+        const systemFor = (persona: string | undefined) =>
+          buildSystemBlocks(
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
             priorContext,
             withFinalizeHint(
               effectiveExtraSystemHint,
               finalizeThisIter && !forceObligation,
             ),
-          ),
+          );
+        const baseParams = {
+          model: turnExec.model,
+          ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
+          max_tokens: this.maxTokens,
+          system: systemFor(turnPersonaBody ?? turnExec.identity),
           tools: finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
           ...(forceObligation && obligationTool
             ? { tool_choice: forceObligationFor }
@@ -4433,18 +4903,53 @@ export class Orchestrator {
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
         const safeParams = ensureWellFormedParams(baseParams);
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
 
-        const response: Message = fromLlmResponse(
-          await this.provider.complete(
-            toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
-          ),
-        );
+        const completed = await completeWithFallback({
+          provider: turnExec.provider,
+          request: toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
+          ...(fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  request: toLlmRequest(
+                    ensureWellFormedParams({
+                      ...baseParams,
+                      model: fb.model,
+                      ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+                      system: systemFor(turnPersonaBody ?? fb.identity),
+                    }),
+                    [MEMORY_BETA_HEADER],
+                  ),
+                  ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
+                },
+              }
+            : {}),
+          streamLabel: 'orchestrator',
+        });
+        if (completed.fallbackUsed) {
+          turnExec = Orchestrator.afterFallback(turnExec);
+          this.recordTurnAttribution(turnId, completed.fallbackUsed.model, completed.fallbackUsed.providerId, true);
+          traceCollector?.recordModel(completed.fallbackUsed.model, completed.fallbackUsed.providerId);
+        }
+        const response: Message = fromLlmResponse(completed.response);
 
         messages.push({ role: 'assistant', content: response.content });
         textParts.push(...collectTextBlocks(response.content));
 
         if (response.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, response.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // Only force a retry on a PURE-TEXT end (no tool_use block). A
           // tool_use present with a non-'tool_use' stop_reason means the model
@@ -5141,7 +5646,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5218,6 +5727,9 @@ export class Orchestrator {
               ? {
                   ...event,
                   answer: v4Rendered.text,
+                  // #1105 — mark the answer as server-rendered so a streaming
+                  // client knows it supersedes the `text_delta` preview.
+                  answerSource: 'privacy-render' as const,
                   ...(v4Rendered.maskedValues.length > 0
                     ? { maskedValues: v4Rendered.maskedValues }
                     : {}),
@@ -5243,7 +5755,11 @@ export class Orchestrator {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
               await this.persistTurnReceipt(turnId, input, receipt);
-              doneEvent = { ...doneEvent, privacyReceipt: receipt };
+              // #1107 — surface the receipt-store key (== turnId) so an API
+              // caller can correlate this turn with `GET .../receipts/:id`.
+              // Emitted only inside `if (receipt)`, so the id appears exactly
+              // when a row was written.
+              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
             }
           } catch (err) {
             console.warn(
@@ -5450,10 +5966,13 @@ export class Orchestrator {
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
+    // #1033 W3 — which provider/model this turn runs on and where it may hop.
+    let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
-    traceCollector?.recordModel(turnModel, this.provider.id);
+    traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
+    this.recordTurnAttribution(turnId, turnExec.model, turnExec.provider.id);
     // Surface the Haiku-triage decision inline, before the first model call —
     // the UI renders it at the top of the turn card so the operator sees the
     // classifier's verdict (simple/complex → model) as soon as it lands.
@@ -5534,26 +6053,58 @@ export class Orchestrator {
         }
 
         let finalMessage: Message | undefined;
-        for await (const ev of streamMessageEvents({
-          provider: this.provider,
-          params: {
-            model: turnModel,
-            max_tokens: this.maxTokens,
-            system: buildSystemBlocks(
-              this.composeStableSystemPrompt(prependRules, turnPersonaBody, turnMemory?.contextBound === true),
-              priorContext,
-              withFinalizeHint(
-                effectiveExtraSystemHint,
-                finalizeThisIter && !forceObligation,
-              ),
+        // #1033 W3 — see the buffered path: persona skill first, else the
+        // execution's own identity (the fallback family's prompt after a hop).
+        const systemFor = (persona: string | undefined) =>
+          buildSystemBlocks(
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            priorContext,
+            withFinalizeHint(
+              effectiveExtraSystemHint,
+              finalizeThisIter && !forceObligation,
             ),
-            tools:
-              finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-            ...(forceObligation && obligationTool
-              ? { tool_choice: forceObligationFor }
-              : {}),
-            messages,
-          },
+          );
+        const streamParams = {
+          model: turnExec.model,
+          ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
+          max_tokens: this.maxTokens,
+          system: systemFor(turnPersonaBody ?? turnExec.identity),
+          tools:
+            finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
+          ...(forceObligation && obligationTool
+            ? { tool_choice: forceObligationFor }
+            : {}),
+          messages,
+        };
+        // #1033 W3 — a hop to ANOTHER provider is only taken before the first
+        // model call of the turn: from iteration 1 on the transcript carries
+        // tool_use/tool_result pairs and cache markers shaped by the primary's
+        // adapter, and replaying them through another wire format is exactly
+        // the kind of silent corruption a fallback must not introduce. A
+        // same-provider fallback (another model on the same wire) may hop at
+        // any iteration.
+        const fb =
+          turnExec.fallback &&
+          (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
+            ? turnExec.fallback
+            : undefined;
+        for await (const ev of streamMessageEvents({
+          provider: turnExec.provider,
+          params: streamParams,
+          ...(fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  params: {
+                    ...streamParams,
+                    model: fb.model,
+                    ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
+                    system: systemFor(turnPersonaBody ?? fb.identity),
+                  },
+                  ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
+                },
+              }
+            : {}),
           observer,
           iteration,
           streamLabel: 'orchestrator',
@@ -5561,6 +6112,22 @@ export class Orchestrator {
         })) {
           if (ev.type === 'text_delta') {
             yield { type: 'text_delta', text: ev.text };
+          } else if (ev.type === 'fallback') {
+            // The hop happened before any output: the rest of this turn —
+            // every further iteration — runs on the fallback, the receipt
+            // names it, and the UI gets a distinct `provider_fallback` chip
+            // (never confused with the triage `bucket: 'fallback'`).
+            turnExec = Orchestrator.afterFallback(turnExec);
+            this.recordTurnAttribution(turnId, ev.model, ev.providerId, true);
+            traceCollector?.recordModel(ev.model, ev.providerId);
+            yield {
+              type: 'turn_routing',
+              bucket: resolved.routing?.bucket ?? 'complex',
+              classifierModel: resolved.routing?.classifierModel ?? '',
+              model: ev.model,
+              reason: 'provider_fallback',
+              provider: ev.providerId,
+            };
           } else {
             finalMessage = ev.message;
           }
@@ -5574,7 +6141,7 @@ export class Orchestrator {
         textParts.push(...collectTextBlocks(finalMessage.content));
 
         if (finalMessage.stop_reason !== 'tool_use') {
-          const answer = textParts.join('\n\n').trim();
+          const answer = finalAnswerText(textParts, finalMessage.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // See the non-streaming path: only force a retry on a pure-text end,
           // never when a (possibly truncated) tool_use block is present.
@@ -6637,6 +7204,19 @@ export class Orchestrator {
           console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
         }
       }
+      // #1105 — a guarded tool that returned a prose error string (the
+      // orchestrator's `Error:` tool-error convention — the same prefix the
+      // tool-result assembly reads to stamp `is_error`) must reach the model
+      // AS an error, not be interned. Interning it would (a) hide the failure
+      // behind a masked digest so the model never learns the call failed, and
+      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
+      // materializes as if the error were data — the divergence reported in
+      // #1105. Pass it through verbatim: the chat path already forwards tool
+      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
+      // `is_error` flag is derived from this very prefix.
+      if (result.startsWith('Error:')) {
+        return result;
+      }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
       try {
@@ -6646,6 +7226,17 @@ export class Orchestrator {
         });
         return v4.digestText;
       } catch (err) {
+        // `query_dataset` returned REAL cell values precisely because this
+        // interning was about to happen (see QueryDatasetTool). If it did
+        // not, those values must not fall through to the model: fail closed
+        // for this one tool. Every other tool keeps the historical fail-open.
+        if (name === QUERY_DATASET_TOOL_NAME) {
+          console.warn(
+            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
+            err,
+          );
+          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
+        }
         console.warn(
           `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
           err,
@@ -6868,6 +7459,21 @@ export class Orchestrator {
       if (!this.isToolAvailable(domainTool.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
       }
+      // THE AUTHORISATION GATE. Registration decides what this Agent is
+      // OFFERED; this decides what it may actually DO, and only the second is
+      // a security boundary. A tool that reached this instance without a grant
+      // — a hydrate path that forgot to scope, a hot-install reconcile, a
+      // rebuild racing a config change — stops here instead of running.
+      //
+      // Refused by NAME without naming the owning plugin: an agent that was
+      // never granted a capability has no business learning which plugin holds
+      // it from an error string.
+      if (!this.isPluginGranted(domainTool.agentId)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted domain tool "${name}" — refused`,
+        );
+        return `Error: tool \`${name}\` is not available to this agent.`;
+      }
       // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
       // above: the turn-bound stack when one is bound, the build-time
       // agent-scoped one otherwise) for the lifetime of the delegation, so a
@@ -6936,7 +7542,9 @@ export class Orchestrator {
       this.knowledgeGraphTool !== undefined,
       // Diagrams is now plugin-contributed — its doc ships via extraDocs.
       false,
-      this.chatParticipantsTool !== undefined,
+      // #1108 — same per-turn gate as buildToolsList(): only describe the
+      // roster tool on a turn that actually carries a provider.
+      this.turnHasChatRoster(),
       this.askUserChoiceTool !== undefined,
       this.suggestFollowUpsTool !== undefined,
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
@@ -7039,6 +7647,20 @@ export class Orchestrator {
   }
 
   /** Probe used by DynamicAgentRuntime for pre-flight collision messages. */
+  /**
+   * Is the plugin that owns a tool granted to THIS Agent?
+   *
+   * `undefined` owner ⇒ the tool belongs to no agent-plugin (a kernel/native
+   * capability), which the grant model does not govern — those are allowed, as
+   * they always were. No grant set at all ⇒ ungated, for the legacy
+   * single-Agent orchestrator.
+   */
+  private isPluginGranted(pluginId: string | undefined): boolean {
+    if (this.grantedPluginIds === undefined) return true;
+    if (pluginId === undefined) return true;
+    return this.grantedPluginIds.has(pluginId);
+  }
+
   hasDomainTool(name: string): boolean {
     return this.domainToolsByName.has(name);
   }
@@ -7275,40 +7897,36 @@ export class Orchestrator {
           // `resolveTurnOwnerIdentity`/`TurnContextValue.resolvedOmadiaUserId`
           // for the resolution + fallback rules (still idempotent, still
           // degrades to the plain-text path below when unresolved).
-          if (isCsvAttachment(contentType, attachmentFileName) && this.knowledgeGraph) {
-            const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
-            if (ownerOmadiaUserId) {
-              const imported = await importCsvDataset({
-                graph: this.knowledgeGraph,
+          // Tabular uploads (CSV, XLSX) route through the structured dataset
+          // pipeline and NEVER fall back to the plain-text path.
+          //
+          // The fallback that used to live here was the bug: when the
+          // KnowledgeGraph was absent, the turn owner unresolved, or the
+          // import merely failed, a spreadsheet's every row was appended to
+          // the prompt as `[attachment-content]` cleartext — the exact
+          // "uploads are not shielded" behaviour this path exists to
+          // prevent. The dataset pipeline privacy-scans every cell before
+          // persisting (`datasetImport.ts`); the text path has no equivalent
+          // per-field step. Degrading from one to the other silently traded
+          // the guarantee away at the moment it mattered most, on files
+          // large or structured enough that a user would never re-read what
+          // the model was handed.
+          //
+          // Refusals are announced to the model instead, so it can tell the
+          // user the file was not ingested rather than inventing an answer
+          // from data it never received.
+          const tabularFormat = detectTabularFormat(contentType, attachmentFileName);
+          if (tabularFormat !== undefined) {
+            textBlocks.push(
+              await this.ingestTabularAttachment({
                 bytes: fetched.bytes,
-                datasetName: attachmentFileName ?? label,
-                sourceFileName: attachmentFileName ?? label,
-                ownerOmadiaUserId,
-                ...(c.storageKey ? { sourceStorageKey: c.storageKey } : {}),
-              });
-              if (imported.ok) {
-                // #430 fixup — per-cell truncation (MAX_CELL_CHARS) still
-                // happens (see datasetImport.ts module doc); only tell the
-                // model "not truncated" when that's actually true this time,
-                // rather than making a blanket claim the PR no longer backs.
-                const { truncatedCellCount, truncatedColumns } = imported.truncation;
-                const truncationNote =
-                  truncatedCellCount > 0
-                    ? `Note: ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
-                    : 'No cells were truncated on import.';
-                textBlocks.push(
-                  `\n\n[dataset-imported: ${label}]\ndataset_id=${imported.result.datasetId}, rows=${String(imported.result.rowCount)}. ` +
-                    `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with this dataset_id to filter/aggregate this data — do not ask the user to re-paste it. ${truncationNote}\n[/dataset-imported]`,
-                );
-                continue;
-              }
-              console.warn(
-                `[harness-orchestrator] ingestAttachments: CSV dataset import failed for ${label} — ${imported.reason}`,
-              );
-              // Fall through to the plain-text path below so the CSV's raw
-              // text (even if capped) still reaches the model rather than
-              // vanishing silently.
-            }
+                format: tabularFormat,
+                label,
+                fileName: attachmentFileName ?? label,
+                ...(c.storageKey ? { storageKey: c.storageKey } : {}),
+              }),
+            );
+            continue;
           }
           const result = await extractAttachmentText(
             fetched.bytes,
@@ -7316,8 +7934,21 @@ export class Orchestrator {
             attachmentFileName,
           );
           if (!result.ok) continue;
+          // #976 — the honest counterpart to `[dataset-imported]`'s privacy
+          // fact. This IS the inlined-text path (PDF/DOCX/TXT/MD have no
+          // structured equivalent), so say so rather than letting the model
+          // invent either a reassurance or an alarm. Whether the prompt-mask
+          // layer additionally redacted spans here depends on the operator's
+          // `mask_user_prompt` setting, which this code cannot observe — so
+          // it claims nothing about it.
           textBlocks.push(
-            `\n\n[attachment-content: ${label}]\n${result.text}\n[/attachment-content]`,
+            `\n\n[attachment-content: ${label}]\n${result.text}\n` +
+              `PRIVACY STATUS OF THIS FILE (state only this, never speculate): this is ` +
+              `extracted document text placed directly into the prompt. It did NOT go ` +
+              `through the dataset store's per-field PII scan — that path exists only for ` +
+              `tabular files (CSV/XLSX). Say this plainly if asked; do not claim a ` +
+              `protection that is not listed here, and do not claim the file was withheld.` +
+              `\n[/attachment-content]`,
           );
         } catch (err) {
           console.warn(
@@ -7344,6 +7975,157 @@ export class Orchestrator {
   }
 
   /**
+   * Import one tabular attachment (CSV/XLSX) as queryable dataset(s) and
+   * return the text block describing the outcome to the model.
+   *
+   * Always returns a block, never raw file content: on every failure path
+   * the model is told the file could not be ingested and why. That is the
+   * whole point — a spreadsheet's rows reach the model through
+   * `query_dataset` (privacy-scanned at import, materialized server-side) or
+   * they do not reach it at all.
+   *
+   * A workbook may yield several datasets (one per sheet); all of their ids
+   * are reported so the model can query the right one.
+   */
+  private async ingestTabularAttachment(args: {
+    bytes: Buffer;
+    format: TabularFormat;
+    label: string;
+    fileName: string;
+    storageKey?: string;
+  }): Promise<string> {
+    const { label, format } = args;
+    const refuse = (reason: string): string => {
+      console.warn(
+        `[harness-orchestrator] ingestAttachments: ${format} dataset import unavailable for ${label} — ${reason}`,
+      );
+      return (
+        `\n\n[attachment-not-ingested: ${label}]\n` +
+        `This ${format.toUpperCase()} file could not be imported as a queryable dataset (${reason}). ` +
+        `Its contents were NOT read. Tell the user the file could not be processed — ` +
+        `do not guess at or invent its contents.\n[/attachment-not-ingested]`
+      );
+    };
+
+    if (!this.knowledgeGraph) return refuse('no knowledge graph available');
+    const ownerOmadiaUserId = turnContext.current()?.resolvedOmadiaUserId;
+    if (!ownerOmadiaUserId) {
+      return refuse('could not resolve the uploading user');
+    }
+
+    let imported: ImportTabularDatasetResult;
+    try {
+      imported = await importTabularDataset({
+        graph: this.knowledgeGraph,
+        bytes: args.bytes,
+        datasetName: args.fileName,
+        sourceFileName: args.fileName,
+        ownerOmadiaUserId,
+        format,
+        ...(args.storageKey ? { sourceStorageKey: args.storageKey } : {}),
+      });
+    } catch (err) {
+      return refuse(
+        `import error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!imported.ok) return refuse(imported.reason);
+
+    let scannedCells = 0;
+    let maskedCells = 0;
+    let linkKeyColumns = 0;
+    let encryptedTables = 0;
+    const lines = imported.imported.map((t) => {
+      if (t.privacyScan.encryptedAtRest) encryptedTables += 1;
+      const { truncatedCellCount, truncatedColumns } = t.truncation;
+      // Only claim "not truncated" when that is actually true for this table
+      // — MAX_CELL_CHARS still caps individual cells (#430 fixup).
+      const truncationNote =
+        truncatedCellCount > 0
+          ? ` ${String(truncatedCellCount)} cell(s) in column(s) [${truncatedColumns.join(', ')}] exceeded the per-cell length cap and were truncated on import.`
+          : ' No cells were truncated on import.';
+      const sheet = t.sheetName ? ` sheet='${t.sheetName}'` : '';
+      scannedCells += t.privacyScan.scannedCells;
+      maskedCells += t.privacyScan.maskedCells;
+      linkKeyColumns += t.linkKeys.columns.length;
+      // Name the key columns per table: the model must not guess them from
+      // the source headers (a header can be skipped, see
+      // `selectLinkKeyColumns`), and rule d) tells it to say plainly when a
+      // file has none.
+      const keysNote =
+        t.linkKeys.columns.length > 0
+          ? ` Link-key columns: [${t.linkKeys.columns.join(', ')}].`
+          : ' Link-key columns: none.';
+      return `dataset_id=${t.result.datasetId}, rows=${String(t.result.rowCount)}${sheet}.${truncationNote}${keysNote}`;
+    });
+
+    // Observability: a successful import used to log nothing at all, so the
+    // only way to confirm one had happened was to infer it from a later
+    // `query_dataset` call's column names. Say it plainly instead.
+    console.log(
+      `[harness-orchestrator] ingestAttachments: ${format} imported ${label} — ` +
+        `datasets=${String(imported.imported.length)} ` +
+        `scannedCells=${String(scannedCells)} maskedCells=${String(maskedCells)} ` +
+        `linkKeyColumns=${String(linkKeyColumns)}`,
+    );
+
+    // #976 — state the privacy FACTS for this file in the prompt.
+    //
+    // Without them the model is left to guess what happened to an upload,
+    // and it guesses badly: it told a user "der Privacy Shield greift bei
+    // Datei-Uploads nicht — der Inhalt liegt im Klartext vor" about a file
+    // that had in fact been imported with 16 of 23 fields masked. A wrong
+    // reassurance is bad; a wrong ALARM is worse, because the user acts on
+    // it. Neither a prompt rule nor a disclaimer fixes a model that lacks
+    // the fact — so ship the fact.
+    // Encrypted at rest (the default with a dataset secret) means the REAL
+    // values survive for the entitled user — render and Excel show them —
+    // while the model still only ever gets a digest. Without a secret the
+    // old irreversible masking applies and the model must not promise real
+    // values in an export.
+    const allEncrypted = encryptedTables === imported.imported.length;
+    // Real values reach render/export ONLY behind an active Privacy Shield —
+    // without a guard `query_dataset` re-masks on read. Promising real data
+    // on an install that cannot deliver it is exactly the wrong fact #976
+    // exists to prevent, so the promise depends on both conditions.
+    const shieldActive = turnContext.current()?.privacyHandle !== undefined;
+    const piiCellsFact = !allEncrypted
+      ? `${String(maskedCells)} contained PII and were masked irreversibly (no dataset ` +
+        `secret configured) — exports show surrogates, not real values`
+      : shieldActive
+        ? `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest — their real ` +
+          `values are decrypted only server-side for \`v4_render_answer\` and \`create_xlsx\`, ` +
+          `so the user sees and exports real data while you never receive it`
+        : `${String(maskedCells)} contained PII and are stored ENCRYPTED at rest, but no ` +
+          `Privacy Shield is active in this turn, so they are re-masked on read — exports ` +
+          `show surrogates, not real values`;
+    const privacyFact =
+      `PRIVACY STATUS OF THIS FILE (state only this, never speculate): its rows were ` +
+      `imported into the privacy-scanned dataset store, NOT inlined into this prompt. ` +
+      `Every string cell passed the PII scan (${String(scannedCells)} cell(s) scanned, ` +
+      `${piiCellsFact}). You do not have this file's raw contents; ` +
+      `\`${QUERY_DATASET_TOOL_NAME}\` returns values under the same Privacy Shield ` +
+      `boundary as any other tool result.` +
+      // Link keys are a fact about the file too: with them, cross-file dedup
+      // is possible; without them it is not, and the model should say so
+      // instead of offering the user a manual workaround.
+      (linkKeyColumns > 0
+        ? ` Its text columns carry \`__k_<column>\` link keys — stable, identity-free ` +
+          `per-person keys that are the same across all of this user's uploads; use ` +
+          `them as the \`by\`/join key in \`v4_distinct\`/\`v4_join\` to de-duplicate or ` +
+          `match across files, and never display them.`
+        : ` No link-key columns were generated for this file (the install has no ` +
+          `dataset link-key secret), so cross-file de-duplication on text columns is ` +
+          `not available — state that plainly if asked.`);
+
+    return (
+      `\n\n[dataset-imported: ${label}]\n${lines.join('\n')}\n${privacyFact}\n` +
+      `Use the \`${QUERY_DATASET_TOOL_NAME}\` tool with a dataset_id above to filter/aggregate this data — ` +
+      `do not ask the user to re-paste it.\n[/dataset-imported]`
+    );
+  }
+
+  /**
    * Issue #474 — true when a plugin-contributed native tool may be exposed
    * to / invoked by the orchestrator. Kernel-internal registrations (no
    * `agentId`) are always available; a plugin-owned one is gated on
@@ -7354,6 +8136,23 @@ export class Orchestrator {
     if (agentId === undefined) return true;
     if (!this.isPluginToolsReady) return true;
     return this.isPluginToolsReady(agentId);
+  }
+
+  /**
+   * #1108 — `get_chat_participants` may only be advertised on a turn that
+   * actually carries a roster provider. The tool instance is built once and is
+   * channel-independent, so gating on `this.chatParticipantsTool` alone offers
+   * the tool on every non-Teams channel, where the handler can only return a
+   * miss the model never sees (the Privacy Shield interns it). Both the tool
+   * list and the system-prompt roster gate on this, so a channel without a
+   * roster shows the tool nowhere. Must be called inside the turn scope, where
+   * `turnContext.current()` resolves the per-turn provider.
+   */
+  private turnHasChatRoster(): boolean {
+    return (
+      this.chatParticipantsTool !== undefined &&
+      turnContext.current()?.chatParticipants !== undefined
+    );
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -7372,7 +8171,9 @@ export class Orchestrator {
     if (this.knowledgeGraphTool) tools.push(knowledgeGraphToolSpec);
     if (this.queryDatasetTool) tools.push(queryDatasetToolSpec);
     // Diagrams + enrich_company tool specs come from nativeTools registry (plugin-contributed).
-    if (this.chatParticipantsTool) tools.push(chatParticipantsToolSpec);
+    // #1108 — gate on the per-turn roster provider, not the constructed
+    // instance, so non-Teams channels never advertise a tool that can't work.
+    if (this.turnHasChatRoster()) tools.push(chatParticipantsToolSpec);
     if (this.askUserChoiceTool) tools.push(askUserChoiceToolSpec);
     if (this.suggestFollowUpsTool) tools.push(suggestFollowUpsToolSpec);
     if (this.readAttachmentTool) tools.push(readAttachmentToolSpec);
@@ -7393,6 +8194,11 @@ export class Orchestrator {
     // still resolves by name, so precedence is unaffected.
     const nativeSpecs: unknown[] = [];
     for (const entry of this.nativeTools.listWithHandler()) {
+      // #1143 registers the kernel's OWN specs here (spec + handler) so the
+      // subscription-CLI loopback can advertise them. The kernel already
+      // pushes those above — advertising them again duplicated five names and
+      // 400'd every turn (`tools: Tool names must be unique.`).
+      if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
       if (entry.spec && this.isToolAvailable(entry.agentId)) {
         nativeSpecs.push(entry.spec);
       }
@@ -7429,6 +8235,17 @@ export class Orchestrator {
     if (v4ToolSpecs) {
       for (const spec of v4ToolSpecs) tools.push(spec);
     }
+    // The Anthropic API rejects the whole request when two tools share a name
+    // (`400 tools: Tool names must be unique.`, every model). The segments
+    // above are filled independently — kernel specs, plugin native specs,
+    // domain tools, Privacy v4 — so a plugin that ships a name the kernel (or
+    // another plugin) already advertises turned every turn of that agent into
+    // an error. Keep the spec whose handler `dispatchTool` actually runs.
+    const unique = this.dropDuplicateToolNames(tools, {
+      v4: new Set<unknown>(v4ToolSpecs ?? []),
+      native: new Set<unknown>(nativeSpecs),
+      domain: new Set<unknown>(domainSpecs),
+    });
     // Prompt-cache the full tool-spec block. Anthropic caches every prior
     // content up to and including the tool that carries `cache_control` —
     // marking the final tool makes the whole list a single cacheable chunk.
@@ -7439,14 +8256,58 @@ export class Orchestrator {
     // because the dynamic segments above are name-sorted. Do not reorder or
     // append unsorted segments before this point without re-reading
     // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
-    const last = tools[tools.length - 1];
-    if (last) {
-      tools[tools.length - 1] = {
-        ...last,
-        cache_control: { type: 'ephemeral' },
-      };
+    const last = unique[unique.length - 1];
+    return last
+      ? [...unique.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+      : unique;
+  }
+
+  /** Names already reported by {@link dropDuplicateToolNames} — warn once. */
+  private readonly reportedDuplicateToolNames = new Set<string>();
+
+  /**
+   * Drops tools whose `name` repeats, keeping the spec whose handler
+   * `dispatchTool` actually runs: `v4_*` (Privacy v4) → kernel `memory` →
+   * native registry → kernel tools → domain tools. Segments are told apart by
+   * object identity. Survivors keep their order, so the cached prefix is
+   * unchanged whenever there is nothing to drop.
+   */
+  private dropDuplicateToolNames<T extends { readonly name: string; readonly type?: string }>(
+    tools: ReadonlyArray<T>,
+    segments: {
+      readonly v4: ReadonlySet<unknown>;
+      readonly native: ReadonlySet<unknown>;
+      readonly domain: ReadonlySet<unknown>;
+    },
+  ): T[] {
+    const count = new Map<string, number>();
+    for (const t of tools) count.set(t.name, (count.get(t.name) ?? 0) + 1);
+    if (![...count.values()].some((n) => n > 1)) return [...tools];
+
+    const rank = (t: T): number => {
+      if (segments.v4.has(t)) return 0;
+      if (t.name === MEMORY_TOOL_NAME && t.type === MEMORY_TOOL_TYPE) return 1;
+      if (segments.native.has(t)) return 2;
+      if (segments.domain.has(t)) return 4;
+      return 3; // kernel tool
+    };
+    // Winner by POSITION, not by object: the same spec object can sit in the
+    // list twice (#1143 registers the kernel's own spec constants into the
+    // native registry), and an identity filter would then keep both copies.
+    const winner = new Map<string, number>();
+    tools.forEach((t, i) => {
+      const current = winner.get(t.name);
+      if (current === undefined || rank(t) < rank(tools[current]!)) winner.set(t.name, i);
+    });
+    for (const [name, n] of count) {
+      if (n > 1 && !this.reportedDuplicateToolNames.has(name)) {
+        this.reportedDuplicateToolNames.add(name);
+        console.warn(
+          `[harness-orchestrator] tool name '${name}' offered ${String(n)}× — kept the spec dispatch serves, dropped the rest (the API rejects duplicate names). Two sources register '${name}'; rename one.`,
+        );
+      }
     }
-    return tools;
+    return tools.filter((t, i) => winner.get(t.name) === i);
   }
 }
 

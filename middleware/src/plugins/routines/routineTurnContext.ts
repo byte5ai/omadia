@@ -53,6 +53,24 @@ export const routineTurnContext = {
    * Set the routine context for the current async resource and its
    * descendants. Use from async generators where `run()` doesn't compose
    * with `yield` (mirrors the orchestrator's `turnContext.enter`).
+   *
+   * #1016 — `enterWith` has NO scope exit. The value persists forward on the
+   * async chain until something overwrites it, so a chain that starts a new
+   * turn without calling `captureRoutineTurn` again still sees the previous
+   * turn's `(tenant, userId)`.
+   *
+   * Before #993 that was harmless in the worst way: the subscription path saw
+   * no context at all and `manage_routine` refused. Now the context crosses
+   * into the CLI path, so the same staleness would mean acting as the previous
+   * principal instead of refusing. The refusal is restored by
+   * `LoopbackMcpServer`'s `assertTurnOwner` hook, which runs inside the
+   * restored context immediately before dispatch.
+   *
+   * That hook is wired in production by `createRoutineTurnOwnerGuard`
+   * (`./turnOwnerGuard.ts`), published by the kernel as
+   * `routineTurnOwnerGuard` and forwarded into `CliChatAgent` by
+   * `buildOrchestratorForAgent`. It compares this store's `userId` against the
+   * turn's own, so a stale chain fails closed.
    */
   enter(value: ManageRoutineContext): void {
     storage.enterWith(value);

@@ -37,10 +37,12 @@ export type {
 } from '@omadia/llm-provider-api';
 export {
   collectText,
+  EFFORT_LEVELS,
   LLM_PROVIDER_API_VERSION,
   textMessage,
   toolCalls,
 } from '@omadia/llm-provider-api';
+export type { EffortLevel } from '@omadia/llm-provider-api';
 
 // ---- Runtime: credentials ----
 export {
@@ -101,6 +103,22 @@ export {
   type ProviderQuirks,
   type WireFormat,
 } from './providerCatalog.js';
+export type {
+  DiscoveredModel,
+  ModelDiscoveryClassRule,
+  ModelDiscoveryRules,
+} from '@omadia/llm-provider-api';
+
+// ---- Runtime: live model discovery (vendor list → catalog entries) ----
+export {
+  applyDiscoveryRules,
+  collapseDatedSnapshots,
+  compareNewest,
+  versionTokens,
+  type DiscoveryDrop,
+  type DiscoveryDropReason,
+  type DiscoveryOutcome,
+} from './modelDiscovery.js';
 
 // ---- Runtime: model registry (+ re-exported model contract types) ----
 export {
@@ -121,3 +139,16 @@ export {
   type ModelRole,
   type ProviderId,
 } from './modelRegistry.js';
+
+// ---- Runtime: provider pool + health (#1033) ----
+export {
+  createLlmProviderPool,
+  type LlmProviderPool,
+  type LlmProviderPoolOptions,
+} from './providerPool.js';
+export {
+  createProviderHealth,
+  DEFAULT_PROVIDER_COOLDOWN_MS,
+  type ProviderHealth,
+  type ProviderHealthEntry,
+} from './providerHealth.js';

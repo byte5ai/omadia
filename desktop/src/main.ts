@@ -32,6 +32,9 @@ import {
   showSupersededBoot,
 } from './shellDialogs';
 import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActions';
+import { createUiReadyGate } from './uiReadyGate';
+import { showAppPage } from './appPageBoot';
+import { resolveAppIconPath } from './icons';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
@@ -55,6 +58,14 @@ let streamBootLogs = false;
 let recoveryBudget: RecoveryBudget = initialRecoveryBudget();
 
 /**
+ * OM-71 — shell dialogs wait for the web UI's ready ping, not for `loadURL`.
+ * The fallback is generous: a slow first hydration must not be mistaken for a
+ * renderer that will never ping, and a late reminder still beats none.
+ */
+const UI_READY_FALLBACK_MS = 15_000;
+const uiReadyGate = createUiReadyGate(UI_READY_FALLBACK_MS);
+
+/**
  * `app.getLocale()` is only meaningful after the ready event, so the translator
  * is built in `onReady`. Until then the identity translator keeps every call
  * site honest rather than forcing null checks into error paths.
@@ -66,6 +77,10 @@ function rendererPath(file: string): string {
 }
 
 function createWindow(): BrowserWindow {
+  // Windows and Linux read the window/taskbar icon from the running process;
+  // macOS takes it from the signed bundle, so passing it there is a no-op
+  // (#888). `undefined` keeps Electron's own default when the asset is absent.
+  const icon = resolveAppIconPath(app.getAppPath()) ?? undefined;
   const w = new BrowserWindow({
     width: 1100,
     height: 760,
@@ -73,6 +88,7 @@ function createWindow(): BrowserWindow {
     minHeight: 620,
     show: false,
     title: 'omadia',
+    ...(icon === undefined ? {} : { icon }),
     backgroundColor: '#0b0d12',
     webPreferences: {
       preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
@@ -182,7 +198,7 @@ async function recoverRenderer(): Promise<void> {
   if (!attempt.allowed) {
     log.error(`[main] giving up recovering ${page} after ${attempt.budget.attempts - 1} attempts`);
     setTrayStatus(trayActions(), 'error');
-    await showRecoveryExhausted(t, logFile());
+    await showRecoveryExhausted(win, t, logFile());
     return;
   }
 
@@ -234,11 +250,12 @@ function trayActions(): TrayActions {
     },
     restart: async () => {
       if (!supervisor || !win) return;
+      const w = win;
       const token = startNavigation('boot', 'restart');
       if (token === null) {
         // The arbiter refused (first-run setup is open). Say so: a menu action
         // that visibly does nothing is its own small version of this bug class.
-        await showRestartRefused(t);
+        await showRestartRefused(win, t);
         return;
       }
       await win.loadFile(rendererPath(LOADING_PAGE));
@@ -249,9 +266,12 @@ function trayActions(): TrayActions {
         const uiUrl = await supervisor.restart();
         streamBootLogs = false;
         if (!finishNavigation(token, 'app', 'restart')) return;
-        await win.loadURL(uiUrl);
-        setTrayStatus(trayActions(), 'running');
-        await maybeRemindRecoveryKey(t);
+        await showAppPage({
+          gate: uiReadyGate,
+          loadApp: () => w.loadURL(uiUrl),
+          onLoaded: () => setTrayStatus(trayActions(), 'running'),
+          remind: () => maybeRemindRecoveryKey(w, t),
+        });
       } catch (err) {
         log.error(`[main] restart failed: ${describeError(err)}`);
         setTrayStatus(trayActions(), 'error');
@@ -289,6 +309,7 @@ onLog((level, msg) => {
 
 async function bootExistingInstall(): Promise<void> {
   if (!win || !supervisor) return;
+  const w = win;
   const token = startNavigation('boot', 'boot-existing');
   if (token === null) return;
   await win.loadFile(rendererPath(LOADING_PAGE));
@@ -298,9 +319,12 @@ async function bootExistingInstall(): Promise<void> {
     const uiUrl = await supervisor.start();
     streamBootLogs = false;
     if (!finishNavigation(token, 'app', 'boot-existing')) return;
-    await win.loadURL(uiUrl);
-    setTrayStatus(trayActions(), 'running');
-    await maybeRemindRecoveryKey(t);
+    await showAppPage({
+      gate: uiReadyGate,
+      loadApp: () => w.loadURL(uiUrl),
+      onLoaded: () => setTrayStatus(trayActions(), 'running'),
+      remind: () => maybeRemindRecoveryKey(w, t),
+    });
   } catch (err) {
     streamBootLogs = false;
     await presentBootFailure(err);
@@ -365,7 +389,9 @@ async function onReady(): Promise<void> {
   // fullscreen item and a DevTools accelerator into customer builds).
   installApplicationMenu({
     checkForUpdates: checkForUpdatesAction,
-    showRecoveryKey: () => void showRecoveryKeyAction(t),
+    showRecoveryKey: () => {
+      if (win) void showRecoveryKeyAction(win, t);
+    },
   });
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
@@ -393,6 +419,7 @@ async function onReady(): Promise<void> {
       void win?.loadURL(uiUrl);
       setTrayStatus(trayActions(), 'running');
     },
+    onUiReady: () => uiReadyGate.signal(),
   });
 
   initUpdater();

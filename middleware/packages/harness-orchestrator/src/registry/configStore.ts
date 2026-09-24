@@ -3,6 +3,14 @@ import type { Pool } from 'pg';
 import { resolveModelRef } from '@omadia/llm-provider';
 
 import type { ContextMemoryMode } from '../memoryBinder.js';
+import {
+  parseAgentToAgentMode,
+  type AgentChannelPolicyInput,
+  type AgentChannelPolicyRow,
+  type AgentToAgentMode,
+} from './agentToAgent.js';
+import { parseModelPolicy } from './modelPolicy.js';
+import type { ModelPolicy } from '@omadia/plugin-api';
 
 import {
   AgentGraphStore,
@@ -62,6 +70,28 @@ export interface AgentRow {
    */
   readonly contextMemory?: ContextMemoryMode;
   /**
+   * #1018 — the agent's own agent-to-agent switch (`agents.agent_to_agent`,
+   * migration 0058). One half of the AND rule; the other half is the
+   * `(channel, agent)` policy row. Optional and deny-default for the same
+   * reasons as `contextMemory` (see {@link parseAgentToAgentMode}).
+   */
+  readonly agentToAgent?: AgentToAgentMode;
+  /**
+   * #1033 — the agent's model policy (`agents.model_policy`, migration 0059),
+   * narrowed deny-default by {@link parseModelPolicy}: absent column or an
+   * unrecognised shape both read as `{primary: auto, fallback: none}`, which
+   * is today's behaviour.
+   */
+  readonly modelPolicy?: ModelPolicy;
+  /**
+   * #1033 — the compiled identity prompt PER MODEL FAMILY
+   * (`agent_identities.composed_prompts`), for every family the policy names.
+   * `instructions` stays the primary family's text; this map is what the
+   * fallback path picks from so a cross-family fallback never speaks a prompt
+   * composed for the other family.
+   */
+  readonly instructionsByFamily?: Readonly<Record<string, string>>;
+  /**
    * #914 — the agent's authored behaviour text (`agent_identities.
    * instructions`). Read-only here: the identity is written through
    * `platform/agentIdentityStore.ts`, and this column is joined in so the
@@ -72,6 +102,39 @@ export interface AgentRow {
    * applies, exactly as before this column existed.
    */
   readonly instructions?: string | null;
+  /**
+   * #967 — the agent's authored NAME (`agent_identities.display_name`), joined
+   * in beside {@link instructions} and read the same way: read-only here,
+   * written through `platform/agentIdentityStore.ts`.
+   *
+   * Distinct from {@link name}, which is the registry label an operator gave
+   * the agent row (`hr`, `Sales Agent`). This one is the name the bot WEARS —
+   * the Teams manifest name, and the name it must introduce itself with. It
+   * is deliberately NOT resolved against `name` here: falling back would put
+   * a registry label into the system prompt of every agent that never
+   * authored an identity, changing prompts that are correct today.
+   *
+   * `null`/absent means "no authored name" — the assistant identity is used
+   * verbatim, exactly as before this column was joined.
+   */
+  readonly identityName?: string | null;
+  /**
+   * #967 follow-up — the agent's authored SELF-DESCRIPTION
+   * (`agent_identities.short_description` / `.long_description`, the operator's
+   * "Steckbrief" tab), joined in beside {@link identityName} and read the same
+   * way: read-only here, written through `platform/agentIdentityStore.ts`.
+   *
+   * These reached the Teams app package and nothing else, so an operator who
+   * filled in what the agent IS got a store listing that said one thing and a
+   * bot that could not say it. They describe the agent rather than instruct it,
+   * which is why they are LAYERED onto the identity text rather than replacing
+   * it — see `withAgentSelfDescription`.
+   *
+   * `null`/absent means "not authored": nothing is added, and the prompt is
+   * byte-identical to one built before these were joined.
+   */
+  readonly identityShortDescription?: string | null;
+  readonly identityLongDescription?: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -89,6 +152,37 @@ export interface ChannelBindingRow {
   readonly channelKey: string;
   readonly agentId: string;
   readonly createdAt: Date;
+}
+
+/**
+ * A channel key that IS an agent's own provisioned identity — not an
+ * operator's routing preference.
+ *
+ * WHY THIS IS NOT A `channel_bindings` ROW
+ * ----------------------------------------
+ * `channel_bindings` is the operator's table: one flat (type, key) namespace
+ * they fill in by hand or that the auto-bind sweep fills in for an observed
+ * conversation. An identity is a different kind of fact. Provisioning an
+ * agent's own Microsoft Teams bot registers an Entra app, an Azure bot and an
+ * app package that exist SOLELY to be that agent's face — the mapping is
+ * already persisted (`agent_teams_identities.app_id`) and it is not a
+ * preference anyone may override.
+ *
+ * Copying it into `channel_bindings` would create a second copy of a mapping
+ * that already exists, and the two would drift the first time an identity is
+ * reset, re-provisioned or hand-edited. So routing READS the identity table
+ * instead: one source of truth, no backfill, and deleting the identity
+ * un-routes the bot for free.
+ *
+ * Exclusivity is the other half. Several provisioned bots share one group
+ * chat, so a binding on that CONVERSATION cannot say which bot a turn is for;
+ * only the bot key can. An identity therefore outranks every binding — see
+ * `OrchestratorRegistry.identityForChannel`.
+ */
+export interface ChannelIdentityRow {
+  readonly channelType: string;
+  readonly channelKey: string;
+  readonly agentId: string;
 }
 
 export interface PlatformSettingsRow {
@@ -119,6 +213,10 @@ export interface AgentPatch {
    * three values, so a widened union cannot reach the database either.
    */
   readonly contextMemory?: ContextMemoryMode;
+  /** #1018 — same COALESCE contract as `contextMemory`: absent leaves it. */
+  readonly agentToAgent?: AgentToAgentMode;
+  /** #1033 — validated by the caller ({@link validateModelPolicy}); absent leaves it. */
+  readonly modelPolicy?: ModelPolicy;
 }
 
 export interface AgentPluginInput {
@@ -241,11 +339,25 @@ interface AgentDbRow {
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
   context_memory?: string | null;
+  /** #1018 — `agents.agent_to_agent`; absent on a DB that predates 0058. */
+  agent_to_agent?: string | null;
+  /** #1033 — `agents.model_policy`; absent on a DB that predates 0059. */
+  model_policy?: unknown;
+  /** #1033 — `agent_identities.composed_prompts`, joined by the read queries. */
+  identity_composed_prompts?: Record<string, unknown> | null;
   /** #914 — `agent_identities.instructions`, joined in by the three read
    *  queries below. Absent on the RETURNING rows of the write paths, which do
    *  not join: a write never changes the identity, and a caller that needs it
    *  re-reads. */
   identity_instructions?: string | null;
+  /** #967 — `agent_identities.display_name`, joined in by the same three read
+   *  queries and absent on the same write paths as `identity_instructions`. */
+  identity_display_name?: string | null;
+  /** #967 follow-up — `agent_identities.short_description` / `.long_description`,
+   *  joined in by the same three read queries and absent on the same write
+   *  paths as `identity_instructions`. */
+  identity_short_description?: string | null;
+  identity_long_description?: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -284,6 +396,26 @@ interface PlatformSettingsDbRow {
   updated_at: Date;
 }
 
+interface AgentChannelPolicyDbRow {
+  channel_type: string;
+  channel_key: string;
+  agent_id: string;
+  agent_to_agent: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+function mapAgentChannelPolicy(row: AgentChannelPolicyDbRow): AgentChannelPolicyRow {
+  return {
+    channelType: row.channel_type,
+    channelKey: row.channel_key,
+    agentId: row.agent_id,
+    agentToAgent: row.agent_to_agent === true,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function mapAgent(row: AgentDbRow): AgentRow {
   return {
     id: row.id,
@@ -295,7 +427,21 @@ function mapAgent(row: AgentDbRow): AgentRow {
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
+    agentToAgent: parseAgentToAgentMode(row.agent_to_agent),
+    modelPolicy: parseModelPolicy(row.model_policy),
+    ...(row.identity_composed_prompts && typeof row.identity_composed_prompts === 'object'
+      ? {
+          instructionsByFamily: Object.fromEntries(
+            Object.entries(row.identity_composed_prompts).filter(
+              (e): e is [string, string] => typeof e[1] === 'string' && e[1].trim().length > 0,
+            ),
+          ),
+        }
+      : {}),
     instructions: row.identity_instructions ?? null,
+    identityName: row.identity_display_name ?? null,
+    identityShortDescription: row.identity_short_description ?? null,
+    identityLongDescription: row.identity_long_description ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -343,11 +489,22 @@ function mapPlatformSettings(
  * compilers live in the middleware, which this package cannot import; that
  * is why the composition is stored rather than done here.
  *
+ * The two description columns (#967 follow-up) ride along because they are the
+ * other half of what the operator authored about this agent: `composed_prompt`
+ * says how it behaves, they say what it IS. Joining them here rather than in a
+ * per-Agent second query keeps the cost of a rebuild at one round trip.
+ *
  * Only text is joined. The identity's avatar columns are BYTEA and this query
- * runs on every dashboard load and every registry rebuild.
+ * runs on every dashboard load and every registry rebuild — and `accent_color`
+ * is left out for the same reason it never reaches a prompt: it is a rendering
+ * decision, not something an agent can act on.
  */
 const AGENT_SELECT =
-  'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions ' +
+  'SELECT a.*, COALESCE(i.composed_prompt, i.instructions) AS identity_instructions, ' +
+  'i.composed_prompts AS identity_composed_prompts, ' +
+  'i.display_name AS identity_display_name, ' +
+  'i.short_description AS identity_short_description, ' +
+  'i.long_description AS identity_long_description ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
 export class ConfigStore {
@@ -423,6 +580,8 @@ export class ConfigStore {
          model_routing   = COALESCE($6::jsonb, model_routing),
          canvas_position = COALESCE($7::jsonb, canvas_position),
          context_memory  = COALESCE($8, context_memory),
+         agent_to_agent  = COALESCE($9, agent_to_agent),
+         model_policy    = COALESCE($10::jsonb, model_policy),
          updated_at      = now()
        WHERE id = $1
        RETURNING *`,
@@ -435,6 +594,8 @@ export class ConfigStore {
         patch.modelRouting ? JSON.stringify(patch.modelRouting) : null,
         patch.canvasPosition ? JSON.stringify(patch.canvasPosition) : null,
         patch.contextMemory ?? null,
+        patch.agentToAgent ?? null,
+        patch.modelPolicy ? JSON.stringify(patch.modelPolicy) : null,
       ],
     );
     const row = rows[0];
@@ -442,6 +603,80 @@ export class ConfigStore {
       throw new ConfigValidationError(`agent ${id} not found`);
     }
     return mapAgent(row);
+  }
+
+  // ── #1018 — per-(channel, agent) peer policies (migration 0058) ──────
+
+  async listAgentChannelPolicies(agentId: string): Promise<AgentChannelPolicyRow[]> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE agent_id = $1
+        ORDER BY channel_type, channel_key`,
+      [agentId],
+    );
+    return rows.map(mapAgentChannelPolicy);
+  }
+
+  /** All policies for one chat — what the relay needs to filter partners. */
+  async listChannelPeerPolicies(
+    channelType: string,
+    channelKey: string,
+  ): Promise<AgentChannelPolicyRow[]> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2`,
+      [channelType, channelKey],
+    );
+    return rows.map(mapAgentChannelPolicy);
+  }
+
+  async getAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<AgentChannelPolicyRow | undefined> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `SELECT channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at
+         FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2 AND agent_id = $3`,
+      [channelType, channelKey, agentId],
+    );
+    const row = rows[0];
+    return row ? mapAgentChannelPolicy(row) : undefined;
+  }
+
+  async upsertAgentChannelPolicy(
+    input: AgentChannelPolicyInput,
+  ): Promise<AgentChannelPolicyRow> {
+    const { rows } = await this.pool.query<AgentChannelPolicyDbRow>(
+      `INSERT INTO agent_channel_policies
+         (channel_type, channel_key, agent_id, agent_to_agent)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (channel_type, channel_key, agent_id)
+       DO UPDATE SET agent_to_agent = EXCLUDED.agent_to_agent, updated_at = now()
+       RETURNING channel_type, channel_key, agent_id, agent_to_agent, created_at, updated_at`,
+      [input.channelType, input.channelKey, input.agentId, input.agentToAgent],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new Error('upsertAgentChannelPolicy: INSERT RETURNING produced no row');
+    }
+    return mapAgentChannelPolicy(row);
+  }
+
+  async deleteAgentChannelPolicy(
+    channelType: string,
+    channelKey: string,
+    agentId: string,
+  ): Promise<boolean> {
+    const result = await this.pool.query(
+      `DELETE FROM agent_channel_policies
+        WHERE channel_type = $1 AND channel_key = $2 AND agent_id = $3`,
+      [channelType, channelKey, agentId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async deleteAgent(id: string): Promise<void> {
@@ -546,6 +781,18 @@ export class ConfigStore {
     );
   }
 
+  /**
+   * Uninstall revokes the plugin's bindings across every agent, including
+   * disabled grants. Reinstalling the same id must require fresh consent.
+   */
+  async deleteAgentPluginsForPlugin(pluginId: string): Promise<number> {
+    const result = await this.pool.query(
+      'DELETE FROM agent_plugins WHERE plugin_id = $1',
+      [pluginId],
+    );
+    return result.rowCount ?? 0;
+  }
+
   // ── channel_bindings ──────────────────────────────────────────────────
   async listChannelBindings(): Promise<readonly ChannelBindingRow[]> {
     const { rows } = await this.pool.query<ChannelBindingDbRow>(
@@ -615,6 +862,52 @@ export class ConfigStore {
     );
   }
 
+  // ── channel identities (provisioned bots) ─────────────────────────────
+  /**
+   * Every provisioned Microsoft Teams bot as a routing key.
+   *
+   * `agent_teams_identities` already holds the only mapping that matters —
+   * `app_id` (the bot's Entra application id) against the agent it was
+   * provisioned for. The Bot-Framework identity the middleware sees on an
+   * inbound activity is `activity.recipient.id`, i.e. `28:<appId>`
+   * lowercased; the Teams plugin builds the same string with its
+   * `teamsBotKey()` helper and exact string equality is what routes, so the
+   * projection is done here in SQL rather than anywhere a second spelling
+   * could creep in.
+   *
+   * Rows without an `app_id` are provisioning runs that have not reached the
+   * app-registration step — there is no bot to route to yet, so they are
+   * skipped rather than projected to a `28:null` key.
+   *
+   * MISSING TABLE IS NOT AN ERROR. This package is embeddable without the
+   * platform's migration series (`agent_teams_identities` arrives in
+   * middleware/migrations/0049). "No identity table" means "no provisioned
+   * bots", which is exactly the pre-existing behaviour — so an
+   * undefined_table degrades to an empty list instead of taking the whole
+   * snapshot load, and with it the registry boot, down with it.
+   */
+  async listChannelIdentities(): Promise<readonly ChannelIdentityRow[]> {
+    try {
+      const { rows } = await this.pool.query<{
+        agent_id: string;
+        channel_key: string;
+      }>(
+        `SELECT agent_id, '28:' || lower(app_id) AS channel_key
+           FROM agent_teams_identities
+          WHERE app_id IS NOT NULL AND app_id <> ''
+          ORDER BY channel_key`,
+      );
+      return rows.map((r) => ({
+        channelType: 'teams',
+        channelKey: r.channel_key,
+        agentId: r.agent_id,
+      }));
+    } catch (err) {
+      if (isUndefinedTable(err)) return [];
+      throw err;
+    }
+  }
+
   // ── multi_orchestrator_settings ─────────────────────────────────────────────────
   async getPlatformSettings(): Promise<PlatformSettingsRow> {
     const { rows } = await this.pool.query<PlatformSettingsDbRow>(
@@ -661,6 +954,7 @@ export class ConfigStore {
       agents,
       plugins,
       bindings,
+      identities,
       settings,
       subAgents,
       toolGrants,
@@ -673,6 +967,7 @@ export class ConfigStore {
       this.listAgents(),
       this.listAllAgentPlugins(),
       this.listChannelBindings(),
+      this.listChannelIdentities(),
       this.getPlatformSettings(),
       graph.listAllSubAgents(),
       graph.listAllToolGrants(),
@@ -686,6 +981,7 @@ export class ConfigStore {
       agents,
       agentPlugins: plugins,
       channelBindings: bindings,
+      channelIdentities: identities,
       platformSettings: settings,
       subAgents,
       toolGrants,
@@ -702,6 +998,14 @@ export interface ConfigSnapshot {
   readonly agents: readonly AgentRow[];
   readonly agentPlugins: readonly AgentPluginRow[];
   readonly channelBindings: readonly ChannelBindingRow[];
+  /**
+   * Provisioned channel identities (see {@link ChannelIdentityRow}). Optional
+   * so snapshot literals written before this existed — tests, fixtures, an
+   * embedding host — stay valid and keep their pre-existing routing; a
+   * deployment with no provisioned bots is indistinguishable from one that
+   * never had the field.
+   */
+  readonly channelIdentities?: readonly ChannelIdentityRow[];
   readonly platformSettings: PlatformSettingsRow;
   // Agent Builder graph (P0). Optional so pre-existing snapshot literals
   // (tests, fixtures) stay valid; `loadSnapshot` always populates them.
@@ -714,6 +1018,15 @@ export interface ConfigSnapshot {
   readonly mcpServers?: readonly McpServerRow[];
   /** Epic #459 W4 — operator bindings of skill capability contracts. */
   readonly skillToolBindings?: readonly SkillToolBindingRow[];
+}
+
+/** Postgres `undefined_table` (42P01) — the relation does not exist. */
+function isUndefinedTable(err: unknown): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { code?: string }).code === '42P01'
+  );
 }
 
 function isUniqueViolation(err: unknown, constraint?: string): boolean {

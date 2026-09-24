@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { LlmProvider } from '@omadia/llm-provider';
 import {
   LocalSubAgent,
+  createCliSubAgent,
   type AskObserver,
   type AskOptions,
   type LocalSubAgentTool,
@@ -15,6 +16,7 @@ import { ASSETS } from '../../platform/assets.js';
 import { warnIfEmptyInputSchema } from '../dynamicAgentRuntime.js';
 import { zodToJsonSchema } from '../zodToJsonSchema.js';
 import { type AuditLogger, createAuditLogger } from './audit.js';
+import { BuilderLlmAccessError, builderResolverErrorCode } from './builderLlmAccess.js';
 import { loadBoilerplate, type SlotDef } from './boilerplateSource.js';
 import type { DraftStore } from './draftStore.js';
 import type { BuildStatusSnapshot } from './buildPipeline.js';
@@ -186,7 +188,16 @@ interface Askable {
 
 export interface BuilderSubAgentBuildOptions {
   name: string;
-  provider: LlmProvider;
+  /**
+   * OM-101 — absent on the subscription path, where the `claude` CLI owns the
+   * tool loop and there is no in-process provider to hand a request to.
+   */
+  provider?: LlmProvider;
+  /**
+   * OM-101 — present on the subscription path: the CLI alias (`opus` /
+   * `sonnet` / `haiku`), already stripped of any `-cli` suffix.
+   */
+  cliModel?: string;
   model: string;
   maxTokens: number;
   maxIterations: number;
@@ -194,8 +205,14 @@ export interface BuilderSubAgentBuildOptions {
   tools: LocalSubAgentTool[];
 }
 
+/**
+ * How the builder reaches a model. Exactly one of `provider` (metered API,
+ * in-process loop) and `cliModel` (subscription, CLI-owned loop) is set —
+ * see `resolveBuilderProvider` and OM-101.
+ */
 export interface BuilderProviderResolution {
-  provider: LlmProvider;
+  provider?: LlmProvider;
+  cliModel?: string;
   modelId: string;
 }
 
@@ -522,7 +539,9 @@ export class BuilderAgent {
     } catch (err) {
       yield {
         type: 'error',
-        code: 'builder.model_unavailable',
+        // OM-101: a missing LLM access is a different problem from an unknown
+        // model, and only one of them has a remedy the operator can act on.
+        code: builderResolverErrorCode(err),
         message: err instanceof Error ? err.message : String(err),
       };
       return;
@@ -530,7 +549,8 @@ export class BuilderAgent {
 
     const subAgent = this.buildSubAgent({
       name: `builder-${opts.draftId}`,
-      provider: resolved.provider,
+      ...(resolved.provider ? { provider: resolved.provider } : {}),
+      ...(resolved.cliModel ? { cliModel: resolved.cliModel } : {}),
       model: resolved.modelId,
       maxTokens: this.maxTokens,
       maxIterations: this.maxIterations,
@@ -885,7 +905,31 @@ function bridgeBuilderTool(
   };
 }
 
+/**
+ * OM-101 — the same branch the dynamic-agent runtime already makes for
+ * uploaded agents (#309 recursive Shape 3): on the subscription provider the
+ * in-process `LocalSubAgent` cannot run a tool loop at all, because the
+ * `claude-cli` completion adapter rejects any request carrying tools. The
+ * builder is a tool-loop agent by nature (`fill_slot`, `read_reference`, the
+ * manifest linter), so there the CLI has to own the loop.
+ */
 function defaultBuildSubAgent(opts: BuilderSubAgentBuildOptions): Askable {
+  if (opts.cliModel) {
+    return createCliSubAgent({
+      name: opts.name,
+      systemPrompt: opts.systemPrompt,
+      model: opts.cliModel,
+      tools: opts.tools,
+    });
+  }
+  if (!opts.provider) {
+    // Unreachable through `resolveBuilderProvider`, which either returns one of
+    // the two paths or throws. Kept as a loud failure rather than a silent
+    // fallback onto a provider nobody chose.
+    throw new BuilderLlmAccessError(
+      'builder sub-agent: neither an LLM provider nor a subscription CLI model was resolved',
+    );
+  }
   return new LocalSubAgent({
     name: opts.name,
     provider: opts.provider,

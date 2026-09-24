@@ -84,6 +84,32 @@ vi.mock('../_components/AgentTeamsInstalls', () => ({
   AgentTeamsInstalls: () => <div data-testid="agent-teams-installs" />,
 }));
 
+// The tabs host mounts one panel at a time; these sections live on their
+// own tabs now and are covered by their own suites — stubbed like the rest.
+vi.mock('../_components/AgentModelPolicy', () => ({
+  AgentModelPolicy: () => <div data-testid="agent-model-policy" />,
+}));
+vi.mock('../_components/AgentPeers', () => ({
+  AgentPeers: () => <div data-testid="agent-peers" />,
+}));
+vi.mock('../_components/AgentToolGrants', () => ({
+  AgentToolGrants: () => <div data-testid="agent-tool-grants" />,
+}));
+vi.mock('../_components/AgentMcpServers', () => ({
+  AgentMcpServers: () => <div data-testid="agent-mcp-servers" />,
+}));
+vi.mock('../_components/AgentContextMemory', () => ({
+  AgentContextMemory: () => <div data-testid="agent-context-memory" />,
+}));
+
+/** Render the page and open the Plugins tab — where every plugin
+ *  assertion below lives since the page became tab-based. */
+async function renderOnPluginsTab(ui: React.ReactElement): Promise<ReturnType<typeof renderWithIntl>> {
+  const rendered = renderWithIntl(ui);
+  await userEvent.click(await screen.findByTestId('agent-detail-tab-plugins'));
+  return rendered;
+}
+
 vi.mock('../../_components/PluginsDnd', async () => {
   const { useState } = await import('react');
   return {
@@ -186,6 +212,9 @@ beforeEach(() => {
   mockToggle.mockReset();
   mockReplace.mockReset();
   mockRefresh.mockReset();
+  // The tab strip writes `?tab=` into the shared jsdom URL; start every
+  // case on the bare route so a previous case's tab does not leak in.
+  window.history.replaceState(null, '', '/operator/agents/hr');
   mockCatalog.mockResolvedValue({
     items: [
       catalogEntry({}),
@@ -202,7 +231,7 @@ beforeEach(() => {
 
 describe('AgentDetail plugin assignment', () => {
   it('renders one row per assigned plugin with its enabled state', async () => {
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     // Catalog names join in after the async catalog load.
     const odoo = await screen.findByRole('checkbox', {
@@ -216,7 +245,7 @@ describe('AgentDetail plugin assignment', () => {
   });
 
   it('renders the empty state when the agent has no plugins assigned', async () => {
-    renderWithIntl(
+    await renderOnPluginsTab(
       <AgentDetail agent={agent({ plugins: [] })} isFallback={false} />,
     );
     expect(
@@ -226,7 +255,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it('toggling a row calls toggleAgentPlugin with the inverted flag and refreshes', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     const odoo = await screen.findByRole('checkbox', {
       name: 'Enable or disable Odoo',
@@ -246,7 +275,7 @@ describe('AgentDetail plugin assignment', () => {
       ),
     );
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     await user.click(
       await screen.findByRole('checkbox', { name: 'Enable or disable Odoo' }),
@@ -263,7 +292,7 @@ describe('AgentDetail plugin assignment', () => {
   });
 
   it('shows the store-config notice only for the fallback agent', async () => {
-    const { unmount } = renderWithIntl(
+    const { unmount } = await renderOnPluginsTab(
       <AgentDetail agent={agent()} isFallback />,
     );
     expect(
@@ -271,7 +300,7 @@ describe('AgentDetail plugin assignment', () => {
     ).toBeInTheDocument();
     unmount();
 
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
     await screen.findByTestId('plugins-dnd-save');
     expect(
       screen.queryByText(/always runs plugins with the global store config/),
@@ -280,7 +309,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it('forwards PluginsDnd saves to replaceAgentPlugins for this slug', async () => {
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-save'));
 
@@ -297,7 +326,7 @@ describe('AgentDetail plugin assignment', () => {
     // edit below it. The stub's mount-local "dirty" flag stands in for that
     // unsaved state.
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-edit'));
     expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
@@ -312,7 +341,7 @@ describe('AgentDetail plugin assignment', () => {
 
   it("the editor's own save DOES remount it so it reseeds from fresh props", async () => {
     const user = userEvent.setup();
-    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await renderOnPluginsTab(<AgentDetail agent={agent()} isFallback={false} />);
 
     await user.click(await screen.findByTestId('plugins-dnd-edit'));
     expect(screen.getByTestId('plugins-dnd-state').textContent).toBe('dirty');
@@ -349,5 +378,67 @@ describe('AgentDetail identity section (#914)', () => {
 
     expect(container.querySelectorAll('a[href*="builder"]').length).toBe(0);
     expect(screen.queryByText(/Agent Builder/)).toBeNull();
+  });
+});
+
+describe('AgentDetail tabs', () => {
+  beforeEach(() => {
+    mockCatalog.mockResolvedValue({ items: [] });
+    window.history.replaceState(null, '', '/operator/agents/hr');
+  });
+
+  it('opens on Identity and mounts only that panel', async () => {
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    expect(await screen.findByTestId('agent-identity')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Identity' })).toHaveAttribute('aria-selected', 'true');
+    // The other panels are not in the tree — a tab fetches when opened, not
+    // seven sections at once.
+    for (const id of ['agent-model-policy', 'agent-peers', 'agent-teams-identity', 'agent-tool-grants', 'agent-context-memory']) {
+      expect(screen.queryByTestId(id)).toBeNull();
+    }
+    expect(screen.queryByText(/Assigned plugins/)).toBeNull();
+  });
+
+  it('switches panels and writes the tab into the URL without navigating', async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await screen.findByTestId('agent-identity');
+
+    await user.click(screen.getByRole('tab', { name: 'Conversations' }));
+    expect(await screen.findByTestId('agent-peers')).toBeTruthy();
+    expect(screen.queryByTestId('agent-identity')).toBeNull();
+    expect(new URL(window.location.href).searchParams.get('tab')).toBe('peers');
+    expect(mockRefresh).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('tab', { name: 'Tools' }));
+    expect(await screen.findByTestId('agent-tool-grants')).toBeTruthy();
+    expect(screen.getByTestId('agent-mcp-servers')).toBeTruthy();
+
+    // Back to the default clears the parameter — a plain link stays plain.
+    await user.click(screen.getByRole('tab', { name: 'Identity' }));
+    expect(new URL(window.location.href).searchParams.get('tab')).toBeNull();
+  });
+
+  it('a ?tab= deep link lands on that tab; an unknown value falls back to Identity', async () => {
+    window.history.replaceState(null, '', '/operator/agents/hr?tab=model');
+    const first = renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    expect(await screen.findByTestId('agent-model-policy')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
+    first.unmount();
+
+    window.history.replaceState(null, '', '/operator/agents/hr?tab=nope');
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    expect(await screen.findByTestId('agent-identity')).toBeTruthy();
+  });
+
+  it('arrow keys move between tabs', async () => {
+    const user = userEvent.setup();
+    renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    await screen.findByTestId('agent-identity');
+    screen.getByRole('tab', { name: 'Identity' }).focus();
+    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByTestId('agent-model-policy')).toBeTruthy();
+    await user.keyboard('{ArrowLeft}');
+    expect(await screen.findByTestId('agent-identity')).toBeTruthy();
   });
 });

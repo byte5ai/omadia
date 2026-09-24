@@ -1,0 +1,661 @@
+/**
+ * The permission gate for every `claude` CLI process omadia spawns (#1007).
+ *
+ * Two call sites spawn the official CLI on the operator's subscription:
+ *
+ *   1. `cliChatAgent.ts` — Shape 3, the CLI owns the agent loop and reaches
+ *      omadia's tools over a loopback MCP server.
+ *   2. `platform/claudeCliAdapter.ts` — Shape 2, a single-shot completion
+ *      endpoint for session summary, fact extraction, the classifier and the
+ *      verifier-judge. It serves NO tools at all.
+ *
+ * OM-81 (#991) closed the gate on the first path only. The second kept the
+ * CLI's full default tool set, the operator's `settings.json` (including
+ * `hooks`, which run shell commands whenever a tool fires) and the operator's
+ * MCP servers — while its prompts are assembled from end-user chat text and
+ * uploaded documents. Read-only built-ins never prompt for permission, so
+ * injected text could read host files and return them inside a "summary"
+ * omadia then persists. This module is the single definition of the gate so a
+ * new spawn site cannot forget half of it.
+ *
+ * The flags, and what each one is actually for (all verified against
+ * `claude --help` on 2.1.259):
+ *
+ *   --tools ""             Documented as "Use \"\" to disable all tools".
+ *                          Removes the built-in set; MCP tools are a separate
+ *                          namespace and stay available.
+ *   --disallowedTools …    Denies the built-ins by name as well. Belt to the
+ *                          braces above, and the layer that has to hold if a
+ *                          CLI version reads `--tools` differently — which is
+ *                          exactly the failure mode that produced OM-81
+ *                          (`--allowedTools` pre-approves, it never restricted).
+ *   --permission-mode      `dontAsk` — the binary's own help says "Don't prompt
+ *                          for permissions, deny if not pre-approved". A
+ *                          prompting mode would hang: nobody is watching a
+ *                          spawned process's stdin.
+ *   --setting-sources ""   Load no user/project/local `settings.json`, so the
+ *                          host user's `hooks` and personal allow rules cannot
+ *                          re-open what the flags above closed.
+ *   --restricted           Removes the code-running built-ins and WebFetch
+ *                          unless `--tools` names them, ignores user, project
+ *                          and local settings files, and confines the file
+ *                          tools. Safe for the subscription path: it does not
+ *                          touch authentication (unlike `--bare`, which reads
+ *                          neither OAuth nor keychain and would break the
+ *                          keyless subscription login outright).
+ *                          OM-85: the flag only exists from CLI 2.1.248
+ *                          (2026-08-27). An older CLI does not ignore an
+ *                          unknown flag — it prints `error: unknown option`
+ *                          and exits 1, which killed EVERY turn on a 2.1.246
+ *                          install. The flag is therefore passed only when
+ *                          the resolved CLI version supports it
+ *                          ({@link supportsRestrictedFlag}); on every version
+ *                          its environment twin `CLAUDE_CODE_RESTRICTED=1`
+ *                          is set as well, because an unknown environment
+ *                          key IS ignored by an older CLI. The other flags
+ *                          hold the boundary on their own — `--restricted` is
+ *                          the third layer, not the first.
+ *   --strict-mcp-config    Only the MCP servers in `--mcp-config` — never the
+ *                          operator's own.
+ *
+ * Credentials are unaffected by all of this: the CLI reads them from
+ * `CLAUDE_CONFIG_DIR` / the keychain, not from settings files, and
+ * {@link buildGatedCliEnv} keeps `CLAUDE_CONFIG_DIR` and `HOME` in the child
+ * env for exactly that reason.
+ *
+ * NOT closed by these flags, and deliberately recorded here rather than left
+ * implied: the CLI hardcodes `CLAUDE.md` / `AGENTS.md` discovery, and only
+ * `--bare` skips it. Both call sites therefore spawn with `cwd` set to an
+ * empty temp directory so no project memory file is in scope. A
+ * `~/.claude/CLAUDE.md` in the operator's home directory can still be read;
+ * with the built-ins gone that is instruction injection rather than code
+ * execution, but it is a residual, not a solved problem.
+ */
+import { execFile } from 'node:child_process';
+
+/**
+ * The CLI's built-in tool inventory, denied by name at spawn time.
+ *
+ * Mined from the installed binary's own inventory (2.1.259 keeps it as one
+ * minified array, 183 entries: 105 `mcp__…` names and 78 built-ins) rather
+ * than hand-collected, because the hand-collected version missed 40 names,
+ * `Tmux` among them — a terminal, exactly the class this gate exists to
+ * remove. This list is a deliberate SUPERSET of that inventory: it also names
+ * tools from neighbouring CLI versions, so an upgrade cannot open a hole
+ * between releases. `JavaScript` is one of those extras and is not a tool in
+ * 2.1.259; the only `"JavaScript"` strings in the binary belong to bundled
+ * highlight.js language metadata.
+ *
+ * Aliases are listed alongside their canonical names on purpose, because
+ * denying only one spelling may match nothing depending on how the CLI
+ * resolves names. 2.1.259 declares exactly ten, all covered here:
+ * `KillShell`/`KillBash`, `AgentOutputTool`/`BashOutputTool`/`AgentOutput`/
+ * `BashOutput`, `ListMcpResources`, `ReadMcpResource`, `ReadMcpResourceDir`,
+ * and `RunWorkflow` — that last one is the alias of `Workflow` and its
+ * metadata declares `enablesCodeExecution`.
+ *
+ * The drift guard in `test/cliBridge/cliSpawnGate.test.ts` mines the installed
+ * binary's inventory AND its alias arrays, then subtracts this list; anything
+ * left over fails. It works in that direction on purpose: its first version
+ * built its candidate set out of this constant and so could not detect a
+ * deletion at all.
+ */
+export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
+  // Shell and code execution — the OM-81 finding itself.
+  'Bash',
+  'BashOutput',
+  'BashOutputTool',
+  'KillShell',
+  'KillBash',
+  'PowerShell',
+  'REPL',
+  // Not a tool in 2.1.259 (highlight.js metadata is the only match); kept as
+  // superset cover in case a future version ships a JS runner by this name.
+  'JavaScript',
+  'Tmux',
+  'Cd',
+  // Sub-agents and task runners: a denied tool is worthless if a sub-agent can
+  // be spawned to call it.
+  'Agent',
+  'AgentOutput',
+  'AgentOutputTool',
+  'Task',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+  'TaskOutput',
+  'TaskStop',
+  'Explore',
+  'Plan',
+  // Filesystem.
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'Read',
+  'Glob',
+  'Grep',
+  'LS',
+  'NotebookEdit',
+  'NotebookRead',
+  // Network egress.
+  'WebFetch',
+  'WebSearch',
+  'WebBrowser',
+  // Skills, plugins and the registries that install them.
+  'Skill',
+  'SlashCommand',
+  'ToolSearch',
+  'Workflow',
+  // Alias of `Workflow`, and its metadata declares `enablesCodeExecution`.
+  'RunWorkflow',
+  'propose_skills',
+  'RefreshMcpTools',
+  'SuggestPluginInstall',
+  'SuggestConnectors',
+  'SuggestSkills',
+  'ListConnectors',
+  'ListPlugins',
+  'ListSkills',
+  'SearchMcpRegistry',
+  'SearchPlugins',
+  'SearchSkills',
+  'ShareOnboardingGuide',
+  // Scheduling and background work.
+  'ScheduleWakeup',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'Monitor',
+  // Messaging: an omadia turn must not reach anyone outside its own channel.
+  'ListAgents',
+  'ListPeers',
+  'SendMessage',
+  'SendUserMessage',
+  'PushNotification',
+  'RemoteTrigger',
+  'SendFeedback',
+  'SendFile',
+  'SendUserFile',
+  'Brief',
+  'ObserverReport',
+  'SubscribePR',
+  // Artifacts, design surfaces and account-level integrations.
+  'Artifact',
+  'ArtifactComments',
+  'ArtifactData',
+  'ArtifactCheck',
+  'DesignSync',
+  'ClaudeDesign',
+  'Snip',
+  'Projects',
+  'ConnectGitHub',
+  'StatusLine',
+  // Session control and interactive prompts nobody is watching.
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'EnterWorktree',
+  'ExitWorktree',
+  'ReportFindings',
+  'EndConversation',
+  'AskUserQuestion',
+  'TodoWrite',
+  'LSP',
+  // MCP resource readers (the tools, not the servers). Each canonical `…Tool`
+  // name has a short-form alias in 2.1.259; both spellings are denied.
+  'ListMcpResourcesTool',
+  'ListMcpResources',
+  'ReadMcpResourceTool',
+  'ReadMcpResource',
+  'ReadMcpResourceDirTool',
+  'ReadMcpResourceDir',
+  // Self-hosted runner control: `spawn_local` starts local sessions.
+  'self_hosted_runner_get_pool',
+  'self_hosted_runner_list_runners',
+  'self_hosted_runner_list_secrets',
+  'self_hosted_runner_list_sessions',
+  'self_hosted_runner_path',
+  'self_hosted_runner_pool_id',
+  'self_hosted_runner_read_health',
+  'self_hosted_runner_read_metrics',
+  'self_hosted_runner_requeue_session',
+  'self_hosted_runner_spawn_local',
+  'self_hosted_runner_tail_log',
+];
+
+/** Prefix of every tool omadia serves to the CLI over the loopback MCP server. */
+export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
+
+/**
+ * Windows-only environment variables a spawned CLI may keep.
+ *
+ * The first version of this allowlist was POSIX-only, which was a regression
+ * against the scrub list it replaced (that one passed everything through).
+ * Windows is a shipped target: `desktop/electron-builder.yml` builds an NSIS
+ * x64 installer and `platform/cliInstallService.ts` has explicit `win32`
+ * handling. `HOME` and `TMPDIR` do not exist there, so the child would have
+ * got no home directory and `os.tmpdir()` would have fallen through to a
+ * `C:\temp` that need not exist — and a missing `SystemRoot` alone is enough
+ * to break a spawned Node process.
+ */
+const WINDOWS_ENV_KEYS: readonly string[] = [
+  'SystemRoot',
+  'windir',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'TEMP',
+  'TMP',
+  'PATHEXT',
+  'COMSPEC',
+  'SystemDrive',
+  'ProgramData',
+  'ProgramFiles',
+  'USERNAME',
+];
+
+/**
+ * Environment variables a spawned CLI may keep, on any platform.
+ *
+ * An allowlist, not a scrub list (#1014). The scrub list it replaces removed
+ * credentials and billing switches but passed everything else through,
+ * including `NODE_OPTIONS` (which can `--require` arbitrary code into the
+ * child) and the whole `CLAUDE_CODE_*` family of feature and auth switches.
+ *
+ * Each entry earns its place:
+ *   PATH, HOME            the CLI resolves helpers and its own config through these
+ *   CLAUDE_CONFIG_DIR     where the subscription credentials live; without it
+ *                         the keyless login path breaks
+ *   TMPDIR                temp files, and the mcp-config we hand it
+ *   LANG, LC_ALL, LC_CTYPE, TZ   output formatting only
+ *   HTTP_PROXY, …         a corporate install has no egress without them
+ *   NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, SSL_CERT_DIR   corporate TLS interception
+ *   USER, LOGNAME         some helpers read the current user name
+ *
+ * See {@link WINDOWS_ENV_KEYS} for what is added on `win32`, and
+ * {@link cliEnvAllowlistFor} for the platform branch.
+ */
+export const CLI_ENV_ALLOWLIST_KEYS: readonly string[] = [
+  'PATH',
+  'HOME',
+  'CLAUDE_CONFIG_DIR',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'USER',
+  'LOGNAME',
+];
+
+/**
+ * The allowlist that applies on a given platform: the shared keys, plus the
+ * Windows ones on `win32`.
+ *
+ * Exported so a test can assert both platforms without stubbing
+ * `process.platform`.
+ */
+export function cliEnvAllowlistFor(platform: NodeJS.Platform): readonly string[] {
+  return platform === 'win32'
+    ? [...CLI_ENV_ALLOWLIST_KEYS, ...WINDOWS_ENV_KEYS]
+    : CLI_ENV_ALLOWLIST_KEYS;
+}
+
+/**
+ * Environment variables that must never reach a spawned CLI, kept as a second
+ * layer behind {@link CLI_ENV_ALLOWLIST_KEYS}.
+ *
+ * The allowlist already excludes all of these. The explicit deny list stays so
+ * that widening the allowlist later cannot silently re-admit a credential or a
+ * billing switch: {@link buildGatedCliEnv} applies it after the allowlist, and
+ * a test asserts the two never overlap.
+ */
+export const CLI_ENV_SCRUB_KEYS: readonly string[] = [
+  // Direct API keys / tokens — would switch the CLI off the subscription.
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  // Routing/header overrides — could redirect to a metered gateway/proxy.
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_CUSTOM_HEADERS',
+  // Alternate-backend switches — would bill Bedrock/Vertex, not the sub.
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLOUD_ML_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_PROFILE',
+  'AWS_REGION',
+  'AWS_DEFAULT_REGION',
+  // Code injection into the child process.
+  'NODE_OPTIONS',
+];
+
+/**
+ * The first Claude CLI release that understands `--restricted` (its changelog
+ * entry for 2.1.248: "Added `--restricted` (or `CLAUDE_CODE_RESTRICTED=1`)").
+ * OM-85: 2.1.246 — two days older — rejects it with exit code 1.
+ */
+export const RESTRICTED_FLAG_MIN_CLI_VERSION = '2.1.248';
+
+/**
+ * The environment form of `--restricted`, documented in the same 2.1.248
+ * changelog entry. Set on every spawn: a CLI that predates it ignores the key,
+ * one that knows it gets the same boundary the flag would give.
+ */
+export const CLI_RESTRICTED_ENV_KEY = 'CLAUDE_CODE_RESTRICTED';
+
+const VERSION_TRIPLE = /(\d+)\.(\d+)\.(\d+)/;
+
+/**
+ * The `x.y.z` triple out of `claude --version` output (`2.1.246 (Claude Code)`),
+ * or undefined when there is none. Pure, so a test can feed it any string.
+ */
+export function parseCliVersion(output: string | undefined): string | undefined {
+  if (output === undefined) {
+    return undefined;
+  }
+
+  const match = VERSION_TRIPLE.exec(output);
+  return match === null ? undefined : `${match[1]}.${match[2]}.${match[3]}`;
+}
+
+/** Numeric compare of two `x.y.z` strings; non-numeric input sorts lowest. */
+function compareVersions(a: string, b: string): number {
+  const left = a.split('.').map(Number);
+  const right = b.split('.').map(Number);
+  for (let i = 0; i < 3; i += 1) {
+    const diff = (left[i] ?? 0) - (right[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Whether a CLI of the given version accepts `--restricted`.
+ *
+ * Unknown (undefined or unparsable) means NO: the failure mode of passing the
+ * flag to a CLI that lacks it is a dead subscription path, while the failure
+ * mode of leaving it out is one protective layer fewer behind `--tools ""`,
+ * the deny list and `dontAsk` — and {@link CLI_RESTRICTED_ENV_KEY} still
+ * reaches a CLI that knows it.
+ */
+export function supportsRestrictedFlag(cliVersion: string | undefined): boolean {
+  const parsed = parseCliVersion(cliVersion);
+  return parsed !== undefined && compareVersions(parsed, RESTRICTED_FLAG_MIN_CLI_VERSION) >= 0;
+}
+
+export interface CliToolGateOptions {
+  /**
+   * Path to the mcp-config this spawn should use. Both call sites pass one:
+   * the chat agent points at its loopback server, the completion adapter at a
+   * config declaring no servers at all.
+   */
+  readonly mcpConfigPath: string;
+  /**
+   * Tool pattern to pre-approve, e.g. `mcp__omadia__*`. Omit on a spawn that
+   * serves no tools, so nothing is pre-approved.
+   */
+  readonly allowedTools?: string;
+  /**
+   * The installed CLI's version (`2.1.259`), as resolved by
+   * {@link resolveCliVersion}. Decides whether `--restricted` is passed
+   * (OM-85). Omit or pass undefined when unknown — the flag is then left out.
+   */
+  readonly cliVersion?: string;
+}
+
+/**
+ * The gate as argv. Order is stable so a test can assert the exact array.
+ *
+ * `--disallowedTools` is variadic and therefore expanded last within its own
+ * group, immediately followed by the next flag — the CLI's parser stops a
+ * variadic list at the next `-`-prefixed token.
+ */
+export function buildCliToolGateArgv(options: CliToolGateOptions): string[] {
+  const argv = [
+    '--strict-mcp-config',
+    '--mcp-config',
+    options.mcpConfigPath,
+    // OM-85 — only where the CLI knows the flag; see the module comment.
+    ...(supportsRestrictedFlag(options.cliVersion) ? ['--restricted'] : []),
+    '--tools',
+    '',
+    '--permission-mode',
+    'dontAsk',
+    '--setting-sources',
+    '',
+    '--disallowedTools',
+    ...CLI_BUILTIN_TOOL_DENYLIST,
+  ];
+
+  if (options.allowedTools !== undefined) {
+    argv.push('--allowedTools', options.allowedTools);
+  }
+
+  return argv;
+}
+
+export interface CompletionCliArgvOptions {
+  /** CLI model alias, already mapped by the caller. */
+  readonly model: string;
+  /** Path to an mcp-config declaring no servers. */
+  readonly mcpConfigPath: string;
+  /** System prompt, or undefined to leave the CLI's default in place. */
+  readonly systemPrompt?: string;
+  /** See {@link CliToolGateOptions.cliVersion}. */
+  readonly cliVersion?: string;
+}
+
+/**
+ * Full argv for the single-shot completion spawn (`claudeCliAdapter`).
+ *
+ * Lives here rather than in the adapter so the gate and the argv that carries
+ * it are one unit, and so both are unit-testable from this package's source.
+ * That matters in a git worktree, where `@omadia/orchestrator` resolves to a
+ * prebuilt `dist` and an app-side test cannot see new package exports until
+ * CI rebuilds.
+ */
+export function buildCompletionCliArgv(options: CompletionCliArgvOptions): string[] {
+  const argv = [
+    '-p',
+    '--output-format',
+    'json',
+    '--model',
+    options.model,
+    ...buildCliToolGateArgv({
+      mcpConfigPath: options.mcpConfigPath,
+      ...(options.cliVersion !== undefined ? { cliVersion: options.cliVersion } : {}),
+    }),
+  ];
+
+  // Replace rather than append, for the same reason as OM-83 (#992) on the
+  // chat path: appended text leaves the CLI's own identity primary.
+  if (options.systemPrompt !== undefined && options.systemPrompt.length > 0) {
+    argv.push('--system-prompt', options.systemPrompt);
+  }
+
+  return argv;
+}
+
+/**
+ * The child environment: allowlist first, then the deny list as a backstop.
+ *
+ * `base` defaults to `process.env`. Callers that need to inject an env for a
+ * test pass their own; the policy applies either way, so a test cannot
+ * accidentally prove a laxer environment than production uses.
+ */
+export function buildGatedCliEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+
+  for (const key of cliEnvAllowlistFor(platform)) {
+    const value = base[key];
+    if (typeof value === 'string') {
+      env[key] = value;
+    }
+  }
+
+  for (const key of CLI_ENV_SCRUB_KEYS) {
+    delete env[key];
+  }
+
+  // OM-85 — the environment twin of `--restricted`, set unconditionally: a
+  // CLI older than 2.1.248 ignores the key, a newer one honours it, and the
+  // flag itself is only passed where the version is known to accept it.
+  env[CLI_RESTRICTED_ENV_KEY] = '1';
+
+  return env;
+}
+
+/** The `execFile` shape {@link resolveCliVersion} needs; a test injects a fake. */
+export type CliVersionExec = (
+  binary: string,
+  args: readonly string[],
+  callback: (error: Error | null, stdout: string) => void,
+) => unknown;
+
+interface CliVersionCacheEntry {
+  readonly version: string | undefined;
+  readonly resolvedAt: number;
+}
+
+/**
+ * How long a resolved version is trusted. Short on purpose: the CLI updates
+ * itself independently of omadia (the OM-85 reporter ran `claude update` with
+ * the kernel still running), and a stale "2.1.246" would keep the flag off
+ * one turn longer — harmless — while a stale "2.1.259" after a downgrade
+ * would break turns until restart, so we re-probe every few minutes.
+ */
+const CLI_VERSION_CACHE_TTL_MS = 5 * 60_000;
+const CLI_VERSION_PROBE_TIMEOUT_MS = 10_000;
+
+const cliVersionCache = new Map<string, CliVersionCacheEntry>();
+
+/** Test seam: forget every cached probe. */
+export function clearCliVersionCache(): void {
+  cliVersionCache.clear();
+}
+
+function defaultVersionExec(
+  binary: string,
+  args: readonly string[],
+  callback: (error: Error | null, stdout: string) => void,
+): unknown {
+  return execFile(
+    binary,
+    [...args],
+    { timeout: CLI_VERSION_PROBE_TIMEOUT_MS, env: buildGatedCliEnv(), windowsHide: true },
+    (error, stdout) => callback(error, typeof stdout === 'string' ? stdout : String(stdout)),
+  );
+}
+
+/**
+ * The installed CLI's version, read once from `<binary> --version` and cached
+ * per binary for {@link CLI_VERSION_CACHE_TTL_MS}.
+ *
+ * Never throws: a missing binary, a timeout or unparsable output all resolve
+ * to `undefined`, which {@link supportsRestrictedFlag} treats as "do not pass
+ * the flag". The spawn that follows then fails (or succeeds) on its own
+ * terms, with its own error message — the probe must not add a failure mode.
+ *
+ * A failed probe is cached like a successful one: a CLI installed inside the
+ * TTL window runs flag-less (still behind `--tools ""`, the deny list,
+ * `dontAsk` and the env twin) for at most five minutes. That is the cheaper
+ * side of the trade — re-probing a missing binary on every turn would spawn a
+ * failing process per message for as long as the CLI stays absent.
+ */
+export async function resolveCliVersion(
+  binary: string,
+  options: { readonly exec?: CliVersionExec; readonly now?: () => number } = {},
+): Promise<string | undefined> {
+  const now = options.now ?? Date.now;
+  const cached = cliVersionCache.get(binary);
+  if (cached !== undefined && now() - cached.resolvedAt < CLI_VERSION_CACHE_TTL_MS) {
+    return cached.version;
+  }
+
+  const exec = options.exec ?? defaultVersionExec;
+  const version = await new Promise<string | undefined>((resolve) => {
+    try {
+      exec(binary, ['--version'], (error, stdout) => {
+        resolve(error === null ? parseCliVersion(stdout) : undefined);
+      });
+    } catch {
+      resolve(undefined);
+    }
+  });
+
+  cliVersionCache.set(binary, { version, resolvedAt: now() });
+  return version;
+}
+
+const UNKNOWN_OPTION = /unknown option '([^']+)'/;
+
+/**
+ * Raised when the spawned CLI rejected the gate's own argv — an installed CLI
+ * older than the flags omadia passes. Carries a stable `code` so a route can
+ * present it as a configuration problem (update the CLI) rather than as a
+ * failed answer.
+ */
+export class CliIncompatibleError extends Error {
+  readonly code = 'cli_incompatible' as const;
+
+  constructor(
+    message: string,
+    readonly flag: string,
+    readonly cliVersion: string | undefined,
+  ) {
+    super(message);
+    this.name = 'CliIncompatibleError';
+  }
+}
+
+/**
+ * Turn a non-zero CLI exit into a {@link CliIncompatibleError} when stderr
+ * shows the CLI did not understand one of OUR flags; undefined otherwise.
+ *
+ * OM-85: the reporter's chat showed the raw `error: unknown option
+ * '--restricted'` and nothing about what to do. This is the sentence that was
+ * missing.
+ */
+export function classifyUnknownOptionFailure(
+  stderr: string,
+  cliVersion: string | undefined,
+): CliIncompatibleError | undefined {
+  const match = UNKNOWN_OPTION.exec(stderr);
+  if (match === null || match[1] === undefined) {
+    return undefined;
+  }
+
+  const flag = match[1];
+  const installed = cliVersion === undefined ? 'an unknown version' : `version ${cliVersion}`;
+  return new CliIncompatibleError(
+    `The installed Claude CLI (${installed}) does not support ${flag}, which omadia's ` +
+      `security gate requires. Update the CLI to ${RESTRICTED_FLAG_MIN_CLI_VERSION} or ` +
+      `newer (\`claude update\`, or ADMIN → LLM access) and try again. CLI said: ${stderr.trim()}`,
+    flag,
+    cliVersion,
+  );
+}

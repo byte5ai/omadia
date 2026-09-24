@@ -18,12 +18,17 @@ interface UsageTotals {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  /** OM-103 — subscription reference cost; informational, never billed. */
+  referenceCostUsd: number;
+  /** OM-103 — how many of `calls` ran on the subscription CLI. */
+  subscriptionCalls: number;
   cacheHitRatio: number;
 }
 interface UsageByKey {
   key: string;
   calls: number;
   costUsd: number;
+  referenceCostUsd: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -233,6 +238,27 @@ export default function UsageDashboardPage(): React.ReactElement {
               value={`${compact(data.totals.inputTokens)} / ${compact(data.totals.outputTokens)}`}
             />
           </section>
+
+          {/*
+            OM-103 — the page used to read "0 Calls" for an operator running
+            purely on a Claude subscription, because the ledger only had
+            capture points on the metered API path. Subscription turns are
+            recorded now, and they need their own line: they have tokens but
+            no per-call price, so folding them into "Gesamtkosten" would be a
+            different lie than the one this replaces.
+          */}
+          {data.totals.subscriptionCalls > 0 && (
+            <section className="mb-8 rounded-lg border border-[color:var(--edge)] px-4 py-3 text-sm text-[color:var(--fg-muted)]">
+              <p className="text-[color:var(--fg-strong)]">
+                {t('subscription.headline', { count: data.totals.subscriptionCalls })}
+              </p>
+              <p className="mt-1">
+                {t('subscription.explainer', {
+                  reference: usd(data.totals.referenceCostUsd),
+                })}
+              </p>
+            </section>
+          )}
 
           <Panel title={t('panels.costOverTime')}>
             {data.timeSeries.length === 0 ? (

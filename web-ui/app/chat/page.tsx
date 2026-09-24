@@ -593,6 +593,7 @@ export default function ChatPage(): React.ReactElement {
           <AgentUnavailableBanner
             sessionId={activeId}
             unavailableSlug={rec.agentUnavailableSlug}
+            reason={rec.agentUnavailableReason}
             onRecovered={() => {
               streamStore.patch(activeId, { agentUnavailableSlug: undefined });
               // Drop the pinned snapshot in the local session so the
@@ -877,7 +878,12 @@ function EmptyState({
   );
 }
 
-function MessageRow({
+/**
+ * Exported for the OM-105 regression test, following the `ToolRow` precedent
+ * (#1008): the turn-end gate below is worth pinning, and driving it through
+ * the whole page would mean standing up the stream store for one boolean.
+ */
+export function MessageRow({
   message,
   disabled,
   onChoose,
@@ -904,7 +910,18 @@ function MessageRow({
   const hasPendingTool = (message.tools ?? []).some(
     (t) => t.output === undefined,
   );
-  const showLiveness = !isUser && (message.streaming === true || hasPendingTool);
+  // OM-105 — a turn that has ENDED must never keep the live row running.
+  // `hasPendingTool` on its own never clears after a failed turn: the tool
+  // call that was in flight when the stream died never receives its result
+  // event, so `output` stays `undefined` forever. A beta tester watched
+  // "stream live · 163s · tool running · iter 0 · … · probably hung — press
+  // stop?" keep counting up next to an answer bubble that already read "CLI
+  // timed out after 120000ms". `finishedAt` is the authoritative turn-end
+  // marker — `finalizePending` sets it from a `finally`, so done, error and
+  // abort all land here.
+  const turnEnded = message.finishedAt !== undefined;
+  const showLiveness =
+    !isUser && !turnEnded && (message.streaming === true || hasPendingTool);
   const liveNow = useClock(showLiveness ? 1000 : null);
   const liveElapsedSec = showLiveness
     ? Math.max(0, Math.round((liveNow - message.startedAt) / 1000))
@@ -1107,7 +1124,13 @@ function ToolTrace({ tools }: { tools: ToolEvent[] }): React.ReactElement {
   );
 }
 
-function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
+/**
+ * Exported for #1008's render test: the foreign-tool warning is the one thing
+ * in this row a reader must not miss, and asserting it by mounting the whole
+ * 1900-line page would test the page, not the warning. Next ignores named
+ * exports from a route file other than its own reserved ones.
+ */
+export function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
   const t = useTranslations('chat');
   const pending = tool.output === undefined;
   // Tick every second while pending so the elapsed timer updates smoothly
@@ -1138,24 +1161,40 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
 
   const subEvents = tool.subEvents ?? [];
 
+  // OM-81 / #1008 — a foreign call bypassed omadia's loopback MCP server, so
+  // it must never look like an omadia tool. Outranks every other style here,
+  // including the in-flight and knowledge-graph looks: this is the one thing
+  // about the row a reader has to notice.
+  const isForeign = tool.foreign === true;
+
   return (
     <details
       className={[
         'rounded border text-[11px]',
-        pending
-          ? 'border-[color:var(--border)]'
-          : tool.isError
-            ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
-            : isKG
-              ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10'
-              : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]',
+        isForeign
+          ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/12'
+          : pending
+            ? 'border-[color:var(--border)]'
+            : tool.isError
+              ? 'border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8'
+              : isKG
+                ? 'border-[color:var(--accent)] bg-[color:var(--accent)]/10'
+                : 'border-[color:var(--border)] bg-[color:var(--bg-elevated)]',
       ].join(' ')}
-      open={pending}
+      open={pending || isForeign}
     >
       <summary className="flex cursor-pointer items-center gap-2 px-2 py-1 font-mono select-none">
         <span>{status}</span>
         {icon && <span>{icon}</span>}
         <span className="font-semibold">{tool.name}</span>
+        {isForeign && (
+          <span
+            className="rounded bg-[color:var(--danger)]/20 px-1 font-semibold text-[color:var(--danger-edge)]"
+            title={t('foreignToolExplain')}
+          >
+            {t('foreignToolBadge')}
+          </span>
+        )}
         {inputPreview && (
           <span
             className="max-w-[40ch] truncate font-normal text-[color:var(--fg-muted)]"
@@ -1178,6 +1217,14 @@ function ToolRow({ tool }: { tool: ToolEvent }): React.ReactElement {
         )}
       </summary>
       <div className="border-t border-[color:var(--border)] px-2 py-1">
+        {isForeign && (
+          <p
+            role="alert"
+            className="mb-1 font-semibold text-[color:var(--danger-edge)]"
+          >
+            {t('foreignToolExplain')}
+          </p>
+        )}
         <div className="text-[color:var(--fg-muted)]">{t('inputLabel')}</div>
         <pre className="overflow-x-auto font-mono">
           {JSON.stringify(tool.input, null, 2)}
@@ -1222,9 +1269,34 @@ function TriageBadge({
     bucket: 'simple' | 'complex' | 'fallback';
     classifierModel: string;
     model: string;
+    /** #1033 — the turn ran on the agent's fallback model (primary unavailable). */
+    reason?: 'provider_fallback';
+    provider?: string;
   };
 }): React.ReactElement {
   const t = useTranslations('chat.routing');
+  // #1033 — a PROVIDER fallback is a different thing from the triage
+  // `bucket: 'fallback'` (classifier failed): the primary model was
+  // unavailable and the answer came from the configured second choice.
+  // One subtle chip, no text in the answer itself.
+  if (routing.reason === 'provider_fallback') {
+    return (
+      <div
+        className="mb-2 inline-flex flex-wrap items-center gap-2 text-[11px] text-[color:var(--fg-muted)]"
+        title={t('providerFallbackTooltip', {
+          model: routing.model,
+          provider: routing.provider ?? '',
+        })}
+      >
+        <span className="inline-flex items-center rounded-full bg-[color:var(--warning)]/10 px-2 py-0.5 font-medium uppercase tracking-[0.08em] text-[color:var(--warning)] ring-1 ring-[color:var(--warning)]">
+          {t('providerFallback')}
+        </span>
+        <span className="rounded bg-current/10 px-2 py-0.5 font-medium">
+          {shortModelName(routing.model)}
+        </span>
+      </div>
+    );
+  }
   const verdict: Record<typeof routing.bucket, { label: string; cls: string }> = {
     simple: {
       label: t('bucketSimple'),

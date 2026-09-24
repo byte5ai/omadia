@@ -39,10 +39,34 @@ export class MaterializerError extends Error {
   }
 }
 
+/**
+ * Rows a chat render shows before it stops and says how many it left out.
+ *
+ * A 953-row Markdown table is not an answer anyone reads in a chat window,
+ * and every channel has a ceiling it hits first: Teams clips at 25k chars and
+ * then rejects the torn table as "Broken Markdown" (the whole turn fails after
+ * the data work already succeeded), Telegram stops at 4096 chars. The cap
+ * lives HERE, not in each channel, so the truncation is honest — a footer with
+ * the exact count — instead of a byte-limit cut through a row. The full result
+ * stays available through `create_xlsx` on the same `datasetId`.
+ */
+export const MAX_CHAT_ROWS = 50;
+
+export interface MaterializeOptions {
+  /** Row cap for the rendered text (and the structured table). Defaults to
+   *  {@link MAX_CHAT_ROWS}; must be a positive integer. */
+  readonly maxRows?: number;
+}
+
 /** Result of materialization — the channel-bound answer body. */
 export interface MaterializeResult {
   readonly text: string;
+  /** Rows in the dataset — the number the answer is ABOUT, not the number
+   *  shown. */
   readonly rowCount: number;
+  /** Rows actually rendered into `text` (≤ `rowCount`). When smaller, `text`
+   *  ends with a note naming how many were left out. */
+  readonly renderedRowCount: number;
   /**
    * Distinct real values rendered into `text` from `sensitive-masked`
    * columns — the values the LLM never saw (it only ever saw `[masked]` in
@@ -161,7 +185,7 @@ function resolveRenderColumns(
 }
 
 function renderTable(
-  dataset: Dataset,
+  rows: ReadonlyArray<Dataset['rows'][number]>,
   columns: ReadonlyArray<RenderColumn>,
   rankColumn: string | undefined,
 ): string {
@@ -169,7 +193,7 @@ function renderTable(
   const cells = rankColumn !== undefined ? [rankColumn, ...headers] : headers;
   const header = `| ${cells.join(' | ')} |`;
   const separator = `| ${cells.map(() => '---').join(' | ')} |`;
-  const body = dataset.rows
+  const body = rows
     .map((row, i) => {
       const rowCells = columns.map((c) => escapeCell(cell(row[c.field])));
       const all =
@@ -181,15 +205,34 @@ function renderTable(
 }
 
 function renderList(
-  dataset: Dataset,
+  rows: ReadonlyArray<Dataset['rows'][number]>,
   columns: ReadonlyArray<RenderColumn>,
 ): string {
-  return dataset.rows
+  return rows
     .map(
       (row) =>
         `- ${columns.map((c) => `${c.label}: ${cell(row[c.field])}`).join(', ')}`,
     )
     .join('\n');
+}
+
+/** The honest footer under a capped render. German, like every other line
+ *  the user reads from this assistant; the numbers are the point. */
+function truncationNote(total: number, shown: number): string {
+  const omitted = total - shown;
+  return (
+    `_… ${String(omitted)} weitere Zeile${omitted === 1 ? '' : 'n'} nicht angezeigt ` +
+    `(${String(shown)} von ${String(total)}). Die vollständige Liste gibt es als ` +
+    `Excel-Datei — einfach danach fragen._`
+  );
+}
+
+function resolveMaxRows(opts: MaterializeOptions | undefined): number {
+  const n = opts?.maxRows ?? MAX_CHAT_ROWS;
+  if (!Number.isInteger(n) || n < 1) {
+    throw new MaterializerError(`maxRows must be a positive integer, got ${String(n)}`);
+  }
+  return n;
 }
 
 function renderScalar(
@@ -232,7 +275,7 @@ function collectMaskedValues(
 }
 
 function buildStructuredTable(
-  dataset: Dataset,
+  rows: ReadonlyArray<Dataset['rows'][number]>,
   columns: ReadonlyArray<ResolvedRenderColumn>,
   rankColumn: string | undefined,
 ): StructuredTable {
@@ -255,7 +298,7 @@ function buildStructuredTable(
     });
   }
 
-  const rows = dataset.rows.map((row, index): StructuredRow => {
+  const structuredRows = rows.map((row, index): StructuredRow => {
     const cells: Record<string, unknown> = {};
     if (rankColumn !== undefined) {
       cells.__rank = String(index + 1);
@@ -271,7 +314,7 @@ function buildStructuredTable(
 
   return {
     columns: structuredColumns,
-    rows,
+    rows: structuredRows,
   };
 }
 
@@ -283,7 +326,9 @@ function buildStructuredTable(
 export function materialize(
   store: DatasetStore,
   directive: RenderDirective,
+  opts?: MaterializeOptions,
 ): MaterializeResult {
+  const maxRows = resolveMaxRows(opts);
   const dataset = store.get(directive.datasetId);
   if (dataset === undefined) {
     throw new MaterializerError(
@@ -302,28 +347,34 @@ export function materialize(
     return {
       text: withProse(directive.prose, '(no rows)'),
       rowCount: 0,
+      renderedRowCount: 0,
       maskedValues: [],
     };
   }
 
   const resolvedColumns = resolveRenderColumns(dataset, directive.columns);
   const renderColumns = resolvedColumns.map((column) => column.render);
+  const total = dataset.rows.length;
+  // A scalar is one value by definition; tables and lists are capped so the
+  // channel gets a readable answer plus an honest count, never a torn table.
+  const shown = directive.format === 'scalar' ? total : Math.min(total, maxRows);
+  const rows = dataset.rows.slice(0, shown);
 
   let body: string;
   let renderedColumns: ReadonlyArray<RenderColumn>;
   let structuredTable: StructuredTable | undefined;
   switch (directive.format) {
     case 'table':
-      body = renderTable(dataset, renderColumns, directive.rankColumn);
+      body = renderTable(rows, renderColumns, directive.rankColumn);
       renderedColumns = renderColumns;
       structuredTable = buildStructuredTable(
-        dataset,
+        rows,
         resolvedColumns,
         directive.rankColumn,
       );
       break;
     case 'list':
-      body = renderList(dataset, renderColumns);
+      body = renderList(rows, renderColumns);
       renderedColumns = renderColumns;
       // `list` is intentionally prose-only: it is not a tabular UI primitive.
       break;
@@ -338,11 +389,15 @@ export function materialize(
         `render directive has an unsupported format "${String(directive.format)}"`,
       );
   }
+  if (shown < total) body = `${body}\n\n${truncationNote(total, shown)}`;
 
   return {
     text: withProse(directive.prose, body),
-    rowCount: dataset.rows.length,
-    maskedValues: collectMaskedValues(dataset, renderedColumns),
+    rowCount: total,
+    renderedRowCount: shown,
+    // Only what was rendered: a value the footer left out never reached the
+    // channel, so it must not be flagged as "resolved behind the boundary".
+    maskedValues: collectMaskedValues({ ...dataset, rows }, renderedColumns),
     ...(structuredTable !== undefined ? { structuredTable } : {}),
   };
 }

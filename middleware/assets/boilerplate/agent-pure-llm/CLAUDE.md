@@ -189,9 +189,20 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    | `{{AGENT_NAME}}` | `Microsoft SharePoint Agent` |
    | `{{AGENT_SLUG}}` | `sharepoint` |
    | `{{AGENT_DESCRIPTION_DE}}` | "Durchsucht SharePoint-Sites …" |
+   | `{{AGENT_DESCRIPTION_EN}}` | "Searches SharePoint sites …" (siehe Hinweis unten) |
    | `{{INTEGRATION_ID}}` | `de.byte5.integration.microsoft365` |
    | `{{CAPABILITY_ID}}` | `search_documents` |
    | `{{ROLE_DESCRIPTION_DE}}` | "ein pragmatischer SharePoint-Recherche-Assistent" |
+
+   > **`identity.description` ist eine Locale-Map, kein einzelner String** (#885).
+   > Ein blanker String wird als Englisch gelesen — deutscher Text darin
+   > erscheint im Hub als englische Beschreibung. Die beiden Platzhalter
+   > kommen aus **zwei getrennten Spec-Feldern** (#1022): `spec.description`
+   > ist der deutsche Text, `spec.description_en` der englische. Der Builder
+   > setzt beide selbst — den englischen formuliert er aus dem deutschen,
+   > ohne dafür nachzufragen. Von Hand zu übersetzen ist also nichts. Fehlt
+   > `description_en` (alte Spec, Clone-from-installed), fällt Codegen auf
+   > die deutsche Zeile zurück und `lint_spec` warnt.
 
 3. **Capabilities verdichten** — `client.ts` (reiner HTTP-Client) + `toolkit.ts`
    (Capability→Zod→Handler). Pro Capability: `side_effects`, `idempotent`,

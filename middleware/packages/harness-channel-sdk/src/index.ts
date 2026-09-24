@@ -40,7 +40,7 @@ export type {
   TargetedSendReport,
 } from './targetedSend.js';
 // #330 C3b - conversation-addressed proactive send (group nudges).
-export type { ConversationSendProvider } from './conversationSend.js';
+export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when
@@ -219,6 +219,7 @@ export type {
 // Semantic outgoing-message contracts (connectors render native)
 export type {
   SemanticAnswer,
+  AnswerSource,
   OutgoingAttachment,
   VerifierBadge,
   FollowUpOption,

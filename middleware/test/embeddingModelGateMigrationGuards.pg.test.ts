@@ -64,6 +64,9 @@ const VEC768 = `[${new Array(768).fill(0.01).join(',')}]`;
 
 /** Advisory-lock namespace shared by the migration and `decideRegistry`. */
 const LOCK_NS_REGISTRY = 4_400;
+/** Cato-Audit Runde 5 / OM-98: the GLOBAL column-rebuild key lives in its own
+ *  namespace, so it can never collide with a tenant id in 4400. */
+const LOCK_NS_COLUMN_REBUILD = 4_401;
 
 describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvailable }, () => {
   let pool: Pool;
@@ -583,6 +586,112 @@ describe('#440 vector-column migration guards (real Postgres)', { skip: !pgAvail
         log: silent,
       });
       assert.equal(result.ok, true);
+    });
+  });
+
+  // ── OM-98 (Cato-Audit Runde 5) ────────────────────────────────────────────
+
+  /**
+   * `graph_nodes` is ONE physical table with a `tenant_id` COLUMN, so
+   * `DROP COLUMN embedding` is table-wide whichever tenant asked for it. The
+   * emptiness precondition used to be `WHERE tenant_id = $1`, which let a
+   * tenant that had never embedded anything authorise the destruction of every
+   * other tenant's corpus. These run against real Postgres because the
+   * property under test IS the SQL scope.
+   */
+  describe('OM-98 — an empty tenant may not drop another tenant\'s vectors', () => {
+    const OTHER_TENANT = 'guards-440-neighbour';
+
+    const vectorsOf = async (tenant: string): Promise<number> => {
+      const r = await pool.query<{ n: string }>(
+        'SELECT count(*) AS n FROM graph_nodes WHERE tenant_id = $1 AND embedding IS NOT NULL',
+        [tenant],
+      );
+      return Number(r.rows[0]?.n ?? 0);
+    };
+
+    it('refuses the non-destructive rebuild when a NEIGHBOUR tenant holds vectors', async () => {
+      // TENANT itself is empty; the neighbour owns three 768d vectors.
+      await freshSchema({ registry: { modelId: OLLAMA_768.modelId, dimensions: 768, ageDays: 3 } });
+      for (let i = 0; i < 3; i++) {
+        await pool.query(
+          `INSERT INTO graph_nodes (id, tenant_id, type, embedding)
+           VALUES ($1, $2, 'Turn', $3::public.vector)`,
+          [`neighbour:${String(i)}`, OTHER_TENANT, VEC768],
+        );
+      }
+      assert.equal(await vectorsOf(TENANT), 0, 'precondition: the acting tenant is empty');
+
+      const result = await migrateVectorColumns({
+        pool,
+        tenantId: TENANT,
+        targets: [{ table: 'graph_nodes', column: 'embedding' }],
+        targetModelId: OPENAI_1536.modelId,
+        targetDimensions: 1536,
+        switchCooldownMs: 0,
+        requireEmpty: true,
+        log: silent,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.ok === false && result.reason, 'corpus-not-empty');
+      assert.equal(
+        await declaredType('graph_nodes'),
+        'public.vector(768)',
+        'the column must be untouched',
+      );
+      assert.equal(await vectorsOf(OTHER_TENANT), 3, 'not one neighbour vector may be destroyed');
+    });
+
+    it('still allows the rebuild when the whole TABLE is empty', async () => {
+      // The case the guard exists to permit: no tenant has anything to lose.
+      await freshSchema({ registry: { modelId: OLLAMA_768.modelId, dimensions: 768, ageDays: 3 } });
+
+      const result = await migrateVectorColumns({
+        pool,
+        tenantId: TENANT,
+        targets: [{ table: 'graph_nodes', column: 'embedding' }],
+        targetModelId: OPENAI_1536.modelId,
+        targetDimensions: 1536,
+        switchCooldownMs: 0,
+        requireEmpty: true,
+        log: silent,
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(await declaredType('graph_nodes'), 'public.vector(1536)');
+    });
+
+    it('serialises the rebuild on a GLOBAL key, so two tenants cannot race', async () => {
+      await freshSchema({ registry: { modelId: OLLAMA_768.modelId, dimensions: 768, ageDays: 3 } });
+
+      // Hold the global rebuild key from an independent session. A second
+      // tenant's run holds a DIFFERENT registry key, so only this key can stop
+      // it — and it must.
+      const holder = new Pool({ connectionString: PG_URL, max: 1 });
+      try {
+        const taken = await holder.query<{ locked: boolean }>(
+          'SELECT pg_try_advisory_lock($1::int, hashtext($2)::int) AS locked',
+          [LOCK_NS_COLUMN_REBUILD, 'vector-column-migration'],
+        );
+        assert.equal(taken.rows[0]?.locked, true, 'precondition: the global key was free');
+
+        const result = await migrateVectorColumns({
+          pool,
+          tenantId: OTHER_TENANT,
+          targets: [{ table: 'graph_nodes', column: 'embedding' }],
+          targetModelId: OPENAI_1536.modelId,
+          targetDimensions: 1536,
+          switchCooldownMs: 0,
+          requireEmpty: true,
+          log: silent,
+        });
+
+        assert.equal(result.ok === false && result.reason, 'lock-held');
+        assert.equal(await declaredType('graph_nodes'), 'public.vector(768)');
+      } finally {
+        await holder.end();
+      }
     });
   });
 });

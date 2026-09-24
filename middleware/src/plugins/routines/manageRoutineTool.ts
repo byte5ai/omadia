@@ -9,10 +9,22 @@ import {
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
+  type RoutineActorScope,
   type RoutineRunner,
 } from './routineRunner.js';
 
 export const MANAGE_ROUTINE_TOOL_NAME = 'manage_routine';
+
+/**
+ * OM-82 (#993) — shown when the per-turn user context is missing. The old text
+ * ("outside a channel turn") blamed the caller, but a subscription-CLI user is
+ * IN a channel; the context was dropped crossing the loopback process boundary.
+ * Phrase it as a runtime/configuration fault, not user error.
+ */
+export const ROUTINE_NO_CONTEXT_ERROR =
+  'Error: routines are unavailable in this session because the user context ' +
+  'did not reach the routines tool (a runtime wiring issue, not something you ' +
+  'did wrong). Please report this to your omadia operator.';
 
 const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'delete']);
 const ListFilterSchema = z.enum(['all', 'active', 'paused']);
@@ -187,7 +199,7 @@ export class ManageRoutineTool {
     }
     const ctx = this.resolveContext();
     if (!ctx) {
-      return 'Error: cannot create routine outside a channel turn (no user context).';
+      return ROUTINE_NO_CONTEXT_ERROR;
     }
 
     // Cold-start 1:1 outreach: when the caller names another person via
@@ -230,7 +242,7 @@ export class ManageRoutineTool {
   private async handleList(args: ManageRoutineInput): Promise<string> {
     const ctx = this.resolveContext();
     if (!ctx) {
-      return 'Error: cannot list routines outside a channel turn (no user context).';
+      return ROUTINE_NO_CONTEXT_ERROR;
     }
     const rows = await this.runner.listRoutines(ctx.tenant, ctx.userId);
     const filter: RoutineListFilter = args.filter ?? 'all';
@@ -270,7 +282,9 @@ export class ManageRoutineTool {
 
   private async handlePause(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `pause` requires `id`.';
-    const updated = await this.runner.pauseRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const updated = await this.runner.pauseRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'paused',
       routine: summariseRoutine(updated),
@@ -279,7 +293,9 @@ export class ManageRoutineTool {
 
   private async handleResume(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `resume` requires `id`.';
-    const updated = await this.runner.resumeRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const updated = await this.runner.resumeRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: 'resumed',
       routine: summariseRoutine(updated),
@@ -288,12 +304,26 @@ export class ManageRoutineTool {
 
   private async handleDelete(args: ManageRoutineInput): Promise<string> {
     if (!args.id) return 'Error: `delete` requires `id`.';
-    const ok = await this.runner.deleteRoutine(args.id);
+    const ctx = this.resolveContext();
+    if (!ctx) return ROUTINE_NO_CONTEXT_ERROR;
+    const ok = await this.runner.deleteRoutine(args.id, actorScope(ctx));
     return JSON.stringify({
       action: ok ? 'deleted' : 'not_found',
       id: args.id,
     });
   }
+}
+
+/**
+ * #1025 — the scope every mutating action runs under. `create` and `list`
+ * always resolved the turn context; `pause`, `resume` and `delete` did not,
+ * and passed a bare id to a runner that filtered on nothing, so knowing an
+ * id was enough to act on another tenant's routine. Every action now
+ * derives its scope from the same context, which is why this helper exists
+ * rather than three inline literals that could drift.
+ */
+export function actorScope(ctx: ManageRoutineContext): RoutineActorScope {
+  return { kind: 'channel-user', tenant: ctx.tenant, userId: ctx.userId };
 }
 
 interface SummarisedRoutine {

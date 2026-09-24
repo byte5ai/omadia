@@ -23,7 +23,9 @@ export interface InstalledAgent {
    *  successful activation. Reset to 0 on success. When it reaches
    *  CIRCUIT_BREAKER_THRESHOLD the entry's status flips to 'errored' and
    *  `activateAllInstalled` will skip it on subsequent boots until manual
-   *  intervention (remove + reinstall, or dedicated /reactivate endpoint). */
+   *  intervention (remove + reinstall, or dedicated /reactivate endpoint).
+   *  A terminal activation block floors this count at the threshold without
+   *  counting another attempt; repeated blocks do not increase it. */
   activation_failure_count?: number;
   /** Human-readable tail of the last activation error. Populated only when
    *  activation_failure_count > 0. Trimmed to avoid unbounded growth. */
@@ -71,6 +73,15 @@ export interface InstalledRegistry {
     error: string,
     unresolvedRequires?: readonly string[],
   ): Promise<void>;
+  /** Record a deterministic configuration block: immediately sets 'errored',
+   *  stores the bounded error and timestamp, and clears unresolved_requires.
+   *  Floors the failure count at the threshold without incrementing it.
+   *  No-op if the agent is not in the registry.
+   *
+   *  OM-87 uses a distinct operation because a non-retryable conflict is not
+   *  a failed activation attempt. Keeping markActivationFailed unchanged also
+   *  preserves every existing two- and three-argument caller's retry policy. */
+  markActivationBlocked(id: AgentId, error: string): Promise<void>;
   /** Record a successful activation. Clears failure count + last error +
    *  unresolved_requires. */
   markActivationSucceeded(id: AgentId): Promise<void>;
@@ -118,6 +129,31 @@ function bumpFailure(
   if (nextCount >= CIRCUIT_BREAKER_THRESHOLD) {
     next.status = 'errored';
   }
+  return next;
+}
+
+/** Shared terminal transition for memory and file registries (OM-87). */
+export function blockActivation(
+  current: InstalledAgent,
+  error: string,
+  nowIso: string,
+): InstalledAgent {
+  const next: InstalledAgent = {
+    ...current,
+    status: 'errored',
+    // The count is exposed by the runtime API, but no reader enforces
+    // errored => count >= threshold. Preserve that convention here without
+    // reducing prior failures or growing the counter on repeated blocks.
+    activation_failure_count: Math.max(
+      current.activation_failure_count ?? 0,
+      CIRCUIT_BREAKER_THRESHOLD,
+    ),
+    last_activation_error: error.slice(0, ERROR_TAIL_MAX),
+    last_activation_error_at: nowIso,
+  };
+  // A provided capability must never become a re-checkable dependency,
+  // including a stale requires-list left by a previous activation attempt.
+  delete next.unresolved_requires;
   return next;
 }
 
@@ -183,6 +219,12 @@ export class InMemoryInstalledRegistry implements InstalledRegistry {
       id,
       bumpFailure(current, error, new Date().toISOString(), unresolvedRequires),
     );
+  }
+
+  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+    const current = this.agents.get(id);
+    if (!current) return;
+    this.agents.set(id, blockActivation(current, error, new Date().toISOString()));
   }
 
   async markActivationSucceeded(id: AgentId): Promise<void> {

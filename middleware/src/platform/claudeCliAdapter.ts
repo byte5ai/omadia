@@ -13,11 +13,26 @@
  * Tools are not supported — full-tool subscription agents are the separate
  * CLI-owns-loop path (Shape 3). Streaming is emulated as a single delta.
  *
+ * #1007 — "tools are not supported" describes what omadia offers this
+ * provider, and used to say nothing about what the spawned CLI could do on its
+ * own. It ran with the CLI's full default tool set, the operator's
+ * `settings.json` (including `hooks`) and the operator's MCP servers, while
+ * every prompt it sends is assembled from end-user chat text and uploaded
+ * documents. Read-only built-ins never prompt, so injected text could read
+ * host files and return them inside a summary omadia persists. This path now
+ * carries the same spawn gate as the chat path, from the same builder in
+ * `@omadia/orchestrator` (`cliSpawnGate.ts`), plus an empty cwd and an
+ * mcp-config with no servers.
+ *
  * Auth is host capability: if the CLI is not logged in, `complete()` rejects and
  * `classifyError` reports a non-retryable auth error.
  */
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { CLI_COMPLETION_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import type {
   LlmAdapter,
   LlmAdapterBuildOptions,
@@ -33,7 +48,13 @@ import type {
   ToolSpec,
 } from '@omadia/llm-provider';
 
-import { scrubbedEnv } from './cliBackendDetector.js';
+import {
+  buildCompletionCliArgv,
+  buildGatedCliEnv,
+  classifyUnknownOptionFailure,
+  resolveCliVersion,
+} from '@omadia/orchestrator';
+
 
 const CLI_BIN = 'claude';
 const COMPLETE_TIMEOUT_MS = 120_000;
@@ -87,7 +108,15 @@ function buildPrompt(messages: ReadonlyArray<ChatMessage>): string {
 interface CliResultJson {
   result?: string;
   is_error?: boolean;
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    /** OM-103 — the CLI reports it; the ledger now has a column for it. */
+    cache_creation_input_tokens?: number;
+  };
+  /** OM-103 — what the same call would have cost on the metered API. */
+  total_cost_usd?: number;
 }
 
 /** Parse the first top-level JSON object in the CLI output (tolerates a stray
@@ -146,28 +175,72 @@ function parseFirstJsonObject(text: string): Record<string, unknown> | undefined
   }
 }
 
-function runClaude(req: LlmRequest): Promise<LlmResponse> {
+async function runClaude(req: LlmRequest): Promise<LlmResponse> {
   const forced = forcedTool(req);
   // Fail CLOSED on GENERAL/auto tool use — only the forced single-tool
   // structured-output pattern is served (via JSON-schema prompt). General
   // tool loops need the CLI to own the loop (Shape 3 / CliChatAgent).
+  //
+  // #1007 — this refusal is about omadia's OWN tools. It says nothing about the
+  // tools the spawned CLI already has, which is why the gate below is not
+  // optional here: every prompt this provider sends is assembled from end-user
+  // chat text and uploaded documents (see `buildPrompt`), and the CLI's
+  // read-only built-ins never prompt for permission.
   if (req.tools && req.tools.length > 0 && !forced) {
-    return Promise.reject(
-      new Error(
-        'claude-cli provider supports only forced single-tool structured output, not general tool use',
-      ),
+    throw new Error(
+      'claude-cli provider supports only forced single-tool structured output, not general tool use',
     );
   }
 
-  const args = ['-p', '--output-format', 'json', '--model', toCliModel(req.model)];
-  const sys = systemText(req.system);
-  if (sys) args.push('--append-system-prompt', sys);
+  // An empty cwd, so the CLI's hardcoded CLAUDE.md / AGENTS.md discovery finds
+  // no project memory to fold into a prompt built from user content, and an
+  // mcp-config declaring no servers at all: this path serves no tools, so
+  // `--strict-mcp-config` against an empty set means the operator's own MCP
+  // servers cannot connect either.
+  const workDir = await mkdtemp(join(tmpdir(), 'omadia-cli-completion-'));
+  try {
+    const mcpConfigPath = join(workDir, 'mcp-config.json');
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
+    // OM-85 — same version gate as the chat path: `--restricted` only where
+    // the installed CLI accepts it. The probe is cached, so this is one
+    // `claude --version` per five minutes, not one per completion.
+    const cliVersion = await resolveCliVersion(CLI_BIN);
+    return await spawnClaude(req, forced, mcpConfigPath, workDir, cliVersion);
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+function spawnClaude(
+  req: LlmRequest,
+  forced: ToolSpec | undefined,
+  mcpConfigPath: string,
+  workDir: string,
+  cliVersion: string | undefined,
+): Promise<LlmResponse> {
+  // #1007 — argv and gate come from the orchestrator package, the same source
+  // the chat path uses, so a flag cannot be present on one spawn site and
+  // missing on the other. No `allowedTools`: nothing is pre-approved here
+  // because this path serves no tools at all.
+  const args = buildCompletionCliArgv({
+    model: toCliModel(req.model),
+    mcpConfigPath,
+    ...(systemText(req.system) ? { systemPrompt: systemText(req.system) } : {}),
+    ...(cliVersion !== undefined ? { cliVersion } : {}),
+  });
   const prompt = forced
     ? `${buildPrompt(req.messages)}\n${structuredSuffix(forced)}`
     : buildPrompt(req.messages);
 
   return new Promise<LlmResponse>((resolve, reject) => {
-    const child = spawn(CLI_BIN, args, { env: scrubbedEnv(), windowsHide: true });
+    const child = spawn(CLI_BIN, args, {
+      // `scrubbedEnv()` used to wrap this. It is a no-op behind the allowlist:
+      // every key it deletes is absent from the allowlist anyway, and a test
+      // asserts the allowlist and the scrub list never overlap.
+      env: buildGatedCliEnv(),
+      cwd: workDir,
+      windowsHide: true,
+    });
     let stdout = '';
     let stderr = '';
     let bytes = 0;
@@ -200,7 +273,20 @@ function runClaude(req: LlmRequest): Promise<LlmResponse> {
         return;
       }
       if (code !== 0) {
-        reject(new Error(`claude-cli exited ${code}: ${(stderr || stdout).slice(0, 500).trim()}`));
+        // OM-94 — record the exit here too; the completion path serves the
+        // summariser, fact extractor and verifier judge, whose failures reach
+        // no chat bubble at all. stderr ONLY: on this path stdout is the
+        // model's answer, i.e. conversation-derived text, and the log must not
+        // become a second copy of it.
+        console.warn(
+          `[claude-cli] completion exited ${code} (cli ${cliVersion ?? 'unknown'}): ` +
+            `${stderr.split('\n')[0]?.trim() ?? ''}`,
+        );
+        // OM-85 — a CLI that rejects the gate's own flags is a config error.
+        reject(
+          classifyUnknownOptionFailure(stderr, cliVersion) ??
+            new Error(`claude-cli exited ${code}: ${(stderr || stdout).slice(0, 500).trim()}`),
+        );
         return;
       }
       // Be tolerant of a stray progress/warning line on stdout: parse the first
@@ -222,6 +308,20 @@ function runClaude(req: LlmRequest): Promise<LlmResponse> {
           ? { cacheReadTokens: parsed.usage.cache_read_input_tokens }
           : {}),
       };
+      // OM-103 — Shape-2 completions are subscription calls too (session
+      // summary, fact extraction, classifiers, the verifier judge). They were
+      // absent from the cost ledger for the same reason the chat turns were:
+      // the only capture points sat on the metered API path.
+      recordUsage({
+        source: CLI_COMPLETION_USAGE_SOURCE,
+        model: req.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens ?? 0,
+        cacheCreationTokens: parsed.usage?.cache_creation_input_tokens ?? 0,
+        costUsd: 0,
+        referenceCostUsd: parsed.total_cost_usd ?? 0,
+      });
       if (forced) {
         const argsObj = parseFirstJsonObject(text);
         if (!argsObj) {

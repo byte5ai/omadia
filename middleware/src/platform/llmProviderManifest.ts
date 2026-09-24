@@ -10,12 +10,16 @@
  * ids, one class-default per (provider,class)) are enforced downstream by
  * `registerExternalModels`; this layer only enforces shape + required fields.
  */
-import type {
-  LlmProviderCatalog,
-  LlmProviderDescriptor,
-  ModelInfo,
-  ProviderPolicy,
-  ProviderQuirks,
+import {
+  EFFORT_LEVELS,
+  type EffortLevel,
+  type LlmProviderCatalog,
+  type LlmProviderDescriptor,
+  type ModelDiscoveryClassRule,
+  type ModelDiscoveryRules,
+  type ModelInfo,
+  type ProviderPolicy,
+  type ProviderQuirks,
 } from '@omadia/llm-provider';
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -70,6 +74,7 @@ function parseModel(raw: unknown): ModelInfo {
     }
     aliases = aliasesRaw as string[];
   }
+  const effort = parseEffort(rec);
   return {
     id: reqString(rec, 'id'),
     provider: reqString(rec, 'id').split(':')[0] ?? '',
@@ -81,6 +86,133 @@ function parseModel(raw: unknown): ModelInfo {
     vision: reqBool(rec, 'vision'),
     ...(rec['class_default'] === true ? { classDefault: true } : {}),
     ...(aliases !== undefined ? { aliases } : {}),
+    ...effort,
+  };
+}
+
+/**
+ * #1033 — optional `effort_levels` / `effort_default` on a model entry. A
+ * level outside the contract vocabulary is a manifest error (the operator UI
+ * would otherwise offer a value no adapter can send); a default that is not
+ * among the declared levels is one too, for the same reason.
+ */
+function parseEffort(
+  rec: Record<string, unknown>,
+): Pick<ModelInfo, 'effortLevels' | 'effortDefault'> {
+  const levelsRaw = rec['effort_levels'];
+  if (levelsRaw === undefined) {
+    if (rec['effort_default'] !== undefined) {
+      throw new Error("'effort_default' requires 'effort_levels'");
+    }
+    return {};
+  }
+  if (!Array.isArray(levelsRaw) || levelsRaw.length === 0) {
+    throw new Error("'effort_levels' must be a non-empty array");
+  }
+  const levels: EffortLevel[] = [];
+  for (const level of levelsRaw) {
+    if (typeof level !== 'string' || !(EFFORT_LEVELS as readonly string[]).includes(level)) {
+      throw new Error(
+        `'effort_levels' entry '${String(level)}' must be one of ${EFFORT_LEVELS.join('|')}`,
+      );
+    }
+    levels.push(level as EffortLevel);
+  }
+  const defaultRaw = optString(rec, 'effort_default');
+  if (defaultRaw !== undefined && !levels.includes(defaultRaw as EffortLevel)) {
+    throw new Error(`'effort_default' '${defaultRaw}' is not among 'effort_levels'`);
+  }
+  return {
+    effortLevels: levels,
+    ...(defaultRaw !== undefined ? { effortDefault: defaultRaw as EffortLevel } : {}),
+  };
+}
+
+function optStringArray(rec: Record<string, unknown>, key: string): string[] | undefined {
+  const v = rec[key];
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.some((s) => typeof s !== 'string')) {
+    throw new Error(`'${key}' must be an array of strings`);
+  }
+  return v as string[];
+}
+
+function assertRegex(source: string, where: string): void {
+  try {
+    new RegExp(source, 'i');
+  } catch {
+    throw new Error(`${where}: '${source}' is not a valid regular expression`);
+  }
+}
+
+function optNumber(rec: Record<string, unknown>, key: string): number | undefined {
+  const v = rec[key];
+  if (v === undefined) return undefined;
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`'${key}' must be a number`);
+  return v;
+}
+
+function parseClassRule(raw: unknown, index: number): ModelDiscoveryClassRule {
+  const rec = asRecord(raw);
+  const where = `discovery.classify[${String(index)}]`;
+  const match = reqString(rec, 'match');
+  assertRegex(match, where);
+  const cls = reqString(rec, 'class');
+  if (!MODEL_CLASSES.has(cls)) throw new Error(`${where}: class '${cls}' must be fast|balanced|frontier`);
+  const restClass = optString(rec, 'rest_class');
+  if (restClass !== undefined && !MODEL_CLASSES.has(restClass)) {
+    throw new Error(`${where}: rest_class '${restClass}' must be fast|balanced|frontier`);
+  }
+  const aliases = optStringArray(rec, 'aliases');
+  const vision = rec['vision'];
+  if (vision !== undefined && typeof vision !== 'boolean') throw new Error(`${where}: 'vision' must be a boolean`);
+  const effort = parseEffort(rec);
+  const label = optString(rec, 'label');
+  const maxTokens = optNumber(rec, 'max_tokens');
+  const contextWindow = optNumber(rec, 'context_window');
+  return {
+    match,
+    class: cls as ModelDiscoveryClassRule['class'],
+    ...(restClass !== undefined ? { restClass: restClass as ModelDiscoveryClassRule['class'] } : {}),
+    ...(aliases !== undefined ? { aliases } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(vision !== undefined ? { vision } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...effort,
+  };
+}
+
+/**
+ * Optional `discovery` block: live model discovery rules (see
+ * `ModelDiscoveryRules`). Regexes are validated here so a broken pattern is a
+ * manifest error at load, not a crash on the first sync.
+ */
+function parseDiscovery(raw: unknown): ModelDiscoveryRules | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const rec = asRecord(raw);
+  const include = optStringArray(rec, 'include');
+  const exclude = optStringArray(rec, 'exclude');
+  for (const s of include ?? []) assertRegex(s, 'discovery.include');
+  for (const s of exclude ?? []) assertRegex(s, 'discovery.exclude');
+  const classifyRaw = rec['classify'];
+  if (!Array.isArray(classifyRaw) || classifyRaw.length === 0) {
+    throw new Error("'discovery.classify' must be a non-empty array");
+  }
+  const select = optString(rec, 'select');
+  if (select !== undefined && select !== 'newest' && select !== 'first') {
+    throw new Error("'discovery.select' must be 'newest' or 'first'");
+  }
+  const collapse = rec['collapse_dated_snapshots'];
+  if (collapse !== undefined && typeof collapse !== 'boolean') {
+    throw new Error("'discovery.collapse_dated_snapshots' must be a boolean");
+  }
+  return {
+    ...(include !== undefined ? { include } : {}),
+    ...(exclude !== undefined ? { exclude } : {}),
+    classify: classifyRaw.map(parseClassRule),
+    ...(select !== undefined ? { select: select as 'newest' | 'first' } : {}),
+    ...(collapse !== undefined ? { collapseDatedSnapshots: collapse } : {}),
   };
 }
 
@@ -152,6 +284,7 @@ export function parseLlmProviderManifestBlock(
   const quirks =
     wireFormat === 'openai-compatible' ? parseQuirks(rec['quirks']) : undefined;
   const policy = parsePolicy(rec['policy']);
+  const discovery = parseDiscovery(rec['discovery']);
   return {
     id: reqString(rec, 'id'),
     label: reqString(rec, 'label'),
@@ -162,6 +295,7 @@ export function parseLlmProviderManifestBlock(
       : {}),
     ...(quirks !== undefined ? { quirks } : {}),
     ...(policy !== undefined ? { policy } : {}),
+    ...(discovery !== undefined ? { discovery } : {}),
     models: modelsRaw.map(parseModel),
   };
 }

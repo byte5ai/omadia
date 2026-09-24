@@ -63,11 +63,29 @@ import {
   TEAMS_PROVISIONING_STATES,
   type TeamsProvisioningState,
 } from '../platform/agentTeamsIdentityStore.js';
+import {
+  adminConsentUrlOf,
+  delegatedStepOf,
+  isDelegatedConsentRequiredError,
+  isDelegatedSignInRequiredError,
+  isDelegatedTokenExpiredError,
+  isDeviceCodeFlowError,
+  requiredScopesOf,
+  type DelegatedTokenSet,
+} from '../platform/teamsDelegatedSignIn.js';
+// The refresh arithmetic itself — shared with the target listing so the two
+// can never grow separate opinions about when a token is spent.
+import { withDelegatedTokenRefresh } from '../platform/teamsDelegatedRefresh.js';
 import type { TimerSeam } from '../plugins/jobScheduler.js';
 import type {
   BackgroundJob,
   BackgroundJobHandle,
 } from '../platform/backgroundJobRegistry.js';
+import { normalizeTeamsTeamId } from '../platform/teamsTeamId.js';
+import {
+  isChatTarget,
+  type TeamsTargetKind,
+} from '../platform/teamsInstallTarget.js';
 
 // ---------------------------------------------------------------------------
 // State vocabulary — the CHECK constraint of agent_teams_identities
@@ -100,6 +118,16 @@ export interface TeamsIdentityJobRecord {
   readonly displayName: string;
   readonly state: TeamsProvisioningState;
   readonly appId: string | null;
+  /**
+   * The Entra app's directory object id (migration 0055) — what the
+   * teardown's purge needs and `appId` cannot substitute for.
+   *
+   * OPTIONAL on this structural port, like every other additive field here
+   * (`targetKind` before it): a store or a test double that predates the
+   * column still satisfies the type, and absent means the same as `null` —
+   * the teardown re-resolves the id from Graph or from the recycle bin.
+   */
+  readonly appObjectId?: string | null;
   readonly tenantId: string | null;
   readonly teamsAppId: string | null;
   readonly teamsAppExternalId: string | null;
@@ -109,6 +137,7 @@ export interface TeamsIdentityJobRecord {
 export interface TeamsIdentityJobUpdate {
   readonly state?: TeamsProvisioningState;
   readonly appId?: string;
+  readonly appObjectId?: string | null;
   readonly tenantId?: string;
   readonly teamsAppId?: string;
   readonly teamsAppExternalId?: string;
@@ -148,6 +177,11 @@ export interface TeamsInstallJobStore {
     readonly teamId: string;
     readonly teamsAppId?: string | null;
     readonly teamDisplayName?: string | null;
+    /** Which kind of target the id addresses (migration 0054). Optional on
+     *  the port so a mount predating it still satisfies the structural type;
+     *  the store defaults it to `'team'`, which is what every pre-0054 row
+     *  means. */
+    readonly targetKind?: TeamsTargetKind;
   }): Promise<unknown>;
 }
 
@@ -260,6 +294,49 @@ export const AWAITING_ENTRA_REPLICATION_DETAIL = 'awaiting_entra_replication';
  *  and its id is persisted; what follows is the wait. */
 export const REGISTRATION_CREATED_DETAIL = 'registration_created';
 
+/** `detail` of the `progress` event emitted when the catalog upload runs on
+ *  the tenant's delegated sign-in rather than app-only (#924). No token, no
+ *  account, no flow handle — just the fact, which is what an operator
+ *  watching a stalled panel actually needs. */
+export const DELEGATED_UPLOAD_DETAIL = 'delegated_upload';
+
+/** `detail` of the `retrying` event emitted while the install step waits for a
+ *  catalog entry this same run has just published to become referenceable.
+ *
+ *  Its own vocabulary rather than the generic retry detail: "attempt 2 of 5,
+ *  next in 8s" and "the catalog entry is seconds old, waiting for it to
+ *  replicate" send an operator to different places, and only the second one
+ *  ends by itself. */
+export const AWAITING_CATALOG_REPLICATION_DETAIL = 'awaiting_catalog_replication';
+
+/** `detail` of the `progress` event for a silent token rotation. Worth a line
+ *  because it is the one moment the run pauses for a reason that is NOT a
+ *  fault and that the operator would otherwise never see. */
+export const DELEGATED_TOKEN_REFRESHED_DETAIL = 'delegated_token_refreshed';
+
+// ---------------------------------------------------------------------------
+// Delegated token custody port (#924)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the tenant's delegated token set is kept — a structural subset of
+ * `platform/teamsDelegatedTokenStore.ts`.
+ *
+ * TENANT-SCOPED, NOT AGENT-SCOPED, and that is the whole point of #924: one
+ * admin signs in once, and every agent provisioned afterwards uses that sign-in.
+ * There is deliberately no agent id in this port — adding one would re-create
+ * the per-agent manual upload the feature exists to remove.
+ *
+ * OPTIONAL ON THE RUNNER. A mount without it (and every existing test) behaves
+ * exactly as before: app-only upload, which is correct against a connector
+ * older than 0.6.0 and against a tenant that never needed the delegated path.
+ */
+export interface TeamsDelegatedTokenPort {
+  read(): Promise<DelegatedTokenSet | undefined>;
+  /** Called the instant the connector reports `refreshed === true`. */
+  write(tokens: DelegatedTokenSet): Promise<void>;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioner port (structural subset of TeamsProvisionerAccessor)
 // ---------------------------------------------------------------------------
@@ -275,7 +352,20 @@ export type TenantMode = 'customer' | 'home';
 
 export interface ProvisionerAppRegistrationResult {
   readonly appId: string;
-  readonly registration: { readonly tenantId: string };
+  readonly registration: {
+    readonly tenantId: string;
+    /**
+     * The DIRECTORY OBJECT id (migration 0055) — a different identifier from
+     * {@link appId} and the only one the recycle-bin purge accepts.
+     *
+     * Optional on the PORT although the connector contract always returns it,
+     * because every existing test double predates it and a required field
+     * would break them all for a value none of them exercises. The runner
+     * persists it when it is there and shrugs when it is not; the teardown
+     * (`services/teamsIdentityReset.ts`) can re-resolve it either way.
+     */
+    readonly objectId?: string;
+  };
 }
 
 export interface ProvisionerRegistrationOnlyOutcome {
@@ -307,7 +397,11 @@ export interface TeamsProvisionerPort {
     readonly secretDisplayName?: string;
     /** Early-persistence hook — see the runner's step 1 (byte5ai/omadia#916). */
     readonly onRegistrationCreated?: (
-      registration: { readonly appId: string; readonly tenantId: string },
+      registration: {
+        readonly appId: string;
+        readonly tenantId: string;
+        readonly objectId?: string;
+      },
       outcome: IdempotentOutcome,
     ) => void | Promise<void>;
   }): Promise<Idempotent<ProvisionerAppRegistrationResult>>;
@@ -332,6 +426,34 @@ export interface TeamsProvisionerPort {
     readonly externalId: string;
   }): Promise<Idempotent<{ readonly teamsAppId: string }>>;
 
+  /**
+   * The DELEGATED catalog upload (connector >= 0.6.0, byte5ai/omadia#924).
+   *
+   * OPTIONAL, and the runner feature-detects it exactly like every other
+   * version-skewed method: absent means an older connector, which keeps using
+   * the app-only {@link uploadToCatalog} above and keeps failing the way it
+   * always did against a tenant that requires delegated permissions.
+   *
+   * Returns the token set it used, with `refreshed` telling the caller whether
+   * it rotated — a rotation MUST be persisted immediately or the next run
+   * signs in from scratch.
+   */
+  uploadToCatalogDelegated?(input: {
+    readonly packageZip: Uint8Array;
+    readonly externalId: string;
+    readonly tokens: DelegatedTokenSet;
+  }): Promise<{
+    readonly app: { readonly value: { readonly teamsAppId: string } };
+    readonly tokens: DelegatedTokenSet;
+    readonly refreshed: boolean;
+  }>;
+
+  /** Silent token refresh (connector >= 0.6.0). Optional for the same
+   *  reason; without it an expired access token needs a human. */
+  refreshDelegatedToken?(input: {
+    readonly tokens: DelegatedTokenSet;
+  }): Promise<DelegatedTokenSet>;
+
   getCatalogApp(input: {
     readonly teamsAppExternalId: string;
   }): Promise<{ readonly found: false } | { readonly found: true; readonly teamsAppId: string }>;
@@ -340,7 +462,48 @@ export interface TeamsProvisionerPort {
     readonly teamId: string;
     readonly teamsAppId: string;
   }): Promise<Idempotent<{ readonly teamId: string; readonly teamsAppId: string }>>;
+
+  /**
+   * The CHAT direction — `POST /chats/{id}/installedApps` (connector >=
+   * 0.7.0). Optional for the same version-skew reason as every other method
+   * added after the oldest supported connector: feature-detect with
+   * `typeof === 'function'`, never call it blind.
+   *
+   * Reached only for a `group-chat` / `one-on-one-chat` target
+   * ({@link ProvisionTeamsIdentityRequest.targetKind}); a `team` target keeps
+   * using {@link installToTeam} unchanged.
+   */
+  installToChat?(input: {
+    readonly chatId: string;
+    readonly teamsAppId: string;
+  }): Promise<Idempotent<{ readonly chatId: string; readonly teamsAppId: string }>>;
 }
+
+/**
+ * The chain reached its install step with a CHAT target, against a connector
+ * that publishes no `installToChat` (< 0.7.0).
+ *
+ * A typed error rather than a crash, and raised by the runner as well as
+ * refused by the route, because the two guard different moments: the route
+ * refuses a NEW request up front (501, nothing enqueued), while a run that
+ * RESUMES an older request can meet a connector that was downgraded since —
+ * and a resumed run must fail with the same actionable sentence rather than a
+ * `TypeError: installToChat is not a function`.
+ */
+export class TeamsChatInstallUnsupportedError extends Error {
+  public readonly code = 'teams_chat_install_unsupported';
+
+  constructor() {
+    super(
+      `the installed teamsProvisioner@1 publishes no installToChat method — upgrade @omadia/integration-microsoft365 to >= ${TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION}; until then an agent can only be installed into a team, not into a group chat.`,
+    );
+    this.name = 'TeamsChatInstallUnsupportedError';
+  }
+}
+
+/** Minimum connector version whose `teamsProvisioner@1` installs into a chat.
+ *  Quoted in the operator-facing reason so the fix is actionable. */
+export const TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION = '0.7.0';
 
 /** App-package inputs for one identity; loading is bound by the wiring unit
  *  (manifest template + icons ship with the channel-teams package). */
@@ -480,6 +643,86 @@ function isDeterministicRequestFailure(err: unknown): boolean {
   return status >= 400 && status < 500 && !TIME_DEPENDENT_CLIENT_STATUSES.has(status);
 }
 
+/**
+ * The connector step labels whose request references the catalog entry — the
+ * only two steps of the chain that can be told about an object Graph itself
+ * created moments earlier.
+ *
+ * Matched as the connector emits them (`ProvisioningRequestError.step`); the
+ * `endsWith` in {@link isCatalogReplicationFailure} keeps a future
+ * `users/…/teamwork` direction from needing a fourth entry here.
+ */
+const CATALOG_DEPENDENT_INSTALL_STEPS: readonly string[] = [
+  'chats.installedApps.add',
+  'teams.installedApps.add',
+];
+
+/**
+ * A 400 that names its reason is a VERDICT and stays terminal even inside the
+ * replication window — re-asking cannot change a permission set or a consent.
+ *
+ * Deliberately short and deliberately about CONFIGURATION: these are the
+ * conditions a second, third and fourth attempt would reproduce exactly.
+ * `ResourceSpecificPermissionsMismatch` is already lifted to its own typed
+ * error upstream; it is listed anyway so an older connector that reports it as
+ * a bare `ProvisioningRequestError` also fails on attempt 1.
+ */
+const TERMINAL_INSTALL_400_MARKERS: readonly string[] = [
+  'ResourceSpecificPermissionsMismatch',
+  'Forbidden',
+  'Unauthorized',
+  'AccessDenied',
+  'consent',
+  'permission',
+];
+
+/**
+ * Is this the read-your-writes race that makes an operator press the button
+ * twice (byte5ai/omadia#916, same shape, different API)?
+ *
+ * WHY A BARE 400 IS NOT ENOUGH ON ITS OWN, and how the two are separated.
+ * `POST /appCatalogs/teamsApps` answers 201 from the app-catalog service,
+ * while `POST /chats/{id}/installedApps` is served by the Teams app service —
+ * a different backing store, with no read-your-writes guarantee across the
+ * two. For a few seconds the catalog entry provably exists and provably
+ * cannot be referenced, and Graph reports that as a 400 with no error code
+ * worth the name. A misconfigured install answers 400 as well, so the STATUS
+ * cannot separate them. Three gates do:
+ *
+ *   1. THE STEP — only the two install verbs, the only ones that dereference
+ *      a just-created catalog id.
+ *   2. THE BODY — a 400 that names a configuration reason
+ *      ({@link TERMINAL_INSTALL_400_MARKERS}) is a verdict and is excluded
+ *      here, so a real misconfiguration still fails on attempt 1.
+ *   3. THE RUN'S OWN HISTORY — see `catalogPublishedInRun`. A replication race
+ *      is only POSSIBLE when this same run published the entry. A resumed run
+ *      that skipped step 4 (the entry is minutes or days old) gets the old
+ *      terminal behaviour, because for it a 400 really is a verdict.
+ *
+ * Gate 3 is what makes this safe rather than a blanket "retry 400s": a
+ * configuration error is 400 whether or not we just uploaded, but a
+ * replication 400 cannot occur without a fresh upload. The residual
+ * false-positive — a genuine config error on a run that did publish — costs a
+ * bounded handful of seconds and then fails with a detail that says the
+ * replication window was exhausted, which is strictly more information than
+ * today's bare 400.
+ */
+function isCatalogReplicationFailure(err: unknown): boolean {
+  if (!(err instanceof Error) || err.name !== 'ProvisioningRequestError') return false;
+  if ((err as Error & { status?: unknown }).status !== 400) return false;
+  const step = (err as Error & { step?: unknown }).step;
+  if (
+    typeof step !== 'string' ||
+    !CATALOG_DEPENDENT_INSTALL_STEPS.some((known) => step.endsWith(known))
+  ) {
+    return false;
+  }
+  const message = err.message.toLowerCase();
+  return !TERMINAL_INSTALL_400_MARKERS.some((marker) =>
+    message.includes(marker.toLowerCase()),
+  );
+}
+
 function isProvisionerUnavailable(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -505,8 +748,34 @@ export class TeamsProvisioningJobError extends Error {
 
 export interface ProvisionTeamsIdentityRequest {
   readonly agentId: string;
-  /** Team (group) id the generated app is installed into. */
+  /**
+   * The install TARGET id. Historically a team (group) id — hence the name,
+   * which is kept because it is also the column name and the request field on
+   * the wire — but since the chat targets of `platform/teamsInstallTarget.ts`
+   * it may equally be a chat conversation id (`19:…@thread.v2`,
+   * `19:…@unq.gbl.spaces`). {@link targetKind} says which.
+   */
   readonly teamId: string;
+  /**
+   * WHICH KIND of target {@link teamId} addresses, and therefore which Graph
+   * endpoint installs into it.
+   *
+   * The runner does NOT classify: the string arrives already decided, from
+   * `resolveTeamsInstallTarget` at the route (for a new request) or from the
+   * identity row's persisted `target_kind` (for a resume). Two reasons that
+   * both matter:
+   *
+   *   * a bare 32-hex id is genuinely ambiguous between a team group id and a
+   *     chat stem, and the context that resolves it lives with the operator,
+   *     not in the runner;
+   *   * re-deriving here would make the runner a SECOND classifier, free to
+   *     disagree with the one that validated the request — and the endpoint
+   *     it picked would then differ from the one the operator was told about.
+   *
+   * Defaults to `'team'` when absent, which is what every caller before this
+   * change meant and what every stored row records.
+   */
+  readonly targetKind?: TeamsTargetKind;
   /**
    * #914 — re-render and re-upload the app package for an identity that is
    * already `installed`. Set by the identity routes after an edit that
@@ -533,9 +802,38 @@ export type ProvisioningRunResult =
       readonly missingSetupFields: readonly string[];
     }
   | {
+      /**
+       * #924 — the delegated catalog upload cannot proceed until a tenant
+       * admin has signed in (or consented). NOT a failure: every step already
+       * taken is real, the row keeps its state, and the run resumes from here
+       * the moment the sign-in exists. A run that fell to `failed` because
+       * nobody had signed in yet would send an operator hunting a fault that
+       * is not there — and would drop the chain's evidence with it.
+       */
+      readonly status: 'halted';
+      readonly agentId: string;
+      readonly reason:
+        | 'delegated_sign_in_required'
+        | 'delegated_consent_required'
+        | 'delegated_token_expired';
+      readonly detail: string;
+    }
+  | {
       readonly status: 'failed';
       readonly agentId: string;
-      readonly reason: 'consent_missing' | 'bot_handle_unavailable' | 'error';
+      readonly reason:
+        | 'consent_missing'
+        | 'bot_handle_unavailable'
+        /** #924 — the device-code flow itself is broken (publisher app not
+         *  configured for it, Conditional Access refusing it). Terminal:
+         *  retrying the same flow produces the same refusal. */
+        | 'device_code_flow_failed'
+        /** Graph refused the install because the app package's
+         *  resource-specific permissions exceed what the installing identity
+         *  may consent to. Terminal: a tenant role grant fixes it, a retry
+         *  does not. */
+        | 'rsc_permissions_mismatch'
+        | 'error';
       readonly detail: string;
     }
   | {
@@ -544,12 +842,22 @@ export type ProvisioningRunResult =
       readonly detail: string;
     }
   | {
-      /** A run for the SAME agent but a DIFFERENT team is in flight — this
-       *  request was refused outright (nothing enqueued, nothing joined), so
-       *  a caller can never be handed the other team's success. */
+      /**
+       * Refused outright — nothing enqueued, nothing joined, so a caller can
+       * never be handed somebody else's outcome. Two causes:
+       *
+       *   * `'team_conflict'` — a run for the SAME agent but a DIFFERENT team
+       *     is in flight;
+       *   * `'exclusive_lease'` — a non-provisioning operation holds this
+       *     agent (today: a teardown, {@link
+       *     TeamsProvisioningJobRunner.acquireExclusive}). Provisioning into
+       *     an identity whose Azure objects are being deleted underneath it
+       *     would race the two against each other over the same app
+       *     registration.
+       */
       readonly status: 'rejected';
       readonly agentId: string;
-      readonly reason: 'team_conflict';
+      readonly reason: 'team_conflict' | 'exclusive_lease';
       readonly detail: string;
     }
   | { readonly status: 'stopped'; readonly agentId: string };
@@ -596,6 +904,18 @@ export interface TeamsProvisioningJobOptions {
   readonly baseRetryDelayMs?: number;
   /** Backoff cap (default 5 min). */
   readonly maxRetryDelayMs?: number;
+  /**
+   * Extra install attempts spent waiting for a catalog entry this run just
+   * published to become referenceable (default 4).
+   *
+   * Small on purpose. Graph closes this window in seconds; a budget large
+   * enough to hide a real misconfiguration would be the wrong trade, because
+   * the cost of guessing wrong is paid on every genuinely broken run.
+   */
+  readonly catalogReplicationAttempts?: number;
+  /** Delay between those attempts (default 4s), capped by
+   *  {@link maxRetryDelayMs} like every other delay in this runner. */
+  readonly catalogReplicationDelayMs?: number;
   /** Test seam — defaults to real timers. */
   readonly timers?: TimerSeam;
   /** #910 — the finishing move that makes the bot live. Absent means the
@@ -617,12 +937,33 @@ export interface TeamsProvisioningJobOptions {
    * run is identical, it simply leaves no timeline behind.
    */
   readonly events?: TeamsProvisioningEventSink;
+  /**
+   * #924 — the tenant's delegated token set. Absent means app-only catalog
+   * upload, i.e. exactly the pre-0.6.0 behaviour.
+   */
+  readonly delegatedTokens?: TeamsDelegatedTokenPort;
+  /**
+   * Wall clock, injectable. Used only to decide whether a delegated access
+   * token is close enough to its expiry to be refreshed BEFORE the call that
+   * would otherwise discover it the hard way — a decision that has to be
+   * testable without waiting an hour. Named `now` to match
+   * `platform/teamsDelegatedTokenStore.ts`, which seams the clock the same
+   * way for the same question.
+   */
+  readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BASE_RETRY_DELAY_MS = 5_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
+/** 4 extra install attempts, 4s apart — ~16s of tolerance for the catalog
+ *  replication window. Sized against the field report (a second run started
+ *  by hand, i.e. tens of seconds later, always succeeded) and against the
+ *  opposite risk: a genuinely misconfigured install must still reach the
+ *  operator quickly, so this is bounded in seconds, not minutes. */
+const DEFAULT_CATALOG_REPLICATION_ATTEMPTS = 4;
+const DEFAULT_CATALOG_REPLICATION_DELAY_MS = 4_000;
 /** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
  *  to ~1 ms and burn the whole retry budget instantly. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
@@ -643,6 +984,8 @@ export class TeamsProvisioningJobRunner {
   private readonly maxAttempts: number;
   private readonly baseRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
+  private readonly catalogReplicationAttempts: number;
+  private readonly catalogReplicationDelayMs: number;
   private readonly timers: TimerSeam;
   private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
   private readonly installs: TeamsInstallJobStore | undefined;
@@ -650,6 +993,8 @@ export class TeamsProvisioningJobRunner {
     | ((teamId: string) => Promise<string | null>)
     | undefined;
   private readonly events: TeamsProvisioningEventSink | undefined;
+  private readonly delegatedTokens: TeamsDelegatedTokenPort | undefined;
+  private readonly now: () => Date;
   private readonly log: (msg: string) => void;
 
   /**
@@ -677,6 +1022,39 @@ export class TeamsProvisioningJobRunner {
    *  say WHICH step it is retrying. One run per agent is guaranteed by
    *  {@link inFlight}, so an agent id is a sufficient key. */
   private readonly currentStep = new Map<string, TeamsProvisioningStep>();
+  /**
+   * Agents whose CURRENT run published or re-published the catalog entry
+   * itself — gate 3 of {@link isCatalogReplicationFailure}.
+   *
+   * This is the causal evidence that a read-your-writes race is even possible.
+   * A resumed run that found `teams_app_id` already set and skipped step 4 is
+   * NOT in this set, so for it an install 400 keeps the old terminal
+   * behaviour: the entry is old, and an old entry that cannot be referenced is
+   * a verdict, not a race. Keyed by agent id like {@link currentStep} — one
+   * run per agent is guaranteed by {@link inFlight} — and cleared per run in
+   * {@link markSettled}, never left to accumulate.
+   */
+  private readonly catalogPublishedInRun = new Set<string>();
+  /** Replication retries already spent by the current run's install step.
+   *  Its OWN budget, deliberately not the chain's `maxAttempts`: this wait is
+   *  seconds of eventual consistency, not a failing chain. */
+  private readonly catalogReplicationRetries = new Map<string, number>();
+  /**
+   * Agents held by an operation that is NOT a provisioning run — today only
+   * the teardown (`services/teamsIdentityReset.ts`), reserved through
+   * {@link acquireExclusive}.
+   *
+   * Kept next to {@link inFlight} rather than inside it because the two hold
+   * different things: `inFlight` holds a promise a second caller can JOIN,
+   * and there is nothing joinable about a teardown — a caller who arrives
+   * mid-teardown must be refused, not handed its result. Sharing the map
+   * would have meant giving every entry a nullable `run` and a discriminator
+   * for the sake of one extra state.
+   *
+   * The value is a short label, so a refusal can say WHAT is holding the
+   * agent instead of only that something is.
+   */
+  private readonly leases = new Map<string, string>();
   private readonly pendingSleeps = new Set<() => void>();
   private stopped = false;
 
@@ -692,11 +1070,21 @@ export class TeamsProvisioningJobRunner {
       opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS,
       MAX_TIMER_DELAY_MS,
     );
+    this.catalogReplicationAttempts = Math.max(
+      0,
+      opts.catalogReplicationAttempts ?? DEFAULT_CATALOG_REPLICATION_ATTEMPTS,
+    );
+    this.catalogReplicationDelayMs = Math.min(
+      opts.catalogReplicationDelayMs ?? DEFAULT_CATALOG_REPLICATION_DELAY_MS,
+      this.maxRetryDelayMs,
+    );
     this.timers = opts.timers ?? REAL_TIMERS;
     this.syncBotConfig = opts.syncBotConfig;
     this.installs = opts.installs;
     this.resolveTeamName = opts.resolveTeamName;
     this.events = opts.events;
+    this.delegatedTokens = opts.delegatedTokens;
+    this.now = opts.now ?? ((): Date => new Date());
     this.log = opts.log ?? ((m) => console.log(m));
   }
 
@@ -708,6 +1096,19 @@ export class TeamsProvisioningJobRunner {
    * result (never silently handed the other team's outcome).
    */
   enqueue(request: ProvisionTeamsIdentityRequest): Promise<ProvisioningRunResult> {
+    // Checked BEFORE the in-flight lookup: a leased agent has no in-flight
+    // run to join, and falling through would refuse it with `team_conflict`,
+    // which names the wrong problem and sends the operator looking for a
+    // second team that does not exist.
+    const lease = this.leases.get(request.agentId);
+    if (lease !== undefined) {
+      return Promise.resolve({
+        status: 'rejected',
+        agentId: request.agentId,
+        reason: 'exclusive_lease',
+        detail: `'${lease}' is in progress for this agent — wait for it to finish, then run provisioning again`,
+      });
+    }
     const existing = this.inFlight.get(request.agentId);
     if (existing) {
       if (existing.teamId === request.teamId) return existing.run;
@@ -763,8 +1164,50 @@ export class TeamsProvisioningJobRunner {
    * it from the row.
    */
   isRunning(agentId: string): boolean {
+    // A held lease counts as running, and it has to: the operator screen asks
+    // this to decide whether work is happening on the agent, and a teardown
+    // deleting an app registration is emphatically work. Reporting `false`
+    // would also let the UI offer a second teardown next to the one already
+    // going.
+    if (this.leases.has(agentId)) return true;
     const entry = this.inFlight.get(agentId);
     return entry !== undefined && !entry.settled;
+  }
+
+  /**
+   * Reserve this agent for an operation that is not a provisioning run, and
+   * return the function that gives it back — or `null` when the agent is
+   * already busy.
+   *
+   * THE MUTUAL EXCLUSION IS THE POINT. A teardown deletes the Entra app the
+   * chain is mid-way through building on; running both at once means one of
+   * them is operating on objects the other is removing, and neither can
+   * report a truthful outcome. The lock lives HERE, on the runner, because
+   * the runner is the only thing that already knows what is in flight — a
+   * second lock elsewhere would be a second opinion about the same question.
+   *
+   * The release is a closure rather than a `release(agentId)` method so a
+   * caller cannot release somebody else's lease, and it is idempotent so a
+   * `finally` that runs twice is harmless.
+   */
+  acquireExclusive(agentId: string, label: string): (() => void) | null {
+    // `inFlight.has`, not `isRunning`: a run that has its verdict but is
+    // still writing its bindings and its plugin config is not something a
+    // teardown may start deleting underneath.
+    if (this.inFlight.has(agentId) || this.leases.has(agentId)) return null;
+    this.leases.set(agentId, label);
+    let released = false;
+    return (): void => {
+      if (released) return;
+      released = true;
+      this.leases.delete(agentId);
+    };
+  }
+
+  /** What is holding this agent, or `null` — so a route can name the
+   *  conflict in its refusal instead of saying "busy". */
+  exclusiveLease(agentId: string): string | null {
+    return this.leases.get(agentId) ?? null;
   }
 
   /**
@@ -887,6 +1330,11 @@ export class TeamsProvisioningJobRunner {
   private markSettled(agentId: string): void {
     const entry = this.inFlight.get(agentId);
     if (entry) entry.settled = true;
+    // Per-run bookkeeping dies with the run: the next run re-establishes its
+    // own evidence, and a stale entry here would let a resumed run inherit a
+    // replication window it never opened.
+    this.catalogPublishedInRun.delete(agentId);
+    this.catalogReplicationRetries.delete(agentId);
   }
 
   /** Stop accepting work and release every pending retry delay. An
@@ -944,8 +1392,20 @@ export class TeamsProvisioningJobRunner {
       try {
         return await this.advance(request);
       } catch (err) {
+        const waitsBefore = this.catalogReplicationRetries.get(request.agentId) ?? 0;
         const outcome = await this.handleFailure(request, err, attempt);
         if (outcome) return outcome;
+        // A REPLICATION WAIT IS NOT A CHAIN ATTEMPT. The chain did not get a
+        // different answer to the same question; it got the same answer about
+        // an object that did not exist yet. Giving the attempt back keeps the
+        // five chain attempts available for real failures — otherwise a run
+        // that spent four waits would have one attempt left to survive a
+        // throttle. Terminating: the replication budget is finite and this
+        // counter only ever grows, so the compensation happens a bounded
+        // number of times and the loop then advances normally.
+        if ((this.catalogReplicationRetries.get(request.agentId) ?? 0) > waitsBefore) {
+          attempt -= 1;
+        }
         // else: retry delay already awaited — loop again.
       }
     }
@@ -1007,13 +1467,109 @@ export class TeamsProvisioningJobRunner {
       return { status: 'failed', agentId, reason: 'bot_handle_unavailable', detail };
     }
 
+    // #924 — THE FOUR DELEGATED ERRORS, EACH WITH A DIFFERENT INSTRUCTION.
+    // They are classified before the throttle/deterministic paths below
+    // because none of them is a transport problem and none is fixable by
+    // retrying: three need a specific human action and the fourth needs a
+    // configuration change on the publisher app. Collapsing them into one
+    // "delegated failed" would collapse four different instructions into an
+    // operator staring at a dead end.
+    //
+    // Three of the four PARK rather than fail. The Entra app, the Azure bot
+    // and the built package all exist and are this agent's; the only thing
+    // missing is a sign-in. A row that dropped to `failed` would throw that
+    // evidence away and re-walk the chain on the next run.
+
+    if (isDelegatedSignInRequiredError(err)) {
+      const detail = delegatedSignInRequiredDetail(
+        requiredScopesOf(err),
+        delegatedStepOf(err),
+      );
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_sign_in_required', detail };
+    }
+
+    if (isDelegatedConsentRequiredError(err)) {
+      // The consent URL is the difference between an actionable message and a
+      // dead end, so it travels in `last_error` — it is a public Microsoft URL
+      // naming a tenant and a client id, not a credential. It is validated as
+      // absolute https by `adminConsentUrlOf` before it gets anywhere near a
+      // link, and it is NOT put into a progress-event detail.
+      const detail = delegatedConsentRequiredDetail(
+        requiredScopesOf(err),
+        adminConsentUrlOf(err),
+      );
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_consent_required', detail };
+    }
+
+    if (isDelegatedTokenExpiredError(err)) {
+      // The refreshable case is recovered inside `uploadPackage` and never
+      // reaches here; arriving with one means the refresh itself failed, which
+      // has the same answer as the invalid one — sign in again. Its OWN code,
+      // though, not `delegated_sign_in_required`: "your sign-in expired" and
+      // "nobody has ever signed in" send an operator to the same button for
+      // different reasons, and only one of them is worth investigating.
+      const detail = delegatedTokenExpiredDetail(err.reason);
+      await this.recordError(agentId, { lastError: detail });
+      return { status: 'halted', agentId, reason: 'delegated_token_expired', detail };
+    }
+
+    if (isDeviceCodeFlowError(err)) {
+      // TERMINAL and DETERMINISTIC: the flow is refused by configuration, not
+      // by load. Retrying it five times produces five identical refusals.
+      const detail = deviceCodeFlowFailedDetail(errorMessage(err), err.oauthError);
+      await this.recordError(agentId, { state: 'failed', lastError: detail });
+      return { status: 'failed', agentId, reason: 'device_code_flow_failed', detail };
+    }
+
     const throttle = throttleHintOf(err);
+
+    // BEFORE the deterministic branch, because this IS a deterministic-looking
+    // 4xx — it is the one whose input is not actually identical next time: the
+    // catalog entry it dereferences is still replicating. See
+    // isCatalogReplicationFailure for how it is told apart from a verdict.
+    if (throttle === undefined && this.catalogPublishedInRun.has(agentId)) {
+      const spent = this.catalogReplicationRetries.get(agentId) ?? 0;
+      if (isCatalogReplicationFailure(err) && spent < this.catalogReplicationAttempts) {
+        this.catalogReplicationRetries.set(agentId, spent + 1);
+        const delayMs = this.catalogReplicationDelayMs;
+        this.log(
+          `[teams-provisioning] ${agentId} install rejected with 400 while the catalog entry ` +
+            `is still replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms`,
+        );
+        // Its own detail, not the generic retry one: this wait ends by itself,
+        // and the operator should be told to sit still rather than to look for
+        // a broken configuration. `attempt` here counts WAITS, not chain
+        // attempts — {@link attemptLoop} gives the chain attempt back, so a
+        // run that spends its whole replication budget and then hits a REAL
+        // failure still has all five chain attempts to report it.
+        await this.emit(agentId, this.currentStep.get(agentId) ?? 'run', 'retrying', {
+          attempt: spent + 1,
+          detail: AWAITING_CATALOG_REPLICATION_DETAIL,
+        });
+        await this.sleep(delayMs);
+        return undefined;
+      }
+    }
 
     if (throttle === undefined && isDeterministicRequestFailure(err)) {
       // A 4xx on identical input is a verdict, not a hiccup — see
       // isDeterministicRequestFailure. Stop now, keep the reached state's
       // evidence, and report the real reason on attempt 1.
-      const detail = `${errorMessage(err)} (deterministic — not retried)`;
+      //
+      // Reaching here with a spent replication budget means the wait did not
+      // help, which is itself the finding: say so, so the operator learns
+      // something a bare 400 never told them.
+      const exhausted =
+        (this.catalogReplicationRetries.get(agentId) ?? 0) >=
+          this.catalogReplicationAttempts && isCatalogReplicationFailure(err);
+      const detail = exhausted
+        ? `${errorMessage(err)} (still refused after waiting ` +
+          `${this.catalogReplicationAttempts} times for the catalog entry to replicate — ` +
+          `treat as a configuration error, not a timing one)`
+        : `${errorMessage(err)} (deterministic — not retried)`;
       await this.recordError(agentId, { state: 'failed', lastError: detail });
       return { status: 'failed', agentId, reason: 'error', detail };
     }
@@ -1180,15 +1736,23 @@ export class TeamsProvisioningJobRunner {
         params: assets.params,
         icons: assets.icons,
       });
-      const uploaded = await provisioner.uploadToCatalog({
+      // Same upload path as the chain's step 4 — a republish that bypassed it
+      // would be the one code path still doing an app-only upload, which is
+      // precisely the call Microsoft refuses (#924).
+      const uploaded = await this.uploadPackage(
+        agentId,
+        provisioner,
         packageZip,
-        externalId: assets.externalId,
-      });
+        assets.externalId,
+      );
+      if (uploaded.kind === 'sign_in_required') return uploaded.result;
       row = await this.store.update(agentId, {
-        teamsAppId: uploaded.value.teamsAppId,
+        teamsAppId: uploaded.teamsAppId,
         teamsAppExternalId: assets.externalId,
         lastError: null,
       });
+      // A republish is an upload like any other — same window, same gate.
+      this.catalogPublishedInRun.add(agentId);
       // Deliberately NO early return. The chain's own step 5 installs the
       // refreshed app into the requested team, records the binding (#919)
       // and re-asserts the plugin config — a republish that returned here
@@ -1231,6 +1795,16 @@ export class TeamsProvisioningJobRunner {
           await this.store.update(agentId, {
             appId: registration.appId,
             tenantId: registration.tenantId,
+            // Written in the SAME statement as the app id, deliberately. The
+            // two are only ever observable together — after a delete the
+            // application is gone from `/applications` and no lookup turns one
+            // into the other any more — so a teardown that has one and not the
+            // other cannot empty the recycle bin, and the agent's `uniqueName`
+            // stays reserved for 30 days (#916). Two writes would have left a
+            // window where exactly that is true.
+            ...(registration.objectId === undefined
+              ? {}
+              : { appObjectId: registration.objectId }),
           });
           // The ONE boundary inside this call the connector's contract already
           // exposes, and therefore the only honest intra-step progress the
@@ -1248,6 +1822,13 @@ export class TeamsProvisioningJobRunner {
         state: 'app_registered',
         appId: result.value.appId,
         tenantId: result.value.registration.tenantId,
+        // Also here, not only in the hook above: the hook is skipped entirely
+        // when the connector ADOPTS an existing registration, which is the
+        // resume path — and a resumed identity needs its object id just as
+        // much as a fresh one.
+        ...(result.value.registration.objectId === undefined
+          ? {}
+          : { appObjectId: result.value.registration.objectId }),
         lastError: null,
       });
       await this.emit(agentId, 'app_registered', 'succeeded');
@@ -1323,11 +1904,17 @@ export class TeamsProvisioningJobRunner {
             params: assets.params,
             icons: assets.icons,
           });
-          const uploaded = await provisioner.uploadToCatalog({
+          const uploaded = await this.uploadPackage(
+            agentId,
+            provisioner,
             packageZip,
-            externalId: assets.externalId,
-          });
-          teamsAppId = uploaded.value.teamsAppId;
+            assets.externalId,
+          );
+          // PARKED, not failed: the package is built and every earlier step
+          // is real. The row keeps `package_built`, `last_error` says which
+          // human action is missing, and the next run resumes right here.
+          if (uploaded.kind === 'sign_in_required') return uploaded.result;
+          teamsAppId = uploaded.teamsAppId;
         }
       }
       row = await this.store.update(agentId, {
@@ -1335,6 +1922,11 @@ export class TeamsProvisioningJobRunner {
         teamsAppId,
         lastError: null,
       });
+      // Gate 3 of isCatalogReplicationFailure: this run just put the entry
+      // there (uploaded it, or resolved one so fresh the lookup was the first
+      // thing that could see it), so an install 400 in the next few seconds is
+      // allowed to be a replication race rather than a verdict.
+      this.catalogPublishedInRun.add(agentId);
       await this.emit(agentId, 'catalog_uploaded', 'succeeded');
     } else {
       await this.emit(agentId, 'package_built', 'succeeded', {
@@ -1347,12 +1939,65 @@ export class TeamsProvisioningJobRunner {
 
     if (this.stopped) return { status: 'stopped', agentId };
 
-    // Step 5 — install into the team (idempotent on Graph's side).
+    // Step 5 — install into the target (idempotent on Graph's side).
+    //
+    // TWO ENDPOINTS, ONE STEP. A team installs through
+    // `POST /teams/{id}/installedApps`, a chat through
+    // `POST /chats/{id}/installedApps`. They are different Graph resources
+    // with different permissions, so the branch is here rather than inside
+    // the connector: the runner already knows which kind it was asked for and
+    // guessing from the id string is exactly the failure this feature exists
+    // to remove.
+    const targetKind: TeamsTargetKind = request.targetKind ?? 'team';
     await this.emit(agentId, 'installed', 'started');
-    await provisioner.installToTeam({
-      teamId: request.teamId,
-      teamsAppId: row.teamsAppId as string,
-    });
+    try {
+      if (isChatTarget(targetKind)) {
+        const installToChat = provisioner.installToChat;
+        // Feature detection, never an optional call: an older connector must
+        // fail with the actionable sentence below rather than with a
+        // TypeError, and `installToChat?.(…)` would silently resolve to
+        // `undefined` and let the run mark itself installed without
+        // installing anything.
+        if (typeof installToChat !== 'function') {
+          throw new TeamsChatInstallUnsupportedError();
+        }
+        await installToChat.call(provisioner, {
+          // NOT normalised: a conversation id is not a GUID, and
+          // `normalizeTeamsTeamId` passes it through untouched anyway.
+          // Calling it here would only suggest a reshaping that must never
+          // happen.
+          chatId: request.teamId.trim(),
+          teamsAppId: row.teamsAppId as string,
+        });
+      } else {
+        await provisioner.installToTeam({
+          // Graph rejects the unhyphenated form Teams itself hands out (see
+          // platform/teamsTeamId). Normalised here as well as at the route,
+          // so a row stored before the route did it still installs instead of
+          // dying at the last step of an otherwise complete chain.
+          teamId: normalizeTeamsTeamId(request.teamId),
+          teamsAppId: row.teamsAppId as string,
+        });
+      }
+    } catch (err) {
+      // `400 ResourceSpecificPermissionsMismatch` is NOT a generic bad
+      // request, and reporting it as one sends the operator hunting for a
+      // wrong id that is in fact correct. It means this agent's app package
+      // declares resource-specific permissions the installing identity may not
+      // consent to — a tenant-side role grant. TERMINAL: no retry makes a
+      // missing grant appear.
+      if (isRscPermissionsMismatch(err)) {
+        const detail = rscPermissionsMismatchDetail(targetKind);
+        await this.recordError(agentId, { state: 'failed', lastError: detail });
+        return {
+          status: 'failed',
+          agentId,
+          reason: 'rsc_permissions_mismatch',
+          detail,
+        };
+      }
+      throw err;
+    }
     // Same ordering rule as recordError (#915): the chain is finished, so the
     // run stops calling itself running BEFORE the terminal state becomes
     // readable. Everything past this line — the binding write, the
@@ -1361,14 +2006,18 @@ export class TeamsProvisioningJobRunner {
     // the timeline rather than through `running`.
     this.markSettled(agentId);
     row = await this.store.update(agentId, { state: 'installed', lastError: null });
-    await this.emit(agentId, 'installed', 'succeeded');
+    // `detail` carries the TARGET KIND — a closed, localizable vocabulary
+    // ('team' | 'group-chat' | 'one-on-one-chat'), exactly like the
+    // `config_sync` step's status. Never the id: the timeline is a screen, and
+    // a chat id names the humans in that chat.
+    await this.emit(agentId, 'installed', 'succeeded', { detail: targetKind });
 
     // Step 5b (migration 0051) — PERSIST the binding. Graph has confirmed the
     // install, so this is the moment the pair becomes a fact rather than an
     // intent. Before this table existed the only trace was the identity row's
     // single `team_id`, which the next request overwrote — the reason a
     // binding never survived a re-target.
-    await this.recordInstall(agentId, request.teamId, row.teamsAppId);
+    await this.recordInstall(agentId, request.teamId, row.teamsAppId, targetKind);
 
     // Step 6 (#910) — the finishing move: write the `teams_bots` entry into
     // channel-teams and reload it, so the bot answers without an operator
@@ -1376,6 +2025,139 @@ export class TeamsProvisioningJobRunner {
     // write and deliberately unable to change it.
     await this.syncTeamsBotsConfig(row);
     return { status: 'installed', agentId };
+  }
+
+  // -------------------------------------------------------------------------
+  // Catalog upload (#924)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Upload the rendered package to the tenant catalog — delegated when the
+   * connector can, app-only when it cannot.
+   *
+   * WHY THIS BRANCH EXISTS AT ALL. `POST /appCatalogs/teamsApps` is
+   * delegated-only at Microsoft; Application permissions are documented as
+   * "Not supported". So the app-only call below is the ONE step of the whole
+   * chain that a fully-consented tenant still refuses, and a connector that
+   * publishes `uploadToCatalogDelegated` (>= 0.6.0) is the only way to do it
+   * properly — on a token set a tenant admin produced by signing in once.
+   *
+   * NOT SIGNED IN IS NOT A FAILURE. It is the absence of a human action, so
+   * this parks rather than throws: it returns a `halted` result the caller
+   * turns into "keep the state, record what is missing, resume later".
+   * Letting the connector throw and classifying it downstream would work too,
+   * but it would burn the retry budget on a condition no retry can fix and
+   * make the first run of a fresh install look broken.
+   *
+   * A ROTATED TOKEN IS PERSISTED IMMEDIATELY, before the upload's result is
+   * used for anything else. Had the process died between the connector
+   * rotating and us writing, the refresh token still in the vault would
+   * already have been spent — and the tenant would be silently signed out
+   * until the next run failed and somebody investigated.
+   */
+  private async uploadPackage(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    packageZip: Uint8Array,
+    externalId: string,
+  ): Promise<
+    | { readonly kind: 'uploaded'; readonly teamsAppId: string }
+    | { readonly kind: 'sign_in_required'; readonly result: ProvisioningRunResult }
+  > {
+    const delegatedUpload = provisioner.uploadToCatalogDelegated;
+    const custody = this.delegatedTokens;
+    // Feature detection, not configuration: an older connector and a mount
+    // without token custody both mean "app-only", which is what this
+    // middleware did before #924 and stays correct for those deployments.
+    if (typeof delegatedUpload !== 'function' || custody === undefined) {
+      const uploaded = await provisioner.uploadToCatalog({ packageZip, externalId });
+      return { kind: 'uploaded', teamsAppId: uploaded.value.teamsAppId };
+    }
+
+    const tokens = await custody.read();
+    if (tokens === undefined) {
+      const detail = delegatedSignInRequiredDetail([]);
+      // State deliberately untouched — every step already taken is real, and
+      // the row's own rank is what makes the next run resume from here.
+      await this.recordError(agentId, { lastError: detail });
+      return {
+        kind: 'sign_in_required',
+        result: {
+          status: 'halted',
+          agentId,
+          reason: 'delegated_sign_in_required',
+          detail,
+        },
+      };
+    }
+
+    // The one honest thing the runner can say from outside another repo's
+    // call: which credential this upload rides on. No token, no account, no
+    // flow handle — this column is read by a screen.
+    await this.emit(agentId, 'catalog_uploaded', 'progress', {
+      detail: DELEGATED_UPLOAD_DETAIL,
+    });
+
+    // THE REFRESH, IN BOTH DIRECTIONS — and no longer written here.
+    //
+    // This block used to hold the whole thing inline: refresh before the call
+    // when our clock says the token is spent, refresh and retry once when
+    // Microsoft says so, persist every rotation the instant it happens. It
+    // was correct, and it was the ONLY place that was — the target listing
+    // grew the same need and answered it by reporting an expired token as
+    // "nobody is signed in", which is how a signed-in admin ended up being
+    // told to sign in.
+    //
+    // So the arithmetic moved to `platform/teamsDelegatedRefresh.ts` and both
+    // callers now share it, for the same reason `isAccessTokenExpiring` is
+    // shared rather than reimplemented: two sites with their own expiry rules
+    // drift, and the drift is invisible until an operator is standing in
+    // front of the wrong sentence. The policies it enforces are unchanged —
+    // proactive failures are swallowed (our clock may be the wrong one),
+    // reactive failures are not (Microsoft's verdict is not an opinion).
+    const refreshCtx = {
+      provisioner,
+      custody,
+      now: (): Date => this.now(),
+      onRefreshed: async (): Promise<void> => {
+        await this.emit(agentId, 'catalog_uploaded', 'progress', {
+          detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
+        });
+      },
+      log: (msg: string): void => {
+        this.log(`[teams-provisioning] agent '${agentId}': ${msg}`);
+      },
+    };
+
+    const attemptUpload = async (set: DelegatedTokenSet): Promise<string> => {
+      const result = await delegatedUpload.call(provisioner, {
+        packageZip,
+        externalId,
+        tokens: set,
+      });
+      // The connector's OWN rotation, which is a third path the shared helper
+      // deliberately knows nothing about: it happens inside the upload, is
+      // reported by the result rather than by an error, and only this call
+      // site can see it. Persisted on the same terms as every other rotation.
+      if (result.refreshed) {
+        await custody.write(result.tokens);
+        await this.emit(agentId, 'catalog_uploaded', 'progress', {
+          detail: DELEGATED_TOKEN_REFRESHED_DETAIL,
+        });
+      }
+      return result.app.value.teamsAppId;
+    };
+
+    // The ONE delegated failure an operator must never be shown: an access
+    // token past its expiry with a refresh token that is still good. It is
+    // recovered in here — refresh, retry once — because surfacing it would
+    // ask a human to fix something no human needs to touch. Anything else,
+    // INCLUDING a refresh that itself failed, travels on to
+    // {@link handleFailure}, which is where the four errors are told apart.
+    return {
+      kind: 'uploaded',
+      teamsAppId: await withDelegatedTokenRefresh(refreshCtx, tokens, attemptUpload),
+    };
   }
 
   /**
@@ -1412,11 +2194,17 @@ export class TeamsProvisioningJobRunner {
     agentId: string,
     teamId: string,
     teamsAppId: string | null,
+    targetKind: TeamsTargetKind,
   ): Promise<void> {
     const installs = this.installs;
     if (!installs) return;
     let displayName: string | null = null;
-    if (this.resolveTeamName) {
+    // The name resolver is `teamsProvisioner@1.getTeam`, which answers for a
+    // TEAM only. A chat has no equivalent lookup in the mirrored contract, so
+    // a chat binding stays nameless rather than being handed an id to resolve
+    // that the connector would answer `found: false` for — a wasted Graph call
+    // whose only outcome is a misleading log line.
+    if (this.resolveTeamName && targetKind === 'team') {
       try {
         displayName = await this.resolveTeamName(teamId);
       } catch (err) {
@@ -1426,7 +2214,13 @@ export class TeamsProvisioningJobRunner {
       }
     }
     try {
-      await installs.record({ agentId, teamId, teamsAppId, teamDisplayName: displayName });
+      await installs.record({
+        agentId,
+        teamId,
+        teamsAppId,
+        teamDisplayName: displayName,
+        targetKind,
+      });
     } catch (err) {
       this.log(
         `[teams-provisioning] could not record the install of agent '${agentId}' in team '${teamId}': ${errorMessage(err)}`,
@@ -1507,6 +2301,40 @@ export class TeamsProvisioningJobRunner {
  *  producer and the classifier so the empty case round-trips to `[]`. */
 const ARM_FIELDS_UNSPECIFIED = 'ARM setup fields';
 
+/**
+ * Graph answered `400 ResourceSpecificPermissionsMismatch`.
+ *
+ * NOT a generic bad request, and mis-reading it as one is exactly why this has
+ * its own code. The install call is well-formed and the target id is correct;
+ * what Graph is saying is that the RESOURCE-SPECIFIC permissions declared in
+ * the agent's app package (ours declares seven) exceed what the installing
+ * identity may consent to on the target's behalf. The fix is a tenant-side
+ * role grant, so the sentence names the role instead of sending the operator
+ * back to check an id that was never wrong.
+ */
+export const RSC_PERMISSIONS_MISMATCH_PREFIX = 'rsc_permissions_mismatch:';
+
+/** The two Graph app roles that let an install carry an app's RSC
+ *  permissions — team direction and chat direction. Named in the
+ *  operator-facing sentence so the fix is a copy-paste, not a search. */
+export const RSC_CONSENT_ROLES = {
+  team: 'TeamsAppInstallation.ReadWriteAndConsentForTeam.All',
+  chat: 'TeamsAppInstallation.ReadWriteAndConsentForChat.All',
+} as const;
+
+export function rscPermissionsMismatchDetail(targetKind: TeamsTargetKind): string {
+  const role = targetKind === 'team' ? RSC_CONSENT_ROLES.team : RSC_CONSENT_ROLES.chat;
+  return `${RSC_PERMISSIONS_MISMATCH_PREFIX} Graph refused the install because this agent's Teams app package declares resource-specific permissions the installing identity may not consent to — grant the app role ${role} to the M365 connector's Entra app and admin-consent it, then re-run provisioning. The target id is correct; this is a permission grant, not a wrong id.`;
+}
+
+/** Does this error carry Graph's ResourceSpecificPermissionsMismatch code?
+ *  Duck-typed on the message for the same reason as the connector's other
+ *  error guards: the class identity belongs to the plugin, not to us. */
+export function isRscPermissionsMismatch(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /ResourceSpecificPermissionsMismatch/i.test(`${err.name} ${err.message}`);
+}
+
 export function consentMissingDetail(missingScopes: readonly string[]): string {
   return `consent_missing: admin consent required for scopes [${missingScopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
 }
@@ -1574,12 +2402,99 @@ export function configSyncFailedDetail(reason: string): string {
  *  producer and the classifier so the empty case round-trips. */
 const CONFIG_SYNC_REASON_UNSPECIFIED = 'no reason reported';
 
+// ---------------------------------------------------------------------------
+// The delegated sentences (#924)
+//
+// Four codes for four errors, because each one sends the operator somewhere
+// else: start a sign-in, send an admin to a consent URL, sign in again, or go
+// look at the publisher app's device-code / Conditional Access configuration.
+// A single `delegated_failed` code would have been shorter and would have made
+// the panel useless.
+// ---------------------------------------------------------------------------
+
+export const DELEGATED_SIGN_IN_REQUIRED_PREFIX = 'delegated_sign_in_required:';
+export const DELEGATED_CONSENT_REQUIRED_PREFIX = 'delegated_consent_required:';
+export const DELEGATED_TOKEN_EXPIRED_PREFIX = 'delegated_token_expired:';
+export const DEVICE_CODE_FLOW_FAILED_PREFIX = 'device_code_flow_failed:';
+
+/** Token carrying the admin-consent URL. Its own `key=value` rather than a
+ *  second bracket group, because a URL and a comma-split list do not mix. */
+const CONSENT_URL_TOKEN = 'consent_url=';
+
+/** Bracket filler for "the connector named no scopes", shared by producer and
+ *  classifier so the empty case round-trips to `[]`. */
+const DELEGATED_SCOPES_UNSPECIFIED = 'the delegated Teams scopes';
+
+/** Nobody is signed in for this tenant — the ordinary state of a fresh
+ *  install, and the reason the very first agent cannot reach the catalog. */
+export function delegatedSignInRequiredDetail(
+  requiredScopes: readonly string[],
+  step?: string,
+): string {
+  const scopes =
+    requiredScopes.length > 0
+      ? requiredScopes.join(', ')
+      : DELEGATED_SCOPES_UNSPECIFIED;
+  const where = step !== undefined ? ` (step: ${step.replace(/[[\]]/g, '')})` : '';
+  return `${DELEGATED_SIGN_IN_REQUIRED_PREFIX} the Teams app catalog upload is delegated-only at Microsoft, so it needs a tenant admin signed in with [${scopes}]${where} — sign in once under Teams sign-in; every agent provisioned afterwards uses it automatically`;
+}
+
+/** Signed in, but the scopes were never consented to. A DIFFERENT person may
+ *  be needed here (a global admin), which is why it is not the same code. */
+export function delegatedConsentRequiredDetail(
+  requiredScopes: readonly string[],
+  adminConsentUrl?: string,
+): string {
+  const scopes =
+    requiredScopes.length > 0
+      ? requiredScopes.join(', ')
+      : DELEGATED_SCOPES_UNSPECIFIED;
+  const link =
+    adminConsentUrl !== undefined ? ` ${CONSENT_URL_TOKEN}${adminConsentUrl}` : '';
+  return `${DELEGATED_CONSENT_REQUIRED_PREFIX} a tenant admin still has to grant consent for [${scopes}] before the delegated catalog upload is allowed — open the consent URL, approve, then re-run provisioning${link}`;
+}
+
+/**
+ * The sign-in itself is spent. The refreshable variant never reaches an
+ * operator (see `uploadPackage`), so a row carrying this sentence means the
+ * refresh token is gone — a re-sign-in, not a wait.
+ */
+export function delegatedTokenExpiredDetail(reason?: string): string {
+  const because =
+    reason === 'access-token-expired'
+      ? 'the access token expired and could not be refreshed'
+      : 'the refresh token is no longer valid';
+  return `${DELEGATED_TOKEN_EXPIRED_PREFIX} ${because} — the stored tenant sign-in cannot be used any more; sign in again under Teams sign-in, then re-run provisioning`;
+}
+
+/**
+ * The device-code flow is refused by configuration. Not the operator's tenant
+ * data — the publisher app itself, or a Conditional Access policy that will
+ * not let a device-code sign-in through.
+ */
+export function deviceCodeFlowFailedDetail(
+  message: string,
+  oauthError?: string,
+): string {
+  const safe = message.replace(/[[\]]/g, '').replace(/\s+/g, ' ').trim();
+  const code = oauthError !== undefined ? ` [${oauthError.replace(/[[\]]/g, '')}]` : '';
+  return `${DEVICE_CODE_FLOW_FAILED_PREFIX}${code} ${safe.length > 0 ? safe : 'the device-code sign-in was refused'} — check that the M365 connector's publisher app allows public-client device-code flows and that no Conditional Access policy blocks them`;
+}
+
 export type TeamsProvisioningErrorCode =
   | 'consent_missing'
+  /** Graph refused the install because the app package's RSC permissions
+   *  exceed what the installing identity may consent to. */
+  | 'rsc_permissions_mismatch'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
   | 'bot_handle_unavailable'
+  /** #924 — the four delegated codes, one per producer above. */
+  | 'delegated_sign_in_required'
+  | 'delegated_consent_required'
+  | 'delegated_token_expired'
+  | 'device_code_flow_failed'
   | 'unknown';
 
 /** Structured projection of one `last_error` sentence. `raw` is always the
@@ -1593,6 +2508,13 @@ export interface TeamsProvisioningErrorDetail {
   readonly fields?: readonly string[];
   /** Connector `Retry-After` hint in seconds (`throttled`), when it had one. */
   readonly retryAfterSeconds?: number;
+  /**
+   * Where an admin grants the delegated scopes (`delegated_consent_required`).
+   * Absolute https by construction — `adminConsentUrlOf` rejects anything
+   * else before the sentence is ever written, so a UI may render it as a link
+   * without re-validating.
+   */
+  readonly adminConsentUrl?: string;
   /** Why the automatic `teams_bots` write did not land (`config_sync_failed`).
    *  A technical sentence, shown as the argument of a localized line — never
    *  as the copy itself. */
@@ -1613,6 +2535,24 @@ function bracketList(sentence: string, sentinel?: string): readonly string[] {
     return [];
   }
   return entries;
+}
+
+/**
+ * The `consent_url=` token of a `delegated_consent_required` sentence.
+ *
+ * Re-validated as absolute https on the way OUT as well as on the way in: the
+ * sentence is a database column, and a row written by an older build (or edited
+ * by hand) must not be able to put a `javascript:` href in front of an
+ * operator. Cheap, and the only alternative is trusting stored text.
+ */
+function consentUrlOf(sentence: string): string | undefined {
+  const raw = new RegExp(`${CONSENT_URL_TOKEN}(\\S+)`).exec(sentence)?.[1];
+  if (raw === undefined) return undefined;
+  try {
+    return new URL(raw).protocol === 'https:' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1638,11 +2578,44 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(BOT_HANDLE_UNAVAILABLE_PREFIX)) {
     return { code: 'bot_handle_unavailable', raw };
   }
+  if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
+    return { code: 'rsc_permissions_mismatch', raw };
+  }
   if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
     return {
       code: 'config_sync_failed',
       reason: inner === CONFIG_SYNC_REASON_UNSPECIFIED ? '' : inner,
+      raw,
+    };
+  }
+  // #924 — the four delegated codes. Each keeps whatever the producer
+  // captured, so the panel can name the scopes and link the consent URL
+  // instead of telling the operator to "check the logs".
+  if (sentence.startsWith(DELEGATED_SIGN_IN_REQUIRED_PREFIX)) {
+    return {
+      code: 'delegated_sign_in_required',
+      scopes: bracketList(sentence, DELEGATED_SCOPES_UNSPECIFIED),
+      raw,
+    };
+  }
+  if (sentence.startsWith(DELEGATED_CONSENT_REQUIRED_PREFIX)) {
+    const url = consentUrlOf(sentence);
+    return {
+      code: 'delegated_consent_required',
+      scopes: bracketList(sentence, DELEGATED_SCOPES_UNSPECIFIED),
+      ...(url !== undefined ? { adminConsentUrl: url } : {}),
+      raw,
+    };
+  }
+  if (sentence.startsWith(DELEGATED_TOKEN_EXPIRED_PREFIX)) {
+    return { code: 'delegated_token_expired', raw };
+  }
+  if (sentence.startsWith(DEVICE_CODE_FLOW_FAILED_PREFIX)) {
+    const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
+    return {
+      code: 'device_code_flow_failed',
+      ...(inner !== '' ? { reason: inner } : {}),
       raw,
     };
   }

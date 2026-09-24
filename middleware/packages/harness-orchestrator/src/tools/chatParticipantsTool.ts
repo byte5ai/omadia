@@ -1,6 +1,16 @@
+import type { ChatParticipant, ChatPeerAgentsProvider } from '../chatParticipants.js';
 import { turnContext } from '../turnContext.js';
 
 export const CHAT_PARTICIPANTS_TOOL_NAME = 'get_chat_participants';
+
+/**
+ * #1108 — machine-readable `reason` on every "can't mention anyone" result, so
+ * the model can distinguish a channel that has no roster at all from a roster
+ * that resolved empty. Both share the shape `{ participants: [], reason, note }`.
+ */
+export const CHAT_PARTICIPANTS_NO_ROSTER_REASON = 'no_roster_on_this_channel';
+export const CHAT_PARTICIPANTS_EMPTY_ROSTER_REASON = 'roster_empty';
+export const CHAT_PARTICIPANTS_FETCH_FAILED_REASON = 'roster_fetch_failed';
 
 export const chatParticipantsToolSpec = {
   name: CHAT_PARTICIPANTS_TOOL_NAME,
@@ -20,7 +30,8 @@ export const chatParticipantsToolSpec = {
     '- Rein informative Antworten ohne direkten Personen-Bezug.\n' +
     '\n' +
     'Response:\n' +
-    '- `participants[]` mit `displayName`, `channelUserId`, `email`, `aadObjectId`.\n' +
+    '- `participants[]` mit `displayName`, `channelUserId`, `email`, `aadObjectId`, `kind` (`human` | `agent`).\n' +
+    '- Einträge mit `kind: "agent"` sind andere omadia-Agenten mit eigenem Bot in diesem Chat, die für Agent-zu-Agent-Gespräche freigeschaltet sind; ihr `agentSlug` ist der Name für `discussion_start`. Sie werden NICHT per @-Mention angesprochen.\n' +
     '- `usage_example` — eine Copy-Paste-Zeile mit echtem `displayName` aus diesem Chat, die zeigt wie die Mention im Antworttext aussehen muss.\n' +
     '\n' +
     'Bei leerem `participants[]`: einfach ohne Mention antworten, nicht blockieren.',
@@ -33,29 +44,68 @@ export const chatParticipantsToolSpec = {
 
 /**
  * Tool handler: reads the roster via the TurnContext-provided accessor.
- * Returns an error string when invoked outside a Teams turn (no provider
- * wired) — the model can recover by simply not using a mention.
+ *
+ * #1108 — a turn without a wired provider must NOT return an `Error:` string.
+ * Prose tool results are interned by the Privacy Shield (#1097), so the model
+ * never sees such a string and renders it as if it were the roster. It returns
+ * a structured, German, non-error result instead, letting the model answer
+ * that this channel has no participant list. The primary guard is the tool
+ * list: `orchestrator.turnHasChatRoster()` only advertises the tool on turns
+ * that carry a provider, so this branch is defense-in-depth for any residual
+ * call (e.g. a present-but-empty admin-only roster on Telegram).
  */
 export class ChatParticipantsTool {
+  /**
+   * #1018 — `peerAgents` resolves the peer AGENTS the calling agent may see
+   * here (kernel service `chatPeerAgents@1`, resolved per call by the plugin).
+   * Absent or failing → humans only, exactly the pre-#1018 roster: a peer
+   * lookup must never cost a human mention.
+   */
+  constructor(private readonly deps: { peerAgents?: ChatPeerAgentsProvider } = {}) {}
+
+  private async peers(): Promise<ChatParticipant[]> {
+    if (!this.deps.peerAgents) return [];
+    try {
+      return await this.deps.peerAgents();
+    } catch {
+      return [];
+    }
+  }
+
   async handle(): Promise<string> {
     const ctx = turnContext.current();
     const provider = ctx?.chatParticipants;
     if (!provider) {
-      return 'Error: chat-participants provider not available in this turn (probably not a Teams turn).';
+      return JSON.stringify({
+        participants: [],
+        reason: CHAT_PARTICIPANTS_NO_ROSTER_REASON,
+        note: 'Dieser Kanal hat keine Teilnehmerliste. Antworte ohne @-Mention.',
+      });
     }
     try {
-      const members = await provider();
+      const humans = await provider();
+      const peers = await this.peers();
+      // Peers merge in AFTER the platform roster and never shadow a human
+      // entry; a roster that (unusually) already lists a bot keeps its own row.
+      const seen = new Set(humans.map((m) => m.channelUserId));
+      const members: ChatParticipant[] = [
+        ...humans,
+        ...peers.filter((p) => !seen.has(p.channelUserId)),
+      ];
       if (members.length === 0) {
         return JSON.stringify({
           participants: [],
+          reason: CHAT_PARTICIPANTS_EMPTY_ROSTER_REASON,
           note: 'Roster leer — entweder keine Teilnehmer sichtbar oder fehlende Berechtigung. Formuliere ohne @-Mention.',
         });
       }
-      // Pick a non-bot participant for the example so it's obvious how the
+      // Pick a human participant for the example so it's obvious how the
       // mention should look. Bots usually have `aadObjectId: null`; a human
       // roster entry has one. Fall back to the first member if all look bot-y.
       const example =
-        members.find((m) => m.aadObjectId !== null) ?? members[0];
+        members.find((m) => m.kind !== 'agent' && m.aadObjectId !== null) ??
+        members.find((m) => m.kind !== 'agent') ??
+        members[0];
       const exampleName = example?.displayName ?? 'Display Name';
       return JSON.stringify({
         participants: members.map((m) => ({
@@ -63,13 +113,29 @@ export class ChatParticipantsTool {
           displayName: m.displayName,
           email: m.email,
           aadObjectId: m.aadObjectId,
+          kind: m.kind ?? 'human',
+          ...(m.kind === 'agent' && m.agentSlug ? { agentSlug: m.agentSlug } : {}),
         })),
         usage_example: `<at>${exampleName}</at>`,
         rendering_rule:
           'Schreib den Namen im Antworttext EXAKT in dieser Form, byteweise identisch zum `displayName`. Ohne die <at>…</at>-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt.',
       });
     } catch (err) {
-      return `Error: roster fetch failed — ${err instanceof Error ? err.message : String(err)}`;
+      // #1108 — a fetch failure is the same class of bug as the no-provider
+      // miss: an English `Error:` string is interned by the Privacy Shield
+      // (#1097) and rendered to the user as if it were the roster. Return a
+      // structured German non-error instead. The raw error is logged here but
+      // deliberately kept OUT of the channel-visible result, which would leak
+      // internal detail; without this line the failure would vanish silently.
+      console.error(
+        '[chat-participants] roster fetch failed:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return JSON.stringify({
+        participants: [],
+        reason: CHAT_PARTICIPANTS_FETCH_FAILED_REASON,
+        note: 'Teilnehmerliste konnte nicht geladen werden. Antworte ohne @-Mention.',
+      });
     }
   }
 }

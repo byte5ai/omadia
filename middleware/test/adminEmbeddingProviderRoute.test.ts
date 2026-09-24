@@ -102,6 +102,139 @@ describe('GET /api/v1/admin/embedding-provider', () => {
   });
 });
 
+// OM-84 (#1003) — the dashboard health card's cheap summary. It must answer
+// from the registry alone (the full GET counts the corpus) and say plainly
+// whether `embeddingClient@1` is published.
+describe('GET /api/v1/admin/embedding-provider/status', () => {
+  it('reports the published capability and its provider', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active', config: {} },
+    ]);
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      capabilityPublished: boolean;
+      activeProviderId: string | null;
+      activeModel: { modelId: string; dimensions: number } | null;
+      installedProviderIds: string[];
+    };
+    assert.equal(body.capabilityPublished, true);
+    assert.equal(body.activeProviderId, OLLAMA);
+    assert.deepEqual(body.activeModel, {
+      modelId: 'ollama:nomic-embed-text',
+      dimensions: 768,
+    });
+    assert.deepEqual(body.installedProviderIds, [OLLAMA]);
+  });
+
+  it('reports capabilityPublished=false when no embedding provider is active (the round-4 default install)', async () => {
+    harness = await makeHarness([
+      { id: OPENAI, status: 'inactive', config: {} },
+      { id: KG_NEON, status: 'active', config: {} },
+    ]);
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      capabilityPublished: boolean;
+      activeProviderId: string | null;
+      activeModel: unknown;
+    };
+    assert.equal(body.capabilityPublished, false);
+    assert.equal(body.activeProviderId, null);
+    assert.equal(body.activeModel, null);
+  });
+
+  // OM-102 — the card used to speak only about embeddings, so an abo install
+  // whose fact extraction and topic detection were both off still read "OK".
+  it('reports the three memory features the extras plugin published', async () => {
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: KG_NEON, status: 'active', config: {} },
+      ],
+      {
+        memoryFeatures: {
+          factExtractor: 'active',
+          topicDetector: 'active',
+          scratchReaper: 'active',
+          providerId: 'claude-cli',
+        },
+      },
+    );
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        factExtractor: string;
+        topicDetector: string;
+        scratchReaper: string;
+        providerId?: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.deepEqual(body.memoryFeatures, {
+      factExtractor: 'active',
+      topicDetector: 'active',
+      scratchReaper: 'active',
+      providerId: 'claude-cli',
+    });
+  });
+
+  it('carries the plugin-stated reason when a feature is off', async () => {
+    harness = await makeHarness(
+      [
+        { id: OLLAMA, status: 'active' },
+        { id: KG_NEON, status: 'active', config: {} },
+      ],
+      {
+        memoryFeatures: {
+          factExtractor: 'active',
+          topicDetector: 'disabled',
+          scratchReaper: 'active',
+          providerId: 'claude-cli',
+          reasons: { topicDetector: 'no_embedding_provider' },
+        },
+      },
+    );
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        topicDetector: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.equal(body.memoryFeatures.topicDetector, 'disabled');
+    assert.equal(
+      body.memoryFeatures.reasons?.['topicDetector'],
+      'no_embedding_provider',
+    );
+  });
+
+  it('reads all three as off when the extras plugin published nothing', async () => {
+    harness = await makeHarness([
+      { id: OLLAMA, status: 'active' },
+      { id: KG_NEON, status: 'active', config: {} },
+    ]);
+    const res = await undiciFetch(`${harness.baseUrl}/status`);
+    const body = (await res.json()) as {
+      memoryFeatures: {
+        factExtractor: string;
+        topicDetector: string;
+        scratchReaper: string;
+        reasons?: Record<string, string>;
+      };
+    };
+    assert.equal(body.memoryFeatures.factExtractor, 'disabled');
+    assert.equal(body.memoryFeatures.topicDetector, 'disabled');
+    assert.equal(body.memoryFeatures.scratchReaper, 'disabled');
+    assert.equal(
+      body.memoryFeatures.reasons?.['factExtractor'],
+      'plugin_inactive',
+    );
+  });
+});
+
 describe('mount-time auth', () => {
   it('lets no route escape the guard applied at mount', async () => {
     const registry = new InMemoryInstalledRegistry();
@@ -144,6 +277,8 @@ describe('mount-time auth', () => {
     const dispatcher = new Agent({ keepAliveTimeout: 10, keepAliveMaxTimeout: 10 });
     try {
       assert.equal((await undiciFetch(base, { dispatcher })).status, 401);
+      // OM-84 (#1003) — the dashboard's status summary sits behind the same guard.
+      assert.equal((await undiciFetch(`${base}/status`, { dispatcher })).status, 401);
       assert.equal(
         (
           await undiciFetch(`${base}/switch`, {

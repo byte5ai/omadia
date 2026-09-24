@@ -11,6 +11,7 @@ export { anthropicAdapter, registerAnthropicAdapter } from './adapter.js';
 export {
   createAnthropicProvider,
   classifyAnthropicError,
+  supportsForcedToolChoice,
   supportsTemperature,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
@@ -20,3 +21,9 @@ export {
   type AnthropicClient,
   type AnthropicClientOptions,
 } from './anthropicClient.js';
+
+export {
+  getAnthropicModel,
+  listAnthropicModels,
+  type AnthropicModelCapabilities,
+} from './modelDiscovery.js';

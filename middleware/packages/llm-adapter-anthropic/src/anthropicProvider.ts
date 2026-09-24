@@ -264,8 +264,53 @@ export function supportsTemperature(model: string): boolean {
   return !TEMPERATURE_UNSUPPORTED.some((m) => model.includes(m));
 }
 
+/**
+ * Models that reject a FORCED `tool_choice` (`any` / `tool`) with a hard 400
+ * (`tool_choice: type "tool" and "any" are not supported for this model.`).
+ *
+ * Measured against the live API on 2026-09-23:
+ *
+ * | model             | auto | any | tool |
+ * |-------------------|------|-----|------|
+ * | claude-opus-5     | OK   | OK  | OK   |
+ * | claude-opus-5-5   | OK   | 400 | 400  |
+ * | claude-fable-5-1  | OK   | 400 | 400  |
+ *
+ * Again not derivable from the version number (`opus-5` forces fine,
+ * `opus-5-5` does not). Mythos 5.1 shares the Fable 5.1 API surface.
+ */
+const FORCED_TOOL_CHOICE_UNSUPPORTED = [
+  'claude-opus-5-5',
+  'claude-fable-5-1',
+  'claude-mythos-5-1',
+];
+
+/** Whether this model accepts a forced `tool_choice` (`required` / `tool`). */
+export function supportsForcedToolChoice(model: string): boolean {
+  return !FORCED_TOOL_CHOICE_UNSUPPORTED.some((m) => model.includes(m));
+}
+
+/**
+ * On models that reject forced tool use, a forced choice degrades to `auto`
+ * (keeping `disableParallel`). Every caller that forces a tool already treats
+ * "no tool_use in the response" as a normal outcome (reminder loop, fail-open
+ * extractor/judge), whereas the 400 turned each of those paths into an
+ * exception — the claim verifier and the card router went silently dark.
+ */
+function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
+  const choice = req.toolChoice;
+  if (choice === undefined || supportsForcedToolChoice(req.model)) {
+    return choice;
+  }
+  if (choice.type !== 'required' && choice.type !== 'tool') return choice;
+  return choice.disableParallel === true
+    ? { type: 'auto', disableParallel: true }
+    : { type: 'auto' };
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
+  const toolChoice = effectiveToolChoice(req);
   return {
     model: req.model,
     max_tokens: req.maxTokens,
@@ -281,11 +326,21 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     ...(req.tools !== undefined && req.tools.length > 0
       ? { tools: toAnthropicTools(req.tools, req.cacheHints) }
       : {}),
-    ...(req.toolChoice !== undefined
-      ? { tool_choice: toAnthropicToolChoice(req.toolChoice) }
+    ...(toolChoice !== undefined
+      ? { tool_choice: toAnthropicToolChoice(toolChoice) }
+      : {}),
+    // #1033 — the normalized effort maps 1:1 onto Anthropic's
+    // `output_config.effort` vocabulary (`low|medium|high|xhigh|max`); we
+    // never send `max`, which the contract deliberately does not carry.
+    ...(req.effort !== undefined
+      ? { output_config: { effort: req.effort } }
       : {}),
   };
 }
+
+/** The beta that unlocks `output_config.effort`. Attached only when a request
+ *  actually carries an effort, so the common path keeps its header set. */
+export const EFFORT_BETA = 'effort-2025-11-24';
 
 /** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
  *  undefined when there are none, so callers pass nothing extra (preserving
@@ -293,8 +348,14 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
 function toRequestOptions(
   req: LlmRequest,
 ): { headers: Record<string, string> } | undefined {
-  return req.betas !== undefined && req.betas.length > 0
-    ? { headers: { 'anthropic-beta': req.betas.join(',') } }
+  const betas = [
+    ...(req.betas ?? []),
+    ...(req.effort !== undefined && !(req.betas ?? []).includes(EFFORT_BETA)
+      ? [EFFORT_BETA]
+      : []),
+  ];
+  return betas.length > 0
+    ? { headers: { 'anthropic-beta': betas.join(',') } }
     : undefined;
 }
 

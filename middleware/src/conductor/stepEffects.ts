@@ -1,4 +1,9 @@
-import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
+import type {
+  JsonObject,
+  JsonValue,
+  Step,
+  TriggerKind,
+} from '@omadia/conductor-core';
 
 export interface StepExecution {
   /** the step's result, fed to the engine as `stepResult` for guard/postcondition evaluation. */
@@ -10,6 +15,28 @@ export interface StepExecution {
 /** Per-call context the executor passes to effects (for session bucketing / tracing). */
 export interface StepMeta {
   runId: string;
+  /**
+   * How this run was started. Present so an effect can tell a run that a HUMAN
+   * or a schedule began from one a CHANNEL began — the two carry different
+   * authority, and only the second one has an addressed bot whose permissions
+   * the work must stay inside.
+   *
+   * Optional so every existing caller (preview, tests, the resume worker's
+   * older shape) keeps compiling and keeps its current behaviour: absent means
+   * "not channel-triggered", which is what those callers are.
+   */
+  triggerKind?: TriggerKind;
+  /** The domain event that started the run (`teams.message.posted`, …), when
+   *  it was an event/webhook trigger. Names WHICH channel, so the origin rule
+   *  applies only to channels that actually carry an addressed bot. */
+  triggerEventId?: string;
+  /**
+   * The run's workflow id. A `say` step's floor is derived from it: the target
+   * conversation's ephemeral attachment must belong to THIS workflow. Optional
+   * for the same back-compat reason as the fields above — preview runs and
+   * tests have no workflow row, and a say there simply finds no floor.
+   */
+  workflowId?: string | null;
 }
 
 /**

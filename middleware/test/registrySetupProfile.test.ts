@@ -74,6 +74,8 @@ const emptyCatalog = {
 } as unknown as PluginCatalog;
 
 const fakeRegistry = {
+  // Empty fixture: every id is absent, so blocking is a no-op.
+  markActivationBlocked: async () => undefined,
   has: () => false,
   get: () => undefined,
 } as unknown as InstalledRegistry;

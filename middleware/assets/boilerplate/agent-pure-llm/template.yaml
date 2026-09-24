@@ -30,7 +30,16 @@ placeholders:
   AGENT_ID: id
   AGENT_NAME: name
   AGENT_SLUG: __derived__/agentSlug
+  # #885 — `identity.description` in the manifest is a locale map, so both
+  # placeholders must resolve or the scaffold ships an unsubstituted `{{…}}`.
+  # #1022 — each locale now has its own spec field. `description` is the
+  # German one; `description_en` is asked for separately, so a scaffolded
+  # plugin is correct in both locales without a manual translation step.
+  # The `|` is a fallback chain (see resolveSource in codegen.ts): a spec
+  # written before `description_en` existed still generates, falling back to
+  # the single description it has.
   AGENT_DESCRIPTION_DE: description
+  AGENT_DESCRIPTION_EN: description_en|description
   AGENT_AUTHOR: author
   AGENT_VERSION: version
   AGENT_DOMAIN: domain

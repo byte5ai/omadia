@@ -76,7 +76,9 @@ export interface PluginContext {
   readonly smokeMode: boolean;
 
   /** Per-plugin scratch directory. Present only when the manifest declares
-   *  `filesystem.scratch: true`. Undefined otherwise — plugins that need
+   *  `permissions.filesystem.scratch: true` (OM-89; the legacy top-level
+   *  `filesystem.scratch` is tolerated only when the canonical block is absent).
+   *  Undefined otherwise — plugins that need
    *  temp files must declare the capability so the operator can see it in
    *  the permissions summary at install time. */
   readonly scratch?: ScratchDirAccessor;

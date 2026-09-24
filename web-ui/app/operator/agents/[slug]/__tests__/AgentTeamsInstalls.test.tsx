@@ -60,9 +60,13 @@ function capabilities(
     uninstall: false,
     enumerate: false,
     multi_team: false,
+    chat_install: false,
+    chat_uninstall: false,
     unsupported_reason: {
       uninstall:
         'the installed teamsProvisioner@1 publishes no uninstallFromTeam method',
+      chat_uninstall:
+        'the installed teamsProvisioner@1 publishes no uninstallFromChat method',
       enumerate: 'teamsProvisioner@1 publishes no installation-listing method',
       multi_team: 'agent_teams_identities stores ONE team_id per agent',
     },
@@ -184,7 +188,7 @@ describe('AgentTeamsInstalls (#866)', () => {
     expect(
       (await screen.findByRole('button', { name: 'Uninstall' })).hasAttribute('disabled'),
     ).toBe(true);
-    expect((screen.getByLabelText('Team ID') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Target ID') as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -196,7 +200,7 @@ describe('AgentTeamsInstalls (#866)', () => {
   it('keeps install disabled once a team is tracked and multi_team is unsupported', async () => {
     await renderPanel();
 
-    expect((screen.getByLabelText('Team ID') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('Target ID') as HTMLInputElement).disabled).toBe(true);
     expect(
       screen.getByText(
         'One orchestrator is tracked in one team. Assigning a second team would leave the first install untracked, so it is refused.',
@@ -211,20 +215,28 @@ describe('AgentTeamsInstalls (#866)', () => {
     mockInstall.mockResolvedValue({
       ok: true,
       agent: 'odoo',
-      team_id: 'team-new',
+      team_id: '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
       state: 'app_registered',
       already_installed: false,
       running: true,
     });
     const user = await renderPanel();
 
-    await user.type(await screen.findByLabelText('Team ID'), 'team-new');
+    await user.type(await screen.findByLabelText('Target ID'), '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c');
     await user.click(screen.getByRole('button', { name: 'Install' }));
 
-    await waitFor(() => expect(mockInstall).toHaveBeenCalledWith('odoo', 'team-new'));
+    // No kind: this id was TYPED, so there is no directory answer to pass on
+    // and the server classifies it the way it always has.
+    await waitFor(() =>
+      expect(mockInstall).toHaveBeenCalledWith(
+        'odoo',
+        '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
+        undefined,
+      ),
+    );
     expect(
       await screen.findByText(
-        'Installing into team team-new — the provisioning run continues in the background.',
+        'Installing into team 2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c — the provisioning run continues in the background.',
       ),
     ).toBeTruthy();
     // Two loads: the mount fetch and the post-write refresh.
@@ -241,7 +253,7 @@ describe('AgentTeamsInstalls (#866)', () => {
     );
     const user = await renderPanel();
 
-    await user.type(await screen.findByLabelText('Team ID'), 'team-two');
+    await user.type(await screen.findByLabelText('Target ID'), '3e2b8d55-2a1f-4b3d-9e2b-8d552a1f4b3d');
     await user.click(screen.getByRole('button', { name: 'Install' }));
 
     expect(
@@ -449,6 +461,7 @@ describe('AgentTeamsInstalls (#866)', () => {
         teams: [],
         state: 'catalog_uploaded',
         pending_team_id: 'team-pending',
+        pending_target_kind: 'group-chat',
         running: true,
       }),
     );
@@ -456,7 +469,7 @@ describe('AgentTeamsInstalls (#866)', () => {
 
     expect(
       await screen.findByText(
-        'A provisioning run is targeting team team-pending. It counts as an install once the chain reaches the install step.',
+        'A provisioning run targets Group chat team-pending. It only counts as installed once the chain reaches the install step.',
       ),
     ).toBeTruthy();
     expect(
@@ -481,7 +494,7 @@ describe('AgentTeamsInstalls (#866)', () => {
     );
     await renderPanel();
 
-    expect(screen.getByLabelText('Team ID')).toHaveProperty('disabled', true);
+    expect(screen.getByLabelText('Target ID')).toHaveProperty('disabled', true);
     expect(screen.getByRole('button', { name: 'Install' })).toHaveProperty(
       'disabled',
       true,
@@ -508,7 +521,173 @@ describe('AgentTeamsInstalls (#866)', () => {
       await screen.findByText(/no provisioning run is active/),
     ).toBeTruthy();
     expect(
-      screen.queryByText(/A provisioning run is targeting team team-x/),
+      screen.queryByText(/A provisioning run targets .* team-x/),
     ).toBeNull();
+  });
+});
+
+/**
+ * The two inputs an operator cannot submit, and the one they can.
+ *
+ * THE FIELD TEST. Someone pasted `abc8af8ec7fc471785d3b83c4d84b667` into a
+ * field labelled "Team ID". The chain answered `400 teamId needs to be a valid
+ * GUID`, then — once hyphenated — `404 No team found with Group Id`, after an
+ * Entra app, an Azure bot and a catalog upload had all succeeded. Every one of
+ * those answers arrived too late to help. These tests pin the answers arriving
+ * BEFORE the button can be pressed.
+ */
+describe('AgentTeamsInstalls — install target classification', () => {
+  it('names a team id as a team and enables Install', async () => {
+    mockGetAgentTeams.mockResolvedValue(view({ teams: [] }));
+    const user = await renderPanel();
+
+    await user.type(
+      await screen.findByLabelText('Target ID'),
+      '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c',
+    );
+
+    expect(await screen.findByText('Detected as: Team')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it('names a group chat id as a group chat and enables Install', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({ teams: [], capabilities: capabilities({ chat_install: true }) }),
+    );
+    const user = await renderPanel();
+
+    await user.type(
+      await screen.findByLabelText('Target ID'),
+      '19:abc123@thread.v2',
+    );
+
+    expect(await screen.findByText('Detected as: Group chat')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+
+  it('refuses a CHANNEL id and says what to use instead', async () => {
+    mockGetAgentTeams.mockResolvedValue(view({ teams: [] }));
+    const user = await renderPanel();
+
+    await user.type(
+      await screen.findByLabelText('Target ID'),
+      '19:aBcDeF@thread.tacv2',
+    );
+
+    // Names the mistake AND the way out — a channel has a parent team, and
+    // that team's group id is the thing that works.
+    expect(
+      await screen.findByText(/channel id, not an install target/),
+    ).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(mockInstall).not.toHaveBeenCalled();
+  });
+
+  it('refuses a bare 32-hex id and offers BOTH readings as one click each', async () => {
+    mockGetAgentTeams.mockResolvedValue(view({ teams: [] }));
+    const user = await renderPanel();
+
+    const field = await screen.findByLabelText('Target ID');
+    await user.type(field, 'abc8af8ec7fc471785d3b83c4d84b667');
+
+    expect(await screen.findByText(/32 hex characters with no context/)).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    // The way out is a click, not a re-typing exercise: choosing "team"
+    // rewrites the field to the hyphenated GUID and unblocks Install.
+    await user.click(screen.getByRole('button', { name: 'Use as team' }));
+    expect((field as HTMLInputElement).value).toBe(
+      'abc8af8e-c7fc-4717-85d3-b83c4d84b667',
+    );
+    expect(await screen.findByText('Detected as: Team')).toBeTruthy();
+  });
+
+  it('offers the group-chat reading of that same id', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({ teams: [], capabilities: capabilities({ chat_install: true }) }),
+    );
+    const user = await renderPanel();
+
+    const field = await screen.findByLabelText('Target ID');
+    await user.type(field, 'abc8af8ec7fc471785d3b83c4d84b667');
+    await user.click(screen.getByRole('button', { name: 'Use as group chat' }));
+
+    // The full form the connector requires — it rejects a bare stem.
+    expect((field as HTMLInputElement).value).toBe(
+      '19:abc8af8ec7fc471785d3b83c4d84b667@thread.v2',
+    );
+    expect(await screen.findByText('Detected as: Group chat')).toBeTruthy();
+  });
+
+  it('refuses an unusable string without offering a guess', async () => {
+    mockGetAgentTeams.mockResolvedValue(view({ teams: [] }));
+    const user = await renderPanel();
+
+    await user.type(await screen.findByLabelText('Target ID'), 'marketing team');
+
+    expect(
+      await screen.findByText(/not a Teams install target/),
+    ).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+  });
+
+  it('warns about an old connector only once a CHAT is actually typed', async () => {
+    // A deployment that installs into teams all day has no reason to be told
+    // about a connector version it does not need.
+    mockGetAgentTeams.mockResolvedValue(
+      view({ teams: [], capabilities: capabilities({ chat_install: false }) }),
+    );
+    const user = await renderPanel();
+
+    const field = await screen.findByLabelText('Target ID');
+    await user.type(field, '2f1a9c44-1f0e-4f2c-8f1a-9c441f0e4f2c');
+    expect(screen.queryByText(/needs the Microsoft 365 connector 0.7.0/)).toBeNull();
+
+    await user.clear(field);
+    await user.type(field, '19:abc123@thread.v2');
+    expect(
+      await screen.findByText(/needs the Microsoft 365 connector 0.7.0/),
+    ).toBeTruthy();
+  });
+
+  it('labels an installed CHAT as a chat, not as a team', async () => {
+    mockGetAgentTeams.mockResolvedValue(
+      view({
+        teams: [
+          {
+            team_id: '19:abc123@thread.v2',
+            target_kind: 'group-chat',
+            team_display_name: null,
+            teams_app_id: 'catalog-1',
+            installed_at: null,
+            evidence: 'install_row',
+          },
+        ],
+      }),
+    );
+    await renderPanel();
+
+    expect(await screen.findByText('Group chat')).toBeTruthy();
+    // A nameless CHAT is not a failed lookup: the connector publishes no name
+    // lookup for chats, and saying "could not resolve" would send an operator
+    // chasing a connector bug that does not exist.
+    expect(
+      screen.getByText(/connector provides no name for chats/),
+    ).toBeTruthy();
   });
 });

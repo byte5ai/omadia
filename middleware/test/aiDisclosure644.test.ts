@@ -389,6 +389,22 @@ describe('#644 orchestrator — AC5 operator note appends, off silences both', (
     assert.equal(sa.aiDisclosure?.source, 'operator');
   });
 
+  it('#1107 — applies a per-channel override on an API turn (api now carries a channelKind)', async () => {
+    // Mirror of the telegram case: the public API channel resolves to
+    // `channelKind: 'api'` (#1107), so an `api=` override bites in production.
+    const o = makeOrchestrator({
+      answer: 'Antwort.',
+      aiDisclosure: { level: 'standard', overrides: { api: 'concise' } },
+    });
+    const sa = await o.chat({
+      userMessage: 'x',
+      channelIdentity: { channelKind: 'api', channelUserId: 'key:abc' },
+    });
+    assert.match(sa.text, /KI-generiert\./, 'the api override used the concise line');
+    assert.equal(sa.aiDisclosure?.level, 'concise');
+    assert.equal(sa.aiDisclosure?.source, 'operator');
+  });
+
   it('documents the limitation: a web/email override is inert (no per-turn channelKind → global level)', async () => {
     // The web SSE route (routes/chat.ts) and the email path never set
     // `channelIdentity`, so a `web`/`email` override key can never match. The

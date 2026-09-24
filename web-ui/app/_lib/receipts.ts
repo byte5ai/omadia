@@ -1,4 +1,4 @@
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 import type { PrivacyReceipt } from './chatSessions';
 
 /**
@@ -35,7 +35,12 @@ export interface TurnReceiptDto {
   turnId: string;
   sessionScope?: string;
   channel?: string;
+  /** The model the turn actually ran on (#1033 W0). */
   model?: string;
+  /** Provider id the turn ran on; absent on rows recorded before #1033 W0. */
+  provider?: string;
+  /** Present (and `true`) only when the turn ran on the agent's fallback. */
+  fallbackUsed?: boolean;
   receipt: PrivacyReceipt;
   createdAt: string;
 }
@@ -57,6 +62,8 @@ export async function listReceipts(opts?: {
   const qs = params.size > 0 ? `?${params.toString()}` : '';
   const res = await fetch(botApi(`/v1/operator/receipts${qs}`), {
     headers: { ...(await forwardCookieHeader()) },
+    // OM-96 — server-side read, so it needs a deadline; see `rscTimeoutSignal`.
+    signal: rscTimeoutSignal(),
     cache: 'no-store',
   });
   if (!res.ok) {

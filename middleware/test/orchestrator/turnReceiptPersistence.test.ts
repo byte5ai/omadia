@@ -53,8 +53,14 @@ function staticProvider(): LlmProvider {
     capabilities: providerCapabilities,
     complete: async (_req: LlmRequest): Promise<LlmResponse> =>
       textResponse('Alles klar.'),
-    stream: (): AsyncIterable<LlmStreamEvent> => {
-      throw new Error('staticProvider: stream() not scripted');
+    stream: (_req: LlmRequest): AsyncIterable<LlmStreamEvent> => {
+      const text = 'Alles klar.';
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'text_delta', text } as LlmStreamEvent;
+          yield { type: 'final', response: textResponse(text) } as LlmStreamEvent;
+        },
+      };
     },
     classifyError: () => ({ retryable: false, kind: 'other' as const }),
   };
@@ -114,6 +120,53 @@ describe('#757 turn-receipt persistence — orchestrator wiring', () => {
       spans.some((s) => s.type === 'email'),
       'persisted receipt must carry the masked email span',
     );
+  });
+
+  it('#1107 — an API turn persists channel = "api"', async () => {
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({
+      record: async (entry) => {
+        recorded.push(entry);
+      },
+    });
+    await orch.runTurn({
+      userMessage: `Bitte schreibe an ${RAW_EMAIL}.`,
+      sessionScope: 'sess-api',
+      userId: 'key:abc',
+      // The dispatcher mints this for a `key:`-prefixed public-API caller.
+      channelIdentity: { channelKind: 'api', channelUserId: 'key:abc' },
+    });
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]!.channel, 'api', 'API traffic must be labelled, not NULL');
+  });
+
+  it('#1107 — the streaming done event carries receiptId == the persisted receipt key', async () => {
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = buildOrch({
+      record: async (entry) => {
+        recorded.push(entry);
+      },
+    });
+    const events: Array<{ type: string } & Record<string, unknown>> = [];
+    for await (const event of orch.chatStream({
+      userMessage: `Bitte schreibe an ${RAW_EMAIL}.`,
+      sessionScope: 'sess-api-stream',
+      userId: 'key:abc',
+      channelIdentity: { channelKind: 'api', channelUserId: 'key:abc' },
+    })) {
+      events.push(event as { type: string } & Record<string, unknown>);
+    }
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done, 'the stream must settle with a done event');
+    assert.equal(recorded.length, 1, 'a receipt was written for this masked turn');
+    // The id the caller sees IS the store key the operator route looks up by
+    // (`turn_receipts.turn_id`), so a caller can correlate the turn.
+    assert.equal(
+      done!['receiptId'],
+      recorded[0]!.turnId,
+      'done.receiptId must equal the persisted receipt key',
+    );
+    assert.equal(recorded[0]!.channel, 'api');
   });
 
   it('a throwing store is loud but never fails the turn', async () => {

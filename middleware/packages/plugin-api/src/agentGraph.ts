@@ -42,6 +42,42 @@ export interface ModelRoutingConfig {
   readonly escalateOn?: readonly EscalationTrigger[];
 }
 
+// ── model policy (persisted on agents.model_policy, #1033) ─────────────────
+
+/** Normalized reasoning-effort vocabulary (mirrors `@omadia/llm-provider-api`). */
+export type ModelPolicyEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
+/** One explicit model choice: which provider, which model, optionally how hard. */
+export interface ModelRef {
+  readonly provider: string;
+  /** Bare vendor model id (`claude-opus-4-8`, `gpt-5.5`). */
+  readonly model: string;
+  readonly effort?: ModelPolicyEffort;
+}
+
+/**
+ * Per-agent default LLM + fallback.
+ *
+ *   primary  `'auto'` — today's resolution: `model_routing.main` → platform
+ *            default → built-in default, with triage when configured.
+ *            A `ModelRef` pins the agent to that model (triage does not apply).
+ *   fallback `'none'` — today's failure behaviour (the turn dies once retries
+ *            are spent); `'auto'` — the auto-resolved model as the fallback;
+ *            a `ModelRef` — an explicit second choice, possibly on another
+ *            provider.
+ *
+ * The write path validates that a ref names a registered, usable provider, a
+ * catalogued model, and (if given) an effort the model declares, and that
+ * fallback ≠ primary.
+ */
+export interface ModelPolicy {
+  readonly primary: 'auto' | ModelRef;
+  readonly fallback: 'none' | 'auto' | ModelRef;
+}
+
+/** What every agent reads as until an operator edits the policy. */
+export const DEFAULT_MODEL_POLICY: ModelPolicy = { primary: 'auto', fallback: 'none' };
+
 // ── node DTOs ───────────────────────────────────────────────────────────────
 
 export interface AgentNode {
@@ -52,6 +88,8 @@ export interface AgentNode {
   readonly privacyProfile: 'strict' | 'default';
   readonly status: 'enabled' | 'disabled';
   readonly modelRouting: ModelRoutingConfig | null;
+  /** #1033 — absent on a DB that predates migration 0059 (= the default). */
+  readonly modelPolicy?: ModelPolicy;
   readonly position: CanvasPosition | null;
 }
 

@@ -8,8 +8,14 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ConfirmDialog } from '@/app/_components/ConfirmDialog';
 import {
+  classifyKnownTeamsTarget,
+  isSubmittableTarget,
+  type KnownTeamsTarget,
+} from '../../../../_lib/teamsInstallTarget';
+import {
   getAgentTeams,
   installAgentTeam,
+  parseInstalledTargetKind,
   parseInstalledTeamName,
   parseTeamsAssignmentCapabilities,
   parseTeamsAssignmentErrorCode,
@@ -17,7 +23,10 @@ import {
   type AgentTeamsDto,
   type InstalledTeamDto,
   type TeamsAssignmentCapabilityKey,
+  getAgentTeamsTargets,
+  type AgentTeamsTargetsDto,
 } from '../../../../_lib/agents';
+import { TeamsTargetField } from './TeamsTargetField';
 import { ApiError } from '../../../../_lib/api';
 
 /**
@@ -127,6 +136,20 @@ export function AgentTeamsInstalls({
   const [result, setResult] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [teamId, setTeamId] = useState('');
+  // What the tenant listing said `teamId` is, while `teamId` is still exactly
+  // what was picked. Cleared by any edit — see `TeamsTargetField`.
+  const [known, setKnown] = useState<KnownTeamsTarget | undefined>(undefined);
+  /**
+   * What the operator can pick instead of type.
+   *
+   * `null` covers BOTH "not loaded yet" and "the directory endpoint failed",
+   * and deliberately so: the picker is a convenience over a field that still
+   * works, so a failure to enumerate must degrade to the field rather than to
+   * an error the operator has to dismiss. The one thing never done here is
+   * storing an empty list on failure — see `TeamsTargetPicker`.
+   */
+  const [targets, setTargets] = useState<AgentTeamsTargetsDto | null>(null);
+  const [targetsLoading, setTargetsLoading] = useState(true);
   const [confirmUninstall, setConfirmUninstall] =
     useState<InstalledTeamDto | null>(null);
 
@@ -199,6 +222,46 @@ export function AgentTeamsInstalls({
     },
     [refresh, router, localizeError],
   );
+
+  /**
+   * What the operator has typed, read as an install target on every keystroke.
+   *
+   * THE POINT OF DOING IT HERE. The field test that produced this panel ended
+   * with `404 No team found with Group Id` after five provisioning steps had
+   * already succeeded. Every answer arrived after the fact. Classifying while
+   * they type turns the whole failure into a label under the input — and the
+   * two cases that cannot be submitted (a channel id, a bare 32-hex string)
+   * get told what to do instead of being allowed through.
+   *
+   * The server re-decides regardless; this is guidance, never authority.
+   */
+  // Loaded ONCE per agent, not on every poll of the panel: a tenant's teams
+  // and chats do not change while somebody fills in a form, and re-enumerating
+  // on each refresh would spend the connector's Graph throttling budget on a
+  // list nobody is looking at any more.
+  useEffect(() => {
+    let cancelled = false;
+    setTargetsLoading(true);
+    void getAgentTeamsTargets(slug)
+      .then((dto) => {
+        if (!cancelled) setTargets(dto);
+      })
+      .catch(() => {
+        // Swallowed on purpose. The text field below is fully functional
+        // without a directory, and an error banner for a failed convenience
+        // would read as though the install itself were broken.
+        if (!cancelled) setTargets(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTargetsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+
+  const target = classifyKnownTeamsTarget(teamId, known);
+  const targetSubmittable = isSubmittableTarget(target);
 
   const installed = data?.teams ?? [];
   /**
@@ -317,6 +380,20 @@ export function AgentTeamsInstalls({
                 // it — and when no name was ever resolved the id takes the
                 // lead line rather than being paired with an empty label.
                 const name = parseInstalledTeamName(team);
+                // A chat listed under a heading that says "team" is exactly
+                // the confusion this feature removes — so every entry names
+                // its own kind.
+                const kind = parseInstalledTargetKind(team);
+                // PER ROW, not per panel. Removing from a team and removing
+                // from a chat are different connector methods that arrived in
+                // different versions, so one flag for the whole list has to be
+                // wrong about one of the two kinds — a chat row with a live
+                // button that answers 501, or a team row greyed out because
+                // the connector cannot do chats.
+                const canRemove =
+                  kind === 'team'
+                    ? data.capabilities.uninstall
+                    : data.capabilities.chat_uninstall;
                 return (
                   <div
                     key={team.team_id}
@@ -337,14 +414,24 @@ export function AgentTeamsInstalls({
                           <span className="font-mono text-sm text-[color:var(--fg-strong)]">
                             {team.team_id}
                           </span>
-                          {/* Says why there is no name, so a GUID does not
-                              read as a rendering bug. */}
+                          {/* Says why there is no name, so a bare id does not
+                              read as a rendering bug. The reason differs by
+                              kind: a team COULD have been resolved and was
+                              not, while the connector publishes no name
+                              lookup for chats at all — reporting the team
+                              sentence for a chat would send an operator
+                              chasing a connector bug that does not exist. */}
                           <span className="text-[11px] text-[color:var(--fg-muted)]">
-                            {t('teamNameUnresolved')}
+                            {kind === 'team'
+                              ? t('teamNameUnresolved')
+                              : t('chatNameUnavailable')}
                           </span>
                         </>
                       )}
                     </div>
+                    <span className="rounded border border-[color:var(--border)] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-[color:var(--fg-muted)]">
+                      {t(`targetKind.${kind}`)}
+                    </span>
                     <span className="text-[11px] text-[color:var(--fg-muted)]">
                       {t('appIdLabel', {
                         appId: team.teams_app_id ?? t('appIdNone'),
@@ -364,7 +451,7 @@ export function AgentTeamsInstalls({
                       className="ml-auto"
                       size="sm"
                       variant="danger"
-                      disabled={!data.capabilities.uninstall || inFlight}
+                      disabled={!canRemove || inFlight}
                       busy={busy === `uninstall:${team.team_id}`}
                       busyLabel={t('uninstallBusy')}
                       onClick={() => setConfirmUninstall(team)}
@@ -375,8 +462,16 @@ export function AgentTeamsInstalls({
                 );
               })
             )}
-            {!data.capabilities.uninstall ? (
+            {/* One note per capability that is actually relevant to what is
+                listed: a deployment with only team installs must not be told
+                about a chat method it never reaches for, and vice versa. */}
+            {!data.capabilities.uninstall &&
+            installed.some((team) => parseInstalledTargetKind(team) === 'team') ? (
               <CapabilityNote {...unsupportedReason(data, 'uninstall')} />
+            ) : null}
+            {!data.capabilities.chat_uninstall &&
+            installed.some((team) => parseInstalledTargetKind(team) !== 'team') ? (
+              <CapabilityNote {...unsupportedReason(data, 'chat_uninstall')} />
             ) : null}
           </div>
 
@@ -388,7 +483,12 @@ export function AgentTeamsInstalls({
           {data.pending_team_id !== null ? (
             <div className="rounded-md border border-[color:var(--border)] px-3 py-2 text-[11px] text-[color:var(--fg-muted)]">
               {data.running
-                ? t('pendingHint', { teamId: data.pending_team_id })
+                ? t('pendingHintTyped', {
+                    kind: t(
+                      `targetKind.${data.pending_target_kind ?? 'team'}`,
+                    ),
+                    teamId: data.pending_team_id,
+                  })
                 : t('pendingStoppedHint', { teamId: data.pending_team_id })}
             </div>
           ) : null}
@@ -397,28 +497,39 @@ export function AgentTeamsInstalls({
             <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--fg-muted)]">
               {t('installHeading')}
             </div>
-            <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
-              {t('fieldTeamId')}
-              <input
-                type="text"
-                value={teamId}
-                disabled={!canInstall || inFlight}
-                onChange={(e) => setTeamId(e.target.value)}
-                aria-label={t('fieldTeamId')}
-                className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 font-mono text-sm text-[color:var(--fg-strong)]"
-              />
-              <span>{t('fieldTeamIdHint')}</span>
-            </label>
+            {/* Pick or type, plus the live verdict — shared verbatim with the
+                Teams identity panel, which asks the same question when a
+                target-less identity needs one before a run can start. */}
+            <TeamsTargetField
+              targets={targets}
+              targetsLoading={targetsLoading}
+              value={teamId}
+              onChange={(next, knownKind) => {
+                setTeamId(next);
+                setKnown(
+                  knownKind === undefined
+                    ? undefined
+                    : { id: next, kind: knownKind },
+                );
+              }}
+              disabled={!canInstall || inFlight}
+              known={known}
+            />
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
-                disabled={!canInstall || inFlight || teamId.trim() === ''}
+                disabled={!canInstall || inFlight || !targetSubmittable}
                 busy={busy === 'install'}
                 busyLabel={t('installBusy')}
                 onClick={() =>
                   void run('install', async () => {
-                    const res = await installAgentTeam(slug, teamId.trim());
+                    const res = await installAgentTeam(
+                      slug,
+                      teamId.trim(),
+                      known?.kind,
+                    );
                     setTeamId('');
+                    setKnown(undefined);
                     return res.already_installed
                       ? t('alreadyInstalled', { teamId: res.team_id })
                       : t('installStarted', { teamId: res.team_id });
@@ -446,6 +557,13 @@ export function AgentTeamsInstalls({
             ) : null}
             {!data.capabilities.multi_team && installed.length > 0 ? (
               <CapabilityNote {...unsupportedReason(data, 'multi_team')} />
+            ) : null}
+            {/* Only once a CHAT is actually typed: a deployment that installs
+                into teams all day has no reason to be told about a connector
+                version it does not need. */}
+            {!data.capabilities.chat_install &&
+            (target.kind === 'group-chat' || target.kind === 'one-on-one-chat') ? (
+              <CapabilityNote {...unsupportedReason(data, 'chat_install')} />
             ) : null}
           </div>
         </>

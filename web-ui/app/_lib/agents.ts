@@ -1,5 +1,6 @@
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
+import type { TeamsTargetKind } from './teamsInstallTarget';
 
 /**
  * Typed client for the operator multi-orchestrator REST surface
@@ -64,6 +65,11 @@ export interface OperatorAgentDto {
   memory_scope: string[];
   plugins: OperatorAgentPluginDto[];
   bindings: OperatorAgentBindingDto[];
+  /** #1033 — the model the registry currently runs this agent on; `null`
+   *  until built. Absent on a pre-W4 middleware. */
+  effective_model?: string | null;
+  /** #1033 — the agent's model policy. Absent on a pre-W4 middleware. */
+  model_policy?: ModelPolicy;
 }
 
 export interface OperatorAgentsListDto {
@@ -84,6 +90,12 @@ async function callJson<T>(
       ...forwarded,
       ...(init?.headers ?? {}),
     },
+    // OM-96 — a server-side GET read gates the RSC payload of the page that
+    // awaits it. Without a deadline, a middleware endpoint that accepts the
+    // connection and never answers parks the navigation instead of failing a
+    // single card. Mutations are left unbounded on purpose: only the caller
+    // knows whether abandoning a half-applied write is safe.
+    signal: (init?.method ?? 'GET') === 'GET' ? rscTimeoutSignal(init) : init?.signal,
     cache: 'no-store',
     credentials: 'include',
   });
@@ -218,6 +230,236 @@ export async function toggleAgentPlugin(
   return callJson<ToggleAgentPluginResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/plugins`,
     { method: 'PATCH', body: JSON.stringify({ id: pluginId, enabled }) },
+  );
+}
+
+// ── #1033 — per-agent model policy ──────────────────────────────────────
+
+export const MODEL_POLICY_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type ModelPolicyEffort = (typeof MODEL_POLICY_EFFORTS)[number];
+
+/** One explicit model choice: which provider, which model, optionally how hard. */
+export interface ModelRef {
+  provider: string;
+  model: string;
+  effort?: ModelPolicyEffort;
+}
+
+/**
+ * `agents.model_policy` as the middleware persists it. `'auto'` is today's
+ * resolution (`model_routing` → platform default); `'none'` is today's
+ * failure behaviour (the turn dies once retries are spent).
+ */
+export interface ModelPolicy {
+  primary: 'auto' | ModelRef;
+  fallback: 'none' | 'auto' | ModelRef;
+}
+
+export const DEFAULT_MODEL_POLICY: ModelPolicy = { primary: 'auto', fallback: 'none' };
+
+export function isModelRef(v: ModelPolicy['primary'] | ModelPolicy['fallback']): v is ModelRef {
+  return typeof v === 'object' && v !== null;
+}
+
+function parseModelRef(raw: unknown): ModelRef | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.provider !== 'string' || typeof rec.model !== 'string') return undefined;
+  const effort = rec.effort;
+  return {
+    provider: rec.provider,
+    model: rec.model,
+    ...(typeof effort === 'string' && (MODEL_POLICY_EFFORTS as readonly string[]).includes(effort)
+      ? { effort: effort as ModelPolicyEffort }
+      : {}),
+  };
+}
+
+/**
+ * Deny-default narrowing, mirroring the middleware's `parseModelPolicy`: a
+ * shape this bundle does not understand renders as the default rather than
+ * as a model the runtime would not actually use.
+ */
+export function parseModelPolicy(raw: unknown): ModelPolicy {
+  if (raw === null || typeof raw !== 'object') return DEFAULT_MODEL_POLICY;
+  const rec = raw as Record<string, unknown>;
+  const primary = rec.primary === 'auto' ? 'auto' : parseModelRef(rec.primary);
+  const fallback =
+    rec.fallback === 'none' || rec.fallback === 'auto' ? rec.fallback : parseModelRef(rec.fallback);
+  if (primary === undefined || fallback === undefined) return DEFAULT_MODEL_POLICY;
+  return { primary, fallback };
+}
+
+export interface ModelPolicyDto {
+  slug: string;
+  policy: ModelPolicy;
+  /** What `auto` currently resolves to (the registry's built model), or null. */
+  effectiveModel: string | null;
+  activeProvider: string | null;
+  /** An explicit primary on another provider that the host cannot run there. */
+  deferredProvider?: string;
+  vision: { primary?: boolean | null; fallback?: boolean | null };
+}
+
+export async function getAgentModelPolicy(slug: string): Promise<ModelPolicyDto> {
+  const res = await callJson<ModelPolicyDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/model-policy`,
+  );
+  return { ...res, policy: parseModelPolicy(res.policy) };
+}
+
+export interface SetModelPolicyResponse {
+  ok: boolean;
+  policy: ModelPolicy;
+  vision: { primary?: boolean; fallback?: boolean };
+  deferredProvider?: string;
+}
+
+/**
+ * Dedicated endpoint, like context-memory: which model answers under an
+ * agent's name is a cost / data-residency / quality decision that must not
+ * ride along on a rename. A `ConfigValidationError` (unknown model, unkeyed
+ * provider, undeclared effort, fallback = primary) surfaces as 409
+ * `config_validation`.
+ */
+export async function setAgentModelPolicy(
+  slug: string,
+  policy: ModelPolicy,
+): Promise<SetModelPolicyResponse> {
+  const res = await callJson<SetModelPolicyResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/model-policy`,
+    { method: 'PUT', body: JSON.stringify(policy) },
+  );
+  return { ...res, policy: parseModelPolicy(res.policy) };
+}
+
+// ── #1018 — agent-to-agent switches ─────────────────────────────────────
+
+export const AGENT_TO_AGENT_MODES = ['off', 'on'] as const;
+export type AgentToAgentMode = (typeof AGENT_TO_AGENT_MODES)[number];
+
+export function parseAgentToAgentMode(raw: unknown): AgentToAgentMode {
+  return raw === 'on' ? 'on' : 'off';
+}
+
+export interface AgentToAgentDto {
+  slug: string;
+  mode: AgentToAgentMode;
+  modes: readonly string[];
+}
+
+export async function getAgentAgentToAgent(slug: string): Promise<AgentToAgentDto> {
+  const res = await callJson<AgentToAgentDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/agent-to-agent`,
+  );
+  return { ...res, mode: parseAgentToAgentMode(res.mode) };
+}
+
+export async function setAgentAgentToAgent(
+  slug: string,
+  mode: AgentToAgentMode,
+): Promise<{ ok: boolean; mode: AgentToAgentMode }> {
+  return callJson<{ ok: boolean; mode: AgentToAgentMode }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/agent-to-agent`,
+    { method: 'PUT', body: JSON.stringify({ mode }) },
+  );
+}
+
+/** One `(channel, agent)` enablement row. */
+export interface PeerChannelDto {
+  channelType: string;
+  channelKey: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+/** One chat the agent's own bot is present in — what the picker offers. */
+export interface PeerChatCandidateDto {
+  channelType: string;
+  channelKey: string;
+  /** The chat's topic when the channel captured one; null otherwise. */
+  label: string | null;
+  /** Channel-specific chat kind (`groupChat`, `channel`, …); null if unknown. */
+  kind: string | null;
+  /** Human participants' display names (capped server-side). */
+  members: string[];
+  /** The other agents whose bots are present — possible partners. */
+  partners: { slug: string; name: string }[];
+}
+
+export interface PeerChannelsDto {
+  slug: string;
+  mode: AgentToAgentMode;
+  channels: PeerChannelDto[];
+  /** Channel kinds this agent owns a bot on; empty = no provisioned bot. */
+  channelTypes: string[];
+  /** The chats those bots are actually in. Derived server-side, never typed. */
+  available: PeerChatCandidateDto[];
+}
+
+interface PeerChannelsWire extends Omit<PeerChannelsDto, 'channelTypes' | 'available'> {
+  channel_types?: unknown;
+  available?: unknown;
+}
+
+function parsePeerChatCandidate(raw: unknown): PeerChatCandidateDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r['channelType'] !== 'string' || typeof r['channelKey'] !== 'string') return null;
+  const partners = Array.isArray(r['partners'])
+    ? r['partners'].flatMap((p: unknown) => {
+        if (typeof p !== 'object' || p === null) return [];
+        const q = p as Record<string, unknown>;
+        return typeof q['slug'] === 'string'
+          ? [{ slug: q['slug'], name: typeof q['name'] === 'string' ? q['name'] : q['slug'] }]
+          : [];
+      })
+    : [];
+  return {
+    channelType: r['channelType'],
+    channelKey: r['channelKey'],
+    label: typeof r['label'] === 'string' && r['label'].length > 0 ? r['label'] : null,
+    kind: typeof r['kind'] === 'string' ? r['kind'] : null,
+    members: Array.isArray(r['members']) ? r['members'].filter((m): m is string => typeof m === 'string') : [],
+    partners,
+  };
+}
+
+export async function getAgentPeerChannels(slug: string): Promise<PeerChannelsDto> {
+  const res = await callJson<PeerChannelsWire>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels`,
+  );
+  const { channel_types: types, available, ...rest } = res;
+  return {
+    ...rest,
+    mode: parseAgentToAgentMode(res.mode),
+    channelTypes: Array.isArray(types) ? types.filter((t): t is string => typeof t === 'string') : [],
+    available: Array.isArray(available)
+      ? available.map(parsePeerChatCandidate).filter((c): c is PeerChatCandidateDto => c !== null)
+      : [],
+  };
+}
+
+export async function setAgentPeerChannel(
+  slug: string,
+  channelType: string,
+  channelKey: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; channelType: string; channelKey: string; enabled: boolean }> {
+  return callJson(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels/${encodeURIComponent(channelType)}/${encodeURIComponent(channelKey)}`,
+    { method: 'PUT', body: JSON.stringify({ enabled }) },
+  );
+}
+
+export async function removeAgentPeerChannel(
+  slug: string,
+  channelType: string,
+  channelKey: string,
+): Promise<{ ok: boolean }> {
+  return callJson<{ ok: boolean }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/peer-channels/${encodeURIComponent(channelType)}/${encodeURIComponent(channelKey)}`,
+    { method: 'DELETE' },
   );
 }
 
@@ -370,6 +612,9 @@ export const OPERATOR_AGENT_ERROR_CODES = [
   'multi_orchestrator_unavailable',
   'not_found',
   'plugin_not_assigned',
+  // #1033 — the model-policy routes 503 with this while the catalogue is
+  // not wired (no DATABASE_URL / orchestrator not active).
+  'model_policy_unavailable',
   // #914 — the agent identity routes. Listed here rather than in a second
   // catalogue so one page needs one mapping: the identity section renders
   // `detailErrors.<code>` exactly like every other operator-agents surface.
@@ -467,6 +712,21 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // Terminal and deterministic: re-running changes nothing, the operator has
   // to rename the bot slug.
   'bot_handle_unavailable',
+  // #924 — the four delegated codes. FOUR, not one, because each sends the
+  // operator somewhere else: start a tenant sign-in, send an admin to a
+  // consent URL, sign in again, or go look at the publisher app's device-code
+  // configuration. Three of them are PARKED runs, not failures — the chain
+  // keeps everything it built and resumes once the human step is done.
+  'delegated_sign_in_required',
+  'delegated_consent_required',
+  'delegated_token_expired',
+  'device_code_flow_failed',
+  // Graph refused the install because this agent's app package declares
+  // resource-specific permissions the installing identity may not consent to
+  // — a tenant role grant, NOT a wrong target id, and worth its own code
+  // because reporting it as a generic bad request sends the operator back to
+  // re-check an id that was correct all along
+  'rsc_permissions_mismatch',
   'unknown',
 ] as const;
 
@@ -492,6 +752,11 @@ export interface TeamsIdentityLastErrorDetailDto {
    *  (`config_sync_failed`) — a technical sentence, rendered as the ICU
    *  argument of a localized line, never as the copy itself. */
   reason?: string;
+  /** #924 — where an admin grants the delegated scopes
+   *  (`delegated_consent_required`). Validated as absolute https server-side
+   *  before the sentence is written AND again when it is decoded, so the panel
+   *  may render it as a link without a third check. */
+  adminConsentUrl?: string;
   raw: string;
 }
 
@@ -529,11 +794,17 @@ export function parseTeamsIdentityLastErrorDetail(
   const fields = stringList(obj?.['fields']);
   const retry = obj?.['retryAfterSeconds'];
   const reason = obj?.['reason'];
+  const consentUrl = obj?.['adminConsentUrl'];
   const rawText = obj?.['raw'];
   return {
     code,
     ...(scopes ? { scopes } : {}),
     ...(fields ? { fields } : {}),
+    // Re-checked here too: this value becomes an `href`, and a row written by
+    // an older build is untrusted text as far as this boundary is concerned.
+    ...(typeof consentUrl === 'string' && consentUrl.startsWith('https://')
+      ? { adminConsentUrl: consentUrl }
+      : {}),
     ...(typeof retry === 'number' && Number.isFinite(retry)
       ? { retryAfterSeconds: retry }
       : {}),
@@ -678,6 +949,17 @@ export interface ProvisionTeamsIdentityInput {
   bot_slug?: string;
   display_name?: string;
   team_id: string;
+  /**
+   * WHAT THE DIRECTORY SAID this target is, when it came from the picker
+   * rather than the text field.
+   *
+   * Optional and absent for anything typed. Sent so the middleware does not
+   * re-derive the kind from the id's suffix: a shape the pattern table has
+   * never seen — a legacy `19:…@thread.skype` group chat today, whatever
+   * Microsoft mints next — is refused there even though Graph had just listed
+   * it as an install target.
+   */
+  target_kind?: TeamsTargetKind;
 }
 
 export interface ProvisionTeamsIdentityResponse {
@@ -710,6 +992,22 @@ export async function provisionAgentTeamsIdentity(
  * `detailErrors.*` / `grants.errors.*` catalogue to grow keys it never
  * renders.
  */
+/**
+ * Browser URL of the Teams app-package download (#924).
+ *
+ * A plain link rather than a fetch-and-blob: the response carries
+ * `Content-Disposition: attachment`, so the browser saves it with the right
+ * filename and streams it without the page holding the bytes in memory.
+ * Same-origin `/bot-api` proxy, so the session cookie rides along.
+ *
+ * A FALLBACK, NOT THE PATH. Provisioning uploads the package itself through
+ * the tenant sign-in; this exists for tenants that forbid programmatic
+ * catalog writes and for admins who want to read the manifest first.
+ */
+export function agentTeamsPackageUrl(slug: string): string {
+  return `/bot-api/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity/package`;
+}
+
 export const TEAMS_IDENTITY_ERROR_CODES = [
   'bot_slug_taken',
   'invalid_body',
@@ -886,7 +1184,9 @@ export interface ResolveChannelResponse {
     name: string;
     privacy_profile: PrivacyProfile;
   } | null;
-  via: 'binding' | 'fallback' | 'none';
+  /** `identity` — the key IS an agent's provisioned bot, which outranks
+   *  every binding. See the orchestrator's ChannelResolver. */
+  via: 'identity' | 'binding' | 'fallback' | 'none';
   message?: string;
 }
 
@@ -1004,6 +1304,23 @@ export interface InstalledTeamDto {
    * derivation. Neither is a live Graph enumeration.
    */
   evidence: 'identity_row' | 'install_row';
+  /**
+   * WHICH KIND of target `team_id` addresses (middleware migration 0054).
+   * Optional on the wire: a middleware predating it omits the field, and
+   * every row it could have written was a team — so
+   * {@link parseInstalledTargetKind} defaults to `'team'` rather than
+   * rendering an empty label.
+   */
+  target_kind?: TeamsTargetKind | null;
+}
+
+/** The entry's target kind, narrowed at the boundary — see the field's note
+ *  for why an absent value is `'team'` and not an error. */
+export function parseInstalledTargetKind(team: InstalledTeamDto): TeamsTargetKind {
+  const kind = team.target_kind;
+  return kind === 'group-chat' || kind === 'one-on-one-chat' || kind === 'team'
+    ? kind
+    : 'team';
 }
 
 /** The team's name, or `null` — the one place the wire's optional/nullable
@@ -1031,6 +1348,8 @@ export const TEAMS_ASSIGNMENT_CAPABILITY_KEYS = [
   'uninstall',
   'enumerate',
   'multi_team',
+  'chat_install',
+  'chat_uninstall',
 ] as const;
 
 export type TeamsAssignmentCapabilityKey =
@@ -1056,6 +1375,10 @@ export interface AgentTeamsDto {
   /** The recorded install TARGET while the chain has not reached
    *  `installed` — a run in flight (or a stalled one), never an install. */
   pending_team_id: string | null;
+  /** Kind of `pending_team_id`, so the in-flight hint can name what is being
+   *  installed into instead of calling every target a team. Optional for the
+   *  same version-skew reason as `InstalledTeamDto.target_kind`. */
+  pending_target_kind?: TeamsTargetKind | null;
   consent: TeamsConsentDto;
   last_error: string | null;
   capabilities: TeamsAssignmentCapabilitiesDto;
@@ -1069,6 +1392,8 @@ const TEAMS_ASSIGNMENT_CAPABILITIES_CLOSED: TeamsAssignmentCapabilitiesDto = {
   uninstall: false,
   enumerate: false,
   multi_team: false,
+  chat_install: false,
+  chat_uninstall: false,
   unsupported_reason: {},
 };
 
@@ -1109,6 +1434,247 @@ export function parseTeamsAssignmentCapabilities(
  * row yet; that is the "there is nothing to assign yet" signal, and the panel
  * treats it as an empty state rather than an error.
  */
+/**
+ * Why a target listing is not available. Mirrors
+ * `TeamsTargetListingUnavailable` in
+ * `middleware/src/services/teamsTargetDirectoryService.ts` — a closed set of
+ * machine codes, each with its own sentence in `messages/*.json`.
+ */
+export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
+  'connector_unavailable',
+  'connector_unsupported',
+  /** NOBODY is signed in — and since #949 nothing else. */
+  'sign_in_required',
+  /**
+   * Somebody IS signed in, their access token is spent, and renewing it
+   * failed. Kept apart from `sign_in_required` because the two send an
+   * operator to the same button with completely different expectations, and
+   * folding them together is what put "sign in once" in front of an admin
+   * whose account was on screen.
+   */
+  'sign_in_expired',
+  'scope_missing',
+  'consent_required',
+  'lookup_failed',
+] as const;
+
+export type TeamsTargetListingUnavailable =
+  (typeof TEAMS_TARGET_LISTING_UNAVAILABLE)[number];
+
+/**
+ * Is this a reason this build has a sentence for?
+ *
+ * A RUNTIME check and not merely a cast, because the middleware ships
+ * independently of this bundle: a server that learns a new reason code before
+ * the UI does would otherwise hand it straight to `t()` and render a missing
+ * translation key at the operator. Degrading to `lookup_failed` is honest —
+ * we could not look, and we cannot say why — and it is exactly how
+ * `sign_in_expired` itself would have surfaced on an older build.
+ */
+export function isTeamsTargetListingUnavailable(
+  value: unknown,
+): value is TeamsTargetListingUnavailable {
+  return (
+    typeof value === 'string' &&
+    (TEAMS_TARGET_LISTING_UNAVAILABLE as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * A listing that can say "I don't know".
+ *
+ * THE WHOLE POINT OF THE UNION. `available: true, items: []` means the tenant
+ * genuinely has none; `available: false` means we could not look. Rendering
+ * an empty dropdown for the second case tells the operator something false
+ * about their tenant and sends them looking in the wrong place.
+ */
+export type TeamsTargetListingDto<T> =
+  | { available: true; items: readonly T[] }
+  | { available: false; reason: TeamsTargetListingUnavailable };
+
+export interface TeamsTeamOptionDto {
+  id: string;
+  displayName: string;
+}
+
+export interface TeamsChatOptionDto {
+  id: string;
+  topic: string | null;
+  chatType: 'group' | 'oneOnOne' | 'meeting';
+  memberNames?: readonly string[];
+}
+
+export interface AgentTeamsTargetsDto {
+  ok: boolean;
+  agent: string;
+  provisioner_installed: boolean;
+  teams: TeamsTargetListingDto<TeamsTeamOptionDto>;
+  chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+}
+
+/**
+ * Normalise one half of the directory response.
+ *
+ * DEFENSIVE ON PURPOSE, and it degrades toward `available: false` rather than
+ * toward an empty list: an unparsable payload is precisely the case where we
+ * do NOT know what the tenant holds, and the union exists so that state has
+ * somewhere honest to go.
+ */
+function parseTargetListing<T>(
+  value: unknown,
+  parseItem: (raw: unknown) => T | null,
+): TeamsTargetListingDto<T> {
+  if (typeof value !== 'object' || value === null) {
+    return { available: false, reason: 'lookup_failed' };
+  }
+  const record = value as Record<string, unknown>;
+  if (record['available'] !== true) {
+    const reason = record['reason'];
+    return {
+      available: false,
+      // Validated, not cast — see `isTeamsTargetListingUnavailable`. A code
+      // this build has no sentence for must not reach `t()`.
+      reason: isTeamsTargetListingUnavailable(reason) ? reason : 'lookup_failed',
+    };
+  }
+  const raw = record['items'];
+  if (!Array.isArray(raw)) return { available: false, reason: 'lookup_failed' };
+  const items: T[] = [];
+  for (const entry of raw) {
+    const parsed = parseItem(entry);
+    if (parsed !== null) items.push(parsed);
+  }
+  return { available: true, items };
+}
+
+function parseTeamOption(raw: unknown): TeamsTeamOptionDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = r['id'];
+  if (typeof id !== 'string' || id === '') return null;
+  const displayName = r['displayName'];
+  return {
+    id,
+    // An id with no name still beats the free-text field this replaces, so a
+    // nameless row is kept and labelled by its id rather than dropped.
+    displayName: typeof displayName === 'string' && displayName !== '' ? displayName : id,
+  };
+}
+
+const CHAT_TYPES: readonly string[] = ['group', 'oneOnOne', 'meeting'];
+
+function parseChatOption(raw: unknown): TeamsChatOptionDto | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = r['id'];
+  if (typeof id !== 'string' || id === '') return null;
+  const chatType = r['chatType'];
+  const topic = r['topic'];
+  const memberNames = r['memberNames'];
+  return {
+    id,
+    topic: typeof topic === 'string' && topic !== '' ? topic : null,
+    chatType: CHAT_TYPES.includes(chatType as string)
+      ? (chatType as TeamsChatOptionDto['chatType'])
+      : 'group',
+    ...(Array.isArray(memberNames)
+      ? { memberNames: memberNames.filter((n): n is string => typeof n === 'string') }
+      : {}),
+  };
+}
+
+/**
+ * `GET /v1/operator/agents/:slug/teams/targets` — what the operator can pick
+ * instead of type.
+ */
+export async function getAgentTeamsTargets(
+  slug: string,
+): Promise<AgentTeamsTargetsDto> {
+  const dto = await callJson<AgentTeamsTargetsDto>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets`,
+  );
+  return {
+    ...dto,
+    teams: parseTargetListing(dto.teams, parseTeamOption),
+    chats: parseTargetListing(dto.chats, parseChatOption),
+  };
+}
+
+/**
+ * HOW FAR BACK a teardown winds the agent — mirrors `TeamsResetScope`.
+ *
+ * `'run'` empties Azure and returns the row to `pending`, keeping the bot
+ * slug and display name so a retry is one button. `'identity'` does the same
+ * Azure teardown and then removes the row, so the agent has no Teams identity
+ * at all and the operator picks a new slug and name from an empty form —
+ * `bot_slug` is `UNIQUE`, so nothing less frees the name.
+ */
+export type TeamsResetScope = 'run' | 'identity';
+
+/** One step of a teardown — mirrors `TeamsResetStepReport`. */
+export interface TeamsResetStepDto {
+  step:
+    | 'catalog_removed'
+    | 'bot_deleted'
+    | 'app_deleted'
+    /** The channel-teams `teams_bots` entry the chain wrote automatically
+     *  (#910) — removed so a "full reset" does not leave the plugin
+     *  configured with a bot whose registration has just been purged. */
+    | 'config_unsynced'
+    /** The `'run'` scope's last step: the row is back at `pending`. */
+    | 'identity_reset'
+    /** The `'identity'` scope's last step: the row is gone. */
+    | 'identity_deleted';
+  outcome: 'removed' | 'already-absent' | 'skipped' | 'blocked' | 'failed';
+  detail?: string;
+}
+
+export interface ResetAgentTeamsIdentityResponse {
+  ok: boolean;
+  agent: string;
+  status: 'reset' | 'incomplete';
+  /** Echoed by the server so the report cannot be read against the wrong
+   *  copy if a poll and a reset ever cross. */
+  scope?: TeamsResetScope;
+  previous_state?: string;
+  steps: readonly TeamsResetStepDto[];
+  stoppedAt?: TeamsResetStepDto['step'];
+  detail?: string;
+}
+
+/**
+ * `POST /v1/operator/agents/:slug/teams-identity/reset` — DESTRUCTIVE.
+ *
+ * Removes the Entra app registration (delete AND recycle-bin purge), the
+ * Azure bot and the tenant catalog entry. What happens to the identity row
+ * afterwards is the `scope`'s business — see {@link TeamsResetScope}.
+ *
+ * THE SCOPE IS ALWAYS SENT EXPLICITLY, including the default. The server
+ * treats a missing one as `'run'` for the sake of clients written before
+ * scopes existed, and relying on that here would make the destructive call
+ * and the safe one differ by an omission rather than by a value — the kind of
+ * difference that survives a refactor in the wrong direction.
+ *
+ * A PARTIAL TEARDOWN RESOLVES, IT DOES NOT REJECT. `status: 'incomplete'`
+ * comes back as a 200 with the per-step report, because "which of the three
+ * are still in Azure" is the answer the operator needs and an exception would
+ * collapse it into "reset failed".
+ */
+export async function resetAgentTeamsIdentity(
+  slug: string,
+  scope: TeamsResetScope = 'run',
+): Promise<ResetAgentTeamsIdentityResponse> {
+  const dto = await callJson<ResetAgentTeamsIdentityResponse>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams-identity/reset`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    },
+  );
+  return { ...dto, steps: Array.isArray(dto.steps) ? dto.steps : [] };
+}
+
 export async function getAgentTeams(slug: string): Promise<AgentTeamsDto> {
   const dto = await callJson<AgentTeamsDto>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
@@ -1141,10 +1707,18 @@ export interface InstallAgentTeamResponse {
 export async function installAgentTeam(
   slug: string,
   teamId: string,
+  /** See `ProvisionTeamsIdentityInput.target_kind`. */
+  targetKind?: TeamsTargetKind,
 ): Promise<InstallAgentTeamResponse> {
   return callJson<InstallAgentTeamResponse>(
     `/v1/operator/agents/${encodeURIComponent(slug)}/teams`,
-    { method: 'POST', body: JSON.stringify({ team_id: teamId }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        team_id: teamId,
+        ...(targetKind !== undefined ? { target_kind: targetKind } : {}),
+      }),
+    },
   );
 }
 

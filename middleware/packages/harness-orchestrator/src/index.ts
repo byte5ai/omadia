@@ -109,6 +109,30 @@ export type {
   MemoryBinderOptions,
 } from './memoryBinder.js';
 export {
+  AGENT_TO_AGENT_MODES,
+  isAgentToAgentEnabled,
+  parseAgentToAgentMode,
+} from './registry/agentToAgent.js';
+export type {
+  AgentChannelPolicyInput,
+  AgentChannelPolicyRow,
+  AgentToAgentMode,
+} from './registry/agentToAgent.js';
+export {
+  DEFAULT_MODEL_POLICY,
+  isModelRef,
+  parseModelPolicy,
+  parseModelRef,
+  resolveModelPolicyRuntime,
+  sameRef,
+  validateModelPolicy,
+} from './registry/modelPolicy.js';
+export type {
+  ModelPolicyValidation,
+  ModelPolicyValidationContext,
+  ResolvedModelPolicy,
+} from './registry/modelPolicy.js';
+export {
   ConfigStore,
   ConfigValidationError,
   validateModelRef,
@@ -123,6 +147,7 @@ export type {
   AgentStatus,
   ChannelBindingInput,
   ChannelBindingRow,
+  ChannelIdentityRow,
   ConfigSnapshot,
   PlatformSettingsRow,
   PrivacyProfile,
@@ -270,6 +295,8 @@ export type { SubAgentMemoryResolver } from './registry/subAgentMemoryTool.js';
 export {
   DEFAULT_ORCHESTRATOR_MODEL,
   resolveAgentModelRouting,
+  resolveConfiguredModel,
+  resolveModelIdForProvider,
 } from './registry/agentRuntime.js';
 export type { ResolvedAgentRuntime } from './registry/agentRuntime.js';
 
@@ -293,6 +320,9 @@ export {
   // …and its production enforcement. Call at boot: a deployment whose timeout
   // knobs invert the hierarchy must not start quietly.
   assertTimeoutHierarchy,
+  // `stop_reason: "refusal"` → explicit notice instead of an empty answer.
+  MODEL_REFUSAL_NOTICE,
+  finalAnswerText,
 } from './orchestrator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
@@ -449,7 +479,32 @@ export type {
   LoopbackMcpServerHandle,
 } from './loopbackMcpServer.js';
 export { CLI_ENV_SCRUB_KEYS, CliChatAgent, StreamJsonParser } from './cliChatAgent.js';
-export type { CliChatAgentDeps, CliUsage } from './cliChatAgent.js';
+// #1007 — the CLI spawn gate, shared with `platform/claudeCliAdapter.ts`.
+export {
+  CLI_BUILTIN_TOOL_DENYLIST,
+  CLI_ENV_ALLOWLIST_KEYS,
+  OMADIA_MCP_TOOL_PREFIX,
+  buildCliToolGateArgv,
+  buildCompletionCliArgv,
+  buildGatedCliEnv,
+  cliEnvAllowlistFor,
+  // OM-85 — version-gated `--restricted` and the "CLI too old" classification.
+  CLI_RESTRICTED_ENV_KEY,
+  CliIncompatibleError,
+  RESTRICTED_FLAG_MIN_CLI_VERSION,
+  classifyUnknownOptionFailure,
+  clearCliVersionCache,
+  parseCliVersion,
+  resolveCliVersion,
+  supportsRestrictedFlag,
+} from './cliSpawnGate.js';
+export type {
+  CliToolGateOptions,
+  CliVersionExec,
+  CompletionCliArgvOptions,
+} from './cliSpawnGate.js';
+export type { CliChatAgentDeps, CliSpawnLogger, CliUsage } from './cliChatAgent.js';
+export { resolveCliSpawnTimeoutMs, CLI_SPAWN_TIMEOUT_ENV_KEY } from './cliChatAgent.js';
 export { createCliSubAgent } from './cliSubAgent.js';
 export type { CliSubAgentOptions } from './cliSubAgent.js';
 
@@ -560,6 +615,7 @@ export type {
 export type {
   ChatParticipant,
   ChatParticipantsProvider,
+  ChatPeerAgentsProvider,
 } from './chatParticipants.js';
 
 // Native tools — channel-coupled UI cards + calendar + roster
@@ -612,13 +668,56 @@ export {
   QueryDatasetTool,
   queryDatasetToolSpec,
 } from './tools/queryDatasetTool.js';
-export { isCsvAttachment } from './attachmentExtract.js';
+export {
+  isCsvAttachment,
+  isTabularAttachment,
+  detectTabularFormat,
+} from './attachmentExtract.js';
+export type { TabularFormat } from './attachmentExtract.js';
 export {
   buildDatasetFromCsv,
+  buildDatasetFromTable,
   importCsvDataset,
   parseCsv,
+  MAX_CELL_CHARS,
   MAX_DATASET_ROWS,
 } from './datasetImport.js';
+export type { BuildDatasetOptions, LinkKeyReport } from './datasetImport.js';
+export {
+  createDatasetLinkKeyer,
+  isLinkKeyColumn,
+  linkKeyColumnName,
+  normalizeLinkValue,
+  resolveDatasetLinkKeySecret,
+  LINK_KEY_COLUMN_PREFIX,
+  LINK_KEY_LENGTH,
+  LINK_KEY_SECRET_ENV,
+} from './datasetLinkKey.js';
+export type { DatasetLinkKeyer } from './datasetLinkKey.js';
+export {
+  decryptCell,
+  decryptRows,
+  encryptCell,
+  isEncryptedCell,
+  resolveDatasetCellKey,
+  ENCRYPTED_CELL_PREFIX,
+  UNAVAILABLE_CELL,
+} from './datasetCellCrypto.js';
+export type { DatasetCellKey } from './datasetCellCrypto.js';
+export {
+  parseXlsx,
+  parseXlsxFirstSheet,
+  cellToString,
+  MAX_SHEETS,
+  MAX_XLSX_BYTES,
+} from './datasetImportXlsx.js';
+export type { XlsxParseResult, XlsxSheetParse } from './datasetImportXlsx.js';
+export { importTabularDataset } from './datasetImportTabular.js';
+export type {
+  ImportTabularDatasetInput,
+  ImportTabularDatasetResult,
+  ImportedTable,
+} from './datasetImportTabular.js';
 export type {
   CsvParseResult,
   ImportCsvDatasetInput,

@@ -5,7 +5,9 @@ identity:
   domain: "seo"
   name: "SEO Analyst"
   version: "0.1.0"
-  description: "Analyzes websites from an SEO perspective: on-page, technical, structured data, and crawl audits."
+  description:
+    en: "Reviews a website for search visibility and reports on page content, technical setup, structured data and crawl problems."
+    de: "Prüft eine Website auf ihre Sichtbarkeit in Suchmaschinen und berichtet über Seiteninhalte, Technik, strukturierte Daten und Probleme beim Crawlen."
   authors:
     - name: "byte5 GmbH"
       email: "info@omadia.ai"

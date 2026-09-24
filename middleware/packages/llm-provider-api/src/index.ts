@@ -14,6 +14,7 @@ export type {
   CacheHints,
   ChatMessage,
   ContentPart,
+  EffortLevel,
   FinishReason,
   ImagePart,
   LlmErrorClassification,
@@ -31,14 +32,22 @@ export type {
   ToolResultPart,
   ToolSpec,
 } from './types.js';
-export { collectText, textMessage, toolCalls } from './types.js';
+export { EFFORT_LEVELS, collectText, textMessage, toolCalls } from './types.js';
 
 // Model-registry contract types (runtime registry lives in @omadia/llm-provider).
-export type { ModelClass, ModelInfo, ModelRole, ProviderId } from './models.js';
+export type {
+  DiscoveredModel,
+  ModelClass,
+  ModelInfo,
+  ModelRole,
+  ProviderId,
+} from './models.js';
 
 // Provider descriptor contract (runtime catalog lives in @omadia/llm-provider).
 export type {
   LlmProviderDescriptor,
+  ModelDiscoveryClassRule,
+  ModelDiscoveryRules,
   ProviderPolicy,
   ProviderQuirks,
   WireFormat,

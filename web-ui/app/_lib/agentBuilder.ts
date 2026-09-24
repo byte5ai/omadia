@@ -1,4 +1,4 @@
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 
 /**
  * Typed client for the Agent-Builder visual-canvas REST surface
@@ -48,6 +48,12 @@ async function callJson<T>(
       ...forwarded,
       ...(init?.headers ?? {}),
     },
+    // OM-96 — a server-side GET read gates the RSC payload of the page that
+    // awaits it. Without a deadline, a middleware endpoint that accepts the
+    // connection and never answers parks the navigation instead of failing a
+    // single card. Mutations are left unbounded on purpose: only the caller
+    // knows whether abandoning a half-applied write is safe.
+    signal: (init?.method ?? 'GET') === 'GET' ? rscTimeoutSignal(init) : init?.signal,
     cache: 'no-store',
     credentials: 'include',
   });
@@ -98,6 +104,13 @@ export interface AgentNode {
   privacyProfile: PrivacyProfile;
   status: NodeStatus;
   modelRouting: ModelRoutingConfig | null;
+  /** #1033 — the agent's model policy (absent on a pre-W2 middleware). */
+  modelPolicy?: {
+    primary: 'auto' | { provider: string; model: string; effort?: string };
+    fallback: 'none' | 'auto' | { provider: string; model: string; effort?: string };
+  };
+  /** #1033 — what the fallback resolves to (`provider:model`, the auto model, or null). */
+  effectiveFallback?: string | null;
   /**
    * Resolved orchestrator model the registry currently runs this Agent on
    * (per-Agent overlay applied to the platform default). `null` when the
@@ -966,6 +979,11 @@ export interface McpRegistryInfo {
   hasToken: boolean;
 }
 
+/** Where a search result actually came from. `cached-page` means the registry's
+ *  own search was unavailable and the middleware substring-filtered the browse
+ *  page it already held — correct, but limited to that page. */
+export type McpCatalogScope = 'registry' | 'cached-page';
+
 export interface McpCatalogEntry {
   id: string;
   name: string;
@@ -1000,15 +1018,25 @@ export async function deleteMcpRegistry(id: string): Promise<void> {
   await callJson(`/v1/operator/mcp-registries/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+/**
+ * @param opts.refresh Operator explicitly asked to re-dial — drops the
+ *   server-side success cache AND the short "recently unreachable" note.
+ * @param opts.signal Abort a superseded request (search-as-you-type, or the
+ *   operator switching registries) instead of leaving it in flight against a
+ *   registry that can take the full timeout to fail.
+ */
 export async function searchMcpCatalog(
   registryId: string,
   q: string,
-): Promise<{ entries: McpCatalogEntry[] }> {
+  opts?: { refresh?: boolean; signal?: AbortSignal },
+): Promise<{ entries: McpCatalogEntry[]; scope?: McpCatalogScope }> {
   const params = new URLSearchParams();
   if (q) params.set('q', q);
+  if (opts?.refresh === true) params.set('refresh', '1');
   const qs = params.toString();
   return callJson(
     `/v1/operator/mcp-registries/${encodeURIComponent(registryId)}/catalog${qs ? `?${qs}` : ''}`,
+    opts?.signal ? { signal: opts.signal } : {},
   );
 }
 

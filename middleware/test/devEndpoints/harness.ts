@@ -68,10 +68,13 @@ export const LEGACY_DEV_PUBLIC_PATH = /^\/api\/dev(?:\/|$|\?)/;
 const SESSION_KEY = new Uint8Array(64).fill(9);
 const OPERATOR_EMAIL = 'operator@example.com';
 
-/** True when the sandbox refuses loopback listeners, so callers can self-skip. */
-export function isSandboxListenDenied(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'EPERM';
-}
+/**
+ * Re-exported so `devEndpointsAuth.e2e`'s six call sites keep their import,
+ * while the behaviour lives in ONE place (#1024). The local copy this replaces
+ * ignored `OMADIA_EXPECT_LOOPBACK`, so on a listener-denied runner the whole
+ * auth e2e passed green without asserting a single 401.
+ */
+export { isSandboxListenDenied } from '../_helpers/listenLoopback.js';
 
 /**
  * A `LifecycleService` that records every call.

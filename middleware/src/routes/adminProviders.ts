@@ -36,7 +36,6 @@ import {
   pollDeviceToken,
   primeProviderOAuthTokens,
   requestUserCode,
-  resolveModelRef,
   writeProviderOAuthTokens,
   type OAuthClientConfig,
   type OAuthTokens,
@@ -66,6 +65,11 @@ import {
   resolveProviderVerification,
   type LlmProviderCatalogView,
 } from '../platform/pluginLlmReadiness.js';
+import {
+  unclassifiedModelIds,
+  type ModelCatalogSync,
+} from '../platform/modelCatalogSync.js';
+import { applyProviderAssignment } from '../platform/providerAssignment.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -78,8 +82,15 @@ export interface AdminProvidersDeps {
   /** OAuth client config for the device flow. Defaults to the OpenAI Codex
    *  client; a test injects a fake pointing at a mock issuer. */
   readonly oauthConfig?: OAuthClientConfig;
+  /** #1033 W3 — the fallback breaker: which providers are currently being
+   *  skipped in favour of their fallback, and why. Optional (tests). */
+  readonly providerHealth?: { snapshot(): readonly { providerId: string; cooldownUntil: number; reason: string; failedAt: number }[] };
   /** Injected fetch for the device-flow HTTP calls (test seam). */
   readonly oauthFetch?: typeof fetch;
+  /** Live model discovery: `POST /:id/refresh-models` re-reads the provider's
+   *  list-models API into the catalog; a successful key verification triggers
+   *  the same refresh. Optional (tests, or discovery switched off). */
+  readonly modelCatalogSync?: ModelCatalogSync;
 }
 
 function providerLabel(id: ProviderId): string {
@@ -155,6 +166,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     // an uncaught vault/read failure would hang the request. Catch → 500.
     try {
       const providerIds = [...new Set(listModels().map((m) => m.provider))];
+      // #1033 W3 — breaker state per provider id (empty when no pool is wired).
+      const cooldownById = new Map(
+        (deps.providerHealth?.snapshot() ?? []).map((e) => [e.providerId, e] as const),
+      );
       // #309: a CLI-backed provider is keyless — "connected" means the local CLI
       // is installed AND logged in (host capability), not a vault key. Detect once.
       const cliSnap = await detectCliBackends().catch(() => undefined);
@@ -233,6 +248,36 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // #294: the provider connects via an OAuth device flow, so the UI
           // renders a "Sign in with ChatGPT" button instead of a key field.
           oauthConnect,
+          // #1033 W3 — present only while the fallback breaker is open for
+          // this provider: turns route straight to the agents' fallback
+          // until `cooldownUntil`, when the primary is probed again.
+          ...(cooldownById.get(id)
+            ? {
+                cooldown: {
+                  until: new Date(cooldownById.get(id)!.cooldownUntil).toISOString(),
+                  since: new Date(cooldownById.get(id)!.failedAt).toISOString(),
+                  reason: cooldownById.get(id)!.reason,
+                },
+              }
+            : {}),
+          // Provenance of the model list: `discovered` = read from the
+          // provider's own list-models API; absent/`seed` = the static list
+          // the provider shipped with (no key yet, or the API was unreachable).
+          ...(descriptor?.modelsSource !== undefined
+            ? { modelsSource: descriptor.modelsSource }
+            : {}),
+          ...(descriptor?.modelsDiscoveredAt !== undefined
+            ? { modelsDiscoveredAt: descriptor.modelsDiscoveredAt }
+            : {}),
+          // Vendor models the last discovery run hid for lack of a `classify`
+          // rule (a new model family). Present only when there are some, so
+          // the operator sees why a model the vendor offers is not pickable.
+          ...(() => {
+            const hidden = unclassifiedModelIds(
+              deps.modelCatalogSync?.lastResult(id)?.dropped ?? [],
+            );
+            return hidden.length > 0 ? { unclassifiedModels: hidden } : {};
+          })(),
           models: listModelsByProvider(id).map((m) => ({
             id: m.id,
             modelId: m.modelId,
@@ -356,6 +401,13 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         }
       }
 
+      // A key that just proved itself is the moment the vendor's live model
+      // list becomes readable — refresh in the background, never on the
+      // response path (the verdict must not wait on a second network call).
+      if (verification.status === 'verified' && deps.modelCatalogSync !== undefined) {
+        void deps.modelCatalogSync.refresh(providerId);
+      }
+
       res.json(verification);
     } catch (err) {
       res.status(500).json({
@@ -365,86 +417,52 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
     }
   });
 
+  /**
+   * Re-read a provider's model list from its own API into the catalog. The
+   * ONLY other network path in this router besides `verify`, and likewise
+   * operator-triggered. Always 200 with the outcome in `status` (a provider
+   * without credentials or rules is a normal answer, not an error); 404 only
+   * for an id the registry has never heard of; 503 when discovery is off.
+   */
+  router.post('/:providerId/refresh-models', async (req: Request, res: Response) => {
+    const raw = (req.params as Record<string, string | string[] | undefined>)[
+      'providerId'
+    ];
+    const providerId = typeof raw === 'string' ? raw : '';
+    const known = new Set(listModels().map((m) => m.provider));
+    if (!known.has(providerId as ProviderId)) {
+      res.status(404).json({
+        code: 'providers.unknown_provider',
+        message: `'${providerId}' is not a registered provider`,
+      });
+      return;
+    }
+    if (deps.modelCatalogSync === undefined) {
+      res.status(503).json({
+        code: 'providers.discovery_unavailable',
+        message: 'live model discovery is not wired on this instance',
+      });
+      return;
+    }
+    res.json(await deps.modelCatalogSync.refresh(providerId));
+  });
+
   router.post('/assignment', async (req: Request, res: Response) => {
     const body = req.body as
       | { pluginId?: unknown; provider?: unknown; model?: unknown }
       | null;
     const pluginId = typeof body?.pluginId === 'string' ? body.pluginId : '';
-    const provider = typeof body?.provider === 'string' ? body.provider.trim() : '';
-    const model = typeof body?.model === 'string' ? body.model.trim() : '';
+    const provider = typeof body?.provider === 'string' ? body.provider : '';
+    const model = typeof body?.model === 'string' ? body.model : '';
 
-    const desc = LLM_PLUGINS.find((p) => p.id === pluginId);
-    if (desc === undefined) {
-      res.status(400).json({
-        code: 'providers.unknown_plugin',
-        message: `'${pluginId}' is not a selectable LLM plugin`,
-      });
+    // The validation + persist rules live in `providerAssignment.ts` so the
+    // subscription-login hand-off (OM-79) applies exactly the same checks.
+    const result = await applyProviderAssignment(deps, { pluginId, provider, model });
+    if (!result.ok) {
+      res.status(result.status).json({ code: result.code, message: result.message });
       return;
     }
-    if (provider.length === 0 || model.length === 0) {
-      res.status(400).json({
-        code: 'providers.invalid_request',
-        message: 'body must be { pluginId, provider, model }',
-      });
-      return;
-    }
-    if (!deps.installedRegistry.has(pluginId)) {
-      res.status(404).json({
-        code: 'providers.not_installed',
-        message: `${pluginId} is not installed`,
-      });
-      return;
-    }
-    // Fail closed: never assign a tool-less provider (the `claude-cli` Shape-2
-    // backend) to a plugin that drives a tool loop — it would silently disable
-    // tools/memory/sub-agents. Tool-less plugins (extractors/classifiers) are
-    // fine and are the intended target for the subscription CLI.
-    const providerWire = deps.llmProviderCatalog?.get(provider)?.wireFormat;
-    if (desc.requiresTools === true && providerWire === 'claude-cli') {
-      res.status(400).json({
-        code: 'providers.tool_incompatible',
-        message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
-      });
-      return;
-    }
-    // Resolve against the CHOSEN provider so class refs (`class:frontier`),
-    // provider-qualified ids (`openai:gpt-5.5`) and legacy aliases (`opus`) all
-    // disambiguate to it. Guard the classic mistake: a known model that belongs
-    // to a DIFFERENT provider (e.g. claude-* assigned to openai). Unknown models
-    // (custom / openai-compatible) are allowed through.
-    const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
-    if (known !== undefined && known.provider !== provider) {
-      res.status(400).json({
-        code: 'providers.model_provider_mismatch',
-        message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
-      });
-      return;
-    }
-    // Persist the bare vendor id the adapter expects — normalise qualified ids /
-    // class refs / aliases to `modelId`; pass unknown custom ids through as-is.
-    const storeModel = known?.modelId ?? model;
-
-    const entry = deps.installedRegistry.get(pluginId);
-    const nextConfig: Record<string, unknown> = { ...(entry?.config ?? {}) };
-    nextConfig['llm_provider'] = provider;
-    for (const mk of desc.modelKeys) nextConfig[mk] = storeModel;
-    if (provider !== 'anthropic' && desc.extraOnNonAnthropic !== undefined) {
-      for (const [k, v] of Object.entries(desc.extraOnNonAnthropic)) {
-        nextConfig[k] = v;
-      }
-    }
-
-    try {
-      await deps.installedRegistry.updateConfig(pluginId, nextConfig);
-      if (deps.reactivate) await deps.reactivate(pluginId);
-    } catch (err) {
-      res.status(500).json({
-        code: 'providers.apply_failed',
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return;
-    }
-    res.json({ ok: true, pluginId, provider, model: storeModel });
+    res.json({ ok: true, pluginId: result.pluginId, provider: result.provider, model: result.model });
   });
 
   // -------------------------------------------------------------------------

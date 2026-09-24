@@ -11,8 +11,11 @@ import { registerOpenAiAdapter } from '@omadia/llm-adapter-openai';
 import { registerOpenAiResponsesAdapter } from '@omadia/llm-adapter-openai-responses';
 import {
   defaultLlmAdapters,
+  listModels,
   LlmProviderCatalog,
+  createLlmProviderPool,
   readProviderApiKey,
+  resolveModelRef,
   readProviderOAuthTokens,
   readProviderOAuthUpdatedAt,
   registerProviderOAuthStoreBinding,
@@ -50,19 +53,30 @@ import { AgentTeamsIdentityStore } from './platform/agentTeamsIdentityStore.js';
 import { AgentIdentityStore } from './platform/agentIdentityStore.js';
 import { AgentTeamsInstallStore } from './platform/agentTeamsInstallStore.js';
 import { TeamsProvisioningEventStore } from './platform/teamsProvisioningEventStore.js';
+import { TeamsDelegatedTokenStore } from './platform/teamsDelegatedTokenStore.js';
+import type { DelegatedTokenSet } from './platform/teamsDelegatedSignIn.js';
+import type { TeamsResetEventSink } from './services/teamsIdentityReset.js';
+import { TeamsDelegatedSignInService } from './services/teamsDelegatedSignInService.js';
+import { createOperatorTeamsSignInRouter } from './routes/operatorTeamsSignIn.js';
 import { TeamsProvisioningJobRunner } from './services/teamsProvisioningJob.js';
-import { syncTeamsBotConfig } from './services/teamsBotsConfigSync.js';
+import {
+  dropTeamsBotConfig,
+  syncTeamsBotConfig,
+} from './services/teamsBotsConfigSync.js';
 import {
   buildTeamsBotMessagingEndpoint,
   getTeamsProvisioner,
   requireTeamsProvisioner,
   supportsTeamLookup,
+  TeamsProvisionerUnavailableError,
 } from './platform/teamsProvisionerService.js';
 import {
   CHANNEL_TEAMS_PLUGIN_ID,
   createTeamsAppPackageAssetLoader,
 } from './services/teamsAppPackageAssets.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore } from './conductor/index.js';
+import { createBotPresenceStore } from './conductor/botPresenceStore.js';
+import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
+import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -155,11 +169,28 @@ import { createRegistryInstallRouter } from './routes/registryInstall.js';
 import { createRuntimeRouter } from './routes/runtime.js';
 import { createAdminSettingsRouter } from './routes/adminSettings.js';
 import { createAdminProvidersRouter } from './routes/adminProviders.js';
-import { createAdminEmbeddingProviderRouter } from './routes/adminEmbeddingProvider.js';
+import {
+  createAdminEmbeddingProviderRouter,
+  type LocalEmbeddingModelFetcher,
+  type MemoryFeatureStatusView,
+} from './routes/adminEmbeddingProvider.js';
 import { createAdminTranscriptionProviderRouter } from './routes/adminTranscriptionProvider.js';
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
+import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
+import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
+import {
+  autoAssignSubscriptionCli,
+  SUBSCRIPTION_CLI_PROVIDER,
+} from './platform/providerAssignment.js';
+import { detectCliBackends } from './platform/cliBackendDetector.js';
 import { registerClaudeCliAdapter } from './platform/claudeCliAdapter.js';
-import { resolvePluginLlmReadiness } from './platform/pluginLlmReadiness.js';
+import {
+  memoizeRuntimeReadinessCause,
+  resolvePluginLlmReadiness,
+  resolveProviderVerification,
+  resolveRuntimeReadinessCause,
+  type RuntimeReadinessCause,
+} from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
 import { createBuilderRouter } from './routes/builder.js';
@@ -181,6 +212,7 @@ import {
   BuilderAgent,
   type BuilderProviderResolver,
 } from './plugins/builder/builderAgent.js';
+import { BuilderLlmAccessError } from './plugins/builder/builderLlmAccess.js';
 import { BuilderTriageLog } from './plugins/builder/builderTriageLog.js';
 import { GithubIssueCache } from './plugins/builder/githubIssueCache.js';
 import { GithubIssueCreator } from './plugins/builder/githubIssueCreator.js';
@@ -267,6 +299,7 @@ import {
   ProviderRegistry,
   parseAuthProvidersEnv,
   resolveActiveProviderIds,
+  shouldWarnEmptyAdminAllowlist,
 } from './auth/providerRegistry.js';
 import { LocalPasswordProvider } from './auth/providers/LocalPasswordProvider.js';
 import {
@@ -325,6 +358,10 @@ import {
   unregisterPluginLlmProvider,
 } from './platform/llmProviderManifest.js';
 import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
+import {
+  createModelCatalogSync,
+  type ModelCatalogSync,
+} from './platform/modelCatalogSync.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
 import { PromptContributionRegistry } from './platform/promptContributionRegistry.js';
@@ -406,8 +443,11 @@ import {
 import { ASSETS, verifyAssetBundles } from './platform/assets.js';
 import { resolveBuilderReferenceCatalog } from './plugins/builder/builderReferenceCatalog.js';
 import {
+  ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+  createRoutineTurnOwnerGuard,
   createRoutinesIntegration,
   initRoutines,
+  routineTurnContext,
   type RoutinesHandle,
 } from './plugins/routines/index.js';
 import { ROUTINES_INTEGRATION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -948,6 +988,15 @@ async function main(): Promise<void> {
   // the boot loop AND the hot-install path (InstallService.onInstalled/
   // onUninstall) so a provider plugin installed at runtime appears WITHOUT a
   // restart.
+  // Live model discovery: the catalog's static model lists are only seeds.
+  // Created here (the vault exists, the catalog holds the built-ins) so the
+  // hot-install path below can refresh a runtime-installed provider through
+  // it; the boot refresh + timer start further down, once installed provider
+  // plugins are in the catalog too.
+  const modelCatalogSync: ModelCatalogSync = createModelCatalogSync({
+    catalog: llmProviderCatalog,
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+  });
   const registerProviderFromPlugin = (pluginId: string): void => {
     try {
       const descriptor = registerPluginLlmProvider(
@@ -957,8 +1006,11 @@ async function main(): Promise<void> {
       );
       if (descriptor !== undefined) {
         console.log(
-          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} model(s), baseURL ${descriptor.baseURL})`,
+          `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
+        if (descriptor.discovery !== undefined) {
+          void modelCatalogSync.refresh(descriptor.id);
+        }
       }
     } catch (err) {
       console.warn(
@@ -1106,6 +1158,19 @@ async function main(): Promise<void> {
       oauthConnectionTracker.isConnected(agentId),
   );
 
+  // #1016 — per-turn owner guard for the subscription-CLI runtime. Published
+  // here, and not defaulted inside the orchestrator package, because the store
+  // it has to read (`routineTurnContext`) lives in this layer. The orchestrator
+  // plugin resolves it as `routineTurnOwnerGuard` and forwards it into
+  // `CliChatAgent`, where it runs inside the restored async context immediately
+  // before a loopback dispatch. Unconditional: `routineTurnContext.enter` is
+  // installed by channel adapters regardless of which backends are configured,
+  // so the staleness this refuses does not depend on a pg pool.
+  serviceRegistry.provide(
+    ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME,
+    createRoutineTurnOwnerGuard(),
+  );
+
   // Kernel-wide background-job scheduler. Plugin-contributed jobs (cron or
   // interval) register here via `ctx.jobs.register(...)`. Bulk teardown on
   // plugin deactivate is owned by each runtime, so a leaked dispose handle
@@ -1113,6 +1178,36 @@ async function main(): Promise<void> {
   const jobScheduler = new JobScheduler({
     log: (msg) => console.log(msg),
   });
+
+  // #1033 W1 — the kernel's own provider pool: same credentials source as the
+  // orchestrator plugin (the vault scope `@omadia/orchestrator`), same
+  // catalog, memoised per provider id. Consumed by the dynamic sub-agent
+  // runtime today; the model-policy validation (W2) reads `usable()` from it.
+  const kernelProviderPool = createLlmProviderPool({
+    getSecret: (k) => secretVault.get('@omadia/orchestrator', k),
+    catalog: llmProviderCatalog,
+    // The orchestrator's own retry budget (see harness-orchestrator plugin.ts);
+    // the pool is shared with it from W3 on, so both sides agree.
+    maxRetries: 5,
+  });
+  // #1033 W3 — published for the orchestrator plugin (`llmProviderPool@1`,
+  // optional_requires) so the fallback circuit breaker has ONE state for the
+  // turn loop and the providers admin page. Provided here, before any plugin
+  // activates, like `llmProviderCatalog`.
+  serviceRegistry.provide('llmProviderPool', kernelProviderPool);
+
+  // Live model discovery, boot run: every connected provider with discovery
+  // rules is asked for its current model list here (fire-and-forget — boot
+  // never waits on a vendor), again after a key verifies, on the admin
+  // "refresh models" action, and on the periodic timer. Built-ins AND
+  // installed provider plugins are already in the catalog at this point.
+  void modelCatalogSync.refreshAll().then((results) => {
+    const summary = results
+      .map((r) => `${r.providerId}=${r.status}${r.status === 'discovered' ? `(${String(r.models)})` : ''}`)
+      .join(', ');
+    console.log(`[middleware] model discovery at boot: ${summary || 'no provider with discovery rules'}`);
+  });
+  modelCatalogSync.start(config.LLM_MODEL_DISCOVERY_INTERVAL_MS);
 
   // Dynamic runtime for uploaded packages — wired up with the orchestrator
   // further below, once it exists. The install/uninstall service hooks in
@@ -1139,6 +1234,7 @@ async function main(): Promise<void> {
         : 'anthropic';
     },
     hostGetSecret: (key: string) => secretVault.get('@omadia/orchestrator', key),
+    providerPool: kernelProviderPool,
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
@@ -1466,6 +1562,8 @@ async function main(): Promise<void> {
     // previous package's database and unauthenticated routes.
     publicPathGrantStore,
     sqlGrantStore,
+    agentPluginBindingStore: () =>
+      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1502,7 +1600,7 @@ async function main(): Promise<void> {
           await propagatePluginInstall(agentId);
       }
     },
-    onUninstall: async (agentId) => {
+    onUninstall: async (agentId, reason) => {
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
@@ -1526,7 +1624,12 @@ async function main(): Promise<void> {
           const removedToolName =
             dynamicAgentRuntime.domainToolFor(agentId)?.name;
           await dynamicAgentRuntime.deactivate(agentId);
-          await propagatePluginUninstall(agentId, removedToolName);
+          if (reason === 'uninstall') {
+            await propagatePluginUninstall(agentId, removedToolName);
+          } else {
+            // Reactivation tears down the runtime, but retains operator grants.
+            reconcileRuntimeDomainTool(agentId, removedToolName);
+          }
         }
       }
     },
@@ -1673,11 +1776,25 @@ async function main(): Promise<void> {
   // after the vault loads) so the plugin runtimes can also use them —
   // `sessionSigningKey` for `ctx.flows` state signing, both together for
   // `ctx.operatorAuth` (issue #438 follow-up).
-  if (emailWhitelist.isEmpty()) {
+  // OM-92 — the empty-allowlist warning is scoped to the provider that
+  // actually reads the allowlist (entra). On a local-password-only install it
+  // used to claim "every sign-in will 403" while the very next boot line
+  // reported a healthy `1 active: local` registry.
+  if (
+    shouldWarnEmptyAdminAllowlist({
+      authProviders: config.AUTH_PROVIDERS,
+      hasMicrosoftCredentials: Boolean(
+        config.MICROSOFT_APP_ID &&
+          config.MICROSOFT_APP_PASSWORD &&
+          config.MICROSOFT_APP_TENANT_ID,
+      ),
+      whitelistIsEmpty: emailWhitelist.isEmpty(),
+    })
+  ) {
     console.warn(
-      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every sign-in will 403 until the secret is set',
+      '[middleware] ⚠ ADMIN_ALLOWED_EMAILS is empty — every Entra sign-in will 403 until the secret is set',
     );
-  } else {
+  } else if (!emailWhitelist.isEmpty()) {
     console.log(
       `[middleware] admin whitelist ready (${emailWhitelist.size()} email(s))`,
     );
@@ -1935,10 +2052,55 @@ async function main(): Promise<void> {
       'teamsProvisioningEventStore',
       teamsProvisioningEventStore,
     );
+    // #924 — custody of the TENANT's delegated Teams token set. Vault-backed
+    // (AES-256-GCM at rest), one record for the whole install, following the
+    // `@omadia/mcp-registry` namespace precedent. The catalog upload is the
+    // one provisioning step Microsoft refuses app-only, so without this an
+    // admin would have to upload a package by hand for every single agent.
+    const teamsDelegatedTokenStore = new TeamsDelegatedTokenStore(secretVault);
+    serviceRegistry.provide('teamsDelegatedTokenStore', teamsDelegatedTokenStore);
+    // The device-code flow itself. Holds the `flowHandle` — which carries the
+    // OAuth `device_code` — in this process only; nothing hands it to a
+    // browser, and the poll endpoint takes no handle at all.
+    const teamsDelegatedSignIn = new TeamsDelegatedSignInService({
+      tokens: teamsDelegatedTokenStore,
+      getProvisioner: () => getTeamsProvisioner(serviceRegistry),
+    });
+    serviceRegistry.provide('teamsDelegatedSignInService', teamsDelegatedSignIn);
     // TEAMS_PUBLIC_BASE_URL ?? PUBLIC_BASE_URL — the binding contract of
     // config.ts; resolved per call so a config reload wins over boot state.
     const teamsPublicBaseUrl = (): string =>
       config.TEAMS_PUBLIC_BASE_URL ?? config.PUBLIC_BASE_URL;
+    // Named rather than inlined into the runner options since #924: the
+    // download endpoint renders a package through the SAME loader the chain
+    // uploads through. Two loaders would be two answers to "what does this
+    // agent's package contain", and the operator would be diffing against a
+    // second implementation's opinion.
+    const loadTeamsPackageAssets = createTeamsAppPackageAssetLoader({
+      getChannelTeamsPackageRoot: () => {
+        const entry = pluginCatalog.get(CHANNEL_TEAMS_PLUGIN_ID);
+        return entry ? path.dirname(entry.source_path) : undefined;
+      },
+      getPublicBaseUrl: teamsPublicBaseUrl,
+      // #914 — the agent's authored identity feeds the manifest (name,
+      // descriptions, accent colour, package version) and the icons. Read
+      // per run, never cached: an identity edited between two runs must
+      // reach the package the second one builds.
+      loadIdentity: async (agentId) => {
+        const record = await agentIdentityStore.getByAgentId(agentId);
+        if (!record) return undefined;
+        const icons = await agentIdentityStore.getIcons(agentId);
+        return {
+          displayName: record.displayName,
+          shortDescription: record.shortDescription,
+          longDescription: record.longDescription,
+          accentColor: record.accentColor,
+          revision: record.revision,
+          icons: icons ?? null,
+        };
+      },
+    });
+    serviceRegistry.provide('teamsAppPackageAssetLoader', loadTeamsPackageAssets);
     const teamsProvisioningRunner = new TeamsProvisioningJobRunner({
       store: agentTeamsIdentityStore,
       // The runner records a binding only AFTER Graph confirmed the install,
@@ -1949,35 +2111,17 @@ async function main(): Promise<void> {
       // #915 — where the runner writes what it is doing between two chain
       // states. Best-effort by contract: a failed note never fails a run.
       events: teamsProvisioningEventStore,
+      // #924 — the tenant sign-in the catalog upload rides on. The runner
+      // feature-detects `uploadToCatalogDelegated` on the connector, so
+      // binding this against an older connector is harmless: it keeps doing
+      // the app-only upload it always did.
+      delegatedTokens: teamsDelegatedTokenStore,
       getProvisioner: () => requireTeamsProvisioner(serviceRegistry),
       // The accessor module's URL builder, bound to the public base — the
       // runner never composes the messaging endpoint itself.
       buildMessagingEndpoint: (botSlug) =>
         buildTeamsBotMessagingEndpoint(teamsPublicBaseUrl(), botSlug),
-      loadPackageAssets: createTeamsAppPackageAssetLoader({
-        getChannelTeamsPackageRoot: () => {
-          const entry = pluginCatalog.get(CHANNEL_TEAMS_PLUGIN_ID);
-          return entry ? path.dirname(entry.source_path) : undefined;
-        },
-        getPublicBaseUrl: teamsPublicBaseUrl,
-        // #914 — the agent's authored identity feeds the manifest (name,
-        // descriptions, accent colour, package version) and the icons. Read
-        // per run, never cached: an identity edited between two runs must
-        // reach the package the second one builds.
-        loadIdentity: async (agentId) => {
-          const record = await agentIdentityStore.getByAgentId(agentId);
-          if (!record) return undefined;
-          const icons = await agentIdentityStore.getIcons(agentId);
-          return {
-            displayName: record.displayName,
-            shortDescription: record.shortDescription,
-            longDescription: record.longDescription,
-            accentColor: record.accentColor,
-            revision: record.revision,
-            icons: icons ?? null,
-          };
-        },
-      }),
+      loadPackageAssets: loadTeamsPackageAssets,
       // #910 — the finishing move: after `installed`, write the identity's
       // `teams_bots` entry into the channel-teams plugin config and reactivate
       // the plugin, so the provisioned bot has an adapter and a route without
@@ -2180,8 +2324,13 @@ async function main(): Promise<void> {
       `[middleware] fact extractor ready (model=${config.TOPIC_CLASSIFIER_MODEL})`,
     );
   } else {
+    // OM-102 — the old text named `anthropic_api_key` as the only cause, which
+    // sent abo-only operators hunting for a key they deliberately do not have.
+    // The extractor now runs on ANY provider the extras plugin can resolve
+    // (its own assignment, the orchestrator's, then an Anthropic key), so the
+    // honest remaining causes are "plugin missing" or "no provider at all".
     console.log(
-      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing or anthropic_api_key not set)',
+      '[middleware] fact extractor DISABLED (orchestrator-extras plugin missing, or no LLM provider assigned to the orchestrator / this plugin and no anthropic_api_key)',
     );
   }
 
@@ -2596,7 +2745,9 @@ async function main(): Promise<void> {
           );
         }
       }
-      const SUBAGENT_DEFAULT_MODEL = 'claude-sonnet-4-6';
+      // A class ref: resolved per sub-agent against the active provider's
+      // live catalog (`resolveSubAgentModel`), never sent raw.
+      const SUBAGENT_DEFAULT_MODEL = 'class:balanced';
       // Read the orchestrator provider from LIVE installed config on each
       // hydrate so a runtime switch to/from the CLI provider is picked up on
       // the next agent build without a process restart.
@@ -2658,10 +2809,28 @@ async function main(): Promise<void> {
 
       let attached = 0;
       for (const entry of registryForHydrate.list()) {
-        for (const t of scopeDomainToolsToPlugins(
+        // WHAT THIS AGENT ACTUALLY ENDED UP WITH, by name and by owner.
+        //
+        // The count alone was not enough to answer the question that matters
+        // — "why can this agent reach that connector?" — because it cannot
+        // distinguish a tool that was granted from one that passed the filter
+        // for lack of an owner id (`agentId === undefined` is waved through by
+        // design, as a core helper). An agent with no grants reaching a
+        // plugin's tool is indistinguishable from correct behaviour in a
+        // number.
+        const scoped = scopeDomainToolsToPlugins(
           currentDomainTools(),
           entry.plugins,
-        )) {
+        );
+        console.log(
+          `[middleware] registry: tool surface for "${entry.agent.slug}": ` +
+            (scoped.length === 0
+              ? '(none)'
+              : scoped
+                  .map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`)
+                  .join(', ')),
+        );
+        for (const t of scoped) {
           if (!entry.built.orchestrator.hasDomainTool(t.name)) {
             entry.built.orchestrator.registerDomainTool(t);
             attached += 1;
@@ -2708,8 +2877,14 @@ async function main(): Promise<void> {
           }
         }
         const subTools = hydrateSubAgentTools(slug, built);
+        // Same by-name surface as the initial hydrate above — a rebuild is
+        // exactly when a tool can appear that the operator did not grant, so
+        // the rebuild path must be as readable as the boot path.
         console.log(
-          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped)`,
+          `[middleware] registry: orchestrator for "${slug}" hydrated with ${String(tools.length)} domain-tool(s) + ${String(subTools)} sub-agent tool(s) (per-Agent plugin-scoped): ` +
+            (tools.length === 0
+              ? '(none)'
+              : tools.map((t) => `${t.name}←${t.agentId ?? 'UNOWNED'}`).join(', ')),
         );
       });
 
@@ -3046,6 +3221,14 @@ async function main(): Promise<void> {
       agentResolver,
       resolveChatAgent,
       getDefaultSlug,
+      // OM-76 — "no orchestrator at all" vs "this one is gone". With a registry
+      // it is the live agent count; on a no-DB boot the legacy default bundle
+      // is the only agent there can be.
+      hasActiveAgents: () => {
+        const reg = getRegistry();
+        if (reg) return reg.size() > 0;
+        return getChatAgentBundle() !== undefined;
+      },
       getChatSessionStore,
       snapshotForAgent: (slug) => getRegistry()?.snapshotForAgent(slug),
     }),
@@ -3345,6 +3528,46 @@ async function main(): Promise<void> {
     '[middleware] memory-backend endpoint ready at /api/v1/admin/memory/backend',
   );
 
+  // OM-75 / OM-78 (#1000, #1001) — the readiness verdict the operator-agents
+  // 503 carries. Hoisted out of the mount so the wiring-pin tests' lazy
+  // `createOperatorAgentsRouter\(\{…\}\)` match still spans every option.
+  // `async` so a synchronous throw from `listModels()` / the registry lands in
+  // the router's `.catch` instead of escaping the handler. Memoised for a few
+  // seconds: a fresh dashboard fires several 503-probing widgets at once, and
+  // each would otherwise re-run the credential lookup and CLI detection.
+  const resolveOperatorRuntimeReadinessCause = memoizeRuntimeReadinessCause(
+    async (): Promise<RuntimeReadinessCause> =>
+      resolveRuntimeReadinessCause({
+        providerIds: [...new Set(listModels().map((m) => m.provider))],
+        orchestratorConfig: installedRegistry.get('@omadia/orchestrator')?.config,
+        vault: secretVault,
+        llmProviderCatalog,
+      }),
+  );
+
+  // #1033 W2 — what the model-policy write path validates against: the live
+  // model catalogue (built-in adapters + manifest-installed provider plugins,
+  // via `resolveModelRef`) and the kernel provider pool (keyed = usable).
+  // Nothing about models is hard-coded here; the catalogue is the source.
+  // `orchestratorActiveProviderId` is declared further down and read lazily
+  // per request, long after boot.
+  const modelPolicyContextFor = () => ({
+    resolveModel: (provider: string, model: string) =>
+      resolveModelRef(`${provider}:${model}`),
+    usable: (provider: string) => kernelProviderPool.usable(provider),
+    activeProvider: orchestratorActiveProviderId(),
+  });
+
+  // #1018 — the chats an agent's bot is actually in (kernel table from graph
+  // migration 0031), so the peer-chat picker offers only those instead of a
+  // typed-in id. Same store the conductor's presence check reads; created
+  // once, no DATABASE_URL means no candidates. Named here, not inline, for
+  // the wiring-pin tests' lazy regex.
+  const peerChatDirectory = graphPool
+    ? createBotPresenceStore(graphPool, (msg) => console.log(msg))
+    : undefined;
+  const peerChatDirectoryFor = () => peerChatDirectory;
+
   // US9 / T037 — operator-facing Agents dashboard backend. Mounts at
   // /api/v1/operator/agents/*. 503s when the orchestratorRegistry@1
   // service is not published (no DATABASE_URL / orchestrator plugin not
@@ -3356,11 +3579,27 @@ async function main(): Promise<void> {
     createOperatorAgentsRouter({
       getConfigStore: () =>
         serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      // (#1033 W2 — `getModelPolicyContext` is passed further down.)
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
+      getPeerChatDirectory: peerChatDirectoryFor,
+      // …and how those chats get a name: the plugin's directory (topic /
+      // member-derived label) and the live roster as post-restart fallback.
+      getChannelDirectory: () => channelDirectoryRegistry,
+      getConversationRosters: () => conversationRosterRegistry,
+      // OM-75 / OM-78 (#1000, #1001) — decorate the 503 with WHY the runtime
+      // is down, so the readiness banner can tell "no access at all" from
+      // "access exists, orchestrator not assigned to it". Same credential
+      // verdicts the providers admin renders; no network probe. Kept above
+      // the closure-heavy options so the wiring-pin tests' lazy regex, which
+      // ends at the first closing paren-brace pair, still sees it.
+      getReadinessCause: resolveOperatorRuntimeReadinessCause,
+      // #1033 W2 — see `modelPolicyContextFor` above. Kept out of line so the
+      // wiring-pin tests' lazy regex is not cut short by an inline object.
+      getModelPolicyContext: modelPolicyContextFor,
       // W0c (#861) — the per-agent grant read model needs the graph store.
       // Same graphPool-guarded shape as the other AgentGraphStore sites; when
       // no DATABASE_URL is set the route degrades to its own 503.
@@ -3401,6 +3640,43 @@ async function main(): Promise<void> {
           // upgraded or removed while the process runs, and the team-uninstall
           // capability (#900) has to follow it.
           getProvisioner: () => getTeamsProvisioner(serviceRegistry),
+          // #924 — the download fallback. Rendered PER REQUEST through the
+          // same asset loader and the same connector `buildAppPackage` the
+          // chain uses, so what an operator downloads is byte-for-byte what
+          // provisioning would upload. Resolved live: without a connector
+          // there is nothing to render with, and the route reports that as a
+          // capability rather than failing.
+          buildAppPackage: async (record) => {
+            const provisioner = getTeamsProvisioner(serviceRegistry);
+            if (!provisioner) {
+              throw new TeamsProvisionerUnavailableError();
+            }
+            const loader = serviceRegistry.get<
+              ReturnType<typeof createTeamsAppPackageAssetLoader>
+            >('teamsAppPackageAssetLoader');
+            if (!loader) {
+              throw new Error(
+                'teams app package asset loader is not registered — Postgres-backed agent-factory wiring did not run',
+              );
+            }
+            const assets = await loader({
+              agentId: record.agentId,
+              botSlug: record.botSlug,
+              displayName: record.displayName,
+              state: record.state as never,
+              appId: record.appId,
+              appObjectId: record.appObjectId ?? null,
+              tenantId: record.tenantId,
+              teamsAppId: record.teamsAppId,
+              teamsAppExternalId: record.teamsAppExternalId,
+              lastError: record.lastError,
+            });
+            return provisioner.buildAppPackage({
+              manifestTemplate: assets.manifestTemplate,
+              params: assets.params,
+              icons: assets.icons,
+            });
+          },
         };
         // Migration 0053 (#915) — same optional posture as 0051: a middleware
         // whose migrations have not reached 0053 serves a status response
@@ -3408,10 +3684,47 @@ async function main(): Promise<void> {
         const eventStore = serviceRegistry.get<OperatorTeamsEventStore>(
           'teamsProvisioningEventStore',
         );
-        const withEvents: OperatorTeamsIdentityDeps =
-          eventStore === undefined
-            ? teamsDeps
-            : { ...teamsDeps, events: eventStore };
+        // The teardown writes to the SAME table the runner does, so it lands
+        // on the operator's existing timeline instead of a second screen. The
+        // WRITE side is bound separately from the read side above: this
+        // router has been a pure reader of that log since #915, and the reset
+        // is the one thing it does that an operator watches happen.
+        const eventWriter = serviceRegistry.get<TeamsResetEventSink>(
+          'teamsProvisioningEventStore',
+        );
+        // #924/#949 — withdrawing the app from the tenant catalog is
+        // delegated-only at Microsoft, exactly like uploading it. Resolved
+        // live for the same reason as the provisioner: an admin can sign in
+        // (or out) while the process runs.
+        // WRITE included, and that is what lets both routes refresh a spent
+        // access token instead of telling a signed-in admin to sign in
+        // (#949). `TeamsDelegatedTokenStore` has always had it; the router's
+        // port simply never asked, which is why the target listing had no way
+        // to recover and reported the expiry as a missing sign-in.
+        const delegatedTokens = serviceRegistry.get<{
+          read(): Promise<DelegatedTokenSet | undefined>;
+          write(tokens: DelegatedTokenSet): Promise<void>;
+        }>('teamsDelegatedTokenStore');
+        const withEvents: OperatorTeamsIdentityDeps = {
+          ...teamsDeps,
+          ...(eventStore === undefined ? {} : { events: eventStore }),
+          ...(eventWriter === undefined ? {} : { eventWriter }),
+          ...(delegatedTokens === undefined ? {} : { delegatedTokens }),
+          // The teardown half of #910. Same registry, same reactivation
+          // funnel and the same serialized write queue as the chain's
+          // `syncBotConfig` above — a reset and a run that finish at the same
+          // moment must not read-modify-write the same config value in
+          // parallel, and they cannot, because both go through the module's
+          // single queue.
+          unsyncBotConfig: (botSlug: string) =>
+            dropTeamsBotConfig(
+              {
+                getInstalledRegistry: () => installedRegistry,
+                reactivate: reactivateAgent,
+              },
+              botSlug,
+            ),
+        };
         if (installStore === undefined) return withEvents;
         return { ...withEvents, installs: installStore };
       },
@@ -3427,6 +3740,25 @@ async function main(): Promise<void> {
   );
   console.log(
     '[middleware] operator-agents endpoints ready at /api/v1/operator/agents/* (auth-gated, incl. teams-identity provisioning)',
+  );
+
+  // #924 — the TENANT-wide Teams sign-in. A sibling of /operator/agents, not a
+  // route under it: one admin signs in once for the whole directory and every
+  // agent provisioned afterwards uses that sign-in, so hanging it off an agent
+  // slug would have said the opposite in the URL — and made "sign in before
+  // you create your first agent" unrepresentable.
+  app.use(
+    '/api/v1/operator/teams',
+    requireAuth,
+    createOperatorTeamsSignInRouter({
+      getSignIn: () =>
+        serviceRegistry.get<TeamsDelegatedSignInService>(
+          'teamsDelegatedSignInService',
+        ),
+    }),
+  );
+  console.log(
+    '[middleware] tenant Teams sign-in ready at /api/v1/operator/teams/sign-in (auth-gated, device-code flow held server-side)',
   );
 
   // Phase B+ — operator channels dashboard.
@@ -3849,6 +4181,61 @@ async function main(): Promise<void> {
         }
       }
     };
+    // Which bots hold a conversation reference where — the presence signal the
+    // agent-discussion partner list is built on (graph migration 0031).
+    const botPresence = createBotPresenceStore(graphPool, (msg) => console.log(msg));
+    // Who can actually be heard in this chat: an agent needs its own bot AND
+    // that bot needs a conversation reference here. Provisioning alone is
+    // not enough — a partner whose bot was never added would have its turns
+    // generated, paid for and dropped.
+    //
+    // Presence comes from the reference table, NOT the roster: Teams'
+    // roster API returns people, never bots, so a roster-based check finds
+    // nothing in a chat full of bots (which is exactly what it did on the
+    // first live run).
+    const presentBots = async (
+      channelType: string,
+      conversationId: string,
+    ): Promise<{ slug: string; name: string; channelKey: string }[]> => {
+      if (channelType !== 'teams') return [];
+      const registry = getRegistry();
+      if (!registry) return [];
+      const present = await botPresence.botAppIdsIn(conversationId);
+      const seen = new Set<string>();
+      const bots: { slug: string; name: string; channelKey: string }[] = [];
+      for (const appId of present) {
+        const channelKey = `28:${appId}`;
+        const owner = registry.identityForChannel(channelType, channelKey);
+        if (!owner || seen.has(owner.agent.slug)) continue;
+        seen.add(owner.agent.slug);
+        bots.push({ slug: owner.agent.slug, name: owner.agent.name ?? owner.agent.slug, channelKey });
+      }
+      return bots;
+    };
+    // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
+    // row (migration 0058), evaluated in one place for the discussion start,
+    // every relayed utterance, and the roster the calling agent sees.
+    const peerGate = createPeerGate({
+      getRegistry,
+      listChannelPeerPolicies: (channelType, channelKey) => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        return store ? store.listChannelPeerPolicies(channelType, channelKey) : Promise.resolve([]);
+      },
+      log: (msg) => console.log(msg),
+    });
+    // `chatPeerAgents@1` — what `get_chat_participants` merges in as
+    // `kind: 'agent'`. Everything derives from the ambient turn; the caller
+    // supplies nothing and therefore sees no chat but its own.
+    serviceRegistry.provide(
+      'chatPeerAgents',
+      createChatPeerAgentsProvider({
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        listPresent: presentBots,
+        peerGate,
+      }),
+    );
     const conductorWiring = await wireConductor({
       pool: graphPool,
       onEphemeralReaped,
@@ -3857,6 +4244,13 @@ async function main(): Promise<void> {
       getRegistry,
       // #330 round 4 — participants column of the facilitation admin lens.
       getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
+      // Agent dialogue: a `say` step publishes an agent's turn into the chat.
+      // The SAME registry the plugin-facing conversationSend uses — one owner
+      // per channel type, so a discussion cannot be posted by a hijacked provider.
+      conversationSendProviders: conversationSendRegistry,
+      // #1018 — re-checked on every utterance, so an operator's flip bites at
+      // the agent's next turn rather than at the end of the run.
+      peerGate,
       // #330 round 4 — the destructive terminate leaves a durable trace.
       // Closure like auditRoleChange: adminAudit is constructed further down.
       auditFacilitationTerminate: async (entry) => {
@@ -3944,6 +4338,28 @@ async function main(): Promise<void> {
     // Deny-by-default like every kernel service: a plugin only reaches it after
     // declaring the service name in its manifest (pluginServiceGrants catalog).
     serviceRegistry.provide('conductorEphemeralRuns', conductorWiring.ephemeralRunService);
+    // Agent topic discussions, startable FROM A CHAT. No conversation id in the
+    // signature on purpose: the kernel reads the conversation off the inbound
+    // turn the calling plugin is answering, so a granted plugin can open a
+    // discussion where it was addressed and nowhere else.
+    serviceRegistry.provide(
+      'conductorDiscussions',
+      createDiscussionsCapability({
+        discussions: conductorWiring.discussionService,
+        resolveTurn: () => ambientTurnFrom(routineTurnContext.current()),
+        // The opener is the bot that received the turn, mapped back through the
+        // SAME provisioned-identity table inbound routing uses — so "who
+        // opened it" and "who was addressed" can never be two different answers.
+        resolveOpener: (channelType, botChannelKey) =>
+          getRegistry()?.identityForChannel(channelType, botChannelKey)?.agent.slug,
+        // Presence (see `presentBots` above) — the gate below decides who of
+        // the present may actually take part.
+        listPartners: presentBots,
+        // #1018 — the opener must be enabled here, and so must every partner.
+        peerGate,
+        log: (msg: string) => console.log(msg),
+      }),
+    );
     // #330 C2a — the three zero-touch-setup services (all deny-by-default via
     // the manifest grant gate). Constructed above, BEFORE wireConductor.
     serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);
@@ -4632,6 +5048,10 @@ async function main(): Promise<void> {
       vault: secretVault,
       reactivate: reactivateAgent,
       llmProviderCatalog,
+      // #1033 W3 — the fallback breaker's state, so the page can show a
+      // provider that is currently being skipped in favour of its fallback.
+      providerHealth: kernelProviderPool.health,
+      modelCatalogSync,
     }),
   );
   console.log('[middleware] providers admin endpoint ready at /api/v1/admin/providers (auth: required)');
@@ -4702,12 +5122,25 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       getEmbeddingClient: () =>
         serviceRegistry.get<EmbeddingClient>('embeddingClient'),
+      // OM-84 follow-up — the keyless adapter publishes this even while its
+      // weights are missing, which is the only moment it is useful. Resolved
+      // per request: it appears the moment that adapter activates and vanishes
+      // when it is swapped out, and a captured copy would outlive both.
+      getLocalModelFetcher: () =>
+        serviceRegistry.get<LocalEmbeddingModelFetcher>(
+          'localEmbeddingModelFetcher',
+        ),
       // Resolved per request, never captured: `vectorWritesAllowed` flips
       // false→true in-process when a stale-vector clear drains, and the whole
       // point of the page is that the operator sees that without a reload.
       getGateStatus: () =>
         serviceRegistry.get<EmbeddingGateStatus>(EMBEDDING_GATE_STATUS_SERVICE),
       getGraphPool: () => graphPool,
+      // OM-102 — resolved per request for the same reason as the gate above:
+      // the extras plugin can be (de)activated without a restart, and the
+      // dashboard card must not render a captured state.
+      getMemoryFeatureStatus: () =>
+        serviceRegistry.get<MemoryFeatureStatusView>('memoryFeatureStatus'),
       // Env-derived fallback. The router prefers the KG plugin's own
       // `graph_tenant_id` setup field when one is set.
       tenantId: graphTenantId,
@@ -4747,6 +5180,23 @@ async function main(): Promise<void> {
   // Read-only host-capability probe; never triggers a login or consumes quota.
   app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
+  // OM-100b — the runtime half of the Systemstatus panel: whether the last
+  // chat turn actually came back. Process-scoped and read-only.
+  app.use('/api/v1/admin/last-turn', requireAuth, createAdminLastTurnRouter());
+  // OM-79 (#994) — the hand-off the subscription path was missing. A successful
+  // in-app login used to end with "signed in" while the orchestrator kept
+  // asking the vault for an Anthropic key and never published chatAgent@1.
+  // Point every credential-less LLM plugin at the CLI provider right here, so
+  // the login IS the setup; the assignment section stays for overrides.
+  setCliLoginAuthorizedHook(async () => {
+    await autoAssignSubscriptionCli({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+      llmProviderCatalog,
+      log: (msg) => console.log(msg),
+    });
+  });
 
   // ── Agent-Builder drafts (B.0) ────────────────────────────────────────────
   // SQLite-backed draft store; persists alongside the vault so redeploys
@@ -4970,14 +5420,75 @@ async function main(): Promise<void> {
     `[middleware] bootstrap profile endpoints ready at /api/v1/profiles (auth: required, live-storage: ${liveProfileStorage ? 'on' : 'off'}, snapshots: ${snapshotService ? 'on' : 'off'})`,
   );
 
+  /**
+   * OM-101 — is a Claude subscription usable right now? Same verdict the
+   * providers-admin page computes (a CLI-backed provider is keyless: its probe
+   * is the login check, not a credential probe), just reached from here.
+   * Never throws — detection failure means "no subscription", not an error.
+   */
+  const subscriptionCliLoggedIn = async (): Promise<boolean> => {
+    const snapshot = await detectCliBackends().catch(() => undefined);
+    const verification = await resolveProviderVerification(
+      SUBSCRIPTION_CLI_PROVIDER,
+      { llmProviderCatalog, ...(snapshot ? { cliSnapshot: snapshot } : {}) },
+    );
+    return verification.status === 'verified';
+  };
+
+  /**
+   * OM-101 — map an Anthropic model id onto the CLI's alias vocabulary. The
+   * CLI takes `opus` / `sonnet` / `haiku`, not `claude-opus-5`; the registry's
+   * own CLI models carry a `-cli` suffix that has to come off either way.
+   */
+  const cliAliasFor = (modelId: string): string => {
+    const bare = modelId.replace(/-cli$/, '');
+    if (bare.includes('opus')) return 'opus';
+    if (bare.includes('haiku')) return 'haiku';
+    if (bare.includes('sonnet')) return 'sonnet';
+    return bare || 'sonnet';
+  };
+
   const resolveBuilderProvider: BuilderProviderResolver = async (modelRef) => {
     const { provider: providerId, modelId } =
       BuilderModelRegistry.resolve(modelRef);
+    // A model the operator picked from the subscription section of the model
+    // catalog. The in-process loop cannot serve it (the completion adapter
+    // rejects tool-carrying requests), so it always takes the CLI path.
+    if (providerId === SUBSCRIPTION_CLI_PROVIDER) {
+      if (!(await subscriptionCliLoggedIn())) {
+        throw new BuilderLlmAccessError(
+          `Builder-Modell '${modelRef}' läuft über das Claude-Abo, aber die ` +
+            `Claude-CLI ist nicht angemeldet. Verbinde das Abo unter ADMIN → ` +
+            `LLM-Zugang.`,
+        );
+      }
+      return { cliModel: cliAliasFor(modelId), modelId };
+    }
     if (providerId === 'anthropic') {
-      return {
-        provider: createAnthropicProvider({ client: currentAnthropicClient() }),
-        modelId,
-      };
+      // OM-101 — the 401 the round-5 tester saw came from right here: the
+      // builder built a metered API client unconditionally, so an install with
+      // no Anthropic key (subscription-only, which the orchestrator has
+      // supported since round 4) failed on a credential it never needed. Only
+      // fall through to the subscription when there is genuinely no key —
+      // an operator who configured one keeps the API path and its tool loop.
+      const anthropicKey =
+        (await readProviderApiKey(
+          (k) => secretVault.get(ORCHESTRATOR_SECRET_SOURCE, k),
+          'anthropic',
+        )) ?? (config.ANTHROPIC_API_KEY ?? '').trim();
+      if (anthropicKey) {
+        return {
+          provider: createAnthropicProvider({ client: currentAnthropicClient() }),
+          modelId,
+        };
+      }
+      if (await subscriptionCliLoggedIn()) {
+        return { cliModel: cliAliasFor(modelId), modelId };
+      }
+      throw new BuilderLlmAccessError(
+        `Builder-Modell '${modelRef}' braucht einen LLM-Zugang: entweder einen ` +
+          `Anthropic-API-Key oder ein verbundenes Claude-Abo. Beides fehlt.`,
+      );
     }
     const provider = await resolveLlmProvider({
       providerId,
@@ -5689,7 +6200,9 @@ async function main(): Promise<void> {
 
   // LAN zero-config discovery (#293): advertise `_omadia._tcp` so a desktop
   // client on the same network can pair with zero typing. Best-effort — a host
-  // with no LAN reachability (Fly) simply never gets discovered this way.
+  // with no LAN reachability (Fly) simply never gets discovered this way. The
+  // desktop shell disables it via env (OM-70); the advertiser itself never
+  // claims the machine's own host name (see pairing/mdns.ts).
   if (config.OMADIA_UI_MDNS_ENABLED) {
     const advertisedAuthMode: 'none' | 'password' | 'oidc' = pairingProviders
       ?.length

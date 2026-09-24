@@ -32,6 +32,13 @@ const api = {
     ipcRenderer.on(CH.bootLog, listener);
     return () => ipcRenderer.removeListener(CH.bootLog, listener);
   },
+  /**
+   * OM-71 — the web UI calls this once its first real screen is up, so shell
+   * dialogs (the recovery-key reminder) wait for a page rather than a
+   * navigation. Fire-and-forget; the web UI must keep working in a browser
+   * where this bridge does not exist.
+   */
+  uiReady: (): void => ipcRenderer.send(CH.uiReady),
 };
 
 contextBridge.exposeInMainWorld('omadia', api);

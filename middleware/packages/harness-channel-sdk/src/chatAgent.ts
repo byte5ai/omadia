@@ -2,6 +2,7 @@ import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugi
 import type {
   AgentConsultation,
   AiDisclosure,
+  AnswerSource,
   DelegatedAnswer,
   DirectLineSessionState,
   FollowUpOption,
@@ -535,6 +536,13 @@ export interface ChatTurnResult {
    */
   maskedValues?: readonly string[];
   /**
+   * #1105 — set to `'privacy-render'` when this turn's `answer` was swapped
+   * in from a Privacy-Shield v4 server-side render (i.e. it may diverge from
+   * the streamed `text_delta` preview). Omitted / `'model'` for the ordinary
+   * case where `answer` is the model's own streamed text. See `AnswerSource`.
+   */
+  answerSource?: AnswerSource;
+  /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
    * canvas-aware turn produced an initial primitive tree; `toSemanticAnswer`
    * forwards it to `SemanticAnswer.surface`. Channels not declaring the
@@ -659,6 +667,16 @@ export type ChatStreamEvent =
       bucket: 'simple' | 'complex' | 'fallback';
       classifierModel: string;
       model: string;
+      /**
+       * #1033 — `'provider_fallback'` marks a turn that ran on the agent's
+       * FALLBACK model because the primary was unavailable (rate-limited,
+       * overloaded, unreachable, unauthorised). Distinct from
+       * `bucket: 'fallback'`, which is the TRIAGE fallback (the classifier
+       * itself failed). Emitted when the switch happens; `provider` names the
+       * provider the turn continued on.
+       */
+      reason?: 'provider_fallback';
+      provider?: string;
     }
   /**
    * Wave 8 — per-turn direct-answer persona verdict. Emitted ONCE at turn
@@ -683,8 +701,28 @@ export type ChatStreamEvent =
       input: unknown;
       /** Set by the chat route when `name` resolves to an installed agent. */
       agent?: AgentMeta;
+      /**
+       * OM-81 — set by the subscription-CLI agent when the call did NOT go
+       * through omadia's loopback MCP server (`mcp__omadia__*`), i.e. it was
+       * one of the CLI's own built-in tools. Those are removed from the CLI
+       * at spawn time; the flag exists so a call that slips through can never
+       * look like an omadia tool in the trace.
+       */
+      foreign?: true;
     }
-  | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
+  | {
+      type: 'tool_result';
+      id: string;
+      output: string;
+      durationMs: number;
+      isError?: boolean;
+      /**
+       * OM-81 — stamped by the chat route when the matching `tool_use` carried
+       * `foreign`, so the pair can never disagree in the trace (a mid-turn
+       * reconnect can deliver a result whose call the client never saw).
+       */
+      foreign?: true;
+    }
   /**
    * OB-77 (Palaia Phase 8) — fired AFTER the nudge pipeline has run on
    * the iteration's tool_results. Channel renderers collect these per
@@ -801,9 +839,28 @@ export type ChatStreamEvent =
       /** Privacy Shield v4 — real values in `answer` the LLM never saw;
        *  clients MAY highlight their occurrences. */
       maskedValues?: readonly string[];
+      /**
+       * #1105 — `'privacy-render'` when `answer` was materialized server-side
+       * by Privacy-Shield v4 this turn, meaning it can diverge from the
+       * concatenated `text_delta` preview; `answer` is then authoritative.
+       * Omitted / `'model'` for the ordinary streamed-text case. Additive and
+       * optional — a client that ignores it keeps today's behaviour. See
+       * `AnswerSource`.
+       */
+      answerSource?: AnswerSource;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
+      /**
+       * #1107 — the privacy-receipt store key (`turn_receipts.turn_id`, a UUID)
+       * for this turn. Distinct from `turnId` above (the KG turn-node external
+       * id): this is the id `GET /api/v1/operator/receipts/:id` resolves, so a
+       * caller can hand it to their operator (or use it themselves) to locate
+       * the matching receipt row. Present ONLY when a receipt was actually
+       * written for the turn — a row exists solely when the privacy shield
+       * recorded activity, so a tool-free turn carries no receipt and no id.
+       */
+      receiptId?: string;
       /**
        * The model this turn actually ran on, resolved once at turn start by
        * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's

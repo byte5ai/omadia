@@ -24,6 +24,7 @@ import {
   isTeamsProvisionerError,
   requireTeamsProvisioner,
   SingleTenantViolationError,
+  supportsChatInstall,
   supportsTeamUninstall,
   TEAMS_PROVISIONER_SERVICE_NAME,
   TeamsMessagingEndpointError,
@@ -157,6 +158,66 @@ describe('supportsTeamUninstall — connector version skew', () => {
   it('is false when no connector is installed at all', () => {
     assert.equal(supportsTeamUninstall(getTeamsProvisioner(new ServiceRegistry())), false);
     assert.equal(supportsTeamUninstall(undefined), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature detection — chat installs (group chats and 1:1 chats)
+// ---------------------------------------------------------------------------
+
+describe('supportsChatInstall — connector version skew', () => {
+  it('is true for a connector that publishes installToChat, and forwards the call', async () => {
+    const stub = createStubTeamsProvisioner();
+    const provisioner = requireTeamsProvisioner(registryWith(stub.accessor));
+
+    assert.equal(supportsChatInstall(provisioner), true);
+    const result = await provisioner.installToChat?.({
+      chatId: '19:abc@thread.v2',
+      teamsAppId: 'catalog-0000',
+    });
+    assert.equal(result?.outcome, 'created');
+    assert.equal(result?.value.chatId, '19:abc@thread.v2');
+    assert.deepEqual(
+      stub.calls.map((call) => call.method),
+      ['installToChat'],
+    );
+  });
+
+  it('is false for an older connector — and the guarded accessor OMITS the method', () => {
+    // THE BUG THIS PINS. An `installToChat: (i) => raw.installToChat?.(i)`
+    // passthrough in the wrapper would put the key on EVERY accessor, make
+    // `supportsChatInstall` answer true for a connector that cannot install
+    // into a chat, and turn the route's honest 501 into a silent `undefined`
+    // at the call site. That mistake has been made in this file before, which
+    // is why the absence is asserted rather than assumed.
+    const stub = createStubTeamsProvisioner({ installToChat: undefined });
+    const provisioner = requireTeamsProvisioner(registryWith(stub.accessor));
+
+    assert.equal(supportsChatInstall(provisioner), false);
+    assert.equal('installToChat' in provisioner, false);
+    assert.equal(provisioner.installToChat, undefined);
+  });
+
+  it('is false when no connector is installed at all', () => {
+    assert.equal(supportsChatInstall(getTeamsProvisioner(new ServiceRegistry())), false);
+    assert.equal(supportsChatInstall(undefined), false);
+  });
+
+  it('is independent of the team-uninstall capability', () => {
+    // The two arrived in different connector versions, so a connector may
+    // publish either without the other and neither guard may answer for the
+    // other.
+    const chatOnly = requireTeamsProvisioner(
+      registryWith(createStubTeamsProvisioner({ uninstallFromTeam: undefined }).accessor),
+    );
+    assert.equal(supportsChatInstall(chatOnly), true);
+    assert.equal(supportsTeamUninstall(chatOnly), false);
+
+    const uninstallOnly = requireTeamsProvisioner(
+      registryWith(createStubTeamsProvisioner({ installToChat: undefined }).accessor),
+    );
+    assert.equal(supportsChatInstall(uninstallOnly), false);
+    assert.equal(supportsTeamUninstall(uninstallOnly), true);
   });
 });
 

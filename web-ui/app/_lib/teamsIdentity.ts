@@ -404,6 +404,14 @@ export const TEAMS_PROVISIONING_EVENT_DETAILS = [
   'retries_exhausted',
   'team_conflict',
   'stopped',
+  // #924 — the catalog step's own intra-step notes, plus the four terminal
+  // reasons the runner classifies for the delegated upload.
+  'delegated_upload',
+  'delegated_token_refreshed',
+  'delegated_sign_in_required',
+  'delegated_consent_required',
+  'delegated_token_expired',
+  'device_code_flow_failed',
 ] as const;
 
 const EVENT_DETAIL_SET: ReadonlySet<string> = new Set(
@@ -644,12 +652,42 @@ export interface TeamsIdentityErrorLink {
 export function teamsIdentityErrorLink(
   detail: TeamsIdentityLastErrorDetailDto,
 ): TeamsIdentityErrorLink | null {
-  return detail.code === 'consent_missing'
-    ? {
-        href: ENTRA_ADMIN_CONSENT_DOCS_URL,
-        labelKey: 'errors.consent_missing.consentLink',
-      }
-    : null;
+  if (detail.code === 'consent_missing') {
+    return {
+      href: ENTRA_ADMIN_CONSENT_DOCS_URL,
+      labelKey: 'errors.consent_missing.consentLink',
+    };
+  }
+  // #924 — the TENANT's own consent URL, captured from the connector's error.
+  // Not documentation: the exact page an admin has to approve on. Without it
+  // "grant consent" is an instruction with no destination.
+  if (detail.code === 'delegated_consent_required' && detail.adminConsentUrl) {
+    return {
+      href: detail.adminConsentUrl,
+      labelKey: 'errors.delegated_consent_required.consentLink',
+    };
+  }
+  return null;
+}
+
+/**
+ * Does this failure send the operator to the TENANT sign-in page (#924)?
+ *
+ * Three of the four delegated codes do, for three different reasons — nobody
+ * has signed in, the sign-in expired, or consent is missing — and all three
+ * need the same affordance: a link out of the agent panel to
+ * `/operator/teams`. The fourth (`device_code_flow_failed`) does not: no
+ * amount of clicking sign-in fixes a publisher app that will not do
+ * device-code flows.
+ */
+export function needsTenantSignIn(
+  detail: TeamsIdentityLastErrorDetailDto,
+): boolean {
+  return (
+    detail.code === 'delegated_sign_in_required' ||
+    detail.code === 'delegated_token_expired' ||
+    detail.code === 'delegated_consent_required'
+  );
 }
 
 /**
@@ -671,11 +709,29 @@ export function teamsIdentityErrorMessages(
   const base = `errors.${detail.code}`;
   const messages: LocalizedMessage[] = [{ key: `${base}.what` }];
 
-  if (detail.code === 'consent_missing' && (detail.scopes?.length ?? 0) > 0) {
+  // #924 — the two delegated codes that name scopes use the same `.scopes`
+  // line as `consent_missing`: same shape, same argument, different sentence
+  // above it. Listing them here rather than widening the condition to "has
+  // scopes" keeps the copy an explicit, reviewable decision per code.
+  const NAMES_SCOPES: readonly TeamsIdentityLastErrorDetailDto['code'][] = [
+    'consent_missing',
+    'delegated_sign_in_required',
+    'delegated_consent_required',
+  ];
+  if (NAMES_SCOPES.includes(detail.code) && (detail.scopes?.length ?? 0) > 0) {
     const scopes = detail.scopes as readonly string[];
     messages.push({
       key: `${base}.scopes`,
       values: { scopes: scopes.join(', '), count: scopes.length },
+    });
+  }
+
+  // #924 — the connector's own OAuth code, shown as an argument on its own
+  // line. It is the difference between "Microsoft refused" and knowing WHY.
+  if (detail.code === 'device_code_flow_failed' && (detail.reason ?? '') !== '') {
+    messages.push({
+      key: `${base}.reason`,
+      values: { reason: detail.reason as string },
     });
   }
 
@@ -709,6 +765,14 @@ export function teamsIdentityErrorMessages(
   // last, where a worried operator stops reading.
   if (detail.code === 'arm_not_configured') {
     messages.push({ key: `${base}.keepsRegistration` });
+  }
+
+  // #924 — the same reassurance for the three PARKED delegated codes, and for
+  // the same reason: the run stopped without failing, and everything it built
+  // is still there. Without this line an operator reads a red box and starts
+  // cleaning up an Entra app the next run is about to reuse.
+  if (needsTenantSignIn(detail)) {
+    messages.push({ key: `${base}.keepsProgress` });
   }
 
   return messages;

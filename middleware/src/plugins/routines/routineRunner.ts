@@ -52,6 +52,7 @@ import {
   RoutineNameConflictError,
   type CreateRoutineInput,
   type Routine,
+  type RoutineOwner,
   type RoutineRunStatus,
   type RoutineStore,
 } from './routineStore.js';
@@ -69,6 +70,46 @@ export const DEFAULT_MAX_ACTIVE_PER_USER = 50;
 /** Minimum wall-clock interval between two firings. Enforced at create()
  *  time after deriving an estimated period from the cron expression. */
 export const MIN_RUN_INTERVAL_MS = 60_000;
+
+/**
+ * #1025 — who is asking for a routine mutation.
+ *
+ * A discriminated union rather than an optional `owner?` parameter, on
+ * purpose: an optional scope is one a caller can forget, and forgetting it
+ * is exactly how `pause`/`resume`/`delete` came to accept a bare id from
+ * any principal. Here TypeScript makes every call site state which case it
+ * is, so a cross-tenant operation is a deliberate, greppable
+ * `{ kind: 'operator' }` instead of an omission that reads like an
+ * oversight.
+ *
+ *   - `channel-user` — an end user acting through a channel turn. Scoped to
+ *     the (tenant, userId) the turn context carries.
+ *   - `operator`     — the authenticated operator surface, deliberately
+ *     cross-tenant (see the routes' own `requireAuth` rationale).
+ */
+export type RoutineActorScope =
+  | ({ kind: 'channel-user' } & RoutineOwner)
+  | { kind: 'operator' };
+
+/** The store-level owner filter for a scope, or undefined for an operator. */
+function ownerFilter(scope: RoutineActorScope): RoutineOwner | undefined {
+  return scope.kind === 'channel-user'
+    ? { tenant: scope.tenant, userId: scope.userId }
+    : undefined;
+}
+
+/**
+ * Whether an already-loaded row is within a scope. Used where the scope
+ * cannot be pushed into the SQL because the operation reads first and acts
+ * second (`triggerRoutineNow`). Prefer `ownerFilter` and a scoped
+ * statement wherever a single statement can do the job.
+ */
+function ownedBy(routine: Routine, scope: RoutineActorScope): boolean {
+  return (
+    scope.kind === 'operator' ||
+    (routine.tenant === scope.tenant && routine.userId === scope.userId)
+  );
+}
 
 export class RoutineQuotaExceededError extends Error {
   constructor(public readonly limit: number) {
@@ -256,9 +297,18 @@ export class RoutineRunner {
    * complete (or the run errored). Caller (`handleRoutineAction`)
    * surfaces a confirmation back into the chat.
    */
-  async triggerRoutineNow(id: string): Promise<Routine> {
+  async triggerRoutineNow(
+    id: string,
+    scope: RoutineActorScope,
+  ): Promise<Routine> {
     const routine = await this.store.get(id);
-    if (!routine) throw new RoutineNotFoundError(id);
+    // #1025 — scoped for the same reason as delete, and with a sharper
+    // consequence: a run delivers to the routine's OWN conversationRef, so
+    // an unscoped trigger let one principal push messages into another
+    // tenant's conversation on demand.
+    if (!routine || !ownedBy(routine, scope)) {
+      throw new RoutineNotFoundError(id);
+    }
     const controller = new AbortController();
     await this.runOnce(routine, controller.signal, 'manual');
     // Re-read so caller gets the updated last_run_* fields.
@@ -405,15 +455,26 @@ export class RoutineRunner {
     return this.store.listForUser(tenant, userId);
   }
 
-  async pauseRoutine(id: string): Promise<Routine> {
-    const updated = await this.store.setStatus(id, 'paused');
+  async pauseRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    const updated = await this.store.setStatus(
+      id,
+      'paused',
+      ownerFilter(scope),
+    );
+    // A scoped miss and a genuinely missing id both land here, and both
+    // raise the same error: telling a caller "exists, but not yours" would
+    // confirm the id.
     if (!updated) throw new RoutineNotFoundError(id);
     this.unregisterFromScheduler(id);
     return updated;
   }
 
-  async resumeRoutine(id: string): Promise<Routine> {
-    const updated = await this.store.setStatus(id, 'active');
+  async resumeRoutine(id: string, scope: RoutineActorScope): Promise<Routine> {
+    const updated = await this.store.setStatus(
+      id,
+      'active',
+      ownerFilter(scope),
+    );
     if (!updated) throw new RoutineNotFoundError(id);
     if (!this.senders.get(updated.channel)) {
       // Resume the row but report the misconfiguration; trigger will
@@ -426,9 +487,17 @@ export class RoutineRunner {
     return updated;
   }
 
-  async deleteRoutine(id: string): Promise<boolean> {
-    this.unregisterFromScheduler(id);
-    return this.store.delete(id);
+  /**
+   * #1025 — the scheduler is unregistered only AFTER the scoped delete
+   * reports a row was actually removed. The previous order unregistered
+   * first, so a cross-tenant id silently disarmed someone else's cron
+   * while the row survived: the routine then looked active in `list` and
+   * never fired again, which is harder to notice than a deleted row.
+   */
+  async deleteRoutine(id: string, scope: RoutineActorScope): Promise<boolean> {
+    const deleted = await this.store.delete(id, ownerFilter(scope));
+    if (deleted) this.unregisterFromScheduler(id);
+    return deleted;
   }
 
   /**

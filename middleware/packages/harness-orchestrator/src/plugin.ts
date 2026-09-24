@@ -4,6 +4,7 @@ import {
   RoleSourceRegistry as RoleSourceRegistryImpl,
   type ChatAgent,
   type AiDisclosureLevel,
+  type ChatTurnInput,
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
@@ -13,8 +14,9 @@ import type {
 } from './securityScreener.js';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
-  resolveLlmProvider,
+  createLlmProviderPool,
   type LlmProviderCatalog,
+  type LlmProviderPool,
 } from '@omadia/llm-provider';
 // Phase 5B: structural shim — `@omadia/integration-microsoft365` lives
 // in the byte5-plugins backup repo. The orchestrator types against a
@@ -68,6 +70,7 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from './buildOrchestrator.js';
+import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 import {
   audienceGuardedAttachmentReader,
   createAttachmentReader,
@@ -83,7 +86,10 @@ import {
   sharedMcpInputReplayer,
   sharedPendingMcpInputStore,
 } from './mcp/pendingMcpInput.js';
-import { DEFAULT_ORCHESTRATOR_MODEL } from './registry/agentRuntime.js';
+import {
+  DEFAULT_ORCHESTRATOR_MODEL,
+  resolveConfiguredModel,
+} from './registry/agentRuntime.js';
 import { ConfigStore } from './registry/configStore.js';
 import {
   OrchestratorRegistry,
@@ -203,6 +209,31 @@ const PLUGIN_CAPABILITIES_SERVICE = 'pluginCapabilities';
 // Kept in sync with the kernel default `ORCHESTRATOR_MODEL` in
 // middleware/src/config.ts.
 const DEFAULT_MODEL = DEFAULT_ORCHESTRATOR_MODEL;
+
+/**
+ * #1016 — the kernel service carrying the per-turn owner guard.
+ *
+ * Duplicated rather than imported: the kernel exports
+ * `ROUTINE_TURN_OWNER_GUARD_SERVICE_NAME` from
+ * `middleware/src/plugins/routines/`, which this package cannot depend on
+ * (the app layer imports packages, never the reverse). Exported so
+ * `test/routineTurnOwnerGuardGrant.test.ts` can assert this literal equals the
+ * kernel constant AND is declared in this plugin's manifest — a drift guard
+ * standing in for the import that is not available.
+ */
+export const ROUTINE_TURN_OWNER_GUARD_SERVICE = 'routineTurnOwnerGuard';
+
+/**
+ * #1018 — kernel-published resolver for the peer AGENTS the calling agent may
+ * see in the current chat. Declared as `chatPeerAgents@1` in
+ * `optional_requires` (the grant test pins the literal); resolved PER CALL,
+ * not at activation, because the kernel provides it from inside the database
+ * block, which may come up after this plugin.
+ */
+export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+
+/** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
+export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
 // 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
 // multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
 // mid-tool-call, so the file is never built. Also enforced as a floor below so
@@ -253,10 +284,10 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
 /** AI-Act Art. 50 (#644) — the tokens the per-channel override map may key on:
  *  the full `ChannelKind` set from `@omadia/plugin-api`. An override for any
  *  other token is dropped with a warning so a typo never silently disables the
- *  marking. NOTE: today only `teams`/`slack`/`telegram` are ever produced as a
- *  per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email` and
- *  `web` are accepted here but currently resolve to the global level, same as
- *  the kind-less channels — see the `ai_disclosure_level_overrides` help text.
+ *  marking. NOTE: today only `teams`/`slack`/`telegram`/`api` are ever produced
+ *  as a per-turn `channelKind` (`orchestratorDispatcher.toChannelKind`); `email`
+ *  and `web` are accepted here but currently resolve to the global level, same
+ *  as the kind-less channels — see the `ai_disclosure_level_overrides` help text.
  *
  *  #648 — derived from the shared list rather than spelled again here. The
  *  posture view reports one row per accepted kind, so a second literal would
@@ -477,14 +508,26 @@ export async function activate(
   const llmProviderCatalog = ctx.services.get<LlmProviderCatalog>(
     'llmProviderCatalog',
   );
-  const provider = await resolveLlmProvider({
-    providerId,
-    getSecret: (k) => ctx.secrets.get(k),
-    maxRetries: 5,
-    ...(llmProviderCatalog !== undefined
-      ? { catalog: llmProviderCatalog }
-      : {}),
-  });
+  // #1033 W1 — ONE pool, MANY providers. The configured provider is simply
+  // the pool's first entry; a per-agent policy naming another provider
+  // (primary or fallback) resolves through the same pool at turn time, with
+  // the same credentials source and the same retry budget.
+  //
+  // #1033 W3 — prefer the KERNEL's pool when it publishes one (declared as
+  // `llmProviderPool@1`, optional): the fallback breaker then has one state
+  // for the turn loop and `/admin/providers` alike. Resolved eagerly, which
+  // is safe here for the same reason as `routineTurnOwnerGuard`: the kernel
+  // provides it at boot, before any plugin activates.
+  const providerPool =
+    ctx.services.getOptional<LlmProviderPool>(LLM_PROVIDER_POOL_SERVICE) ??
+    createLlmProviderPool({
+      getSecret: (k: string) => ctx.secrets.get(k),
+      maxRetries: 5,
+      ...(llmProviderCatalog !== undefined
+        ? { catalog: llmProviderCatalog }
+        : {}),
+    });
+  const provider = await providerPool.get(providerId);
   if (!provider) {
     ctx.log(
       `[harness-orchestrator] no API key for provider '${providerId}' — chatAgent@1 capability NOT published`,
@@ -645,10 +688,40 @@ export async function activate(
     (agentId: string) => boolean
   >('installedPluginToolsReadyReader');
 
-  // Setup-field config (with defaults)
-  const model =
+  // #1016 — per-turn owner guard for the subscription-CLI runtime. Published
+  // by the kernel at boot (`middleware/src/index.ts:routineTurnOwnerGuard`)
+  // because the store it reads (`routineTurnContext`) lives in the application
+  // layer, not in this package. Absent (legacy hosts, unit tests) → the
+  // restored context is not cross-checked, the pre-#1016 behaviour.
+  //
+  // `getOptional`, paired with `optional_requires: ["routineTurnOwnerGuard@1"]`
+  // in the manifest, because absence is a supported steady state rather than a
+  // misconfiguration. BOTH halves are load-bearing: the verb advertises the
+  // contract, and the declaration is what makes the call legal at all — the
+  // grant gate throws `ServiceNotDeclaredError` for an undeclared name, and
+  // this call sits near the top of `activate()`, so an undeclared name takes
+  // `chatAgent@1` down on every boot instead of degrading the guard.
+  //
+  // Resolved eagerly, which the `getOptional` docblock cautions against for
+  // PLUGIN providers (an optional dependency contributes no activation edge).
+  // Safe here because the provider is the kernel: `serviceRegistry.provide`
+  // runs at boot, before any plugin activates — the same ordering the two
+  // sibling readers above already rely on.
+  const turnOwnerGuard = ctx.services.getOptional<
+    (input: ChatTurnInput) => (() => void) | undefined
+  >(ROUTINE_TURN_OWNER_GUARD_SERVICE);
+
+  // Setup-field config (with defaults). `orchestrator_model` is a REF — a
+  // class ref (`class:frontier`, the default), an alias or a vendor id — and
+  // is resolved against the live catalog for the active provider here, at
+  // build time, so the turn loop only ever sends a concrete vendor id.
+  const configuredModelRef =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
+  const model =
+    resolveConfiguredModel(configuredModelRef, providerId) ??
+    resolveConfiguredModel(DEFAULT_MODEL, providerId) ??
+    configuredModelRef;
   // Operator persona. Empty → Orchestrator falls back to its generic,
   // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
   // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.
@@ -718,6 +791,14 @@ export async function activate(
   const maxTurnSeconds = parseNumberOrDefault(
     ctx.config.get<unknown>('max_turn_seconds'),
     DEFAULT_MAX_TURN_SECONDS,
+  );
+  // OM-104 — operator-set wall-clock budget for one CLI-owned turn, in
+  // seconds. `0` (the default) means "not set": the ENV override and then the
+  // 600 s built-in stay in charge. Not floored — an operator on a slow box may
+  // legitimately want a much larger budget, and a small one is their call too.
+  const cliTurnSeconds = parseNumberOrDefault(
+    ctx.config.get<unknown>('cli_turn_seconds'),
+    0,
   );
   // Round-loop guard thresholds (omit → LoopGuard defaults 3 / 5). `0` or an
   // unparseable value falls back to the default rather than disabling the guard.
@@ -991,6 +1072,8 @@ export async function activate(
   // same `deps`.
   const orchestratorDeps: OrchestratorDeps = {
     provider,
+    // #1033 W3 — the policy's other providers resolve through the same pool.
+    providerPool,
     knowledgeGraph,
     memoryStore,
     entityRefBus,
@@ -1001,6 +1084,11 @@ export async function activate(
     turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
+    ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
+    // #1018 — resolved PER CALL (optional service, provided by the kernel from
+    // inside its database block, possibly after this plugin activated).
+    chatPeerAgents: async () =>
+      (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),
@@ -1064,24 +1152,29 @@ export async function activate(
     (ctx.config.get<string>('orchestrator_model_routing') ?? '')
       .trim()
       .toLowerCase() === 'true';
+  // Each routing slot is a REF resolved like `orchestrator_model` above; the
+  // defaults are class refs so they follow the live catalog. A slot that
+  // cannot be resolved for the active provider falls back to the main model.
+  const resolveSlot = (ref: string | undefined, fallbackRef: string): string =>
+    resolveConfiguredModel(ref, providerId) ??
+    resolveConfiguredModel(fallbackRef, providerId) ??
+    model;
   const modelRouting = modelRoutingEnabled
     ? {
-        classifierModel:
-          (
-            ctx.config.get<string>('model_routing_classifier_model') ??
-            ctx.config.get<string>('topic_classifier_model') ??
-            'claude-haiku-4-5'
-          ).trim(),
-        simpleModel:
-          (
-            ctx.config.get<string>('model_routing_simple_model') ??
-            ctx.config.get<string>('sub_agent_model') ??
-            'claude-sonnet-4-6'
-          ).trim(),
-        complexModel:
-          (
-            ctx.config.get<string>('model_routing_complex_model') ?? model
-          ).trim(),
+        classifierModel: resolveSlot(
+          ctx.config.get<string>('model_routing_classifier_model') ??
+            ctx.config.get<string>('topic_classifier_model'),
+          'class:fast',
+        ),
+        simpleModel: resolveSlot(
+          ctx.config.get<string>('model_routing_simple_model') ??
+            ctx.config.get<string>('sub_agent_model'),
+          'class:balanced',
+        ),
+        complexModel: resolveSlot(
+          ctx.config.get<string>('model_routing_complex_model'),
+          model,
+        ),
       }
     : undefined;
   if (modelRouting) {
@@ -1113,6 +1206,7 @@ export async function activate(
       maxTokens,
       maxToolIterations: maxIterations,
       ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+      ...(cliTurnSeconds > 0 ? { cliTurnSeconds } : {}),
       ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
       ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
     },
@@ -1187,6 +1281,7 @@ export async function activate(
           maxTokens,
           maxToolIterations: maxIterations,
           ...(maxTurnSeconds > 0 ? { maxTurnSeconds } : {}),
+          ...(cliTurnSeconds > 0 ? { cliTurnSeconds } : {}),
           ...(loopRepeatSoft > 0 ? { loopRepeatSoft } : {}),
           ...(loopRepeatHard > 0 ? { loopRepeatHard } : {}),
         },

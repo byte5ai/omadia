@@ -15,6 +15,7 @@ import {
   type McpServerConfig,
 } from '@omadia/orchestrator';
 import type { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
+import { isSandboxListenDenied } from './_helpers/listenLoopback.js';
 
 /**
  * W0-5 — the first REAL `McpManager` → MCP-server round trip in the repo.
@@ -54,11 +55,9 @@ function fakeDispatch(seen: Array<{ name: string; input: unknown }>): ToolDispat
   } as unknown as ToolDispatchService;
 }
 
-function isSandboxListenError(error: unknown): boolean {
-  return (
-    error instanceof Error && 'code' in error && (error as { code?: string }).code === 'EPERM'
-  );
-}
+// #1024 — the local `isSandboxListenError` this replaces ignored
+// `OMADIA_EXPECT_LOOPBACK`, so a listener-denied runner skipped the repo's only
+// real McpManager round trip and still reported success.
 
 /** Count how many times the manager dropped a pooled connection. `close` is the
  *  single invalidation point (connect failure, call failure, stale token). */
@@ -320,7 +319,7 @@ describe('McpManager against a live MCP server (W0-5)', () => {
       servers.push(server);
       return handle.url;
     } catch (error) {
-      if (isSandboxListenError(error)) {
+      if (isSandboxListenDenied(error)) {
         t.skip('sandbox blocks loopback listeners on 127.0.0.1');
         return undefined;
       }

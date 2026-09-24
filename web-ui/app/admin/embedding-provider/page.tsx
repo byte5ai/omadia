@@ -9,10 +9,16 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   getEmbeddingProvider,
+  getLocalEmbeddingModel,
+  reactivateEmbeddingProvider,
+  startLocalEmbeddingModelFetch,
   switchEmbeddingProvider,
+  type EmbeddingCapabilityGap,
+  type EmbeddingDedupThresholdResult,
   type EmbeddingGateState,
   type EmbeddingProviderOption,
   type EmbeddingProviderState,
+  type LocalEmbeddingModelState,
 } from '../../_lib/api';
 
 /**
@@ -43,6 +49,8 @@ import {
  *  without a reload. */
 const POLL_INTERVAL_MS = 10_000;
 const POLL_INTERVAL_SECONDS = POLL_INTERVAL_MS / 1000;
+/** While weights are downloading, 10s of nothing reads as "stuck". */
+const DOWNLOAD_POLL_INTERVAL_MS = 2_000;
 
 /** Gate reasons that are progress reports, not failures. Both are published
  *  together with `vectorWritesAllowed: true`. */
@@ -72,6 +80,54 @@ function gateTone(gate: EmbeddingGateState): Tone {
   return gate.vectorWritesAllowed ? 'ok' : 'error';
 }
 
+/**
+ * OM-99 — the message key for a missing capability.
+ *
+ * An older middleware sends no `capabilityGap` at all; that falls back to the
+ * historical wording, which is still the right answer for the keyed adapters
+ * that were the only ones when it was written.
+ */
+function capabilityGapKey(gap: EmbeddingCapabilityGap | null | undefined): string {
+  switch (gap) {
+    case 'missing-weights':
+      return 'capabilityMissingWeights';
+    case 'missing-credentials':
+      return 'capabilityMissingCredentials';
+    case 'no-active-provider':
+      return 'capabilityMissingNoProvider';
+    case 'not-published':
+      return 'capabilityMissingNotPublished';
+    default:
+      return 'capabilityMissing';
+  }
+}
+
+/** The reactivate button plus its busy label. Rendered from two different
+ *  cards, which is why it is not inlined into either. */
+function ReactivateControl({
+  onReactivate,
+  busy,
+  label,
+}: {
+  onReactivate: () => Promise<void>;
+  busy: boolean;
+  label?: string;
+}): React.ReactElement {
+  const t = useTranslations('adminEmbeddingProvider');
+  return (
+    <div className="mt-3">
+      <Button
+        type="button"
+        onClick={() => void onReactivate()}
+        disabled={busy}
+        data-testid="reactivate-provider"
+      >
+        {busy ? t('reactivating') : (label ?? t('reactivateButton'))}
+      </Button>
+    </div>
+  );
+}
+
 /** The middleware's inline error code, when it sent one. */
 function errorCodeOf(err: unknown): string | null {
   if (!(err instanceof ApiError)) return null;
@@ -97,6 +153,28 @@ export default function EmbeddingProviderPage(): React.ReactElement {
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switchedTo, setSwitchedTo] = useState<string | null>(null);
 
+  /**
+   * OM-84 follow-up — the keyless adapter's weights. `null` means that adapter
+   * is not active (the middleware answers 404), which is the normal state on a
+   * keyed deployment and must render nothing at all.
+   */
+  const [localModel, setLocalModel] = useState<LocalEmbeddingModelState | null>(
+    null,
+  );
+  const [fetchStarting, setFetchStarting] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  /**
+   * OM-98 — "reactivate provider". One button behind two different dead ends
+   * (weights arrived after activation; empty columns at the wrong width), so
+   * its result is reported in full rather than as a spinner that stops.
+   */
+  const [reactivating, setReactivating] = useState(false);
+  const [reactivateError, setReactivateError] = useState<string | null>(null);
+  const [dedupResult, setDedupResult] =
+    useState<EmbeddingDedupThresholdResult | null>(null);
+  const [reactivated, setReactivated] = useState(false);
+
   /** Silent re-read used by both the mount fetch and the poll. Never toggles
    *  `loading`, so a poll cannot make the page flash. */
   const refresh = useCallback(async (): Promise<void> => {
@@ -105,6 +183,15 @@ export default function EmbeddingProviderPage(): React.ReactElement {
       setLoadError(null);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
+    }
+    // Settled separately and deliberately not inside the try above: a keyed
+    // deployment has no keyless adapter, and letting its absence blank the
+    // whole page would be a regression for every install that will never use
+    // it.
+    try {
+      setLocalModel(await getLocalEmbeddingModel());
+    } catch {
+      setLocalModel(null);
     }
   }, []);
 
@@ -115,10 +202,66 @@ export default function EmbeddingProviderPage(): React.ReactElement {
     void refresh().finally(() => setLoading(false));
   }, [refresh]);
 
+  const downloading = localModel?.job.state === 'running';
+
   useEffect(() => {
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    const timer = setInterval(
+      () => void refresh(),
+      downloading ? DOWNLOAD_POLL_INTERVAL_MS : POLL_INTERVAL_MS,
+    );
     return () => clearInterval(timer);
+  }, [refresh, downloading]);
+
+  const onFetchWeights = useCallback(async (): Promise<void> => {
+    setFetchStarting(true);
+    setFetchError(null);
+    try {
+      const result = await startLocalEmbeddingModelFetch();
+      setLocalModel(result);
+    } catch (err) {
+      // A 409 means someone else already started it — not an error worth
+      // shouting about, so re-read and let the progress row speak.
+      if (err instanceof ApiError && err.status === 409) {
+        await refresh();
+      } else {
+        setFetchError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setFetchStarting(false);
+    }
   }, [refresh]);
+
+  const onReactivate = useCallback(async (): Promise<void> => {
+    setReactivating(true);
+    setReactivateError(null);
+    setReactivated(false);
+    setDedupResult(null);
+    try {
+      const result = await reactivateEmbeddingProvider();
+      setState(result);
+      setReactivated(true);
+      setDedupResult(result.dedupThreshold ?? null);
+      // The adapter republishes its fetcher on activation, so the weights card
+      // has to be re-read from the NEW service instance, not the stale one.
+      await refresh();
+    } catch (err) {
+      const code = errorCodeOf(err);
+      if (code === 'embeddingProvider.corpus_not_empty') {
+        setReactivateError(t('reactivateCorpusNotEmpty'));
+      } else if (code === 'embeddingProvider.no_active_provider') {
+        setReactivateError(t('reactivateNoProvider'));
+      } else if (code === 'embeddingProvider.switch_in_progress') {
+        setReactivateError(t('reactivateInProgress'));
+      } else if (err instanceof ApiError && err.status === 403) {
+        setReactivateError(t('forbiddenError'));
+      } else {
+        setReactivateError(err instanceof Error ? err.message : String(err));
+      }
+      await refresh();
+    } finally {
+      setReactivating(false);
+    }
+  }, [refresh, t]);
 
   const candidates = useMemo(
     () => state?.providers.filter((p) => !p.active) ?? [],
@@ -239,9 +382,182 @@ export default function EmbeddingProviderPage(): React.ReactElement {
             </p>
           </section>
 
+          {/* OM-84 follow-up — the keyless adapter is active but its weights
+              are not on disk, so it publishes nothing. Printing
+              "npm run fetch-model" here would be useless to the person this
+              adapter exists for: a subscription user in the desktop app, who
+              has no terminal in the flow. So the page drives the download.
+              Rendered only when that adapter is active — `localModel` is null
+              on every keyed deployment. */}
+          {localModel !== null && localModel.missingFiles.length > 0 && (
+            <section
+              data-testid="local-model-card"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.info}`}
+            >
+              <p className="font-semibold">{t('localModelTitle')}</p>
+              <p className="mt-1">
+                {t('localModelBody', {
+                  size: format.number(
+                    Math.round(localModel.totalBytes / 1024 / 1024),
+                  ),
+                })}
+              </p>
+              <p className="mt-1 font-mono text-xs opacity-80">
+                {localModel.modelDir}
+              </p>
+
+              {localModel.job.state === 'running' ? (
+                <p data-testid="local-model-progress" className="mt-3">
+                  {t('localModelProgress', {
+                    done: format.number(
+                      Math.round(localModel.job.downloadedBytes / 1024 / 1024),
+                    ),
+                    total: format.number(
+                      Math.round(localModel.job.totalBytes / 1024 / 1024),
+                    ),
+                    file: localModel.job.currentFile ?? '—',
+                  })}
+                </p>
+              ) : (
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    onClick={() => void onFetchWeights()}
+                    disabled={fetchStarting}
+                    data-testid="local-model-fetch"
+                  >
+                    {fetchStarting
+                      ? t('localModelStarting')
+                      : t('localModelFetch')}
+                  </Button>
+                </div>
+              )}
+
+              {localModel.job.state === 'failed' && localModel.job.error !== null && (
+                <p
+                  data-testid="local-model-error"
+                  className="mt-3 text-[color:var(--danger)]"
+                >
+                  {t('localModelFailed', { message: localModel.job.error })}
+                </p>
+              )}
+              {fetchError !== null && (
+                <p className="mt-3 text-[color:var(--danger)]">
+                  {t('localModelFailed', { message: fetchError })}
+                </p>
+              )}
+
+              {/* The threshold is the one thing an operator cannot infer and
+                  will not notice: at the knowledge-graph default of 0.90 this
+                  model's dedup never fires, silently. */}
+              <p className="mt-3 text-xs opacity-80">{t('localModelThreshold')}</p>
+            </section>
+          )}
+
+          {/* Weights arrived while the page was open. The adapter reads them in
+              its `activate()`, not retroactively — so this used to end on
+              "published on the next activation" with no way to cause one short
+              of a restart. OM-98 gives it the button. */}
+          {localModel !== null &&
+            localModel.missingFiles.length === 0 &&
+            localModel.job.state === 'done' && (
+              <section
+                data-testid="local-model-ready"
+                className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.ok}`}
+              >
+                <p>{t('localModelReady')}</p>
+                {!state.capabilityPublished && (
+                  <ReactivateControl
+                    onReactivate={onReactivate}
+                    busy={reactivating}
+                  />
+                )}
+              </section>
+            )}
+
+          {/* OM-99 — one box per REASON. The single "no API key or base URL"
+              sentence is true for the keyed adapters and false for the keyless
+              one, which is the adapter that exists so nobody needs a key. */}
           {state.activeProviderId !== null && !state.capabilityPublished && (
-            <section className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}>
-              {t('capabilityMissing')}
+            <section
+              data-testid="capability-missing"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}
+            >
+              {t(capabilityGapKey(state.capabilityGap))}
+            </section>
+          )}
+
+          {/* OM-98 — the width collision, as its own fact. The adapter IS
+              publishing here; the gate is refusing the WRITES. When the
+              columns are empty the fix costs nothing, so it is offered rather
+              than described. */}
+          {state.widthCollision != null && (
+            <section
+              data-testid="width-collision"
+              className={`mb-6 rounded-lg border p-4 text-sm ${
+                state.widthCollision.columnsEmpty === true
+                  ? TONE_CLASS.warn
+                  : TONE_CLASS.error
+              }`}
+            >
+              <p className="font-semibold">{t('widthCollisionTitle')}</p>
+              <p className="mt-1">
+                {t('widthCollisionBody', {
+                  provider: state.widthCollision.providerDimensions ?? 0,
+                  columns: state.widthCollision.columnDimensions ?? 0,
+                })}
+              </p>
+              {state.widthCollision.columnsEmpty === true ? (
+                <>
+                  <p className="mt-1">{t('widthCollisionEmpty')}</p>
+                  <ReactivateControl
+                    onReactivate={onReactivate}
+                    busy={reactivating}
+                    label={t('rebuildColumns')}
+                  />
+                </>
+              ) : (
+                <p className="mt-1">
+                  {state.widthCollision.columnsEmpty === false
+                    ? t('widthCollisionPopulated')
+                    : t('widthCollisionUnknown')}
+                </p>
+              )}
+            </section>
+          )}
+
+          {reactivateError !== null && (
+            <section
+              data-testid="reactivate-error"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.error}`}
+            >
+              {reactivateError}
+            </section>
+          )}
+
+          {reactivated && reactivateError === null && (
+            <section
+              data-testid="reactivate-result"
+              className={`mb-6 rounded-lg border p-4 text-sm ${TONE_CLASS.info}`}
+            >
+              <p>
+                {state.capabilityPublished
+                  ? t('reactivatePublished')
+                  : t('reactivateNotPublished')}
+              </p>
+              {dedupResult !== null && dedupResult.applied && (
+                <p className="mt-1" data-testid="reactivate-dedup">
+                  {t('dedupApplied', { value: dedupResult.value ?? 0 })}
+                </p>
+              )}
+              {dedupResult !== null && dedupResult.reason === 'operator-set' && (
+                <p className="mt-1" data-testid="reactivate-dedup">
+                  {t('dedupOperatorSet', {
+                    current: dedupResult.previous ?? '',
+                    recommended: dedupResult.value ?? 0,
+                  })}
+                </p>
+              )}
             </section>
           )}
 
@@ -373,6 +689,11 @@ export default function EmbeddingProviderPage(): React.ReactElement {
                         ? t('discardUnknown')
                         : t('discardCount', { count: state.storedVectorTotal })}
                     </p>
+                    {/* Cato-Audit Runde 5 / OM-98: the count above is scoped to
+                        this tenant, but DROP COLUMN is not — the governed
+                        vector columns live on tables every tenant shares. Say
+                        so before the confirmation checkbox, not after. */}
+                    <p className="mt-1">{t('discardAllTenants')}</p>
                     <p className="mt-1">{t('costWarning')}</p>
                     <label className="mt-3 flex items-start gap-2">
                       <input

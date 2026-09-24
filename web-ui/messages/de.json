@@ -28,6 +28,31 @@
         "available": "{count, plural, one {# Orchestrator verfügbar} other {# Orchestratoren verfügbar}}",
         "none": "Kein Orchestrator konfiguriert"
       },
+      "embeddings": {
+        "title": "Gedächtnis / Embeddings",
+        "active": "Aktiv: {model}",
+        "none": "Kein Embedding-Anbieter konfiguriert. Prozessgedächtnis, semantische Suche und Dublettenerkennung sind aus.",
+        "unknown": "Status nicht abrufbar",
+        "memory": {
+          "allActive": "Gedächtnis-Funktionen aktiv",
+          "allActiveWithProvider": "Gedächtnis-Funktionen aktiv (LLM: {provider})",
+          "off": "Aus: {features}",
+          "featureWithReason": "{feature} ({reason})",
+          "feature": {
+            "factExtractor": "Faktenextraktion",
+            "topicDetector": "Themenerkennung",
+            "scratchReaper": "Scratch-Aufräumer"
+          },
+          "reason": {
+            "no_llm_provider": "kein LLM-Provider zugewiesen",
+            "no_embedding_provider": "kein Embedding-Anbieter",
+            "no_graph_pool": "kein Graph-Speicher",
+            "disabled_by_config": "per Konfiguration deaktiviert",
+            "plugin_inactive": "Plugin nicht aktiv",
+            "unknown": "Grund unbekannt"
+          }
+        }
+      },
       "plugins": {
         "title": "Plugins",
         "installed": "{count, plural, one {# Plugin installiert} other {# Plugins installiert}}",
@@ -39,6 +64,17 @@
         "summary": "{enabled} von {total} verbunden · {tools} Tools",
         "summaryPending": "{enabled} von {total} verbunden · {tools} Tools · {pending} brauchen Discover",
         "none": "Noch keine MCP-Server"
+      },
+      "lastTurn": {
+        "title": "Letzter Turn",
+        "okStatus": "Erfolgreich",
+        "unknownStatus": "Unbekannt",
+        "ok": "Der letzte Chat-Turn wurde erfolgreich beantwortet.",
+        "none": "Seit dem Start dieses Prozesses lief noch kein Turn.",
+        "cliIncompatible": "Die installierte Claude-CLI ({installed}) unterstützt eine Option nicht, die omadia braucht. Aktualisiere auf {required} oder neuer.",
+        "cliTimeout": "Der letzte Turn hat sein Zeitlimit überschritten. Erhöhe das Zeitlimit pro Turn im Abo-Bereich.",
+        "failure": "Der letzte Turn ist fehlgeschlagen: {message}",
+        "unknownVersion": "unbekannte Version"
       }
     },
     "quick": {
@@ -113,8 +149,15 @@
         "title": "LLM verbinden",
         "description": "Ohne verbundenes LLM kann kein Orchestrator laufen. Verbinde zuerst einen API-Provider oder ein Abo-CLI.",
         "doneViaProvider": "Ein LLM-Anbieter ist verbunden und sein Schlüssel wurde geprüft.",
-        "doneViaCli": "Du bist in einer Abo-CLI angemeldet — das reicht, um Orchestratoren zu betreiben."
+        "doneViaCli": "Du bist in einer Abo-CLI angemeldet und der Orchestrator läuft darüber.",
+        "doneViaOauth": "Ein Abo ist verbunden und die Agent-Runtime läuft darüber.",
+        "doneViaRuntime": "Die Agent-Runtime läuft über {label}.",
+        "doneViaRuntimeNoLabel": "Die Agent-Runtime läuft.",
+        "accessWithoutRuntime": "Ein LLM-Zugang ist hinterlegt, aber die Agent-Runtime läuft noch nicht. Meist fehlt nur die Zuordnung des Orchestrators zu diesem Zugang.",
+        "assignOrchestrator": "Orchestrator zuordnen"
       },
+      "embeddingsNote": "Gedächtnis eingeschränkt: Es ist kein Embedding-Anbieter aktiv. Prozessgedächtnis, semantische Suche und Dublettenerkennung bleiben aus, bis einer läuft. Es gibt auch einen schlüssellosen Weg — ohne API-Schlüssel und ohne eigenen Server.",
+      "embeddingsCta": "Embedding-Anbieter einrichten",
       "heading": "Erste Schritte",
       "kicker": "Einrichtung",
       "applied": "Installiert",
@@ -203,7 +246,7 @@
         },
         "datasets": {
           "title": "Datensätze",
-          "description": "CSVs als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
+          "description": "CSV- und Excel-Dateien als strukturierte Datensätze importieren, die Agenten abfragen können, Schema und Zeilen prüfen und sie wieder löschen."
         },
         "bulkPromote": {
           "title": "Bulk-Promotion",
@@ -346,6 +389,10 @@
         "modelDefault": "(Standard)",
         "platformDefault": "(Plattform-Standard: {model})",
         "effectiveModel": "Aktiv: {model}",
+        "modelPolicy": "Policy: {primary} · Fallback {fallback}.",
+        "modelPolicyAuto": "Auto",
+        "modelPolicyNone": "keiner",
+        "modelPolicyEdit": "Auf der Agenten-Seite bearbeiten →",
         "skillBody": "Skill-Inhalt (Markdown)",
         "skillFileReadOnly": "Datei-basierter Skill — hier schreibgeschützt.",
         "transport": "Transport",
@@ -444,7 +491,9 @@
     "channels": "Channels",
     "pluginsCluster": "Plugins",
     "adminCluster": "Admin",
-    "help": "Hilfe"
+    "help": "Hilfe",
+    "teamsSignIn": "Teams-Anmeldung",
+    "llmAccess": "LLM-Zugang"
   },
   "conductor": {
     "title": "Conductor",
@@ -786,6 +835,9 @@
     "scopeLabel": "Scope",
     "channelLabel": "Channel",
     "modelLabel": "Modell",
+    "providerLabel": "Provider",
+    "fallbackUsedLabel": "Fallback",
+    "fallbackUsedTitle": "Dieser Turn lief auf dem Fallback-Modell des Agenten, weil das primäre Modell nicht verfügbar war.",
     "turnIdLabel": "Turn",
     "summaryCounts": "{masked} maskiert · {datasets} Datasets",
     "loadMore": "Mehr laden",
@@ -839,6 +891,7 @@
   },
   "layout": {
     "logoAriaLabel": "omadia · Startseite",
+    "loading": "Seite wird geladen…",
     "metaTitle": "omadia · Management UI",
     "metaDescription": "Verwaltungsoberfläche für die omadia Agent-Plattform (lokal).",
     "tagline": "an Agentic OS"
@@ -1075,6 +1128,10 @@
       "tool_incompatible": {
         "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
         "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
+      },
+      "discovery_unavailable": {
+        "what": "Die Live-Modellerkennung ist auf diesem Server nicht eingerichtet, die Modell-Liste kann daher nicht aus der Provider-API aktualisiert werden.",
+        "next": "Der Provider behält seine mitgelieferte Modell-Liste. Starte die Middleware nach einem Update neu oder bitte einen Administrator, die Erkennung zu aktivieren."
       },
       "unknown_plugin": {
         "what": "Diesem Plugin kann auf dieser Seite kein Provider zugeordnet werden.",
@@ -1320,8 +1377,13 @@
   },
   "runtimeReadiness": {
     "title": "LLM-Zugang fehlt",
-    "body": "Die Agent-Runtime ist offline — meistens, weil noch kein LLM-API-Key oder Abo hinterlegt ist. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang; Chat, Agenten, Channels und Skills sind danach sofort verfügbar. Routinen brauchen zusätzlich einen Neustart der Middleware.",
+    "body": "Die Agent-Runtime ist offline: Es ist noch kein LLM-API-Key und kein Abo hinterlegt. Hinterlege einen API-Key oder verbinde ein bestehendes Claude/Codex-Abo im LLM-Zugang und ordne den Orchestrator diesem Zugang zu. Diese Karte verschwindet, sobald die Runtime läuft.",
+    "titleNoAssignment": "Orchestrator nicht zugeordnet",
+    "bodyNoAssignment": "Ein LLM-Zugang ist vorhanden, aber der Orchestrator ist noch keinem Provider mit Zugang zugeordnet. Wähle im LLM-Zugang unter Zuordnung den verbundenen Provider für den Orchestrator, bei einem Abo „Claude (subscription CLI)“. Die Runtime startet danach ohne Neustart.",
+    "titleUnknown": "Agent-Runtime antwortet nicht",
+    "bodyUnknown": "Zugang und Zuordnung sind gesetzt, die Agent-Runtime antwortet trotzdem nicht. Prüfe den hinterlegten Zugang unter LLM-Zugang.",
     "cta": "LLM-Zugang öffnen",
+    "ctaNoAssignment": "Zuordnung öffnen",
     "dismiss": "Später"
   },
   "agentDetailsModal": {
@@ -1354,6 +1416,8 @@
   },
   "chat": {
     "errorProxyFailure": "Proxy-Fehler (HTTP {status}). Prüf die Middleware-Logs.",
+    "errorAgentUnavailable": "Der Orchestrator dieser Session ist nicht mehr aktiv. Binde ihn unten neu, oder wähle einen anderen.",
+    "errorNoAgentsActive": "Es läuft noch kein Orchestrator. Ordne unter LLM-Zugang einen LLM-Anbieter zu und versuche es erneut.",
     "errorAborted": "Abgebrochen.",
     "errorProviderGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
     "errorProviderAuth": "Der KI-Anbieter hat den hinterlegten API-Schlüssel abgelehnt. Prüfe ihn unter Admin → LLM-Zugang mit „Schlüssel testen“ und hinterlege ggf. einen neuen.",
@@ -1399,6 +1463,8 @@
     },
     "inputLabel": "Eingabe",
     "outputLabel": "Ausgabe",
+    "foreignToolBadge": "Fremdes Werkzeug",
+    "foreignToolExplain": "Dieser Aufruf lief nicht über omadia. Die Abo-CLI hat ein eigenes eingebautes Werkzeug benutzt, omadias Rechteprüfung hat dafür also nicht gegriffen. Bitte melde das deinem Betreiber.",
     "persona": {
       "title": "Persona",
       "matched": "Antwortet als {name}",
@@ -1545,7 +1611,9 @@
       "classifierTooltip": "Triage-Klassifizierer: {classifier} → {bucket} → {model}",
       "bucketSimple": "einfach",
       "bucketComplex": "komplex",
-      "bucketFallback": "Fallback"
+      "bucketFallback": "Fallback",
+      "providerFallback": "Fallback-Modell",
+      "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
     }
   },
   "privacyReceipt": {
@@ -1652,7 +1720,10 @@
     "unavailableTitle": "Der Orchestrator dieser Session ist nicht mehr verfügbar",
     "unavailableBody": "Der Orchestrator „{slug}\" wurde gelöscht oder deaktiviert. Wie soll diese Session weiterlaufen?",
     "actionReSnapshot": "Auf Standard umbinden",
-    "actionDelete": "Session löschen"
+    "actionDelete": "Session löschen",
+    "noAgentsTitle": "Es läuft kein Orchestrator",
+    "noAgentsBody": "Es ist noch kein LLM-Anbieter einem Orchestrator zugeordnet, daher kann kein Agent antworten. Öffne den LLM-Zugang und hinterlege einen API-Schlüssel oder eine Abo-CLI.",
+    "actionOpenLlmAccess": "LLM-Zugang öffnen"
   },
   "skills": {
     "metaTitle": "Skills · omadia",
@@ -1773,6 +1844,7 @@
       "multi_orchestrator_unavailable": "Die Multi-Orchestrator-Runtime ist nicht verfügbar.",
       "not_found": "Diesen Orchestrator gibt es nicht mehr — lad die Seite neu.",
       "plugin_not_assigned": "Dieses Plugin ist dem Orchestrator nicht mehr zugewiesen — lad die Seite neu.",
+      "model_policy_unavailable": "Der Modell-Katalog ist gerade nicht verfügbar — die Policy kann nicht geprüft werden. Versuch es gleich noch einmal.",
       "unknown": "Request fehlgeschlagen: {detail}"
     },
     "statusEnabled": "aktiviert",
@@ -1808,7 +1880,29 @@
     "memoryWriteTooltip": "Memory-Write-Scope dieses Plugins",
     "networkLabel": "Netzwerk:",
     "configShow": "Config",
-    "configHide": "Schließen",
+    "configOverrideBadgeTooltip": "Für diesen Orchestrator überschriebene Felder",
+    "pluginConfig": {
+      "title": "Konfiguration — {plugin}",
+      "close": "Schließen",
+      "done": "Fertig",
+      "overrideSummary": "{set} von {total} überschrieben",
+      "introMixed": "Überschriebene Felder gelten nur für diesen Orchestrator; jedes andere Feld behält die Store-Konfiguration.",
+      "introAllFromStore": "Nichts überschrieben — dieses Plugin läuft komplett auf der Store-Konfiguration.",
+      "resetAll": "Alle Overrides entfernen",
+      "filterPlaceholder": "Felder filtern …",
+      "filterEmpty": "Kein Feld passt zu diesem Filter.",
+      "badgeSecret": "Secret · Vault",
+      "badgeConfig": "Config",
+      "badgeSecretTitle": "Secret — verschlüsselt im per-Agent-Vault",
+      "badgeConfigTitle": "Config — nicht-sensitiver Wert in der Instanz-Konfiguration",
+      "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
+      "statusOverridden": "überschreibt die Store-Konfiguration",
+      "statusFromStore": "aus der Store-Konfiguration",
+      "statusFromStoreWithDefault": "aus der Store-Konfiguration · Default: {default}",
+      "notSet": "nicht gesetzt",
+      "reset": "Auf Store-Wert zurücksetzen",
+      "unsavedHint": "Änderungen greifen erst mit „Speichern“ oben."
+    },
     "orphanPluginBadge": "nicht mehr installiert",
     "bindingsAdd": "Binding hinzufügen",
     "bindingsRemove": "Entfernen",
@@ -1822,6 +1916,8 @@
     "routingTesterMatched": "→ Orchestrator „{slug}\" (via {via})",
     "routingTesterNoMatch": "Kein Match — und kein Standard-Orchestrator konfiguriert.",
     "agentCardSummary": "privacy: {privacy} · status: {status} · runtime: {runtime} · {plugins} Plugins angehängt · {bindings} Bindings",
+    "agentCardModel": "Modell: {primary}{fallback, select, none {} other { · Fallback: {fallback}}}",
+    "agentCardModelAuto": "Auto{model, select, none {} other { ({model})}}",
     "sessionsLabel": "Sitzungen:",
     "pluginsAvailable": "Verfügbar",
     "pluginsAvailableToAttach": "Zum Anhängen verfügbar",
@@ -1917,6 +2013,81 @@
         "unknown": "Laden der Grants fehlgeschlagen: {detail}"
       }
     },
+    "modelPolicy": {
+      "heading": "Modell",
+      "hint": "Welches Modell unter dem Namen dieses Agenten antwortet — und welches einspringt, wenn es nicht verfügbar ist. Angeboten wird nur, was auf diesem Host installiert ist und unter Provider einen Key hat.",
+      "loading": "Modell-Policy wird geladen…",
+      "primary": {
+        "label": "Primär"
+      },
+      "fallback": {
+        "label": "Fallback"
+      },
+      "auto": "Auto",
+      "autoResolves": "Was die Plattform heute auflöst: {model}",
+      "autoUnknown": "Was die Plattform heute auflöst (noch nicht gebaut)",
+      "none": "Keiner",
+      "noneHint": "Ist das primäre Modell nicht verfügbar, schlägt der Turn fehl — das heutige Verhalten.",
+      "specific": "Bestimmtes Modell",
+      "providerLabel": "Provider",
+      "modelLabel": "Modell",
+      "effortLabel": "Effort",
+      "effortDefault": "Standard-Effort",
+      "effort": {
+        "low": "niedrig",
+        "medium": "mittel",
+        "high": "hoch",
+        "xhigh": "sehr hoch"
+      },
+      "providerNoKey": "{provider} (kein Key)",
+      "configureProvider": "Unter Provider einrichten →",
+      "sameRef": "Fallback und Primär sind dasselbe Modell — anderen Fallback wählen oder Keiner.",
+      "sameProvider": "Gleicher Provider wie das primäre Modell — ein Ausfall des Providers trifft beide.",
+      "deferred": "Das primäre Modell nennt {provider}, der Host läuft aber auf {active} und hat keinen Pool für {provider} — der Effort greift, der Modellwechsel nicht.",
+      "fallbackNoVision": "Das Fallback-Modell kann keine Bilder lesen — bei Turns mit Anhängen läuft das primäre Modell ohne Fallback.",
+      "primaryNoVision": "Das primäre Modell kann keine Bilder lesen.",
+      "summaryAuto": "Auto ({model})",
+      "summaryNoFallback": "Läuft auf {primary} · kein Fallback",
+      "summaryWithFallback": "Läuft auf {primary} · Fallback {fallback}",
+      "save": "Speichern",
+      "saving": "Speichert",
+      "unchanged": "Keine ungespeicherte Änderung."
+    },
+    "peers": {
+      "heading": "Gespräche zwischen Agenten",
+      "hint": "Ob dieser Agent mit anderen Agenten eine Themen-Diskussion führen darf — und in welchen Chats. Beide Schalter müssen an sein: der des Agenten und einer je Chat. Jeder Teilnehmer postet unter seinem eigenen Bot; ein Umschalten hier stoppt eine laufende Diskussion beim nächsten Beitrag dieses Agenten.",
+      "loading": "Peer-Einstellungen werden geladen…",
+      "stateUnknown": "Aktuell: unbekannt",
+      "stateSummary": "Aktuell: {mode} · {chats, plural, =0 {kein Chat freigeschaltet} one {# Chat freigeschaltet} other {# Chats freigeschaltet}}",
+      "modes": {
+        "off": "Aus",
+        "on": "An"
+      },
+      "modeHints": {
+        "off": "Der Agent spricht nie mit anderen Agenten. Der Standard.",
+        "on": "Der Agent darf an Diskussionen mit anderen Agenten teilnehmen — in den unten freigeschalteten Chats."
+      },
+      "chatsHeading": "Freigeschaltete Chats",
+      "chatsHint": "Eine Zeile je Chat. Angeboten werden nur Chats, in denen der eigene Bot dieses Agenten wirklich ist — den Bot zuerst in Teams zum Gruppenchat hinzufügen, dann erscheint er hier. Das Relay berücksichtigt nur Bots, die anwesend sind.",
+      "chatsEmpty": "Noch kein Chat freigeschaltet.",
+      "chatEnabled": "freigeschaltet",
+      "chatDisabled": "gesperrt",
+      "remove": "Entfernen",
+      "channelTypeLabel": "Channel",
+      "add": "Chat freischalten",
+      "adding": "Wird hinzugefügt",
+      "chatSelectLabel": "Chat",
+      "chatSelectPlaceholder": "Chat wählen…",
+      "chatSelectNone": "Kein Chat verfügbar",
+      "noKnownChats": "Dieser Bot ist in keinem Gruppenchat, der nicht schon gelistet ist. Den Bot in Teams zu einem Gruppenchat hinzufügen — dann taucht er hier auf.",
+      "noBot": "Dieser Agent hat noch keinen eigenen Bot. Zuerst eine Teams-Identität bereitstellen — ohne Bot gibt es keinen Chat zum Freischalten.",
+      "chatOption": "{chat} · mit {partners}",
+      "chatOptionNoPartners": "{chat} · kein weiterer Bot anwesend",
+      "chatPartners": "Anwesende Bots: {partners}",
+      "chatPartnersNone": "Kein weiterer Bot anwesend — eine Diskussion braucht einen zweiten.",
+      "chatNotPresent": "Der Bot ist nicht (mehr) in diesem Chat; die Zeile wirkt nicht.",
+      "chatMembers": "Teilnehmer: {members}"
+    },
     "contextMemory": {
       "heading": "Chat-Kontext-Memory",
       "hint": "Legt fest, ob dieser Orchestrator ein gemeinsames Memory führt oder je Chat-Kontext (Team, Kanal, Direktnachricht) ein eigenes. „Aus“ ist die Voreinstellung und entspricht dem Verhalten vor dieser Funktion.",
@@ -1994,7 +2165,9 @@
         "install": "Die Installation in ein Team ist in dieser Installation nicht verfügbar.",
         "uninstall": "Das Entfernen der App aus einem Team braucht den Microsoft-365-Connector 0.4.0 oder neuer. Der hier installierte Connector ist älter und veröffentlicht keine Deinstallation — aktualisiere das Plugin, oder lass die App von einem Teams-Admin manuell entfernen.",
         "enumerate": "Der Connector kann Installationen nicht auflisten. Diese Ansicht zeigt daher, was der Provisionierungs-Datensatz belegt, nicht den aktuellen Stand in Teams.",
-        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt."
+        "multi_team": "Pro Orchestrator wird ein Team geführt. Ein zweites Team würde die erste Installation ungeführt zurücklassen und wird deshalb abgelehnt.",
+        "chat_install": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
+        "chat_uninstall": "Das Entfernen der App aus einem Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder lass die App im Chat manuell entfernen."
       },
       "unsupportedTechnical": "Server-Begründung: {detail}",
       "notice": {
@@ -2014,9 +2187,32 @@
         "teams_provisioner_unavailable": "Die Teams-Provisioner-Fähigkeit fehlt — installiere das Microsoft-365-Connector-Plugin.",
         "teams_provisioning_running": "Für diesen Orchestrator läuft noch eine Provisionierung. Warte, bis sie fertig ist, und versuche es dann erneut.",
         "teams_uninstall_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App aus einem Team zu entfernen. Aktualisiere ihn auf 0.4.0 oder neuer, oder lass die App von einem Teams-Admin manuell entfernen.",
-        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}"
+        "unknown": "Die Anfrage zur Teams-Zuordnung ist fehlgeschlagen: {detail}",
+        "teams_target_is_channel": "Das ist die ID eines Kanals. Ein Kanal ist kein Installationsziel — nimm die Gruppen-ID des Teams oder die ID eines Gruppenchats.",
+        "teams_target_ambiguous": "Diese 32 Hex-Zeichen sind mehrdeutig — sie können eine Team-ID ohne Bindestriche oder der Rumpf einer Gruppenchat-ID sein. Gib an, was gemeint ist.",
+        "teams_target_unrecognised": "Diese Eingabe ist kein Teams-Installationsziel.",
+        "teams_chat_install_unsupported": "Der hier installierte Microsoft-365-Connector ist zu alt, um eine App in einen Chat zu installieren. Aktualisiere ihn auf 0.7.0 oder neuer, oder wähle ein Team."
       },
-      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben."
+      "pendingStoppedHint": "Team {teamId} ist das hinterlegte Ziel, es läuft aber kein Provisioning — die Kette ist vor dem Installationsschritt stehen geblieben. Den erfassten Fehler zeigt der Abschnitt „Teams-Identität“ oben.",
+      "targetHeading": "Ziel wählen",
+      "fieldTarget": "Ziel-ID",
+      "fieldTargetHint": "Ein Team oder ein Chat. Team: die Gruppen-ID aus „Link zum Team abrufen“. Gruppenchat: die vollständige ID in der Form 19:…@thread.v2 — ältere Chats enden auf 19:…@thread.skype und sind genauso gültig.",
+      "targetKind": {
+        "team": "Team",
+        "group-chat": "Gruppenchat",
+        "one-on-one-chat": "1:1-Chat"
+      },
+      "targetKindLabel": "Erkannt als: {kind}",
+      "targetKindFromListLabel": "Aus der Liste: {kind}",
+      "targetExamples": "Beispiele — Team: {team} · Gruppenchat: {groupChat} · älterer Gruppenchat: {legacyGroupChat}",
+      "targetChannel": "Das ist die ID eines Kanals, kein Installationsziel. Teams installiert eine App in ein Team oder in einen Chat, nie in einen einzelnen Kanal. Nimm die Gruppen-ID des Teams, zu dem der Kanal gehört, oder die ID eines Gruppenchats (19:…@thread.v2).",
+      "targetAmbiguous": "32 Hex-Zeichen ohne Kontext — das kann die Gruppen-ID eines Teams ohne Bindestriche sein oder der Rumpf einer Gruppenchat-ID. Geraten wird hier nicht: wähle, was gemeint ist.",
+      "targetAmbiguousUseTeam": "Als Team einsetzen",
+      "targetAmbiguousUseChat": "Als Gruppenchat einsetzen",
+      "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2, bei älteren Chats 19:…@thread.skype) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
+      "chatInstallUnsupported": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
+      "pendingHintTyped": "Ein Provisionierungslauf zielt auf {kind} {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
+      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID."
     },
     "identity": {
       "heading": "Identität",
@@ -2033,7 +2229,7 @@
       "avatarHint": "PNG, JPEG oder WebP bis 2 MB. Daraus entsteht das 192×192-Farbsymbol des Teams-Pakets; ein 32×32-Umrisssymbol nur dann, wenn das Bild transparente Flächen hat — sonst bleibt das Standardsymbol.",
       "fields": {
         "displayName": "Anzeigename",
-        "displayNameHint": "So heißt der Agent in Teams. Leer lassen heißt: Name aus der Registry.",
+        "displayNameHint": "So heißt der Agent in Teams — und so stellt er sich im Chat vor. Leer lassen heißt: Name aus der Registry.",
         "accentColor": "Akzentfarbe",
         "accentColorHint": "Als #RRGGBB. Färbt das Teams-App-Paket ein.",
         "shortDescription": "Kurzbeschreibung",
@@ -2086,6 +2282,7 @@
       "boundaries": {
         "presetsHeading": "Grenzen aus der Bibliothek",
         "presetsHint": "Harte Verbote. Sie landen als eigener Abschnitt im Prompt, unterhalb des Charakters.",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Vorlagen bleiben gespeichert, wirken aber nicht: {ids}",
         "categories": {
           "data": "Daten",
@@ -2159,7 +2356,13 @@
           "error": "Fehler",
           "retries_exhausted": "Wiederholungen aufgebraucht — der erreichte Stand bleibt erhalten",
           "team_conflict": "Für diesen Orchestrator läuft bereits ein anderer Lauf",
-          "stopped": "durch das Herunterfahren unterbrochen"
+          "stopped": "durch das Herunterfahren unterbrochen",
+          "delegated_upload": "Katalog-Upload über die Teams-Anmeldung dieses Tenants",
+          "delegated_token_refreshed": "Zugriffstoken automatisch erneuert",
+          "delegated_sign_in_required": "Wartet auf die Teams-Anmeldung",
+          "delegated_consent_required": "Wartet auf die Zustimmung einer Administration",
+          "delegated_token_expired": "Anmeldung abgelaufen",
+          "device_code_flow_failed": "Anmeldevorgang abgelehnt"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2230,6 +2433,34 @@
         "bot_handle_unavailable": {
           "what": "Microsoft hat den Bot-Namen abgelehnt: Er ist bereits für eine andere Bot-Anwendung registriert.",
           "next": "Azure-Bot-Handles teilen sich einen einzigen globalen Namensraum über alle Azure-Kunden hinweg — wie ein Domainname, nicht wie ein Name innerhalb deines Tenants. omadia qualifiziert den Handle bereits automatisch mit der ID der App-Registrierung, dieser Name ist also auch in qualifizierter Form vergeben. Vergib dem Agenten einen anderen Bot-Slug und starte das Provisioning erneut."
+        },
+        "tenantSignInLink": "Zur Teams-Anmeldung für diesen Tenant",
+        "delegated_sign_in_required": {
+          "what": "Der Katalog-Upload braucht eine angemeldete Tenant-Administration. Microsoft erlaubt diesen Schritt nur im Namen einer Person, App-Berechtigungen genügen dafür nicht.",
+          "scopes": "Benötigte Berechtigungen ({count}): {scopes}",
+          "next": "Melde dich einmal unter „Teams-Anmeldung\" an und starte das Provisioning danach erneut. Jeder weitere Agent nutzt diese Anmeldung dann automatisch.",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Entra-App, Azure-Bot und das gebaute Paket bleiben bestehen — es geht genau an dieser Stelle weiter."
+        },
+        "delegated_consent_required": {
+          "what": "Die Anmeldung steht, aber den benötigten Berechtigungen hat im Tenant noch niemand zugestimmt.",
+          "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
+          "next": "Lass eine Tenant-Administration auf der Zustimmungsseite zustimmen und starte das Provisioning danach erneut.",
+          "consentLink": "Zustimmungsseite für diesen Tenant öffnen",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Es wurde nichts zurückgebaut."
+        },
+        "delegated_token_expired": {
+          "what": "Die gespeicherte Anmeldung dieses Tenants ist nicht mehr gültig und ließ sich nicht automatisch erneuern.",
+          "next": "Melde dich unter „Teams-Anmeldung\" erneut an und starte das Provisioning danach noch einmal.",
+          "keepsProgress": "Der Lauf ist nicht fehlgeschlagen, sondern wartet. Alles, was bereits angelegt wurde, bleibt bestehen."
+        },
+        "device_code_flow_failed": {
+          "what": "Microsoft hat den Anmeldevorgang selbst abgelehnt — nicht die Berechtigungen, sondern den Weg dorthin.",
+          "reason": "Von Microsoft gemeldet: {reason}",
+          "next": "Prüfe, ob die Publisher-App des Microsoft-365-Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert. Ein erneuter Versuch ändert ohne diese Anpassung nichts."
+        },
+        "rsc_permissions_mismatch": {
+          "what": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle.",
+          "next": "Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
         }
       },
       "teamsBot": {
@@ -2251,7 +2482,118 @@
           "unknown": "Ob diese Konfiguration bereits übernommen wurde, lässt sich gerade nicht feststellen. Vergleiche sie mit dem Teams-Channel-Plugin und füge den Block unten ein, falls er fehlt."
         }
       },
-      "rerunNeedsTeam": "Für diese Identität ist kein Ziel-Team hinterlegt, deshalb lässt sich das Provisioning hier nicht erneut starten."
+      "package": {
+        "heading": "App-Paket herunterladen",
+        "hint": "Das Provisioning lädt dieses Paket selbst in den Tenant-Katalog — ein manueller Upload pro Agent ist nicht nötig. Der Download bleibt als Rückfallebene: für Tenants, in denen programmatische Katalog-Uploads nicht erlaubt sind, oder wenn du das Manifest vorher ansehen willst. Es wird bei jeder Anfrage neu erzeugt und entspricht damit genau dem, was das Provisioning hochladen würde.",
+        "download": "Teams-App-Paket (.zip) herunterladen"
+      },
+      "retarget": {
+        "heading": "Ziel wählen und Provisioning starten",
+        "hint": "Für diese Identität ist kein Ziel hinterlegt — nach einem Zurücksetzen ist das der Normalfall. Bot-Slug und Anzeigename bleiben erhalten; es fehlt nur das Team oder der Chat, in das die App installiert werden soll.",
+        "runningHint": "Für diesen Agenten läuft bereits ein Durchlauf. Warte, bis er beendet ist — einen zweiten lehnt der Server ab."
+      }
+    },
+    "teamsTargets": {
+      "loading": "Teams und Chats werden geladen …",
+      "choose": "Bitte auswählen",
+      "teamsLabel": "Team aus der Liste wählen",
+      "chatsLabel": "Chat aus der Liste wählen",
+      "teamsEmpty": "In diesem Tenant ist kein Team sichtbar. Nutze das Feld unten.",
+      "chatsEmpty": "In diesem Tenant ist kein Chat sichtbar. Nutze das Feld unten.",
+      "chatType": {
+        "group": "Gruppenchat",
+        "oneOnOne": "1:1-Chat",
+        "meeting": "Besprechungschat"
+      },
+      "unavailable": {
+        "teams": {
+          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Teamliste — trage die ID unten von Hand ein.",
+          "connector_unsupported": "Der installierte Connector kann keine Teams auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die ID unten ein.",
+          "sign_in_required": "Für die Teamliste fehlt die Tenant-Anmeldung. Melde dich einmal an oder trage die ID unten ein.",
+          "scope_missing": "Die gespeicherte Anmeldung kennt eine Berechtigung nicht, die für die Teamliste nötig ist. Eine erneute Anmeldung schaltet die Liste frei.",
+          "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
+          "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein.",
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein."
+        },
+        "chats": {
+          "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
+          "connector_unsupported": "Der installierte Connector kann keine Chats auflisten. Nach einem Upgrade erscheint hier eine Auswahl; bis dahin trage die Chat-ID unten ein.",
+          "sign_in_required": "Chats lassen sich nur mit einer Tenant-Anmeldung auflisten — Graph bietet dafür keinen App-Zugriff an. Melde dich einmal an oder trage die Chat-ID unten ein.",
+          "scope_missing": "Die gespeicherte Anmeldung kennt die Berechtigung {scope} noch nicht und kann sie nicht nachträglich erneuern. Eine einmalige neue Anmeldung schaltet die Chatliste frei; bis dahin trage die Chat-ID unten ein.",
+          "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
+          "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein.",
+          "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern — das ist keine fehlende Anmeldung, sondern eine, die nicht mehr gilt. Melde dich einmal neu an oder trage die Chat-ID unten ein."
+        }
+      },
+      "filter": "Tippen zum Filtern …",
+      "noMatch": "Kein Eintrag passt zu „{query}“. Für eine ID, die hier nicht auftaucht, nutze das Feld darunter.",
+      "matchCount": "{count, plural, =0 {Keine Treffer} one {Ein Treffer} other {# Treffer}}"
+    },
+    "teamsReset": {
+      "heading": "Provisionierung zurücksetzen",
+      "cancel": "Abbrechen",
+      "hint": "Räumt die in Azure angelegten Objekte ab, damit ein neuer Versuch mit demselben Slug starten kann.",
+      "runningHint": "Solange eine Provisionierung läuft, ist das Zurücksetzen gesperrt — warte, bis der Lauf fertig ist.",
+      "confirmHeading": "Das wird unwiderruflich gelöscht:",
+      "consequenceApp": "Die Entra-App-Registrierung samt Geheimnis — gelöscht und aus dem Papierkorb entfernt, damit der Name sofort wieder frei ist.",
+      "consequenceBot": "Der Azure-Bot-Dienst dieses Agenten.",
+      "consequenceCatalog": "Der Eintrag im Teams-App-Katalog des Tenants; die App verschwindet damit aus allen Teams und Chats.",
+      "consequenceInstalls": "Alle hier vermerkten Team- und Chat-Installationen.",
+      "keepsHint": "Bot-Slug und Anzeigename bleiben erhalten — ein neuer Lauf startet direkt mit denselben Angaben.",
+      "acknowledge": "Ich habe verstanden, dass diese Azure-Objekte gelöscht werden und neu angelegt werden müssen.",
+      "busy": "Wird zurückgesetzt …",
+      "resultComplete": "Zurückgesetzt. Der Agent kann jetzt erneut provisioniert werden.",
+      "resultIncomplete": "Abgebrochen bei „{step}“ — alles davor ist abgeräumt, der Rest steht noch. Ein erneuter Aufruf macht dort weiter.",
+      "stepLine": "{step}: {outcome}",
+      "steps": {
+        "catalog_removed": "Katalogeintrag",
+        "bot_deleted": "Azure-Bot",
+        "app_deleted": "App-Registrierung",
+        "config_unsynced": "Teams-Bot-Eintrag",
+        "identity_reset": "Datenbankzeile",
+        "identity_deleted": "Identität"
+      },
+      "outcomes": {
+        "removed": "entfernt",
+        "already-absent": "war schon weg",
+        "skipped": "nicht vorhanden",
+        "blocked": "blockiert",
+        "failed": "fehlgeschlagen"
+      },
+      "details": {
+        "nothing_to_remove": "Es gab dazu keinen Eintrag.",
+        "catalog_removal_unsupported": "Der installierte Connector kann den Katalogeintrag nicht entfernen. Damit wurde nichts weiter gelöscht: ein neuer Lauf würde sonst den alten Katalogeintrag übernehmen und den Bot an eine gelöschte App-ID binden.",
+        "tenant_sign_in_required": "Der Katalogeintrag lässt sich nur mit einer Tenant-Anmeldung entfernen. Melde dich an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
+        "purge_unsupported": "Der installierte Connector kann den Papierkorb nicht leeren. Die App-Registrierung wurde deshalb absichtlich NICHT gelöscht: sie würde ihren Namen sonst 30 Tage blockieren.",
+        "app_absent_unpurgeable": "Die App-Registrierung ist bereits weg, ließ sich aber nicht mehr im Papierkorb nachschlagen. Sie könnte den Namen noch bis zu 30 Tage belegen — wähle im Zweifel einen anderen Bot-Slug.",
+        "app_provably_gone": "Die App-Registrierung ist weg und liegt auch nicht im Papierkorb — der Name ist wieder frei.",
+        "arm_not_configured": "Ohne ARM-Konfiguration wurde nie ein Bot-Dienst angelegt.",
+        "config_unsync_unavailable": "Diese Installation schreibt den teams_bots-Eintrag nicht automatisch — es gab also auch keinen, den das Zurücksetzen entfernen müsste.",
+        "config_plugin_not_installed": "Der Teams-Channel ist nicht installiert, es gibt also keine Konfiguration aufzuräumen.",
+        "tenant_sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
+        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann."
+      },
+      "openRun": "Lauf zurücksetzen …",
+      "openIdentity": "Identität löschen …",
+      "confirmHeadingIdentity": "Das wird unwiderruflich gelöscht — inklusive der Identität selbst:",
+      "consequenceIdentity": "Die Teams-Identität dieses Orchestrators samt Bot-Slug und Anzeigename. Beides ist danach wieder frei wählbar.",
+      "dropsHint": "Bot-Slug und Anzeigename werden NICHT behalten. Der Orchestrator hat danach keine Teams-Identität mehr, und das Anlegen beginnt wieder mit einem leeren Formular.",
+      "acknowledgeIdentity": "Ich habe verstanden, dass zusätzlich die Identität entfernt wird und Bot-Slug und Anzeigename neu vergeben werden müssen.",
+      "confirmRun": "Lauf zurücksetzen",
+      "confirmIdentity": "Identität endgültig löschen",
+      "slugConfirmLabel": "Tippe zur Bestätigung den Bot-Slug „{slug}“ ein:",
+      "slugMismatch": "Der eingegebene Bot-Slug stimmt nicht überein.",
+      "resultCompleteIdentity": "Identität gelöscht. Der Orchestrator kann jetzt mit einem neuen Bot-Slug und Anzeigenamen angelegt werden."
+    },
+    "detailTabs": {
+      "aria": "Agent-Einstellungen",
+      "identity": "Identität",
+      "model": "Modell",
+      "peers": "Gespräche",
+      "teams": "Teams",
+      "plugins": "Plugins",
+      "tools": "Werkzeuge",
+      "memory": "Memory"
     }
   },
   "builder": {
@@ -2514,7 +2856,8 @@
         "unknownTurn": "Unbekannter Fehler beim Builder-Turn",
         "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
         "choiceSaveFailedDetail": "Auswahl konnte nicht gespeichert werden: {message}",
-        "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden."
+        "choiceSaveFailed": "Auswahl konnte nicht gespeichert werden.",
+        "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
       },
       "inputLabel": "Builder-Nachricht",
       "scrollToBottomAriaLabel": "Zur neuesten Nachricht springen",
@@ -2574,7 +2917,8 @@
         "error": {
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
-          "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut."
+          "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
+          "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
@@ -2790,6 +3134,7 @@
       "boundaries": {
         "heading": "Boundaries",
         "selectedCount": "{count} ausgewählt",
+        "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
         "save": "Boundaries speichern",
@@ -3337,6 +3682,8 @@
     "providers": {
       "heading": "Provider",
       "modelCount": "{count, plural, one {# Modell} other {# Modelle}}",
+      "cooldown": "Fallback aktiv · neuer Versuch {time}",
+      "cooldownTitle": "Der Provider ist gerade eben ausgefallen ({reason}). Agenten mit Fallback-Modell laufen bis zum Ende der Abkühlphase direkt darauf, danach wird das primäre Modell erneut probiert.",
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
       "unverified": "Schlüssel hinterlegt, nicht geprüft",
@@ -3345,6 +3692,17 @@
       "verifiedAt": "geprüft {time}",
       "testKey": "Schlüssel testen",
       "testing": "Wird geprüft …",
+      "refreshModels": "Modelle aktualisieren",
+      "refreshingModels": "Wird aktualisiert …",
+      "modelsDiscovered": "{count, plural, one {# Modell aus der Provider-API} other {# Modelle aus der Provider-API}}",
+      "modelsRefreshNoCredentials": "Kein API-Key hinterlegt — die Modell-Liste kann nicht abgerufen werden.",
+      "modelsRefreshFailed": "Abruf fehlgeschlagen: {error}",
+      "modelsRefreshFailedUnknown": "Abruf fehlgeschlagen.",
+      "modelsRefreshEmpty": "Die Provider-API lieferte keine passenden Chat-Modelle — bisherige Liste bleibt.",
+      "modelsRefreshUnsupported": "Dieser Provider unterstützt keine Live-Erkennung.",
+      "modelsSourceLive": "live · {at}",
+      "modelsSourceSeed": "Seed-Liste",
+      "unclassifiedModels": "{count, plural, one {# Modell} other {# Modelle}} ausgeblendet (keine Discovery-Regel): {models}",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
@@ -3406,11 +3764,12 @@
     "explainer": {
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
-      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider.",
+      "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg hat der Assistent noch kein Langzeitgedächtnis, er merkt sich also keine Fakten über Chats hinweg. Wissensgraph-Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",
-    "selectModelLink": "Nach der Anmeldung ein CLI-Modell für einen Agenten unter LLM-Provider auswählen",
+    "selectModelLink": "Ordne nach der Anmeldung den Orchestrator unter LLM-Zugang dieser CLI zu — sonst läuft kein Agent. omadia setzt das automatisch, wenn kein anderer Anbieter konfiguriert ist",
     "detected": {
       "heading": "Erkannte CLIs"
     },
@@ -3438,6 +3797,8 @@
       "retry": "Erneut versuchen",
       "failed": "Anmeldung fehlgeschlagen. Bitte erneut versuchen.",
       "stillPending": "Noch nicht angemeldet. Öffne den Link, bestätige den Zugriff und sende den Code erneut.",
+      "callbackWait": "Bestätige den Zugriff im Browser. Diese CLI schließt die Anmeldung selbst ab, kein Code zum Einfügen — diese Seite aktualisiert sich, sobald es fertig ist.",
+      "callbackTimedOut": "Die Anmeldung wurde nicht rechtzeitig abgeschlossen. Starte erneut, bestätige den Zugriff im Browser und lass diese Seite offen.",
       "manualSummary": "Lieber das Terminal?",
       "step1": "Stelle sicher, dass die CLI installiert ist (im omadia-Image enthalten oder selbst installieren):",
       "installCmd": "npm install -g @anthropic-ai/claude-code --prefix {prefix}",
@@ -3470,6 +3831,13 @@
       "conflict": "Auf diesem Server läuft bereits eine CLI-Installation. Bitte warten, bis sie abgeschlossen ist, und dann erneut versuchen.",
       "retry": "Erneut versuchen",
       "manualSummary": "Lieber manuell installieren?"
+    },
+    "turnBudget": {
+      "label": "Zeitlimit pro Turn (Sekunden)",
+      "help": "Wie lange ein einzelner Turn auf dem Abo-Weg laufen darf. Leer lassen für den Standard von {default} Sekunden bzw. den Wert aus OMADIA_CLI_SPAWN_TIMEOUT_MS.",
+      "save": "Speichern",
+      "saved": "Gespeichert",
+      "invalid": "Bitte eine ganze Zahl zwischen {min} und {max} eingeben."
     }
   },
   "createIssue": {
@@ -4023,7 +4391,6 @@
     "marketplace": {
       "registry": "Registry",
       "search": "Suche",
-      "browse": "Katalog durchsuchen",
       "hint": "Registry wählen und Katalog durchsuchen. Verbundene Server starten deaktiviert: erst Discover ausführen, Verdicts prüfen, dann aktivieren.",
       "noResults": "Keine passenden Katalog-Einträge.",
       "connect": "Verbinden",
@@ -4038,7 +4405,27 @@
       "removeRegistry": "Registry entfernen",
       "registryName": "Name",
       "registryUrl": "URL",
-      "registryToken": "Bearer-Token (optional)"
+      "registryToken": "Bearer-Token (optional)",
+      "searchPlaceholder": "Katalog durchsuchen — z. B. postgres, github, slack",
+      "clearSearch": "Leeren",
+      "searching": "Suche läuft…",
+      "manageRegistries": "Registries verwalten",
+      "retry": "Erneut versuchen",
+      "resultCount": "{count, plural, one {# Server} other {# Server}} in {name}",
+      "resultCountFor": "{count, plural, one {# Treffer} other {# Treffer}} für „{query}“ in {name}",
+      "hintShort": "Importe starten deaktiviert — erst Discover ausführen.",
+      "noResultsFor": "Kein Katalog-Eintrag passt zu „{query}“.",
+      "noResultsHint": "Kürzeren Begriff probieren oder oben eine andere Registry wählen.",
+      "errorTimeout": "Die Registry „{name}“ hat nicht rechtzeitig geantwortet.",
+      "errorUnreachable": "Die Registry „{name}“ ist nicht erreichbar.",
+      "errorGeneric": "Der Katalog von „{name}“ konnte nicht gelesen werden.",
+      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus blockiert. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
+      "removeRegistryBody": "Registry „{name}“ entfernen? Bereits importierte Server bleiben bestehen.",
+      "unlicensedShort": "ohne Lizenz",
+      "refresh": "Aktualisieren",
+      "scopeCachedPage": "nur geladene Seite",
+      "scopeCachedPageWhy": "Die Suche dieser Registry hat nicht geantwortet. Diese Treffer sind deshalb ein Textabgleich über die bereits geladene Katalogseite — Server weiter hinten im Katalog sind nicht erfasst. Mit „Aktualisieren“ die Registry-Suche erneut versuchen.",
+      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen."
     },
     "grants": {
       "grantHeading": "Tools einem Orchestrator zuweisen",
@@ -4272,7 +4659,7 @@
   },
   "adminUsage": {
     "title": "Nutzung & Kosten",
-    "intro": "Token-Verbrauch und LLM-Kosten pro Modell, Quelle und Zeit. Erfasst jeden Anthropic-Call — Orchestrator, Sub-Agents und die Haiku-Background-Tasks.",
+    "intro": "Erfasst jeden LLM-Call — Orchestrator, Sub-Agents und die Background-Tasks. Abo-Turns über die Claude-CLI zählen als Calls, werden aber nicht pro Token abgerechnet.",
     "loading": "Lädt …",
     "loadError": "Fehler beim Laden: {message}",
     "ranges": {
@@ -4295,7 +4682,11 @@
     },
     "empty": "Keine Daten im Zeitraum.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
-    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache"
+    "rowStats": "{calls} Calls · {input} in · {output} out · {cache} cache",
+    "subscription": {
+      "headline": "{count, plural, one {# Abo-Turn} other {# Abo-Turns}} in diesem Zeitraum",
+      "explainer": "Abo-Turns laufen über das Claude-Abo, nicht über Token-Abrechnung. Sie zählen als Calls, kosten hier aber nichts. Auf der API hätten sie {reference} gekostet."
+    }
   },
   "adminUsers": {
     "loading": "Lädt …",
@@ -4804,10 +5195,10 @@
   },
   "adminDatasets": {
     "title": "Wissen · Datensätze",
-    "intro": "Eine CSV als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
-    "uploadHeading": "CSV importieren",
+    "intro": "Eine CSV- oder Excel-Datei als strukturierten Datensatz importieren, das von omadia abgeleitete Schema nachlesen und ihn wieder löschen. Eine Excel-Mappe wird dabei pro Tabellenblatt zu einem eigenen Datensatz. Agenten greifen über das Tool <code>query_dataset</code> darauf zu — serverseitig gefiltert und aggregiert, nie als ganze Tabelle in einem Turn. Ein Datensatz ist nur für das Konto sichtbar, das ihn importiert hat: Diese Liste ist Ihre, nicht die der Instanz.",
+    "uploadHeading": "Tabelle importieren",
     "fields": {
-      "file": "CSV-Datei",
+      "file": "CSV- oder Excel-Datei",
       "nameOptional": "Name (optional)"
     },
     "placeholders": {
@@ -4844,9 +5235,9 @@
     "nextPage": "Weiter",
     "errors": {
       "tooLarge": "Die Datei überschreitet das Upload-Limit von {maxMb} MB.",
-      "notCsv": "Bisher werden ausschließlich CSV-Dateien unterstützt.",
-      "noFile": "Es kam keine Datei an — bitte zuerst eine CSV auswählen.",
-      "importFailed": "Die CSV konnte nicht importiert werden. {detail}",
+      "notCsv": "Unterstützt werden CSV- und Excel-Dateien (.xlsx, .xlsm).",
+      "noFile": "Es kam keine Datei an — bitte zuerst eine Tabelle auswählen.",
+      "importFailed": "Die Datei konnte nicht importiert werden. {detail}",
       "notFound": "Diesen Datensatz gibt es nicht mehr — womöglich wurde er in einem anderen Tab gelöscht.",
       "generic": "Die Anfrage ist fehlgeschlagen (HTTP {status}).",
       "unexpected": "Die Anfrage ist fehlgeschlagen. {detail}"
@@ -4917,6 +5308,25 @@
     "providerDriftTitle": "Provider-Drift",
     "providerDriftBody": "Die Registry liefert {activeModelId} aus, das für den Knowledge Graph geltende Verdikt wurde aber gegen {gateModelId} berechnet. Kaputt ist damit nichts — ein Adapter-Wechsel über die Plugin-Seiten führt das Dimensions-Gate nicht erneut aus. Wechsle den Provider hier, um neu zu gaten, damit Korpus und Verdikt wieder dasselbe Modell beschreiben.",
     "capabilityMissing": "Der aktive Adapter published keinen Client — er läuft, ist aber nicht konfiguriert (API-Key oder Base-URL fehlt).",
+    "capabilityMissingCredentials": "Der aktive Adapter veröffentlicht keinen Client — er läuft, ist aber nicht konfiguriert (API-Schlüssel oder Base-URL fehlt).",
+    "capabilityMissingWeights": "Der aktive Adapter ist der schlüssellose — er braucht weder API-Schlüssel noch Base-URL. Was fehlt, sind die Modellgewichte auf dieser Maschine. Lade sie oben herunter und aktiviere den Anbieter danach neu.",
+    "capabilityMissingNoProvider": "Es ist kein Embedding-Anbieter aktiv. Ohne einen laufenden Anbieter gibt es kein Prozessgedächtnis, keine semantische Suche und keine Dublettenerkennung.",
+    "capabilityMissingNotPublished": "Der aktive Adapter hat sich zurückgezogen: seine Modellgewichte liegen vollständig vor, aber er hat keinen Client veröffentlicht. Meist hält ein zweiter Adapter die Capability bereits — deinstalliere ihn oder leere seine Zugangsfelder, dann aktiviere hier neu.",
+    "widthCollisionTitle": "Breiten-Kollision mit den Vektorspalten",
+    "widthCollisionBody": "Das aktive Modell rechnet in {provider} Dimensionen, die Vektorspalten sind {columns} Dimensionen breit. Der Wissensgraph lehnt Vektor-Writes ab, solange das so ist — die Volltextsuche läuft weiter.",
+    "widthCollisionEmpty": "Die Spalten sind leer. Ein Umbau auf die passende Breite verwirft deshalb nichts und braucht keinen Anbieter-Wechsel.",
+    "widthCollisionPopulated": "Die Spalten enthalten gespeicherte Vektoren. Ein Umbau würde sie verwerfen — nimm dafür den Anbieter-Wechsel unten, der die Bestätigung dafür einholt.",
+    "widthCollisionUnknown": "Ob die Spalten leer sind, ließ sich nicht ermitteln. Ohne diese Auskunft wird nichts umgebaut.",
+    "rebuildColumns": "Vektorspalten anpassen",
+    "reactivateButton": "Anbieter neu aktivieren",
+    "reactivating": "Wird neu aktiviert …",
+    "reactivatePublished": "Anbieter neu aktiviert. Er veröffentlicht jetzt einen Embedding-Client — Gedächtnis, semantische Suche und Dublettenerkennung laufen.",
+    "reactivateNotPublished": "Anbieter neu aktiviert, er veröffentlicht aber weiterhin keinen Embedding-Client. Die Gründe stehen oben.",
+    "reactivateCorpusNotEmpty": "Die Vektorspalten enthalten noch Embeddings. Diese Aktion verwirft grundsätzlich nichts — nutze den Anbieter-Wechsel unten, der die Bestätigung zum Verwerfen einholt.",
+    "reactivateNoProvider": "Es ist kein Embedding-Anbieter aktiv, es gibt also nichts neu zu aktivieren.",
+    "reactivateInProgress": "Es läuft bereits eine Änderung am Embedding-Anbieter. Warte, bis sie fertig ist, und lade die Seite neu.",
+    "dedupApplied": "Dublettenschwelle des Wissensgraphen auf {value} gesetzt — den Wert, den dieses Modell braucht. Wirksam beim nächsten Start des Wissensgraph-Plugins.",
+    "dedupOperatorSet": "Dublettenschwelle unverändert bei {current} gelassen, weil sie gesetzt ist. Für dieses Modell wären {recommended} passend.",
     "corpusTitle": "Gespeicherter Korpus",
     "corpusModel": "Registriertes Modell",
     "corpusDimensions": "Registrierte Breite",
@@ -4950,6 +5360,7 @@
     "discardTitle": "Damit ist der gespeicherte Korpus weg",
     "discardCount": "{count, plural, =0 {Aktuell ist nichts gespeichert, es gehen also keine Vektoren verloren.} one {# gespeicherter Vektor wird verworfen und neu berechnet.} other {# gespeicherte Vektoren werden verworfen und neu berechnet.}}",
     "discardUnknown": "Die Zahl der gespeicherten Vektoren war nicht lesbar. Geh davon aus, dass der komplette Korpus verworfen und neu berechnet wird.",
+    "discardAllTenants": "Der Umbau droppt die Vektorspalte selbst und legt sie neu an — und diese Spalte ist geteilt: Der Knowledge Graph hält alle Mandanten in denselben physischen Tabellen. Es fallen die Embeddings aller Mandanten weg, nicht nur die oben gezählten, und jedes davon holt der Backfill-Sweep neu ein.",
     "costWarning": "Für jede Zeile geht ein Provider-Call raus. Bei einer kostenpflichtigen API kostet das echtes Geld.",
     "confirmLabel": "Mir ist klar, dass die gespeicherten Vektoren verworfen und neu berechnet werden.",
     "switchButton": "Provider wechseln",
@@ -4960,7 +5371,15 @@
     "unknownTargetError": "Dieses Plugin ist kein installierter embeddingClient@1-Provider.",
     "alreadyActiveError": "Dieser Provider ist bereits aktiv.",
     "targetUnavailableError": "Der Ziel-Provider konnte nicht übernehmen, deshalb ist der vorherige wieder aktiv. Konfiguriere ihn erst (API-Key, Base-URL) und versuch es dann noch mal.",
-    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte."
+    "forbiddenError": "Nicht berechtigt (403) — der Provider-Wechsel erfordert Admin-Rechte.",
+    "localModelTitle": "Schlüsselloser Embedder: Modell noch nicht geladen",
+    "localModelBody": "Dieser Anbieter rechnet ohne API-Schlüssel und ohne eigenen Server — die Modellgewichte ({size} MB) sind aber bewusst nicht im Installer enthalten und müssen einmal geladen werden. Danach läuft alles offline.",
+    "localModelFetch": "Modell jetzt laden",
+    "localModelStarting": "Wird gestartet …",
+    "localModelProgress": "Lädt … {done} von {total} MB ({file})",
+    "localModelFailed": "Der Download ist fehlgeschlagen: {message}",
+    "localModelReady": "Die Modellgewichte liegen vollständig vor. Beim nächsten Aktivieren des Anbieters veröffentlicht er `embeddingClient@1` — Gedächtnis, semantische Suche und Dublettenerkennung laufen dann.",
+    "localModelThreshold": "Wichtig: Die Cosinus-Skala dieses Modells ist nicht die Voreinstellung des Wissensgraphen. Setze `process_dedup_threshold` auf 0.45 — beim Standardwert 0.90 greift die Dublettenerkennung nie, und zwar ohne Fehlermeldung."
   },
   "graph": {
     "page": {
@@ -5208,7 +5627,7 @@
       "metaTitle": "Routinen · omadia",
       "kicker": "Routinen",
       "title": "Cronjobs & Routinen.",
-      "intro": "User-eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
+      "intro": "Eigene wiederkehrende Agent-Aufrufe. Anlegen passiert im Chat (manage_routine Tool); hier siehst du alles auf einen Blick und kannst pausieren oder löschen.",
       "summaryTotal": "Total",
       "summaryActive": "Aktiv",
       "summaryPaused": "Pausiert",
@@ -5395,5 +5814,61 @@
     "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
     "frameTitle": "Oberfläche des Plugins {pluginId}",
     "loading": "Plugin-Oberfläche wird geladen…"
+  },
+  "operatorTeamsSignIn": {
+    "metaTitle": "Teams-Anmeldung",
+    "heading": "Teams-Anmeldung für diesen Tenant",
+    "why": "Microsoft erlaubt das Hochladen einer Teams-App in den Tenant-Katalog nur im Namen einer angemeldeten Person — App-Berechtigungen sind dafür ausdrücklich nicht unterstützt. Deshalb meldet sich einmal eine Tenant-Administration an; jeder Agent, der danach provisioniert wird, nutzt diese Anmeldung automatisch.",
+    "loading": "Anmeldestatus wird geladen …",
+    "refresh": "Aktualisieren",
+    "unsupported": "Der installierte Microsoft-365-Connector kennt die delegierte Anmeldung noch nicht. Aktualisiere ihn auf Version 0.6.0 oder neuer — installiert ist er bereits.",
+    "technicalReason": "Technischer Grund:",
+    "start": "Anmeldung starten",
+    "startBusy": "Anmeldung wird gestartet",
+    "signOut": "Abmelden",
+    "signOutBusy": "Wird abgemeldet",
+    "signedOut": {
+      "body": "Für diesen Tenant ist noch niemand angemeldet. Solange das so bleibt, kommt das Provisioning bis zum Katalog-Upload und bleibt dort stehen — alles davor bleibt erhalten und läuft weiter, sobald die Anmeldung steht."
+    },
+    "pending": {
+      "instructions": "Öffne die Anmeldeseite auf einem beliebigen Gerät und gib diesen Code ein. Angemeldet werden muss eine Tenant-Administration.",
+      "codeLabel": "Anmeldecode",
+      "copy": "Code kopieren",
+      "copied": "Kopiert",
+      "openVerification": "Anmeldeseite von Microsoft öffnen",
+      "expiresIn": "Der Code läuft in {seconds} Sekunden ab.",
+      "consentHint": "Falls die Anmeldeseite zuerst eine Genehmigung verlangt: hier zustimmen, danach den Code eingeben.",
+      "consentLink": "Zustimmungsseite öffnen",
+      "waiting": "omadia wartet auf den Abschluss der Anmeldung. Diese Seite aktualisiert sich von selbst."
+    },
+    "signedIn": {
+      "badge": "Angemeldet",
+      "as": "Angemeldet als {who}",
+      "unknownAccount": "unbekanntes Konto",
+      "since": "Angemeldet seit",
+      "tokenExpires": "Aktuelles Zugriffstoken gültig bis",
+      "tenant": "Tenant",
+      "scopes": "Berechtigungen",
+      "staleNote": "Das aktuelle Zugriffstoken ist abgelaufen — kein Fehler und kein Handlungsbedarf. omadia erneuert es vor dem nächsten Zugriff, die Anmeldung bleibt bestehen.",
+      "selfRenewing": "Die Anmeldung bleibt bestehen und erneuert sich selbst. Erneut anmelden musst du dich erst, wenn hier steht, dass die Anmeldung fehlt.",
+      "technicalHeading": "Technische Details",
+      "tokenExpiresHint": "Die Laufzeit des Zugriffstokens gibt Microsoft vor (rund 60 bis 90 Minuten), sie lässt sich nicht einstellen. Über die Anmeldung sagt sie nichts aus: omadia besorgt sich vor jedem Zugriff ein frisches Token."
+    },
+    "expired": {
+      "headline": "Der Anmeldecode ist abgelaufen.",
+      "body": "Es wurde nichts angelegt und nichts verändert. Starte die Anmeldung einfach neu."
+    },
+    "declined": {
+      "headline": "Die Anmeldung wurde nicht abgeschlossen.",
+      "body": "Microsoft meldet das sowohl bei einem Abbruch als auch dann, wenn eine Richtlinie den Vorgang blockiert — etwa Conditional Access oder eine Geräteanforderung. Der technische Grund unten sagt, welcher Fall vorliegt."
+    },
+    "errors": {
+      "teams_sign_in_unavailable": "Die Teams-Anmeldung ist in diesem Deployment nicht verdrahtet.",
+      "teams_provisioner_unavailable": "Der Microsoft-365-Connector ist nicht installiert — installiere und aktiviere ihn zuerst.",
+      "delegated_sign_in_unsupported": "Der installierte Microsoft-365-Connector ist zu alt für die delegierte Anmeldung. Aktualisiere ihn auf 0.6.0 oder neuer.",
+      "device_code_flow_failed": "Microsoft hat den Anmeldevorgang abgelehnt. Prüfe, ob die Publisher-App des Connectors Device-Code-Anmeldungen als öffentlicher Client erlaubt und ob eine Conditional-Access-Richtlinie sie blockiert.",
+      "teams_sign_in_failed": "Die Teams-Anmeldung ist fehlgeschlagen.",
+      "unknown": "Die Anfrage zur Teams-Anmeldung ist fehlgeschlagen: {detail}"
+    }
   }
 }

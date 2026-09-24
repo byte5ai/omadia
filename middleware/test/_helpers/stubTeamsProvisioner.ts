@@ -102,6 +102,17 @@ export function createStubTeamsProvisioner(
         installationId: 'install-0000',
       },
     }),
+    // Connector >= 0.7.0 — the chat direction. Same override convention as
+    // `uninstallFromTeam` below: `{ installToChat: undefined }` models an
+    // older connector by omitting the key entirely.
+    installToChat: async (input) => ({
+      outcome: 'created',
+      value: {
+        chatId: input.chatId,
+        teamsAppId: input.teamsAppId,
+        installationId: 'install-chat-0000',
+      },
+    }),
     // Connector >= 0.4.0 (byte5ai/omadia#900). Pass
     // `{ uninstallFromTeam: undefined }` to model an OLDER connector — the
     // stub then omits the key entirely, which is what feature detection has
@@ -141,6 +152,9 @@ export function createStubTeamsProvisioner(
     uploadToCatalog: record('uploadToCatalog', merged.uploadToCatalog),
     getCatalogApp: record('getCatalogApp', merged.getCatalogApp),
     installToTeam: record('installToTeam', merged.installToTeam),
+    ...(merged.installToChat !== undefined
+      ? { installToChat: record('installToChat', merged.installToChat) }
+      : {}),
     ...(merged.uninstallFromTeam !== undefined
       ? {
           uninstallFromTeam: record('uninstallFromTeam', merged.uninstallFromTeam),

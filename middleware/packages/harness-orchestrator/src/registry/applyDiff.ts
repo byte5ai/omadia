@@ -5,6 +5,26 @@ import {
   type OrchestratorDeps,
 } from '../buildOrchestrator.js';
 import type { OrchestratorPersonaSkill } from '../orchestrator.js';
+import { DEFAULT_MODEL_POLICY, isModelRef, resolveModelPolicyRuntime } from './modelPolicy.js';
+import type { ModelPolicy, ModelRef } from '@omadia/plugin-api';
+import { resolveModelRef } from '@omadia/llm-provider';
+
+/** #1033 W3 — the fallback as a concrete ref, or undefined for `none`. */
+function fallbackRefFor(
+  policy: ModelPolicy,
+  autoModel: string,
+  activeProvider: string,
+): ModelRef | undefined {
+  if (policy.fallback === 'none') return undefined;
+  if (policy.fallback === 'auto') return { provider: activeProvider, model: autoModel };
+  return policy.fallback;
+}
+
+/** #1033 W3 — whether the explicit fallback model can read images (catalogue). */
+function fallbackVisionFor(policy: ModelPolicy): boolean | undefined {
+  if (!isModelRef(policy.fallback)) return undefined;
+  return resolveModelRef(`${policy.fallback.provider}:${policy.fallback.model}`)?.vision;
+}
 
 import type {
   PersonaSkillRow,
@@ -15,6 +35,7 @@ import type {
 import {
   DEFAULT_ORCHESTRATOR_MODEL,
   resolveAgentModelRouting,
+  resolveConfiguredModel,
   resolveModelIdForProvider,
 } from './agentRuntime.js';
 import type {
@@ -39,11 +60,23 @@ import type {
  *  - `remove`  — Agent disappeared (row deleted OR status flipped to
  *                disabled). Drop the existing `BuiltOrchestrator`.
  *  - `rebuild` — Agent kept its slug but a runtime-relevant field changed
- *                (privacy_profile, runtime config). Tear down + rebuild.
- *  - `update`  — Agent kept its slug AND its runtime config; only the
- *                plugin / binding lists changed. Refresh registry metadata
- *                without touching the `Orchestrator` instance — sessions
- *                in-flight on the old plugin set keep working (US6).
+ *                (privacy_profile, runtime config, PLUGIN GRANTS). Tear down
+ *                + rebuild.
+ *  - `update`  — Agent kept its slug, its runtime config AND its plugin
+ *                grants; only the channel bindings changed. Refresh registry
+ *                metadata without touching the `Orchestrator` instance.
+ *
+ * Why plugin grants rebuild rather than update: the granted plugin set is
+ * baked into the `Orchestrator` at build time twice over — once as the
+ * `grantedPluginIds` the dispatch gate checks, and once as the domain tools
+ * the kernel hydrates through `onAgentBuilt`, which only an `add`/`rebuild`
+ * fires. An `update` refreshed the registry's metadata and left both stale,
+ * so the operator's grant took effect on the NEXT PROCESS START and not
+ * before. The original design read `update` as the cheap path that let
+ * in-flight sessions finish on the old plugin set (US6); with an enforcing
+ * dispatch gate that same sentence describes a revocation that does not
+ * revoke. Capability changes are rare and operator-driven — correctness
+ * beats the saved rebuild.
  *
  * The function does NOT touch the registry itself; it returns a typed plan
  * the caller (OrchestratorRegistry) executes. This keeps `applyDiff` pure
@@ -111,9 +144,17 @@ export function diffSnapshots(
     if (!isEnabled) continue;
 
     // Both old and new are enabled. Decide rebuild vs metadata-only update.
+    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
+    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
+
     const reasons = [
       ...runtimeChangeReasons(oldAgent!, newAgent),
       ...graphChangeReasons(oldAgent!.id, newAgent.id, oldSnap, newSnap),
+      // The enabled plugin set IS this agent's authorisation. It reaches the
+      // running orchestrator only through a build, so a grant change that
+      // produced a metadata-only `update` was persisted, reported as saved
+      // and never armed — in both directions.
+      ...(equalPlugins(oldPlugins, newPlugins) ? [] : ['plugin_grants']),
     ];
     if (reasons.length > 0) {
       actions.push({
@@ -124,15 +165,10 @@ export function diffSnapshots(
       continue;
     }
 
-    const oldPlugins = oldPluginsByAgent.get(oldAgent!.id) ?? [];
-    const newPlugins = newPluginsByAgent.get(newAgent.id) ?? [];
     const oldBindings = oldBindingsByAgent.get(oldAgent!.id) ?? [];
     const newBindings = newBindingsByAgent.get(newAgent.id) ?? [];
 
-    if (
-      !equalPlugins(oldPlugins, newPlugins) ||
-      !equalBindings(oldBindings, newBindings)
-    ) {
+    if (!equalBindings(oldBindings, newBindings)) {
       actions.push({ kind: 'update', agent: newAgent });
     }
   }
@@ -165,6 +201,10 @@ export function buildForAgent(
    *  resolves from `GraphIndex.personaSkillsByAgent`; per-agent, so passed
    *  separately from the shared `runtime`/`deps`). */
   personaSkills?: readonly OrchestratorPersonaSkill[],
+  /** The plugin ids this agent is granted (enabled `agent_plugins` rows).
+   *  Passed separately for the same reason as `personaSkills`: it is per-agent
+   *  and the caller is the one holding the snapshot. Omitted ⇒ ungated. */
+  grantedPluginIds?: readonly string[],
 ): BuiltOrchestrator {
   // Agent Builder P5 — overlay the agent's persisted model_routing onto the
   // platform default: `main` overrides the model, `triage` mode adds per-turn
@@ -191,12 +231,15 @@ export function buildForAgent(
   // so a cross-provider ref never reaches here for a fresh write; the raw
   // fallthrough is what lets a CLI deployment's bare alias (`opus`) run. A
   // registry-UNKNOWN same-context ref is already returned raw by the resolver.
-  // The platform default (`runtime.model`, operator-set env) is not passed
-  // through here — it works raw today and resolving it would change established
-  // behaviour.
+  // The platform default (`runtime.model`, operator-set env) and the hard
+  // fallback are CLASS refs since the catalog went live-discovered — they go
+  // through `resolveConfiguredModel`, which never lets a class ref reach the
+  // wire (it falls back to the nearest served class instead).
   const activeProvider = deps.provider?.id;
   const resolveOverlay = (ref: string | undefined): string | undefined =>
     (resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined;
+  const resolveConfigured = (ref: string | undefined): string | undefined =>
+    (resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined;
 
   // Per-instance model resolution (issue #296 AC#2), three tiers:
   //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
@@ -204,22 +247,42 @@ export function buildForAgent(
   //      (= `orchestrator_model` install config = `ORCHESTRATOR_MODEL` env)
   //   3. `DEFAULT_ORCHESTRATOR_MODEL` — guards against an empty / whitespace
   //      platform default so the turn loop never gets an empty model id.
+  // #1033 W2 — the model POLICY sits above the routing overlay: an explicit
+  // primary pins the model (and effort) and switches triage off; `auto`
+  // leaves the three tiers below exactly as they were. An explicit primary on
+  // a provider other than the active one is deferred (effort still applies)
+  // until the turn loop can switch providers — W3 — and says so in the log
+  // rather than quietly running the auto model under the policy's name.
+  const modelPolicy = agent.modelPolicy ?? DEFAULT_MODEL_POLICY;
+  const policy = resolveModelPolicyRuntime(modelPolicy, activeProvider);
+  // #1033 W3 — with a provider pool the turn loop switches providers itself
+  // (`primaryRef` below); without one an explicit primary on another
+  // provider can only be deferred, and the log says so.
+  if (policy.deferredProvider !== undefined && !deps.providerPool) {
+    console.warn(
+      `[registry] agent '${agent.slug}': model policy names provider '${policy.deferredProvider}' but the active provider is '${activeProvider ?? 'unknown'}' and no provider pool is wired — running the auto-resolved model`,
+    );
+  }
   const model =
+    policy.model ||
     resolveOverlay(routing.model) ||
-    runtime.model?.trim() ||
+    resolveConfigured(runtime.model) ||
+    resolveConfigured(DEFAULT_ORCHESTRATOR_MODEL) ||
     DEFAULT_ORCHESTRATOR_MODEL;
 
   // Resolve the per-turn routing sub-models the same way. Any sub-model that
   // does not resolve to the active provider falls back to the resolved `model`
   // so every id the turn loop sends is a valid same-provider `modelId`.
-  const overlayRouting = routing.modelRouting
-    ? {
-        classifierModel:
-          resolveOverlay(routing.modelRouting.classifierModel) ?? model,
-        simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
-        complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
-      }
-    : undefined;
+  // A pinned primary turns triage OFF: routing is part of `auto`.
+  const overlayRouting =
+    routing.modelRouting && !policy.pinned
+      ? {
+          classifierModel:
+            resolveOverlay(routing.modelRouting.classifierModel) ?? model,
+          simpleModel: resolveOverlay(routing.modelRouting.simpleModel) ?? model,
+          complexModel: resolveOverlay(routing.modelRouting.complexModel) ?? model,
+        }
+      : undefined;
 
   return buildOrchestratorForAgent(
     {
@@ -231,8 +294,27 @@ export function buildForAgent(
       // (Agent Builder P5); otherwise fall back to the platform default
       // `runtime.modelRouting` so registry-managed orchestrators still emit
       // `turn_routing` and the UI renders the Haiku-triage badge (origin/main).
-      ...((overlayRouting ?? runtime.modelRouting)
+      ...((overlayRouting ?? (policy.pinned ? undefined : runtime.modelRouting))
         ? { modelRouting: overlayRouting ?? runtime.modelRouting }
+        : {}),
+      // #1033 — the policy's effort rides on every request of this agent.
+      ...(policy.effort !== undefined ? { effort: policy.effort } : {}),
+      // #1033 W3 — the policy's providers. An explicit primary is handed
+      // through as a ref (the turn loop resolves it via the pool, so a
+      // primary on another provider actually runs there); the fallback is
+      // the explicit ref, or — for `auto` — the auto-resolved model on the
+      // active provider, which only matters when the primary sits elsewhere
+      // (the orchestrator withholds a fallback identical to the primary).
+      ...(isModelRef(modelPolicy.primary) ? { primaryRef: modelPolicy.primary } : {}),
+      // `activeProvider` is undefined on hosts (and test fixtures) that build
+      // without a provider; an `auto` fallback then has no provider to name
+      // and is simply not offered — the pre-W3 behaviour.
+      ...(activeProvider !== undefined && fallbackRefFor(modelPolicy, model, activeProvider)
+        ? { fallbackRef: fallbackRefFor(modelPolicy, model, activeProvider)! }
+        : {}),
+      ...(agent.instructionsByFamily ? { identityByFamily: agent.instructionsByFamily } : {}),
+      ...(fallbackVisionFor(modelPolicy) !== undefined
+        ? { fallbackVisionSupported: fallbackVisionFor(modelPolicy)! }
         : {}),
       ...(runtime.loopRepeatSoft !== undefined
         ? { loopRepeatSoft: runtime.loopRepeatSoft }
@@ -254,6 +336,40 @@ export function buildForAgent(
       ...(agent.instructions?.trim()
         ? { identityInstructions: agent.instructions.trim() }
         : {}),
+      // #967 — the agent's authored NAME. Layered onto whichever identity
+      // text applies rather than replacing it, so a bot that was given a name
+      // introduces itself under that name without losing the behaviour the
+      // platform (or its own instructions) already describe.
+      ...(agent.identityName?.trim()
+        ? { identityName: agent.identityName.trim() }
+        : {}),
+      // #967 follow-up — the agent's authored Steckbrief. Layered on like the
+      // name (never replacing the behaviour text), so an operator who filled in
+      // what the agent IS gets a bot that can actually say it.
+      ...(agent.identityShortDescription?.trim()
+        ? { identityShortDescription: agent.identityShortDescription.trim() }
+        : {}),
+      ...(agent.identityLongDescription?.trim()
+        ? { identityLongDescription: agent.identityLongDescription.trim() }
+        : {}),
+      // W5 memory-ACL — the agent's own rollout mode. Omitted here until now,
+      // which made `agents.context_memory` a switch with nothing behind it:
+      // the column was written, read back into `AgentRow`, echoed by the API
+      // and rendered in the UI, and then dropped on the floor at exactly the
+      // point where it would have changed behaviour. Every registry-built
+      // agent ran the `'off'` default no matter what its row said.
+      //
+      // Spread conditionally like every other optional above, so an agent on
+      // a DB predating migration 0050 (no column → `undefined`) still yields a
+      // byte-identical config object.
+      ...(agent.contextMemory !== undefined
+        ? { contextMemory: agent.contextMemory }
+        : {}),
+      // The authorisation set. An agent with rows but none enabled yields an
+      // EMPTY array, which is meaningful (grant nothing) and must not collapse
+      // to `undefined` (grant everything) — hence the explicit presence check
+      // on the argument rather than on its length.
+      ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
     },
     deps,
   );
@@ -296,6 +412,39 @@ function runtimeChangeReasons(oldAgent: AgentRow, newAgent: AgentRow): string[] 
   // registry would keep serving the Orchestrator built from the old text.
   if ((oldAgent.instructions ?? '') !== (newAgent.instructions ?? '')) {
     reasons.push('identity_instructions');
+  }
+  // #967 — the authored name is part of the system prompt too (it is what the
+  // bot calls itself), so a rename has to reach the running Agent. Without
+  // this reason the operator would rename the bot in Teams and in the UI and
+  // keep hearing the old name in chat until some unrelated edit rebuilt it.
+  if ((oldAgent.identityName ?? '') !== (newAgent.identityName ?? '')) {
+    reasons.push('identity_display_name');
+  }
+  // #967 follow-up — the Steckbrief is part of the system prompt too, so the
+  // same rule applies as for the name: an edit the operator saved and the UI
+  // confirmed must reach the running Agent, or the agent page and the bot go on
+  // disagreeing until some unrelated change happens to rebuild it.
+  if (
+    (oldAgent.identityShortDescription ?? '') !==
+    (newAgent.identityShortDescription ?? '')
+  ) {
+    reasons.push('identity_short_description');
+  }
+  if (
+    (oldAgent.identityLongDescription ?? '') !==
+    (newAgent.identityLongDescription ?? '')
+  ) {
+    reasons.push('identity_long_description');
+  }
+  // W5 memory-ACL — the mode decides which memory stack every turn of this
+  // Agent gets, so it is as runtime-relevant as the model. The rebuild is the
+  // second half of the fix above: forwarding the value only helps agents built
+  // AFTER the flip, and an operator who switches a live agent to `enforce`
+  // would otherwise keep the un-partitioned stack until something unrelated
+  // happened to rebuild it — i.e. a memory-isolation switch that reports
+  // success and does not isolate.
+  if ((oldAgent.contextMemory ?? 'off') !== (newAgent.contextMemory ?? 'off')) {
+    reasons.push('context_memory');
   }
   // `name` / `description` are display-only and never warrant a rebuild —
   // they would invalidate sessions for no semantic gain.

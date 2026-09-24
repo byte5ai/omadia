@@ -52,6 +52,11 @@ export type {
 // already uses for its operator warning, instead of hand-rolling a second one
 // that could drift from the column set the gate actually governs.
 export { countVectors } from './vectorColumnCatalog.js';
+// OM-98 — the emptiness predicate the gate uses to decide whether a width
+// rebuild loses anything. Exported so the admin router can refuse a
+// reactivation up front with the same question the gate asks, rather than
+// letting the operator click into a refusal.
+export { areGovernedColumnsEmpty } from './vectorCorpusEmptiness.js';
 export type { ColumnCatalogInfo } from './vectorColumnCatalog.js';
 
 // #440 follow-up — the in-place gate re-evaluation entry point. Exported for

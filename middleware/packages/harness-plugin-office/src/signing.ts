@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 /**
  * HMAC-SHA256 signing for the office-document proxy.
  *
- * Scheme:  `/documents/<encoded-key>?exp=<unix-seconds>&sig=<hex>`
+ * Scheme:  `/documents/dl/<encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * Payload: `<key>.<exp>` (prevents replay for a different key)
  *
  * This is a deliberate copy of `@omadia/diagrams`' signing rather than a
@@ -33,7 +33,7 @@ export function signDocumentUrl(params: SignUrlParams): string {
     .digest('hex');
   const encKey = encodeURIComponent(params.key);
   const base = params.publicBaseUrl.replace(/\/+$/, '');
-  return `${base}/documents/${encKey}?exp=${String(exp)}&sig=${sig}`;
+  return `${base}/documents/dl/${encKey}?exp=${String(exp)}&sig=${sig}`;
 }
 
 export interface VerifySigParams {

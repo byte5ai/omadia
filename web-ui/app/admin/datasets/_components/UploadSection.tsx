@@ -72,7 +72,7 @@ export function UploadSection({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,text/csv,.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroenabled.12"
               aria-label={t('fields.file')}
               onChange={(e) => {
                 setFile(e.target.files?.[0] ?? null);

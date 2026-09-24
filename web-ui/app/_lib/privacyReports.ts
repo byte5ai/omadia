@@ -1,4 +1,4 @@
-import { ApiError } from './api';
+import { ApiError, rscTimeoutSignal } from './api';
 
 /**
  * #760 — typed client for the privacy miss-report queue
@@ -63,6 +63,9 @@ export async function listMissReports(
 ): Promise<{ items: MissReportDto[] }> {
   const res = await fetch(botApi(`${BASE}?status=${status}`), {
     headers: { ...(await forwardCookieHeader()) },
+    // OM-96 — server-side read, so it needs a deadline; see `rscTimeoutSignal`.
+    // `createMissReport` above is a mutation and stays unbounded.
+    signal: rscTimeoutSignal(),
     cache: 'no-store',
   });
   if (!res.ok) throw new ApiError(res.status, `miss-report list failed: ${String(res.status)}`);

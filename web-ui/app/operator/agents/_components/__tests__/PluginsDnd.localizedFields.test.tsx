@@ -129,6 +129,8 @@ describe('PluginsDnd config drawer — localized setup fields', () => {
 
     await user.click(screen.getByRole('button', { name: 'Config' }));
 
-    expect(screen.getByText(/orphan_key/)).toBeInTheDocument();
+    // Twice now: once as the field key in the row header, once as the label
+    // fallback the loader itself uses for a label-less field.
+    expect(screen.getAllByText(/orphan_key/)).toHaveLength(2);
   });
 });

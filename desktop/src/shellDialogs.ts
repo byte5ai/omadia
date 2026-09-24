@@ -12,8 +12,25 @@
  * Every function takes the translator rather than building one, so the locale is
  * resolved once at startup and no dialog can silently fall back to English.
  */
-import { BrowserWindow, clipboard, dialog } from 'electron';
+import { BrowserWindow, clipboard, dialog, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron';
 import { fillPlaceholders, type ShellTranslate } from './shellStrings';
+
+/**
+ * Every dialog goes through here so it is attached to the main window (OM-71).
+ *
+ * Five of the seven used to call `dialog.showMessageBox(options)` without a
+ * parent. On macOS that is an application-modal, free-floating window: the
+ * reminder about the recovery key was half covered by a system dialog and the
+ * dialog that shows the key itself could get lost behind other windows. A
+ * destroyed window cannot parent anything, so that one case falls back to the
+ * old behaviour rather than throwing over the vault key.
+ */
+async function messageBox(
+  win: BrowserWindow,
+  options: MessageBoxOptions,
+): Promise<MessageBoxReturnValue> {
+  return win.isDestroyed() ? dialog.showMessageBox(options) : dialog.showMessageBox(win, options);
+}
 
 /** What the user chose in the boot-failure dialog. */
 export type BootFailureChoice = 'rerun-setup' | 'quit';
@@ -30,7 +47,7 @@ export type RecoveryReminderChoice = 'show-now' | 'later';
  * the only correct action, waiting, was not on offer.
  */
 export async function showSupersededBoot(win: BrowserWindow, t: ShellTranslate): Promise<void> {
-  await dialog.showMessageBox(win, {
+  await messageBox(win, {
     type: 'info',
     title: t('boot.superseded.title', 'Applying update'),
     message: t('boot.superseded.message', 'omadia is applying an update.'),
@@ -51,7 +68,7 @@ export async function showBootFailure(
   detail: string,
   logPath: string,
 ): Promise<BootFailureChoice> {
-  const { response } = await dialog.showMessageBox(win, {
+  const { response } = await messageBox(win, {
     type: 'error',
     title: t('boot.failed.title', 'omadia failed to start'),
     message: t('boot.failed.message', 'omadia could not start its local services.'),
@@ -76,10 +93,11 @@ export async function showBootFailure(
  * first version of the recovery path turned into a silent infinite loop.
  */
 export async function showRecoveryExhausted(
+  win: BrowserWindow,
   t: ShellTranslate,
   logPath: string,
 ): Promise<void> {
-  await dialog.showMessageBox({
+  await messageBox(win, {
     type: 'error',
     title: t('shell.loadFailed.exhausted.title', 'The interface could not be loaded'),
     message: t(
@@ -105,8 +123,8 @@ export async function showRecoveryExhausted(
  * The arbiter already refuses it; without this the tray item just did nothing
  * visible, which is its own small version of the same problem.
  */
-export async function showRestartRefused(t: ShellTranslate): Promise<void> {
-  await dialog.showMessageBox({
+export async function showRestartRefused(win: BrowserWindow, t: ShellTranslate): Promise<void> {
+  await messageBox(win, {
     type: 'info',
     title: t('shell.restartRefused.title', 'Cannot restart right now'),
     message: t('shell.restartRefused.message', 'First-run setup is still open.'),
@@ -121,9 +139,13 @@ export async function showRestartRefused(t: ShellTranslate): Promise<void> {
 }
 
 /** Show the vault recovery key, offering a clipboard copy. */
-export async function showRecoveryKey(t: ShellTranslate, key: string): Promise<void> {
+export async function showRecoveryKey(
+  win: BrowserWindow,
+  t: ShellTranslate,
+  key: string,
+): Promise<void> {
   const copyLabel = t('recovery.copy', 'Copy to clipboard');
-  const { response } = await dialog.showMessageBox({
+  const { response } = await messageBox(win, {
     type: 'info',
     title: t('recovery.title', 'Recovery key'),
     message: t('recovery.message', 'Keep this key somewhere safe.'),
@@ -142,12 +164,13 @@ export async function showRecoveryKey(t: ShellTranslate, key: string): Promise<v
 }
 
 export async function showRecoveryKeyUnavailable(
+  win: BrowserWindow,
   t: ShellTranslate,
   error: string,
   logPath: string,
 ): Promise<void> {
   const title = t('recovery.unavailableTitle', 'Recovery key unavailable');
-  await dialog.showMessageBox({
+  await messageBox(win, {
     type: 'error',
     title,
     message: title,
@@ -162,10 +185,11 @@ export async function showRecoveryKeyUnavailable(
 }
 
 export async function showRecoveryReminder(
+  win: BrowserWindow,
   t: ShellTranslate,
 ): Promise<RecoveryReminderChoice> {
   const menuItem = t('recovery.menuItem', 'Show recovery key…');
-  const { response } = await dialog.showMessageBox({
+  const { response } = await messageBox(win, {
     type: 'warning',
     title: t('recovery.reminder.title', 'Recovery key not saved yet'),
     message: t('recovery.reminder.message', 'You have not viewed your recovery key yet.'),

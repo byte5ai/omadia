@@ -46,7 +46,7 @@ interface ServiceUse {
    * same way. Recorded rather than folded into `get` because the two produce
    * different remedies in the finding text.
    */
-  readonly verb: 'get' | 'replace';
+  readonly verb: 'get' | 'getOptional' | 'replace';
 }
 
 interface CoverageSnapshot {
@@ -414,7 +414,7 @@ function collectServiceUsesForManifest(
   return observed;
 }
 
-const GATED_SERVICE_VERBS = new Set(['get', 'replace']);
+const GATED_SERVICE_VERBS = new Set(['get', 'getOptional', 'replace']);
 
 /**
  * A gated `ctx.services.<verb>(name, …)` call. Returns the verb so the finding
@@ -424,8 +424,19 @@ const GATED_SERVICE_VERBS = new Set(['get', 'replace']);
  * live name away from anyone — `ServiceRegistry.provide` throws
  * duplicate-provider instead. Adding it here would report false findings for
  * every plugin that registers a name it did not spell in `provides:`.
+ *
+ * `getOptional` IS gated and was missing here until #1016. It delegates
+ * straight to the same accessor (`pluginContext.ts` → `services.get`), so it
+ * throws `ServiceNotDeclaredError` for an undeclared name exactly like `get` —
+ * "optional" describes whether a PROVIDER must exist, never whether the
+ * manifest must declare the name. The blind spot was the dangerous kind:
+ * moving a call from `get` to `getOptional` silenced this scanner while
+ * leaving the runtime throw in place, so the suite went green and activation
+ * still died on every boot.
  */
-function gatedServiceCallVerb(node: ts.Node): 'get' | 'replace' | undefined {
+function gatedServiceCallVerb(
+  node: ts.Node,
+): 'get' | 'getOptional' | 'replace' | undefined {
   if (!ts.isCallExpression(node)) return undefined;
   const callee = node.expression;
   if (!ts.isPropertyAccessExpression(callee)) return undefined;
@@ -435,13 +446,13 @@ function gatedServiceCallVerb(node: ts.Node): 'get' | 'replace' | undefined {
   if (!ts.isPropertyAccessExpression(target) || target.name.text !== 'services') {
     return undefined;
   }
-  return verb as 'get' | 'replace';
+  return verb as 'get' | 'getOptional' | 'replace';
 }
 
 function resolveServiceName(
   arg: ts.Expression,
   checker: ts.TypeChecker,
-  verb: 'get' | 'replace' = 'get',
+  verb: 'get' | 'getOptional' | 'replace' = 'get',
 ): { name: string } | { error: string } {
   if (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) {
     return { name: arg.text };
@@ -576,8 +587,10 @@ function asStringArray(
 
 /** "resolves" reads wrong for a `replace`; the finding has to name the verb
  *  the author actually wrote or it sends them hunting for the wrong call. */
-function verbPhrase(verb: 'get' | 'replace'): string {
-  return verb === 'replace' ? 'replaces the provider of' : 'resolves';
+function verbPhrase(verb: 'get' | 'getOptional' | 'replace'): string {
+  if (verb === 'replace') return 'replaces the provider of';
+  if (verb === 'getOptional') return 'optionally resolves';
+  return 'resolves';
 }
 
 function relativeToMiddleware(absPath: string): string {

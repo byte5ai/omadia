@@ -66,7 +66,7 @@ describe('/documents router (office delivery path)', () => {
     await store.put(key, xlsxBytes, MEDIA_TYPE.xlsx);
 
     const app = express();
-    app.use('/documents', createDocumentsRouter({ store, secret: SECRET }));
+    app.use('/documents/dl', createDocumentsRouter({ store, secret: SECRET }));
     server = await listenLoopback(app);
     const addr = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${String(addr.port)}`;
@@ -88,7 +88,7 @@ describe('/documents router (office delivery path)', () => {
   });
 
   it('returns 403 when the signature is missing', async () => {
-    const res = await fetch(`${baseUrl}/documents/${encodeURIComponent(key)}?exp=9999999999`);
+    const res = await fetch(`${baseUrl}/documents/dl/${encodeURIComponent(key)}?exp=9999999999`);
     assert.equal(res.status, 403);
   });
 

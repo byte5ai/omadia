@@ -111,7 +111,15 @@ export async function activate(ctx: PluginContext): Promise<DiagramsPluginHandle
   );
 
   const router = createDiagramsRouter({ store, secret: signingSecret });
-  const disposeRoute = ctx.routes.register('/diagrams', router);
+  // `auth: 'custom'` — same posture as `@omadia/plugin-office`'s `/documents`:
+  // the router verifies the HMAC-signed, expiring URL on every request, and
+  // the channel users who open these PNG links have no operator session. Only
+  // served session-less once the operator grants `/diagrams/dl` (manifest
+  // `permissions.public_paths`); fail-closed to the session gate before that.
+  // `/dl` because a public-path claim must be at least two segments deep.
+  const disposeRoute = ctx.routes.register('/diagrams/dl', router, {
+    auth: 'custom',
+  });
 
   ctx.log(
     `[diagrams] ready (kroki=${krokiBaseUrl}, bucket=${tigrisBucket}, tenant=${tenantId})`,

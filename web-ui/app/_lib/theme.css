@@ -186,10 +186,12 @@
 
   /* ============================================================
      Typography — families (spec §2.7)
-     next/font (layout.tsx) self-hosts Geist, Geist Mono and
-     Source Serif 4, assigning --font-geist / --font-geist-mono /
-     --font-source-serif. The stacks below add the platform-strongest
-     fallbacks and stay valid before next/font hydrates.
+     next/font/local (app/_fonts) serves Geist, Geist Mono and
+     Source Serif 4 from woff2 files vendored in this repo, assigning
+     --font-geist / --font-geist-mono / --font-source-serif. The stacks
+     below add the platform-strongest fallbacks, stay valid before the
+     faces load, and carry text outside the latin unicode-range those
+     files cover.
      ============================================================ */
   --font-sans:  var(--font-geist), system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono:  var(--font-geist-mono), ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
