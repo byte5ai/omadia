@@ -96,16 +96,20 @@ cannot silently re-open the drift.
 
 `processReuseThreshold` is a string field (the manifest loader has no decimal
 type) constrained by a `0–1` pattern. The pattern is not the only write path:
-`ctx.config.set` persists a declared non-secret field without re-running
-`checkSetupFieldPattern`, so out-of-contract values could still reach the
-plugin, and the old `Number.parseFloat` + `Number.isFinite` guard passed them
-through. `"0,6"` (decimal comma) parsed to the prefix `0` — finite, in range,
-and therefore invisible to a range check — which reuses **every** retrieved
-process regardless of similarity; `"5"` silently disabled reuse while the
-startup log printed a plausible threshold. Parsing now rejects anything that is
-not a complete numeric literal and anything outside 0–1, falling back to the
-0.6 default in both cases (`parseProcessReuseThreshold`), which is what the
-field's help text promises.
+`PATCH /api/v1/admin/runtime/installed/:id/config` blind-merges the JSON body
+and profile apply stores the profile's YAML `config` as-is — neither re-runs
+`checkSetupFieldPattern`, and both keep the raw JSON/YAML type — so
+out-of-contract values could still reach the plugin, and the old
+`Number.parseFloat` + `Number.isFinite` guard passed them through. `"0,6"`
+(decimal comma) parsed to the prefix `0` — finite, in range, and therefore
+invisible to a range check — which reuses **every** retrieved process
+regardless of similarity; `"5"` silently disabled reuse while the startup log
+printed a plausible threshold. Parsing now range-checks a stored number as-is,
+rejects any string that is not a complete numeric literal, and rejects anything
+outside 0–1 or of another type, falling back to the 0.6 default
+(`parseProcessReuseThreshold`, which never throws, so a bad value cannot fail
+activation) — what the field's help text promises. A rejected, operator-set
+value is logged at activation instead of being swapped for 0.6 silently.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

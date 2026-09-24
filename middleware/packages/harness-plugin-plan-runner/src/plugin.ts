@@ -115,11 +115,13 @@ export const DEFAULT_PROCESS_REUSE_THRESHOLD = 0.6;
 /**
  * Parse the `processReuseThreshold` setup value into a usable score.
  *
- * The manifest pattern rejects out-of-range and non-numeric input at the
- * schema level, but it is NOT the only write path: `ctx.config.set` persists a
- * declared non-secret field WITHOUT running `checkSetupFieldPattern`, so a
- * value like `"0,6"` (decimal comma) or `"5"` can reach this code. Two reasons
- * `Number.parseFloat` alone is the wrong parser here:
+ * The manifest pattern rejects out-of-range and non-numeric input in the
+ * install/setup flow, but it is NOT the only write path:
+ * `PATCH /api/v1/admin/runtime/installed/:id/config` blind-merges the JSON body
+ * and profile apply stores the profile's YAML `config` as-is — neither re-runs
+ * `checkSetupFieldPattern`, and both keep the raw JSON/YAML type. So a value
+ * like `"0,6"` (decimal comma), `"5"`, or the NUMBER `0.8` can reach this code.
+ * Two reasons `Number.parseFloat` alone is the wrong parser for strings:
  *
  *   - it parses a PREFIX, so `"0,6"` → `0` — finite, in range, and therefore
  *     invisible to any range check: every retrieved process would be reused
@@ -127,19 +129,42 @@ export const DEFAULT_PROCESS_REUSE_THRESHOLD = 0.6;
  *   - it happily returns out-of-range numbers, so `"5"` silently disables
  *     reuse while the startup log prints a plausible-looking threshold.
  *
- * So: reject anything that is not a complete numeric literal (`Number`, not
- * `parseFloat`), then reject anything outside the documented 0–1 range. Both
- * fall back to the default, which is what the manifest promises.
+ * So: a number is range-checked as-is; a string must be a complete numeric
+ * literal (`Number`, not `parseFloat`) in the documented 0–1 range; anything
+ * else (boolean, object, unset, blank) takes the default, which is what the
+ * manifest promises. Never throws — a bad value must not fail activation.
  */
-export function parseProcessReuseThreshold(raw: string | undefined): number {
-  const trimmed = (raw ?? '').trim();
-  // `Number('')` and `Number('   ')` are 0, not NaN — an empty value means
-  // "unset" and must take the default, never the reuse-everything score.
-  if (trimmed.length === 0) return DEFAULT_PROCESS_REUSE_THRESHOLD;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed)) return DEFAULT_PROCESS_REUSE_THRESHOLD;
-  if (parsed < 0 || parsed > 1) return DEFAULT_PROCESS_REUSE_THRESHOLD;
-  return parsed;
+export function parseProcessReuseThreshold(raw: unknown): number {
+  if (isUnsetThreshold(raw)) return DEFAULT_PROCESS_REUSE_THRESHOLD;
+  return thresholdInRange(raw) ?? DEFAULT_PROCESS_REUSE_THRESHOLD;
+}
+
+/** `true` when an operator SET a threshold that `parseProcessReuseThreshold`
+ *  discarded for the default — `activate()` logs it so the fallback is visible. */
+function isRejectedThreshold(raw: unknown): boolean {
+  return !isUnsetThreshold(raw) && thresholdInRange(raw) === undefined;
+}
+
+// `Number('')` and `Number('   ')` are 0, not NaN — a blank value means "unset"
+// and must take the default, never the reuse-everything score.
+function isUnsetThreshold(raw: unknown): boolean {
+  return (
+    raw === undefined ||
+    raw === null ||
+    (typeof raw === 'string' && raw.trim().length === 0)
+  );
+}
+
+function thresholdInRange(raw: unknown): number | undefined {
+  const parsed =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Number(raw.trim())
+        : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1
+    ? parsed
+    : undefined;
 }
 
 export interface ReusableProcess {
@@ -226,9 +251,17 @@ export async function activate(
   const processMemory = reuseProcesses
     ? ctx.services.get<ProcessMemoryService>(PROCESS_MEMORY_SERVICE_NAME)
     : undefined;
-  const reuseThreshold = parseProcessReuseThreshold(
-    ctx.config.get<string>('processReuseThreshold'),
-  );
+  // `unknown`, not `string`: the admin PATCH route and profile apply persist
+  // raw JSON/YAML types, so a stored number is a real input (see the parser).
+  const reuseThresholdRaw = ctx.config.get<unknown>('processReuseThreshold');
+  const reuseThreshold = parseProcessReuseThreshold(reuseThresholdRaw);
+  if (isRejectedThreshold(reuseThresholdRaw)) {
+    ctx.log(
+      `[plan-runner] processReuseThreshold ${JSON.stringify(
+        reuseThresholdRaw,
+      )} is not a number in 0–1; using default ${DEFAULT_PROCESS_REUSE_THRESHOLD.toFixed(2)}`,
+    );
+  }
   if (processMemory) {
     ctx.log(
       `[plan-runner] process reuse ON (threshold=${reuseThreshold.toFixed(2)})`,
