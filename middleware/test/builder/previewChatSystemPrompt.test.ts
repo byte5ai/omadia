@@ -73,7 +73,7 @@ describe('loadPreviewSystemPrompt — live compose (issue #51/#54/#55 follow-up)
       name: 'Weather',
       id: 'weather',
       quality: {
-        boundaries: { presets: ['no-pii', 'no-medical-data'], custom: ['no Spekulationen'] },
+        boundaries: { presets: ['no-pii', 'no-medical-data'], custom: ['Keine Spekulationen.'] },
       },
     };
     const out = await loadPreviewSystemPrompt(
@@ -84,8 +84,8 @@ describe('loadPreviewSystemPrompt — live compose (issue #51/#54/#55 follow-up)
     assert.match(out, /## Boundaries/);
     assert.match(out, /personally identifiable information/);
     assert.match(out, /medical diagnoses/);
-    assert.match(out, /\nno Spekulationen/);
-    assert.doesNotMatch(out, /You must NOT: no Spekulationen/);
+    assert.match(out, /\nKeine Spekulationen\./);
+    assert.doesNotMatch(out, /You must NOT:/);
   });
 
   it('emits the sycophancy guard when quality.sycophancy is set', async () => {

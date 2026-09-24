@@ -74,10 +74,14 @@ describe('compileBoundaries (issue #54)', () => {
   });
 
   it('splices custom lines verbatim, trimming whitespace (issue #1101)', () => {
-    const { text } = compileBoundaries([], ['  promise refunds  ', '', 'leak internal data']);
+    const { text } = compileBoundaries([], [
+      '  Never promise refunds.  ',
+      '',
+      'Never leak internal data.',
+    ]);
     // No hardcoded prefix — the line reaches the prompt as written.
     assert.doesNotMatch(text, /You must NOT:/);
-    assert.deepEqual(text.split('\n'), ['promise refunds', 'leak internal data']);
+    assert.deepEqual(text.split('\n'), ['Never promise refunds.', 'Never leak internal data.']);
   });
 
   it('does not double-negate a line already phrased as a prohibition (issue #1101)', () => {

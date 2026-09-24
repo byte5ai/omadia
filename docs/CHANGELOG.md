@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — custom boundary lines are spliced verbatim (#1101)
+
+2026-09-24 — custom boundary lines (`quality.boundaries.custom`, edited as
+"Own prohibitions" on an operator agent's Limits tab, as custom boundaries
+in the Agent Builder, or in AGENT.md) no longer get a hardcoded
+`You must NOT: ` prefix. Each line reaches the prompt exactly as
+written, which is how the Quality Guard plugin already splices
+`default_boundary_custom`, so a line now means the same thing on both
+surfaces. The prefix turned a line written as a rule into a double negative:
+`Give no investment advice.` compiled to `You must NOT: Give no investment
+advice.`
+
+Lines saved under the old contract as a bare action (`promise refunds`) are
+now spliced as-is and read as an instruction, not a prohibition. Rewrite them
+as complete rules (`Never promise refunds.`). Operator agents
+(`/operator/agents`) do not pick the change up on upgrade: they run on the
+prompt compiled when their identity was last saved
+(`agent_identities.composed_prompt`), and nothing recompiles it at boot. An
+existing operator agent keeps the old `You must NOT: …` text, visible on its
+Prompt tab, until its identity is saved with a change (the save button stays
+disabled without one; rewriting a custom line counts) or its model policy
+changes. Builder and AGENT.md agents compile their prompt when they load and
+pick the change up on the next restart.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
