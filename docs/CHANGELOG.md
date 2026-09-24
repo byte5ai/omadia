@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
+
+2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
+ever carried, while the repo sat on 0.1.1 with months of newer content (#656,
+#1020, #1118, #1120) and no bump. Diffing the Hub ZIPs showed `dist/` in 0.1.2
+byte-identical to 0.1.1: the whole +826 B was a `setup.guide` (en + de) that was
+written, bumped and published from a working tree nobody committed.
+`@omadia/plugin-web-search` 0.1.0 on the Hub likewise predated #477 and #1020
+without a bump. Neither package had a way to build its own release artifact.
+
+The office guide is restored verbatim from the 0.1.2 ZIP. `plugin-office` goes
+to **0.1.3** (0.1.2 is never reused) and `plugin-web-search` to **0.1.1**, each
+in `manifest.yaml`, `package.json` and the lockfile workspace entry. New
+`middleware/scripts/build-plugin-zip.mjs`, wired as `npm run package` in both
+packages, is the only way to cut their ZIPs. It hard-fails on manifest vs.
+`package.json` version or id drift, on any uncommitted or untracked file under
+the package (the actual root cause), and on a missing `lifecycle.entry` after a
+fresh build. It writes a flat, byte-reproducible ZIP to `<repo>/out/` with
+`yazl` and prints the commit SHA and sha256. `test/pluginPackageVersions.test.ts`
+holds manifest, `package.json` and lockfile versions equal for every in-tree
+package with a `manifest.yaml`, so this drift fails CI. Publishing the two new
+versions is an operator step after merge (docs/creating-plugins.md §8).
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a

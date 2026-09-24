@@ -1,5 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import YAML from 'yaml';
 
 import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 
@@ -69,5 +74,31 @@ describe('adaptManifestV1 · setup.guide', () => {
     const plugin = adaptManifestV1(baseManifest({ guide: { en: '', de: '' }, fields: [] }));
     assert.ok(plugin);
     assert.equal(plugin.setup_guide, undefined);
+  });
+});
+
+// #1075 — the office setup guide was written, bumped to 0.1.2 and published to
+// the Hub from a working tree that was never committed, so the repository never
+// had it. This guards the restored block against being dropped again.
+describe('bundled manifest · @omadia/plugin-office setup.guide (#1075)', () => {
+  it('ships an en + de guide covering the bucket and the public base URL', () => {
+    const file = join(
+      fileURLToPath(new URL('.', import.meta.url)),
+      '..',
+      'packages',
+      'harness-plugin-office',
+      'manifest.yaml',
+    );
+    const doc = YAML.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    const plugin = adaptManifestV1(doc);
+    assert.ok(plugin);
+    const guide = plugin.setup_guide;
+    assert.ok(guide, 'the office manifest declares no setup.guide');
+    for (const locale of ['en', 'de']) {
+      const text = guide[locale];
+      assert.ok(typeof text === 'string' && text.trim().length > 0, `missing ${locale} guide`);
+      assert.match(text, /Tigris/);
+      assert.match(text, /base URL|Base-URL/i);
+    }
   });
 });
