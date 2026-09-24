@@ -3739,7 +3739,10 @@
       "pickModel": "Select a model …",
       "avvDisclosure": "This agent runs on {provider}. Its prompt data is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before using it for personal data.",
       "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers.",
-      "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent."
+      "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent.",
+      "routingLabel": "Per-turn model routing (Haiku triage)",
+      "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
+      "routingAnthropicOnly": "Only available with Anthropic."
     },
     "status": {
       "saving": "saving …",

@@ -3739,7 +3739,10 @@
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
       "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
-      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten.",
+      "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
+      "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
+      "routingAnthropicOnly": "Nur mit Anthropic verfügbar."
     },
     "status": {
       "saving": "speichert …",
