@@ -470,19 +470,20 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "signing identity: $IDENT"
 
-      # --- Windows Authenticode signing (optional) --------------------------
       # --- Windows signing: Azure Trusted Signing (preferred) ----------------
       # The three coordinates are passed on the CLI rather than hard-coded in
       # electron-builder.yml so the config stays generic — a fork without these
       # secrets simply builds unsigned instead of failing on someone else's
       # Azure account. Presence of win.azureSignOptions is what switches
-      # electron-builder to the Azure path.
+      # electron-builder to the Azure path. Runs when ANY of the six is set, so
+      # a partial config (e.g. a deleted AZURE_CLIENT_ID) fails here instead of
+      # silently skipping signing and shipping an unsigned installer.
       - name: Prepare Windows signing (Azure Trusted Signing)
-        if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != '' }}
+        if: ${{ matrix.os == 'windows-latest' && (env.AZURE_CLIENT_ID != '' || env.AZURE_TENANT_ID != '' || env.AZURE_CLIENT_SECRET != '' || env.AZURE_SIGN_ENDPOINT != '' || env.AZURE_SIGN_ACCOUNT != '' || env.AZURE_SIGN_CERT_PROFILE != '') }}
         run: |
-          for v in AZURE_TENANT_ID AZURE_CLIENT_SECRET AZURE_SIGN_ENDPOINT AZURE_SIGN_ACCOUNT AZURE_SIGN_CERT_PROFILE; do
+          for v in AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_SIGN_ENDPOINT AZURE_SIGN_ACCOUNT AZURE_SIGN_CERT_PROFILE; do
             if [ -z "${!v}" ]; then
-              echo "FAIL: AZURE_CLIENT_ID is set but $v is empty — Azure signing needs all six." >&2
+              echo "FAIL: some but not all Azure signing secrets are set ($v is empty) — Azure signing needs all six." >&2
               exit 1
             fi
           done

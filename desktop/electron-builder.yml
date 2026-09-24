@@ -4,8 +4,9 @@
 # Prerequisites for a *signed* build (unsigned builds work for local testing):
 #   macOS:   CSC_LINK + CSC_KEY_PASSWORD (Developer ID cert) and
 #            APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarization.
-#   Windows: CSC_LINK + CSC_KEY_PASSWORD (Authenticode cert), ideally an EV cert
-#            to avoid SmartScreen warnings.
+#   Windows: Azure Trusted Signing via --config.win.azureSignOptions.* flags from
+#            desktop-apps.yml (preferred); legacy CSC_LINK + CSC_KEY_PASSWORD
+#            only for Authenticode certs issued before 2023-06-01.
 #
 # The omadia runtime (middleware dist + node_modules, web-ui standalone) is shipped
 # as unpacked extraResources so the kernel can be forked as a child process and so
@@ -103,7 +104,9 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  # signtool / azure-trusted-signing wired via CSC_* env in CI.
+  # Signing is wired in CI, not here: Azure Trusted Signing via
+  # --config.win.azureSignOptions.* flags from desktop-apps.yml (preferred),
+  # legacy CSC_LINK + CSC_KEY_PASSWORD for pre-2023 certs.
 
 nsis:
   installerIcon: buildResources/icon.ico
@@ -119,6 +122,10 @@ nsis:
   # `Invoke-TrustedSigning -Files <path>` without quoting the path, so
   # signtool sees the path truncated at the first space and fails with
   # "File not found". No spaces sidesteps the bug entirely.
+  # It is also load-bearing for Windows auto-update: latest.yml's `url` (and
+  # electron-updater's request) use the dash form, while GitHub stores a
+  # spaced upload as `omadia.Setup.X.exe` — the feed then 404s. Keep this name
+  # even if a future electron-builder quotes `-Files`.
   artifactName: ${productName}-Setup-${version}.${ext}
 
 linux:
