@@ -24,10 +24,11 @@ function refreshSummary() {
 if (!window.omadia) {
   // Preload bridge failed — say so instead of showing a frozen progress bar.
   if (msgEl) {
+    // Log pointer guarded like `wt`: a missing wizard-i18n.js must not turn
+    // this message into a TypeError and a frozen progress bar (OM-63).
+    var hint = window.omadiaLogHint ? ' ' + window.omadiaLogHint(wt) : '';
     msgEl.textContent =
-      wt('loading.bridgeMissing', 'Internal error: the app bridge did not load.') +
-      ' ' +
-      window.omadiaLogHint(wt);
+      wt('loading.bridgeMissing', 'Internal error: the app bridge did not load.') + hint;
   }
 } else {
   refreshSummary();

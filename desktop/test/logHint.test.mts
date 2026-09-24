@@ -80,3 +80,142 @@ describe('omadiaLogHint', () => {
     assert.match(w.omadiaLogHint(w.wizardT), /menu-bar icon/);
   });
 });
+
+/*
+ * The call sites. The helper above can be right and the user still never sees a
+ * path: the first draft appended the pointer only to the `res.error || fallback`
+ * fallback, and ipc.ts `complete` always answers with the thrown message, so a
+ * real first-run failure showed no path at all. These run the actual page
+ * scripts against a stub DOM holding just the members they touch.
+ */
+const LOG = '/Users/x/Library/Logs/omadia/omadia-desktop.log';
+const rendererSource = (file: string): string =>
+  fs.readFileSync(path.join(here, '..', 'src', 'renderer', file), 'utf8');
+
+interface StubElement {
+  textContent: string;
+  className: string;
+  [member: string]: unknown;
+}
+
+function stubElement(): StubElement {
+  const classes = new Set<string>();
+  return {
+    textContent: '',
+    className: '',
+    value: '',
+    checked: false,
+    style: {},
+    dataset: {},
+    childElementCount: 0,
+    classList: {
+      add: (c: string) => classes.add(c),
+      remove: (c: string) => classes.delete(c),
+      toggle: (c: string, on?: boolean) =>
+        (on ?? !classes.has(c)) ? classes.add(c) : classes.delete(c),
+    },
+    addEventListener: () => {},
+    appendChild: () => {},
+  };
+}
+
+/** Run renderer scripts, in page order, under a stub window/document. */
+function runPage(scripts: readonly string[], bridge: unknown) {
+  const els = new Map<string, StubElement>();
+  const el = (id: string): StubElement => {
+    if (!els.has(id)) els.set(id, stubElement());
+    return els.get(id) as StubElement;
+  };
+  const context = vm.createContext({
+    window: { omadia: bridge, location: { search: '?log=' + encodeURIComponent(LOG), hash: '' } },
+    navigator: { language: 'en-US' },
+    document: {
+      body: el('body'),
+      getElementById: el,
+      querySelector: (sel: string) => el(sel.replace(/^#/, '')),
+      querySelectorAll: () => [],
+      createElement: stubElement,
+    },
+    URLSearchParams,
+    setInterval,
+    clearInterval,
+  });
+  for (const file of scripts) vm.runInContext(rendererSource(file), context);
+  return { el, provision: context['provision'] as (() => Promise<void>) | undefined };
+}
+
+describe('setup failure names the log file (wizard.js provision)', () => {
+  async function provisionError(complete: () => Promise<unknown>): Promise<string> {
+    const bridge = { complete, onBootProgress: () => () => {}, onBootLog: () => () => {} };
+    const page = runPage(['wizard-i18n.js', 'wizard.js'], bridge);
+    assert.ok(page.provision, 'wizard.js must declare provision()');
+    await page.provision();
+    return page.el('provisionError').textContent;
+  }
+
+  it('appends the path to the error the main process reported', async () => {
+    const text = await provisionError(async () => ({ ok: false, error: 'Port 5432 is in use.' }));
+    assert.equal(text, `Port 5432 is in use. Log file: ${LOG}`);
+  });
+
+  it('appends the path when the IPC call itself rejected', async () => {
+    const text = await provisionError(async () => {
+      throw new Error('spawn ENOENT');
+    });
+    assert.equal(text, `spawn ENOENT Log file: ${LOG}`);
+  });
+
+  it('appends the path to the generic message when no error text came back', async () => {
+    const text = await provisionError(async () => ({ ok: false, error: '' }));
+    assert.equal(text, `Setup failed. Check the logs. Log file: ${LOG}`);
+  });
+});
+
+describe('bridge-missing messages name the log file', () => {
+  it('loading.js shows the path when the preload bridge failed', () => {
+    const page = runPage(['wizard-i18n.js', 'loading.js'], undefined);
+    assert.equal(
+      page.el('progressMsg').textContent,
+      `Internal error: the app bridge did not load. Log file: ${LOG}`,
+    );
+  });
+
+  it('wizard.js shows the path when the preload bridge failed', () => {
+    const page = runPage(['wizard-i18n.js', 'wizard.js'], undefined);
+    assert.equal(
+      page.el('testResult').textContent,
+      `Internal error: the app bridge did not load. Please reinstall or report this. Log file: ${LOG}`,
+    );
+  });
+
+  // Without wizard-i18n.js the hint helper is absent. That may cost the pointer,
+  // never the message: an unguarded call throws and leaves a frozen screen.
+  it('loading.js still shows the message when wizard-i18n.js did not load', () => {
+    const page = runPage(['loading.js'], undefined);
+    assert.equal(page.el('progressMsg').textContent, 'Internal error: the app bridge did not load.');
+  });
+
+  it('wizard.js still shows the message when wizard-i18n.js did not load', () => {
+    const page = runPage(['wizard.js'], undefined);
+    assert.equal(
+      page.el('testResult').textContent,
+      'Internal error: the app bridge did not load. Please reinstall or report this.',
+    );
+  });
+});
+
+describe('main.ts hands the log path to every renderer page', () => {
+  const main = fs.readFileSync(path.join(here, '..', 'src', 'main.ts'), 'utf8');
+
+  it('loadRenderer sets the `log` query parameter', () => {
+    const fn = /function loadRenderer\([\s\S]*?\n\}\n/.exec(main);
+    assert.ok(fn, 'main.ts must define loadRenderer');
+    assert.match(fn[0], /\.loadFile\(rendererPath\(page\), \{ query: \{ log: logFile\(\) \}/);
+  });
+
+  it('no page is loaded around loadRenderer', () => {
+    // A bare `win.loadFile(...)` opens the page without the path, and the
+    // renderer quietly falls back to the tray hint OM-63 is about.
+    assert.equal(main.match(/\.loadFile\(/g)?.length, 1, 'only loadRenderer may call loadFile');
+  });
+});

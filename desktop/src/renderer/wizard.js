@@ -12,6 +12,10 @@ const bridge = window.omadia;
 // call site keeps its English text readable inline.
 const wt = window.wizardT || ((_k, fallback) => fallback);
 if (window.applyWizardLocale) window.applyWizardLocale();
+// Appends the log-file pointer (wizard-i18n.js, OM-63). Guarded like `wt`: if
+// that script failed to load, the bare message still beats a TypeError that
+// leaves the user with no message at all.
+const withLogHint = (msg) => (window.omadiaLogHint ? msg + ' ' + window.omadiaLogHint(wt) : msg);
 const LAST_STEP = 4;
 
 const state = {
@@ -37,13 +41,9 @@ const stepSections = () => Array.from(document.querySelectorAll('.step[data-step
 function bridgeOk() {
   if (bridge) return true;
   const el = $('#testResult') || document.body;
-  el.textContent =
-    wt(
-      'js.bridgeMissing',
-      'Internal error: the app bridge did not load. Please reinstall or report this.',
-    ) +
-    ' ' +
-    window.omadiaLogHint(wt);
+  el.textContent = withLogHint(
+    wt('js.bridgeMissing', 'Internal error: the app bridge did not load. Please reinstall or report this.'),
+  );
   if (el.className !== undefined) el.className = 'test-result err';
   return false;
 }
@@ -208,9 +208,10 @@ async function provision() {
 
   if (!res.ok) {
     const err = $('#provisionError');
-    err.textContent =
-      res.error ||
-      wt('js.setupFailed', 'Setup failed. Check the logs.') + ' ' + window.omadiaLogHint(wt);
+    // The pointer goes on the real error too, not only on the fallback: ipc.ts
+    // `complete` always answers with the thrown message, so a hint limited to
+    // the fallback never showed on an actual first-run failure.
+    err.textContent = withLogHint(res.error || wt('js.setupFailed', 'Setup failed. Check the logs.'));
     err.classList.remove('hidden');
     appendBootLog('ERROR', res.error || 'Setup failed.');
     // Allow another attempt.
