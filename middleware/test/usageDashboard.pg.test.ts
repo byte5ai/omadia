@@ -132,6 +132,11 @@ before(async () => {
     occurredAt: new Date('2026-01-11T09:00:00Z'),
   });
   await flush();
+  // `flush()` swallows INSERT failures (the recorder must never break a turn),
+  // so a drift between the migrations and the recorder's column list would
+  // otherwise surface below as confusing zero totals. Fail here, with the cause.
+  const seeded = await pool.query<{ n: string }>('SELECT count(*) AS n FROM token_usage');
+  assert.equal(Number(seeded.rows[0]?.n), 4, 'the recorder wrote every seed row');
 });
 
 after(async () => {

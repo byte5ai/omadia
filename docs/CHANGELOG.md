@@ -63,11 +63,19 @@ they cover turns them red.
   `reactivateEmbeddingProvider` request wrapper.
 - CI: `PG_TEST_FLOOR` 281 → 365 (main measured 359, plus 6 new Postgres tests).
 
-Tests only; no production code changed. Writing the registry test surfaced a
-separate bug that is deliberately not fixed here: `registry/applyDiff.ts`
-`buildForAgent` does not forward `cliTurnSeconds`, so Agents built by the
-registry ignore the turn budget. It has no issue of its own yet; one is to be
-filed as a follow-up of #1077.
+Tests only; no production code changed. Writing the tests surfaced two
+pre-existing defects that are deliberately not fixed here; both are recorded as
+#1077 follow-ups in `docs/middleware-agent-handoff.md` §13:
+
+- `registry/applyDiff.ts` `buildForAgent` forwards the loop guards,
+  `maxTurnSeconds` and `directLineSticky` from the registry runtime defaults,
+  but not `cliTurnSeconds`. Every Agent the registry builds ignores the turn
+  budget, and with a database the web chat runs on the registry's fallback
+  Agent, so on those deployments the OM-104 setting has no effect.
+- `TurnBudgetField` keeps Save enabled after a failed load; saving then sends
+  `null` and wipes the stored budget while the field reads "Saved". It also
+  stores a fractional entry such as `240.5` verbatim, and shows raw exception
+  text instead of a catalog message.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 

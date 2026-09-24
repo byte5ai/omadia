@@ -102,14 +102,31 @@ const PROVIDERS: ProvidersResponse = {
 
 interface Card {
   readonly text: string;
+  /** The card's detail line alone, so a key that prefixes another key (`ok`
+   *  inside `okStatus`) cannot satisfy an assertion by accident. */
+  readonly detail: string | null;
+  /** The tone the status dot is painted with, read back from its colour
+   *  token — the one card signal that is not text. */
+  readonly tone: string | null;
   readonly href: string | null;
 }
+
+const TONE_BY_TOKEN: Readonly<Record<string, string>> = {
+  success: 'ok',
+  warning: 'warn',
+  danger: 'down',
+  'fg-subtle': 'neutral',
+};
 
 function card(titleKey: string): Card {
   const li = screen.getByText(titleKey).closest('li');
   if (!li) throw new Error(`${titleKey} card not found`);
+  const dotClass = li.querySelector('span.rounded-full')?.getAttribute('class') ?? '';
+  const token = /bg-\[color:var\(--([a-z-]+)\)\]/.exec(dotClass)?.[1];
   return {
     text: li.textContent ?? '',
+    detail: li.querySelector('p')?.textContent ?? null,
+    tone: token === undefined ? null : (TONE_BY_TOKEN[token] ?? token),
     href: li.querySelector('a')?.getAttribute('href') ?? null,
   };
 }
@@ -145,30 +162,35 @@ describe('dashboard — last-turn card (OM-100b)', () => {
 
   it('says "unknown" rather than OK when no turn has run yet', async () => {
     await renderWithLastTurn(null);
-    const { text, href } = card('health.lastTurn.title');
+    const { text, detail, tone, href } = card('health.lastTurn.title');
     expect(text).toContain('health.lastTurn.unknownStatus');
-    expect(text).toContain('health.lastTurn.none');
+    expect(detail).toBe('health.lastTurn.none');
+    expect(tone).toBe('neutral');
     expect(text).not.toContain('health.lastTurn.okStatus');
     expect(href).toBe('/admin/providers');
     // No evidence against the cards above — they keep their own verdict.
     expect(card('health.llm.title').text).toContain('health.ok');
+    expect(card('health.llm.title').tone).toBe('ok');
   });
 
   it('reads OK after a turn that came back', async () => {
     await renderWithLastTurn({ status: 'ok', at: Date.now() });
-    const { text } = card('health.lastTurn.title');
+    const { text, detail, tone } = card('health.lastTurn.title');
     expect(text).toContain('health.lastTurn.okStatus');
-    expect(text).toContain('health.lastTurn.ok');
+    expect(detail).toBe('health.lastTurn.ok');
+    expect(tone).toBe('ok');
     expect(card('health.orchestrators.title').text).toContain('health.ok');
+    expect(card('health.orchestrators.title').tone).toBe('ok');
   });
 
   it('names both CLI versions for an incompatible CLI', async () => {
     await renderWithLastTurn(
       failed({ errorCode: 'cli_incompatible', cliVersion: '2.1.100', minCliVersion: '2.1.248' }),
     );
-    const { text } = card('health.lastTurn.title');
+    const { text, detail, tone } = card('health.lastTurn.title');
     expect(text).toContain('health.warn');
-    expect(text).toContain(
+    expect(tone).toBe('warn');
+    expect(detail).toBe(
       'health.lastTurn.cliIncompatible:{"installed":"2.1.100","required":"2.1.248"}',
     );
   });
@@ -201,9 +223,10 @@ describe('dashboard — last-turn card (OM-100b)', () => {
     await renderWithLastTurn(failed({ errorCode: 'orchestrator_failure', errorMessage: 'x' }));
     // Credential present and agent configured — neither survived a real turn.
     for (const title of ['health.llm.title', 'health.orchestrators.title']) {
-      const { text } = card(title);
+      const { text, tone } = card(title);
       expect(text, title).toContain('health.warn');
       expect(text, title).not.toContain('health.ok');
+      expect(tone, title).toBe('warn');
     }
   });
 });

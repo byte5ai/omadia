@@ -24,8 +24,9 @@ import { cliOrchestratorConfig, orchestratorKernelServices } from './orchestrato
  * builds. `registry/applyDiff.ts` `buildForAgent` forwards `maxTurnSeconds`
  * and the loop guards from those defaults but not `cliTurnSeconds`, so every
  * registry-built Agent ignores the setting today. That is a production bug,
- * left unfixed in this tests-only change and not yet tracked by an issue of
- * its own (to be filed as a #1077 follow-up); an assertion on the built Agents
+ * left unfixed in this tests-only change and recorded as an open point in
+ * `docs/middleware-agent-handoff.md` §13 ("Turn-Budget greift nicht bei
+ * Registry-Agents", a #1077 follow-up); an assertion on the built Agents
  * would be red on main for that reason alone.
  *
  * Isolation: its own schema via `search_path` (as `coreMigrations.pg.test.ts`
