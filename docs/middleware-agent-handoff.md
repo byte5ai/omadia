@@ -1819,7 +1819,12 @@ hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
 kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
-`clearActivationError` wieder auf. Alle Schreibpfade für
+`clearActivationError` wieder auf. Ein erneutes Speichern **desselben**
+Providers (der Rat der Fehlermeldung: „Save again“) ist keine effektive
+Änderung, baut aber jedes abhängige Plugin neu, das noch `errored` ist
+(`providerWritten` im Helper, gesetzt, sobald der Write `llm_provider` enthält);
+sonst hätte der Retry nur den Orchestrator neu gebaut und `ok` gemeldet, während
+extras weiter ausfällt. Alle Schreibpfade für
 `llm_provider` laufen durch den Helper: `POST /api/v1/admin/providers/assignment`
 bzw. `applyProviderAssignment`, `PATCH /api/v1/admin/runtime/installed/:id/config`
 und der Config-Zweig von `PATCH …/secrets` (`applySetupValues`). Der
@@ -2715,6 +2720,19 @@ den KG-Wrapper, weil er sie eager in `activate()` abgreift und ein Teardown
 nicht kaskadiert. Die allgemeine Lösung — nach einem Provider-Rebuild die eager
 Konsumenten neu bauen — gehört in das gemeinsame `reactivateAgent` in
 `src/index.ts`; dort liegt gerade #1080 (PR #1186), daher bewusst nicht in #1076.
+
+### Weitere eager Abgriffe, die ein extras- oder Provider-Rebuild nicht erreicht
+
+Dieselbe Klasse wie oben, außerhalb des Scopes von #1076:
+
+- **Teams** greift den `topicDetector` von extras einmal in `activate()` ab
+  (`omadia-channel-teams`, `src/plugin.ts`). Nach einer Neuzuweisung des
+  Orchestrators kann `memoryFeatureStatus` den Detektor als aktiv auf dem neuen
+  Provider melden, während Teams noch die alte (oder keine) Instanz hält.
+- **Plan-Runner und Verifier** halten den KG-Wrapper von extras aus ihrem
+  eigenen `activate()`.
+- **Dynamische Sub-Agents** lösen `hostProviderId` einmal je Aktivierung auf
+  (`src/index.ts`, `dynamicAgentRuntime.ts`).
 
 ### `ctx.llm` friert den geerbten Provider bei Kontext-Erzeugung ein
 

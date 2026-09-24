@@ -224,6 +224,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
         // inherit it (extras from the orchestrator), dependents first.
         await reactivateAfterProviderWrite(deps, id, {
           providerChanged: isEffectiveProviderChange(installed.config, nextConfig),
+          providerWritten: Object.hasOwn(patch, 'llm_provider'),
         });
         const updated = deps.installedRegistry.get(id);
         res.json({
@@ -941,6 +942,8 @@ async function applySetupValues(
       await vault.deleteKey(id, key);
     }
     let providerChanged = false;
+    const providerWritten =
+      Object.hasOwn(configSet, 'llm_provider') || configDelete.includes('llm_provider');
     if (Object.keys(configSet).length > 0 || configDelete.length > 0) {
       const nextConfig: Record<string, unknown> = {
         ...installed.config,
@@ -951,7 +954,7 @@ async function applySetupValues(
       providerChanged = isEffectiveProviderChange(installed.config, nextConfig);
     }
     // #1076 — same dependent rebuild as PATCH /installed/:id/config.
-    await reactivateAfterProviderWrite(deps, id, { providerChanged });
+    await reactivateAfterProviderWrite(deps, id, { providerChanged, providerWritten });
     const keys = await vault.listKeys(id);
     const updated = deps.installedRegistry.get(id);
     const configValues = stringifyConfigValues(updated?.config);

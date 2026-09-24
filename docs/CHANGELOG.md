@@ -61,7 +61,9 @@ plugin itself. If extras does not come back up (the kernel's reactivation
 records the failure and marks it `errored` rather than throwing), the
 orchestrator is still rebuilt on its new, persisted provider, but the write
 answers with an error naming extras and its activation error instead of a
-success. The subscription-login hand-off now assigns plugins that others
+success. Saving the same provider again (what the error copy recommends)
+retries every dependent still left `errored`, so the retry answers `ok` only
+once extras is really back up. The subscription-login hand-off now assigns plugins that others
 inherit from last (verifier, extras, orchestrator), so the final rebuild
 captures extras with its own hand-off model rather than an intermediate one.
 

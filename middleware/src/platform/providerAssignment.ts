@@ -144,9 +144,41 @@ async function rebuildDependent(
   return entry.last_activation_error ?? 'activation failed (no error recorded)';
 }
 
+export interface ProviderWriteFacts {
+  /** The effective provider differs before vs after the write. */
+  readonly providerChanged: boolean;
+  /**
+   * The write carried `llm_provider` at all, changed or not. A same-provider
+   * re-save is the retry the UI recommends after a failed dependent rebuild
+   * ("Save again"), so it must reach a dependent still left `errored`.
+   */
+  readonly providerWritten?: boolean;
+}
+
+/**
+ * The installed dependents a write to `pluginId` has to rebuild: all of them on
+ * an effective provider change; on a same-provider re-save of `llm_provider`
+ * only those still `errored`. Without the second rule a retry after a failed
+ * extras rebuild would see no change, rebuild only the primary and answer
+ * `ok`, leaving extras down behind a success.
+ */
+function dependentsToRebuild(
+  installedRegistry: ProviderReactivationDeps['installedRegistry'],
+  pluginId: string,
+  facts: ProviderWriteFacts,
+): string[] {
+  return providerDependentsOf(pluginId).filter((id) => {
+    if (!installedRegistry.has(id)) return false;
+    if (facts.providerChanged) return true;
+    return facts.providerWritten === true && installedRegistry.get(id)?.status === 'errored';
+  });
+}
+
 /**
  * Reactivate `pluginId` after a config write. When its provider changed, every
- * INSTALLED provider dependent is rebuilt first. A failing dependent does not
+ * INSTALLED provider dependent is rebuilt first; when `llm_provider` was
+ * re-written unchanged, only the dependents still `errored` are (see
+ * {@link dependentsToRebuild}). A failing dependent does not
  * stop the primary from being rebuilt (it re-captures whatever the dependent
  * left published). Afterwards the first dependent failure is thrown as a
  * {@link ProviderDependentRebuildError}, so the caller reports the write as
@@ -157,13 +189,11 @@ async function rebuildDependent(
 export async function reactivateAfterProviderWrite(
   deps: ProviderReactivationDeps,
   pluginId: string,
-  opts: { readonly providerChanged: boolean },
+  opts: ProviderWriteFacts,
 ): Promise<void> {
   const reactivate = deps.reactivate;
   if (reactivate === undefined) return;
-  const dependents = opts.providerChanged
-    ? providerDependentsOf(pluginId).filter((id) => deps.installedRegistry.has(id))
-    : [];
+  const dependents = dependentsToRebuild(deps.installedRegistry, pluginId, opts);
   const failures: ProviderDependentRebuildError[] = [];
   for (const id of dependents) {
     const reason = await rebuildDependent(deps.installedRegistry, reactivate, id);
@@ -179,7 +209,9 @@ export async function reactivateAfterProviderWrite(
     for (const f of failures) console.error(`[providers] ${f.message}`);
     throw err;
   }
-  const [firstFailure] = failures;
+  const [firstFailure, ...otherFailures] = failures;
+  // Only one error can be thrown; the rest are logged, not dropped.
+  for (const f of otherFailures) console.error(`[providers] ${f.message}`);
   if (firstFailure !== undefined) throw firstFailure;
 }
 
@@ -267,6 +299,7 @@ export async function applyProviderAssignment(
     await deps.installedRegistry.updateConfig(pluginId, nextConfig);
     await reactivateAfterProviderWrite(deps, pluginId, {
       providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
+      providerWritten: true,
     });
   } catch (err) {
     return {

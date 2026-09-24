@@ -33,7 +33,7 @@ interface Harness {
 
 async function makeHarness(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { erroredOn?: string } = {},
+  opts: { erroredOn?: string; erroredTimes?: number } = {},
 ): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   for (const p of installed) {
@@ -67,6 +67,7 @@ async function makeHarness(
   } as unknown as PluginCatalog;
 
   const reactivated: string[] = [];
+  let erroredLeft = opts.erroredTimes ?? Number.POSITIVE_INFINITY;
   const stubReg = {
     names: () => [],
     counts: () => ({ before_turn: 0, after_tool_call: 0, after_turn: 0 }),
@@ -87,9 +88,13 @@ async function makeHarness(
       reactivate: async (id: string): Promise<void> => {
         reactivated.push(id);
         // Mirror production `installService.reactivate` on a failed
-        // activation: record it, flip to `errored`, return normally.
-        if (opts.erroredOn === id) {
+        // activation: record it, flip to `errored`, return normally. A later
+        // successful rebuild lifts `errored` again (`clearActivationError`).
+        if (opts.erroredOn === id && erroredLeft > 0) {
+          erroredLeft -= 1;
           await registry.markActivationBlocked(id, `${id} activate() exploded`);
+        } else {
+          await registry.clearActivationError(id);
         }
       },
     }),
@@ -154,6 +159,32 @@ describe('runtime config writes rebuild provider dependents (#1076)', () => {
     // The orchestrator was still rebuilt on the persisted config.
     assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
     assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'claude-cli');
+  });
+
+  // "Save again" after a failed extras rebuild carries the SAME provider; it
+  // must still retry extras instead of answering 200 over an errored dependent.
+  it('PATCH /installed/:id/config re-saving the same provider retries an errored dependent', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: EXTRAS }], { erroredOn: EXTRAS, erroredTimes: 1 });
+    const url = `${h.baseUrl}/installed/${encodeURIComponent(ORCH)}/config`;
+    assert.equal(await patch(url, { llm_provider: 'claude-cli' }), 500);
+    h.reactivated.length = 0;
+    assert.equal(await patch(url, { llm_provider: 'claude-cli' }), 200);
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+    assert.equal(h.registry.get(EXTRAS)?.status, 'active');
+  });
+
+  it('PATCH /installed/:id/secrets re-saving the same provider still reports a dependent that stays errored', async () => {
+    h = await makeHarness(
+      [{ id: ORCH, config: { llm_provider: 'anthropic' } }, { id: EXTRAS }],
+      { erroredOn: EXTRAS },
+    );
+    const url = `${h.baseUrl}/installed/${encodeURIComponent(ORCH)}/secrets`;
+    assert.equal(await patch(url, { set: { llm_provider: 'openai' } }), 500);
+    h.reactivated.length = 0;
+    const res = await patchWithBody(url, { set: { llm_provider: 'openai' } });
+    assert.equal(res.status, 500);
+    assert.equal((JSON.parse(res.body) as { code: string }).code, 'runtime.vault_write_failed');
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
   });
 
   it('PATCH /installed/:id/secrets reports a dependent left errored instead of a 200', async () => {

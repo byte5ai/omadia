@@ -229,6 +229,66 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.equal(registry.get(EXTRAS)?.status, 'active');
   });
 
+  // After a failed extras rebuild the UI tells the operator to "Save again".
+  // That second save carries the SAME provider, so without the errored-retry
+  // rule it would rebuild only the orchestrator and answer ok while extras
+  // stays down. Both variants run through the real InstallService.
+  async function saveTwiceWithExtrasFailing(extrasFailures: number) {
+    const { registry, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+      { id: EXTRAS },
+    ]);
+    const activated: string[] = [];
+    let extrasFailuresLeft = extrasFailures;
+    const installService = new InstallService({
+      catalog: {} as PluginCatalog,
+      registry,
+      vault: {} as SecretVault,
+      onUninstall: async () => undefined,
+      onInstalled: async (id: string) => {
+        activated.push(id);
+        if (id === EXTRAS && extrasFailuresLeft > 0) {
+          extrasFailuresLeft -= 1;
+          throw new Error('extras activate() exploded');
+        }
+      },
+    });
+    const withService = {
+      ...deps,
+      reactivate: async (id: string): Promise<void> => {
+        await installService.reactivate(id);
+      },
+    };
+    const input = { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' };
+    const first = await applyProviderAssignment(withService, input);
+    const firstActivated = activated.splice(0);
+    const extrasAfterFirst = registry.get(EXTRAS)?.status;
+    const second = await applyProviderAssignment(withService, input);
+    return { registry, first, firstActivated, extrasAfterFirst, second, secondActivated: activated };
+  }
+
+  it('re-saving the same provider retries a dependent left errored and reports ok once it is up', async () => {
+    const run = await saveTwiceWithExtrasFailing(1);
+    assert.equal(run.first.ok, false);
+    assert.equal(run.first.ok === false ? run.first.code : undefined, 'providers.apply_failed');
+    assert.deepEqual(run.firstActivated, [EXTRAS, ORCH]);
+    assert.equal(run.extrasAfterFirst, 'errored');
+
+    assert.equal(run.second.ok, true, JSON.stringify(run.second));
+    assert.deepEqual(run.secondActivated, [EXTRAS, ORCH]);
+    assert.equal(run.registry.get(EXTRAS)?.status, 'active');
+  });
+
+  it('re-saving the same provider while the dependent keeps failing reports apply_failed again', async () => {
+    const run = await saveTwiceWithExtrasFailing(Number.POSITIVE_INFINITY);
+    assert.equal(run.first.ok, false);
+    assert.equal(run.second.ok, false, JSON.stringify(run.second));
+    assert.equal(run.second.ok === false ? run.second.code : undefined, 'providers.apply_failed');
+    assert.match(run.second.ok === false ? run.second.message : '', /orchestrator-extras failed to rebuild/);
+    assert.deepEqual(run.secondActivated, [EXTRAS, ORCH]);
+    assert.equal(run.registry.get(EXTRAS)?.status, 'errored');
+  });
+
   it('a throwing dependent still rebuilds the orchestrator, then reports apply_failed', async () => {
     const { reactivated, deps } = await makeDeps(
       [{ id: ORCH, config: { llm_provider: 'anthropic' } }, { id: EXTRAS }],
@@ -299,6 +359,36 @@ describe('providerDependentsOf / reactivateAfterProviderWrite', () => {
         return true;
       },
     );
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('without a provider write, an errored dependent is left alone', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    for (const id of [ORCH, EXTRAS]) {
+      await registry.register({
+        id,
+        installed_version: '0.1.0',
+        installed_at: new Date().toISOString(),
+        status: id === EXTRAS ? 'errored' : 'active',
+        config: {},
+      });
+    }
+    const reactivated: string[] = [];
+    // A successful rebuild lifts `errored`, as `installService.reactivate` does.
+    const reactivate = async (id: string): Promise<void> => {
+      reactivated.push(id);
+      await registry.clearActivationError(id);
+    };
+    await reactivateAfterProviderWrite({ installedRegistry: registry, reactivate }, ORCH, {
+      providerChanged: false,
+    });
+    assert.equal(registry.get(EXTRAS)?.status, 'errored');
+    assert.deepEqual(reactivated, [ORCH]);
+    reactivated.length = 0;
+    await reactivateAfterProviderWrite({ installedRegistry: registry, reactivate }, ORCH, {
+      providerChanged: false,
+      providerWritten: true,
+    });
     assert.deepEqual(reactivated, [EXTRAS, ORCH]);
   });
 
