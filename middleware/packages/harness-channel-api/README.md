@@ -137,12 +137,20 @@ while (! $body->eof()) {
 }
 ```
 
-Retry advice: `429` is the only status worth retrying automatically (back off
-until the 60-second window resets). `401`/`403` mean the credential itself is
-wrong and retrying will not fix it. A `200` whose stream ends in an `error`
-event means the turn failed, not the credential.
+Retry advice: `429` is the only status worth retrying automatically. **No
+`Retry-After` header is sent** — there is no machine-readable signal for when
+the window resets. The window is a fixed 60 seconds (see "Rate limiting"), so a
+client waits a hardcoded 60 seconds rather than reading a header. `401`/`403`
+mean the credential itself is wrong and retrying will not fix it. A `200` whose
+stream ends in an `error` event means the turn failed, not the credential.
 
 ## `POST /api/public/v1/chat`
+
+The route is **POST-only**. `GET /api/public/v1/chat` — or any other non-POST
+method such as `PUT` or `DELETE` — returns `404 Not Found`; the router registers
+`POST` only. (`OPTIONS` is the exception: it is answered with `200` and
+`Allow: POST`.) If a `GET` returns 404, that is the method, not a missing route
+or a bad key.
 
 ### Request
 
@@ -191,7 +199,7 @@ relevant to a plain chat integration:
 
 | `type` | Meaning |
 |---|---|
-| `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the server MAY replace the answer before `done` (see `done.answerSource`), in which case the concatenated deltas are stale and do not match `done.answer`. |
+| `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the concatenated deltas can differ from `done.answer` — the server MAY replace the answer before `done` (see `done.answerSource`), and it adds the AI-disclosure paragraph to `done.answer` only, never as a delta. |
 | `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (currently only `"privacy-render"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas; `answerIsError: true` then marks that render as a failure rather than a result. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
 | `verifier` | **Informational, safe to ignore.** Only appears when the omadia instance has verifier mode enabled — one extra event **after** `done`, carrying a `summary` of the post-hoc fact-check. Never blocks or retries the turn; the caller already has the answer by the time this arrives. |
@@ -203,16 +211,21 @@ concatenated `text_delta` chunks are a live preview of the model's text and
 may be superseded server-side before the turn ends. The `done` event carries
 an optional `answerSource` field to tell the two apart:
 
-- absent or `"model"` — `answer` is the model's own streamed text; it equals
-  the concatenated deltas.
+- absent or `"model"` — `answer` is the model's own streamed text. It equals
+  the concatenated deltas, except that on the first turn of a conversation
+  scope `done.answer` also carries the folded AI-disclosure paragraph (plus the
+  operator note, if one is configured), which is never streamed as a
+  `text_delta` — see "`done` event fields" below.
 - `"privacy-render"` — Privacy Shield materialized the final `answer`
   server-side from ground truth (the model never saw those values). The
   earlier deltas are stale and will not match; render `done.answer`.
 
-A client that reconstructs the answer from deltas should overwrite it with
-`done.answer` whenever `answerSource` is present and not `"model"`. The field
-is additive and optional — a client that ignores it and always renders
-`done.answer` is already correct.
+A client that reconstructs the answer from deltas should therefore **always**
+replace its accumulated text with `done.answer` when `done` arrives — not only
+when `answerSource` is set, or it drops the AI-disclosure paragraph on the
+first turn of every conversation. `answerSource` only tells you *why* the two
+differ; it is additive and optional, and a client that ignores it and always
+renders `done.answer` is already correct.
 
 A server-rendered answer can also be a **failure**: the model asked the shield
 to render a result that is in fact a tool error or an authorization prompt. The
@@ -235,6 +248,62 @@ informational and skip it rather than treating it as an error. `done` and
 `error` are the terminal events for the turn itself, but note the `verifier`
 row above: a `done` or `error` event is not a guarantee that nothing else
 will ever appear on the stream afterward.
+
+#### `done` event fields
+
+The `done` event carries more than the `answer` / `toolCalls` / `iterations`
+shown in the minimal example below. All fields beyond `answer`, `toolCalls` and
+`iterations` are optional and additive — a client that does not know a field
+ignores it — but two of them,
+`provenance` and `aiDisclosure`, are exactly what a compliance-relevant
+integration needs, so read them from the structured fields rather than parsing
+the answer text.
+
+| Field | Type | Notes |
+|---|---|---|
+| `answer` | string | The full assistant answer. On the first turn of a conversation scope it also contains the folded AI-disclosure paragraph — see below. |
+| `toolCalls` | number | Tool invocations this turn. |
+| `iterations` | number | Agentic iterations this turn. |
+| `answerSource` | string | `"privacy-render"` when the server materialized `answer` itself; absent (or `"model"`) otherwise. See "`text_delta` vs `done.answer` — which one wins" above. |
+| `provenance` | object | AI-Act Art. 50 machine-readable marker: `{"aiGenerated": true}`. Always stamped on this route (the plugin owns the NDJSON envelope). The literal `true` is the only state — there is no `aiGenerated: false`. |
+| `aiDisclosure` | object | Structured AI disclosure — `{ text, level: "standard"\|"concise", locale, source: "default"\|"operator", operatorNote? }`. **This is the stable carrier: read the disclosure from here on every turn.** Present on every turn the disclosure is active. Absent when an operator turned disclosure `off` — and currently also on instances running the subscription-CLI runtime (`claude-cli`), where the paragraph is not folded into `answer` either. Never read its absence as permission to show the answer unmarked: `provenance.aiGenerated` and the `X-AI-Generated` header are always present on a streamed turn, so render your own AI marking when `aiDisclosure` is missing. |
+| `receiptId` | string | Present only when a privacy receipt was written this turn. See "Correlating a turn with its privacy receipt" below. |
+| `runTrace` | object | Agentic run trace for the turn (verifier evidence, dev UIs). Ignore if you don't need it. |
+| `palaiaExcerpt` | object | Verbatim source snippet, present only when the instance runs the excerpt extractor. Ignore if you don't need it. |
+
+The full event union carries still more internal fields (`model`, `turnId`,
+`privacyReceipt`, `agentsConsulted`, and others) that a plain chat integration
+can ignore.
+
+**The AI-disclosure paragraph in `done.answer` is folded once per conversation
+scope, not on every turn.** On the first turn of a scope the disclosure line
+(e.g. `Diese Antwort wurde von einem KI-System erzeugt.`) is appended to
+`done.answer` as its own paragraph, followed by the operator note as a second
+paragraph if one is configured; on later turns with the same `conversationId`
+it is not. The structured `aiDisclosure` field, by contrast, rides **every**
+turn while disclosure is active (see the table above for when it is absent).
+Consequences to design for:
+
+- **Do not depend on the paragraph being present in `done.answer`.** Read the
+  disclosure from the `aiDisclosure` field — that is the stable carrier.
+- Sending the same request twice within a scope yields answer text that differs
+  by that whole paragraph (plus the operator note, if configured). That is the
+  fold-once rule, not nondeterminism.
+- Without a `conversationId` every call is its own scope, so every call folds
+  the paragraph in again.
+- The seen-store is in-memory and per-process, so a server restart (or a second
+  replica) makes the next turn in an existing conversation fold the paragraph in
+  once more. This is the fail-safe direction — after a restart or on another
+  replica the marking repeats rather than being skipped.
+- The fold is consumed server-side when the turn completes, whether or not your
+  client is still connected (a dropped connection does not stop the turn, see
+  below). A retry in the same scope after a dropped connection therefore gets
+  no paragraph in `answer`; `aiDisclosure` still rides it.
+
+An `X-AI-Generated: true` response header is also set on every `200` streaming
+response from this route, at envelope-open, so it is present regardless of how
+the turn ends. Rejections before the stream opens (`401`, `403`, `415`, `400`,
+`429`) do not carry it.
 
 A dropped connection on the caller's side does not fail the underlying turn
 server-side; the server simply stops writing once it detects the client is
@@ -279,9 +348,27 @@ returns `429 Too Many Requests`:
 { "error": "rate_limited", "message": "this key is limited to 60 requests/minute" }
 ```
 
-This is a fixed 60-second window, counted per key, in-memory on the server —
-back off and retry after the window resets. A rate-limited call is
-authenticated (the key was valid) but never reaches the orchestrator.
+This is a fixed 60-second window, in-memory on the server — wait for the window
+to reset and retry. **No `Retry-After` header is sent**, so the 60 seconds is a
+fixed value to hardcode, not something to read off the response. A rate-limited
+call is authenticated (the key was valid) but never reaches the orchestrator.
+
+**Each key's budget is counted separately per limiter, not pooled across
+routes.** The limit is always keyed by API key — `rateLimitPerMinute` is a
+per-key value — but the *counter* is not shared between routes. The same key is
+also valid for the public MCP route (`POST /api/v1/mcp`), and each route runs
+its own independent limiter instance, so a key with `rateLimitPerMinute = 60`
+gets 60/min on `/api/public/v1/chat` **and** a separate 60/min on
+`/api/v1/mcp`, rather than one shared 60/min across both. Every MCP request,
+reads and writes alike, counts against that one general per-key MCP budget
+(`rateLimitPerMinute`). MCP write tool calls are additionally capped by the key
+binding's `writeRateLimitPerMinute` (default 5) — a stricter sub-cap inside the
+MCP budget, not extra capacity. A key's per-process ceiling is therefore at most
+2 × `rateLimitPerMinute` (chat + MCP), and 1× on installs where the public MCP
+route is not mounted (it stays off unless the operator sets
+`PUBLIC_MCP_ENABLED=true`, and it also needs the Postgres backend). Size a key
+with this in mind: an operator sizing purely by "requests per minute for this
+customer" will under-count if the customer uses both routes.
 
 **This limiter is in-memory and per-process.** It resets on every restart
 and does not share state across multiple replicas/instances of this app —
@@ -317,8 +404,14 @@ sequence of lines like:
 ```
 {"type":"text_delta","text":"Your "}
 {"type":"text_delta","text":"current MRR is..."}
-{"type":"done","answer":"Your current MRR is...","toolCalls":0,"iterations":1}
+{"type":"done","answer":"Your current MRR is...\n\nDiese Antwort wurde von einem KI-System erzeugt.","toolCalls":0,"iterations":1,"provenance":{"aiGenerated":true},"aiDisclosure":{"text":"Diese Antwort wurde von einem KI-System erzeugt.","level":"standard","locale":"de","source":"default"}}
 ```
+
+The `done` line above is abbreviated for readability — the wire also carries
+`runTrace`, `model` and, on instances that run the excerpt extractor,
+`palaiaExcerpt`.
+See "`done` event fields" above for the full shape and the fold-once rule that
+governs the disclosure paragraph inside `answer`.
 
 ## Layout
 
