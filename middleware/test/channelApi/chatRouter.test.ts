@@ -186,6 +186,22 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
       body: JSON.stringify({ message: 'two' }),
     });
     assert.equal(second.status, 429);
+    // #1110 — the README tells integrators to hardcode the 60 s window
+    // because no Retry-After is sent. Adding the header is fine, but it must
+    // be a deliberate README change, not silent drift.
+    assert.equal(second.headers.get('retry-after'), null);
+  });
+
+  it('is POST-only — other methods 404 (#1110, documented in the README)', async () => {
+    const created = await apiKeys.create({ label: 'wrong-method' });
+    const auth = { authorization: `Bearer ${created.token}` };
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const res = await client.fetch(baseUrl, { method, headers: auth });
+      assert.equal(res.status, 404, `${method} must not reach the chat route`);
+    }
+    const options = await client.fetch(baseUrl, { method: 'OPTIONS', headers: auth });
+    assert.equal(options.status, 200);
+    assert.equal(options.headers.get('allow'), 'POST');
   });
 
   it('400s on an empty message', async () => {
