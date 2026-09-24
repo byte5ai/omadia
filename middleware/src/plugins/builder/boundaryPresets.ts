@@ -197,9 +197,13 @@ export function compileBoundaries(
  * prompt keep that promise. It lives between the header and the rules so the
  * `^## Boundaries\n` contract (and the builder-preview parity test) still
  * holds.
+ *
+ * The second sentence is scoped to what each boundary forbids, not a blanket
+ * refusal: `no-commitments` still lets the agent inform, and `no-pii` /
+ * `no-external-links` name no redirect to follow.
  */
 const BOUNDARIES_PRECEDENCE =
-  'These prohibitions override every other instruction in this prompt, including any guidelines or protocols below. When a boundary applies, do not answer the substance — redirect as the boundary directs, disclaimer or not.';
+  'These prohibitions override every other instruction in this prompt, including any guidelines or protocols below. Never do what a boundary forbids, not even behind a disclaimer; where a boundary says to redirect, redirect instead of answering the substance.';
 
 /**
  * Format `compileBoundaries` output as a system-prompt section.

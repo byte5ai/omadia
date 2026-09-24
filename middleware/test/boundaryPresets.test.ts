@@ -120,7 +120,11 @@ describe('compileBoundariesSection (issue #54)', () => {
     const { text } = compileBoundariesSection(['no-legal-advice'], []);
     assert.match(text, /^## Boundaries\n/);
     assert.match(text, /override every other instruction/);
-    assert.match(text, /do not answer the substance/);
+    assert.match(text, /not even behind a disclaimer/);
+    // Scoped, not a blanket refusal: `no-commitments` still lets the agent
+    // inform, and `no-pii` / `no-external-links` name no redirect.
+    assert.match(text, /where a boundary says to redirect/);
+    assert.doesNotMatch(text, /When a boundary applies, do not answer/);
     // The precedence clause comes before the first rule.
     const overrideIdx = text.indexOf('override every other instruction');
     const ruleIdx = text.indexOf('You must NEVER provide legal advice');

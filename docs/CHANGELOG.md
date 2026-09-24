@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
+
+2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`
+received a self-contradicting system prompt: the boundary forbade interpreting
+laws, and high-tier rule 5 two sections below licensed an "informational only"
+answer behind a disclaimer. The model followed the later rule. The
+`## Boundaries` section now opens with a precedence clause (boundaries override
+every other instruction, including the protocols below; never do what a
+boundary forbids, not even behind a disclaimer), and rule 5 defers to a
+Boundary that forbids the topic. Agents with boundaries may therefore refuse
+more strictly than before. Operator-agent identities speak from the stored
+`agent_identities.composed_prompt`, a write-time cache, so the middleware now
+recompiles stale stored prompts once at boot (`recomposeStaleIdentities`, no
+revision bump, idempotent) and reloads the registry; agents saved before this
+release pick up the clause without being re-saved.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
