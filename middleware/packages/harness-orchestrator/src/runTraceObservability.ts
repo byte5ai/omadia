@@ -54,9 +54,10 @@ export type RunTraceOutcome =
   | 'transcript-failed'
   /** `ingestTurn` failed, so the Run would have pointed at a missing Turn. */
   | 'turn-ingest-failed'
-  /** `ingestRun` itself threw because a node it links to does not exist —
-   *  the Turn (it was not written), or the user's User-Cluster (#684). The
-   *  error detail names which. */
+  /** `ingestRun` itself threw. The cause is in the error detail: a node it
+   *  links to may be missing — the Turn (it was not written) or the user's
+   *  User-Cluster (#684) — but a pool, connection or insert failure lands here
+   *  too, so nothing about the cause is assumed. */
   | 'run-ingest-failed';
 
 /** The one outcome that is not a drop. `satisfies` rather than a type
@@ -64,7 +65,8 @@ export type RunTraceOutcome =
  *  and an `=== RUN_TRACE_RECORDED` check would then narrow nothing. */
 export const RUN_TRACE_RECORDED = 'recorded' satisfies RunTraceOutcome;
 
-/** Monotonic per-outcome tallies since process start. */
+/** Monotonic per-outcome tallies over the lifetime of one
+ *  {@link RunTraceOutcomeStats} instance. */
 export type RunTraceOutcomeCounts = Readonly<Record<RunTraceOutcome, number>>;
 
 const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
@@ -80,8 +82,9 @@ const ZERO_COUNTS: RunTraceOutcomeCounts = Object.freeze({
  *
  * Deliberately an injectable object rather than module-level mutable state: the
  * counters are asserted on in tests, and a shared global would make two tests
- * in one process read each other's turns. The kernel holds one instance; a test
- * constructs its own.
+ * in one process read each other's turns. Each `SessionLogger` holds its own
+ * instance, so the tallies are per logger, not process-wide; a test constructs
+ * its own.
  */
 export class RunTraceOutcomeStats {
   #counts: Record<RunTraceOutcome, number> = { ...ZERO_COUNTS };
@@ -120,7 +123,8 @@ export class RunTraceOutcomeStats {
     this.#captureTailOnlyTurns += 1;
   }
 
-  /** Turns the capture filter wrote as tail-only records since process start. */
+  /** Turns the capture filter wrote as tail-only records over the lifetime of
+   *  this instance. */
   captureTailOnlyTurns(): number {
     return this.#captureTailOnlyTurns;
   }
@@ -137,7 +141,7 @@ const DROP_REASON_TEXT: Readonly<Record<Exclude<RunTraceOutcome, 'recorded'>, st
     'turn-ingest-failed':
       'ingestTurn failed, so the run trace was skipped rather than left pointing at a missing Turn',
     'run-ingest-failed':
-      'ingestRun failed — a node it links to does not exist: either the Turn was not written, or no User-Cluster node exists yet for this user (#684); the error detail after this names which',
+      'ingestRun failed — the run trace was not written; the error detail after this names the cause (known cases: the Turn was not written, or no User-Cluster node exists yet for this user, see #684)',
   });
 
 /**

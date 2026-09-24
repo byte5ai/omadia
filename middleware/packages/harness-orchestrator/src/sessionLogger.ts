@@ -233,10 +233,11 @@ export class SessionLogger {
           });
           recordRunTraceOutcome(this.runTraceStats, 'recorded');
         } catch (err) {
-          // #684 / #1082 — `ingestRun` throws when a node it links to does not
-          // exist: the user's User-Cluster (#684), or the Turn itself. Which
-          // one is in the error message, and the drop text defers to it rather
-          // than guessing. The turn still succeeded and the transcript still
+          // #684 / #1082 — `ingestRun` can throw for more than one reason: a
+          // node it links to is missing (the user's User-Cluster, #684, or the
+          // Turn itself), or the pool, connection or an insert failed. The
+          // cause is in the error message, and the drop text defers to it
+          // rather than guessing. The turn still succeeded and the transcript still
           // holds it; only the trace is missing. Recorded as telemetry loss,
           // not as a turn error.
           recordRunTraceOutcome(this.runTraceStats, 'run-ingest-failed', err);

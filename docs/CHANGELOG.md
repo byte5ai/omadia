@@ -58,9 +58,10 @@ recorded" warning.
 
 The `run-ingest-failed` text no longer claims the cause is "most often" a
 missing User-Cluster that is "resolved only on the browser-login path".
-Channel identity is resolved per turn now, and a missing Turn is a second known
-cause. The text names both and defers to the error detail, which names the
-missing node.
+Channel identity is resolved per turn now, and `ingestRun` also fails on pool,
+connection and insert errors, not only on a missing node. The text no longer
+asserts a cause: it says the trace was not written, defers to the error detail,
+and lists a missing Turn and a missing User-Cluster (#684) only as known cases.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 

@@ -115,8 +115,8 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
     assert.equal(stats.snapshot().recorded, 0);
     const drop = warnings.find((w) => w.includes('run-ingest-failed'));
     assert.ok(drop, 'the drop #684 is about must be visible in the log');
-    // #1082 — the text names both known causes and defers to the error detail
-    // instead of guessing: a filtered turn used to be booked here under the
+    // #1082 — the text names the known causes only as examples and defers to
+    // the error detail instead of guessing: a filtered turn used to be booked here under the
     // "most often no User-Cluster … browser-login path" hint, which sent
     // operators after a cluster problem that did not exist.
     assert.ok(!drop.includes('most often'), `hint must not guess a cause: ${drop}`);
@@ -132,6 +132,38 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
     const graphStats = await graph.stats();
     assert.equal(graphStats.byNodeType.Turn, 1);
     assert.equal(graphStats.byNodeType.Run ?? 0, 0);
+  });
+
+  it('does not diagnose a missing node when ingestRun fails for another reason', async () => {
+    // #1082 — `ingestRun` also throws on pool / connection / insert failures
+    // (NeonKnowledgeGraph: `pool.connect()`, the UPDATE, the Run inserts). The
+    // drop text must not assert a missing node for those; it defers to the
+    // error detail, which here names the real cause.
+    class ConnectionDroppingGraph extends InMemoryKnowledgeGraph {
+      override async ingestRun(): Promise<never> {
+        throw new Error('Connection terminated unexpectedly');
+      }
+    }
+    const stats = new RunTraceOutcomeStats();
+    const store = new InMemoryMemoryStore();
+    const graph = new ConnectionDroppingGraph();
+    const logger = new SessionLogger(store, graph, undefined, undefined, stats);
+
+    await logger.log({ ...ENTRY, runTrace: payload() });
+
+    assert.equal(stats.snapshot()['run-ingest-failed'], 1);
+    assert.equal(stats.snapshot().recorded, 0);
+    const drop = warnings.find((w) => w.includes('run-ingest-failed'));
+    assert.ok(drop, 'the drop must be visible in the log');
+    assert.ok(
+      !drop.includes('does not exist'),
+      `a connection failure must not be diagnosed as a missing node: ${drop}`,
+    );
+    assert.ok(!drop.includes('most often'), `hint must not guess a cause: ${drop}`);
+    assert.ok(
+      drop.includes('Connection terminated unexpectedly'),
+      'the error detail that names the real cause is kept',
+    );
   });
 
   it('counts a successful ingest as recorded and stays quiet', async () => {
