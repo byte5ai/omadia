@@ -65,7 +65,7 @@ import type { VerifierBundle } from '@omadia/verifier';
 
 import type { Pool } from 'pg';
 import { initUsageRecorder, setUsageContextProvider } from '@omadia/usage-telemetry';
-import { turnContext } from './turnContext.js';
+import { currentUsageContext } from './turnContext.js';
 
 import {
   buildOrchestratorForAgent,
@@ -855,16 +855,14 @@ export async function activate(
   if (graphPool) initUsageRecorder(graphPool);
 
   // #1098: teach the recorder to read turn attribution from the ambient turn
-  // context. Every capture seam (streaming, extras/verifier scorers, routers)
-  // runs inside `turnContext.run(...)`, so a row picks up its turn_id/session
-  // without threading ids through each call site. `sessionScope` is the
-  // session key (falls back to the turn id when the caller supplied none);
-  // outside any turn the accessors return undefined → NULL, never a throw.
-  setUsageContextProvider(() => {
-    const ctx = turnContext.current();
-    if (!ctx) return undefined;
-    return { turnId: ctx.turnId, sessionId: ctx.sessionScope };
-  });
+  // context, so a row picks up its turn_id/session without threading ids
+  // through each call site. Only the orchestrator's own turn scope counts
+  // (streaming iterations, model/persona routers, the extras hooks run inside
+  // it); the placeholder scopes routes and adapters open around a turn read as
+  // "no turn" → NULL — see `usageContextFromTurn`. NOT covered: the verifier
+  // scorers run after the orchestrator's scope has closed, and the claude-cli
+  // runtime never opens one (`CliChatAgent` passes its own ids explicitly).
+  setUsageContextProvider(currentUsageContext);
 
   // (LLM provider built above from the configured provider id.)
 

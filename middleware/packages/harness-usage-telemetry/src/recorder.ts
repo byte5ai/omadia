@@ -68,13 +68,14 @@ interface BufferedRow extends UsageRecord {
 }
 
 /**
- * #1098 — ambient turn attribution. The capture seams (streaming, extras,
- * verifier, routers) run inside the orchestrator's per-turn AsyncLocalStorage
- * scope, but this package sits below the orchestrator and cannot import it. So
- * the orchestrator registers a provider once (see `setUsageContextProvider`)
- * and the recorder reads `turnId`/`sessionId` from it at `recordUsage()` time.
+ * #1098 — ambient turn attribution. Most capture seams (streaming, extras,
+ * routers) run inside the orchestrator's per-turn AsyncLocalStorage scope, but
+ * this package sits below the orchestrator and cannot import it. So the
+ * orchestrator registers a provider once (see `setUsageContextProvider`) and
+ * the recorder reads `turnId`/`sessionId` from it at `recordUsage()` time.
  * Ids passed explicitly on a `UsageRecord` still win; off-turn callers (e.g.
- * background jobs) get `undefined` → NULL, never a throw.
+ * background jobs, the verifier after the turn scope closed) get `undefined`
+ * → NULL, never a throw.
  */
 export interface UsageContext {
   readonly turnId?: string | undefined;
@@ -103,6 +104,7 @@ const buffer: BufferedRow[] = [];
 let flushTimer: ReturnType<typeof setInterval> | undefined;
 let warnedDroppedNoPool = false;
 let warnedFlushError = false;
+let warnedContextProviderError = false;
 let warnedBufferFull = false;
 
 /**
@@ -155,8 +157,15 @@ export function recordUsage(record: UsageRecord): void {
   let ctx: UsageContext | undefined;
   try {
     ctx = contextProvider?.();
-  } catch {
+  } catch (err) {
     ctx = undefined;
+    if (!warnedContextProviderError) {
+      warnedContextProviderError = true;
+      console.warn(
+        '[usage-telemetry] usage context provider threw — writing rows without turn attribution:',
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   // OM-103: an explicit `costUsd` from the caller wins over the price table.
   // `?? ` and not `||` — `0` is the whole point on the subscription path.
@@ -226,7 +235,7 @@ export async function flush(): Promise<void> {
     if (!warnedFlushError) {
       warnedFlushError = true;
       console.warn(
-        '[usage-telemetry] flush failed — dropping batch (have graph migrations 0028 + 0032 run?):',
+        '[usage-telemetry] flush failed — dropping batch (have graph migrations 0028 + 0032 + 0033 run?):',
         err instanceof Error ? err.message : err,
       );
     }

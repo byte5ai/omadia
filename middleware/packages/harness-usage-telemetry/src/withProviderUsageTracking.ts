@@ -39,9 +39,10 @@ function record(
       source: opts.source,
       model,
       tenantId: opts.tenantId,
-      // #1098: turnId/sessionId come from the ambient turn context (these
-      // background scorers run inside the turn's async scope); the provider id
-      // is known here at the boundary.
+      // #1098: turnId/sessionId come from the ambient turn context when the
+      // call runs inside the orchestrator's turn scope (the extras hooks do);
+      // the verifier scorers run after that scope has closed and stay NULL.
+      // The provider id is known here at the boundary.
       provider: providerId,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

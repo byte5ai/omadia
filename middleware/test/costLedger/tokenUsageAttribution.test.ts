@@ -1,13 +1,25 @@
 import { strict as assert } from 'node:assert';
-import { afterEach, describe, it } from 'node:test';
+import { PassThrough } from 'node:stream';
+import { afterEach, describe, it, mock } from 'node:test';
 
 import {
+  CLI_CHAT_USAGE_SOURCE,
   flushUsageRecorder,
   initUsageRecorder,
   recordUsage,
   setUsageContextProvider,
+  withProviderUsageTracking,
 } from '@omadia/usage-telemetry';
 import type { Pool } from 'pg';
+
+import { CliChatAgent } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
+import type { CliChatAgentDeps } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
+import { routeTurnModel } from '../../packages/harness-orchestrator/src/modelRouter.js';
+import { routeTurnPersona } from '../../packages/harness-orchestrator/src/personaRouter.js';
+import {
+  currentUsageContext,
+  turnContext,
+} from '../../packages/harness-orchestrator/src/turnContext.js';
 
 /**
  * #1098 — a cost-ledger row could not be attributed to a turn, a session, or a
@@ -65,6 +77,23 @@ function metered(source: string): void {
     outputTokens: 20,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+  });
+}
+
+const COLS = 13;
+
+/**
+ * Every row flushed so far, as its 13-value slice. Robust against the
+ * recorder's own 5s interval flush splitting a case across two queries.
+ */
+async function flushedRows(): Promise<readonly (readonly unknown[])[]> {
+  await flushUsageRecorder();
+  return captured.flatMap((q) => {
+    const rows: (readonly unknown[])[] = [];
+    for (let i = 0; i < q.params.length; i += COLS) {
+      rows.push(q.params.slice(i, i + COLS));
+    }
+    return rows;
   });
 }
 
@@ -129,6 +158,27 @@ describe('#1098 — cost-ledger rows carry turn attribution and call time', () =
     assert.equal(row.params[COL.createdAt], callTime);
   });
 
+  it('freezes the DEFAULT call time at recordUsage(), not at the flush', async () => {
+    // No production caller passes `occurredAt`, so this default is the path
+    // that matters. Record, let the clock move past it, then flush.
+    const before = Date.now();
+    metered('orchestrator');
+    const recordedBy = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const flushStart = Date.now();
+    assert.ok(recordedBy < flushStart);
+
+    const [row] = await flushedRows();
+    assert.ok(row);
+    const createdAt = row[COL.createdAt];
+    assert.ok(createdAt instanceof Date);
+    assert.ok(createdAt.getTime() >= before);
+    assert.ok(
+      createdAt.getTime() <= recordedBy,
+      'created_at must carry the call time, not the flush time',
+    );
+  });
+
   it('writes NULL ids (and does not throw) with no turn context', async () => {
     setUsageContextProvider(undefined);
 
@@ -140,5 +190,167 @@ describe('#1098 — cost-ledger rows carry turn attribution and call time', () =
     assert.equal(row.params[COL.turnId], null);
     assert.equal(row.params[COL.sessionId], null);
     assert.equal(row.params[COL.tenantId], null);
+  });
+
+  it('logs a throwing context provider once and still writes the row', async () => {
+    const warn = mock.method(console, 'warn', () => undefined);
+    try {
+      setUsageContextProvider(() => {
+        throw new Error('ctx boom');
+      });
+      assert.doesNotThrow(() => metered('orchestrator'));
+      metered('orchestrator');
+
+      const rows = await flushedRows();
+      assert.equal(rows.length, 2);
+      for (const row of rows) assert.equal(row[COL.turnId], null);
+      const logged = warn.mock.calls.filter((c) =>
+        String(c.arguments[0]).includes('context provider threw'),
+      );
+      assert.equal(logged.length, 1, 'a throwing provider must be visible, once');
+    } finally {
+      warn.mock.restore();
+    }
+  });
+});
+
+describe('#1098 — each capture seam names the provider that generated the cost', () => {
+  afterEach(() => {
+    setUsageContextProvider(undefined);
+    captured.length = 0;
+  });
+
+  const response = {
+    content: [{ type: 'text', text: 'SIMPLE' }],
+    finishReason: 'stop',
+    model: 'claude-haiku-4-5',
+    usage: { inputTokens: 4, outputTokens: 1 },
+  };
+
+  it('withProviderUsageTracking records the wrapped provider id (complete + stream)', async () => {
+    const fake = {
+      id: 'fake-prov',
+      capabilities: {},
+      complete: () => Promise.resolve(response),
+      stream: async function* () {
+        yield { type: 'final', response };
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' }),
+    } as unknown as Parameters<typeof withProviderUsageTracking>[0];
+    const tracked = withProviderUsageTracking(fake, { source: 'extras' });
+
+    await tracked.complete({ model: 'claude-haiku-4-5', messages: [] } as never);
+    for await (const _ev of tracked.stream({
+      model: 'claude-haiku-4-5',
+      messages: [],
+    } as never)) {
+      // drain
+    }
+
+    const rows = await flushedRows();
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.equal(row[COL.source], 'extras');
+      assert.equal(row[COL.provider], 'fake-prov');
+    }
+  });
+
+  it('the model and persona routers record their classifier provider', async () => {
+    const classifier = { id: 'router-prov', complete: () => Promise.resolve(response) };
+
+    await routeTurnModel(
+      classifier as never,
+      { classifierModel: 'claude-haiku-4-5', simpleModel: 's', complexModel: 'c' },
+      'hi',
+      'fb',
+    );
+    await routeTurnPersona(
+      classifier as never,
+      [{ skillId: 'sk-1', slug: 'simple', name: 'Simple', description: 'd' }],
+      'hi',
+      'claude-haiku-4-5',
+    );
+
+    const rows = await flushedRows();
+    assert.deepEqual(
+      rows.map((r) => [r[COL.source], r[COL.provider]]),
+      [
+        ['model-router', 'router-prov'],
+        ['persona-router', 'router-prov'],
+      ],
+    );
+  });
+});
+
+describe('#1098 — claude-cli turns carry their own turn id', () => {
+  afterEach(() => {
+    setUsageContextProvider(undefined);
+    captured.length = 0;
+  });
+
+  /** A CLI that answers every turn with one terminal result line. */
+  function cliAgent(): CliChatAgent {
+    return new CliChatAgent({
+      dispatch: {
+        listDispatchableToolSpecs: () => [],
+      } as unknown as CliChatAgentDeps['dispatch'],
+      createLoopbackServer: () =>
+        ({
+          start: async () => ({ url: 'http://127.0.0.1:1/mcp', port: 1, bearer: 'b' }),
+          stop: async () => {},
+        }) as never,
+      resolveCliVersion: async () => '2.1.259',
+      spawnFn: (() => {
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const child = Object.assign(new PassThrough(), {
+          stdin,
+          stdout,
+          stderr,
+          exitCode: null as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: () => true,
+        });
+        stdin.on('finish', () => {
+          stdout.end(
+            JSON.stringify({
+              type: 'result',
+              is_error: false,
+              result: 'ok',
+              num_turns: 1,
+              total_cost_usd: 0.01,
+              usage: { input_tokens: 5, output_tokens: 9 },
+            }) + '\n',
+          );
+          child.exitCode = 0;
+          child.emit('close', 0, null);
+        });
+        return child;
+      }) as unknown as CliChatAgentDeps['spawnFn'],
+    });
+  }
+
+  it("does not inherit the route's placeholder id, and two turns stay separable", async () => {
+    // Production wiring: the orchestrator's provider is registered, and the
+    // CLI runs inside chat.ts's outer scope — never inside an orchestrator one.
+    setUsageContextProvider(currentUsageContext);
+    const agent = cliAgent();
+
+    await turnContext.run({ turnId: 'http-chat-sess-cli', turnDate: '2026-09-24' }, async () => {
+      await agent.chat({ userMessage: 'one', sessionScope: 'sess-cli' });
+      await agent.chat({ userMessage: 'two', sessionScope: 'sess-cli' });
+    });
+
+    const rows = await flushedRows();
+    assert.equal(rows.length, 2);
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    for (const row of rows) {
+      assert.equal(row[COL.source], CLI_CHAT_USAGE_SOURCE);
+      assert.equal(row[COL.provider], 'claude-cli');
+      assert.equal(row[COL.sessionId], 'sess-cli');
+      assert.match(String(row[COL.turnId]), uuid);
+    }
+    assert.notEqual(rows[0]?.[COL.turnId], rows[1]?.[COL.turnId]);
   });
 });

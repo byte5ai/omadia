@@ -55,15 +55,25 @@ time (`occurredAt`) at `recordUsage()` and writes it explicitly to `created_at`
 instead of leaning on `DEFAULT NOW()` at flush. Turn attribution is read from the
 orchestrator's per-turn `AsyncLocalStorage` context via a `setUsageContextProvider`
 hook (the telemetry package sits below the orchestrator and cannot import it), so
-every capture seam picks up `turn_id`/`session_id` without threading ids through
-each call site; ids passed explicitly on a `UsageRecord` still win, and off-turn
-callers (background jobs) keep NULL ids rather than throwing. `session_id` maps to
-the turn's `sessionScope` — best-effort, since unscoped HTTP turns share
+the seams inside the orchestrator's own turn scope (streaming iterations, model-
+and persona-router calls, extras hooks) pick up `turn_id`/`session_id` without
+threading ids through each call site. Only that scope counts
+(`usageContextFromTurn`): the placeholder scopes routes and adapters open around
+a turn (`http-chat-<scope>`, or `''` on channel, routine and canvas turns) read
+as "no turn", so their rows stay NULL instead of carrying a plausible but wrong
+id. The subscription runtime (`CliChatAgent`) never opens an orchestrator scope
+and passes its own per-turn id explicitly; ids passed on a `UsageRecord` always
+win. Not yet attributed: the verifier scorers (they run after the turn scope
+closed) and `claude-cli-completion` rows, which stay NULL. Off-turn callers
+(background jobs) keep NULL ids rather than throwing. `session_id` maps to the
+turn's `sessionScope` — best-effort, since unscoped HTTP turns share
 `http-default` (see #445), so group on `turn_id`. Regression tests
-(`test/costLedger/tokenUsageAttribution.test.ts`) cover turn/session attribution,
-two turns separable within one flush window, `occurredAt` surviving the flush, and
-the no-context NULL path. The `/api/usage` missing role check is out of scope and
-tracked separately.
+(`test/costLedger/`) cover turn/session attribution, placeholder scopes writing
+NULL, two turns separable within one flush window (including on the CLI path),
+the call time surviving the flush, the provider column at each seam, and the
+no-context NULL path. Deploy graph migration 0033 before this code: the INSERT
+names the new columns, so an older schema drops every usage batch. The
+`/api/usage` missing role check is out of scope and tracked separately.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

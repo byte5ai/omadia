@@ -3204,6 +3204,25 @@ Erfasst wird an zwei Stellen: `cliChatAgent.ts` (Chat-Turn, Quelle `claude-cli`)
 ⚠️ Neue Codes gegen ein Schema vor 0032 lassen **jede** Usage-Erfassung und die ganze
 Kostenseite fehlschlagen, nicht nur die Abo-Zeilen. Migration vor Deploy.
 
+### Kosten-Ledger: Turn-Zuordnung (#1098)
+
+Graph-Migration **0033** ergänzt `token_usage.turn_id` + `provider` (beide NULL-bar,
+partieller Index auf `turn_id`); `created_at` schreibt der Recorder jetzt explizit zum
+Aufrufzeitpunkt (`occurredAt`), nicht mehr per `DEFAULT NOW()` beim 5-s-Flush.
+Gruppierschlüssel ist `turn_id` — `session_id` bleibt best-effort (`http-default`, #445).
+
+Die IDs kommen über `setUsageContextProvider` (`@omadia/usage-telemetry`); der
+Orchestrator registriert `currentUsageContext` aus `turnContext.ts`. Der liefert nur für
+den **eigenen** Turn-Scope des Orchestrators etwas (erkennbar an gesetztem
+`sessionScope`). Die Platzhalter-Scopes der Routen/Adapter (`http-chat-<scope>`, `''`)
+ergeben NULL statt einer plausiblen, falschen ID. `CliChatAgent` hat keinen
+Orchestrator-Scope und übergibt eine eigene Turn-ID pro Lauf explizit — explizite IDs
+gewinnen immer.
+
+Offen: Verifier-Zeilen (laufen nach dem Turn-Scope) und `claude-cli-completion` bleiben
+NULL, bis der Orchestrator seine Ledger-Turn-ID nach außen gibt. ⚠️ Wie bei 0032:
+Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
+
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)
 
 Neue Route **`GET /api/v1/admin/last-turn`** (auth required, `routes/adminLastTurn.ts`) →
