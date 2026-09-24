@@ -297,6 +297,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ...(turn.userId ? { userId: turn.userId } : {}),
         // #584 WS I — speaker-attributed transcript-ingest turns.
         ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
+        // #1096 — session-continuity record: visible to getSession (and so to
+        // the context tail), invisible to cross-session recall. Written
+        // unconditionally (see the Neon backend): props are merged on upsert,
+        // so an omitted flag could never clear a stale `true`.
+        tailOnly: turn.tailOnly === true,
       },
       // Palaia (OB-70 / OB-71) — mirror the Neon DB defaults on Turn
       // ingest so the in-memory backend exposes the same axes to consumers.
@@ -701,6 +706,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     for (const node of this.nodes.values()) {
       if (node.type !== 'Turn') continue;
       if (excludeTurnIds.has(node.id)) continue;
+      // #1096 — tail-only turns are conversation, not knowledge: the session
+      // tail reads them, recall must not.
+      if (node.props['tailOnly'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
@@ -771,6 +779,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     for (const node of this.nodes.values()) {
       if (node.type !== 'Turn') continue;
       if (excludeTurnIds.has(node.id)) continue;
+      // #1096 — see searchTurns.
+      if (node.props['tailOnly'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
@@ -3152,6 +3162,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         if (edge.type === 'CAPTURED' && edge.to === entity.id) {
           const turnNode = this.nodes.get(edge.from);
           if (!turnNode || turnNode.type !== 'Turn') continue;
+          // #1096 — see searchTurns. A tail-only ingest carries no entityRefs,
+          // so this is belt-and-braces for backfilled or legacy edges.
+          if (turnNode.props['tailOnly'] === true) continue;
           if (opts.userId && turnNode.props['userId'] !== opts.userId) continue;
           if (opts.excludeScope && turnNode.props['scope'] === opts.excludeScope) continue;
           // Entity node stays global; entity-anchored recall is agent-isolated.

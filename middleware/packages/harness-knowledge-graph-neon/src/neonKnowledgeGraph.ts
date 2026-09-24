@@ -462,6 +462,13 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // #584 WS I — speaker-attributed transcript-ingest turns. Passthrough
         // prop; ordinary Q&A turns never carry it.
         ...(turn.speaker !== undefined ? { speaker: turn.speaker } : {}),
+        // #1096 — session-continuity record: readable through getSession (the
+        // orchestrator's context tail), filtered out of every recall query
+        // below. Written unconditionally, including the `false`: upsert MERGES
+        // properties, so an omitted flag would leave a stale `true` on a turn
+        // that a replay (capture_level=off) or a backfill re-ingests as real
+        // knowledge — invisible to recall for good, with nothing to clear it.
+        tailOnly: turn.tailOnly === true,
       });
       const turnUuid = await this.upsertNode(client, {
         externalId: turnExtId,
@@ -519,7 +526,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // Resolved fresh: the gate can have re-enabled vector writes since this
       // instance was constructed. `embedAndStoreTurn` re-resolves for itself,
       // so this check only avoids scheduling obvious no-op work.
-      if (this.currentEmbeddingClient()) {
+      // #1096 — a tail-only turn is never a recall candidate, so an embedding
+      // for it would be spend with no reader. This is the cost half of the
+      // capture filter's job, kept intact while the session record is not.
+      if (!turn.tailOnly && this.currentEmbeddingClient()) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
@@ -1856,6 +1866,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ($2::text IS NULL OR user_id = $2)
         AND ($4::text IS NULL OR scope <> $4)
         AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+        -- #1096 — tail-only turns are conversation, not knowledge: the
+        -- session tail reads them, cross-session recall must not.
+        AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
         -- Per-orchestrator isolation: when a prefix is given, restrict to the
         -- Agent's own scopes. The 'default::' branch also admits legacy
         -- unqualified rows (no '::' separator) so pre-isolation data stays
@@ -1997,6 +2010,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($3::text IS NULL OR user_id = $3)
           AND ($4::text IS NULL OR scope <> $4)
           AND ($5::text[] IS NULL OR external_id <> ALL($5::text[]))
+          -- #1096 — see searchTurns. Tail-only turns carry no embedding
+          -- either, so this only guards the lexical leg.
+          AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
           -- Per-orchestrator isolation (see searchTurns): own prefix, plus
           -- legacy unqualified rows for the default Agent.
           AND ($14::text IS NULL
@@ -5208,6 +5224,9 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND t.type = 'Turn'
           AND ($3::text IS NULL OR t.user_id = $3)
           AND ($4::text IS NULL OR t.scope <> $4)
+          -- #1096 — see searchTurns. A tail-only ingest writes no entityRefs,
+          -- so this only guards backfilled or legacy CAPTURED edges.
+          AND COALESCE((t.properties->>'tailOnly')::boolean, FALSE) = FALSE
           -- Per-orchestrator isolation: the entity NODE stays global (shared
           -- vocabulary), but entity-anchored recall only surfaces turns of
           -- the active Agent. Closes the cross-agent entity-recall leak.

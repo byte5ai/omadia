@@ -85,7 +85,8 @@ export function createBulkPromotionService(
       deps.pool.query<{ count: string }>(
         `SELECT count(*)::text AS count
            FROM graph_nodes
-          WHERE tenant_id = $1 AND type = 'Turn' AND significance IS NULL`,
+          WHERE tenant_id = $1 AND type = 'Turn' AND significance IS NULL
+            AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE`,
         [deps.tenantId],
       ),
       deps.pool.query<{ count: string }>(
@@ -94,6 +95,7 @@ export function createBulkPromotionService(
           WHERE t.tenant_id = $1
             AND t.type = 'Turn'
             AND t.significance >= $2
+            AND COALESCE((t.properties->>'tailOnly')::boolean, FALSE) = FALSE
             AND NOT EXISTS (
               SELECT 1 FROM graph_edges e
                 JOIN graph_nodes mk ON mk.id = e.from_node
@@ -110,6 +112,7 @@ export function createBulkPromotionService(
           WHERE t.tenant_id = $1
             AND t.type = 'Turn'
             AND t.significance >= $2
+            AND COALESCE((t.properties->>'tailOnly')::boolean, FALSE) = FALSE
             AND EXISTS (
               SELECT 1 FROM graph_edges e
                 JOIN graph_nodes mk ON mk.id = e.from_node
@@ -153,6 +156,9 @@ export function createBulkPromotionService(
         WHERE tenant_id = $1
           AND type = 'Turn'
           AND significance IS NULL
+          -- #1096 — scoring a tail-only Turn would only make it eligible for
+          -- the promote phase; it is deliberately not a knowledge candidate.
+          AND COALESCE((properties->>'tailOnly')::boolean, FALSE) = FALSE
         ORDER BY created_at ASC
         LIMIT $2`,
       [deps.tenantId, scoreLimit],
@@ -195,6 +201,8 @@ export function createBulkPromotionService(
           AND t.type = 'Turn'
           AND t.significance >= $2
           AND t.user_id IS NOT NULL
+          -- #1096 — tail-only Turns are conversation, not knowledge.
+          AND COALESCE((t.properties->>'tailOnly')::boolean, FALSE) = FALSE
           AND NOT EXISTS (
             SELECT 1 FROM graph_edges e
               JOIN graph_nodes mk ON mk.id = e.from_node
