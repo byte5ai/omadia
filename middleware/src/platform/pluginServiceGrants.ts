@@ -121,7 +121,7 @@ import type { PluginCatalog } from '../plugins/manifestLoader.js';
  * stamps from WHERE the package was found and never reads from a manifest.
  * That is the whole of the #789 fix for these ids, and it matters most here:
  * `@omadia/orchestrator` alone carried nineteen names at the 2026-08-20 audit
- * (seventeen since #1076 moved two into its manifest), including `graphPool`
+ * (fewer since, as names move into its manifest), including `graphPool`
  * (the operator's Postgres pool) and `tigrisStore`. `PluginCatalog` documents
  * that an uploaded package wins an `identity.id` collision, so before this gate
  * a zip claiming that id inherited all of them without declaring one.

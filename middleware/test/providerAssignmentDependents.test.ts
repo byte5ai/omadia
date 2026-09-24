@@ -23,15 +23,19 @@ import {
 } from '@omadia/llm-provider';
 import { INHERITS_PROVIDER_FROM_PLUGIN_ID } from '@omadia/orchestrator-extras';
 
+import { InstallService } from '../src/plugins/installService.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { registerBuiltinLlmProviders } from '../src/platform/builtinLlmProviders.js';
 import { LLM_PLUGINS } from '../src/platform/pluginLlmReadiness.js';
 import {
+  ProviderDependentRebuildError,
   applyProviderAssignment,
   isEffectiveProviderChange,
   providerDependentsOf,
   reactivateAfterProviderWrite,
 } from '../src/platform/providerAssignment.js';
+import type { SecretVault } from '../src/secrets/vault.js';
 
 const ORCH = '@omadia/orchestrator';
 const VERIFIER = '@omadia/verifier';
@@ -129,6 +133,10 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.deepEqual(reactivated, [ORCH]);
   });
 
+  // Pins TODAY's behaviour, not the intended end state: a direct extras
+  // rebuild leaves the running orchestrator on the previous extras instances.
+  // That reverse direction is the open follow-up in
+  // docs/middleware-agent-handoff.md §13 ("Umgekehrte Richtung").
   it('assigning extras or the verifier directly rebuilds only that plugin', async () => {
     const { reactivated, deps } = await makeDeps([
       { id: ORCH },
@@ -153,7 +161,75 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.deepEqual(reactivated, [VERIFIER]);
   });
 
-  it('a failing dependent still rebuilds the orchestrator, then reports apply_failed', async () => {
+  it('a dependent the production reactivate leaves errored still rebuilds the orchestrator, then reports apply_failed', async () => {
+    // The REAL `InstallService.reactivate`, the function production's
+    // `reactivateAgent` awaits. It never throws on an activation failure: it
+    // records `markActivationFailed`, flips the entry to `errored` and
+    // returns. The helper must read that status, or a failed extras rebuild
+    // would leave the orchestrator without its memory services behind a 200.
+    const { registry, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+      { id: EXTRAS },
+    ]);
+    const activated: string[] = [];
+    const installService = new InstallService({
+      catalog: {} as PluginCatalog,
+      registry,
+      vault: {} as SecretVault,
+      onUninstall: async () => undefined,
+      onInstalled: async (id: string) => {
+        activated.push(id);
+        if (id === EXTRAS) throw new Error('extras activate() exploded');
+      },
+    });
+    const reactivate = async (id: string): Promise<void> => {
+      await installService.reactivate(id);
+    };
+    const result = await applyProviderAssignment(
+      { ...deps, reactivate },
+      { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' },
+    );
+    assert.deepEqual(activated, [EXTRAS, ORCH]);
+    assert.equal(registry.get(EXTRAS)?.status, 'errored');
+    assert.equal(registry.get(ORCH)?.status, 'active');
+    // The primary's config IS persisted; only the report says "not whole".
+    assert.equal(registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.equal(result.ok, false);
+    assert.equal(result.ok === false ? result.code : undefined, 'providers.apply_failed');
+    const message = result.ok === false ? result.message : '';
+    assert.match(message, /@omadia\/orchestrator-extras failed to rebuild/);
+    assert.match(message, /extras activate\(\) exploded/);
+  });
+
+  it('a dependent that comes back up (errored lifted by the rebuild) is not a failure', async () => {
+    const { registry, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+      { id: EXTRAS },
+    ]);
+    // Extras was errored BEFORE the change (e.g. no usable provider). A
+    // successful rebuild lifts that through `clearActivationError`.
+    await registry.markActivationFailed(EXTRAS, 'no provider resolved');
+    await registry.register({ ...registry.get(EXTRAS)!, status: 'errored' });
+    const installService = new InstallService({
+      catalog: {} as PluginCatalog,
+      registry,
+      vault: {} as SecretVault,
+      onInstalled: async () => undefined,
+    });
+    const result = await applyProviderAssignment(
+      {
+        ...deps,
+        reactivate: async (id: string): Promise<void> => {
+          await installService.reactivate(id);
+        },
+      },
+      { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' },
+    );
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(registry.get(EXTRAS)?.status, 'active');
+  });
+
+  it('a throwing dependent still rebuilds the orchestrator, then reports apply_failed', async () => {
     const { reactivated, deps } = await makeDeps(
       [{ id: ORCH, config: { llm_provider: 'anthropic' } }, { id: EXTRAS }],
       { throwFor: EXTRAS },
@@ -191,6 +267,59 @@ describe('providerDependentsOf / reactivateAfterProviderWrite', () => {
     await reactivateAfterProviderWrite({ installedRegistry: registry }, ORCH, {
       providerChanged: true,
     });
+  });
+
+  it('throws a typed error naming the dependent when it is left errored', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    for (const id of [ORCH, EXTRAS]) {
+      await registry.register({
+        id,
+        installed_version: '0.1.0',
+        installed_at: new Date().toISOString(),
+        status: 'active',
+        config: {},
+      });
+    }
+    const reactivated: string[] = [];
+    const reactivate = async (id: string): Promise<void> => {
+      reactivated.push(id);
+      // Mirror `installService.reactivate`: record, flip, never throw.
+      if (id === EXTRAS) await registry.markActivationBlocked(id, 'missing llmProviderPool');
+    };
+    await assert.rejects(
+      reactivateAfterProviderWrite({ installedRegistry: registry, reactivate }, ORCH, {
+        providerChanged: true,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof ProviderDependentRebuildError);
+        assert.equal(err.primaryId, ORCH);
+        assert.equal(err.dependentId, EXTRAS);
+        assert.equal(err.primaryApplied, true);
+        assert.match(err.message, /missing llmProviderPool/);
+        return true;
+      },
+    );
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
+  });
+
+  it('a failing primary is the error it throws, even after a failing dependent', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    await registry.register({
+      id: EXTRAS,
+      installed_version: '0.1.0',
+      installed_at: new Date().toISOString(),
+      status: 'active',
+      config: {},
+    });
+    const reactivate = async (id: string): Promise<void> => {
+      throw new Error(`${id} down`);
+    };
+    await assert.rejects(
+      reactivateAfterProviderWrite({ installedRegistry: registry, reactivate }, ORCH, {
+        providerChanged: true,
+      }),
+      /^Error: @omadia\/orchestrator down$/,
+    );
   });
 
   it('treats an unset provider as the platform default', () => {

@@ -1810,8 +1810,16 @@ Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
 seinem eigenen `activate()` ab, und ein Teardown von extras kaskadiert nicht
 (`toolPluginRuntime.deactivate` ruft nur `disposeBySource`). Extras erst danach
 neu zu bauen, ließe die Chat-Turn-Faktenextraktion auf der alten Instanz. Scheitert
-ein abhängiges Plugin, wird der Orchestrator trotzdem neu gebaut und der erste
-Fehler danach geworfen (`providers.apply_failed`). Alle Schreibpfade für
+ein abhängiges Plugin, wird der Orchestrator trotzdem neu gebaut und danach eine
+`ProviderDependentRebuildError` (mit `dependentId`, `primaryApplied: true` und
+dem `last_activation_error` im Text) geworfen; die Routen antworten mit
+`providers.apply_failed` bzw. `runtime.update_failed` /
+`runtime.vault_write_failed`. „Gescheitert“ heißt: `reactivate` wirft **oder**
+hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
+Produktionsfall, denn `installService.reactivate` wirft bei einem
+Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
+kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
+`clearActivationError` wieder auf. Alle Schreibpfade für
 `llm_provider` laufen durch den Helper: `POST /api/v1/admin/providers/assignment`
 bzw. `applyProviderAssignment`, `PATCH /api/v1/admin/runtime/installed/:id/config`
 und der Config-Zweig von `PATCH …/secrets` (`applySetupValues`). Der
@@ -2697,8 +2705,11 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 #1076 baut bei einer Provider-Änderung des Orchestrators extras **vor** dem
 Orchestrator neu. Offen ist die Gegenrichtung: wird extras allein reaktiviert
-(direkte Zuweisung an extras, oder `adminSettings`, das nach einem
-Key-Speichern den Orchestrator vor extras reaktiviert), hält der laufende Orchestrator
+(direkte Zuweisung an extras; `adminSettings`, das nach einem Key-Speichern
+den Orchestrator vor extras reaktiviert; oder der OAuth-Fan-out
+`fanOutProviderOAuthTokens` in `src/routes/adminProviders.ts`, der in
+`LLM_PLUGINS`-Reihenfolge reaktiviert und Fehler per `.catch(() => undefined)`
+verschluckt), hält der laufende Orchestrator
 weiter die vorherigen `FactExtractor`/`ContextRetriever`/`SessionBriefing` und
 den KG-Wrapper, weil er sie eager in `activate()` abgreift und ein Teardown
 nicht kaskadiert. Die allgemeine Lösung — nach einem Provider-Rebuild die eager

@@ -38,8 +38,9 @@ changelog.
 
 ### Fixed — re-assigning the orchestrator's provider now reaches the memory features (#1076)
 
-2026-09-24 — `@omadia/orchestrator-extras` (fact extraction, topic detection,
-the scratch-promotion reaper) falls back to the orchestrator's `llm_provider`
+2026-09-24 — `@omadia/orchestrator-extras` (fact extraction, context
+retrieval, session briefing, the scratch-promotion reaper and its other
+background jobs) falls back to the orchestrator's `llm_provider`
 since OM-102, but resolves it once per `activate()`. Changing the
 orchestrator's provider on `/admin/providers` reactivated only the
 orchestrator, so the background memory features kept running on the old
@@ -56,7 +57,11 @@ every writer of `llm_provider` goes through the same
 `reactivateAfterProviderWrite`: the providers assignment route, the runtime
 `PATCH …/config` route and the config branch of `PATCH …/secrets`. A
 model-only change, or unset to explicit `anthropic`, still rebuilds only the
-plugin itself. The subscription-login hand-off now assigns plugins that others
+plugin itself. If extras does not come back up (the kernel's reactivation
+records the failure and marks it `errored` rather than throwing), the
+orchestrator is still rebuilt on its new, persisted provider, but the write
+answers with an error naming extras and its activation error instead of a
+success. The subscription-login hand-off now assigns plugins that others
 inherit from last (verifier, extras, orchestrator), so the final rebuild
 captures extras with its own hand-off model rather than an intermediate one.
 

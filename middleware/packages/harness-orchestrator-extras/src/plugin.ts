@@ -119,7 +119,9 @@ import {
 // Exported because the kernel records the same edge as data
 // (`inheritsProviderFrom` in `src/platform/pluginLlmReadiness.ts`) to know
 // which plugin to rebuild when the orchestrator's provider changes (#1076).
-// The kernel does not import this package; a drift test compares the two.
+// That descriptor table spells the id out as a literal instead of importing
+// it, so it stays a plain data table with no plugin-package imports; a drift
+// test compares the two.
 export const INHERITS_PROVIDER_FROM_PLUGIN_ID = '@omadia/orchestrator';
 
 const CONTEXT_RETRIEVER_SERVICE = 'contextRetriever';
@@ -243,10 +245,8 @@ export async function activate(
         ]
       : []),
   ];
-  // Resolved once per activate(). That is correct: re-assigning the
-  // orchestrator's `llm_provider` rebuilds this plugin through
-  // `reactivateAfterProviderWrite` (`src/platform/providerAssignment.ts`,
-  // #1076), the #989 lesson that a capability-relevant change is a rebuild.
+  // Resolved once per activate(); see the #1076 note at the
+  // `installedPluginConfigReader` read above for why that is correct.
   const resolvedProvider = await resolveExtrasLlmProvider({
     candidates: providerCandidates,
     sources: providerSources,

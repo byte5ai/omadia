@@ -93,16 +93,66 @@ export function isEffectiveProviderChange(
 }
 
 export interface ProviderReactivationDeps {
-  readonly installedRegistry: Pick<InstalledRegistry, 'has'>;
+  readonly installedRegistry: Pick<InstalledRegistry, 'has' | 'get'>;
   readonly reactivate?: (pluginId: string) => Promise<void>;
+}
+
+/**
+ * A provider dependent (extras, for the orchestrator) did not come back up
+ * after the rebuild a provider change triggered. The primary's config is
+ * persisted and the primary itself WAS rebuilt on it (`primaryApplied`), but
+ * it re-captured whatever the dependent left published, so the features the
+ * dependent serves (memory recall, fact extraction, briefing) are down.
+ */
+export class ProviderDependentRebuildError extends Error {
+  readonly primaryId: string;
+  readonly dependentId: string;
+  readonly primaryApplied = true;
+
+  constructor(primaryId: string, dependentId: string, reason: string) {
+    super(
+      `${primaryId} runs on its new provider, but its dependent ${dependentId} failed to rebuild: ${reason}`,
+    );
+    this.name = 'ProviderDependentRebuildError';
+    this.primaryId = primaryId;
+    this.dependentId = dependentId;
+  }
+}
+
+/**
+ * Rebuild `dependentId`; return why it did not come back up, or `undefined`
+ * when it did.
+ *
+ * The production `reactivate` (`reactivateAgent` → `installService.reactivate`)
+ * never throws on an activation failure: it records `markActivationFailed`,
+ * flips the entry to `errored` and returns. A successful reactivation lifts
+ * `errored` again (`clearActivationError`), so `errored` right after the call
+ * means THIS rebuild failed. A throwing `reactivate` counts as a failure too.
+ */
+async function rebuildDependent(
+  installedRegistry: ProviderReactivationDeps['installedRegistry'],
+  reactivate: (pluginId: string) => Promise<void>,
+  dependentId: string,
+): Promise<string | undefined> {
+  try {
+    await reactivate(dependentId);
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  const entry = installedRegistry.get(dependentId);
+  if (entry?.status !== 'errored') return undefined;
+  return entry.last_activation_error ?? 'activation failed (no error recorded)';
 }
 
 /**
  * Reactivate `pluginId` after a config write. When its provider changed, every
  * INSTALLED provider dependent is rebuilt first. A failing dependent does not
  * stop the primary from being rebuilt (it re-captures whatever the dependent
- * left published); the first dependent error is rethrown afterwards so the
- * caller reports the write as failed instead of silently half-applied.
+ * left published). Afterwards the first dependent failure is thrown as a
+ * {@link ProviderDependentRebuildError}, so the caller reports the write as
+ * failed instead of silently half-applied. A dependent counts as failed when
+ * `reactivate` throws OR leaves it `errored` in the registry; the production
+ * `reactivate` only ever does the latter.
  */
 export async function reactivateAfterProviderWrite(
   deps: ProviderReactivationDeps,
@@ -114,16 +164,23 @@ export async function reactivateAfterProviderWrite(
   const dependents = opts.providerChanged
     ? providerDependentsOf(pluginId).filter((id) => deps.installedRegistry.has(id))
     : [];
-  const failures: unknown[] = [];
+  const failures: ProviderDependentRebuildError[] = [];
   for (const id of dependents) {
-    try {
-      await reactivate(id);
-    } catch (err) {
-      failures.push(err);
+    const reason = await rebuildDependent(deps.installedRegistry, reactivate, id);
+    if (reason !== undefined) {
+      failures.push(new ProviderDependentRebuildError(pluginId, id, reason));
     }
   }
-  await reactivate(pluginId);
-  if (failures.length > 0) throw failures[0];
+  try {
+    await reactivate(pluginId);
+  } catch (err) {
+    // The primary's own failure is the headline; still say what the
+    // dependents reported on the way instead of dropping it.
+    for (const f of failures) console.error(`[providers] ${f.message}`);
+    throw err;
+  }
+  const [firstFailure] = failures;
+  if (firstFailure !== undefined) throw firstFailure;
 }
 
 /**
