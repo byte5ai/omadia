@@ -65,6 +65,38 @@ two turns separable within one flush window, `occurredAt` surviving the flush, a
 the no-context NULL path. The `/api/usage` missing role check is out of scope and
 tracked separately.
 
+### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
+
+2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
+readings as equivalent: concatenate the `text_delta` chunks, or read
+`done.answer`. Whenever Privacy Shield v4 renders the final answer server-side
+(`v4_render_answer`), the orchestrator swaps that text into the terminal `done`
+event after the model's own tokens have already streamed as `text_delta` — so
+the two readings disagreed, with no signal that the earlier deltas were void. A
+streaming client showed a success (or a plain-prose answer) the server had
+already thrown away.
+
+The `done` event (and `ChatTurnResult` / `SemanticAnswer` for the buffered
+path) now carries an optional `answerSource: 'model' | 'privacy-render'`. It is
+stamped `'privacy-render'` at both swap sites — streaming (`chatStream`) and
+buffered (`chatInContext`) — whenever `takeRenderedAnswerV4` returned a value,
+and omitted (meaning `'model'`) otherwise. `done.answer` is authoritative; a
+client that reconstructs the answer from deltas must overwrite it with
+`done.answer` whenever `answerSource` is present and not `'model'`. The
+`@omadia/channel-api` README no longer presents the two readings as
+interchangeable and states which one wins. No new event type was added; the
+field is additive and a client that ignores it and always renders `done.answer`
+is already correct.
+
+Also fixed the second defect the issue surfaced: a guarded tool that RETURNED a
+prose `Error:` string (the orchestrator's tool-error convention) was interned
+by Privacy Shield v4 as a one-row masked dataset, so the model never saw the
+error text and a later render materialized it as if it were data. The two
+dispatch seams (`Orchestrator.dispatchTool`, `ToolDispatchService.afterDispatch`)
+now pass a fulfilled `Error:` result through verbatim instead of interning it,
+so the model sees the failure and it can never become a renderable dataset.
+Thrown-exception masking (`maskErrorText`) is unchanged.
+
 ### Fixed — public chat API validates its request contract strictly (#1109)
 
 2026-09-18 — two defects in `POST /api/public/v1/chat`
