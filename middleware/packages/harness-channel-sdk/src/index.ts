@@ -172,6 +172,12 @@ export type {
   ApplyAiDisclosureResult,
 } from './aiDisclosure.js';
 
+// #1094 — wording for a degraded turn (a tool committed, a later step threw).
+// Composed at the delivery boundary through the same locale mechanism as the
+// AI-Act marking above; the orchestrator itself emits only a language-free
+// marker and persists that.
+export { composeTurnIncompleteText } from './turnIncomplete.js';
+
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance
 // bundler + judge-facing legend, the payload renderer, the shipping-default

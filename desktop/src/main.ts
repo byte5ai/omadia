@@ -76,6 +76,21 @@ function rendererPath(file: string): string {
   return path.join(app.getAppPath(), 'dist', 'renderer', file);
 }
 
+/**
+ * Loads a bundled renderer page, always passing the log-file path as a `log`
+ * query parameter (OM-63). The renderer shows it in its "something broke" hints,
+ * so a user can still reach the log when the menu-bar icon is invisible or the
+ * preload bridge failed to load — a URL parameter survives both of those; an
+ * IPC call to fetch the path does not, because the bridge is the thing that died.
+ */
+function loadRenderer(
+  w: BrowserWindow,
+  page: string,
+  opts: { readonly hash?: string } = {},
+): Promise<void> {
+  return w.loadFile(rendererPath(page), { query: { log: logFile() }, ...opts });
+}
+
 function createWindow(): BrowserWindow {
   // Windows and Linux read the window/taskbar icon from the running process;
   // macOS takes it from the signed bundle, so passing it there is a no-op
@@ -207,10 +222,7 @@ async function recoverRenderer(): Promise<void> {
   try {
     // A recovered wizard restarts at step 0 and loses what was entered, so the
     // page is told to explain that rather than leaving the user guessing.
-    await win.loadFile(
-      rendererPath(page),
-      view === 'wizard' ? { hash: RECOVERED_HASH } : {},
-    );
+    await loadRenderer(win, page, view === 'wizard' ? { hash: RECOVERED_HASH } : {});
     if (!finishNavigation(token, view, 'recover')) return;
     if (view === 'boot') {
       sendBootProgress({
@@ -258,7 +270,7 @@ function trayActions(): TrayActions {
         await showRestartRefused(win, t);
         return;
       }
-      await win.loadFile(rendererPath(LOADING_PAGE));
+      await loadRenderer(win, LOADING_PAGE);
       setTrayStatus(trayActions(), 'starting');
       supervisor.on('progress', sendBootProgress);
       streamBootLogs = true;
@@ -312,7 +324,7 @@ async function bootExistingInstall(): Promise<void> {
   const w = win;
   const token = startNavigation('boot', 'boot-existing');
   if (token === null) return;
-  await win.loadFile(rendererPath(LOADING_PAGE));
+  await loadRenderer(win, LOADING_PAGE);
   supervisor.on('progress', sendBootProgress);
   streamBootLogs = true;
   try {
@@ -369,7 +381,7 @@ function startWizard(): void {
   // first-run setup, requested by the user from the failure dialog.
   const token = startNavigation('wizard', 'wizard-complete');
   if (token === null) return;
-  void win.loadFile(rendererPath(WIZARD_PAGE)).then(
+  void loadRenderer(win, WIZARD_PAGE).then(
     () => {
       finishNavigation(token, 'wizard', 'wizard-complete');
     },

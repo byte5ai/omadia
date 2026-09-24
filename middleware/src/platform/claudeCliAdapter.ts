@@ -315,6 +315,9 @@ function spawnClaude(
       recordUsage({
         source: CLI_COMPLETION_USAGE_SOURCE,
         model: req.model,
+        // #1098 — the subscription runtime. Turn attribution stays ambient,
+        // so these rows are NULL-attributed outside an orchestrator turn.
+        provider: 'claude-cli',
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         cacheReadTokens: usage.cacheReadTokens ?? 0,

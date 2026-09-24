@@ -186,6 +186,22 @@ describe('channelApi/chatRouter — wiring (auth, rate limit, audit, NDJSON fram
       body: JSON.stringify({ message: 'two' }),
     });
     assert.equal(second.status, 429);
+    // #1110 — the README tells integrators to hardcode the 60 s window
+    // because no Retry-After is sent. Adding the header is fine, but it must
+    // be a deliberate README change, not silent drift.
+    assert.equal(second.headers.get('retry-after'), null);
+  });
+
+  it('is POST-only — other methods 404 (#1110, documented in the README)', async () => {
+    const created = await apiKeys.create({ label: 'wrong-method' });
+    const auth = { authorization: `Bearer ${created.token}` };
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const res = await client.fetch(baseUrl, { method, headers: auth });
+      assert.equal(res.status, 404, `${method} must not reach the chat route`);
+    }
+    const options = await client.fetch(baseUrl, { method: 'OPTIONS', headers: auth });
+    assert.equal(options.status, 200);
+    assert.equal(options.headers.get('allow'), 'POST');
   });
 
   it('400s on an empty message', async () => {
@@ -623,5 +639,48 @@ describe('channelApi/chatRouter — audit-log accuracy for every authenticated o
       'error',
       'an in-band error event with no throw must be audited as "error", not "ok"',
     );
+  });
+
+  it('audits status "error" — never "ok" — for a `done` marked degraded (#1094)', async () => {
+    // A degraded turn threw after a tool committed. It ends with `done` on the
+    // wire (#506) so the committed call is not reported as failed, but the
+    // audit trail must still record the failure — same bug class as #403.
+    let degraded = true;
+    const harness = startTestServer({
+      async *handleTurnStream() {
+        await Promise.resolve();
+        yield {
+          type: 'done',
+          answer: 'Dieser Turn wurde nicht abgeschlossen.',
+          toolCalls: 1,
+          iterations: 2,
+          ...(degraded
+            ? { degraded: true as const, committedTools: ['manage_widget'], correlationId: 'c-1094' }
+            : {}),
+        };
+      },
+    });
+    const created = await harness.apiKeys.create({ label: 'degraded' });
+    const send = async (): Promise<void> => {
+      const res = await harness.client.fetch('/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${created.token}` },
+        body: JSON.stringify({ message: 'hi' }),
+      });
+      assert.equal(res.status, 200);
+      await res.text();
+    };
+
+    await send();
+    degraded = false;
+    await send();
+
+    const statuses = (await harness.auditLog.list()).map((e) => e.status);
+    assert.equal(statuses.length, 2, 'one audit row per authenticated call');
+    assert.ok(
+      statuses.includes('error'),
+      `a degraded done must be audited as "error", got ${JSON.stringify(statuses)}`,
+    );
+    assert.ok(statuses.includes('ok'), 'control: an ordinary done still audits "ok"');
   });
 });
