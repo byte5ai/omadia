@@ -1202,3 +1202,134 @@ describe('embeddingClient@1 mutual exclusion — Ollama vs keyless local adapter
     assert.equal(reg.get(EMB_ID), undefined);
   });
 });
+
+// #1070 (OM-95 follow-up) — every bootstrap auto-removal must report the
+// removed id through `onPluginRemoved`, so the host can purge the plugin's
+// `agent_plugins` bindings once the orchestrator's store exists. Before this
+// hook the four `registry.remove` sites left those rows behind as orphans.
+describe('onPluginRemoved — bootstrap auto-removals report the removed id (#1070)', () => {
+  const MEMORY_ID = '@omadia/memory';
+  const MEMORY_PG_ID = '@omadia/memory-postgres';
+  const EMB_ID = '@omadia/embeddings';
+  const LOCAL_ID = '@omadia/embedding-adapter-local';
+  const KG_LEGACY = 'de.byte5.tool.knowledge-graph';
+  const KG_INMEMORY = '@omadia/knowledge-graph-inmemory';
+  const KG_NEON = '@omadia/knowledge-graph-neon';
+  const MEMORY_CFG = {
+    DEV_ENDPOINTS_ENABLED: false,
+    MEMORY_BACKEND: 'inmemory',
+    MEMORY_SEED_DIR: '/test/seed/memory',
+    MEMORY_SEED_MODE: 'missing',
+  };
+
+  const catalog = makeCatalog([
+    { id: MEMORY_ID, kind: 'extension', provides: ['memoryStore@1'], requires: [], depends_on: [] },
+    { id: MEMORY_PG_ID, kind: 'extension', provides: ['memoryStore@1'], requires: ['graphPool@^1'], depends_on: [] },
+    { id: EMB_ID, kind: 'extension', provides: ['embeddingClient@1'], requires: [], depends_on: [] },
+    { id: LOCAL_ID, kind: 'extension', provides: ['embeddingClient@1'], requires: [], depends_on: [] },
+    { id: KG_INMEMORY, kind: 'extension', provides: ['knowledgeGraph@1'], requires: [], depends_on: [] },
+    { id: KG_NEON, kind: 'extension', provides: ['knowledgeGraph@1'], requires: ['graphPool@^1'], depends_on: [] },
+  ]);
+  const vault = {
+    get: async () => undefined,
+    setMany: async () => {},
+    set: async () => {},
+    has: async () => false,
+    purge: async () => {},
+    list: async () => [],
+  } as unknown as SecretVault;
+
+  async function seed(reg: InMemoryInstalledRegistry, id: string, config: Record<string, unknown> = {}) {
+    await reg.register({ id, installed_version: '0.1.0', installed_at: '2026-09-24T00:00:00Z', status: 'active', config });
+  }
+
+  function deps(
+    reg: InMemoryInstalledRegistry,
+    config: Record<string, unknown>,
+    removed: string[],
+    logs: string[] = [],
+  ) {
+    return {
+      config: config as unknown as Config,
+      catalog,
+      registry: reg,
+      vault,
+      log: (m: string) => { logs.push(m); },
+      onPluginRemoved: (id: string) => { removed.push(id); },
+    };
+  }
+
+  it('memory self-heal reports the removed non-selected provider', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, MEMORY_ID);
+    await seed(reg, MEMORY_PG_ID);
+    const removed: string[] = [];
+    await bootstrapMemoryFromEnv(deps(reg, MEMORY_CFG, removed));
+    assert.equal(reg.get(MEMORY_PG_ID), undefined);
+    assert.deepEqual(removed, [MEMORY_PG_ID]);
+  });
+
+  it('embeddings conflict (#1053) reports the removed loser', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, EMB_ID, { ollama_base_url: 'http://ollama:11434' });
+    await seed(reg, LOCAL_ID);
+    const removed: string[] = [];
+    await bootstrapEmbeddingsFromEnv(deps(reg, { OLLAMA_BASE_URL: 'http://ollama:11434' }, removed));
+    assert.equal(reg.get(LOCAL_ID), undefined);
+    assert.deepEqual(removed, [LOCAL_ID]);
+  });
+
+  it('legacy KG migration reports the removed legacy id', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, KG_LEGACY);
+    const removed: string[] = [];
+    await bootstrapKnowledgeGraphFromEnv(deps(reg, { GRAPH_TENANT_ID: 'default' }, removed));
+    assert.equal(reg.get(KG_LEGACY), undefined);
+    assert.ok(removed.includes(KG_LEGACY), `expected ${KG_LEGACY} in ${JSON.stringify(removed)}`);
+  });
+
+  it('KG dual-active conflict reports the dropped sibling', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, KG_INMEMORY);
+    await seed(reg, KG_NEON);
+    const removed: string[] = [];
+    await bootstrapKnowledgeGraphFromEnv(
+      deps(reg, { DATABASE_URL: 'postgres://x', GRAPH_TENANT_ID: 'default' }, removed),
+    );
+    assert.equal(reg.get(KG_INMEMORY), undefined);
+    assert.deepEqual(removed, [KG_INMEMORY]);
+  });
+
+  it('reports nothing when no auto-removal happens', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, LOCAL_ID);
+    await seed(reg, MEMORY_ID);
+    const removed: string[] = [];
+    await bootstrapEmbeddingsFromEnv(deps(reg, {}, removed));
+    await bootstrapMemoryFromEnv(deps(reg, MEMORY_CFG, removed));
+    assert.equal(reg.get(LOCAL_ID)?.status, 'active');
+    assert.equal(reg.get(MEMORY_ID)?.status, 'active');
+    assert.deepEqual(removed, []);
+  });
+
+  it('a throwing hook never aborts bootstrap and is logged with the plugin id', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await seed(reg, EMB_ID);
+    await seed(reg, LOCAL_ID);
+    const logs: string[] = [];
+    await bootstrapEmbeddingsFromEnv({
+      ...deps(reg, {}, [], logs),
+      onPluginRemoved: () => {
+        throw new Error('queue exploded');
+      },
+    });
+    assert.equal(reg.get(EMB_ID), undefined, 'registry removal still happened');
+    assert.equal(reg.get(LOCAL_ID)?.status, 'active');
+    assert.ok(
+      logs.some(
+        (l) => l.includes(`onPluginRemoved hook FAILED for ${EMB_ID}`) && l.includes('queue exploded'),
+      ),
+      `expected a hook-failure log line, got ${JSON.stringify(logs)}`,
+    );
+  });
+});

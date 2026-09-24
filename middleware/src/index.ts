@@ -349,6 +349,7 @@ import {
   retryErroredPlugins,
   runLegacyBootstrap,
 } from './plugins/bootstrap.js';
+import { createPendingBindingPurge } from './plugins/pendingBindingPurge.js';
 import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
@@ -1551,6 +1552,18 @@ async function main(): Promise<void> {
     );
   };
 
+  // OM-95 / #1070 — one lazy getter for the `agent_plugins` binding store,
+  // shared by uninstall (InstallService) and the bootstrap auto-removals. The
+  // store only exists once `@omadia/orchestrator` has activated, so bootstrap
+  // removals are queued here and flushed after the tool runtime is up, and
+  // again whenever the orchestrator is (re)activated.
+  const agentPluginBindingStore = (): MultiOrchestratorConfigStore | undefined =>
+    serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+  const pendingBindingPurge = createPendingBindingPurge({
+    getStore: agentPluginBindingStore,
+    hasDatabase: Boolean(config.DATABASE_URL),
+  });
+
   const installService = new InstallService({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -1564,8 +1577,7 @@ async function main(): Promise<void> {
     // previous package's database and unauthenticated routes.
     publicPathGrantStore,
     sqlGrantStore,
-    agentPluginBindingStore: () =>
-      serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+    agentPluginBindingStore,
     onInstalled: async (agentId) => {
       // A plugin may contribute an `llm_provider` block regardless of its kind
       // (provider plugins ship as `extension`). Register it FIRST — mirroring
@@ -1593,6 +1605,12 @@ async function main(): Promise<void> {
         case 'extension':
         case 'integration':
           await toolPluginRuntime.activate(agentId);
+          // #1070 — a key-less boot activates the orchestrator without its
+          // `configStore`; the store appears on this (re)activation, so drain
+          // the bootstrap removals that were still waiting for it.
+          if (agentId === ORCHESTRATOR_PLUGIN_ID) {
+            await pendingBindingPurge.flush();
+          }
           return;
         case 'agent':
         default:
@@ -1759,6 +1777,10 @@ async function main(): Promise<void> {
     registry: installedRegistry,
     vault: secretVault,
     builtInStore: builtInPackageStore,
+    // #1070 — queue only; the binding store does not exist yet at this point.
+    onPluginRemoved: (pluginId) => {
+      pendingBindingPurge.enqueue(pluginId);
+    },
   });
 
   // S+8.5 sub-commit-3 — Auto-reset errored plugins whose root cause has
@@ -1935,6 +1957,9 @@ async function main(): Promise<void> {
   console.log(
     `[middleware] tool plugin runtime: ${toolPluginRuntime.activeIds().length} tool/extension/integration package(s) active`,
   );
+  // #1070 — the orchestrator (an extension) has now had its chance to provide
+  // `configStore`; purge the bindings of plugins bootstrap removed above.
+  await pendingBindingPurge.flush();
 
   // OB-61 fix (boot path) — when the operator completed /setup in a PRIOR
   // session, the anthropic key lives in the orchestrator's VAULT, not in ENV.

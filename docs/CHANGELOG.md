@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — bootstrap auto-removals purge agent bindings (#1070)
+
+2026-09-24 — the boot-time bootstrap removes a plugin on its own at four
+sites: the memory self-heal, the #1053 `embeddingClient@1` conflict, the
+legacy-KG migration and the KG dual-active conflict. None of them purged the
+plugin's `agent_plugins` rows, so each removal left orphaned orchestrator
+bindings behind. #1063 (OM-95) had fixed this for operator uninstalls only.
+Every site now reports the id through a new `BootstrapDeps.onPluginRemoved`
+hook. Bootstrap runs before `@omadia/orchestrator` provides its binding store,
+so the host queues the ids (`pendingBindingPurge.ts`) and purges them via the
+existing `purgePluginAgentBindings` at two points: right after
+`toolPluginRuntime.activateAllInstalled()`, and whenever the orchestrator is
+(re)activated, which covers a fresh host that boots without an LLM key and
+gets its store only after `/setup`. A failed DELETE is logged with
+`console.error` and the plugin id; a still-missing store is a `console.warn`
+listing the ids on a Postgres host and an info line without `DATABASE_URL`.
+The queue is kept in both cases, because the KG can publish a `graphPool` from
+a vault-stored DSN without `DATABASE_URL`. A throwing hook is logged and never
+aborts boot. Residual: the queue lives in memory only, so ids still pending
+when the process exits (Postgres host whose orchestrator never activated in
+that lifetime) are not retried on the next boot.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
