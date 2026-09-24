@@ -1243,6 +1243,22 @@ explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben
 benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
 Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
 
+**Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
+(`class:frontier` / `class:balanced` / `class:fast`) speichert
+`applyProviderAssignment` wörtlich — wie der Runtime-`PATCH` — statt sie auf die
+heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie pro Aufruf
+über `resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079). Kann der
+Provider gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
+(`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
+`modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in
+der POST-Antwort). `GET /admin/providers` liefert pro Assignment `model` (der
+gespeicherte Ref) plus `resolvedModel` (dieselbe Auflösung wie zur Laufzeit,
+`null` wenn nichts gesetzt ist) und pro Provider `classDefaults` (Klasse →
+`modelId` via `modelForClass`). Die Admin-UI rendert Klassen als eigene,
+beschriftete Optionen (`Frontier (auto → Claude Opus 5)`) und behält beim
+Provider-Wechsel einen Klassen-Ref bei.
+
 ### Fehlercodes für die UI: `verifyErrorCode` + `ProviderVerification.code` (issue #604)
 
 Die Middleware hat keine Request-Locale — niemand liest `Accept-Language`, und

@@ -1098,6 +1098,10 @@
         "what": "Das gewählte Modell gehört zu einem anderen Provider als dem ausgewählten.",
         "next": "Wähle ein Modell dieses Providers oder wechsle zum Provider des Modells."
       },
+      "model_class_unavailable": {
+        "what": "Der gewählte Provider bietet kein Modell für diese Modellklasse an.",
+        "next": "Aktualisiere oder registriere die Modelle des Providers, oder wähle statt einer Klasse ein festes Modell."
+      },
       "not_installed": {
         "what": "Das Plugin, dem du einen Provider zuordnest, ist hier nicht installiert.",
         "next": "Installiere das Plugin zuerst und setze danach seinen Provider.",
@@ -3748,7 +3752,17 @@
       "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten.",
       "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
       "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
-      "routingAnthropicOnly": "Nur mit Anthropic verfügbar."
+      "routingAnthropicOnly": "Nur mit Anthropic verfügbar.",
+      "classGroup": "Modellklasse folgen (aktualisiert sich automatisch)",
+      "modelsGroup": "Feste Modelle",
+      "classOption": "{class} (auto → {model})",
+      "classOptionUnresolved": "{class} (auto)",
+      "unlistedModel": "{model} (nicht in der Modellliste)",
+      "classNames": {
+        "frontier": "Frontier",
+        "balanced": "Ausgewogen",
+        "fast": "Schnell"
+      }
     },
     "status": {
       "saving": "speichert …",

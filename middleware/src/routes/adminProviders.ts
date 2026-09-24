@@ -6,9 +6,14 @@
  * lives on this page (not buried in the per-plugin settings panel).
  *
  * GET  /                 → providers (from the global model registry, with
- *                          connection status) + per-plugin LLM assignments.
+ *                          connection status and per-class default model) +
+ *                          per-plugin LLM assignments, each with the stored
+ *                          model ref AND the concrete model it resolves to
+ *                          (`resolvedModel`, #1083 — a class ref such as
+ *                          `class:frontier` is not a vendor id).
  * POST /assignment       → set { provider, model } for an LLM-consuming plugin
- *                          (writes its config + reactivates). A dedicated
+ *                          (writes its config + reactivates; a class ref is
+ *                          stored as given, see providerAssignment.ts). A dedicated
  *                          endpoint (plugin id in the body, not the URL) avoids
  *                          the encoded-slash proxy 404 the runtime config route
  *                          hits from the browser.
@@ -32,11 +37,14 @@ import {
   exchangeAuthorizationCode,
   listModels,
   listModelsByProvider,
+  modelForClass,
   OPENAI_CODEX_OAUTH,
   pollDeviceToken,
   primeProviderOAuthTokens,
   requestUserCode,
+  resolveConfiguredModel,
   writeProviderOAuthTokens,
+  type ModelClass,
   type OAuthClientConfig,
   type OAuthTokens,
   type ProviderId,
@@ -106,6 +114,21 @@ function providerLabel(id: ProviderId): string {
     default:
       return id;
   }
+}
+
+const MODEL_CLASSES: readonly ModelClass[] = ['frontier', 'balanced', 'fast'];
+
+/** The model each class resolves to for `providerId` (#1083) — lets the UI
+ *  label the class options it does not have selected without copying the
+ *  registry's `classDefault` rule into the client. Classes the provider does
+ *  not serve are left out. */
+function classDefaultsFor(providerId: ProviderId): Partial<Record<ModelClass, string>> {
+  const out: Partial<Record<ModelClass, string>> = {};
+  for (const cls of MODEL_CLASSES) {
+    const hit = modelForClass(cls, providerId);
+    if (hit !== undefined) out[cls] = hit.modelId;
+  }
+  return out;
 }
 
 /** Fan a provider's OAuth tokens out to EVERY LLM-plugin scope with one shared
@@ -287,6 +310,7 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
             maxTokens: m.maxTokens,
             vision: m.vision,
           })),
+          classDefaults: classDefaultsFor(id),
           };
         }),
       );
@@ -297,12 +321,19 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         const installed = deps.installedRegistry.has(p.id);
         const cfg = (installed ? deps.installedRegistry.get(p.id)?.config : {}) ?? {};
         const modelKey = p.modelKeys[0] ?? '';
+        const provider = readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER;
+        const model = readStringConfig(cfg, modelKey) ?? null;
         return {
           pluginId: p.id,
           label: p.label,
           installed,
-          provider: readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER,
-          model: readStringConfig(cfg, modelKey) ?? null,
+          provider,
+          model,
+          // #1083 — the concrete model a turn actually sends, computed by the
+          // runtime's own resolver: a class ref follows the provider's
+          // catalog, an alias maps to its vendor id. `null` when unset or
+          // unresolvable. `model` stays the raw stored ref (the intent).
+          resolvedModel: model === null ? null : (resolveConfiguredModel(model, provider) ?? null),
           modelKey,
           // This plugin drives a tool loop → the UI disables tool-less providers.
           requiresTools: p.requiresTools === true,
@@ -462,7 +493,13 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       res.status(result.status).json({ code: result.code, message: result.message });
       return;
     }
-    res.json({ ok: true, pluginId: result.pluginId, provider: result.provider, model: result.model });
+    res.json({
+      ok: true,
+      pluginId: result.pluginId,
+      provider: result.provider,
+      model: result.model,
+      resolvedModel: result.resolvedModel,
+    });
   });
 
   // -------------------------------------------------------------------------

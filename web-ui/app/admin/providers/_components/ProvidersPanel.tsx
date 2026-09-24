@@ -7,6 +7,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
 import { ChatGptConnectModal } from './ChatGptConnectModal';
+import { buildModelSelect, isClassRef, type ClassOption } from './assignmentModelOptions';
 import {
   assignProvider,
   getProviders,
@@ -131,7 +132,12 @@ export function ProvidersPanel({
         return n;
       });
       try {
-        await assignProvider({ pluginId, provider, model });
+        const res = await assignProvider({ pluginId, provider, model });
+        // #1083 — the server stores a class ref as given and says what it
+        // resolves to. Without that answer (older middleware), a concrete id
+        // resolves to itself and a class ref stays unresolved.
+        const storedModel = res?.model ?? model;
+        const resolvedModel = res?.resolvedModel ?? (isClassRef(model) ? null : model);
         setState((prev) =>
           prev.kind === 'ready'
             ? {
@@ -150,7 +156,13 @@ export function ProvidersPanel({
                       provider !== 'anthropic' && a.modelRouting !== undefined
                         ? { modelRouting: 'false' }
                         : {};
-                    return { ...a, provider, model, ...routingReset };
+                    return {
+                      ...a,
+                      provider,
+                      model: storedModel,
+                      resolvedModel,
+                      ...routingReset,
+                    };
                   }),
                 },
               }
@@ -832,9 +844,23 @@ function AssignmentRow({
 
   const onProvider = (providerId: string): void => {
     const next = providers.find((p) => p.id === providerId);
-    // Default to the provider's first model when switching providers.
-    const model = next?.models[0]?.modelId ?? '';
+    // A class ref (#1083) is provider-independent: keep following the class on
+    // the new provider. A pinned (or no) model defaults to the new provider's
+    // first model, as before.
+    const model = isClassRef(a.model) ? a.model : (next?.models[0]?.modelId ?? '');
     if (model) onApply(a.pluginId, providerId, model);
+  };
+  const modelSelect = buildModelSelect({
+    stored: a.model,
+    resolvedModel: a.resolvedModel,
+    models,
+    classDefaults: selectedProvider?.classDefaults,
+  });
+  const classLabel = (o: ClassOption): string => {
+    const cls = t(`assignments.classNames.${o.cls}`);
+    return o.target === undefined
+      ? t('assignments.classOptionUnresolved', { class: cls })
+      : t('assignments.classOption', { class: cls, model: o.target });
   };
 
   return (
@@ -888,17 +914,35 @@ function AssignmentRow({
         </label>
         <select
           id={`model-${a.pluginId}`}
-          value={a.model ?? ''}
+          value={modelSelect.value}
           disabled={disabled || models.length === 0}
           onChange={(e) => onApply(a.pluginId, a.provider, e.target.value)}
           className={`${selectCls} sm:max-w-[280px]`}
         >
-          {a.model === null && <option value="">{t('assignments.pickModel')}</option>}
-          {models.map((m) => (
-            <option key={m.id} value={m.modelId}>
-              {m.label}
+          {modelSelect.placeholder && <option value="">{t('assignments.pickModel')}</option>}
+          {/* #1083 — a stored value no list entry matches keeps its own
+              option, so the select never shows option 0 in its place. */}
+          {modelSelect.extraOption && (
+            <option value={modelSelect.extraOption.value}>
+              {t('assignments.unlistedModel', { model: modelSelect.extraOption.label })}
             </option>
-          ))}
+          )}
+          {modelSelect.classOptions.length > 0 && (
+            <optgroup label={t('assignments.classGroup')}>
+              {modelSelect.classOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {classLabel(o)}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label={t('assignments.modelsGroup')}>
+            {modelSelect.modelOptions.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </optgroup>
         </select>
       </div>
 

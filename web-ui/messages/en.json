@@ -1098,6 +1098,10 @@
         "what": "The chosen model belongs to a different provider than the one selected.",
         "next": "Pick a model this provider serves, or switch to the provider the model belongs to."
       },
+      "model_class_unavailable": {
+        "what": "The selected provider serves no model for this model class.",
+        "next": "Refresh or register the provider's models, or pick a concrete model instead of a class."
+      },
       "not_installed": {
         "what": "The plugin you are assigning a provider to is not installed here.",
         "next": "Install the plugin first, then set its provider.",
@@ -3748,7 +3752,17 @@
       "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent.",
       "routingLabel": "Per-turn model routing (Haiku triage)",
       "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
-      "routingAnthropicOnly": "Only available with Anthropic."
+      "routingAnthropicOnly": "Only available with Anthropic.",
+      "classGroup": "Follow a model class (auto-updates)",
+      "modelsGroup": "Pinned models",
+      "classOption": "{class} (auto → {model})",
+      "classOptionUnresolved": "{class} (auto)",
+      "unlistedModel": "{model} (not in the model list)",
+      "classNames": {
+        "frontier": "Frontier",
+        "balanced": "Balanced",
+        "fast": "Fast"
+      }
     },
     "status": {
       "saving": "saving …",
