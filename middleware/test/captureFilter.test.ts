@@ -283,14 +283,16 @@ describe('CaptureFilteringKnowledgeGraph', () => {
     assert.equal(turn.significance, null);
   });
 
-  it('persist=false skips the inner write entirely', async () => {
+  it('persist=false writes a tail-only record instead of skipping (#1096)', async () => {
     const inner = new InMemoryKnowledgeGraph();
     let innerCalls = 0;
+    let lastIngest: Parameters<typeof inner.ingestTurn>[0] | undefined;
     const proxiedInner = new Proxy(inner, {
       get(target, prop, recv) {
         if (prop === 'ingestTurn') {
           return async (...args: Parameters<typeof inner.ingestTurn>) => {
             innerCalls += 1;
+            lastIngest = args[0];
             return target.ingestTurn(...args);
           };
         }
@@ -320,9 +322,16 @@ describe('CaptureFilteringKnowledgeGraph', () => {
       assistantAnswer: 'np',
       entityRefs: [],
     });
-    assert.equal(innerCalls, 0, 'inner.ingestTurn must NOT be called');
+    // #1096 — the conversation is recorded even when the turn is not worth
+    // remembering: the session tail is the model's only in-session memory.
+    assert.equal(innerCalls, 1, 'inner.ingestTurn must be called');
+    assert.equal(lastIngest?.tailOnly, true, 'flagged as a tail-only record');
+    assert.equal(lastIngest?.significance, 0.1);
     assert.equal(result.sessionId, 'session:drop-scope');
     assert.ok(result.turnId.startsWith('turn:drop-scope'));
     assert.deepEqual(result.entityNodeIds, []);
+
+    const session = await inner.getSession('drop-scope');
+    assert.equal(session?.turns.length, 1, 'turn is readable from the session');
   });
 });
