@@ -18,6 +18,7 @@ import { SessionWatcher } from './_components/SessionWatcher';
 import { TimeZoneSync } from './_components/TimeZoneSync';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
 import { DesktopUiReady } from './_components/DesktopUiReady';
+import { DesktopLocaleSync } from './_components/DesktopLocaleSync';
 import { StreamRunner } from './_components/StreamRunner';
 import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
@@ -135,6 +136,9 @@ export default async function RootLayout({
               <SessionWatcher />
               <RuntimeReadinessBanner />
               <DesktopUiReady />
+              {/* Headless — tells the desktop shell the UI language so its
+                  own dialogs follow it, not the OS (issue #1074). */}
+              <DesktopLocaleSync />
             </StreamStoreProvider>
           </ChatSessionsProvider>
         </NextIntlClientProvider>

@@ -29,6 +29,12 @@ export interface IpcDeps {
   onReady: (uiUrl: string) => void;
   /** OM-71: the web UI reports that its first real screen is standing. */
   onUiReady: () => void;
+  /**
+   * #1074: the web UI reports the language it is showing. Deliberately
+   * `unknown`: the value comes from a renderer, and the only way in is
+   * through `parseUiLocale`.
+   */
+  onUiLocale: (locale: unknown) => void;
 }
 
 /**
@@ -94,6 +100,12 @@ async function chooseDataDirWithSyncWarning(
 
 export function registerIpc(deps: IpcDeps): void {
   ipcMain.on(CH.uiReady, () => deps.onUiReady());
+  // No sender/origin check, same as `uiReady` above: the one window hosts both
+  // the file:// wizard/loading pages and the localhost web UI, whose origin is
+  // only known after boot. The payload is validated down to 'en' | 'de' and
+  // only picks the language of shell dialogs, so a forged value can do no more
+  // than switch that language.
+  ipcMain.on(CH.uiLocale, (_e, locale: unknown) => deps.onUiLocale(locale));
 
   ipcMain.handle(CH.getState, (): AppState => ({
     setupComplete: isSetupComplete(),

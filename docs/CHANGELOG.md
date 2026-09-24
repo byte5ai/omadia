@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — desktop dialogs follow the UI language (#1074)
+
+2026-09-24 — the desktop shell's own dialogs (updater, boot failure, recovery
+key) and its menu headings took their language from `app.getLocale()`, the OS
+locale. A user on an English OS who had switched the web UI to German still got
+English shell dialogs, because nothing told the main process which language the
+UI was showing (the OM-91 residual left open by #1069).
+
+The web UI now pushes the language it is showing to the shell over a new
+fire-and-forget preload channel, `omadia:uiLocale` (`window.omadia.setUiLocale`),
+on first load and after every switch, on every route. The shell accepts only
+`'en'` and `'de'`, applies the value to the next dialog, rebuilds the menu
+headings, and persists it to `userData/ui-locale.json` so dialogs that fire
+before the web UI is up (a boot failure, the updater at startup) use it too.
+Without a valid value it still falls back to the OS locale, so a fresh install
+behaves as before. `desktop/src/shellLocale.ts` is now the only place that
+reads the OS locale; a source-census test keeps it that way. Electron's own
+`role:` menu entries still follow the OS language.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
