@@ -36,6 +36,88 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — subscription-CLI agent has conversation memory again (#1087)
+
+2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
+stateless single shot. `CliChatAgent.composePrompt` replayed `input.priorTurns`,
+and nothing in the repo ever produced that field — not the HTTP route
+(`{ message, sessionId }`), not the web UI, not a channel. Asked to summarize
+the conversation, the agent answered that none had taken place ("dies ist Ihre
+erste Nachricht an mich in diesem Chat") while two earlier turns sat in the same
+chat, and the turn reported success (`tools=0 · iterations=1`). The in-process
+(API-key) path compensates via the `ContextRetriever` verbatim tail; the CLI
+path called neither it nor any session store.
+
+`CliChatAgent` now takes an injected `sessionTail(sessionScope, limit)` history
+supplier, consulted only when the caller supplied no `priorTurns` of its own, so
+a channel that assembles history stays authoritative. `buildOrchestratorForAgent`
+wires it in the `claude-cli` branch to the `ChatSessionStore` — the RAW session
+source, deliberately not the `ContextRetriever` tail: that one reads Session
+nodes from the knowledge graph, and CLI turns never reach the graph
+(`SessionLogger.log` runs on the in-process path only), so a KG-backed tail
+would be empty here rather than merely lossy. The window is 3 turns, mirroring
+`ContextRetriever`'s `tailSize`. `chatSessionTailTurns` pairs the flat message
+list into completed (user, assistant) turns and drops the trailing unanswered
+question — the web UI persists a question before its answer exists, so replaying
+it would hand the model the current turn twice — along with failed and blank
+answers.
+
+Replayed turns are budgeted and sanitized on the way out: 600 chars per
+question and 1200 per answer, mirroring the in-process verbatim tail (a turn
+COUNT is not a budget — one long answer would otherwise be prepended in full to
+each of the next three prompts), and a line inside replayed content that starts
+with `User:` / `Assistant:` / `System Hint:` is neutralized, so a pasted
+transcript cannot forge turn boundaries in the region of the prompt the model
+reads as established history. The live user message rides the same transcript
+format and gets the same treatment. The tail read itself is bounded by a 5 s
+deadline: it runs while the turn already holds one of three concurrency permits
+and an open loopback MCP server, before the spawn timer is armed, so a store
+that hangs rather than rejects would otherwise wedge the permit for good.
+
+Replayed turns are masked through the turn's privacy handle before they reach
+the child, the way `maskPriorTurnsForWire` does in-process; a `blocked` outcome
+(or a masker that throws) drops the whole replay rather than failing the turn or
+sending raw history. The handle is read through the async context CAPTURED at
+the turn's public entry point, not the ambient one — the lifecycle runs in a
+generator body, and `createOrchestratorDispatcher` iterates it with no
+`turnContext` wrapper at all, so an ambient read would silently find nothing on
+channel turns.
+**Known limitation, stated deliberately:** that seam is inert on this path
+today, because only the in-process orchestrator installs a privacy handle in
+`turnContext` — the subscription-CLI path has no prompt masking at all right
+now, the live user message included. Adding the tail does not widen that gap
+(the seam covers the replay the moment a handle is installed here), but closing
+it is separate work, tracked in #1087.
+
+Second, independent defect from the same report: when a turn carries no
+history, the system prompt now says so ("you were given no transcript of earlier
+turns … never claim that no conversation has taken place") instead of letting
+the model deny the chat. It is emitted only when the history could not be
+established, and only on chat turns: a tail that reads cleanly and comes back
+empty is a genuine first turn, a scope the supplier reports as unreadable is a
+disclosed gap, and a scope-less single-shot turn (the CLI sub-agent in
+`cliSubAgent.ts`) gets no note at all — it has no chat to have forgotten.
+
+Scope, so it is not mistaken for a regression later: the store-backed tail
+covers web-UI chat sessions. Channel scopes (`http-*`, `teams-*`) are not chat
+session ids and resolve to "no history" WITH the disclosure note — the supplier
+answers `undefined` ("cannot read this scope"), deliberately distinct from `[]`
+("read it, the chat is empty"), so an unreadable scope can never pass as a
+genuine first turn. A session whose messages contain no replayable turn (its
+only question errored, or the turn is still in flight) reads as unreadable for
+the same reason — "something was there and none of it is replayable" is a gap,
+not a new chat. A chat id with no stored document reads as unreadable too:
+the web UI PUTs a session when the tab is created, so a missing document means a
+lost write, and the cost of that reading is a disclosure note on the rare first
+turn that races the PUT.
+
+On this path nothing server-side writes the chat session (`SessionLogger.log` is
+in-process only), so the tail depends on the browser's fire-and-forget PUT: a
+follow-up sent before that write lands sees an N-1 tail. And CLI turns still
+reach neither the knowledge graph nor the markdown transcript — so cross-chat
+recall, memory promotion and the session log remain blank on this provider. Both
+deserve their own follow-ups.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two

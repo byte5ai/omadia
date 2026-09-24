@@ -136,3 +136,103 @@ test('a claude-cli agent without a guard in deps installs none (#1016)', () => {
   // behaviour instead of getting a half-built guard.
   assert.equal(installedGuard(built.bundle.agent), undefined);
 });
+
+/**
+ * #1087 — the WIRING pin for conversation memory on the subscription-CLI path.
+ *
+ * `CliChatAgent` composes one stateless prompt per turn, so a history supplier
+ * that is never injected means the agent has no memory at all — the reported
+ * bug. This reads the tail back OUT of the store the production branch wires,
+ * rather than asserting that some function was handed over: a supplier that
+ * returns nothing would satisfy the latter and reproduce the bug.
+ */
+function inMemoryMemoryStore(): MemoryStore {
+  const files = new Map<string, string>();
+  return {
+    list: async (path: string) =>
+      [...files.keys()]
+        .filter((p) => p.startsWith(`${path}/`))
+        .map((p) => ({ virtualPath: p, isDirectory: false, sizeBytes: 0 })),
+    fileExists: async (path: string) => files.has(path),
+    directoryExists: async (path: string) =>
+      [...files.keys()].some((p) => p.startsWith(`${path}/`)),
+    readFile: async (path: string) => {
+      const content = files.get(path);
+      if (content === undefined) throw new Error(`missing ${path}`);
+      return content;
+    },
+    createFile: async (path: string, content: string) => {
+      files.set(path, content);
+    },
+    writeFile: async (path: string, content: string) => {
+      files.set(path, content);
+    },
+    delete: async (path: string) => {
+      files.delete(path);
+    },
+    rename: async () => {},
+  };
+}
+
+/** Reads the history supplier the agent was constructed with. */
+type TailSupplier = (
+  scope: string,
+  limit: number,
+) => Promise<readonly { userMessage: string; assistantAnswer: string }[] | undefined>;
+
+function installedSessionTail(agent: unknown): TailSupplier | undefined {
+  return (agent as { deps?: { sessionTail?: TailSupplier } }).deps?.sessionTail;
+}
+
+test('a claude-cli agent replays the chat session store as its tail (#1087)', async () => {
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    { ...cliDeps(), memoryStore: inMemoryMemoryStore() },
+  );
+
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-1087',
+    title: 'chat',
+    createdAt: 1,
+    updatedAt: 2,
+    messages: [
+      { id: 'u1', role: 'user', content: 'Wer bist du?', startedAt: 1 },
+      { id: 'a1', role: 'assistant', content: 'Ich bin dein Assistent.', startedAt: 1 },
+      { id: 'u2', role: 'user', content: 'Hund oder Katze?', startedAt: 2 },
+      { id: 'a2', role: 'assistant', content: 'Katze.', startedAt: 2 },
+      // The question this turn is answering, already persisted by the web UI.
+      { id: 'u3', role: 'user', content: 'Fasse unser Gespräch zusammen', startedAt: 3 },
+    ],
+  });
+
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-failed',
+    title: 'chat whose only turn failed',
+    createdAt: 1,
+    updatedAt: 2,
+    messages: [
+      { id: 'u1', role: 'user', content: 'Wer bist du?', startedAt: 1 },
+      { id: 'a1', role: 'assistant', content: 'Fehler: upstream 500', startedAt: 1, error: true },
+    ],
+  });
+
+  const tail = installedSessionTail(built.bundle.agent);
+  assert.ok(tail, 'the claude-cli branch must inject a history supplier');
+
+  assert.deepEqual(await tail('sess-1087', 3), [
+    { userMessage: 'Wer bist du?', assistantAnswer: 'Ich bin dein Assistent.' },
+    { userMessage: 'Hund oder Katze?', assistantAnswer: 'Katze.' },
+  ]);
+  // Scopes the chat store was never keyed by answer `undefined` — "I cannot
+  // read this", which the agent discloses — rather than `[]`, which would pass
+  // a Teams conversation off as a brand-new chat.
+  assert.equal(await tail('teams-19:abc', 3), undefined);
+  assert.equal(await tail('http-default', 3), undefined);
+  // A chat id with no document is a LOST write, not a new chat — the web UI
+  // PUTs the session when the tab is created. Reading it as "new" would
+  // reproduce #1087 without any disclosure.
+  assert.equal(await tail('never-persisted', 3), undefined);
+  // Messages exist but none of them survive into a replayable turn (the chat's
+  // only question errored): also a gap the agent has to disclose.
+  assert.equal(await tail('sess-failed', 3), undefined);
+});

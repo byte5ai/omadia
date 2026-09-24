@@ -118,6 +118,49 @@ export class InvalidSessionIdError extends Error {
   }
 }
 
+/**
+ * Issue #1087 — the newest `limit` COMPLETED turns of a persisted chat, oldest
+ * first, in the pair shape the subscription-CLI agent replays into its prompt.
+ *
+ * Lives next to the message shape rather than at the call site because the
+ * pairing rules are properties of that shape:
+ *  - a session is a flat message list, so a turn is a user message plus the
+ *    answer that follows it;
+ *  - the web UI persists the question before the answer exists, so a trailing
+ *    unanswered user message is the turn IN FLIGHT — replaying it would hand
+ *    the model the current question a second time;
+ *  - failed (`error`) and blank answers are dropped, so a broken prior turn
+ *    cannot poison the next prompt. When two user messages arrive back to back
+ *    the later one owns the answer.
+ */
+export function chatSessionTailTurns(
+  messages: readonly ChatMessage[],
+  limit: number,
+): Array<{ userMessage: string; assistantAnswer: string }> {
+  if (limit <= 0) return [];
+
+  const turns: Array<{ userMessage: string; assistantAnswer: string }> = [];
+  let pendingUser: string | undefined;
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      pendingUser = message.content;
+      continue;
+    }
+    if (pendingUser === undefined) continue;
+    if (
+      message.error !== true &&
+      pendingUser.trim().length > 0 &&
+      message.content.trim().length > 0
+    ) {
+      turns.push({ userMessage: pendingUser, assistantAnswer: message.content });
+    }
+    pendingUser = undefined;
+  }
+
+  return turns.slice(-limit);
+}
+
 export class ChatSessionStore {
   constructor(private readonly store: MemoryStore) {}
 
