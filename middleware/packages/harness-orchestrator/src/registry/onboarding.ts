@@ -13,8 +13,8 @@ const ORCHESTRATOR_PLUGIN_ID = '@omadia/orchestrator';
  * First-boot onboarding seed (US7 / T029, C2 / FR-021).
  *
  * If the operator has not yet created any Agents, seed a minimal-privilege
- * `fallback` Agent (zero plugins, `strict` privacy profile) and set it as
- * the platform's `fallback_agent_id`. This means unmatched channel keys
+ * `fallback` Agent (zero plugins; its `strict` privacy profile is reserved
+ * and not enforced, #978) and set it as the platform's `fallback_agent_id`. This means unmatched channel keys
  * have somewhere to land on day-1 — operators see "we routed your message
  * to the safe default Agent" instead of a hard-reject they cannot debug.
  *

@@ -2874,7 +2874,7 @@ Stand #978: Die Spalte ist **reserviert, nicht wirksam**. Sie wird
 persistiert, von der Operator-API gemeldet und im UI angezeigt, aber kein
 Runtime-Pfad liest sie. `AgentRuntimeConfig` hat kein Posture-Feld, und nichts
 verzweigt auf `'strict'`. Eine Änderung ist seit #978 ein Metadaten-`update` in
-`applyDiff.ts` und kein `rebuild` mehr. Die Migration `0060` schreibt den
+`applyDiff.ts` und kein `rebuild` mehr. Die Migration `0061` schreibt den
 Status als Kommentar an die Spalte. Im UI gibt es keinen Toggle mehr, der Wert
 steht mit „(nicht wirksam)“ in der Zusammenfassung.
 
