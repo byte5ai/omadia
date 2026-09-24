@@ -880,6 +880,15 @@ describe('<ProvidersPanel />', () => {
   // way to toggle it was the undocumented Store setup-field editor.
   describe('per-turn model routing toggle (#1099)', () => {
     const routingLabel = en.adminProviders.assignments.routingLabel;
+    const model = (id: string) => ({
+      id,
+      modelId: id,
+      label: id,
+      class: 'frontier' as const,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+      vision: false,
+    });
 
     it('renders the routing toggle for the orchestrator assignment', async () => {
       mockGetProviders.mockResolvedValue(
@@ -964,6 +973,134 @@ describe('<ProvidersPanel />', () => {
           { orchestrator_model_routing: 'true' },
         ),
       );
+    });
+
+    it('shows the toggle on and "saved" once the write succeeds', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [orchestratorAssignment({ modelRouting: 'false' })],
+        }),
+      );
+      mockUpdateInstalledPluginConfig.mockResolvedValue({
+        updated: { id: '@omadia/orchestrator', config: {}, status: 'active' },
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      fireEvent.click(toggle);
+
+      expect(await screen.findByText(en.adminProviders.status.saved)).toBeTruthy();
+      expect(toggle.checked).toBe(true);
+    });
+
+    it('surfaces a failed write and leaves the toggle off', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [orchestratorAssignment({ modelRouting: 'false' })],
+        }),
+      );
+      mockUpdateInstalledPluginConfig.mockRejectedValue(
+        new ApiError(
+          500,
+          'PATCH /v1/admin/runtime/installed/@omadia/orchestrator/config failed: 500',
+          '{"code":"runtime.update_failed","message":"disk full"}',
+        ),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      fireEvent.click(toggle);
+
+      expect(
+        await screen.findByText(en.errorHelp.runtime.update_failed.what),
+      ).toBeTruthy();
+      expect(screen.getByText(en.adminProviders.status.errorChip)).toBeTruthy();
+      expect(toggle.checked).toBe(false);
+    });
+
+    // runtime.ts answers 200 when the reactivation behind the write fails and
+    // reports it only as `updated.status: 'errored'`.
+    it('does not report "saved" when the orchestrator comes back errored', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          assignments: [orchestratorAssignment({ modelRouting: 'false' })],
+        }),
+      );
+      mockUpdateInstalledPluginConfig.mockResolvedValue({
+        updated: { id: '@omadia/orchestrator', config: {}, status: 'errored' },
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      fireEvent.click(toggle);
+
+      expect(
+        await screen.findByText(en.errorHelp.runtime.agent_inactive.what),
+      ).toBeTruthy();
+      expect(screen.getByText(en.adminProviders.status.errorChip)).toBeTruthy();
+      expect(screen.queryByText(en.adminProviders.status.saved)).toBeNull();
+      // The flag itself was stored, so the switch shows what the backend holds.
+      expect(toggle.checked).toBe(true);
+    });
+
+    // The server resets routing to 'false' on every non-Anthropic assignment
+    // (pluginLlmReadiness.ts `extraOnNonAnthropic`). The page has to mirror
+    // that, or switching back to Anthropic shows a stale "on".
+    it('shows routing off after an Anthropic → other → Anthropic round-trip', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({ connected: true, models: [model('claude-opus-4-8')] }),
+            provider({
+              id: 'openai',
+              label: 'OpenAI',
+              connected: true,
+              models: [model('gpt-5.5')],
+            }),
+          ],
+          assignments: [orchestratorAssignment({ modelRouting: 'true' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      expect(toggle.checked).toBe(true);
+      const select = screen.getByLabelText(en.adminProviders.assignments.providerLabel);
+
+      fireEvent.change(select, { target: { value: 'openai' } });
+      await waitFor(() => expect(toggle.disabled).toBe(true));
+      fireEvent.change(select, { target: { value: 'anthropic' } });
+      await waitFor(() => expect(toggle.disabled).toBe(false));
+
+      expect(mockAssignProvider).toHaveBeenCalledTimes(2);
+      expect(toggle.checked).toBe(false);
+    });
+
+    // The reset is the non-Anthropic rule only: a model change that stays on
+    // Anthropic leaves the stored flag alone, so the switch must too.
+    it('keeps routing on when only the Anthropic model changes', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [
+            provider({
+              connected: true,
+              models: [model('claude-opus-4-8'), model('claude-sonnet-4-6')],
+            }),
+          ],
+          assignments: [orchestratorAssignment({ modelRouting: 'true' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const toggle = (await screen.findByLabelText(routingLabel)) as HTMLInputElement;
+      fireEvent.change(screen.getByLabelText(en.adminProviders.assignments.modelLabel), {
+        target: { value: 'claude-sonnet-4-6' },
+      });
+
+      expect(await screen.findByText(en.adminProviders.status.saved)).toBeTruthy();
+      expect(toggle.checked).toBe(true);
     });
   });
 });

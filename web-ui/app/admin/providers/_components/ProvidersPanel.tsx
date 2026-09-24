@@ -138,9 +138,20 @@ export function ProvidersPanel({
                 ...prev,
                 data: {
                   ...prev.data,
-                  assignments: prev.data.assignments.map((a) =>
-                    a.pluginId === pluginId ? { ...a, provider, model } : a,
-                  ),
+                  assignments: prev.data.assignments.map((a) => {
+                    if (a.pluginId !== pluginId) return a;
+                    // #1099 — mirror the server: a non-Anthropic assignment
+                    // force-writes `orchestrator_model_routing: 'false'`
+                    // (`LLM_PLUGINS[orchestrator].extraOnNonAnthropic` in
+                    // pluginLlmReadiness.ts, applied by providerAssignment.ts).
+                    // Keeping the old value would show routing ON after an
+                    // Anthropic → other → Anthropic round-trip while it is off.
+                    const routingReset =
+                      provider !== 'anthropic' && a.modelRouting !== undefined
+                        ? { modelRouting: 'false' }
+                        : {};
+                    return { ...a, provider, model, ...routingReset };
+                  }),
                 },
               }
             : prev,
@@ -169,9 +180,11 @@ export function ProvidersPanel({
         return n;
       });
       try {
-        await updateInstalledPluginConfig(pluginId, {
+        const res = await updateInstalledPluginConfig(pluginId, {
           orchestrator_model_routing: value,
         });
+        // The flag is stored whether or not the reactivation behind it worked,
+        // so the local state follows the write either way.
         setState((prev) =>
           prev.kind === 'ready'
             ? {
@@ -185,6 +198,16 @@ export function ProvidersPanel({
               }
             : prev,
         );
+        // runtime.ts answers 200 even when the reactivation fails:
+        // installService.reactivate() records it as status 'errored' instead of
+        // throwing. The orchestrator then serves no chat, so 'saved' would lie.
+        if (res.updated?.status === 'errored') {
+          throw new ApiError(
+            200,
+            `PATCH installed/${pluginId}/config: reactivation left the plugin errored`,
+            JSON.stringify({ code: 'runtime.agent_inactive' }),
+          );
+        }
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
