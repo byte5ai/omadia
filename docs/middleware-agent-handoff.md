@@ -918,7 +918,8 @@ Modell liefert genau solche ids: der Privacy-Shield-Digest übergibt eine
 `ds_<uuid>` (turn-scoped In-Memory-Dataset, **anderer** Id-Raum als die
 hochgeladenen Datasets), und Digest wie System-Prompt fordern das Modell
 ausdrücklich auf, eine `datasetId` an andere Tools weiterzureichen
-(`create_xlsx` nimmt genau diese). Vier Schichten seitdem:
+(`create_xlsx` nimmt genau diese). Drei Dataset-Schichten seitdem, dazu eine
+generische:
 
 1. `queryDatasetTool.ts` normalisiert `dataset_id`, bevor der Graph überhaupt
    gerufen wird — `normalizeDatasetUuid` (`plugin-api/src/datasetId.ts`, von
@@ -943,7 +944,8 @@ ausdrücklich auf, eine `datasetId` an andere Tools weiterzureichen
    Collection-Routen gibt es keine Pfad-Id, dort bleibt ein `22P02` ein
    echter 5xx.
 
-4. **Generisch, unabhängig vom Dataset-Pfad:** `prepareStreamSlot`
+4. **Generisch, unabhängig vom Dataset-Pfad (gelandet mit #1095; #1093 hatte
+   denselben Catch unabhängig gebaut und verlässt sich jetzt darauf):** `prepareStreamSlot`
    (`orchestrator.ts`) fängt jetzt pro Slot ab. Der Streaming-Dispatch rennt
    die Slot-Promises mit `Promise.race` — eine einzige Rejection riss vorher
    den Race, verließ `chatStreamInner` und beendete den Turn (Client sah ein

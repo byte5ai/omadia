@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.15.0 — 2026-09-22
+## 1.17.0 — 2026-09-24
 
 Additive. One canonicaliser for dataset ids, so the `query_dataset` tool and
 the Neon graph cannot disagree about which ids exist (#1093).
