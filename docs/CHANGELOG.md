@@ -54,7 +54,8 @@ now stores a class ref as given — like the runtime config PATCH already did �
 instead of normalising it to a concrete id, returns `resolvedModel`, and
 rejects a class ref the provider cannot serve with any model with
 `400 providers.model_class_unavailable`. Qualified ids and aliases are still
-normalised.
+normalised. The in-app issue reporter's reformulation now resolves the
+orchestrator's model ref too, instead of sending a class ref raw to the vendor.
 
 ### Fixed — dynamic sub-agents on the Anthropic host sent `class:frontier` raw (404) (#1079)
 

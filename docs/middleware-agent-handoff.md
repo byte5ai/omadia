@@ -1246,9 +1246,11 @@ Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
 **Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
 (`class:frontier` / `class:balanced` / `class:fast`) speichert
 `applyProviderAssignment` wörtlich — wie der Runtime-`PATCH` — statt sie auf die
-heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie pro Aufruf
-über `resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079). Kann der
-Provider gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
+heutige konkrete `modelId` festzunageln; die Konsumenten lösen sie über
+`resolveConfiguredModel` / `resolveModelRefStrict` auf (#1079) — Orchestrator,
+Verifier und Extras einmal bei der Aktivierung (das Assignment reaktiviert das
+Plugin), die Sub-Agents und die Issue-Umformulierung (`issuesRouter`) pro
+Aufruf. Kann der Provider gar kein Modell liefern (auch keine Nachbarklasse), antwortet der
 POST fail-closed mit `400 providers.model_class_unavailable`. Qualifizierte IDs
 (`openai:gpt-5.5`) und Aliase (`opus`) werden weiterhin auf die nackte
 `modelId` normalisiert. Das Ergebnis trägt zusätzlich `resolvedModel` (auch in

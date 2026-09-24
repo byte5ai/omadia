@@ -329,10 +329,12 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           installed,
           provider,
           model,
-          // #1083 — the concrete model a turn actually sends, computed by the
-          // runtime's own resolver: a class ref follows the provider's
-          // catalog, an alias maps to its vendor id. `null` when unset or
-          // unresolvable. `model` stays the raw stored ref (the intent).
+          // #1083 — the concrete model the stored ref currently resolves to,
+          // computed by the runtime's own resolver: a class ref follows the
+          // provider's catalog, an alias maps to its vendor id. Plugins that
+          // resolve once at activation keep that model until reactivated.
+          // `null` when unset or unresolvable. `model` stays the raw stored
+          // ref (the intent).
           resolvedModel: model === null ? null : (resolveConfiguredModel(model, provider) ?? null),
           modelKey,
           // This plugin drives a tool loop → the UI disables tool-less providers.

@@ -465,9 +465,9 @@ export interface ProviderAssignment {
   /** The stored model ref: a concrete id, or a class ref (`class:frontier`)
    *  that follows the provider's catalog. */
   model: string | null;
-  /** #1083 — the concrete model `model` resolves to right now (the one a turn
-   *  sends); `null` when nothing is stored or it cannot be resolved. Absent on
-   *  pre-#1083 middleware payloads. */
+  /** #1083 — the concrete model `model` currently resolves to; `null` when
+   *  nothing is stored or it cannot be resolved. Absent on pre-#1083
+   *  middleware payloads. */
   resolvedModel?: string | null;
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */

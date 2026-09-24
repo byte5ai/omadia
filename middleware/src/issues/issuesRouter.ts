@@ -37,6 +37,7 @@
 import { Router, type Request, type Response } from 'express';
 
 import {
+  resolveConfiguredModel,
   resolveLlmProvider,
   type LlmProvider,
   type LlmProviderCatalog,
@@ -418,8 +419,13 @@ async function defaultResolveLlm(
   const providerId =
     (typeof cfg['llm_provider'] === 'string' && cfg['llm_provider']) ||
     DEFAULT_PROVIDER_ID;
+  // `orchestrator_model` may hold a class ref (`class:frontier` — the bootstrap
+  // default, and what the per-agent model select now keeps, #1083) or a legacy
+  // alias. Adapters send `model` raw, so resolve it to the concrete vendor id
+  // first; an unresolvable ref falls back to the provider's default.
+  const rawModel = cfg['orchestrator_model'];
   const model =
-    (typeof cfg['orchestrator_model'] === 'string' && cfg['orchestrator_model']) ||
+    (typeof rawModel === 'string' && resolveConfiguredModel(rawModel, providerId)) ||
     defaultModelFor(providerId);
   const provider = await resolveLlmProvider({
     providerId,

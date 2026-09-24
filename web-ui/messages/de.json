@@ -3755,8 +3755,8 @@
       "routingAnthropicOnly": "Nur mit Anthropic verfügbar.",
       "classGroup": "Modellklasse folgen (aktualisiert sich automatisch)",
       "modelsGroup": "Feste Modelle",
-      "classOption": "{class} (auto → {model})",
-      "classOptionUnresolved": "{class} (auto)",
+      "classOption": "{class} (automatisch → {model})",
+      "classOptionUnresolved": "{class} (automatisch)",
       "unlistedModel": "{model} (nicht in der Modellliste)",
       "classNames": {
         "frontier": "Frontier",
