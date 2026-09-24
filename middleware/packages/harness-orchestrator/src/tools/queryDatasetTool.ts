@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   DatasetQueryValidationError,
+  normalizeDatasetUuid,
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
 
@@ -67,6 +68,48 @@ const QueryDatasetInputSchema = z.object({
   offset: z.number().int().min(0).optional(),
 });
 
+/** A dataset the caller doesn't own is indistinguishable from a missing one
+ *  (see the ACL note above) — an id that cannot address a row joins them. */
+const NOT_FOUND_RESULT = JSON.stringify({ error: 'not_found_or_not_owned' });
+
+/**
+ * #1093 — `dataset_id` arrives straight from the model and used to reach the
+ * persistence layer unchecked. On the Neon backend it lands in
+ * `WHERE tenant_id = $1 AND id = $2` against a `uuid` column, so a non-uuid
+ * id raises Postgres `22P02` BEFORE any owner check ever runs — which the
+ * `get_schema` branch did not catch, so the rejection left the handler and
+ * (streaming path) killed the whole turn.
+ *
+ * The id the model actually passes is a `ds_<uuid>` from a Privacy-Shield
+ * digest: a turn-scoped IN-MEMORY dataset, a different id space from the
+ * uploaded datasets this tool reads. That confusion is not the model being
+ * careless — the digest and the orchestrator system prompt both tell it to
+ * carry a `datasetId` to other tools (`create_xlsx` takes exactly this one),
+ * so the `ds_` case gets its own message naming the right id space. Without
+ * it the model re-sends the same id on the next iteration.
+ *
+ * Returns either the canonical id to query with, or the tool result to send
+ * INSTEAD of dispatching.
+ */
+function resolveDatasetId(
+  datasetId: string,
+): { id: string } | { refusal: string } {
+  const id = normalizeDatasetUuid(datasetId);
+  if (id !== undefined) return { id };
+  if (datasetId.trim().startsWith('ds_')) {
+    return {
+      refusal:
+        'Error: privacy_shield_dataset_id — that id names a turn-scoped ' +
+        'Privacy-Shield dataset (the `datasetId` from a digest), which lives ' +
+        'in a different id space than the uploaded datasets `query_dataset` ' +
+        'reads. Work on it with the `v4_*` verbs (or pass it to a file-export ' +
+        'tool such as `create_xlsx`). `query_dataset` accepts only the uuid ' +
+        'ids returned by `list_datasets` — call that first.',
+    };
+  }
+  return { refusal: NOT_FOUND_RESULT };
+}
+
 export const QUERY_DATASET_TOOL_NAME = 'query_dataset';
 
 export const queryDatasetToolSpec = {
@@ -77,6 +120,7 @@ export const queryDatasetToolSpec = {
     '- `list_datasets`: list the caller\'s datasets (id, name, row count, column names+types). Call this FIRST when you don\'t already know the `dataset_id`.\n' +
     '- `get_schema`: full column schema (name, inferred type, sample value) for one dataset — pass `dataset_id`.\n' +
     '- `query_rows`: filter/aggregate over a dataset\'s rows — pass `dataset_id` plus any of `filters` (column/op/value, `op` one of eq/neq/gt/gte/lt/lte/contains — gt/gte/lt/lte only on number columns, contains only on string columns), `group_by` (a column name), `aggregate` ({fn: count/sum/avg/min/max, column?}), `limit`, `offset`. ' +
+    'A valid `dataset_id` is the uuid `list_datasets` returned for an UPLOADED dataset. A `ds_…` id from a privacy digest is a different id space and is NOT accepted here — use the `v4_*` verbs for those. ' +
     'NEVER invent column names — call `get_schema` first if unsure. Results are always paged/aggregated server-side; the response includes `totalMatched` so you can tell the user when there is more than what was returned. ' +
     'Columns named `__k_<column>` are LINK KEYS: a stable, identity-free key of `<column>` (same value in any of this user\'s uploads ⇒ same key, case/whitespace-insensitive). They are safe verb keys — use them as `by`/join keys in `v4_distinct`/`v4_join` to de-duplicate or match people across files or pages; never show them to the user and never filter on them with a guessed value.',
   input_schema: {
@@ -177,45 +221,65 @@ export class QueryDatasetTool {
 
     switch (args.query) {
       case 'list_datasets': {
-        const datasets = await this.graph.listDatasets({
-          ownerOmadiaUserId: viewerOmadiaUserId,
-          ...(args.limit !== undefined ? { limit: args.limit } : {}),
-        });
-        return JSON.stringify({
-          datasets: datasets.map((d) => ({
-            id: d.id,
-            name: d.name,
-            sourceFileName: d.sourceFileName,
-            rowCount: d.rowCount,
-            columns: d.columns.map((c) => ({ name: c.name, type: c.type })),
-            createdAt: d.createdAt,
-          })),
-        });
+        try {
+          const datasets = await this.graph.listDatasets({
+            ownerOmadiaUserId: viewerOmadiaUserId,
+            ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          });
+          return JSON.stringify({
+            datasets: datasets.map((d) => ({
+              id: d.id,
+              name: d.name,
+              sourceFileName: d.sourceFileName,
+              rowCount: d.rowCount,
+              columns: d.columns.map((c) => ({ name: c.name, type: c.type })),
+              createdAt: d.createdAt,
+            })),
+          });
+        } catch (err) {
+          // #1093 — every branch of this tool answers with the `Error:`
+          // string convention rather than throwing: a backend blip (a
+          // dropped Neon connection) is something the model can retry or
+          // report, while a throw is a dead turn on the streaming path.
+          return `Error: query_dataset failed — ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       case 'get_schema': {
         if (!args.dataset_id) {
           return 'Error: get_schema requires `dataset_id`.';
         }
-        const dataset = await this.graph.getDataset(
-          args.dataset_id,
-          viewerOmadiaUserId,
-        );
-        if (!dataset) {
-          return JSON.stringify({ error: 'not_found_or_not_owned' });
+        const resolved = resolveDatasetId(args.dataset_id);
+        if ('refusal' in resolved) return resolved.refusal;
+        try {
+          const dataset = await this.graph.getDataset(
+            resolved.id,
+            viewerOmadiaUserId,
+          );
+          if (!dataset) {
+            return NOT_FOUND_RESULT;
+          }
+          return JSON.stringify({
+            id: dataset.id,
+            name: dataset.name,
+            rowCount: dataset.rowCount,
+            columns: dataset.columns,
+          });
+        } catch (err) {
+          // #1093 — this branch used to have no catch at all: a rejection
+          // left the handler and, in the streaming dispatch path, ended the
+          // turn. A tool error the model can read and react to is always
+          // preferable to a dead turn.
+          return `Error: query_dataset failed — ${err instanceof Error ? err.message : String(err)}`;
         }
-        return JSON.stringify({
-          id: dataset.id,
-          name: dataset.name,
-          rowCount: dataset.rowCount,
-          columns: dataset.columns,
-        });
       }
 
       case 'query_rows': {
         if (!args.dataset_id) {
           return 'Error: query_rows requires `dataset_id`.';
         }
+        const resolved = resolveDatasetId(args.dataset_id);
+        if ('refusal' in resolved) return resolved.refusal;
         // A `__k_*` link key is safe to SEE but must never be a filter
         // target: `eq`/`contains` with a model-chosen value would let the
         // model test guesses against a stable per-person handle. The prompt
@@ -226,7 +290,7 @@ export class QueryDatasetTool {
         }
         try {
           const result = await this.graph.queryDatasetRows(
-            args.dataset_id,
+            resolved.id,
             viewerOmadiaUserId,
             {
               ...(args.filters ? { filters: args.filters } : {}),
@@ -237,7 +301,7 @@ export class QueryDatasetTool {
             },
           );
           if (!result) {
-            return JSON.stringify({ error: 'not_found_or_not_owned' });
+            return NOT_FOUND_RESULT;
           }
           if (result.rows === undefined) return JSON.stringify(result);
           // Real values only when this result is about to be interned behind

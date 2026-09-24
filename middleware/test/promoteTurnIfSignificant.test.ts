@@ -14,7 +14,11 @@ import type {
 // lookup → idempotency lookup → createMemorableKnowledge via kg), so a
 // queue covers the deterministic flow.
 function makeFakePool(opts: {
-  significanceRows?: ReadonlyArray<{ significance: number | null }>;
+  significanceRows?: ReadonlyArray<{
+    significance: number | null;
+    /** #1096 — set on rows the capture filter wrote for continuity only. */
+    tail_only?: boolean;
+  }>;
   idempotencyRows?: ReadonlyArray<{ external_id: string }>;
   throwOnQuery?: boolean;
 }): {
@@ -68,6 +72,33 @@ const FALLBACK_ANSWER =
   'pgvector mit Dim 768 nach Migration 0007 deployed.';
 
 describe('Slice 4b · promoteTurnIfSignificant', () => {
+  it('declines a tail-only turn even above the threshold (#1096)', async () => {
+    // The capture threshold and the promotion threshold are independent, so a
+    // tail-only turn can score above the promotion bar (capture_level=aggressive
+    // at 0.5 with a promote threshold of 0.4). Promoting it would mint a
+    // MemorableKnowledge, and MKs ARE visible to cross-session recall — the
+    // door the tail-only flag exists to keep shut.
+    const { pool, calls } = makeFakePool({
+      significanceRows: [{ significance: 0.45, tail_only: true }],
+    });
+    const { kg, createCalls } = makeFakeKg({});
+    const result = await promoteTurnIfSignificant({
+      pool: pool as never,
+      tenantId: 'default',
+      kg,
+      turnId: TURN_ID,
+      userId: USER_ID,
+      threshold: 0.4,
+      fallbackAssistantAnswer: FALLBACK_ANSWER,
+      log: () => {},
+    });
+    assert.equal(result.promoted, false);
+    assert.equal(result.reason, 'tail-only');
+    assert.equal(result.significance, 0.45);
+    assert.equal(createCalls.length, 0, 'no MemorableKnowledge is minted');
+    assert.equal(calls.length, 1, 'stops after the significance lookup');
+  });
+
   it('promotes when significance >= threshold (palaiaExcerpt path)', async () => {
     const { pool, calls } = makeFakePool({
       significanceRows: [{ significance: 0.85 }],

@@ -82,13 +82,23 @@ function previewStreamProvider(): LlmProvider {
  * before `done`. `renderText: undefined` leaves the real behaviour (no render),
  * the control for "no `answerSource` on an ordinary turn".
  */
-function serviceWith(renderText: string | undefined): ReturnType<typeof createPrivacyGuardService> {
+function serviceWith(
+  renderText: string | undefined,
+  /** #1097 — what the guard stamped on the stashed answer. A FIXTURE, not a
+   *  re-implementation of the rule: the stamping itself is pinned in
+   *  `privacyV4Service.test.ts`; here it only has to reach the wire. */
+  renderIsError?: boolean,
+): ReturnType<typeof createPrivacyGuardService> {
   const real = createPrivacyGuardService();
   if (renderText === undefined) return real;
   return {
     ...real,
     async takeRenderedAnswerV4() {
-      return { text: renderText, maskedValues: [] as readonly string[] };
+      return {
+        text: renderText,
+        maskedValues: [] as readonly string[],
+        ...(renderIsError === true ? { isError: true } : {}),
+      };
     },
   };
 }
@@ -100,7 +110,10 @@ function parseNdjson(body: string): Array<Record<string, unknown>> {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-function buildClient(renderText: string | undefined): {
+function buildClient(
+  renderText: string | undefined,
+  renderIsError?: boolean,
+): {
   client: InProcessClient;
   apiKeys: ReturnType<typeof createApiKeyStore>;
 } {
@@ -116,7 +129,7 @@ function buildClient(renderText: string | undefined): {
     maxToolIterations: 3,
     domainTools: [],
     nativeToolRegistry: new NativeToolRegistry(),
-    privacyGuard: () => serviceWith(renderText),
+    privacyGuard: () => serviceWith(renderText, renderIsError),
   } as ConstructorParameters<typeof Orchestrator>[0]);
 
   const app = express();
@@ -184,6 +197,34 @@ describe('channelApi/chatRouter — #1105 answerSource on a server-rendered turn
       done['answerSource'],
       'privacy-render',
       'done must flag the server render so the stale deltas are not treated as the answer',
+    );
+  });
+
+  /**
+   * #1097 — the render can materialize control flow rather than a result (the
+   * `SERVER_RENDERED` fixture above is literally a tool error). `answerSource`
+   * only says WHO wrote the answer; `answerIsError` says it is a failure, so a
+   * client can show it as one instead of rendering the English error string as
+   * a successful result.
+   */
+  it('marks a rendered tool error with answerIsError so clients can show a failure', async () => {
+    const { client, apiKeys } = buildClient(SERVER_RENDERED, true);
+    const { done } = await runTurn(client, apiKeys);
+
+    assert.equal(done['answerSource'], 'privacy-render');
+    assert.equal(done['answerIsError'], true, 'a rendered error must say so on the wire');
+    assert.ok(String(done['answer']).includes(SERVER_RENDERED));
+  });
+
+  it('leaves answerIsError unset when the render is an ordinary answer', async () => {
+    const { client, apiKeys } = buildClient('Anna Rüsche: 30 Tage', false);
+    const { done } = await runTurn(client, apiKeys);
+
+    assert.equal(done['answerSource'], 'privacy-render');
+    assert.equal(
+      done['answerIsError'],
+      undefined,
+      'an ordinary server render must not be flagged as a failure',
     );
   });
 

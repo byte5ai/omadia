@@ -135,6 +135,15 @@ export interface SemanticAnswer {
   answerSource?: AnswerSource;
 
   /**
+   * #1097 — `true` when `text` is a server-rendered FAILURE (a tool error, an
+   * MCP auth prompt) rather than an answer. Connectors MAY render it as an
+   * error (their own wording, their own styling) instead of presenting it as a
+   * result. Only ever set alongside `answerSource: 'privacy-render'`; omitted
+   * otherwise, so a connector that ignores it behaves exactly as before.
+   */
+  answerIsError?: boolean;
+
+  /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
    * canvas-aware turn produced an initial primitive tree. Channels not declaring
    * the `'canvas'` capability ignore it. Additive optional field (see stability
