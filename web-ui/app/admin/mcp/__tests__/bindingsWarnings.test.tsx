@@ -47,9 +47,9 @@ beforeEach(() => {
   mockListBindings.mockReset();
 });
 
-async function openBindingsTab(): Promise<void> {
+async function openBindingsTab(timeZone?: string): Promise<void> {
   const user = userEvent.setup();
-  renderWithIntl(<AdminMcpPage />);
+  renderWithIntl(<AdminMcpPage />, { timeZone });
   await user.click(screen.getByRole('button', { name: 'Public API keys' }));
 }
 
@@ -100,5 +100,24 @@ describe('BindingsPane — #571 dead-binding warnings', () => {
     await waitFor(() => expect(screen.getByText('healthy')).toBeTruthy());
     expect(screen.queryByText(/No API key with this id exists yet/i)).toBeNull();
     expect(screen.queryByText(/no longer registered/i)).toBeNull();
+  });
+});
+
+/**
+ * Issue #1091 — "last changed" used to slice the 'Z' off the UTC ISO string and
+ * print it as unmarked wall-clock time, so a Berlin operator read a UTC hour as
+ * local. It now goes through next-intl and follows the operator's zone.
+ */
+describe('BindingsPane — #1091 last-changed timestamp', () => {
+  it("renders updatedAt in the operator's zone, not as raw UTC", async () => {
+    mockListBindings.mockResolvedValue({
+      bindings: [binding({ keyId: 'healthy', updatedAt: '2026-09-23T14:17:47.000Z' })],
+    });
+
+    await openBindingsTab('Europe/Berlin');
+
+    const meta = await screen.findByText(/last changed/i);
+    expect(meta.textContent).toContain('4:17:47');
+    expect(meta.textContent).not.toContain('14:17:47');
   });
 });

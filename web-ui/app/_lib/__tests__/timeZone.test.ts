@@ -28,8 +28,9 @@ describe('#1091 — time-zone cookie contract', () => {
     expect(TIME_ZONE_COOKIE).toBe('omadia-tz');
   });
 
-  it('falls back to a fixed literal, never to the host zone', () => {
-    // Deliberately NOT resolvedOptions().timeZone: that is the bug.
+  it('ends the fallback chain (valid container TZ, else this) at a fixed literal', () => {
+    // Deliberately NOT resolvedOptions().timeZone: that is the bug. An
+    // explicitly set, valid `TZ` is tried first — see serverFallbackTimeZone.
     expect(FALLBACK_TIME_ZONE).toBe('UTC');
   });
 

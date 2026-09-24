@@ -49,7 +49,8 @@ come back is resolving the *runtime's own* zone (`Intl.…resolvedOptions()`) in
 the request config, which is what rendered UTC for everyone. Never drop the
 `timeZone` key either — it also suppresses next-intl's `ENVIRONMENT_FALLBACK`
 IntlError (#821). Both halves are pinned by
-`app/_lib/__tests__/timeZone.test.ts`.
+`app/_lib/__tests__/timeZone.test.ts`; `timeZone.request.test.ts` next to it
+runs the request config itself against stubbed cookies.
 
 The layout stamps the resolved zone onto `<html data-timezone>` so
 `TimeZoneSync` can skip the refresh when the page is already correct.

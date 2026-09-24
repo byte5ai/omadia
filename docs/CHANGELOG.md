@@ -98,9 +98,10 @@ instants carries no zone.
 The browser is the only party that knows the operator's zone, so it now says
 so. `TimeZoneSync` (headless, mounted in the root layout) mirrors
 `Intl.DateTimeFormat().resolvedOptions()`'s zone into the non-secret
-`omadia-tz` cookie on mount and calls `router.refresh()` once when the value
-changed — the same client-writes / RSC-reads mechanism `ThemeControls` already
-uses for the no-FOUC palette cookie. `i18n/request.ts` reads the cookie through
+`omadia-tz` cookie on mount and calls `router.refresh()` once when the page
+was rendered in a different zone (per `<html data-timezone>`) — the same
+client-writes / RSC-reads mechanism `ThemeControls` already uses for the
+no-FOUC palette cookie. `i18n/request.ts` reads the cookie through
 `parseTimeZoneCookie` (`web-ui/app/_lib/timeZone.ts`), which decodes,
 shape-checks and validates against `Intl` before returning it. Deciding the
 zone *before* render rather than re-formatting after
@@ -120,17 +121,22 @@ load for a value the server will never see. `layout.tsx` stamps the resolved
 zone onto `<html data-timezone>`, so a page that is already correct — operator
 in UTC, or a container whose `TZ` matches the browser — costs no second render.
 
-Swept up with it: `DraftRow` (the plugin-builder draft list) formatted its
-fallback date with a hardcoded German locale tag via `toLocaleDateString`,
-outside next-intl entirely — a German-formatted date in the English UI, in the
-machine's zone. It now uses `useFormatter()` and is pinned by the `SWEPT` list
-in `app/_lib/i18n-structural.test.ts`, which is where the #679 sweep tracks
-this category.
+Swept up with it, three render sites outside next-intl that the cookie never
+reached: `DraftRow` (the plugin-builder draft list) formatted its fallback date
+with a hardcoded German locale tag via `toLocaleDateString` — a
+German-formatted date in the English UI, in the machine's zone; and the "last
+changed" line of the `/admin/mcp` key bindings and the turn cards of the graph
+list view sliced the `Z` off a UTC ISO string and printed the rest as unmarked
+wall-clock time. All three now use `useFormatter()`. `DraftRow` is pinned by
+the `SWEPT` list in `app/_lib/i18n-structural.test.ts`, which is where the
+#679 sweep tracks this category; its guard now also catches the
+`toLocaleDateString`/`toLocaleTimeString` variants.
 
 The `timeZone` key stays explicitly set — dropping
 it would bring back the `ENVIRONMENT_FALLBACK` IntlError flood (one per
 rendered table row on `/admin/datasets`) that #821 added it to silence. A guard
-test pins both halves.
+test pins both halves, and `timeZone.request.test.ts` runs the request config
+against stubbed cookies, so a config that stops reading the cookie fails.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

@@ -125,9 +125,9 @@ async function loadConfig(locale: Locale, timeZone: string) {
   // host zone, read off `Intl.DateTimeFormat().resolvedOptions()` HERE — on the
   // server, so it resolved to the container zone (UTC in the shipped image),
   // and NextIntlClientProvider handed that same zone to every client component.
-  // It now comes from the browser via `TIME_ZONE_COOKIE`, falling back to a
-  // fixed 'UTC' literal (never the host zone) when the cookie is absent on a
-  // first visit or fails validation.
+  // It now comes from the browser via `TIME_ZONE_COOKIE`, falling back to an
+  // explicitly set, valid container `TZ`, else a fixed 'UTC' literal, when the
+  // cookie is absent on a first visit or fails validation.
   return {
     locale,
     messages,

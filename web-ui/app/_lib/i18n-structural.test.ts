@@ -87,9 +87,9 @@ describe('#679 / I6 — number and date formatting follows the active locale', (
     'memories/page.tsx',
     'memories/[id]/page.tsx',
     'store/builder/[id]/_components/VersionsTab.tsx',
-    // #1091 — the last absolute date formatter in the app that bypassed
-    // next-intl: it rendered a German-formatted date inside the English UI and
-    // in the machine's zone, so the #1091 cookie never reached it.
+    // #1091 — an absolute date formatter that bypassed next-intl: it rendered
+    // a German-formatted date inside the English UI and in the machine's zone,
+    // so the #1091 cookie never reached it.
     'store/builder/_components/DraftRow.tsx',
   ];
 
@@ -103,7 +103,9 @@ describe('#679 / I6 — number and date formatting follows the active locale', (
         .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
         .join('\n');
 
-      expect(code).not.toContain('toLocaleString');
+      // Covers the Date/Time variants too — `toLocaleDateString` is the exact
+      // call #1091 removed from DraftRow.
+      expect(code).not.toMatch(/toLocale(Date|Time)?String/);
     });
   }
 
