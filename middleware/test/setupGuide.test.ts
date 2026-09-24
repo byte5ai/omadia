@@ -95,7 +95,7 @@ describe('bundled manifest · @omadia/plugin-office setup.guide (#1075)', () => 
     const guide = plugin.setup_guide;
     assert.ok(guide, 'the office manifest declares no setup.guide');
     for (const locale of ['en', 'de']) {
-      const text = guide[locale];
+      const text: string | undefined = guide[locale];
       assert.ok(typeof text === 'string' && text.trim().length > 0, `missing ${locale} guide`);
       assert.match(text, /Tigris/);
       assert.match(text, /base URL|Base-URL/i);

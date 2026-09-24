@@ -41,15 +41,17 @@ interface Fixture {
   entry?: string;
 }
 
-/** Git without the caller's GIT_* env (hooks can set GIT_DIR) and without signing. */
+/** The caller's env minus GIT_* — a git hook can set GIT_DIR and redirect every call. */
+const CHILD_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')),
+);
+
+/** Git in the fixture repo, without signing. */
 function git(cwd: string, args: string[]): void {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')),
-  );
   const r = spawnSync(
     'git',
     ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', ...args],
-    { cwd, env, encoding: 'utf8' },
+    { cwd, env: CHILD_ENV, encoding: 'utf8' },
   );
   assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
 }
@@ -96,7 +98,10 @@ function makeRepo(f: Fixture = {}): { repo: string; pkg: string; out: string } {
 }
 
 function runScript(pkg: string, out: string): { status: number | null; stderr: string } {
-  const r = spawnSync(process.execPath, [SCRIPT, pkg, '--out-dir', out], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [SCRIPT, pkg, '--out-dir', out], {
+    encoding: 'utf8',
+    env: CHILD_ENV,
+  });
   return { status: r.status, stderr: r.stderr };
 }
 
