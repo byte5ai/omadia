@@ -320,6 +320,9 @@ export {
   // …and its production enforcement. Call at boot: a deployment whose timeout
   // knobs invert the hierarchy must not start quietly.
   assertTimeoutHierarchy,
+  // `stop_reason: "refusal"` → explicit notice instead of an empty answer.
+  MODEL_REFUSAL_NOTICE,
+  finalAnswerText,
 } from './orchestrator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
