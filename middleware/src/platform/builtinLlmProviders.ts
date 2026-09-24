@@ -40,10 +40,11 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
     // below is the offline seed (cold boot, no key yet, API unreachable).
     discovery: {
       include: ['^claude-'],
-      // Fable/Mythos: different API contract (forced tool_choice → 400,
-      // refusal stop reason, retention requirements) — not until the adapter
-      // handles them. `claude-3-*` / `claude-2*`: retired families.
-      exclude: ['fable', 'mythos', '^claude-[23]([.-]|$)', '^claude-instant'],
+      // Mythos: access-program only (Project Glasswing). Fable is offered —
+      // its one breaking request difference (forced tool_choice → 400, shared
+      // with Opus 5.5) is degraded to `auto` in the adapter. `claude-3-*` /
+      // `claude-2*`: retired families.
+      exclude: ['mythos', '^claude-[23]([.-]|$)', '^claude-instant'],
       classify: [
         {
           match: '^claude-opus-',
@@ -74,6 +75,19 @@ export const BUILTIN_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = [
           maxTokens: 8_192,
           contextWindow: 200_000,
           vision: true,
+        },
+        {
+          // Frontier, but deliberately LAST: rule order is the class-default
+          // preference, so `Auto` and the `opus` alias keep resolving to Opus.
+          // Fable costs 2–2.5× Opus per token — explicit selection only.
+          match: '^claude-fable-',
+          class: 'frontier',
+          aliases: ['fable'],
+          maxTokens: 32_000,
+          contextWindow: 1_000_000,
+          vision: true,
+          effortLevels: ['low', 'medium', 'high', 'xhigh'],
+          effortDefault: 'high',
         },
       ],
     },
