@@ -6934,7 +6934,8 @@ export class Orchestrator {
     // done with the same rejection; narrowing it belongs in one change that
     // moves BOTH paths, not in a fix that makes them disagree again. A handler
     // that knows its errors carry data should catch and return its own
-    // `Error:` prose — that path is guarded (#1105).
+    // data-free `Error:` prose — returned `Error:` strings also reach the
+    // model verbatim, un-interned (#1105, #1097).
     const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
       (err: unknown) => {
         // Settling the slot must not cost the operator the STACK. Before this

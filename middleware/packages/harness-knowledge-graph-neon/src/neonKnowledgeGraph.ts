@@ -106,6 +106,7 @@ import {
   type TurnSearchHit,
   type Visibility,
   type EmbeddingClient,
+  normalizeDatasetUuid,
 } from '@omadia/plugin-api';
 import {
   GRAPH_EDGE_TYPES,
@@ -689,11 +690,21 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     return { datasetId, rowCount: input.rows.length, graphNodeId };
   }
 
+  /**
+   * #1093 — `datasets.id` is a `uuid` column, so a non-uuid id raises
+   * Postgres `22P02` before the id/tenant predicate is evaluated, which no
+   * caller can tell apart from a real failure. An id that cannot address a
+   * row is simply "no row"; the normaliser accepts every spelling Postgres
+   * does, so nothing that used to resolve stops resolving. Validating here
+   * (rather than comparing `id::text = $2`) keeps the primary-key index.
+   */
   private async loadDatasetRow(datasetId: string): Promise<DatasetRow | null> {
+    const id = normalizeDatasetUuid(datasetId);
+    if (id === undefined) return null;
     const result = await this.pool.query<DatasetRow>(
       `SELECT id, name, source_file_name, owner_omadia_user_id, row_count, columns, created_at
        FROM datasets WHERE tenant_id = $1 AND id = $2`,
-      [this.tenantId, datasetId],
+      [this.tenantId, id],
     );
     return result.rows[0] ?? null;
   }
@@ -763,7 +774,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const normalized = validateDatasetQueryOptions(columns, opts);
     const columnTypeByName = new Map(columns.map((c) => [c.name, c.type]));
 
-    const params: unknown[] = [datasetId];
+    // The id as STORED, not as spelled by the caller — `dataset_rows
+    // .dataset_id` is a `uuid` column too, and the caller may have passed an
+    // equivalent-but-different spelling (#1093).
+    const params: unknown[] = [dataset.id];
     const whereClauses = normalized.filters.map((f) => {
       const colType = columnTypeByName.get(f.column);
       if (colType === undefined) {
@@ -832,6 +846,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     datasetId: string,
     actor: AclMutationOptions,
   ): Promise<boolean> {
+    // Same guard as `loadDatasetRow` — this method reads `datasets` by id on
+    // its own rather than going through it. A non-uuid id owns nothing, so
+    // "deleted nothing" is the honest answer.
+    const id = normalizeDatasetUuid(datasetId);
+    if (id === undefined) return false;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -842,7 +861,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       }>(
         `SELECT id, owner_omadia_user_id, graph_node_external_id
          FROM datasets WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-        [this.tenantId, datasetId],
+        [this.tenantId, id],
       );
       const row = result.rows[0];
       if (!row || row.owner_omadia_user_id !== actor.actorOmadiaUserId) {

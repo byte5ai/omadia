@@ -56,9 +56,34 @@ function requireSessionUserId(req: Request, res: Response): string | null {
   return id;
 }
 
-function mapErrorToHttp(err: unknown): { status: number; code: string; message: string } {
+/** Postgres `invalid_text_representation` — e.g. a non-uuid id bound against
+ *  the `uuid` column `datasets.id`. */
+const PG_INVALID_TEXT_REPRESENTATION = '22P02';
+
+/**
+ * `byId` is set ONLY by the three `/:id` handlers. #1093 — there the id comes
+ * from the URL path, so a caller could turn a typo into a 500 carrying the
+ * raw Postgres text; a malformed id addresses no row, which is a 404 (the
+ * same answer a foreign or deleted dataset gets). On the collection handlers
+ * there is no path id, so a `22P02` from anywhere inside them is a genuine
+ * server fault and must stay a 5xx rather than be reported as "not found".
+ * `NeonKnowledgeGraph` already refuses a non-uuid id before the query; this
+ * is the backstop for any other path into a uuid column.
+ */
+function mapErrorToHttp(
+  err: unknown,
+  opts?: { byId?: boolean },
+): { status: number; code: string; message: string } {
   if (err instanceof DatasetQueryValidationError) {
     return { status: 400, code: `dataset.${err.code}`, message: err.message };
+  }
+  if (
+    opts?.byId === true &&
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === PG_INVALID_TEXT_REPRESENTATION
+  ) {
+    return { status: 404, code: 'dataset.not_found', message: 'dataset not found' };
   }
   const message = err instanceof Error ? err.message : String(err);
   return { status: 500, code: 'dataset.internal_error', message };
@@ -211,7 +236,7 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
       }
       res.json(dataset);
     } catch (err) {
-      const { status, code, message } = mapErrorToHttp(err);
+      const { status, code, message } = mapErrorToHttp(err, { byId: true });
       res.status(status).json({ code, message });
     }
   });
@@ -252,7 +277,7 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
       }
       res.json(result);
     } catch (err) {
-      const { status, code, message } = mapErrorToHttp(err);
+      const { status, code, message } = mapErrorToHttp(err, { byId: true });
       res.status(status).json({ code, message });
     }
   });
@@ -271,7 +296,7 @@ export function createDatasetsRouter(deps: { graph: KnowledgeGraph }): Router {
       }
       res.status(204).end();
     } catch (err) {
-      const { status, code, message } = mapErrorToHttp(err);
+      const { status, code, message } = mapErrorToHttp(err, { byId: true });
       res.status(status).json({ code, message });
     }
   });
