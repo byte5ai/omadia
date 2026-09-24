@@ -7457,7 +7457,7 @@ export class Orchestrator {
       // race window. Returned (not thrown) as an `Error:`-prefixed string,
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
-      // only the non-streaming one also catches thrown rejections.
+      // both also fold a thrown rejection into the same convention (#1095).
       if (!this.isToolAvailable(reg.agentId)) {
         return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
       }

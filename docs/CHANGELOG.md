@@ -77,10 +77,13 @@ Two consequences are deliberate. A rejected dispatch is now logged at the slot
 object) instead of at the turn's catch, so the operator keeps the stack a
 handler-level failure used to produce. And a THROWN message still bypasses
 Privacy Shield interning — that only ever sees a RETURNED string — so a driver
-error quoting a row value reaches the provider and the API caller. That is what
-the non-streaming path has always done with the same rejection; tightening it
-has to move both paths at once, and a handler whose errors carry data should
-catch and return its own `Error:` prose, which is guarded (#1105).
+error quoting a row value reaches the provider (new for streaming turns) and the
+API caller (which already received the same raw text as the `error` event's
+`message` before this fix). The provider half is what the non-streaming path
+has always done with the same rejection; tightening it
+has to move both paths at once, and a handler whose errors may carry data should
+catch and return its own data-free `Error:` prose — returned `Error:` strings
+also reach the model verbatim, un-interned (#1105, #1097).
 
 The reported trigger — `query_dataset` with `query: "get_schema"` and a non-UUID
 `dataset_id`, where `QueryDatasetTool.handle` lets a Postgres `22P02` escape — is
