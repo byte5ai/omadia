@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — filtered turns are counted, and the run-ingest hint no longer blames the User-Cluster (#1082)
+
+2026-09-24 — #1171 (the #1096 fix) already made a turn below the capture
+threshold a tail-only Turn instead of a skipped one, so its run trace is
+recorded, promotion reports `tail-only` rather than `missing-turn`, and the
+`run-ingest-failed` / #684 warning no longer fires for it. That covered the
+first three acceptance criteria of #1082. The fourth, that the number of
+filtered turns is a counter and not only the `[capture-filter] turn tail-only`
+log line, was still open: `SessionLogger` threw the `ingestTurn` result away,
+and the result had no way to say the turn was tail-only.
+
+`TurnIngestResult` gains an optional `tailOnly` (plugin-api **1.18.0**,
+additive), which `CaptureFilteringKnowledgeGraph` sets on the result of a
+tail-only write. `SessionLogger` reads it and counts the turn on its
+`RunTraceOutcomeStats` as `captureTailOnlyTurns()`, with or without a trace,
+next to the existing run-trace counters. It is deliberately not a sixth
+`RunTraceOutcome`: the filtered turn's trace is `recorded`, so an outcome would
+count it twice, raise `droppedTotal()` and print a false "run trace not
+recorded" warning.
+
+The `run-ingest-failed` text no longer claims the cause is "most often" a
+missing User-Cluster that is "resolved only on the browser-login path".
+Channel identity is resolved per turn now, and a missing Turn is a second known
+cause. The text names both and defers to the error detail, which names the
+missing node.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a

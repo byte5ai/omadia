@@ -877,6 +877,7 @@ export interface TurnIngestResult {
 sessionId: string;
 turnId: string;
 entityNodeIds: string[];
+tailOnly?: boolean;
 }
 export interface CaptureDisclosure {
 persisted: boolean;

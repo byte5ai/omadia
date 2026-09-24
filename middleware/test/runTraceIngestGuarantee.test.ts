@@ -102,11 +102,9 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
     const graph = new InMemoryKnowledgeGraph();
     const logger = new SessionLogger(store, graph, undefined, undefined, stats);
 
-    // `userId` with no User-Cluster node is the ORDINARY state for every
-    // channel except the browser-login flow — nothing else calls
-    // `resolveOrCreateChannelIdentity` per turn. This is the exact drop #684
-    // was filed about, reproduced through the real implementation rather than
-    // a stub that merely throws.
+    // A `userId` whose User-Cluster node was never resolved. This is the
+    // exact drop #684 was filed about, reproduced through the real
+    // implementation rather than a stub that merely throws.
     await logger.log({
       ...ENTRY,
       userId: 'omadia-user-with-no-cluster',
@@ -115,9 +113,18 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
 
     assert.equal(stats.snapshot()['run-ingest-failed'], 1);
     assert.equal(stats.snapshot().recorded, 0);
+    const drop = warnings.find((w) => w.includes('run-ingest-failed'));
+    assert.ok(drop, 'the drop #684 is about must be visible in the log');
+    // #1082 — the text names both known causes and defers to the error detail
+    // instead of guessing: a filtered turn used to be booked here under the
+    // "most often no User-Cluster … browser-login path" hint, which sent
+    // operators after a cluster problem that did not exist.
+    assert.ok(!drop.includes('most often'), `hint must not guess a cause: ${drop}`);
+    assert.ok(!drop.includes('browser-login'), `hint must not blame a path: ${drop}`);
+    assert.ok(drop.includes('Turn'), 'a missing Turn is named as a cause');
     assert.ok(
-      warnings.some((w) => w.includes('run-ingest-failed')),
-      'the drop #684 is about must be visible in the log',
+      drop.includes('User-Cluster user:omadia-user-with-no-cluster not found'),
+      'the error detail that names the missing node is kept',
     );
 
     // The turn itself survived: transcript written, Turn node ingested. Only
@@ -166,6 +173,9 @@ describe('#684 — run-trace ingest is best-effort, and every drop is observable
       'turn-ingest-failed': 0,
       'run-ingest-failed': 0,
     });
+    // #1082 — the tail-only counter is a separate dimension, not a sixth
+    // outcome: it stays out of `snapshot()` (above) and out of the drop total.
+    assert.equal(stats.captureTailOnlyTurns(), 0);
     assert.deepEqual(warnings, []);
   });
 });
