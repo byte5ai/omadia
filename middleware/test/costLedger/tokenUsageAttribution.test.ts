@@ -10,12 +10,14 @@ import {
   setUsageContextProvider,
   withProviderUsageTracking,
 } from '@omadia/usage-telemetry';
+import type { LlmProvider, LlmRequest, LlmStreamEvent } from '@omadia/llm-provider';
 import type { Pool } from 'pg';
 
 import { CliChatAgent } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
 import type { CliChatAgentDeps } from '../../packages/harness-orchestrator/src/cliChatAgent.js';
 import { routeTurnModel } from '../../packages/harness-orchestrator/src/modelRouter.js';
 import { routeTurnPersona } from '../../packages/harness-orchestrator/src/personaRouter.js';
+import { streamMessageEvents } from '../../packages/harness-orchestrator/src/streaming.js';
 import {
   currentUsageContext,
   turnContext,
@@ -179,6 +181,27 @@ describe('#1098 — cost-ledger rows carry turn attribution and call time', () =
     );
   });
 
+  it('lets ids passed on the UsageRecord win over the ambient context', async () => {
+    // The CLI seam relies on this: it passes its own turn id while running
+    // inside a route's outer scope.
+    setUsageContextProvider(() => ({ turnId: 'ctx-t', sessionId: 'ctx-s' }));
+    recordUsage({
+      source: 'orchestrator',
+      model: 'claude-sonnet-5',
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      turnId: 'exp-t',
+      sessionId: 'exp-s',
+    });
+
+    const [row] = await flushedRows();
+    assert.ok(row);
+    assert.equal(row[COL.turnId], 'exp-t');
+    assert.equal(row[COL.sessionId], 'exp-s');
+  });
+
   it('writes NULL ids (and does not throw) with no turn context', async () => {
     setUsageContextProvider(undefined);
 
@@ -279,6 +302,85 @@ describe('#1098 — each capture seam names the provider that generated the cost
         ['persona-router', 'router-prov'],
       ],
     );
+  });
+});
+
+describe('#1098 — a streaming orchestrator turn writes an attributed row', () => {
+  afterEach(() => {
+    setUsageContextProvider(undefined);
+    captured.length = 0;
+  });
+
+  const PARAMS = {
+    model: 'primary-model',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  };
+  const FB_PARAMS = { ...PARAMS, model: 'fallback-model' };
+  const provider = (id: string, stream: (req: LlmRequest) => AsyncIterable<LlmStreamEvent>) =>
+    ({
+      id,
+      capabilities: {},
+      stream,
+      classifyError: () => ({ retryable: false, kind: 'auth' }),
+    }) as unknown as LlmProvider;
+  const answering = (id: string) =>
+    provider(id, (req) => ({
+      async *[Symbol.asyncIterator]() {
+        const usage = { inputTokens: 7, outputTokens: 3 };
+        yield {
+          type: 'final',
+          response: { content: [], finishReason: 'stop', model: req.model, usage },
+        } as LlmStreamEvent;
+      },
+    }));
+  const failing = (id: string) =>
+    provider(id, () => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => Promise.reject(Object.assign(new Error(`${id} auth`), { status: 401 })),
+      }),
+    }));
+
+  async function streamTurn(
+    args: Omit<Parameters<typeof streamMessageEvents>[0], 'observer' | 'iteration' | 'streamLabel'>,
+  ) {
+    setUsageContextProvider(currentUsageContext);
+    const ctx = { turnId: 't-stream', turnDate: '2026-09-24', sessionScope: 's-stream' };
+    const gen = turnContext.runGenerator(ctx, () =>
+      streamMessageEvents({
+        ...args,
+        observer: undefined,
+        iteration: 0,
+        streamLabel: 'orchestrator',
+      }),
+    );
+    for await (const _ev of gen) {
+      // drain
+    }
+    return flushedRows();
+  }
+
+  it('carries turn_id, session_id and the provider it ran on', async () => {
+    const rows = await streamTurn({ provider: answering('prim'), params: PARAMS });
+    assert.equal(rows.length, 1);
+    const [row] = rows;
+    assert.ok(row);
+    assert.equal(row[COL.source], 'orchestrator');
+    assert.equal(row[COL.turnId], 't-stream');
+    assert.equal(row[COL.sessionId], 's-stream');
+    assert.equal(row[COL.provider], 'prim');
+  });
+
+  it('names the fallback provider after a hop', async () => {
+    const rows = await streamTurn({
+      provider: failing('prim'),
+      params: PARAMS,
+      fallback: { provider: answering('backup'), params: FB_PARAMS },
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.[COL.provider], 'backup');
+    assert.equal(rows[0]?.[COL.model], 'fallback-model');
+    assert.equal(rows[0]?.[COL.turnId], 't-stream');
   });
 });
 
