@@ -214,3 +214,36 @@ test('a registry-invalid discovered set (alias collision) is rejected and the se
   assert.equal(resolveModelRef('anthropic:claude-opus-4-8')?.modelId, 'claude-opus-4-8');
   assert.equal(catalog.get('anthropic')?.modelsSource, undefined);
 });
+
+test('a vendor model with no classify rule (new family) is named in a warning — once', async () => {
+  // Claude Fable reached the vendor list long before a rule existed for it and
+  // was dropped as `unclassified` with only a count in an info log line.
+  adapters.register(
+    adapterListing(
+      async () => [
+        { modelId: 'claude-opus-5', label: 'Claude Opus 5' },
+        { modelId: 'claude-fable-5-1', label: 'Claude Fable 5.1' },
+      ],
+      calls,
+    ),
+  );
+  const s = sync();
+
+  const first = await s.refresh('anthropic');
+  assert.deepEqual(first.dropped, [{ modelId: 'claude-fable-5-1', reason: 'unclassified' }]);
+  assert.equal(warns.length, 1);
+  assert.match(warns[0] ?? '', /claude-fable-5-1/);
+  assert.match(warns[0] ?? '', /hidden from the model picker/);
+
+  // The periodic sync must not repeat it every interval.
+  await s.refresh('anthropic');
+  assert.equal(warns.length, 1);
+});
+
+test('a listing where every model has a rule warns about nothing', async () => {
+  adapters.register(
+    adapterListing(async () => [{ modelId: 'claude-opus-5', label: 'Claude Opus 5' }], calls),
+  );
+  await sync().refresh('anthropic');
+  assert.deepEqual(warns, []);
+});
