@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — direct tests for the Runde-5 code paths (#1077)
+
+2026-09-24 — the Runde-5 cross-vendor audit listed 14 changed production paths
+that CI only exercised through substitute factories, mocked APIs or logic the
+test recomputed itself, so a regression in any of them would have passed. Each
+is now pinned by a test that calls (or renders) the real path, and every new
+test was mutation-checked: breaking the production line turns it red.
+
+- Middleware: the `cli_turn_seconds` → `spawnTimeoutMs` hop in
+  `buildOrchestratorForAgent`, the orchestrator plugin's real `activate()`
+  (default Agent and, against Postgres, the registry runtime defaults),
+  `getUsageDashboard` over a real `token_usage` table, the `claude-cli`
+  completion adapter against a fake `claude` binary (version gate, exit/parse
+  errors, ledger row, forced tool), and the orchestrator-extras `activate()`
+  provider wiring and `memoryFeatureStatus@1`. A shared
+  `test/_helpers/fakePluginContext.ts` backs the two `activate()` suites.
+- Web UI: `TurnBudgetField`, the usage page's subscription block, the
+  missing-LLM-access branch of both builder chat panes, the dashboard's
+  last-turn card, the root `loading.tsx` boundary and the
+  `reactivateEmbeddingProvider` request wrapper.
+- CI: `PG_TEST_FLOOR` 281 → 365 (main measured 359, plus 6 new Postgres tests).
+
+Tests only; no production code changed. Writing the registry test surfaced a
+separate bug that is deliberately not fixed here: `registry/applyDiff.ts`
+`buildForAgent` does not forward `cliTurnSeconds`, so Agents built by the
+registry ignore the turn budget. It is tracked in its own issue.
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
