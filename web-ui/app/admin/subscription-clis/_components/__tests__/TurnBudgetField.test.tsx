@@ -66,7 +66,10 @@ describe('<TurnBudgetField />', () => {
     }
   });
 
-  it('surfaces a failed load instead of an empty field that swallows saves', async () => {
+  // Only the message is pinned. After a failed load the field still enables
+  // Save with an empty value (a pre-existing defect outside this tests-only
+  // change), so the title claims no more than the assertion checks.
+  it('surfaces a failed load', async () => {
     mockGetInstalledPlugin.mockRejectedValue(new Error('plugin not installed'));
     renderWithIntl(<TurnBudgetField />);
     expect(await screen.findByText('plugin not installed')).toBeInTheDocument();

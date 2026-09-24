@@ -275,7 +275,9 @@ function installedSpawnTimeout(agent: unknown): number | undefined {
 
 function hasSpawnTimeoutKey(agent: unknown): boolean {
   const d = (agent as { deps?: object }).deps;
-  return d !== undefined && Object.prototype.hasOwnProperty.call(d, 'spawnTimeoutMs');
+  // Absent deps would make every "no key" check pass vacuously.
+  assert.ok(d, 'the built CLI agent must carry its deps');
+  return Object.prototype.hasOwnProperty.call(d, 'spawnTimeoutMs');
 }
 
 function cliAgentWithBudget(cliTurnSeconds: number | undefined): unknown {

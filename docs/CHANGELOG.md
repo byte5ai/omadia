@@ -40,17 +40,22 @@ changelog.
 
 2026-09-24 — the Runde-5 cross-vendor audit listed 14 changed production paths
 that CI only exercised through substitute factories, mocked APIs or logic the
-test recomputed itself, so a regression in any of them would have passed. Each
-is now pinned by a test that calls (or renders) the real path, and every new
-test was mutation-checked: breaking the production line turns it red.
+test recomputed itself, so a regression in any of them would have passed. This
+change pins 12 of the 14 with a test that calls (or renders) the real path; the
+other two, the `BuilderAgent` and `PreviewChatService` subscription-CLI
+factories, are covered by the separate #1072 change and stay open on #1077 until
+it lands. The new tests were mutation-checked: breaking the production line
+they cover turns them red.
 
 - Middleware: the `cli_turn_seconds` → `spawnTimeoutMs` hop in
   `buildOrchestratorForAgent`, the orchestrator plugin's real `activate()`
   (default Agent and, against Postgres, the registry runtime defaults),
   `getUsageDashboard` over a real `token_usage` table, the `claude-cli`
   completion adapter against a fake `claude` binary (version gate, exit/parse
-  errors, ledger row, forced tool), and the orchestrator-extras `activate()`
-  provider wiring and `memoryFeatureStatus@1`. A shared
+  errors, ledger row, forced tool), and the orchestrator-extras `activate()`:
+  provider resolution, `memoryFeatureStatus@1`, and the model coercion that
+  turns the Anthropic default or an operator-typed model into the provider's
+  same-class model (checked against the shipped model catalog). A shared
   `test/_helpers/fakePluginContext.ts` backs the two `activate()` suites.
 - Web UI: `TurnBudgetField`, the usage page's subscription block, the
   missing-LLM-access branch of both builder chat panes, the dashboard's
@@ -61,7 +66,8 @@ test was mutation-checked: breaking the production line turns it red.
 Tests only; no production code changed. Writing the registry test surfaced a
 separate bug that is deliberately not fixed here: `registry/applyDiff.ts`
 `buildForAgent` does not forward `cliTurnSeconds`, so Agents built by the
-registry ignore the turn budget. It is tracked in its own issue.
+registry ignore the turn budget. It has no issue of its own yet; one is to be
+filed as a follow-up of #1077.
 
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 

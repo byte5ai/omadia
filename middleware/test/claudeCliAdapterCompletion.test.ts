@@ -45,7 +45,8 @@ initUsageRecorder({
   },
 } as unknown as Pool);
 
-/** Column order of the INSERT in `recorder.ts`. */
+/** Column count and order of the INSERT in `recorder.ts`. */
+const COLS_PER_ROW = 13;
 const COL = {
   source: 0,
   model: 1,
@@ -122,7 +123,11 @@ const okJson = (result: string): string =>
   });
 
 describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX shell fake' : false }, () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Drain rows an earlier case left in the recorder's process-wide buffer
+    // BEFORE forgetting what was captured: otherwise its 5 s flush timer can
+    // land a previous case's rows inside this one.
+    await flushUsageRecorder();
     binDir = mkdtempSync(path.join(tmpdir(), 'fake-claude-'));
     previousPath = process.env['PATH'];
     previousApiKey = process.env['ANTHROPIC_API_KEY'];
@@ -165,6 +170,8 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
       writeFakeClaude({ version, stdout: okJson('ok') });
       await provider.complete(request());
       assert.equal(argv().includes('--restricted'), false, `version=${version}`);
+      // The env twin of the flag is set regardless of the CLI version.
+      assert.equal(readCaptured('env.txt'), '1|', `version=${version}`);
     }
   });
 
@@ -175,6 +182,8 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
 
     assert.equal(captured.length, 1);
     const p = captured[0]!.params;
+    // Exactly one row: a completion recorded twice would widen the INSERT.
+    assert.equal(p.length, COLS_PER_ROW, `rows written: ${String(p.length / COLS_PER_ROW)}`);
     assert.equal(p[COL.source], 'claude-cli-completion');
     assert.equal(p[COL.provider], 'claude-cli');
     assert.equal(p[COL.model], 'opus-cli');
@@ -193,7 +202,8 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
       exitCode: 1,
     });
     const warn = console.warn;
-    console.warn = () => undefined;
+    const warned: string[] = [];
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(' '));
     try {
       await assert.rejects(provider.complete(request()), (err: unknown) => {
         assert.ok(err instanceof CliIncompatibleError, String(err));
@@ -204,12 +214,20 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     } finally {
       console.warn = warn;
     }
+    assert.equal(warned.length, 1, warned.join('\n'));
+    assert.match(warned[0]!, /completion exited 1 \(cli 2\.1\.300\): error: unknown option '--restricted'/);
   });
 
   it('rejects any other non-zero exit with the exit code and stderr', async () => {
-    writeFakeClaude({ version: '2.1.300', stderr: 'Not logged in', exitCode: 2 });
+    writeFakeClaude({
+      version: '2.1.300',
+      stdout: 'the model answer, which must stay out of the log',
+      stderr: 'Not logged in\nsecond line',
+      exitCode: 2,
+    });
     const warn = console.warn;
-    console.warn = () => undefined;
+    const warned: string[] = [];
+    console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(' '));
     try {
       await assert.rejects(provider.complete(request()), (err: unknown) => {
         assert.ok(!(err instanceof CliIncompatibleError));
@@ -221,6 +239,11 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     } finally {
       console.warn = warn;
     }
+    // OM-94: the warn is the only trace a failed background completion
+    // leaves — exit code and first stderr line, never stdout.
+    assert.equal(warned.length, 1, warned.join('\n'));
+    assert.match(warned[0]!, /\[claude-cli\] completion exited 2 \(cli 2\.1\.300\): Not logged in$/);
+    assert.ok(!warned[0]!.includes('model answer'), warned[0]!);
     await flushUsageRecorder();
     assert.equal(captured.length, 0, 'a failed call writes no ledger row');
   });
