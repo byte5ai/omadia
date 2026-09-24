@@ -103,7 +103,9 @@ existing gate could see it.
   `chat_unavailable` 503 body (`middleware/src/routes/chatSessions.ts`) both
   told the operator to set `ANTHROPIC_API_KEY` "via the Setup Wizard". The
   wizard creates the first admin account and nothing else. Both now name
-  Admin → LLM access (`/admin/providers`) and `middleware/.env`. The 503 was
+  Admin → LLM access (`/admin/providers`). `middleware/.env` is deliberately
+  not offered: the env key is seeded only on the boot that first registers the
+  orchestrator, and every boot that shows this hint is past that. The 503 was
   the more damaging of the two: it is what an operator sees on the live path
   when chat is dead, not a line in a log.
 - **Onboarding done-label.** `StepShell` renders one label next to all three
@@ -145,7 +147,8 @@ Guarded by `web-ui/app/_lib/first-run-copy.test.ts` (old page name, every
 visible title for `/admin/providers` pinned to the nav label, unqualified
 "the wizard", orphan `setup.*` keys, the done-label) and
 `middleware/test/firstRunChatHints.test.ts` (503 body through the real router,
-boot literal from source). Both pin the claim, not the phrasing.
+the boot warning read from source and required to compose `LLM_SETUP_HINT`).
+Both pin the claim, not the phrasing.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 

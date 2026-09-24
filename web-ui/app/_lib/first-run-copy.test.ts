@@ -134,10 +134,12 @@ describe('#1090 / defect 2 — no copy points at the removed wizard key step', (
     // Sourced from whichever files actually open the namespace, anywhere under
     // `app/` — not from a fixed directory. Pinning the scan to `app/setup/`
     // would report every `setup.*` key as an orphan the day the form moves
-    // into a shared component, under a misleading "#1090" message.
+    // into a shared component, under a misleading "#1090" message. Test files
+    // are skipped: this one quotes a reader call below and would count itself.
     const readers = fs
       .readdirSync(APP_DIR, { recursive: true, encoding: 'utf8' })
       .filter((f) => f.endsWith('.tsx') || f.endsWith('.ts'))
+      .filter((f) => !/\.test\.tsx?$/.test(f))
       .map((f) => fs.readFileSync(path.join(APP_DIR, f), 'utf8'))
       .filter((src) => /useTranslations\(\s*'setup(?:\.|')/.test(src));
     expect(readers.length).toBeGreaterThan(0);

@@ -7,18 +7,23 @@
  * key in S4 (provider v2) — it creates the first admin account and nothing
  * else — so the one instruction shown on the only two surfaces an operator
  * sees when chat is dead pointed at a field that is not there. The supported
- * paths are the LLM access page (/admin/providers) and middleware/.env.
+ * path is the LLM access page (/admin/providers). middleware/.env is not one:
+ * the env key is seeded only on the boot that first registers the
+ * orchestrator, which every boot showing these hints is already past.
  *
- * The 503 is checked through the real router. The boot line composes the same
- * `LLM_SETUP_HINT` constant, so the constant is checked directly rather than
- * grepped out of `src/index.ts` — a source grep breaks on an apostrophe in the
- * message or a switch to a template literal, and reports that as "warning not
- * found", which points at the wrong problem. Both are pinned on the CLAIM (no
- * wizard, names a real path), not on the exact wording.
+ * The 503 is checked through the real router. The boot line cannot be run
+ * without booting the whole composition root (`src/index.ts` calls `main()` at
+ * import), so — as in `778RouteMounts.wiring.test.ts` — it is read from source:
+ * exactly one `chat DISABLED` warning, composing `LLM_SETUP_HINT`, which is
+ * itself checked directly. All are pinned on the CLAIM (no wizard, names a
+ * real path), not on the exact wording.
  */
 
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 
@@ -36,7 +41,12 @@ const STALE_WIZARD = /Setup[- ]?Wizard/i;
  * construction, so a German alternative here would accept a string this
  * process cannot produce.
  */
-const REAL_PATH = /\/admin\/providers|LLM access|\.env/;
+const REAL_PATH = /\/admin\/providers|LLM access/;
+
+const indexSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'index.ts'),
+  'utf8',
+);
 
 describe('#1090 — chat-disabled hints point at a path that exists', () => {
   let server: Server;
@@ -74,6 +84,35 @@ describe('#1090 — chat-disabled hints point at a path that exists', () => {
       `LLM_SETUP_HINT still names the Setup Wizard: ${LLM_SETUP_HINT}`,
     );
     assert.match(LLM_SETUP_HINT, REAL_PATH);
+    // Every boot that prints this hint has already registered the
+    // orchestrator, so an env key set now is never read (llmSetupHint.ts).
+    assert.doesNotMatch(
+      LLM_SETUP_HINT,
+      /\.env\b/,
+      `LLM_SETUP_HINT offers middleware/.env, which this boot no longer reads: ${LLM_SETUP_HINT}`,
+    );
+  });
+
+  it('the boot warning composes that hint and names no wizard', () => {
+    const warnings = indexSource
+      .split('\n')
+      .filter((line) => line.includes('chat DISABLED'))
+      .filter((line) => !/^\s*(?:\/\/|\*)/.test(line));
+    assert.equal(
+      warnings.length,
+      1,
+      `expected exactly one live 'chat DISABLED' warning in src/index.ts, found ${String(warnings.length)} — if it was reworded, move this anchor with it`,
+    );
+    const [warning = ''] = warnings;
+    assert.match(
+      warning,
+      /\$\{LLM_SETUP_HINT\}/,
+      `boot warning no longer composes LLM_SETUP_HINT: ${warning.trim()}`,
+    );
+    assert.ok(
+      !STALE_WIZARD.test(warning),
+      `boot warning still names the Setup Wizard: ${warning.trim()}`,
+    );
   });
 
   it('the 503 body composes that hint rather than restating it', async () => {
