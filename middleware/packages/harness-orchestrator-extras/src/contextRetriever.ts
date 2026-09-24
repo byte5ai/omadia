@@ -24,7 +24,14 @@ import type {
 } from './recallRelevanceJudge.js';
 
 export interface ContextRetrieverOptions {
-  /** Verbatim tail depth (most recent turns of the active chat). */
+  /**
+   * Verbatim tail depth (most recent turns of the active chat). This is the
+   * model's entire in-session memory, so it is the one recall leg that is
+   * not about relevance — #1096: at the former hard-wired 3 the model lost
+   * sight of turn 4 onwards while the user still saw the whole thread.
+   * Operator-settable via `context_tail_size`; the default matches
+   * `sessionBriefing`'s own tail so the two continuity surfaces agree.
+   */
   tailSize?: number;
   /** Max FTS hits across all chats. */
   ftsLimit?: number;
@@ -361,7 +368,10 @@ interface CandidateHit {
 const DEFAULTS: Required<
   Omit<ContextRetrieverOptions, 'recallTypeWeights'>
 > & { recallTypeWeights: Partial<Record<EntryType, number>> } = {
-  tailSize: 3,
+  // #1096 — 10, aligned with `sessionBriefing`'s DEFAULTS.tailSize. Tail
+  // turns fill the token budget first, so this trades recall slots for
+  // in-session continuity on purpose; `context_tail_size` moves the line.
+  tailSize: 10,
   ftsLimit: 5,
   entityLimit: 5,
   maxChars: 12_000,

@@ -543,6 +543,16 @@ export interface ChatTurnResult {
    */
   answerSource?: AnswerSource;
   /**
+   * #1097 — `true` when the server-rendered `answer` is control flow rather
+   * than a result: a tool error (`Error: …`) or an MCP auth prompt the model
+   * rendered as if it were data. Channels MAY present the turn as a failure
+   * (and localise around it) instead of showing success prose over an error
+   * string. Only ever set alongside `answerSource: 'privacy-render'`; omitted
+   * for an ordinary answer, so a client that ignores it keeps today's
+   * behaviour.
+   */
+  answerIsError?: boolean;
+  /**
    * Omadia UI canvas surface payload (omadia-canvas-protocol/1.0). Present when a
    * canvas-aware turn produced an initial primitive tree; `toSemanticAnswer`
    * forwards it to `SemanticAnswer.surface`. Channels not declaring the
@@ -848,6 +858,13 @@ export type ChatStreamEvent =
        * `AnswerSource`.
        */
       answerSource?: AnswerSource;
+      /**
+       * #1097 — `true` when the server-rendered `answer` is control flow (a
+       * tool error, an MCP auth prompt) rather than a result. Additive and
+       * optional; only ever set alongside `answerSource: 'privacy-render'`.
+       * See `ChatTurnResult.answerIsError`.
+       */
+      answerIsError?: boolean;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;

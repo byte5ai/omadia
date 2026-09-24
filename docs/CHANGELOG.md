@@ -118,6 +118,212 @@ reach neither the knowledge graph nor the markdown transcript — so cross-chat
 recall, memory promotion and the session log remain blank on this provider. Both
 deserve their own follow-ups.
 
+### Fixed — the model sees the whole running conversation again (#1096)
+
+2026-09-22 — the orchestrator's in-session history (the "context tail") was
+built exclusively from turns the knowledge graph had ingested, and the capture
+filter skipped that ingest entirely for any turn scoring below the significance
+threshold (0.2 at `capture_level=normal`). Short messages — "ok", "pong",
+"Farbe: blau" — score 0.00–0.10, so they were dropped, and with them the only
+record the model had that the message ever happened. The user saw a coherent
+dialog (web chat and API clients keep the full transcript), the model saw a
+series of unrelated single-shot requests, and a request to summarise the
+conversation was answered with "there is no prior context". This was not
+web-chat-only: it reproduced on the Public API channel, which has no
+client-side history at all, and Teams uses the same tail loader.
+
+A sub-threshold turn is now still written, flagged `tailOnly` on `TurnIngest`.
+That splits the two jobs one boolean used to carry: the **conversation** (the
+session record `getSession()` returns, and therefore the tail) is always
+recorded, while **knowledge** (embedding, cross-session recall, promotion)
+stays gated by significance exactly as before. Backends honouring the flag
+write no embedding for such a turn and exclude it from `searchTurns`,
+`searchTurnsByEmbedding` and `findEntityCapturedTurns`; its `entityRefs` are
+dropped so no `CAPTURED` edge can let it back into recall through the side
+door, the periodic embedding backfill sweep skips them (otherwise it would
+hand every "ok" a vector at the next sweep), and both promotion paths — the
+per-turn auto-promote and the bulk promoter — decline them explicitly rather
+than inferring it from the score: the capture threshold and the promotion
+threshold are configured independently, so a tail-only turn can outrank the
+promotion bar, and a promoted turn becomes a MemorableKnowledge, which IS
+visible to cross-session recall. The flag is written on every turn, including
+as `false`, because node properties are merged on upsert — a replay at
+`capture_level=off` or a backfill re-ingest clears it instead of stranding a
+row outside recall for good. A backend that rejects the tail-only write fails
+the ingest like any other turn write: the session logger absorbs it without
+failing the turn and counts it as `turn-ingest-failed`. On Neon the daily GC
+quotas count tail-only rows (so they cannot pile up) but evict them before any
+knowledge turn, so the significant turns a scope keeps are the same ones it
+kept before tail-only rows existed.
+
+The second, independent limit is gone too: the tail was hard-capped at the last
+3 knowledge-graph turns by a `tailSize: 3` constant with no configuration
+surface, so even significant turns left the model's view after three exchanges.
+The default is now 10 (aligned with `sessionBriefing`'s own tail) and operators
+can set `context_tail_size` — declared in the `orchestrator-extras` manifest, so
+it is reachable from the plugin store rather than only from the source, and
+clamped to 1–50 (every tail turn enters the candidate pool, so a tail near the
+compact-mode threshold of 100 would flip every assembly into compact rendering,
+and the Neon GC keeps 50 turns per scope by default). A larger
+tail consumes the shared token budget (`context_default_budget_tokens`) ahead of
+cross-session recall, which is the trade the field makes visible. The
+`[harness-orchestrator-extras] context-assembler ready` log line now reports the
+effective tail length.
+
+### Fixed — tool errors and MCP auth prompts are no longer interned as datasets (#1097)
+
+2026-09-22 — completes the `Error:`-passthrough fix that #1105 started. A tool
+result following the orchestrator's `Error:` tool-error convention is
+control-flow text the model must read, not a data row: interning it hides the
+failure behind a masked digest (so the model cannot act on the hint the error
+carries and cannot self-correct) and registers a renderable one-row dataset
+that a later `v4_render_answer` materializes as if the error were data. #1105
+closed the two seams its reproductions hit — `Orchestrator.dispatchTool` (web
+chat) and `ToolDispatchService.afterDispatch` (public API). Two intern sites
+were left:
+
+- `LocalSubAgent.dispatch` — a tool failing inside a sub-agent handed that
+  sub-agent's own model a `[masked]` digest. The `is_error` flag on the
+  `tool_result` block is derived from the same prefix, so interning also
+  cleared the machine-readable error signal.
+- `Orchestrator.guardReplayResult` — a failed MCP input replay comes back from
+  `McpManager.callTool` as an `Error: …` string (the manager never throws) and
+  was interned like a personnel row.
+
+Both now return the string verbatim, with the guard in the same position as the
+two existing ones: after the intern-exemption allowlist and the operator
+bypass, before interning. Behaviour for successful results is unchanged — each
+regression test carries a control case asserting an ordinary result is still
+interned. An end-to-end chat-path test drives the issue's own reproduction
+(`search_turns_semantic` without an embedding client) and pins that the error
+reaches the model verbatim with `is_error` set, and that the `search_turns`
+fallback it names is dispatched and its data result interned.
+
+The `Error:` prefix check that #1105 introduced was also the wrong shape for a
+second carrier, so all four seams now share one predicate,
+`isControlFlowToolResult` (`@omadia/plugin-api`, `toolControlFlowText.ts`): an
+**MCP auth prompt** (anchored to its exact `🔒 The MCP server "` producer
+prefix, optionally carrying the `<mcp-auth-required>` machine block the chat UI
+turns into a Connect card) is control flow too, and carries no `Error:` prefix.
+The predicate is prefix-only on purpose: a substring match would let one
+planted marker in a cell unmask a whole multi-row result. `McpManager.handleFailure` returns it in place of a
+raw failure whenever a call looks unauthorized — an expired OAuth token on a
+parked MCP input card is the everyday case — and interning it destroyed the
+Connect card and left the model narrating success over a masked digest.
+
+**Rendered answers**: `PrivacyRenderedAnswer` gains an optional `isError`,
+stamped when `v4_render_answer` rendered a dataset that is one control-flow
+cell (decided on the source cell, so the model's prose and list/table framing
+cannot hide it). The orchestrator forwards it to both answer paths as
+`answerIsError: true` (streaming `done` and `ChatTurnResult` /
+`SemanticAnswer`), so a channel can present the turn as a failure in its own
+wording instead of rendering the English error text as a successful result.
+Additive and optional, only ever set alongside
+`answerSource: 'privacy-render'`; `@omadia/channel-api`'s README documents
+it. `@omadia/plugin-api` 1.14.0 → 1.15.0 (added symbols, MINOR).
+
+Known limit, unchanged from #1105 and recorded on #1097: an **MCP** tool's
+`Error:` text is authored by the remote server (`renderToolResult` prefixes
+`Error: ` onto the server's own body), so the passthrough trusts foreign error
+text; and a passed-through result produces no receipt entry (only
+`internAndCount` and the operator bypass count), so the turn receipt does not
+report the passage — closing that needs a new `reason` on the
+`recordBypassedTool` contract.
+
+Deliberately NOT changed: `ToolDispatchService.maskErrorText`, which masks the
+message of an exception a handler THREW. Nothing sanitized that text — an ORM
+echoes the failing row, a driver echoes bound parameters — so the "error
+strings carry no PII by construction" argument holds for the `Error:`
+convention only. A test now pins, against the real privacy-guard service,
+that a thrown message which happens to start with `Error:` is still masked.
+Also deliberately NOT changed: the shape classifier. A classifier exemption for
+a one-row `Error:` scalar was tried and dropped — verbs re-classify their
+derived datasets, so `filter` + `select` could narrow any masked column to
+such a scalar and put it in cleartext; a regression test pins that it stays
+masked. On the sub-agent path, `bridgeTool`'s `Error: ${err.message}` wrapper
+now reaches the sub-agent's model raw, matching the chat path's policy for
+thrown exception text.
+
+### Fixed — cost-ledger rows are attributable to a turn, a session, and the call time (#1098)
+
+2026-09-21 — every LLM call writes one row into the `token_usage` ledger
+(`@omadia/usage-telemetry`), but the rows carried no attribution: `session_id`
+was NULL on every row, there was no `turn_id` column at all, and `created_at`
+recorded the flush tick, not the call — the recorder buffers and flushes on a
+5-second grid, so `DEFAULT NOW()` stamped every row of a flush with one
+transaction-start time. A single turn emits several rows (one per streaming
+iteration plus background extras / model- and persona-router calls), so "what
+did this turn/session/user cost?" could not be answered, and a time-window
+heuristic failed because rows of different turns landed on the same tick.
+
+Graph migration `0033_token_usage_attribution.sql` adds `turn_id TEXT NULL` (with
+a partial index) and `provider TEXT NULL` (mirroring `turn_receipts.provider`, so
+a provider fallback is visible in the ledger). The recorder now freezes the call
+time (`occurredAt`) at `recordUsage()` and writes it explicitly to `created_at`
+instead of leaning on `DEFAULT NOW()` at flush. Turn attribution is read from the
+orchestrator's per-turn `AsyncLocalStorage` context via a `setUsageContextProvider`
+hook (the telemetry package sits below the orchestrator and cannot import it), so
+the seams inside the orchestrator's own turn scope (streaming iterations, model-
+and persona-router calls, extras hooks) pick up `turn_id`/`session_id` without
+threading ids through each call site. Only that scope counts
+(`usageContextFromTurn`): the placeholder scopes routes and adapters open around
+a turn (`http-chat-<scope>`, or `''` on channel, routine and canvas turns) read
+as "no turn", so their rows stay NULL instead of carrying a plausible but wrong
+id. The subscription runtime (`CliChatAgent`) never opens an orchestrator scope
+and passes its own per-turn id explicitly; ids passed on a `UsageRecord` always
+win. Not yet attributed: the verifier scorers (they run after the turn scope
+closed) and `claude-cli-completion` rows, which stay NULL. Off-turn callers
+(background jobs) keep NULL ids rather than throwing. `session_id` maps to the
+turn's `sessionScope` — best-effort, since unscoped HTTP turns share
+`http-default` (see #445), so group on `turn_id`. Regression tests
+(`test/costLedger/`) cover turn/session attribution, placeholder scopes writing
+NULL, two turns separable within one flush window (including on the CLI path),
+the call time surviving the flush, the provider column at each seam, and the
+no-context NULL path. Deploy graph migration 0033 before this code: the INSERT
+names the new columns, so an older schema drops every usage batch. The
+`/api/usage` missing role check is out of scope and tracked separately.
+
+### Fixed — boundary presets now take precedence over the anti-sycophancy guard (#1100)
+
+2026-09-24 — an agent with a `no-legal-advice` boundary and `sycophancy: high`
+received a self-contradicting system prompt: the boundary forbade interpreting
+laws, and high-tier rule 5 two sections below licensed an "informational only"
+answer behind a disclaimer. The model followed the later rule. The
+`## Boundaries` section now opens with a precedence clause (boundaries override
+every other instruction, including the protocols below; never do what a
+boundary forbids, not even behind a disclaimer), and rule 5 defers to a
+Boundary that forbids the topic. Agents with boundaries may therefore refuse
+more strictly than before. Operator-agent identities speak from the stored
+`agent_identities.composed_prompt`, a write-time cache, so the middleware now
+recompiles stale stored prompts once at boot (`recomposeStaleIdentities`, no
+revision bump, idempotent) and reloads the registry; agents saved before this
+release pick up the clause without being re-saved. The same boot pass also
+applies #1101's verbatim custom-boundary-line change to stored operator
+agents, so their legacy bare-action custom lines render as written from that
+first boot on.
+
+### Changed — custom boundary lines are spliced verbatim (#1101)
+
+2026-09-24 — custom boundary lines (`quality.boundaries.custom`, edited as
+"Own prohibitions" on an operator agent's Limits tab, as custom boundaries
+in the Agent Builder, or in AGENT.md) no longer get a hardcoded
+`You must NOT: ` prefix. Each line reaches the prompt exactly as
+written, which is how the Quality Guard plugin already splices
+`default_boundary_custom`, so a line now means the same thing on both
+surfaces. The prefix turned a line written as a rule into a double negative:
+`Give no investment advice.` compiled to `You must NOT: Give no investment
+advice.`
+
+Lines saved under the old contract as a bare action (`promise refunds`) are
+now spliced as-is and read as an instruction, not a prohibition. Rewrite them
+as complete rules (`Never promise refunds.`). Operator agents
+(`/operator/agents`) run on the prompt compiled when their identity was last
+saved (`agent_identities.composed_prompt`); the boot-time recompose added with
+#1100 (entry above) recompiles stale stored prompts once, so they pick the
+change up on the first boot after the upgrade without being re-saved. Builder
+and AGENT.md agents compile their prompt when they load and pick the change up
+on the next restart.
+
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
 2026-09-21 — on `POST /api/public/v1/chat` the NDJSON stream documented two
@@ -821,6 +1027,14 @@ any values.
 hours after it shipped. The mirror is caught up, the stale section is named
 honestly, and the header now says the refresh is manual and how to tell in one
 command whether the file is behind.
+
+**Error messages name the log file instead of the tray (OM-63, refs #888).**
+The loading screen and the setup wizard sent a stuck user to "tray → Open Logs",
+a menu-bar control that was invisible while the tray icon was missing. They now
+print the real log file path, which `main.ts` hands to every renderer page as a
+`log` query parameter, so it still arrives when the preload bridge is the thing
+that failed. A failed first-run setup shows the path next to the reported error,
+and the tray wording is only the fallback when no path was passed.
 
 Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race

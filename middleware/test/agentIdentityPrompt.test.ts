@@ -105,6 +105,36 @@ describe('agent identity → system prompt (#914)', () => {
     assert.ok((out.text ?? '').includes('## Boundaries'));
   });
 
+  it('gives boundaries precedence over a later licensing rule (#1100)', () => {
+    // Repro from #1100: a no-legal-advice boundary and sycophancy=high.
+    // The high guard's "informational only" rule sits BELOW the boundary and
+    // used to license the exact answer the boundary forbids. The composed
+    // prompt must (a) declare that boundaries override the rest, and (b) carry
+    // the licence rule's carve-out so the two no longer contradict.
+    const out = composeAgentIdentityPrompt({
+      instructions: 'You are the support agent.',
+      persona: null,
+      quality: {
+        sycophancy: 'high',
+        boundaries: { presets: ['no-legal-advice'], custom: [] },
+      },
+      family: 'sonnet',
+    });
+    const text = out.text ?? '';
+
+    // (a) the precedence clause is present, inside the Boundaries section,
+    //     ahead of the anti-sycophancy block that closes the prompt.
+    const overrideAt = text.indexOf('override every other instruction');
+    const boundariesAt = text.indexOf('## Boundaries');
+    const sycophancyAt = text.indexOf('## Anti-Sycophancy Protocol');
+    assert.ok(overrideAt >= 0, 'precedence clause present');
+    assert.ok(boundariesAt >= 0 && boundariesAt < overrideAt, 'clause is in the Boundaries section');
+    assert.ok(overrideAt < sycophancyAt, 'precedence is stated before the sycophancy block');
+
+    // (b) the licence rule no longer contradicts the boundary — it defers.
+    assert.match(text, /unless a Boundary above forbids/i);
+  });
+
   it('emits different traits for different model families', () => {
     const persona = { axes: { conciseness: 85 } };
     const sonnet = composeAgentIdentityPrompt({

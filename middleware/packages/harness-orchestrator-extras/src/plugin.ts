@@ -340,6 +340,12 @@ export async function activate(
     ctx.config.get<unknown>('context_compact_mode_threshold'),
     100,
   );
+  // #1096 — verbatim in-session tail depth. Was a hard-wired 3 inside the
+  // retriever, which silently cut the model's view of the running chat after
+  // three exchanges with no way for an operator to see or change it.
+  const contextTailSize = resolveContextTailSize(
+    ctx.config.get<unknown>('context_tail_size'),
+  );
 
   // Slice 7 — memory-recall toggle + tuning. Default ON whenever an
   // embeddingClient is wired (we still skip the leg in `loadMemoryHits`
@@ -653,6 +659,7 @@ export async function activate(
   const contextRetriever = new ContextRetriever(
     wrappedKg,
     {
+      tailSize: contextTailSize,
       recallMinScore,
       recallRecencyBoost,
       recallTypeWeights,
@@ -687,7 +694,7 @@ export async function activate(
     relevanceJudge,
   );
   ctx.log(
-    `[harness-orchestrator-extras] context-assembler ready (budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
+    `[harness-orchestrator-extras] context-assembler ready (tail=${String(contextTailSize)}, budget=${String(contextDefaultBudgetTokens)}tk, chars/tk=${String(contextCharsPerToken)}, manual-boost=${contextManualBoostFactor.toFixed(2)}, compact>${String(contextCompactModeThreshold)}, agentPriorities=${agentPriorities ? 'on' : 'off'}, memoryRecall=${embeddingClient && !memoryRecallDisabled ? `on(limit=${String(memoryLimit)},excerpts=${String(memoryExcerptsPerMemory)},minSim=${memoryMinSimilarity.toFixed(2)})` : 'off'}, teamVisibility=${teamVisibility ? 'on' : 'off'}, planRecall=${planRecallDisabled ? 'off' : `on(limit=${String(planLimit)})`}, processRecall=${processMemory && !processRecallDisabled ? `on(limit=${String(processLimit)},minScore=${processMinScore.toFixed(2)})` : 'off'}, recallGate=${recallRequiresTerms ? 'require-terms' : 'off'}, recallJudge=${relevanceJudge ? `on(${recallJudgeModel ?? '?'})` : 'off'}, durableTier=${durableTierDisabled ? 'off' : `on(slots=${String(durableReservedSlots)},kinds=${(durableKinds ?? ['reference', 'decision']).join('+')},minSim=${durableMinSimilarity.toFixed(2)},judge=${durableRelevanceJudgeEnabled ? 'on' : 'off'})`})`,
   );
   const disposeContext = ctx.services.provide(
     CONTEXT_RETRIEVER_SERVICE,
@@ -1058,6 +1065,28 @@ export async function activate(
       disposeCaptureFilter();
     },
   };
+}
+
+/** #1096 — see {@link resolveContextTailSize}. */
+const DEFAULT_CONTEXT_TAIL_SIZE = 10;
+const MAX_CONTEXT_TAIL_SIZE = 50;
+
+/**
+ * #1096 — the operator's `context_tail_size`, as the whole number of verbatim
+ * tail turns the ContextRetriever gets. Unset or unparsable ⇒ 10. Clamped to
+ * [1, 50]: the tail is the model's only in-session memory, so "0 turns" is
+ * never meant. The ceiling stays well below the default
+ * `context_compact_mode_threshold` (100) — every tail turn enters the
+ * candidate pool, so a tail near 100 plus a single recall hit would switch the
+ * whole assembly to compact rendering — and matches the Neon GC's default
+ * per-scope `graph_gc_hot_max_entries` (50), beyond which there is nothing
+ * left to read after the daily sweep.
+ */
+export function resolveContextTailSize(raw: unknown): number {
+  return Math.min(
+    MAX_CONTEXT_TAIL_SIZE,
+    Math.max(1, Math.round(parseNumberOrDefault(raw, DEFAULT_CONTEXT_TAIL_SIZE))),
+  );
 }
 
 function parseNumberOrDefault(value: unknown, fallback: number): number {

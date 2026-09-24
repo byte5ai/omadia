@@ -295,11 +295,22 @@ export interface CliUsage {
  * `recordUsage` is fire-and-forget and no-ops until a pool is wired, so this
  * is safe on every host (in-memory KG boots, unit tests) and can never fail a
  * turn. Kept a free function so the parser stays a pure NDJSON reader.
+ *
+ * #1098 — `attribution` is passed explicitly because this runtime never opens
+ * an orchestrator turn scope: the ambient scope here is the route's
+ * placeholder, which the recorder's context provider reads as "no turn".
  */
-function recordCliTurnUsage(model: string, usage: CliUsage): void {
+function recordCliTurnUsage(
+  model: string,
+  usage: CliUsage,
+  attribution: { readonly turnId: string; readonly sessionId: string },
+): void {
   recordUsage({
     source: CLI_CHAT_USAGE_SOURCE,
     model,
+    turnId: attribution.turnId,
+    sessionId: attribution.sessionId,
+    provider: 'claude-cli',
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadInputTokens,
@@ -1094,6 +1105,10 @@ export class CliChatAgent implements ChatAgent {
     const parser = new StreamJsonParser();
     const tools = this.deps.dispatch.listDispatchableToolSpecs();
     const bearer = randomUUID();
+    // #1098 — the cost-ledger turn key. Minted per lifecycle so two turns of
+    // one session stay separable; the session mirrors the orchestrator's
+    // `sessionScope ?? turnId`.
+    const cliTurnId = randomUUID();
     const createLoopbackServer =
       this.deps.createLoopbackServer ??
       ((serverDeps: {
@@ -1400,7 +1415,10 @@ export class CliChatAgent implements ChatAgent {
       // API path. `costUsd: 0` is not a placeholder — a subscription turn
       // genuinely costs nothing per call — and the CLI's own `total_cost_usd`
       // is kept beside it as the informational reference.
-      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage());
+      recordCliTurnUsage(this.deps.model ?? DEFAULT_MODEL, parser.usage(), {
+        turnId: cliTurnId,
+        sessionId: input.sessionScope ?? cliTurnId,
+      });
 
       return parser;
     } finally {
