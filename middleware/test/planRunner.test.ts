@@ -2,13 +2,21 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { planNodeId, type LlmCompleteResult } from '@omadia/plugin-api';
 import {
+  planNodeId,
+  PROCESS_MEMORY_SERVICE_NAME,
+  type LlmCompleteResult,
+  type PluginContext,
+} from '@omadia/plugin-api';
+import {
+  activate,
   buildPlanSnapshot,
   materializePlan,
   parsePlanSteps,
+  parseProcessReuseThreshold,
   pruneTurns,
   shouldPlan,
+  DEFAULT_PROCESS_REUSE_THRESHOLD,
 } from '@omadia/plugin-plan-runner';
 
 // #133 (plan-as-data) slice E2 — gate + materializer. The LLM is mocked so
@@ -203,6 +211,120 @@ describe('#133 E2 — plan-runner gate + materializer', () => {
           [1, 'second', 'in_progress'],
         ],
       );
+    });
+  });
+});
+
+describe('#1103 — processReuseThreshold parsing', () => {
+  it('accepts in-range decimals verbatim', () => {
+    for (const [raw, want] of [
+      ['0', 0],
+      ['1', 1],
+      ['0.6', 0.6],
+      ['0.85', 0.85],
+      ['1.00', 1],
+    ] as const) {
+      assert.equal(parseProcessReuseThreshold(raw), want, `raw=${raw}`);
+    }
+  });
+
+  it('falls back to the default on empty / non-numeric input', () => {
+    for (const raw of [undefined, '', '   ', 'abc', 'NaN']) {
+      assert.equal(
+        parseProcessReuseThreshold(raw),
+        DEFAULT_PROCESS_REUSE_THRESHOLD,
+        `raw=${String(raw)}`,
+      );
+    }
+  });
+
+  // The manifest pattern rejects these, but the admin
+  // `PATCH /installed/:id/config` route and profile apply store values WITHOUT
+  // re-running the pattern — so out-of-range values can reach the plugin. A
+  // bare `Number.isFinite` guard used to let them through: `0,6` parsed to 0
+  // (reuse every hit) and `5` disabled reuse silently.
+  it('falls back to the default on out-of-range values reaching it via the PATCH route / profile apply', () => {
+    for (const raw of ['0,6', '5', '1.5', '2', '-0.1', '-1']) {
+      assert.equal(
+        parseProcessReuseThreshold(raw),
+        DEFAULT_PROCESS_REUSE_THRESHOLD,
+        `raw=${raw}`,
+      );
+    }
+  });
+
+  // Those same paths keep raw JSON/YAML types, so a stored NUMBER is a real
+  // input. It must be range-checked like a string, never `.trim()`-ed into a
+  // TypeError; any other type takes the default.
+  it('accepts in-range numbers and defaults any other non-string without throwing', () => {
+    assert.equal(parseProcessReuseThreshold(0.7), 0.7);
+    assert.equal(parseProcessReuseThreshold(1), 1);
+    assert.equal(parseProcessReuseThreshold(0), 0);
+    for (const raw of [5, -0.1, Number.NaN, Infinity, true, {}, [0.7], null]) {
+      assert.equal(
+        parseProcessReuseThreshold(raw),
+        DEFAULT_PROCESS_REUSE_THRESHOLD,
+        `raw=${JSON.stringify(raw)}`,
+      );
+    }
+  });
+
+  describe('activate() wiring', () => {
+    /** Minimal ctx: enabled, all deps present, so activate() reaches the
+     *  threshold read and logs the effective value. */
+    async function activateWith(threshold: unknown): Promise<string[]> {
+      const logs: string[] = [];
+      const config: Record<string, unknown> = {
+        enabled: 'on',
+        processReuseThreshold: threshold,
+      };
+      const services: Record<string, unknown> = {
+        turnHookRegistry: { register: () => () => undefined },
+        knowledgeGraph: new InMemoryKnowledgeGraph(),
+        [PROCESS_MEMORY_SERVICE_NAME]: {},
+      };
+      const ctx = {
+        log: (msg: string) => logs.push(msg),
+        config: { get: (key: string) => config[key] },
+        services: { get: (name: string) => services[name] },
+        llm: fakeLlm(''),
+      } as unknown as PluginContext;
+      const handle = await activate(ctx);
+      await handle.close();
+      return logs;
+    }
+
+    it('activates with a stored number and uses it as the threshold', async () => {
+      const logs = await activateWith(0.8);
+      assert.ok(
+        logs.includes('[plan-runner] process reuse ON (threshold=0.80)'),
+        logs.join('\n'),
+      );
+      assert.ok(!logs.some((l) => l.includes('is not a number')), logs.join('\n'));
+    });
+
+    it('logs a rejected operator-set value instead of swapping in 0.6 silently', async () => {
+      const logs = await activateWith('0,9');
+      assert.ok(
+        logs.includes(
+          '[plan-runner] processReuseThreshold "0,9" is not a number in 0–1; using default 0.60',
+        ),
+        logs.join('\n'),
+      );
+      assert.ok(
+        logs.includes('[plan-runner] process reuse ON (threshold=0.60)'),
+        logs.join('\n'),
+      );
+    });
+
+    it('stays quiet when the value is unset or blank', async () => {
+      for (const raw of [undefined, '', '  ']) {
+        const logs = await activateWith(raw);
+        assert.ok(
+          !logs.some((l) => l.includes('is not a number')),
+          `raw=${String(raw)}: ${logs.join('\n')}`,
+        );
+      }
     });
   });
 });
