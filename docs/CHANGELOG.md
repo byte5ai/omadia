@@ -36,6 +36,60 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a throwing tool no longer kills a whole streaming turn (#1095)
+
+2026-09-22 — the orchestrator's two tool-loop paths disagreed about a tool
+handler that throws. The non-streaming path (`chatInContext`, used by Teams and
+Telegram) runs its dispatches through `Promise.allSettled` and folds a rejection
+into a normal `Error: <message>` tool result: the model sees the error, can
+correct its call, and the turn finishes. The streaming path (`chatStream`, used
+by the web chat and by the Public API channel) put the bare dispatch promise on
+its parallel slot and awaited `Promise.race([...slots, tick])`, so the first
+rejection escaped the async generator and aborted the entire turn. Sibling tools
+running in the same iteration never settled — their `tool_use` event had already
+streamed, but no `tool_result` ever followed, leaving the web chat's tool row on
+"TOOL RUNNING" forever.
+
+Worse on the Public API: when an earlier tool in the turn had already completed,
+the dead turn hit issue #506's emergency branch and was reported to the client as
+a SUCCESS — a fabricated `done` event ("The requested action(s) … completed
+successfully, but the turn could not finish generating a follow-up response."),
+`runTrace.status: "success"`, HTTP 200 and no `error` event. That pseudo-answer
+was also persisted via the session logger, so the next turn's model read a stored
+message claiming an action had succeeded in a turn where a tool had in fact
+blown up.
+
+`prepareStreamSlot()` now attaches a `.catch()` to the dispatch promise that
+resolves to `Error: <message>` — the same convention the non-streaming path
+builds from its rejections and the one the race loop already reads
+(`output.startsWith('Error:')`). A rejected dispatch therefore settles its slot:
+the `tool_result` streams with `isError: true`, the model gets the error back,
+sibling tools keep running, and the turn finishes normally. No
+`[orchestrator] turn failed` log line and no fabricated success for a tool-level
+failure. The message is passed through RAW, matching the chat path's deliberate
+divergence from `ToolDispatchService` (fenced by
+`test/orchestrator/chatPathToolErrorText.test.ts`). The non-streaming path is
+unchanged; `dispatchTool` itself still rejects, so the `allSettled` branch stays
+live rather than becoming dead code.
+
+Two consequences are deliberate. A rejected dispatch is now logged at the slot
+(`[orchestrator.prepareStreamSlot:<tool>] dispatch rejected …`, with the error
+object) instead of at the turn's catch, so the operator keeps the stack a
+handler-level failure used to produce. And a THROWN message still bypasses
+Privacy Shield interning — that only ever sees a RETURNED string — so a driver
+error quoting a row value reaches the provider (new for streaming turns) and the
+API caller (which already received the same raw text as the `error` event's
+`message` before this fix). The provider half is what the non-streaming path
+has always done with the same rejection; tightening it
+has to move both paths at once, and a handler whose errors may carry data should
+catch and return its own data-free `Error:` prose — returned `Error:` strings
+also reach the model verbatim, un-interned (#1105, #1097).
+
+The reported trigger — `query_dataset` with `query: "get_schema"` and a non-UUID
+`dataset_id`, where `QueryDatasetTool.handle` lets a Postgres `22P02` escape — is
+a separate input-validation defect and is NOT fixed here; it is simply survivable
+now, like every other throwing handler.
+
 ### Fixed — the model sees the whole running conversation again (#1096)
 
 2026-09-22 — the orchestrator's in-session history (the "context tail") was
