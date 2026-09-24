@@ -311,6 +311,18 @@ export class AgentIdentityStore {
   }
 
   /**
+   * Every identity row, for the boot-time recompose (#1100): the compiled
+   * prompt is a write-time cache, so a compiler change reaches stored agents
+   * only when something walks all of them. Metadata only — no avatar bytes.
+   */
+  async listAll(): Promise<readonly AgentIdentityRecord[]> {
+    const res = await this.pool.query<AgentIdentityMetaRow>(
+      `SELECT ${META_COLUMNS} FROM agent_identities ORDER BY agent_id`,
+    );
+    return res.rows.map(mapRow);
+  }
+
+  /**
    * Replace the authored identity — text, character and the compiled prompt
    * the caller derived from them. Creates the row when absent, bumps
    * `revision` only when the content actually differs: an unchanged save must
