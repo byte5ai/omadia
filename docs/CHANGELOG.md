@@ -764,6 +764,14 @@ hours after it shipped. The mirror is caught up, the stale section is named
 honestly, and the header now says the refresh is manual and how to tell in one
 command whether the file is behind.
 
+**Error messages name the log file instead of the tray (OM-63, refs #888).**
+The loading screen and the setup wizard sent a stuck user to "tray → Open Logs",
+a menu-bar control that was invisible while the tray icon was missing. They now
+print the real log file path, which `main.ts` hands to every renderer page as a
+`log` query parameter, so it still arrives when the preload bridge is the thing
+that failed. A failed first-run setup shows the path next to the reported error,
+and the tray wording is only the fallback when no path was passed.
+
 Not reproduced and deliberately left open: the setup-wizard overwrite (#930) is
 plausible from the code and matches the observed timing, but provoking the race
 would have required a build that still started.
