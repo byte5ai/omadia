@@ -9,7 +9,9 @@ import {
   composePersonaFromAgentMd,
   composeSycophancyFromAgentMd,
   inferFamilyFromModel,
+  loadSystemPrompt,
 } from '../src/plugins/dynamicAgentRuntime.js';
+import type { PluginCatalogEntry } from '../src/plugins/manifestLoader.js';
 
 /**
  * Phase 3 / OB-67 Slice 11 — runtime persona-section assembly tests.
@@ -325,7 +327,7 @@ quality:
     assert.match(out, /medical diagnoses/);
   });
 
-  it('includes custom "You must NOT:" lines after preset prompts', async () => {
+  it('includes custom boundary lines verbatim after preset prompts', async () => {
     await fs.writeFile(
       path.join(pkgRoot, 'AGENT.md'),
       `---
@@ -334,7 +336,7 @@ quality:
     presets:
       - no-pii
     custom:
-      - reveal staff names
+      - Never reveal staff names.
 ---
 
 # Body
@@ -342,7 +344,8 @@ quality:
     );
     const out = await composeBoundariesFromAgentMd(pkgRoot);
     assert.match(out, /personally identifiable information/);
-    assert.match(out, /You must NOT: reveal staff names/);
+    assert.match(out, /\nNever reveal staff names\./);
+    assert.doesNotMatch(out, /You must NOT:/);
   });
 
   it('silently skips unknown preset IDs at runtime (warnings are edit-time only)', async () => {
@@ -363,5 +366,49 @@ quality:
     const out = await composeBoundariesFromAgentMd(pkgRoot);
     assert.match(out, /personally identifiable information/);
     assert.equal(out.includes('does-not-exist'), false);
+  });
+});
+
+describe('loadSystemPrompt — installed-agent section order (#1100)', () => {
+  let pkgRoot: string;
+
+  beforeEach(async () => {
+    pkgRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'load-prompt-rt-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(pkgRoot, { recursive: true, force: true });
+  });
+
+  it('emits Boundaries (with its precedence clause) before the sycophancy protocol', async () => {
+    // The precedence clause says "protocols below" and the high-tier rule
+    // says "a Boundary above": both are only true while this path keeps
+    // boundaries ahead of sycophancy.
+    await fs.writeFile(
+      path.join(pkgRoot, 'AGENT.md'),
+      `---
+quality:
+  sycophancy: high
+  boundaries:
+    presets:
+      - no-legal-advice
+---
+
+# Body
+`,
+    );
+    const entry = {
+      plugin: { id: 'test.agent', name: 'Test Agent', version: '1.0.0', description: 'desc' },
+      manifest: {},
+    } as unknown as PluginCatalogEntry;
+    const out = await loadSystemPrompt(pkgRoot, entry, 'claude-sonnet-4-6');
+
+    const boundariesAt = out.indexOf('## Boundaries');
+    const overrideAt = out.indexOf('override every other instruction');
+    const sycophancyAt = out.indexOf('## Anti-Sycophancy Protocol');
+    assert.ok(boundariesAt >= 0, 'boundaries section present');
+    assert.ok(overrideAt > boundariesAt, 'precedence clause inside the boundaries section');
+    assert.ok(sycophancyAt >= 0, 'sycophancy section present');
+    assert.ok(boundariesAt < sycophancyAt, 'boundaries precede the sycophancy protocol');
   });
 });

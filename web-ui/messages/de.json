@@ -2291,7 +2291,8 @@
           "communication": "Kommunikation"
         },
         "customLabel": "Eigene Verbote",
-        "customHint": "Eine Regel pro Zeile.",
+        "customHint": "Eine Regel pro Zeile, als vollständiger Satz formuliert — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "sycophancyLabel": "Schmeichel-Bremse",
         "sycophancyHint": "Wie deutlich der Agent widersprechen darf, statt dem Nutzer nach dem Mund zu reden.",
         "sycophancyLevels": {
@@ -3137,6 +3138,8 @@
         "pluginStackNote": "Ist das Quality-Guard-Plugin installiert, gelten dessen plattformweite Vorgaben zusätzlich zu diesen Einstellungen — Grenzen und Schmeichel-Bremse addieren sich im Prompt, sie ersetzen sich nicht.",
         "unknownPresets": "Unbekannte Preset-IDs: {ids}",
         "customLabel": "Eigene Boundaries (eine pro Zeile)",
+        "customHint": "Jede als vollständigen Satz formulieren — sie erreicht den Agenten genau so, wie eingegeben.",
+        "customPlaceholder": "Gib keine Anlageberatung; verweise auf eine unabhängige Beratung.",
         "save": "Boundaries speichern",
         "saving": "Boundaries speichern…",
         "saved": "Gespeichert",
@@ -3702,6 +3705,7 @@
       "modelsRefreshUnsupported": "Dieser Provider unterstützt keine Live-Erkennung.",
       "modelsSourceLive": "live · {at}",
       "modelsSourceSeed": "Seed-Liste",
+      "unclassifiedModels": "{count, plural, one {# Modell} other {# Modelle}} ausgeblendet (keine Discovery-Regel): {models}",
       "addKey": "Schlüssel hinterlegen",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
@@ -3735,7 +3739,10 @@
       "pickModel": "Modell wählen …",
       "avvDisclosure": "Dieser Agent läuft über {provider}. Seine Prompt-Daten werden an einen Drittanbieter (Auftragsverarbeiter) übermittelt. Stelle sicher, dass ein Auftragsverarbeitungsvertrag (DSGVO Art. 28) vorliegt, bevor du ihn für personenbezogene Daten nutzt.",
       "euHostedNote": "{provider} wird in der EU gehostet. Ein Auftragsverarbeitungsvertrag nach DSGVO Art. 28 ist weiterhin erforderlich, aber es findet keine Drittlandübermittlung statt — anders als bei US-Anbietern.",
-      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten."
+      "subscriptionNotice": "{provider} läuft über das persönliche Claude-Abo des angemeldeten Kontos. Für Consumer-Tarife gibt es keinen Auftragsverarbeitungsvertrag (AVV) — verarbeite über diesen Agenten keine personenbezogenen Daten.",
+      "routingLabel": "Per-Turn Model-Routing (Haiku-Triage)",
+      "routingHint": "Ein günstiger Haiku-Call klassifiziert jeden Turn — einfache Turns bekommen ein günstigeres Modell, komplexe das Frontier-Modell.",
+      "routingAnthropicOnly": "Nur mit Anthropic verfügbar."
     },
     "status": {
       "saving": "speichert …",
@@ -3763,7 +3770,8 @@
     "explainer": {
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
-      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider."
+      "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Provider.",
+      "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg hat der Assistent noch kein Langzeitgedächtnis, er merkt sich also keine Fakten über Chats hinweg. Wissensgraph-Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",

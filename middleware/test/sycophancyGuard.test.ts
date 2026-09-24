@@ -61,6 +61,18 @@ describe('compileSycophancyGuard', () => {
     assert.match(out, /seeking confirmation rather than information/);
   });
 
+  it('the implications rule defers to a Boundary that forbids the topic (#1100)', () => {
+    // The high-tier "informational only, cannot replace professional advice"
+    // rule used to be a blanket licence to answer with a disclaimer — the
+    // exact opposite of a no-legal-advice boundary two sections above it.
+    // It now carries a carve-out so a boundary still wins.
+    const out = compileSycophancyGuard('high');
+    assert.match(out, /regulatory, legal, or financial implications/);
+    assert.match(out, /unless a Boundary above forbids/i);
+    // Still exactly 7 rules — this narrows wording, it does not add a rule.
+    assert.equal(out.split('\n').filter((l) => l.startsWith('- ')).length, 7);
+  });
+
   it('packages registry matches kemia tier counts: 3/5/7', () => {
     assert.equal(SYCOPHANCY_PACKAGES.low.rules.length, 3);
     assert.equal(SYCOPHANCY_PACKAGES.medium.rules.length, 5);

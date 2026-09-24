@@ -16,6 +16,8 @@ import {
   type LlmProviderDescriptor,
 } from '@omadia/llm-provider';
 
+import { BUILTIN_LLM_PROVIDERS } from '../src/platform/builtinLlmProviders.js';
+
 const anthropic: LlmProviderDescriptor = {
   id: 'anthropic',
   label: 'Anthropic',
@@ -243,5 +245,35 @@ test('throws when the descriptor declares no discovery rules', () => {
   assert.throws(
     () => applyDiscoveryRules({ ...anthropic, discovery: undefined }, [m('claude-opus-5')]),
     /declares no discovery rules/,
+  );
+});
+
+test('bundled anthropic rules: Fable is offered, Opus keeps the frontier default', () => {
+  // The model list the live `GET /v1/models` returned on 2026-09-23 — the
+  // bundled rules dropped Fable as `excluded`, so it never reached the
+  // operator's model picker.
+  const bundled = BUILTIN_LLM_PROVIDERS.find((d) => d.id === 'anthropic')!;
+  const { models, dropped } = applyDiscoveryRules(bundled, [
+    m('claude-opus-5-5', { label: 'Claude Opus 5.5' }),
+    m('claude-fable-5-1', { label: 'Claude Fable 5.1' }),
+    m('claude-opus-5', { label: 'Claude Opus 5' }),
+    m('claude-sonnet-5', { label: 'Claude Sonnet 5' }),
+    m('claude-fable-5', { label: 'Claude Fable 5' }),
+    m('claude-opus-4-8', { label: 'Claude Opus 4.8' }),
+    m('claude-haiku-4-5-20251001', { label: 'Claude Haiku 4.5' }),
+    m('claude-mythos-5-1', { label: 'Claude Mythos 5.1' }),
+  ]);
+  const byId = new Map(models.map((x) => [x.modelId, x]));
+
+  assert.equal(byId.get('claude-fable-5-1')?.class, 'frontier');
+  assert.deepEqual(byId.get('claude-fable-5-1')?.aliases, ['fable']);
+  assert.equal(byId.get('claude-fable-5')?.class, 'frontier');
+  // Fable must never become what `Auto` / `opus` resolve to.
+  assert.equal(byId.get('claude-opus-5-5')?.classDefault, true);
+  assert.equal(byId.get('claude-fable-5-1')?.classDefault, undefined);
+  assert.deepEqual(byId.get('claude-opus-5-5')?.aliases, ['opus']);
+  assert.deepEqual(
+    dropped.map((d) => [d.modelId, d.reason]),
+    [['claude-mythos-5-1', 'excluded']],
   );
 });

@@ -13,7 +13,12 @@
  * `compileSycophancyGuard` turns the persisted level into a system-prompt
  * fragment that `dynamicAgentRuntime` injects between persona and skill.
  *
- * Ported 1:1 from kemia (`byte5ai/kemia` @ `main` — src/lib/sycophancy-guard.ts).
+ * Ported 1:1 from kemia (`byte5ai/kemia` @ `main` — src/lib/sycophancy-guard.ts),
+ * with ONE deliberate local divergence (#1100): the high-tier
+ * "regulatory, legal, or financial implications" rule now defers to a
+ * `## Boundaries` preset that forbids the topic, instead of licensing an
+ * informational answer that a no-legal-advice boundary two sections above
+ * explicitly prohibits. Do not silently revert this on a kemia re-port.
  */
 
 export type SycophancyLevel = 'off' | 'low' | 'medium' | 'high';
@@ -59,7 +64,7 @@ export const SYCOPHANCY_PACKAGES: Record<Exclude<SycophancyLevel, 'off'>, Sycoph
       "MANDATORY: If a user presents a conclusion, play devil's advocate. Challenge assumptions explicitly before agreeing.",
       'MANDATORY: Never begin a response with agreement. Start with your independent analysis.',
       'When the user pushes back on your assessment, do NOT retract unless they provide new evidence. Hold your position if it is well-founded.',
-      'Flag when a question has regulatory, legal, or financial implications. State that your response is informational only and cannot replace professional advice.',
+      'Flag when a question has regulatory, legal, or financial implications, and state that your response is informational only and cannot replace professional advice — unless a Boundary above forbids the topic, in which case follow that Boundary and redirect instead of answering the substance.',
       'If the user seems to be seeking confirmation rather than information, name this pattern explicitly and offer an objective assessment instead.',
       'Distinguish clearly between facts, professional consensus, and your inference. Label each.',
     ],
