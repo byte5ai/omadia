@@ -4,7 +4,7 @@ import type {
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote } from '@omadia/plugin-api';
+import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
 import { streamMessageWithObserver } from './streaming.js';
 import type { AskObserver } from './tools/domainQueryTool.js';
 import { isInternExemptTool } from './privacyInternPolicy.js';
@@ -524,6 +524,21 @@ export class LocalSubAgent {
         } catch (err) {
           console.warn(`[sub-agent ${this.name}] canvasSentinelSink threw on '${toolName}':`, err);
         }
+      }
+      // #1097 — a guarded tool that returned control-flow prose (the `Error:`
+      // tool-error convention, or an MCP auth prompt) must reach this
+      // sub-agent's model AS that text, not be interned. Interning it would (a) hide the failure
+      // behind a masked digest, so the sub-agent never learns the call failed
+      // and cannot act on the hint the error carries, and (b) register a
+      // renderable 1-row dataset that a later `v4_render_answer` materializes
+      // as if the error were data. Same guard, same position as the one on
+      // `Orchestrator.dispatchTool` and `ToolDispatchService.afterDispatch`:
+      // after the intern exemption and the operator bypass, before interning.
+      // The `is_error` flag on the tool_result block is derived from this very
+      // prefix (see `dispatch`'s caller), so passing it through keeps the
+      // string and the flag telling the same story.
+      if (isControlFlowToolResult(result)) {
+        return { output: result, ...(postcondition ? { postcondition } : {}) };
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.

@@ -394,6 +394,7 @@ export * from './pluginContext.js';
 export * from './pkce.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
+export * from './toolControlFlowText.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
@@ -1964,6 +1965,7 @@ readonly input_schema: Record<string, unknown>;
 export interface PrivacyRenderedAnswer {
 readonly text: string;
 readonly maskedValues: readonly string[];
+readonly isError?: boolean;
 }
 export interface PrivacyBypassedToolRequest {
 readonly turnId: string;
@@ -2420,6 +2422,11 @@ diagnostics: readonly TargetedSendResultDiagnostic[];
 export interface TargetedSendService {
 sendToPrincipal(request: TargetedSendRequest): Promise<TargetedSendResult>;
 }
+
+// ===== toolControlFlowText.d.ts =====
+export declare const TOOL_ERROR_PREFIX = "Error:";
+export declare const MCP_AUTH_PROMPT_PREFIX = "\uD83D\uDD12 The MCP server \"";
+export declare function isControlFlowToolResult(result: string): boolean;
 
 // ===== topic.d.ts =====
 import type { GraphNode } from './knowledgeGraph.js';

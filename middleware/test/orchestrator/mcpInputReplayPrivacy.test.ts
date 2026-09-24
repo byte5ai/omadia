@@ -79,6 +79,21 @@ const RAW_ROW =
   `Personalakte: ${PERSON} | Email: ${EMAIL} | IBAN: ${IBAN} | Status: aktiv`;
 const DIGEST_MARKER = '«dataset:lookup_employee_record»';
 const MCP_TOOL_NAME = 'mcp__HR_Payroll__lookup_employee_record';
+/** #1097 — the case id whose replay fails; the server answers `isError`, which
+ *  `McpManager.callTool` renders with the `Error:` tool-error prefix. */
+const ERROR_CASE_ID = 'HR-ERR';
+const REPLAY_ERROR_TEXT = 'employee record locked — retry with an unlocked case id';
+/** #1097 — the case id whose replay THROWS, so `McpManager.handleFailure`
+ *  answers with the auth provider's connect prompt instead of a raw failure. */
+const AUTH_CASE_ID = 'HR-AUTH';
+/** Shape the app layer's `onAuthFailure` returns (`middleware/src/index.ts`):
+ *  no `Error:` prefix, and the machine block the chat UI parses into a Connect
+ *  card. */
+const AUTH_PROMPT =
+  '🔒 The MCP server "HR Payroll" needs authorization before it can be used. Ask ' +
+  "the user to click Connect (this opens the provider's login), then retry: " +
+  'https://example.test/oauth/authorize?x=1\n' +
+  '<mcp-auth-required serverId="s-1" server="HR Payroll" needsClient="false"></mcp-auth-required>';
 
 const providerCapabilities = {
   tools: true,
@@ -141,6 +156,17 @@ function buildMcpServerInstance(): McpSdkServer {
     serverArgs.push(args);
     const answers = args[REPLAY_ARG_KEY];
     if (answers !== undefined && answers !== null && typeof answers === 'object') {
+      if (args.caseId === AUTH_CASE_ID) {
+        // A 401-shaped failure: the manager catches it and consults the auth
+        // provider, which answers with the connect prompt.
+        throw new Error('HTTP 401 Unauthorized');
+      }
+      if (args.caseId === ERROR_CASE_ID) {
+        return {
+          content: [{ type: 'text' as const, text: REPLAY_ERROR_TEXT }],
+          isError: true,
+        };
+      }
       return {
         content: [{ type: 'text' as const, text: RAW_ROW }],
       };
@@ -313,10 +339,25 @@ interface Harness {
 
 function harness(
   streams: LlmStreamEvent[][],
-  options?: { readonly privacyGuard?: () => PrivacyGuardService | undefined },
+  options?: {
+    readonly privacyGuard?: () => PrivacyGuardService | undefined;
+    /** #1097 — installs an auth provider so a failing call takes the
+     *  `handleFailure` → `onAuthFailure` branch, as it does in production. */
+    readonly authPrompt?: string;
+  },
 ): Harness {
   const store = new InMemoryPendingMcpInputStore();
-  const manager = new McpManager({ pendingInput: store });
+  const manager = new McpManager({
+    pendingInput: store,
+    ...(options?.authPrompt !== undefined
+      ? {
+          auth: {
+            getToken: async () => null,
+            onAuthFailure: async () => options.authPrompt ?? null,
+          },
+        }
+      : {}),
+  });
   managers.add(manager);
   const registry = new NativeToolRegistry();
   registry.register(MCP_TOOL_NAME, {
@@ -399,13 +440,13 @@ const USER = 'u1';
  * replay turn then needs the full `{userId, sessionId, correlationId}` triple,
  * so the #445 ownership defence is exercised rather than bypassed.
  */
-function seedParkedCard(h: Harness, correlationId: string): void {
+function seedParkedCard(h: Harness, correlationId: string, caseId = 'HR-7'): void {
   const record: PendingMcpInput = {
     correlationId,
     serverId: CFG.id,
     serverName: CFG.name,
     toolName: 'lookup_employee_record',
-    originalArgs: { caseId: 'HR-7' },
+    originalArgs: { caseId },
     inputRequests: [
       { name: 'employeeId', required: true },
       { name: 'pin', secret: true, required: true },
@@ -481,6 +522,75 @@ describe('MCP input replay privacy boundary (#544 / W2-1)', () => {
     } finally {
       setMcpPrivacyBypassServers([]);
     }
+  });
+
+  /**
+   * #1097 — the replay path is the fourth intern site (after the chat path, the
+   * public-API path and the sub-agent path). A replayed MCP call that FAILS
+   * comes back through `McpManager.callTool` as an `Error: …` string, and
+   * interning that turned the failure into a masked 1-row dataset: the model
+   * never learned the replay failed and rendered the error as a result. The
+   * error text is control-flow, not a personnel row — it reaches the model raw.
+   */
+  it('MUTATION CHECK: an `Error:` replay result reaches the wire raw, not interned', async () => {
+    clearSharedState();
+    serverArgs.length = 0;
+    const h = harness([textStream('fertig')], {
+      privacyGuard: () => redactingPrivacyService(),
+    });
+    seedParkedCard(h, 'corr-error', ERROR_CASE_ID);
+
+    const wire = await replayWire(h, 'corr-error', { employeeId: 'E-13', pin: '0000' });
+
+    // The replay really ran — otherwise "no digest on the wire" would pass
+    // vacuously over a replay that never happened.
+    assert.ok(
+      serverArgs.some((a) => a[REPLAY_ARG_KEY] !== undefined && a.caseId === ERROR_CASE_ID),
+      'the failing replay never reached the MCP server',
+    );
+    assert.ok(
+      wire.includes(REPLAY_ERROR_TEXT),
+      `the model must see the replay error text: ${wire}`,
+    );
+    assert.equal(
+      wire.includes(DIGEST_MARKER),
+      false,
+      `an error result must NOT be interned as a renderable dataset: ${wire}`,
+    );
+  });
+
+  /**
+   * #1097 — the other control-flow carrier on this path. An OAuth token that
+   * expired while the card sat parked makes the replay fail auth-shaped, and
+   * `handleFailure` answers with the connect prompt rather than an `Error: …`
+   * string. Interning it destroyed the `<mcp-auth-required>` block the chat UI
+   * turns into a Connect card, and left the model rendering a masked digest.
+   */
+  it('MUTATION CHECK: an auth-required replay reaches the wire with its Connect block intact', async () => {
+    clearSharedState();
+    serverArgs.length = 0;
+    const h = harness([textStream('bitte verbinden')], {
+      privacyGuard: () => redactingPrivacyService(),
+      authPrompt: AUTH_PROMPT,
+    });
+    seedParkedCard(h, 'corr-auth', AUTH_CASE_ID);
+
+    const wire = await replayWire(h, 'corr-auth', { employeeId: 'E-13', pin: '0000' });
+
+    assert.ok(
+      serverArgs.some((a) => a[REPLAY_ARG_KEY] !== undefined && a.caseId === AUTH_CASE_ID),
+      'the failing replay never reached the MCP server',
+    );
+    assert.ok(
+      wire.includes('<mcp-auth-required'),
+      `the Connect machine block must survive to the wire: ${wire}`,
+    );
+    assert.ok(wire.includes('needs authorization'), `the connect prompt is missing: ${wire}`);
+    assert.equal(
+      wire.includes(DIGEST_MARKER),
+      false,
+      `an auth prompt must NOT be interned as a renderable dataset: ${wire}`,
+    );
   });
 
   it('MUTATION CHECK: without a privacy handle the replay note stays legacy-raw byte-for-byte', async () => {

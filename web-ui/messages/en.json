@@ -2291,7 +2291,8 @@
           "communication": "Communication"
         },
         "customLabel": "Own prohibitions",
-        "customHint": "One rule per line.",
+        "customHint": "One rule per line, written as a complete sentence — it reaches the agent exactly as typed.",
+        "customPlaceholder": "Give no investment advice; refer to independent advisors.",
         "sycophancyLabel": "Anti-flattery guard",
         "sycophancyHint": "How firmly the agent may disagree instead of telling the user what they want to hear.",
         "sycophancyLevels": {
@@ -3137,6 +3138,8 @@
         "pluginStackNote": "If the Quality Guard plugin is installed, its platform-wide defaults apply on top of these — boundaries and the anti-flattery level add up in the prompt, they do not replace each other.",
         "unknownPresets": "Unknown preset IDs: {ids}",
         "customLabel": "Custom boundaries (one per line)",
+        "customHint": "Write each as a complete sentence — it reaches the agent exactly as typed.",
+        "customPlaceholder": "Give no investment advice; refer to independent advisors.",
         "save": "Save boundaries",
         "saving": "Saving boundaries…",
         "saved": "Saved",
@@ -3736,7 +3739,10 @@
       "pickModel": "Select a model …",
       "avvDisclosure": "This agent runs on {provider}. Its prompt data is sent to a third-party processor. Ensure a data-processing agreement (GDPR Art. 28) is in place before using it for personal data.",
       "euHostedNote": "{provider} is hosted in the EU. An Art. 28 GDPR processing agreement is still required, but there is no third-country transfer — unlike US-based providers.",
-      "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent."
+      "subscriptionNotice": "{provider} runs on a personal Claude subscription of the signed-in account. No data-processing agreement (DPA/AVV) is available on a consumer plan — do not route personal data through this agent.",
+      "routingLabel": "Per-turn model routing (Haiku triage)",
+      "routingHint": "A cheap Haiku call classifies each turn — simple turns get a cheaper model, complex ones the frontier model.",
+      "routingAnthropicOnly": "Only available with Anthropic."
     },
     "status": {
       "saving": "saving …",
