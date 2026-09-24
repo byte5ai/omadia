@@ -91,7 +91,7 @@ setup:
       label: "Capture-Level"
       type: "string"
       required: false
-      help: "off | minimal | normal | aggressive. Default: minimal (privacy + hints automatisch, kein LLM, keine Bewertung). normal: + Significance-Scoring, Turns unter score 0.2 werden nur als Verlaufs-Eintrag gespeichert (#1096: sie bleiben im Gesprächs-Tail sichtbar, erhalten aber kein Embedding und tauchen in der sitzungsübergreifenden Recall nicht auf). aggressive: dieselbe Grenze bei 0.5. off: Escape-Hatch — KEIN Cleanup, ungestripped text in den Index."
+      help: "off | minimal | normal | aggressive. Default: normal. minimal: privacy + hints automatisch, kein LLM, keine Bewertung. normal: + Significance-Scoring, Turns unter score 0.2 werden nur als Verlaufs-Eintrag gespeichert (#1096: sie bleiben im Gesprächs-Tail sichtbar, erhalten aber kein Embedding und tauchen in der sitzungsübergreifenden Recall nicht auf). aggressive: dieselbe Grenze bei 0.5. off: Escape-Hatch — KEIN Cleanup, ungestripped text in den Index."
     - key: "capture_default_visibility"
       label: "Capture Default-Visibility"
       type: "string"
@@ -107,7 +107,7 @@ setup:
       type: "integer"
       required: false
       default: "10"
-      help: "Wie viele der letzten Turns der laufenden Sitzung wortwörtlich in den Kontext gehen — das einzige Gedächtnis des Modells innerhalb einer Sitzung. Default 10 (bis #1096 fest auf 3, ohne Einstellmöglichkeit). Höhere Werte kosten Platz im Token-Budget (context_default_budget_tokens), der sonst der sitzungsübergreifenden Recall zur Verfügung steht; Werte ausserhalb von 1–100 werden auf diesen Bereich geklemmt."
+      help: "Wie viele der letzten Turns der laufenden Sitzung wortwörtlich in den Kontext gehen — das einzige Gedächtnis des Modells innerhalb einer Sitzung. Default 10 (bis #1096 fest auf 3, ohne Einstellmöglichkeit). Höhere Werte kosten Platz im Token-Budget (context_default_budget_tokens), der sonst der sitzungsübergreifenden Recall zur Verfügung steht; Werte ausserhalb von 1–50 werden auf diesen Bereich geklemmt. Auf Neon behält der tägliche GC pro Sitzung höchstens graph_gc_hot_max_entries Turns (Default 50) — ein längerer Tail hätte danach nichts mehr zu lesen."
 
 playbook:
   when_to_use: |

@@ -342,18 +342,9 @@ export async function activate(
   );
   // #1096 — verbatim in-session tail depth. Was a hard-wired 3 inside the
   // retriever, which silently cut the model's view of the running chat after
-  // three exchanges with no way for an operator to see or change it. Clamped
-  // to a whole number in [1, 100]: the tail is the model's only in-session
-  // memory, so "0 turns" is never meant — and every tail turn enters the
-  // candidate pool, so a fat-fingered 5000 would push every assembly past
-  // `compactModeThreshold` (100) into compact rendering for the whole
-  // instance. The token budget trims what actually ships either way.
-  const contextTailSize = Math.min(
-    100,
-    Math.max(
-      1,
-      Math.round(parseNumberOrDefault(ctx.config.get<unknown>('context_tail_size'), 10)),
-    ),
+  // three exchanges with no way for an operator to see or change it.
+  const contextTailSize = resolveContextTailSize(
+    ctx.config.get<unknown>('context_tail_size'),
   );
 
   // Slice 7 — memory-recall toggle + tuning. Default ON whenever an
@@ -1074,6 +1065,28 @@ export async function activate(
       disposeCaptureFilter();
     },
   };
+}
+
+/** #1096 — see {@link resolveContextTailSize}. */
+const DEFAULT_CONTEXT_TAIL_SIZE = 10;
+const MAX_CONTEXT_TAIL_SIZE = 50;
+
+/**
+ * #1096 — the operator's `context_tail_size`, as the whole number of verbatim
+ * tail turns the ContextRetriever gets. Unset or unparsable ⇒ 10. Clamped to
+ * [1, 50]: the tail is the model's only in-session memory, so "0 turns" is
+ * never meant. The ceiling stays well below the default
+ * `context_compact_mode_threshold` (100) — every tail turn enters the
+ * candidate pool, so a tail near 100 plus a single recall hit would switch the
+ * whole assembly to compact rendering — and matches the Neon GC's default
+ * per-scope `graph_gc_hot_max_entries` (50), beyond which there is nothing
+ * left to read after the daily sweep.
+ */
+export function resolveContextTailSize(raw: unknown): number {
+  return Math.min(
+    MAX_CONTEXT_TAIL_SIZE,
+    Math.max(1, Math.round(parseNumberOrDefault(raw, DEFAULT_CONTEXT_TAIL_SIZE))),
+  );
 }
 
 function parseNumberOrDefault(value: unknown, fallback: number): number {

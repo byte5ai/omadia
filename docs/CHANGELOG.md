@@ -67,8 +67,12 @@ promotion bar, and a promoted turn becomes a MemorableKnowledge, which IS
 visible to cross-session recall. The flag is written on every turn, including
 as `false`, because node properties are merged on upsert — a replay at
 `capture_level=off` or a backfill re-ingest clears it instead of stranding a
-row outside recall for good. The write is best-effort: a backend that rejects
-it leaves the turn behaving exactly as it did before, rather than failing it.
+row outside recall for good. A backend that rejects the tail-only write fails
+the ingest like any other turn write: the session logger absorbs it without
+failing the turn and counts it as `turn-ingest-failed`. On Neon the daily GC
+quotas count tail-only rows (so they cannot pile up) but evict them before any
+knowledge turn, so the significant turns a scope keeps are the same ones it
+kept before tail-only rows existed.
 
 The second, independent limit is gone too: the tail was hard-capped at the last
 3 knowledge-graph turns by a `tailSize: 3` constant with no configuration
@@ -76,8 +80,9 @@ surface, so even significant turns left the model's view after three exchanges.
 The default is now 10 (aligned with `sessionBriefing`'s own tail) and operators
 can set `context_tail_size` — declared in the `orchestrator-extras` manifest, so
 it is reachable from the plugin store rather than only from the source, and
-clamped to 1–100 (every tail turn enters the candidate pool, so an accidental
-5000 would flip every assembly into compact rendering). A larger
+clamped to 1–50 (every tail turn enters the candidate pool, so a tail near the
+compact-mode threshold of 100 would flip every assembly into compact rendering,
+and the Neon GC keeps 50 turns per scope by default). A larger
 tail consumes the shared token budget (`context_default_budget_tokens`) ahead of
 cross-session recall, which is the trade the field makes visible. The
 `[harness-orchestrator-extras] context-assembler ready` log line now reports the

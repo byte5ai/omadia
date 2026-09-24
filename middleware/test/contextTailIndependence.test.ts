@@ -11,19 +11,20 @@
  * promotion) stay gated by significance.
  */
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 
 import {
+  activate,
   CaptureFilter,
   CaptureFilteringKnowledgeGraph,
   ContextRetriever,
 } from '@omadia/orchestrator-extras';
+import { resolveContextTailSize } from '@omadia/orchestrator-extras/dist/plugin.js';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import type { KnowledgeGraph, TurnIngest } from '@omadia/plugin-api';
+import type { KnowledgeGraph, PluginContext, TurnIngest } from '@omadia/plugin-api';
 
 /** Capture filter at `level=normal` with a scorer that returns a fixed score. */
 function filterScoring(score: number): CaptureFilter {
@@ -202,7 +203,11 @@ describe('#1096 session tail vs. capture filter', () => {
     assert.equal(lexical.length, 1, 'recall sees it again');
   });
 
-  it('never fails the turn when the tail-only write is rejected', async () => {
+  it('propagates a rejected tail-only write to the caller', async () => {
+    // The caller (sessionLogger) already absorbs ingest failures without
+    // failing the turn — and counts them as `turn-ingest-failed`, skipping the
+    // run-trace write. A synthetic success here would hide the lost tail
+    // entry, the exact #1096 symptom, behind a misleading `run-ingest-failed`.
     const inner = new InMemoryKnowledgeGraph();
     const failing: KnowledgeGraph = new Proxy(inner, {
       get(target, prop, recv) {
@@ -221,10 +226,10 @@ describe('#1096 session tail vs. capture filter', () => {
       log: () => {},
     });
 
-    const result = await wrapped.ingestTurn(turn('s-fail', 1, 'ok', 'ok'));
-    assert.equal(result.sessionId, 'session:s-fail');
-    assert.ok(result.turnId.startsWith('turn:s-fail'));
-    assert.deepEqual(result.entityNodeIds, []);
+    await assert.rejects(
+      wrapped.ingestTurn(turn('s-fail', 1, 'ok', 'ok')),
+      /backend down/,
+    );
   });
 });
 
@@ -277,14 +282,70 @@ describe('#1096 tail size is reachable from the plugin store', () => {
     assert.ok(field, 'context_tail_size must be declared under setup.fields');
     assert.equal(field.type, 'integer');
     assert.equal(field.default, '10');
+  });
 
-    const pluginSrc = readFileSync(
-      fileURLToPath(new URL('src/plugin.ts', PKG_ROOT)),
-      'utf8',
-    );
-    assert.ok(
-      pluginSrc.includes("'context_tail_size'"),
-      'plugin.ts must read the declared key',
-    );
+  it('clamps the configured value to a whole number in [1, 50]', () => {
+    assert.equal(resolveContextTailSize(undefined), 10, 'unset ⇒ default');
+    assert.equal(resolveContextTailSize('abc'), 10, 'unparsable ⇒ default');
+    assert.equal(resolveContextTailSize('30'), 30, 'store values are strings');
+    assert.equal(resolveContextTailSize(12), 12);
+    assert.equal(resolveContextTailSize(7.6), 8, 'rounded to whole turns');
+    assert.equal(resolveContextTailSize(0), 1, '0 turns is never meant');
+    assert.equal(resolveContextTailSize(-4), 1);
+    // Below the default compact-mode threshold (100) with room for recall
+    // hits, and no deeper than the Neon GC's default per-scope keep (50).
+    assert.equal(resolveContextTailSize(5000), 50);
+    assert.equal(resolveContextTailSize('100'), 50);
+  });
+
+  it('hands the configured value to the published ContextRetriever', async () => {
+    // Behavioural, not a grep: activate() with a minimal host, then read the
+    // tail through the retriever it publishes. Dropping `tailSize` from the
+    // construction would fall back to the default 10 while the ready log
+    // still printed the operator's value.
+    const kg = new InMemoryKnowledgeGraph();
+    for (let i = 1; i <= 12; i++) {
+      await kg.ingestTurn(turn('s-wired', i, `frage ${String(i)}`, `antwort ${String(i)}`));
+    }
+    const config: Record<string, unknown> = {
+      context_tail_size: '4',
+      capture_level: 'minimal',
+    };
+    const provided = new Map<string, unknown>();
+    const ctx = {
+      agentId: '@omadia/orchestrator-extras',
+      domain: 'orchestrator',
+      smokeMode: false,
+      secrets: { get: async (): Promise<undefined> => undefined },
+      config: { get: (key: string): unknown => config[key] },
+      services: {
+        get: (name: string): unknown =>
+          name === 'knowledgeGraph' ? kg : provided.get(name),
+        getOptional: (): undefined => undefined,
+        provide: (name: string, impl: unknown): (() => void) => {
+          provided.set(name, impl);
+          return () => { provided.delete(name); };
+        },
+        replace: (name: string, impl: unknown): (() => void) => {
+          provided.set(name, impl);
+          return () => { provided.delete(name); };
+        },
+      },
+      log: (): void => {},
+    } as unknown as PluginContext;
+
+    const handle = await activate(ctx);
+    try {
+      const retriever = provided.get('contextRetriever') as ContextRetriever | undefined;
+      assert.ok(retriever, 'activate() publishes the contextRetriever service');
+      const result = await retriever.build({
+        userMessage: 'weiter',
+        sessionScope: 's-wired',
+      });
+      assert.equal(result.sources.verbatimTurns.length, 4);
+      assert.equal(result.sources.verbatimTurns[0]?.userMessage, 'frage 9');
+    } finally {
+      await handle.close();
+    }
   });
 });

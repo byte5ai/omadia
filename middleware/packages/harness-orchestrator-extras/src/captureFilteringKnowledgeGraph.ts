@@ -31,14 +31,17 @@
  *   - *conversation* (the session record the tail reads) — always written;
  *   - *knowledge* (embedding, cross-session recall, promotion) — still gated
  *     by significance. Backends honouring `tailOnly` write no embedding and
- *     keep the row out of every recall query; promotion needs no special
- *     case because a sub-threshold score is below its own threshold anyway.
+ *     keep the row out of every recall query; both promotion paths decline
+ *     the row explicitly (`promotion.ts`, `bulkPromotion.ts`) — the capture
+ *     and promotion thresholds are configured independently, so a
+ *     sub-threshold score is NOT necessarily below the promotion bar.
  * So the capture filter keeps deciding what costs money, and stops deciding
  * what the model remembers.
  *
- * The write is best-effort: if the inner backend rejects it, the old
- * synthetic result is returned rather than propagating an error the caller
- * never used to see for these turns.
+ * A failed tail-only write propagates like any other ingest failure: the
+ * session logger already catches it without failing the turn, counts it as
+ * `turn-ingest-failed` and skips the run-trace write that would point at the
+ * missing Turn.
  */
 
 import type {
@@ -109,10 +112,6 @@ import type {
   DatasetQueryResult,
   DatasetSummary,
 } from '@omadia/plugin-api';
-import {
-  sessionNodeId,
-  turnNodeId,
-} from '@omadia/plugin-api';
 
 import type { CaptureFilter } from './captureFilter.js';
 
@@ -168,21 +167,10 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
         entityRefs: [],
         tailOnly: true,
       };
-      try {
-        return await this.inner.ingestTurn(tailOnly);
-      } catch (err) {
-        // Best-effort by design: before #1096 this path never called the
-        // inner backend and never threw. Keep that contract — a failed
-        // continuity record must not fail the turn.
-        this.log(
-          `[capture-filter] tail-only write FAILED, continuing without: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        return {
-          sessionId: sessionNodeId(turn.scope),
-          turnId: turnNodeId(turn.scope, turn.time),
-          entityNodeIds: [],
-        };
-      }
+      // Not swallowed: a synthetic success would bypass the caller's own
+      // failure handling and book the lost tail entry — the #1096 symptom —
+      // under the wrong telemetry bucket (`run-ingest-failed`).
+      return this.inner.ingestTurn(tailOnly);
     }
 
     const cleaned: TurnIngest = {
