@@ -270,6 +270,14 @@ export async function recomposeStaleIdentities(
       ) {
         continue;
       }
+      // The save path tells the operator; unattended, the log is the only
+      // trace that the rewritten prompt no longer carries that rule.
+      const dropped = compiled.primary.droppedBoundaryPresets;
+      if (dropped.length > 0) {
+        deps.log(
+          `${tag} agent ${identity.agentId}: boundary preset(s) no longer in the library: ${dropped.join(', ')}`,
+        );
+      }
       await deps.identityStore.recompose(identity.agentId, {
         text: compiled.primary.text,
         family: compiled.family,

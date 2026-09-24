@@ -50,7 +50,10 @@ more strictly than before. Operator-agent identities speak from the stored
 `agent_identities.composed_prompt`, a write-time cache, so the middleware now
 recompiles stale stored prompts once at boot (`recomposeStaleIdentities`, no
 revision bump, idempotent) and reloads the registry; agents saved before this
-release pick up the clause without being re-saved.
+release pick up the clause without being re-saved. The same boot pass also
+applies #1101's verbatim custom-boundary-line change to stored operator
+agents, so their legacy bare-action custom lines render as written from that
+first boot on.
 
 ### Fixed — public API stream no longer carries two contradicting answers for one turn (#1105)
 
