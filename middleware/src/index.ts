@@ -4591,6 +4591,15 @@ async function main(): Promise<void> {
         publicBaseUrl: config.PUBLIC_BASE_URL,
         defaultReturnPath: config.AUTH_DEFAULT_RETURN_PATH,
         setupAllowed: bootstrapResult.setupRequired,
+        // #965 — explicit session renewal ("I'm still here"): re-checks the
+        // principal, audits every renewal, bounded by an absolute cap from
+        // the original sign-in.
+        renewal: {
+          whitelist: emailWhitelist,
+          audit: adminAudit,
+          refreshStore: authRefreshStore,
+          maxLifetimeSeconds: config.AUTH_SESSION_MAX_LIFETIME_HOURS * 3600,
+        },
         // OB-61 — the /setup ENDPOINT still seeds an operator-supplied
         // `anthropic_api_key` into each consumer plugin's vault and
         // reactivates the plugin so the LLM-bound capabilities go live

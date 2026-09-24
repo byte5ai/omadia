@@ -177,6 +177,13 @@ const ConfigSchema = z.object({
   // was supplied. Defaults to `/` because the admin UI's root is the chat
   // landing page.
   AUTH_DEFAULT_RETURN_PATH: z.string().default('/'),
+  // #965 — absolute cap on an admin-UI session renewal chain, in hours,
+  // measured from the ORIGINAL sign-in (`auth_time`), not from the last
+  // renewal. Each login or "I'm still here" renewal grants a 4h window;
+  // renewals stop once the cap is reached and the operator signs in again.
+  // Lower bound 4 = the fixed login window (a smaller cap would be
+  // meaningless); upper bound one week.
+  AUTH_SESSION_MAX_LIFETIME_HOURS: z.coerce.number().min(4).max(168).default(12),
 
   // Friction-free desktop pairing (#293). The server owns the mapping
   // "human-facing URL → canvas transport URL"; these knobs let one config
