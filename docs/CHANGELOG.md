@@ -36,6 +36,36 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — re-assigning the orchestrator's provider now reaches the memory features (#1076)
+
+2026-09-24 — `@omadia/orchestrator-extras` (fact extraction, topic detection,
+the scratch-promotion reaper) falls back to the orchestrator's `llm_provider`
+since OM-102, but resolves it once per `activate()`. Changing the
+orchestrator's provider on `/admin/providers` reactivated only the
+orchestrator, so the background memory features kept running on the old
+provider until the next restart, and no surface said so.
+
+A change of the orchestrator's effective provider now rebuilds extras first,
+then the orchestrator. The order matters: the orchestrator captures extras'
+`factExtractor`, `contextRetriever` and `sessionBriefing` instances eagerly in
+its own `activate()`, and an extras teardown does not cascade, so rebuilding
+extras afterwards would have left chat-turn fact extraction on the old
+instance. The dependency is data (`inheritsProviderFrom` on the extras entry
+of `LLM_PLUGINS`, drift-tested against a constant exported by extras), and
+every writer of `llm_provider` goes through the same
+`reactivateAfterProviderWrite`: the providers assignment route, the runtime
+`PATCH …/config` route and the config branch of `PATCH …/secrets`. A
+model-only change, or unset to explicit `anthropic`, still rebuilds only the
+plugin itself. The subscription-login hand-off now assigns plugins that others
+inherit from last (verifier, extras, orchestrator), so the final rebuild
+captures extras with its own hand-off model rather than an intermediate one.
+
+The orchestrator also declares `llmProviderCatalog@1` and
+`installedPluginConfigReader@1` under `optional_requires` and resolves both
+with `getOptional`; both names are gone from its row in the legacy
+service-grant allowlist (nineteen names at the 2026-08-20 audit, seventeen
+now).
+
 ### Fixed — subscription-CLI agent has conversation memory again (#1087)
 
 2026-09-24 — on the Claude subscription-CLI provider every chat turn was a
