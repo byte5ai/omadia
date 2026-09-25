@@ -65,7 +65,8 @@ export interface NewerRemoteReconciliation {
  * options, … exist only in the browser's copy. A routine delivery bumps the
  * server `updatedAt`, so "newer" no longer means "ahead". Turns (the
  * non-proactive messages) are compared position by position: a remote turn
- * matches the local one with the same id, or — for a turn the server's
+ * matches the local one with the same id when that local message is finished
+ * and its trimmed content equals the server's, or — for a turn the server's
  * SessionLogger mirrored (`srv-u-…` / `srv-a-…`, see `isMirroredTurn`) — the
  * finished local message with the same role and content, the rule the
  * mirror's own idempotency check (`appendTurnUnlocked`) uses. Only a client
@@ -83,10 +84,11 @@ export interface NewerRemoteReconciliation {
  *   exist nowhere else), fold the deliveries in and ask for a catch-up PUT,
  *   exactly the "backend is behind" healing a chat got before deliveries
  *   could bump `updatedAt`.
- * - Anything else — a turn from another device, a mirrored answer the local
- *   copy only holds partially (a mid-stream reload: the server's recovered
- *   answer must win), a clear or reset (no server turns) — is a real newer
- *   state and the server copy wins.
+ * - Anything else — a turn from another device, an answer the local copy
+ *   only holds partially under either id (a mid-stream reload, or a tab closed
+ *   before the debounced local write caught up: the server's full answer must
+ *   win), a clear or reset (no server turns) — is a real newer state and the
+ *   server copy wins, exactly as before #1071.
  */
 export function reconcileNewerRemote(
   local: ChatSession,
@@ -127,8 +129,16 @@ type TurnMatch = 'id' | 'mirror' | 'none';
 
 function matchTurn(remote: Message, local: Message | undefined): TurnMatch {
   if (local === undefined) return 'none';
-  if (remote.id === local.id) return 'id';
+  // Equal ids are not enough: a tab closed right after a turn's PUT can leave
+  // a truncated copy of that same message in localStorage (the debounced
+  // write lags the stream). The newer server copy must then win, as on main.
+  if (remote.id === local.id) return sameContent(remote, local) ? 'id' : 'none';
   return isMirroredTurn(remote) && sameFinishedTurn(remote, local) ? 'mirror' : 'none';
+}
+
+/** The local message is finished and says what the server copy says. */
+function sameContent(remote: Message, local: Message): boolean {
+  return local.streaming !== true && remote.content.trim() === local.content.trim();
 }
 
 /** Ids the SessionLogger mirror (`ChatSessionStore.appendTurnUnlocked`)
@@ -143,10 +153,5 @@ function isMirroredTurn(m: Message): boolean {
  *  only when that message is finished and says the same thing — a still
  *  streaming, errored or partial local answer is not the mirrored one. */
 function sameFinishedTurn(remote: Message, local: Message): boolean {
-  return (
-    remote.role === local.role &&
-    local.streaming !== true &&
-    local.error !== true &&
-    remote.content.trim() === local.content.trim()
-  );
+  return remote.role === local.role && local.error !== true && sameContent(remote, local);
 }

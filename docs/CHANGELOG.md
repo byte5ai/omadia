@@ -338,10 +338,17 @@ never created.
   in-process runtime the server copy holds such a turn under the SessionLogger
   mirror's `srv-u-…` / `srv-a-…` ids; a mirrored message matches the finished
   local one with the same role and trimmed content, and the catch-up PUT swaps
-  the `srv-*` ids for the client's. Any other difference (a turn from another
-  device, a partial local answer after a mid-stream reload, a clear) is still
-  resolved in favour of the newer server copy; dropping local turns for a copy
-  with none is logged.
+  the `srv-*` ids for the client's. A turn with the same id matches only when
+  the local copy is finished and its trimmed content equals the server's. Any
+  other difference (a turn from another device, a partial local answer after a
+  mid-stream reload or a tab closed before its local write caught up, a clear)
+  is still resolved in favour of the newer server copy; dropping local turns for
+  a copy with none is logged.
+- **Re-reads never rewrite what they did not change.** A re-read that finds no
+  delivery leaves the session state untouched (no re-render, no localStorage
+  write), so a stale tab regaining focus cannot overwrite another tab's stored
+  chats. A re-read or PUT answer requested before "clear chat" is discarded, so
+  a cleared delivery does not come back.
 - **The "Run now" notice no longer promises ~30 seconds** for a web routine:
   the result shows when that chat is next opened or focused.
 - **`PUT /api/chat/sessions/:id` merges instead of overwriting**

@@ -3963,15 +3963,33 @@ durch den Web-Sender unten.
   und hydratisiert nur einmal pro Full-Load, ein In-App-Wechsel von `/routines` nach
   `/chat` sähe sonst nichts —, wenn die Hydration fertig ist, wenn der aktive Chat
   wechselt und wenn der Browser-Tab wieder sichtbar wird. Die Antwort des PUT (das
-  gemergte Dokument) wird ebenso eingefaltet. Offline-User sehen die Nachricht beim
+  gemergte Dokument) wird ebenso eingefaltet. Findet ein Re-Read nichts Neues, bleibt der
+  State-Array identisch (`foldProactive` gibt `prev` zurück) — kein Re-Render, kein
+  localStorage-Write; ein veralteter Tab, der wieder sichtbar wird, überschreibt so nicht,
+  was ein anderer Tab gespeichert hat. Ein Re-Read oder PUT-Answer, der **vor** einem
+  "Chat leeren" angefragt wurde, wird verworfen (Clear-Epoche pro Session), sonst kämen
+  die gerade gelöschten Zustellungen zurück. Offline-User sehen die Nachricht beim
   nächsten Öffnen; die UI zeigt ein Badge "Geplante Routine · <Name>".
 - **Hydration faltet, ersetzt nicht.** Eine Zustellung macht die Server-Kopie neuer. Die
   Server-Kopie kennt aber nur, was `MessageSchema` deklariert (zod strippt den Rest):
   Attachments, Privacy-Receipts, Routing, Persona, Follow-ups … gibt es nur im Browser.
-  Unterscheidet sich die Server-Kopie **nur** um Zustellungen (gleiche Nicht-Proactive-Ids
-  in gleicher Reihenfolge), behält die Hydration die lokale Kopie und fügt die Zustellungen
-  ein (`reconcileNewerRemote`); nur der Titel kommt vom Server. Jeder andere Unterschied
-  (Turn von einem anderen Gerät, Leeren, Reset) → Server-Kopie gewinnt wie vor #1071.
+  `reconcileNewerRemote` vergleicht die Turns (Nicht-Proactive-Nachrichten) Position für
+  Position. Ein Server-Turn passt zum lokalen, wenn (a) die Ids gleich sind **und** die
+  lokale Nachricht fertig ist (`streaming !== true`) und ihr getrimmter Inhalt dem des
+  Servers gleicht, oder (b) der Server-Turn eine Mirror-Id trägt (`srv-u-…`/`srv-a-…`, vom
+  SessionLogger geschrieben, bevor der Client-PUT sie ersetzt) und die lokale Nachricht
+  gleiche Rolle, gleichen getrimmten Inhalt hat, fertig und nicht `error` ist — die Regel
+  der Mirror-Idempotenz (`appendTurnUnlocked`). Drei Fälle:
+  - **Alle Turns passen, gleiche Anzahl:** lokale Kopie bleibt, Zustellungen werden
+    eingefügt, nur der Titel kommt vom Server. Hat ein Mirror-Turn gepasst, folgt ein
+    Catch-up-PUT, der die `srv-*`-Ids durch die des Clients ersetzt.
+  - **Server-Turns sind ein nicht-leeres echtes Präfix der lokalen:** der Browser ist
+    voraus (ein Turn-PUT scheiterte, ohne gespiegelt zu werden). Lokale Kopie bleibt,
+    Zustellungen werden eingefügt, Catch-up-PUT (der Merge-PUT behält die Zustellungen).
+  - **Alles andere** — Turn von einem anderen Gerät, eine lokal nur teilweise vorhandene
+    Antwort unter gleicher oder Mirror-Id (Reload mitten im Stream, Tab geschlossen bevor
+    der debouncte localStorage-Write nachzog), Leeren/Reset (Server ohne Turns; das wird
+    geloggt) → Server-Kopie gewinnt wie vor #1071, kein PUT.
 - **Delivery-Handle:** `conversationRef = { kind: 'http-chat', sessionScope, sessionId? }`.
   `sessionId` wird serverseitig nur gesetzt, wenn die `sessionId` des Requests wirklich der
   Scope des Turns ist (nicht unter Debug-`scope`, nicht bei `http-default`). Fehlt sie,
@@ -3985,7 +4003,10 @@ durch den Web-Sender unten.
   ersten späteren User-Nachricht einsortiert, nie zwischen Frage und Antwort). Der Marker
   zählt nur aus der Server-Kopie; ein vom Client gesetzter wird entfernt. Ein PUT mit
   `messages: []` ist "Chat leeren" und löscht auch Zustellungen. `MessageSchema` kennt
-  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle).
+  `proactive`, sonst entfernt zod ihn beim nächsten PUT (die #445-Falle). Ist die
+  gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
+  sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
+  scheitern, statt ungesehene Zustellungen samt Marker endgültig zu verwerfen.
 - **Per-Session-Lock, modulweit, nur in-process.** Append, Merge-Save,
   `appendTurnFromServer`, `captureSnapshot`, `clearSnapshot`, `resetMessages` und `delete`
   laufen unter einem Lock pro Session-Id, den **alle** `ChatSessionStore`-Instanzen teilen
@@ -3998,9 +4019,10 @@ durch den Web-Sender unten.
 - **Gelöschter Chat wird nicht wiederbelebt.** `send` wirft *"web chat conversation '<id>'
   no longer exists"*, der Runner schreibt das nach `last_run_error`, die Routine bleibt
   aktiv (ProactiveSender-Vertrag).
-- **Nur Text.** `cardBody`/`approval` werden ignoriert; `message.text` trägt schon den
-  Markdown-Fallback, und das Session-Schema persistiert keine Attachments. Verworfene
-  Attachments werden als `WARN` geloggt. Eine **leere Antwort** (z. B. ein reiner
+- **Nur Text.** `cardBody`/`approval` werden stillschweigend ignoriert; `message.text`
+  trägt schon den Markdown-Fallback, und das Session-Schema persistiert keine
+  Attachments. Verworfene Attachments und ein verworfenes `message.interactive` (Kind
+  wird genannt) werden als `WARN` geloggt. Eine **leere Antwort** (z. B. ein reiner
   Diagramm-Turn) wirft — der Lauf landet als `error` in `last_run_error` statt als `ok`
   ohne Zustellung.
 - **`NO_REPLY` wird verworfen, nicht zugestellt.** Der Orchestrator-Systemprompt macht

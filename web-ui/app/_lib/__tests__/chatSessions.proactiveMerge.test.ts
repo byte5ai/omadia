@@ -108,6 +108,33 @@ describe('reconcileNewerRemote', () => {
     expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
   });
 
+  it('takes the server copy when a same-id local answer is only partial', () => {
+    // The tab closed right after turn 2's PUT, before the debounced local
+    // write caught up: localStorage holds a truncated copy under the SAME id.
+    const local = session([U1, A1, U2, { ...A2, content: 'a' }], 30);
+    const remote = session([U1, A1, U2, { ...A2, content: 'a2 in full' }, DELIVERY], 40);
+
+    expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
+  });
+
+  it('takes the server copy when a same-id local answer is still streaming', () => {
+    const local = session([U1, A1, U2, { ...A2, streaming: true }], 30);
+    const remote = session([U1, A1, U2, A2, DELIVERY], 40);
+
+    expect(reconcileNewerRemote(local, remote)).toEqual({ session: remote, pushLocal: false });
+  });
+
+  it('keeps a same-id local answer that differs from the server copy only in whitespace', () => {
+    const local = session([U1, { ...A1, content: 'a1\n' }], 30);
+    const remote = session([U1, A1, DELIVERY], 40);
+
+    const { session: result, pushLocal } = reconcileNewerRemote(local, remote);
+
+    expect(result.messages.map((m) => m.id)).toEqual(['u1', 'a1', 'p1']);
+    expect(result.messages[1]?.content).toBe('a1\n');
+    expect(pushLocal).toBe(false);
+  });
+
   // The in-process runtime's SessionLogger mirrors every web-chat turn into the
   // server copy under `srv-u-<startedAt>` / `srv-a-<finishedAt>` ids before the
   // client PUT lands; only that PUT swaps them for the client's ids.

@@ -41,6 +41,8 @@ let serverB: ChatSession;
 let putResponse: ChatSession | null = null;
 let puts: string[] = [];
 let putBodies: ChatSession[] = [];
+/** When set, a GET of one session waits for this promise before answering. */
+let holdSessionGet: Promise<void> | null = null;
 
 function session(id: string, updatedAt: number, messages: Message[]): ChatSession {
   return { id, title: id, createdAt: 1_000, updatedAt, messages };
@@ -67,6 +69,7 @@ beforeEach(() => {
   puts = [];
   putBodies = [];
   putResponse = null;
+  holdSessionGet = null;
   window.localStorage.clear();
   serverA = session(ID_A, 2_000, []);
   serverB = session(ID_B, 1_500, [USER_TURN]);
@@ -82,8 +85,12 @@ beforeEach(() => {
       if (method === 'GET' && url === '/bot-api/chat/sessions') {
         return Promise.resolve(json({ sessions: [summary(serverA), summary(serverB)] }));
       }
-      if (method === 'GET' && url.endsWith(ID_A)) return Promise.resolve(json(serverA));
-      if (method === 'GET' && url.endsWith(ID_B)) return Promise.resolve(json(serverB));
+      const answer = async (read: () => ChatSession): Promise<Response> => {
+        if (holdSessionGet) await holdSessionGet;
+        return json(read());
+      };
+      if (method === 'GET' && url.endsWith(ID_A)) return answer(() => serverA);
+      if (method === 'GET' && url.endsWith(ID_B)) return answer(() => serverB);
       return Promise.resolve(new Response('', { status: 200 }));
     },
   );
@@ -222,6 +229,83 @@ describe('useChatSessions — proactive re-read (#1071)', () => {
     const view = await hydrated();
 
     expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual(['u1', 'u2']);
+  });
+
+  it('hydration takes the server copy when the same-id local answer is truncated', async () => {
+    // The tab closed right after turn 2's PUT, before the debounced local
+    // write caught up; a delivery then landed. Same ids, but the server holds
+    // the full answer — it must win, as before #1071.
+    const local = session(ID_B, 2_150, [USER_TURN, RICH_ANSWER, U2, { ...A2, content: 'Next' }]);
+    window.localStorage.setItem('odoo-bot-chat-sessions', JSON.stringify([local]));
+    window.localStorage.setItem('odoo-bot-chat-active-id', ID_B);
+    serverB = session(ID_B, 9_000, [USER_TURN, STRIPPED_A1, U2, A2, DELIVERY]);
+
+    const view = await hydrated();
+
+    const messages = messagesOf(view, ID_B);
+    expect(messages.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', DELIVERY.id]);
+    expect(messages[3]?.content).toBe('Next week…');
+    expect(puts.some((url) => url.endsWith(`/${ID_B}`))).toBe(false);
+  });
+
+  it('a re-read that finds no delivery changes no state and writes nothing', async () => {
+    const view = await hydrated();
+    // Let the post-hydration debounced write settle, then watch for more.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const before = view.result.current.sessions;
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    let served = 0;
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const inner = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(ID_B)) served += 1;
+      return inner ? inner(input, init) : Promise.resolve(new Response(''));
+    });
+
+    act(() => {
+      view.result.current.refreshProactive(ID_B);
+    });
+    await waitFor(() => {
+      expect(served).toBe(1);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(view.result.current.sessions).toBe(before);
+    expect(setItem.mock.calls.filter(([key]) => key === 'odoo-bot-chat-sessions')).toEqual([]);
+    expect(puts).toEqual([]);
+  });
+
+  it('does not bring back a delivery the user cleared while the re-read was in flight', async () => {
+    const view = await hydrated();
+    serverB = { ...serverB, updatedAt: 9_000, messages: [...serverB.messages, DELIVERY] };
+    let release: () => void = () => undefined;
+    holdSessionGet = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    act(() => {
+      view.result.current.refreshProactive(ID_B);
+    });
+    await act(async () => {
+      await view.result.current.clearMessages(ID_B);
+    });
+    await act(async () => {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(messagesOf(view, ID_B)).toEqual([]);
+
+    // A delivery that lands after the clear still reaches the chat.
+    const later: Message = { ...DELIVERY, id: 'proactive-r1-12000', startedAt: 12_000 };
+    serverB = { ...serverB, updatedAt: 12_000, messages: [later] };
+    holdSessionGet = null;
+    act(() => {
+      view.result.current.refreshProactive(ID_B);
+    });
+    await waitFor(() => {
+      expect(messagesOf(view, ID_B).map((m) => m.id)).toEqual([later.id]);
+    });
   });
 
   it('folds a delivery the server merged into its PUT answer', async () => {
