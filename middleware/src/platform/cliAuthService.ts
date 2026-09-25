@@ -395,6 +395,19 @@ export async function submitCliCode(
   if (!session || session.id !== sessionId) {
     return { status: 'expired', error: 'No active login session. Start again.' };
   }
+  // The session outlives its process on purpose (see the exit handler). Since
+  // #1084 the code field shows while the browser callback may still complete,
+  // so report a settled session as it is, not as a dead process. (A local
+  // copy: narrowing `session.status` here would break the loop's re-checks.)
+  const settled = session.status;
+  if (settled === 'authorized') {
+    const account = session.account;
+    disposeActive();
+    return account ? { status: 'authorized', account } : { status: 'authorized' };
+  }
+  if (settled === 'error') {
+    return { status: 'error', error: session.error ?? 'The login process ended before sign-in completed. Start again.' };
+  }
   const child = session.child;
   if (!child || child.exitCode !== null) {
     return { status: 'expired', error: 'Login process is no longer running. Start again.' };

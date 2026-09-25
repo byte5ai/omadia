@@ -1216,8 +1216,8 @@ verschobenen Module zeigen jetzt auf `packages/harness-api-key-auth/`.
 |---|---|
 | `GET  /` | Erkannte CLIs (installiert / angemeldet), `?refresh=1` bustet den Cache |
 | `POST /:id/login/start` | Spawnt `claude auth login --claudeai`; Antwort `{ sessionId, verificationUrl, codeEntry, status }` |
-| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|invalid\|expired\|error, account?, error? }` |
-| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus |
+| `GET  /:id/login/status` | Poll-Ziel: `{ status: idle\|pending\|authorized\|error, account?, error? }` — `invalid` ist seit #1084 nur noch das Ergebnis eines `login/code`-Versuchs, kein Session-Status |
+| `POST /:id/login/code` | Schreibt den eingefügten Code auf stdin — wann immer die CLI auf einen Code wartet, auch als Fallback aus dem Polling-Modus; ist die Session schon `authorized`/`error` (Callback fertig, Prozess gescheitert), meldet es genau das statt „läuft nicht mehr" |
 | `POST /:id/login/cancel` | Verwirft die aktive Login-Session |
 | `POST /:id/logout` | `claude auth logout` + Cache-Bust |
 

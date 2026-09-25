@@ -296,4 +296,32 @@ describe('cliAuthService — OM-73 exit-code handling + flow detection', () => {
     // Auto-assign (OM-79) must still run after a failed first attempt.
     assert.deepEqual(hookCalls, ['claude']);
   });
+
+  // ── #1084: a submit against a session that already settled ─────────────────
+
+  it('#1084: a code submitted after the callback already finished reports authorized, not a dead process', async () => {
+    const res = await start(CALLBACK_FLOW_OUTPUT);
+    assert.equal(res.codeEntry, true); // the code field is showing …
+    loggedIn = 'yes';
+    child.exit(0); // … while the browser callback completes the login
+    await delay(20);
+    assert.equal(getActiveLogin()?.status, 'authorized');
+
+    const late = await submitCliCode(res.sessionId, 'late');
+    assert.equal(late.status, 'authorized');
+    assert.equal(late.account, 'me@firm.de');
+    assert.deepEqual(hookCalls, ['claude'], 'the hook fired once, on the exit path');
+    assert.equal(getActiveLogin(), undefined);
+  });
+
+  it('#1084: a code submitted after the process failed surfaces the stored error', async () => {
+    const res = await start(REAL_2_1_187_OUTPUT);
+    child.print('Error: token exchange failed\n');
+    child.exit(1);
+    await delay(20);
+
+    const late = await submitCliCode(res.sessionId, 'late');
+    assert.equal(late.status, 'error');
+    assert.match(late.error ?? '', /token exchange failed/);
+  });
 });

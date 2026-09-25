@@ -397,6 +397,126 @@ describe('<SubscriptionClisPanel />', () => {
     expect(mockSubmitCliLoginCode).not.toHaveBeenCalled();
   }, 10000);
 
+  /** #1084 — the image's 2.1.187 CLI: a paste prompt ⇒ `codeEntry: true`. */
+  function startsWithPastePrompt(sessionId: string): void {
+    mockStartCliLogin.mockResolvedValue({
+      sessionId,
+      verificationUrl: `https://claude.com/cai/oauth/authorize?code=true&s=${sessionId}`,
+      codeEntry: true,
+      status: 'pending',
+    });
+  }
+
+  it('#1084: codeEntry=true shows the code field at once; a wrong code keeps it, the right retry connects', async () => {
+    mockGetCliBackends
+      .mockResolvedValueOnce({
+        backends: [backend({ installed: true, loggedIn: 'no' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      })
+      .mockResolvedValue({
+        backends: [backend({ installed: true, loggedIn: 'yes', account: 'me@firm.de' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      });
+    startsWithPastePrompt('login-4');
+    mockGetCliLoginStatus.mockResolvedValue({ status: 'pending' });
+    // Keyed on the code (not a Once-queue) so a failure here cannot leak a
+    // queued result into the next test.
+    mockSubmitCliLoginCode.mockImplementation(async (_id: string, _sid: string, code: string) =>
+      code === 'good'
+        ? { status: 'authorized', account: 'me@firm.de' }
+        : { status: 'invalid', error: 'Invalid code. Copy the full code and try again.' },
+    );
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Abo verbinden/i }));
+    // The main field, not the callback wait.
+    const input = await screen.findByPlaceholderText(/Login-Code einfügen/i);
+    expect(screen.getByText(/Wird nach der Bestätigung ein Code angezeigt/i)).toBeTruthy();
+    expect(screen.queryByText(/sobald die Anmeldung abgeschlossen ist/i)).toBeNull();
+
+    fireEvent.change(input, { target: { value: 'bad' } });
+    fireEvent.click(screen.getByRole('button', { name: /Code senden/i }));
+    expect(await screen.findByText(/Invalid code/)).toBeTruthy();
+    // The server session is still pending: the field stays, no Retry.
+    expect(screen.getByPlaceholderText(/Login-Code einfügen/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Erneut versuchen/i })).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText(/Login-Code einfügen/i), {
+      target: { value: 'good' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Code senden/i }));
+    expect(await screen.findByText(/Angemeldet als me@firm\.de/)).toBeTruthy();
+    expect(mockSubmitCliLoginCode).toHaveBeenLastCalledWith('claude', 'login-4', 'good');
+  }, 10000);
+
+  it('#1084: after a wrong code the status poll resumes, so a callback that completes still connects', async () => {
+    mockGetCliBackends
+      .mockResolvedValueOnce({
+        backends: [backend({ installed: true, loggedIn: 'no' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      })
+      .mockResolvedValue({
+        backends: [backend({ installed: true, loggedIn: 'yes', account: 'me@firm.de' })],
+        cliToolsDir: CLI_TOOLS_DIR,
+        generatedAt: Date.now(),
+      });
+    startsWithPastePrompt('login-5');
+    // Any poll tick sees the finished login. The submit's result stops the
+    // first loop before its first 3s tick, so only a RESUMED loop can see it.
+    mockGetCliLoginStatus.mockResolvedValue({ status: 'authorized' });
+    mockSubmitCliLoginCode.mockResolvedValue({ status: 'invalid', error: 'Invalid code.' });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Abo verbinden/i }));
+    fireEvent.change(await screen.findByPlaceholderText(/Login-Code einfügen/i), {
+      target: { value: 'bad' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Code senden/i }));
+    await screen.findByText(/Invalid code/);
+
+    expect(
+      await screen.findByText(/Angemeldet als me@firm\.de/, {}, { timeout: 6000 }),
+    ).toBeTruthy();
+    expect(mockSubmitCliLoginCode).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('#1084: a submit that finds the session gone shows Retry, not a dead code field', async () => {
+    mockGetCliBackends.mockResolvedValue({
+      backends: [backend({ installed: true, loggedIn: 'no' })],
+      cliToolsDir: CLI_TOOLS_DIR,
+      generatedAt: Date.now(),
+    });
+    startsWithPastePrompt('login-6');
+    mockGetCliLoginStatus.mockResolvedValue({ status: 'pending' });
+    mockSubmitCliLoginCode.mockResolvedValue({
+      status: 'expired',
+      error: 'No active login session. Start again.',
+    });
+
+    renderWithIntl(<SubscriptionClisPanel onSwitchToProviders={() => {}} />, {
+      locale: 'de',
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Abo verbinden/i }));
+    fireEvent.change(await screen.findByPlaceholderText(/Login-Code einfügen/i), {
+      target: { value: 'late' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Code senden/i }));
+
+    expect(await screen.findByText(/No active login session/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Erneut versuchen/i })).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/Login-Code einfügen/i)).toBeNull();
+  }, 10000);
+
   it('OM-73: cancelling the callback login stops the status poll', async () => {
     mockGetCliBackends.mockResolvedValue({
       backends: [backend({ installed: true, loggedIn: 'no' })],
