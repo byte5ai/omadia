@@ -42,8 +42,36 @@ const PLUGIN_SOURCE = path.join(
   MIDDLEWARE_ROOT,
   'packages/harness-orchestrator/src/plugin.ts',
 );
+const KERNEL_SOURCE = path.join(MIDDLEWARE_ROOT, 'src/index.ts');
 
 describe('cliBinaryResolver service grant (#1085)', () => {
+  it('the kernel publishes the rule before any plugin activates', () => {
+    // The first half of the chain. Every other pin here stays green with this
+    // provide deleted: the orchestrator reads the service with getOptional, so
+    // its absence is the supported "no resolver" state and every turn quietly
+    // spawns from PATH again. Read out of `index.ts` source, like
+    // `coreMigrationsBootWiring.test.ts`, because importing it boots the
+    // whole middleware.
+    const source = readFileSync(KERNEL_SOURCE, 'utf8');
+    const provide = source.search(
+      /\n {2}serviceRegistry\.provide\(\s*CLI_BINARY_RESOLVER_SERVICE_NAME,\s*\(bin: string\): string => resolveCliBin\(bin\),?\s*\);/,
+    );
+    assert.notEqual(
+      provide,
+      -1,
+      'index.ts must provide CLI_BINARY_RESOLVER_SERVICE_NAME as `(bin) => resolveCliBin(bin)` ' +
+        "at main()'s top level, not inside a branch",
+    );
+    const activate = source.indexOf('await toolPluginRuntime.activateAllInstalled()');
+    assert.notEqual(activate, -1, 'could not find activateAllInstalled() in index.ts');
+    assert.ok(
+      provide < activate,
+      'the resolver must be provided BEFORE activateAllInstalled(): the orchestrator ' +
+        'resolves it once in activate(), so a later provide is never seen',
+    );
+  });
+
+
   it('the kernel constant and the plugin-side literal are the same name', () => {
     assert.equal(
       CLI_BINARY_RESOLVER_SERVICE,
@@ -125,8 +153,9 @@ describe('cliBinaryResolver service grant (#1085)', () => {
     // spread `...(maybeResolver ? { resolveCliBinary: maybeResolver } : {})`
     // — the legitimate shape at `subAgentTools.ts:117` — passes this guard
     // even when `maybeResolver` is never populated, and spawns from PATH.
-    // Green here is not proof the binary is resolved; the wiring tests below
-    // (service published → declared → forwarded per turn) carry that half.
+    // Green here is not proof the binary is resolved; the kernel-provide pin
+    // above, the forward pin below and the DB sub-agent spawn test in
+    // `agentBuilderSubAgentTools.test.ts` carry that half.
     const missing: string[] = [];
     for (const root of [
       path.join(MIDDLEWARE_ROOT, 'src'),
