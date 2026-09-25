@@ -35,7 +35,7 @@ const EXTRAS = '@omadia/orchestrator-extras';
 
 async function makeDeps(
   installed: Array<{ id: string; config?: Record<string, unknown> }>,
-  opts: { reactivateThrows?: boolean; throwFor?: string } = {},
+  opts: { reactivateThrows?: boolean; throwFor?: string; leavesErrored?: string } = {},
 ) {
   const vault = new InMemorySecretVault();
   const registry = new InMemoryInstalledRegistry();
@@ -64,6 +64,10 @@ async function makeDeps(
         if (opts.reactivateThrows) throw new Error('activation exploded');
         reactivated.push(id);
         if (opts.throwFor === id) throw new Error(`${id} activation exploded`);
+        // Mirror `installService.reactivate`: record, flip to errored, return.
+        if (opts.leavesErrored === id) {
+          await registry.markActivationBlocked(id, `${id} activate() exploded`);
+        }
       },
     },
   };
@@ -228,6 +232,28 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     assert.deepEqual(reactivated, [EXTRAS, ORCH]);
     assert.ok(
       logs.some((l) => l.includes(ORCH) && l.includes(`dependent ${EXTRAS} failed to rebuild`)),
+      logs.join('\n'),
+    );
+  });
+
+  // #1076 — persisted, but the plugin's own rebuild left it errored: it runs
+  // on nothing, so it is neither "assigned" nor "not switched".
+  it('reports a plugin left errored by its own rebuild as saved but not running', async () => {
+    const { registry, deps } = await makeDeps([{ id: ORCH, config: {} }], {
+      leavesErrored: ORCH,
+    });
+    const logs: string[] = [];
+
+    const outcome = await autoAssignSubscriptionCli({ ...deps, log: (m) => logs.push(m) });
+
+    assert.deepEqual(outcome.assigned, []);
+    assert.ok(
+      outcome.skipped.some((s) => s.pluginId === ORCH && s.reason === 'providers.rebuild_failed'),
+      JSON.stringify(outcome.skipped),
+    );
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER);
+    assert.ok(
+      logs.some((l) => l.includes(ORCH) && l.includes('saved but not running')),
       logs.join('\n'),
     );
   });

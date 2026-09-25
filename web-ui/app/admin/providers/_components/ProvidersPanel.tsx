@@ -64,21 +64,46 @@ function errorCode(err: unknown): string | null {
 }
 
 /**
- * #1076 — the one failure after which the assignment IS persisted: the
- * server wrote the new provider/model and only the rebuild of a plugin that
- * inherits it (extras) failed. `primaryApplied` on the envelope says whether
- * the plugin itself came back up; the saved config is the same either way.
+ * #1076 — the failures after which the assignment IS persisted: the server
+ * wrote the new provider/model, then a plugin inheriting it (extras) or the
+ * plugin itself did not come back up on it. `primaryApplied: false` on the
+ * envelope means the plugin itself is down.
  */
 const DEPENDENT_REBUILD_FAILED = 'providers.dependent_rebuild_failed';
+const REBUILD_FAILED = 'providers.rebuild_failed';
 
 /**
- * True when a failed assignment still landed (see
- * {@link DEPENDENT_REBUILD_FAILED}). The row must then show the NEW provider:
- * snapping the controlled select back to the old one would misstate what the
- * server now holds, and would point the row's Retry at the old assignment.
+ * True when a failed assignment still landed. The row must then show the NEW
+ * provider: snapping the controlled select back to the old one would misstate
+ * what the server now holds, and would point the row's Retry at the old
+ * assignment.
  */
 function isAssignmentPersisted(err: unknown): boolean {
-  return errorCode(err) === DEPENDENT_REBUILD_FAILED;
+  const code = errorCode(err);
+  return code === DEPENDENT_REBUILD_FAILED || code === REBUILD_FAILED;
+}
+
+/** `primaryApplied` off the error envelope; `null` when absent. */
+function primaryApplied(err: unknown): boolean | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { primaryApplied?: unknown };
+    return typeof parsed.primaryApplied === 'boolean' ? parsed.primaryApplied : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The code whose copy the row shows. A dependent failure whose plugin is down
+ * too gets the plugin-down copy: "only the background memory features" would
+ * understate an orchestrator that runs on nothing.
+ */
+function assignmentHelpCode(err: unknown): string | null {
+  const code = errorCode(err);
+  return code === DEPENDENT_REBUILD_FAILED && primaryApplied(err) === false
+    ? REBUILD_FAILED
+    : code;
 }
 
 /**
@@ -188,7 +213,7 @@ export function ProvidersPanel({
         commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
-        // #1076 — the assignment landed; a dependent is down. Show the row on
+        // #1076 — the assignment landed; a rebuild failed. Show the row on
         // the provider the server now holds, AND the error with its Retry.
         if (isAssignmentPersisted(err)) commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
@@ -999,12 +1024,12 @@ function AssignmentRow({
         </p>
       )}
       {error !== undefined && (
-        <ErrorHelp code={errorCode(error)} rawDetail={error} />
+        <ErrorHelp code={assignmentHelpCode(error)} rawDetail={error} />
       )}
-      {/* #1076 — after a failed dependent rebuild both selects already hold
-          the saved values (the row was committed), so re-picking them fires
-          no change event. Retry re-sends the same assignment; the server then
-          rebuilds every dependent still left errored. */}
+      {/* #1076 — after a persisted-but-failed rebuild both selects already
+          hold the saved values (the row was committed), so re-picking them
+          fires no change event. Retry re-sends the same assignment; the
+          server then rebuilds the plugin and every dependent still errored. */}
       {isAssignmentPersisted(error) && a.model !== null && (
         <div>
           <Button

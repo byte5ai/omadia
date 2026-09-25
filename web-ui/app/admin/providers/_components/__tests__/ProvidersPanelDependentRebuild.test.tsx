@@ -188,6 +188,37 @@ describe('<ProvidersPanel /> dependent rebuild failure (#1076)', () => {
       }),
     ).toBeTruthy();
     expect(select.value).toBe('openai');
+    // The orchestrator itself is down: "only the background memory features"
+    // would understate it, so the row shows the plugin-down copy instead.
+    expect(screen.getByText(en.errorHelp.providers.rebuild_failed.what)).toBeTruthy();
+    expect(
+      screen.queryByText(en.errorHelp.providers.dependent_rebuild_failed.what),
+    ).toBeNull();
+  });
+
+  it('keeps the saved provider and offers Retry when only the orchestrator failed to rebuild', async () => {
+    mockAssignProvider.mockRejectedValue(
+      new ApiError(
+        500,
+        'POST /v1/admin/providers/assignment failed: 500',
+        JSON.stringify({
+          code: 'providers.rebuild_failed',
+          message: 'orchestrator did not come back up',
+          primaryApplied: false,
+        }),
+      ),
+    );
+    const select = await switchToOpenAi();
+
+    expect(
+      await screen.findByText(en.errorHelp.providers.rebuild_failed.what),
+    ).toBeTruthy();
+    expect(select.value).toBe('openai');
+    expect(
+      screen.getByRole('button', {
+        name: en.adminProviders.assignments.retryDependentRebuild,
+      }),
+    ).toBeTruthy();
   });
 
   it('snaps back to the old provider when the assignment did not land', async () => {

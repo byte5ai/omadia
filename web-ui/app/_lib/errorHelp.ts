@@ -77,6 +77,10 @@ export const ERROR_HELP_CODES = [
   'providers.oauth_too_many_flows',
   'providers.oauth_unsupported',
   'providers.read_failed',
+  // #1076 — the assignment landed, but the plugin's own rebuild left it
+  // errored. Also the row's copy for a dependent_rebuild_failed whose
+  // envelope says `primaryApplied: false` (ProvidersPanel.tsx).
+  'providers.rebuild_failed',
   'providers.tool_incompatible',
   'providers.unknown_plugin',
   'providers.unknown_provider',

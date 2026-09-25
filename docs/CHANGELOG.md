@@ -85,6 +85,21 @@ final rebuild captures extras with its own hand-off model rather than an
 intermediate one, and it counts a plugin whose only failure was a dependent
 rebuild as assigned, because its config was persisted and rebuilt.
 
+An assignment on `/admin/providers` whose plugin is left `errored` by its own
+rebuild no longer answers `ok` either: it answers `providers.rebuild_failed`
+with `primaryApplied: false`. The route's response carries no plugin status,
+so before this the page showed "saved" for a plugin running on nothing; the
+Retry path made that reachable (both fail, Retry, extras recovers, the
+orchestrator still fails). The page keeps the saved provider, offers Retry and
+shows the plugin-down copy, which it also shows for a
+`dependent_rebuild_failed` with `primaryApplied: false` instead of the
+understating memory-features copy. The dependent-rebuild copy now says that
+a restart would leave the orchestrator down too while extras is `errored`
+(boot skips non-active entries, and the orchestrator hard-requires extras'
+services). The subscription hand-off logs such a plugin as "saved but not
+running". The dependent helpers moved from `providerAssignment.ts` to
+`providerDependents.ts`.
+
 The rebuild does not change OM-102's precedence: extras follows the
 orchestrator only where it inherits. An explicit `llm_provider` on extras, or
 an Anthropic key in extras' own vault scope, still wins over the orchestrator's

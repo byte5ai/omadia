@@ -1868,7 +1868,7 @@ Daten im Kernel: `inheritsProviderFrom: '@omadia/orchestrator'` am extras-Eintra
 von `LLM_PLUGINS` (`src/platform/pluginLlmReadiness.ts`), gespiegelt durch die
 exportierte Konstante `INHERITS_PROVIDER_FROM_PLUGIN_ID` im extras-Paket (ein
 Drift-Test hält beide gleich). `reactivateAfterProviderWrite`
-(`src/platform/providerAssignment.ts`) baut bei einer **effektiven**
+(`src/platform/providerDependents.ts`) baut bei einer **effektiven**
 Provider-Änderung (vorher `?? 'anthropic'` gegen nachher; unset → explizit
 `anthropic` zählt nicht) zuerst jedes installierte abhängige Plugin neu, dann das
 Plugin selbst. Die Reihenfolge ist tragend: der Orchestrator greift
@@ -1892,7 +1892,15 @@ Code den neuen Provider in die Zeile, statt das kontrollierte Select auf den
 alten zurückspringen zu lassen, und zeigt einen „Erneut versuchen“-Button, der
 dieselbe Zuordnung noch einmal schickt; ein erneutes Auswählen der schon
 gewählten Option löst kein Change-Event aus. `autoAssignSubscriptionCli` zählt
-ein Plugin mit `primaryApplied: true` als `assigned`. „Gescheitert“ heißt: `reactivate` wirft **oder**
+ein Plugin mit `primaryApplied: true` als `assigned`. Kommt kein abhängiges
+Plugin zu Fall, liefert `reactivateAfterProviderWrite` das `primaryFailure`
+des Plugins selbst zurück; `applyProviderAssignment` antwortet dann mit
+`providers.rebuild_failed` (`primaryApplied: false`) statt `ok`, weil die
+Providers-Antwort keinen Status trägt (die Runtime-PATCH-Routen liefern den
+Status im `updated`-Objekt und bleiben unverändert). Das `ProvidersPanel`
+behandelt den Code wie `dependent_rebuild_failed` (Zeile übernimmt den neuen
+Provider, Retry) und zeigt dessen Copy auch für ein
+`dependent_rebuild_failed` mit `primaryApplied: false`. „Gescheitert“ heißt: `reactivate` wirft **oder**
 hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und

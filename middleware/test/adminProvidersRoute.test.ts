@@ -549,6 +549,24 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
   });
 
+  it('answers rebuild_failed with primaryApplied: false when only the orchestrator is left errored', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      reactivateLeavesErrored: [ORCH],
+    });
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(status, 500);
+    const body = json as { code?: string; dependentId?: string; primaryApplied?: boolean };
+    assert.equal(body.code, 'providers.rebuild_failed');
+    assert.equal(body.primaryApplied, false);
+    assert.equal('dependentId' in body, false);
+    assert.equal(h.registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.deepEqual(h.reactivated, [EXTRAS, ORCH]);
+  });
+
   it('sets BOTH model keys for the extras plugin', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     const { status } = await assign(h, {

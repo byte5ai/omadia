@@ -11,7 +11,7 @@ import {
   ProviderDependentRebuildError,
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
-} from '../platform/providerAssignment.js';
+} from '../platform/providerDependents.js';
 import type { SetupOption } from '../api/admin-v1.js';
 import {
   SetupOptionsResolveError,

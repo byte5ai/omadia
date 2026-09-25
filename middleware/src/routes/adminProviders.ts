@@ -462,12 +462,11 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       res.status(result.status).json({
         code: result.code,
         message: result.message,
-        // #1076 — `providers.dependent_rebuild_failed`: the assignment IS
-        // persisted; a provider dependent is down. `primaryApplied` says
-        // whether the plugin itself came back up on it.
-        ...(result.dependentId !== undefined
-          ? { dependentId: result.dependentId, primaryApplied: result.primaryApplied === true }
-          : {}),
+        // #1076 — `providers.dependent_rebuild_failed` / `.rebuild_failed`:
+        // the assignment IS persisted, but a provider dependent or the plugin
+        // itself is down. `primaryApplied` says whether the plugin runs on it.
+        ...(result.dependentId !== undefined ? { dependentId: result.dependentId } : {}),
+        ...(result.primaryApplied !== undefined ? { primaryApplied: result.primaryApplied } : {}),
       });
       return;
     }

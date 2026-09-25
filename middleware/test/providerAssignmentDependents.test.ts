@@ -28,13 +28,13 @@ import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { registerBuiltinLlmProviders } from '../src/platform/builtinLlmProviders.js';
 import { LLM_PLUGINS } from '../src/platform/pluginLlmReadiness.js';
+import { applyProviderAssignment } from '../src/platform/providerAssignment.js';
 import {
   ProviderDependentRebuildError,
-  applyProviderAssignment,
   isEffectiveProviderChange,
   providerDependentsOf,
   reactivateAfterProviderWrite,
-} from '../src/platform/providerAssignment.js';
+} from '../src/platform/providerDependents.js';
 import type { SecretVault } from '../src/secrets/vault.js';
 
 const ORCH = '@omadia/orchestrator';
@@ -354,6 +354,70 @@ describe('provider re-assignment rebuilds dependents (#1076)', () => {
     assert.equal(result.ok === false ? result.code : undefined, 'providers.dependent_rebuild_failed');
     assert.match(result.ok === false ? result.message : '', /orchestrator-extras activation exploded/);
   });
+
+  // The primary's own rebuild can fail while every dependent comes back up.
+  // The providers response carries no status, so `ok` would show "saved" for a
+  // plugin that runs on nothing.
+  async function withFailingActivations(failing: (id: string, attempt: number) => boolean) {
+    const { registry, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+      { id: EXTRAS },
+    ]);
+    const attempts = new Map<string, number>();
+    const installService = new InstallService({
+      catalog: {} as PluginCatalog,
+      registry,
+      vault: {} as SecretVault,
+      onUninstall: async () => undefined,
+      onInstalled: async (id: string) => {
+        const attempt = (attempts.get(id) ?? 0) + 1;
+        attempts.set(id, attempt);
+        if (failing(id, attempt)) throw new Error(`${id} activate() exploded`);
+      },
+    });
+    const withService = {
+      ...deps,
+      reactivate: async (id: string): Promise<void> => {
+        await installService.reactivate(id);
+      },
+    };
+    return { registry, withService };
+  }
+
+  it('the orchestrator left errored on its own answers rebuild_failed, not ok', async () => {
+    const { registry, withService } = await withFailingActivations((id) => id === ORCH);
+    const result = await applyProviderAssignment(withService, {
+      pluginId: ORCH,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    assert.equal(registry.get(ORCH)?.status, 'errored');
+    assert.equal(registry.get(EXTRAS)?.status, 'active');
+    assert.equal(registry.get(ORCH)?.config['llm_provider'], 'openai');
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.ok === false ? result.code : undefined, 'providers.rebuild_failed');
+    assert.equal(result.ok === false ? result.primaryApplied : undefined, false);
+    assert.equal(result.ok === false ? result.dependentId : undefined, undefined);
+    assert.match(result.ok === false ? result.message : '', /@omadia\/orchestrator activate\(\) exploded/);
+  });
+
+  it('a Retry whose dependent comes back up while the orchestrator still fails is not answered ok', async () => {
+    // First save: both fail (primaryApplied: false). Retry: extras recovers,
+    // the orchestrator keeps failing — the case that used to turn "saved".
+    const { registry, withService } = await withFailingActivations(
+      (id, attempt) => id === ORCH || attempt === 1,
+    );
+    const input = { pluginId: ORCH, provider: 'openai', model: 'gpt-5.5' };
+    const first = await applyProviderAssignment(withService, input);
+    assert.equal(first.ok === false ? first.code : undefined, 'providers.dependent_rebuild_failed');
+    assert.equal(first.ok === false ? first.primaryApplied : undefined, false);
+
+    const retry = await applyProviderAssignment(withService, input);
+    assert.equal(registry.get(EXTRAS)?.status, 'active');
+    assert.equal(retry.ok, false, JSON.stringify(retry));
+    assert.equal(retry.ok === false ? retry.code : undefined, 'providers.rebuild_failed');
+    assert.equal(retry.ok === false ? retry.primaryApplied : undefined, false);
+  });
 });
 
 describe('providerDependentsOf / reactivateAfterProviderWrite', () => {
@@ -374,9 +438,33 @@ describe('providerDependentsOf / reactivateAfterProviderWrite', () => {
 
   it('does nothing without a reactivate hook', async () => {
     const registry = new InMemoryInstalledRegistry();
-    await reactivateAfterProviderWrite({ installedRegistry: registry }, ORCH, {
+    const outcome = await reactivateAfterProviderWrite({ installedRegistry: registry }, ORCH, {
       providerChanged: true,
     });
+    assert.equal(outcome, undefined);
+  });
+
+  it('returns the primary failure instead of dropping it when no dependent failed', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    for (const id of [ORCH, EXTRAS]) {
+      await registry.register({
+        id,
+        installed_version: '0.1.0',
+        installed_at: new Date().toISOString(),
+        status: 'active',
+        config: {},
+      });
+    }
+    const reactivate = async (id: string): Promise<void> => {
+      if (id === ORCH) await registry.markActivationBlocked(id, 'no chat provider');
+    };
+    const outcome = await reactivateAfterProviderWrite(
+      { installedRegistry: registry, reactivate },
+      ORCH,
+      { providerChanged: true },
+    );
+    assert.equal(outcome?.providerChanged, true);
+    assert.match(outcome?.primaryFailure ?? '', /no chat provider/);
   });
 
   it('throws a typed error naming the dependent when it is left errored', async () => {

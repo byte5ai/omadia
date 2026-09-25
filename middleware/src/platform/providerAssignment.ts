@@ -26,6 +26,13 @@ import {
   type LlmProviderCatalogView,
   type ProviderKeyVault,
 } from './pluginLlmReadiness.js';
+import {
+  ProviderDependentRebuildError,
+  isEffectiveProviderChange,
+  providerDependentsOf,
+  reactivateAfterProviderWrite,
+  type PrimaryRebuildOutcome,
+} from './providerDependents.js';
 
 export interface ProviderAssignmentDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -55,228 +62,16 @@ export type ProviderAssignmentResult =
       readonly code: string;
       readonly message: string;
       /**
-       * Set only on `providers.dependent_rebuild_failed` (#1076): the
-       * assignment IS persisted; the named provider dependent did not come
-       * back up. `primaryApplied` says whether the plugin itself came back up
-       * on it (`false` when its own rebuild left it `errored` too). The route
-       * puts both fields on the error envelope.
+       * #1076 — set only when the assignment IS persisted but something did
+       * not come back up on it: `providers.dependent_rebuild_failed` names the
+       * provider dependent in `dependentId`; `providers.rebuild_failed` means
+       * the plugin itself is left `errored`. `primaryApplied` says whether the
+       * plugin itself runs on the saved assignment. The route puts both on the
+       * error envelope.
        */
       readonly dependentId?: string;
       readonly primaryApplied?: boolean;
     };
-
-// ---------------------------------------------------------------------------
-// #1076 (OM-102 follow-up) — provider dependents.
-//
-// `@omadia/orchestrator-extras` falls back to the orchestrator's `llm_provider`
-// and resolves it ONCE per activate(). A change to the orchestrator's provider
-// therefore has to rebuild extras too — on the writing side, the lesson of #989
-// (a capability-relevant change is a rebuild, not an update). Doing it inside
-// extras as a lazy lookup is ruled out: the orchestrator captures extras'
-// `factExtractor` / `contextRetriever` / `sessionBriefing` instances eagerly in
-// its own activate(), so the instances themselves must be replaced.
-//
-// That capture is also why the ORDER matters: dependents first, then the plugin
-// itself — the boot order. Rebuilding extras after the orchestrator would leave
-// the running orchestrator holding the old extras instances.
-// ---------------------------------------------------------------------------
-
-/** Ids of the LLM plugins that inherit their provider from `pluginId`. */
-export function providerDependentsOf(pluginId: string): string[] {
-  return LLM_PLUGINS.filter((p) => p.inheritsProviderFrom === pluginId).map(
-    (p) => p.id,
-  );
-}
-
-function effectiveProvider(cfg: Record<string, unknown> | undefined): string {
-  return (readStringConfig(cfg ?? {}, 'llm_provider') ?? DEFAULT_PROVIDER).trim();
-}
-
-/** True when two configs resolve to different providers. Unset means the
- *  platform default, so unset → explicit `anthropic` is NOT a change. */
-export function isEffectiveProviderChange(
-  before: Record<string, unknown> | undefined,
-  after: Record<string, unknown> | undefined,
-): boolean {
-  return effectiveProvider(before) !== effectiveProvider(after);
-}
-
-export interface ProviderReactivationDeps {
-  readonly installedRegistry: Pick<InstalledRegistry, 'has' | 'get'>;
-  readonly reactivate?: (pluginId: string) => Promise<void>;
-}
-
-export interface PrimaryRebuildOutcome {
-  /** The effective provider changed with this write. */
-  readonly providerChanged: boolean;
-  /**
-   * Why the primary's own rebuild left it `errored`, or `undefined` when it
-   * came back up.
-   */
-  readonly primaryFailure?: string;
-}
-
-/**
- * A provider dependent (extras, for the orchestrator) did not come back up
- * after the rebuild a provider change triggered. The primary's config is
- * persisted and the primary was rebuilt on it; it re-captured whatever the
- * dependent left published, so the features the dependent serves (memory
- * recall, fact extraction, briefing) are down. `primaryApplied` is `true` only
- * when the primary itself came back up; when its own rebuild left it
- * `errored` too, nothing runs on the saved provider and the message says so.
- */
-export class ProviderDependentRebuildError extends Error {
-  readonly primaryId: string;
-  readonly dependentId: string;
-  readonly primaryApplied: boolean;
-
-  /**
-   * `outcome.providerChanged` picks the wording: on a same-provider re-save
-   * (the retry of a dependent still `errored`) the primary did not move to a
-   * NEW provider, so the message must not claim it did.
-   */
-  constructor(
-    primaryId: string,
-    dependentId: string,
-    reason: string,
-    outcome: PrimaryRebuildOutcome,
-  ) {
-    super(
-      `${describePrimaryState(primaryId, outcome)}, but its dependent ${dependentId} failed to rebuild: ${reason}`,
-    );
-    this.name = 'ProviderDependentRebuildError';
-    this.primaryId = primaryId;
-    this.dependentId = dependentId;
-    this.primaryApplied = outcome.primaryFailure === undefined;
-  }
-}
-
-function describePrimaryState(primaryId: string, outcome: PrimaryRebuildOutcome): string {
-  if (outcome.primaryFailure !== undefined) {
-    return `${primaryId}'s config was saved, but ${primaryId} did not come back up either (${outcome.primaryFailure})`;
-  }
-  return outcome.providerChanged
-    ? `${primaryId} runs on its new provider`
-    : `${primaryId} was saved and rebuilt on its unchanged provider`;
-}
-
-/**
- * Why `pluginId` is `errored` in the registry right after a rebuild, or
- * `undefined` when it is not. The production `reactivate`
- * (`reactivateAgent` → `installService.reactivate`) never throws on an
- * activation failure: it records `markActivationFailed`, flips the entry to
- * `errored` and returns. A successful reactivation lifts `errored` again
- * (`clearActivationError`), so `errored` right after the call means THIS
- * rebuild failed.
- */
-function activationFailure(
-  installedRegistry: ProviderReactivationDeps['installedRegistry'],
-  pluginId: string,
-): string | undefined {
-  const entry = installedRegistry.get(pluginId);
-  if (entry?.status !== 'errored') return undefined;
-  return entry.last_activation_error ?? 'activation failed (no error recorded)';
-}
-
-/**
- * Rebuild `dependentId`; return why it did not come back up, or `undefined`
- * when it did. Left `errored` (see {@link activationFailure}) or a throwing
- * `reactivate` both count as a failure.
- */
-async function rebuildDependent(
-  installedRegistry: ProviderReactivationDeps['installedRegistry'],
-  reactivate: (pluginId: string) => Promise<void>,
-  dependentId: string,
-): Promise<string | undefined> {
-  try {
-    await reactivate(dependentId);
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  }
-  return activationFailure(installedRegistry, dependentId);
-}
-
-export interface ProviderWriteFacts {
-  /** The effective provider differs before vs after the write. */
-  readonly providerChanged: boolean;
-  /**
-   * The write carried `llm_provider` at all, changed or not. A same-provider
-   * re-save is the retry the UI offers after a failed dependent rebuild (the
-   * Retry button on /admin/providers), so it must reach a dependent still
-   * left `errored`.
-   */
-  readonly providerWritten?: boolean;
-}
-
-/**
- * The installed dependents a write to `pluginId` has to rebuild: all of them on
- * an effective provider change; on a same-provider re-save of `llm_provider`
- * only those still `errored`. Without the second rule a retry after a failed
- * extras rebuild would see no change, rebuild only the primary and answer
- * `ok`, leaving extras down behind a success.
- */
-function dependentsToRebuild(
-  installedRegistry: ProviderReactivationDeps['installedRegistry'],
-  pluginId: string,
-  facts: ProviderWriteFacts,
-): string[] {
-  return providerDependentsOf(pluginId).filter((id) => {
-    if (!installedRegistry.has(id)) return false;
-    if (facts.providerChanged) return true;
-    return facts.providerWritten === true && installedRegistry.get(id)?.status === 'errored';
-  });
-}
-
-/**
- * Reactivate `pluginId` after a config write. When its provider changed, every
- * INSTALLED provider dependent is rebuilt first; when `llm_provider` was
- * re-written unchanged, only the dependents still `errored` are (see
- * {@link dependentsToRebuild}). A failing dependent does not
- * stop the primary from being rebuilt (it re-captures whatever the dependent
- * left published). Afterwards the first dependent failure is thrown as a
- * {@link ProviderDependentRebuildError}, so the caller reports the write as
- * failed instead of silently half-applied. A dependent counts as failed when
- * `reactivate` throws OR leaves it `errored` in the registry; the production
- * `reactivate` only ever does the latter.
- */
-export async function reactivateAfterProviderWrite(
-  deps: ProviderReactivationDeps,
-  pluginId: string,
-  opts: ProviderWriteFacts,
-): Promise<void> {
-  const reactivate = deps.reactivate;
-  if (reactivate === undefined) return;
-  const dependents = dependentsToRebuild(deps.installedRegistry, pluginId, opts);
-  const dependentFailures: Array<{ readonly id: string; readonly reason: string }> = [];
-  for (const id of dependents) {
-    const reason = await rebuildDependent(deps.installedRegistry, reactivate, id);
-    if (reason !== undefined) dependentFailures.push({ id, reason });
-  }
-  try {
-    await reactivate(pluginId);
-  } catch (err) {
-    // The primary's own failure is the headline; still say what the
-    // dependents reported on the way instead of dropping it.
-    for (const f of dependentFailures) {
-      console.error(`[providers] ${pluginId}'s dependent ${f.id} failed to rebuild: ${f.reason}`);
-    }
-    throw err;
-  }
-  // Same check as for the dependents: the production `reactivate` reports a
-  // failed rebuild by leaving the primary `errored`, not by throwing, so the
-  // error must not claim the primary runs on the saved provider.
-  const outcome: PrimaryRebuildOutcome = {
-    providerChanged: opts.providerChanged,
-    primaryFailure: activationFailure(deps.installedRegistry, pluginId),
-  };
-  const failures = dependentFailures.map(
-    (f) => new ProviderDependentRebuildError(pluginId, f.id, f.reason, outcome),
-  );
-  const [firstFailure, ...otherFailures] = failures;
-  // Only one error can be thrown; the rest are logged, not dropped.
-  for (const f of otherFailures) console.error(`[providers] ${f.message}`);
-  if (firstFailure !== undefined) throw firstFailure;
-}
 
 /**
  * Validate and persist `{ provider, model }` for an LLM-consuming plugin, then
@@ -358,9 +153,10 @@ export async function applyProviderAssignment(
     }
   }
 
+  let outcome: PrimaryRebuildOutcome | undefined;
   try {
     await deps.installedRegistry.updateConfig(pluginId, nextConfig);
-    await reactivateAfterProviderWrite(deps, pluginId, {
+    outcome = await reactivateAfterProviderWrite(deps, pluginId, {
       providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
       providerWritten: true,
     });
@@ -382,6 +178,19 @@ export async function applyProviderAssignment(
       status: 500,
       code: 'providers.apply_failed',
       message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (outcome?.primaryFailure !== undefined) {
+    // #1076 — persisted, but the plugin's own rebuild left it `errored`. This
+    // response carries no status, so answering `ok` would show "saved" for a
+    // plugin that runs on nothing (e.g. after a Retry whose dependents came
+    // back up while the plugin itself still fails).
+    return {
+      ok: false,
+      status: 500,
+      code: 'providers.rebuild_failed',
+      message: `${pluginId}'s assignment was saved, but ${pluginId} did not come back up on it: ${outcome.primaryFailure}`,
+      primaryApplied: false,
     };
   }
   return { ok: true, pluginId, provider, model: storeModel };
@@ -517,11 +326,12 @@ export async function autoAssignSubscriptionCli(
         `[providers] subscription hand-off: ${desc.id} had no credential for '${current}', now runs on '${SUBSCRIPTION_CLI_PROVIDER}', but its dependent ${result.dependentId ?? '(unknown)'} failed to rebuild (${result.code}: ${result.message})`,
       );
     } else {
-      // A `dependent_rebuild_failed` without `primaryApplied` means the config
+      // `primaryApplied: false` (`providers.rebuild_failed`, or a
+      // `dependent_rebuild_failed` whose plugin failed too) means the config
       // WAS persisted but the plugin itself did not come back up on it, so it
-      // runs on nothing; `result.message` says so rather than "not switched".
+      // runs on nothing; the log says so rather than "not switched".
       skipped.push({ pluginId: desc.id, reason: result.code });
-      const verdict = result.dependentId !== undefined ? 'saved but not running' : 'not switched';
+      const verdict = result.primaryApplied === false ? 'saved but not running' : 'not switched';
       log(`[providers] subscription hand-off: ${desc.id} ${verdict} (${result.code}: ${result.message})`);
     }
   }

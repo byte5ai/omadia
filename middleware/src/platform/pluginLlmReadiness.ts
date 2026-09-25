@@ -46,7 +46,7 @@ export interface LlmPluginDesc {
   readonly requiresTools?: boolean;
   /** The plugin whose `llm_provider` this one falls back to when it has none
    *  of its own. A change to THAT plugin's provider must rebuild this one
-   *  (`reactivateAfterProviderWrite` in `providerAssignment.ts`), because the
+   *  (`reactivateAfterProviderWrite` in `providerDependents.ts`), because the
    *  inherited provider is resolved once per `activate()`. */
   readonly inheritsProviderFrom?: string;
 }

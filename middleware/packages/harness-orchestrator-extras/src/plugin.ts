@@ -201,7 +201,7 @@ export async function activate(
   // Read ONCE, here, on purpose. A change to the orchestrator's `llm_provider`
   // rebuilds this plugin (and then the orchestrator, which captures the
   // services published below eagerly) through `reactivateAfterProviderWrite`
-  // in the kernel's `src/platform/providerAssignment.ts` (#1076). Do not add a
+  // in the kernel's `src/platform/providerDependents.ts` (#1076). Do not add a
   // lazy per-call lookup instead: the orchestrator would keep holding the
   // instances built here, so a lookup inside them could never be the whole fix.
   //
