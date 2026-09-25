@@ -859,7 +859,15 @@ export interface ToolsAccessor {
    *  registered without a handler. NOTE: this bypasses the per-turn
    *  dispatch hooks (privacy guard, telemetry) — callers replay only
    *  inputs a real turn of the same user already executed. Optional so
-   *  narrow test contexts need not implement it. */
+   *  narrow test contexts need not implement it.
+   *
+   *  `memory` is special (#909): it never reaches the memory provider's
+   *  root-bound handler. It runs against the caller's OWN `ctx.memory`
+   *  scope — `/memories` is the plugin's subtree
+   *  (`/memories/orchestrators/<agentSlug>/plugins/<pluginId>/`), with the
+   *  same default-Agent read-only legacy fallback — and rejects when the
+   *  manifest declares no `permissions.memory` or no memory store is
+   *  published. */
   invoke?(name: string, input: unknown): Promise<string>;
 }
 

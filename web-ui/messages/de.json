@@ -904,6 +904,7 @@
   "themeControls": {
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
+    "menuAriaLabel": "Palette und Darstellung",
     "palette": {
       "lagoon": "Lagoon (Türkis)",
       "petrol": "Petrol (Blau)",

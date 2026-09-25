@@ -42,35 +42,89 @@ export interface RoutineListAttachmentInput {
   }>;
 }
 
+/**
+ * Runs one async segment of a routine turn with the principal installed.
+ * Returned by {@link RoutinesIntegration.beginRoutineTurn}; call it as often as
+ * the turn has segments (once for a buffered turn, once per pull for a stream).
+ */
+export type RoutineTurnRunner = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * Who this turn belongs to, and where a scheduled answer would be delivered.
+ * Shared by both turn-capture entry points so they cannot drift apart.
+ */
+export interface RoutineTurnInput {
+  tenant: string;
+  userId: string;
+  channel: string;
+  /**
+   * The channel-native delivery handle a `ProactiveSender` for {@link channel}
+   * can send to — an adapter's own wire shape (Teams: a Bot Framework
+   * `ConversationReference`).
+   *
+   * The kernel's channel-agnostic producer (#1086) cannot know that shape, so
+   * for a turn whose adapter installed nothing it supplies
+   * `{ kind: 'channel', channelId, conversationId }` instead: the routable pair
+   * it does hold. A sender that can receive one MUST handle that shape (route
+   * by `conversationId`) or, better, the adapter should install its own context
+   * so this one is never used — and it can upgrade an already-stored ref via
+   * {@link RoutinesIntegration.updateRoutineConversationRef}.
+   */
+  conversationRef: unknown;
+  /**
+   * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
+   * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
+   * operator enters as a role holder or human-step principal. Omitted ⇒ the binding falls back to
+   * `userId` (the channel-native id, e.g. AAD object id). Does NOT affect routine attribution.
+   */
+  principalRef?: string;
+  /**
+   * Cold-start authorization (default `false`). When `true`, the
+   * `manage_routine` tool permits this user to create routines that
+   * proactively message OTHER people (via `targetEmail` → a
+   * `ColdStartTarget`). Channel plugins populate it from their own
+   * governance source (e.g. an operator-configured allowlist of AAD
+   * object ids / roles). Omitted ⇒ self-only, unchanged behaviour.
+   */
+  canTargetOthers?: boolean;
+}
+
 export interface RoutinesIntegration {
   /**
    * Open a per-turn AsyncLocalStorage scope so the `manage_routine` tool
    * can attribute `create` to the active user and capture the channel-
    * native delivery handle. Channel plugins call this at the start of
    * every inbound turn, BEFORE invoking the chatAgent.
+   *
+   * Uses `AsyncLocalStorage.enterWith`, which has NO scope exit: the value
+   * persists forward on the async chain until something overwrites it, so an
+   * adapter that begins a second turn without calling this again still carries
+   * the first turn's principal (#1016 guards the resulting staleness on the
+   * subscription-CLI path). Prefer {@link RoutinesIntegration.beginRoutineTurn}
+   * whenever the caller can wrap the turn body; this entry point exists for
+   * adapters that hand control to the orchestrator and cannot.
    */
-  captureRoutineTurn(info: {
-    tenant: string;
-    userId: string;
-    channel: string;
-    conversationRef: unknown;
-    /**
-     * Operator-addressable principal id used as the Conductor channel-binding key, so proactive
-     * reminders / approvals reach this user. For Teams this is the lowercased email/UPN — the id an
-     * operator enters as a role holder or human-step principal. Omitted ⇒ the binding falls back to
-     * `userId` (the channel-native id, e.g. AAD object id). Does NOT affect routine attribution.
-     */
-    principalRef?: string;
-    /**
-     * Cold-start authorization (default `false`). When `true`, the
-     * `manage_routine` tool permits this user to create routines that
-     * proactively message OTHER people (via `targetEmail` → a
-     * `ColdStartTarget`). Channel plugins populate it from their own
-     * governance source (e.g. an operator-configured allowlist of AAD
-     * object ids / roles). Omitted ⇒ self-only, unchanged behaviour.
-     */
-    canTargetOthers?: boolean;
-  }): void;
+  captureRoutineTurn(info: RoutineTurnInput): void;
+
+  /**
+   * Scoped alternative to {@link RoutinesIntegration.captureRoutineTurn}.
+   *
+   * Opens a turn: the Conductor channel binding is written ONCE, here, and the
+   * returned runner installs the principal for each async segment of that turn
+   * — exiting the scope when the segment settles, so nothing leaks onto the
+   * async chain the way `enterWith` does. A caller that owns the whole turn
+   * body runs it in a single segment; a caller that drives a stream runs each
+   * pull as its own segment, which is why the binding cannot live in the
+   * runner.
+   *
+   * This is what the kernel's channel-agnostic producer uses (#1086), so every
+   * channel that drives a turn through `CoreApi.handleTurnStream` gets a
+   * principal without adapter-side wiring. An adapter that installs its own
+   * context still wins: the producer skips turns whose context already belongs
+   * to the same user, because an adapter's `conversationRef` is the real
+   * channel-native delivery handle and the generic one is not.
+   */
+  beginRoutineTurn(info: RoutineTurnInput): RoutineTurnRunner;
 
   /**
    * Persist a materialised conversation reference back onto a routine row.
