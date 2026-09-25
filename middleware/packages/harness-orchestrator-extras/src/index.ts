@@ -12,7 +12,7 @@
  * side construction.
  */
 
-export { activate } from './plugin.js';
+export { activate, INHERITS_PROVIDER_FROM_PLUGIN_ID } from './plugin.js';
 export type { OrchestratorExtrasPluginHandle } from './plugin.js';
 
 // OM-102 — provider resolution for the background memory features, and the
