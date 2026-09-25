@@ -551,8 +551,12 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   - **Kernel-Routen** (`registerKernel(path, { authenticate, maxPayload, handler })`,
     **nur Kernel-Code**, nicht auf `CoreApi`): eigener
     `WebSocketAuthenticator<T>` (läuft **vor** dem `101`; `ok:false` → rohes
-    `401`/`403`, Exception → `401` fail-closed), **Pflicht**-`maxPayload`
-    (eigener `ws.Server` pro Route), Handler bekommt den rohen `ws`-Socket
+    `401`/`403`; Exception, Nicht-Ergebnis oder verpasste Deadline
+    `authTimeoutMs` (Default 10 s) → `503` fail-closed, `console.error` mit
+    Stack — ein Key-Store-Ausfall liest sich so nicht als „Credential
+    abgelehnt"), **Pflicht**-`maxPayload` (positiver Integer ≤ `2^31 − 1`, weil
+    `ws` `maxPayload | 0` speichert und 2^31+ still „unbegrenzt" hieße;
+    eigener `ws.Server` pro Route), Handler bekommt den rohen `ws`-Socket
     (Ping/Pong, Binär-Frames, Backpressure) + Principal. Unabhängig vom
     Channel-Lifecycle: `deactivateChannel` schließt keine Kernel-Sockets.
     Erster Consumer: `/api/v1/satellites/ws` (W1-2).
@@ -564,8 +568,10 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
     abfing.
 - **Auth — vor dem Upgrade, nicht danach.** Der `upgrade`-Request trägt das
   Session-Cookie (`omadia_session`) in `req.headers.cookie`. Die Registry parst
-  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor) und ruft
-  `verifySession(token, sessionSigningKey)` — **derselbe Key wie `requireAuth`**.
+  es selbst (beim rohen `upgrade` läuft **kein** `cookie-parser` davor; ein
+  kaputtes `%`-Escape ist ein normales `401`) und ruft seit W1-1
+  `evaluateSessionToken` aus `requireAuth.ts` — **derselbe Code-Pfad wie
+  `requireAuth`**, keine Handkopie mehr, die driften könnte.
   Fehlt/ungültig → rohes `401` + `socket.destroy()` **vor** dem `101`; für einen
   unauthentifizierten Peer wird kein WebSocket allokiert. Nur authentifizierte
   Upgrades werden zu `ChannelSocket`s; die verifizierten `ChannelSessionClaims`
@@ -574,21 +580,34 @@ für Channel-Plugins — das Gegenstück zu `registerRoute`, eine Ebene höher.
   eine OIDC-(`entra`)-Session mit nicht (mehr) whitelisteter E-Mail → `403`
   (Auth-Parität zu den HTTP-Routes; der `EmailWhitelist` wird mitinjiziert).
   (Hinweis: `CoreApi.resolveIdentity` ist channel-natives User-Mapping,
-  **nicht** Session-Auth — daher direkt `verifySession`.)
-- **Wiring** (`index.ts`): `new WebSocketRegistry({ signingKey: sessionSigningKey })`
-  vor `createCoreApi({ … webSockets })` (≈2505), zusätzlich an die
-  `DefaultChannelRegistry` gereicht (Lifecycle-Spiegel zu `routes`), und
-  `attach(server)` nach `const server = app.listen(PORT, '::')` (≈2592) —
-  dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  **nicht** Session-Auth — daher die Session-Evaluation von `requireAuth`.)
+  Nach der asynchronen Cookie-Prüfung wird das Active-Flag **erneut** geprüft:
+  ein `deactivateChannel` im Auth-Fenster führt zu `503` statt zu einem Socket,
+  der an `deactivateChannel` vorbeigerutscht ist.
+- **Wiring** (`index.ts`, per `grep -n WebSocketRegistry src/index.ts` finden —
+  Zeilennummern driften): `new WebSocketRegistry({ signingKey:
+  sessionSigningKey, whitelist: emailWhitelist })` vor
+  `createCoreApi({ … webSockets })`, zusätzlich an die `DefaultChannelRegistry`
+  gereicht (Lifecycle-Spiegel zu `routes`), und
+  `webSocketRegistry.attach(server)` nach `const server = app.listen(PORT, '::')`
+  — dasselbe `http.Server`, der Dual-Stack-`::`-Bind serviert WS mit.
+  `channelMaxPayloadBytes` bleibt in Prod ungesetzt, also greift der
+  32-MiB-Default; nur Tests setzen einen kleinen Cap.
 - **Dependency:** `ws` + `@types/ws` nur im Kernel, nicht im SDK.
 
 Test: `test/webSocketRegistry.test.ts` fährt einen echten `http.Server` + echten
 `ws`-Client (authentifizierter Upgrade → Claims + Echo-Frame; ohne Cookie →
 `401`; unbekannter Pfad → `404`; deaktivierter Channel → `503`; seit W1-1
 zusätzlich: Kernel-Route ignoriert Cookies und nutzt ihren Authenticator,
-`401`/`403`/Exception ohne `101`, `maxPayload` pro Route mit `1009` ohne
+`401`/`403` ohne `101`, `maxPayload` pro Route mit `1009` ohne
 uncaught exception, Kernel↔Channel-Pfadkollision wirft, `deactivateChannel`
-lässt Kernel-Sockets offen, 32-MiB-Default). Damit ist der
+lässt Kernel-Sockets offen, 32-MiB-Default; Statuscodes werden exakt geprüft,
+nicht per `|unexpected server response`). `test/webSocketRegistryHardening.test.ts`
+deckt `503` bei Exception/Deadline/Nicht-Ergebnis (auch ein spätes `ok` nach
+der Deadline öffnet nichts), die rohen Status-Line-Bytes bei CR/LF im
+`message`, die Grenzen für `maxPayload`/`authTimeoutMs`/`channelMaxPayloadBytes`,
+das kaputte Cookie-Escape und das Deaktivieren im Auth-Fenster ab. Gemeinsame
+Fixtures: `test/_helpers/wsRegistryKit.ts`. Damit ist der
 Transport bereit für **PR-10b** (echter Canvas-Channel: Handshake-`offer→select→
 ack`, `IncomingTurn`-Bildung, `surface_*`-Fan-out).
 

@@ -9,9 +9,17 @@ import type {
   ChannelSessionClaims,
 } from '@omadia/channel-sdk';
 
-import { SESSION_COOKIE } from '../auth/requireAuth.js';
-import { verifySession } from '../auth/sessionJwt.js';
+import { SESSION_COOKIE, evaluateSessionToken } from '../auth/requireAuth.js';
 import type { EmailWhitelist } from '../auth/whitelist.js';
+
+import {
+  authenticateBeforeHandshake,
+  rejectUpgrade as reject,
+  type WebSocketAuthResult,
+  type WebSocketAuthenticator,
+} from './webSocketUpgradeAuth.js';
+
+export type { WebSocketAuthResult, WebSocketAuthenticator } from './webSocketUpgradeAuth.js';
 
 /**
  * The process's WebSocket mount — the upgrade-level counterpart to
@@ -26,16 +34,19 @@ import type { EmailWhitelist } from '../auth/whitelist.js';
  *   `active` lifecycle — `deactivateChannel` rejects new upgrades (503) and
  *   closes the channel's live sockets.
  * - **Kernel routes** (`registerKernel`, kernel code only — never exposed on
- *   `CoreApi`): their own {@link WebSocketAuthenticator}, a REQUIRED
- *   `maxPayload`, and the raw `ws` socket (ping/pong, binary frames,
+ *   `CoreApi`): their own {@link WebSocketAuthenticator} with a deadline, a
+ *   REQUIRED `maxPayload`, and the raw `ws` socket (ping/pong, binary frames,
  *   backpressure). They do not belong to any channel, so channel activation
  *   and deactivation never touch them. Custom authentication is therefore a
  *   kernel-only capability: a plugin cannot opt out of the session cookie.
  *
  * Auth happens BEFORE the handshake for both kinds: a rejected peer gets a raw
  * `401`/`403` and the socket is destroyed — no `101` is ever sent, so no
- * WebSocket is allocated for it. An unregistered path is a raw `404`. Handlers
- * only ever see an authenticated socket plus its verified principal.
+ * WebSocket is allocated for it. An authenticator that throws or misses its
+ * deadline is an infrastructure failure, not a verdict on the credential: the
+ * peer gets a raw `503` (still no `101` — it fails closed). An unregistered
+ * path is a raw `404`. Handlers only ever see an authenticated socket plus its
+ * verified principal.
  *
  * Every accepted socket carries an `'error'` listener: `ws` emits `'error'` on
  * any protocol violation from the peer (including a frame above the route's
@@ -45,34 +56,30 @@ import type { EmailWhitelist } from '../auth/whitelist.js';
 
 /**
  * Default inbound frame cap for channel routes: 32 MiB (ws's own default is
- * 100 MiB). Derived from the largest frame the canvas channel accepts:
- * `canvas_list_put` is sanitized to 50 entries × a 262_144-character tree
- * (`omadia-ui-channel/src/protocol.ts` `sanitizeCanvasList`) ≈ 12.5 MiB of
- * ASCII (the limit counts UTF-16 code units, not bytes), so the cap leaves
- * ~2.5× headroom over that ASCII worst case. The desktop client caps neither
- * the slot count nor the tree size before sending (the server trims after
- * parsing). A maximal list of purely 3-byte UTF-8 text (~37.5 MiB) would
- * exceed the cap; real trees are a few KB. A frame above the cap closes the
- * socket with 1009.
+ * 100 MiB). Sized against the largest frame the canvas channel treats as
+ * valid, measured in ASCII: `canvas_list_put` is sanitized to 50 entries × a
+ * 262_144-character tree (`omadia-ui-channel/src/protocol.ts`
+ * `sanitizeCanvasList`) ≈ 12.5 MiB of ASCII (the limit counts UTF-16 code
+ * units, not bytes), so the cap leaves ~2.5× headroom over that ASCII worst
+ * case. The desktop client caps neither the slot count nor the tree size
+ * before sending (the server trims after parsing). A maximal list of purely
+ * 3-byte UTF-8 text (~37.5 MiB) would exceed the cap; real trees are a few KB.
+ * A frame above the cap closes the socket with 1009.
  */
 export const CHANNEL_WS_MAX_PAYLOAD_BYTES = 32 * 1024 * 1024;
 
-/** Outcome of a pre-handshake authenticator. */
-export type WebSocketAuthResult<TPrincipal> =
-  | { ok: true; principal: TPrincipal }
-  /**
-   * `message` is for the server log only; the status line always carries the
-   * standard reason phrase, so it can never inject header bytes.
-   */
-  | { ok: false; status: 401 | 403; message?: string };
-
 /**
- * Runs on the raw upgrade request BEFORE the handshake. Resolving `ok: false`
- * rejects the upgrade with that status; throwing rejects it with 401.
+ * Upper bound for any `maxPayload`. `ws` stores the cap as `maxPayload | 0` and
+ * enforces it only when that is above 0, so 2^31 or more would silently mean
+ * "unlimited".
  */
-export type WebSocketAuthenticator<TPrincipal> = (
-  req: IncomingMessage,
-) => Promise<WebSocketAuthResult<TPrincipal>>;
+export const WS_MAX_PAYLOAD_LIMIT_BYTES = 2 ** 31 - 1;
+
+/** Default deadline for a kernel route's authenticator. */
+export const KERNEL_WS_AUTH_TIMEOUT_MS = 10_000;
+
+/** Largest delay `setTimeout` honours (a larger one fires immediately). */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** Kernel-route handler: the raw `ws` socket plus the authenticated principal. */
 export type KernelSocketHandler<TPrincipal> = (
@@ -83,8 +90,17 @@ export type KernelSocketHandler<TPrincipal> = (
 
 export interface KernelWebSocketRoute<TPrincipal> {
   authenticate: WebSocketAuthenticator<TPrincipal>;
-  /** Inbound frame cap in bytes. Required — a kernel route chooses it. */
+  /**
+   * Inbound frame cap in bytes. Required — a kernel route chooses it. A
+   * positive integer no larger than {@link WS_MAX_PAYLOAD_LIMIT_BYTES}.
+   */
   maxPayload: number;
+  /**
+   * Deadline for `authenticate`, in ms (default
+   * {@link KERNEL_WS_AUTH_TIMEOUT_MS}). Without it a hung authenticator would
+   * hold the raw upgraded socket open forever.
+   */
+  authTimeoutMs?: number;
   handler: KernelSocketHandler<TPrincipal>;
 }
 
@@ -99,6 +115,7 @@ interface KernelRoute {
   kind: 'kernel';
   path: string;
   authenticate: WebSocketAuthenticator<unknown>;
+  authTimeoutMs: number;
   handler: KernelSocketHandler<unknown>;
   wss: WebSocketServer;
   live: Set<WebSocket>;
@@ -127,15 +144,6 @@ export interface WebSocketRegistryDeps {
   channelMaxPayloadBytes?: number;
 }
 
-type RejectStatus = 401 | 403 | 404 | 503;
-
-const REASON_PHRASE: Readonly<Record<RejectStatus, string>> = {
-  401: 'Unauthorized',
-  403: 'Forbidden',
-  404: 'Not Found',
-  503: 'Service Unavailable',
-};
-
 export class WebSocketRegistry {
   private readonly routes = new Map<string, SocketRoute>();
   private readonly activeByChannel = new Map<string, boolean>();
@@ -146,7 +154,7 @@ export class WebSocketRegistry {
 
   constructor(private readonly deps: WebSocketRegistryDeps) {
     const maxPayload = deps.channelMaxPayloadBytes ?? CHANNEL_WS_MAX_PAYLOAD_BYTES;
-    assertPositiveInteger('channelMaxPayloadBytes', maxPayload);
+    assertBoundedPositiveInteger('channelMaxPayloadBytes', maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
     this.channelWss = createServer(maxPayload);
   }
 
@@ -188,12 +196,15 @@ export class WebSocketRegistry {
         existing.kind === 'kernel' ? 'a kernel route' : `channel '${existing.channelId}'`;
       throw new Error(`websocket path '${path}' already owned by ${owner}`);
     }
-    assertPositiveInteger('maxPayload', route.maxPayload);
+    assertBoundedPositiveInteger('maxPayload', route.maxPayload, WS_MAX_PAYLOAD_LIMIT_BYTES);
+    const authTimeoutMs = route.authTimeoutMs ?? KERNEL_WS_AUTH_TIMEOUT_MS;
+    assertBoundedPositiveInteger('authTimeoutMs', authTimeoutMs, MAX_TIMER_MS);
     const { authenticate, handler } = route;
     this.routes.set(path, {
       kind: 'kernel',
       path,
       authenticate,
+      authTimeoutMs,
       // The principal is produced by this route's own authenticator.
       handler: (ws, req, principal) => handler(ws, req, principal as TPrincipal),
       wss: createServer(route.maxPayload),
@@ -268,7 +279,7 @@ export class WebSocketRegistry {
     socket: Duplex,
     head: Buffer,
   ): Promise<void> {
-    if (!this.activeByChannel.get(route.channelId)) {
+    if (!this.isChannelRouteLive(route)) {
       reject(socket, 503);
       return;
     }
@@ -279,12 +290,25 @@ export class WebSocketRegistry {
       route.path,
     );
     if (!session) return;
+    // The channel may have been deactivated (or the path re-registered) while
+    // the cookie was being verified: re-check before handing out a socket.
+    if (!this.isChannelRouteLive(route)) {
+      reject(socket, 503);
+      return;
+    }
 
     this.channelWss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       const live = this.liveByChannel.get(route.channelId);
       trackSocket(ws, live, `${route.path} (channel=${route.channelId})`);
       route.handler(wrapSocket(ws, req), session.principal);
     });
+  }
+
+  private isChannelRouteLive(route: ChannelRoute): boolean {
+    return (
+      this.activeByChannel.get(route.channelId) === true &&
+      this.routes.get(route.path) === route
+    );
   }
 
   private async upgradeKernel(
@@ -298,6 +322,7 @@ export class WebSocketRegistry {
       req,
       socket,
       route.path,
+      route.authTimeoutMs,
     );
     if (!auth) return;
 
@@ -308,28 +333,26 @@ export class WebSocketRegistry {
   }
 
   /**
-   * The channel-route authenticator: the session cookie verified with the
-   * same signing key `requireAuth` uses, plus requireAuth's Entra whitelist
-   * gate. The raw upgrade request has no cookie-parser middleware in front of
-   * it, so the header is parsed by hand.
+   * The channel-route authenticator: `requireAuth`'s own session evaluation
+   * (same signing key, same Entra whitelist gate), so the WS upgrade and the
+   * HTTP gate cannot drift. Status mapping matches `requireAuth`:
+   * `auth.not_whitelisted` → 403, everything else → 401. The raw upgrade
+   * request has no cookie-parser middleware in front of it, so the header is
+   * parsed by hand.
    */
   private async authenticateSession(
     req: IncomingMessage,
   ): Promise<WebSocketAuthResult<ChannelSessionClaims>> {
     const token = sessionTokenFromCookie(req.headers.cookie);
-    if (!token) return { ok: false, status: 401 };
-    let verified: Awaited<ReturnType<typeof verifySession>>;
-    try {
-      verified = await verifySession(token, this.deps.signingKey);
-    } catch {
-      return { ok: false, status: 401 };
+    const result = await evaluateSessionToken(token, this.deps);
+    if (!result.ok) {
+      // Missing/expired cookies are routine (a reconnecting logged-out tab)
+      // and stay unlogged; a de-whitelisted identity is worth a log line.
+      return result.code === 'auth.not_whitelisted'
+        ? { ok: false, status: 403, message: result.code }
+        : { ok: false, status: 401 };
     }
-    // Mirror requireAuth's provider gate: OIDC ('entra') identities must stay
-    // whitelisted. Local sessions were status-checked at login, so the gate
-    // applies only to 'entra' — exactly as requireAuth does.
-    if (verified.provider === 'entra' && !this.deps.whitelist.isAllowed(verified.email)) {
-      return { ok: false, status: 403 };
-    }
+    const verified = result.claims;
     return {
       ok: true,
       principal: {
@@ -341,44 +364,6 @@ export class WebSocketRegistry {
       },
     };
   }
-}
-
-/**
- * Run an authenticator against the raw upgrade request. Returns the principal
- * on success; otherwise writes the raw rejection (no 101) and returns
- * `undefined`. A throwing authenticator fails closed with 401.
- */
-async function authenticateBeforeHandshake<TPrincipal>(
-  authenticate: WebSocketAuthenticator<TPrincipal>,
-  req: IncomingMessage,
-  socket: Duplex,
-  path: string,
-): Promise<{ principal: TPrincipal } | undefined> {
-  // Node removes its own socket error handler before emitting `upgrade`; guard
-  // the auth window so a peer resetting mid-auth can't raise an uncaught error.
-  const onEarlyError = (): void => undefined;
-  socket.on('error', onEarlyError);
-  let result: WebSocketAuthResult<TPrincipal>;
-  try {
-    result = await authenticate(req);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[channels] websocket authenticator threw on ${path}: ${message}`);
-    result = { ok: false, status: 401 };
-  } finally {
-    socket.removeListener('error', onEarlyError);
-  }
-  if (result.ok) return { principal: result.principal };
-  // Fail closed on anything but an explicit 403 (a JS caller could return junk).
-  const status = result.status === 403 ? 403 : 401;
-  if (result.message) {
-    // JSON-quoted: an authenticator-supplied reason must not forge log lines.
-    console.warn(
-      `[channels] websocket upgrade rejected on ${path} (${status}): ${JSON.stringify(result.message)}`,
-    );
-  }
-  reject(socket, status);
-  return undefined;
 }
 
 /** Track a live socket for its owner and make every peer error non-fatal. */
@@ -398,9 +383,11 @@ function createServer(maxPayload: number): WebSocketServer {
   return new WebSocketServer({ noServer: true, maxPayload, clientTracking: false });
 }
 
-function assertPositiveInteger(name: string, value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`websocket ${name} must be a positive integer, got ${String(value)}`);
+function assertBoundedPositiveInteger(name: string, value: number, max: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > max) {
+    throw new Error(
+      `websocket ${name} must be a positive integer <= ${String(max)}, got ${String(value)}`,
+    );
   }
 }
 
@@ -412,16 +399,22 @@ function pathFromUrl(url: string | undefined): string | null {
 }
 
 /** Extract the session cookie value from a raw `Cookie` header. */
-function sessionTokenFromCookie(cookieHeader: string | undefined): string | null {
-  if (!cookieHeader) return null;
+function sessionTokenFromCookie(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) return undefined;
   for (const part of cookieHeader.split(';')) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
     if (part.slice(0, eq).trim() === SESSION_COOKIE) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
+      const raw = part.slice(eq + 1).trim();
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        // A malformed %-escape is not a token we minted; verification rejects it.
+        return raw;
+      }
     }
   }
-  return null;
+  return undefined;
 }
 
 /** Wrap a raw `ws` socket in the transport-agnostic SDK {@link ChannelSocket}. */
@@ -441,10 +434,4 @@ function wrapSocket(ws: WebSocket, req: IncomingMessage): ChannelSocket {
     close: (code?: number, reason?: string) => ws.close(code, reason),
     request: { url: req.url ?? '', headers: req.headers },
   };
-}
-
-/** Reject an upgrade pre-handshake: write a raw status line, then destroy. */
-function reject(socket: Duplex, code: RejectStatus): void {
-  socket.write(`HTTP/1.1 ${code} ${REASON_PHRASE[code]}\r\nConnection: close\r\n\r\n`);
-  socket.destroy();
 }

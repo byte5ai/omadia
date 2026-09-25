@@ -46,18 +46,27 @@ slice W1-1 of the Satellites epic and the prerequisite for the tunnel at
 - **Behaviour tightening:** channel WebSockets (today: the omadia UI canvas)
   accept inbound frames up to **32 MiB** (`CHANNEL_WS_MAX_PAYLOAD_BYTES`). They
   previously inherited `ws`'s 100 MiB default. A larger frame closes the socket
-  with code **1009**. The cap comes from the largest frame the canvas channel
-  treats as valid (`canvas_list_put`, 50 × 262_144-character trees ≈ 12.5 MiB
-  of ASCII), leaving ~2.5× headroom over that ASCII worst case because the
+  with code **1009**. The cap is sized against the largest frame the canvas
+  channel treats as valid, measured in ASCII (`canvas_list_put`, 50 ×
+  262_144-character trees ≈ 12.5 MiB), leaving ~2.5× headroom because the
   desktop client doesn't trim before sending. The limit counts UTF-16 code
   units, so a maximal list of purely 3-byte UTF-8 text (~37.5 MiB) would still
   exceed the cap; real trees are a few KB.
 - **New kernel-only API:** `registerKernel(path, { authenticate, maxPayload,
-  handler })` gives a route its own pre-handshake authenticator (a rejected
-  peer gets a raw 401/403 and never a 101; a throwing authenticator fails
-  closed with 401), a required frame cap and the raw `ws` socket. Kernel routes
-  don't follow channel activation or deactivation. Plugins can't use it:
-  `CoreApi.registerWebSocket` keeps session-cookie and whitelist auth.
+  handler, authTimeoutMs? })` gives a route its own pre-handshake
+  authenticator, a required frame cap and the raw `ws` socket. A rejected peer
+  gets a raw 401/403 and never a 101. An authenticator that throws, returns a
+  non-result or misses its deadline (default 10 s) fails closed with **503**
+  and an error log with the stack, so an outage doesn't read as a bad
+  credential. Frame caps are bounded to 2^31 − 1, because `ws` treats larger
+  values as "unlimited". Kernel routes don't follow channel activation or
+  deactivation. Plugins can't use it: `CoreApi.registerWebSocket` keeps
+  session-cookie and whitelist auth.
+- **Channel auth reuses `requireAuth`:** the channel upgrade now calls
+  `evaluateSessionToken` instead of a hand copy of it, so the WebSocket and
+  HTTP gates can't drift. A malformed `%`-escape in the session cookie is an
+  ordinary 401. A channel deactivated while its cookie is being verified now
+  answers 503; before, that upgrade could still complete.
 - **Fixed:** accepted sockets had no `'error'` listener. A malformed or
   oversized frame from an authenticated peer made `ws` emit an unhandled
   `'error'`, which surfaced as an uncaught exception that only
