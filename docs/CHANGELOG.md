@@ -115,7 +115,8 @@ names the real limitation and `list`/`pause`/`resume`/`delete` simply work.
 issue" or sends the user to their operator. Reaching it now almost always means a
 channel no producer covers (the direct-`chatAgent` adapters above), which no
 operator can configure, so it says routines are not available in this
-conversation and points at the Routines page. The issue's suggested split into a
+conversation and points at the Routines page for viewing, pausing or deleting
+existing routines (the page cannot create one). The issue's suggested split into a
 second, operator-facing "genuine wiring fault" message is not done: the tool has
 no signal that tells the two cases apart. Registering senders for `web` and the
 reference channels, and wiring the direct-`chatAgent` adapters, remain open.

@@ -446,5 +446,9 @@ describe('ROUTINE_NO_CONTEXT_ERROR (#1086)', () => {
     assert.doesNotMatch(ROUTINE_NO_CONTEXT_ERROR, /wiring|operator/i);
     assert.match(ROUTINE_NO_CONTEXT_ERROR, /not available/);
     assert.match(ROUTINE_NO_CONTEXT_ERROR, /Routines page/);
+    // The page lists, pauses, resumes and deletes — it cannot create. Sending
+    // a user there to create a routine would be the next dishonest pointer.
+    assert.match(ROUTINE_NO_CONTEXT_ERROR, /view, pause or delete/);
+    assert.doesNotMatch(ROUTINE_NO_CONTEXT_ERROR, /Routines page instead/);
   });
 });

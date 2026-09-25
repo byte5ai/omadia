@@ -32,7 +32,8 @@ export const MANAGE_ROUTINE_TOOL_NAME = 'manage_routine';
 export const ROUTINE_NO_CONTEXT_ERROR =
   'Error: routines are not available in this conversation — this channel does ' +
   'not pass your identity to the routines tool yet, so routines cannot be ' +
-  'created, listed or changed from here. Use the Routines page instead.';
+  'created, listed or changed from here. The Routines page can view, pause ' +
+  'or delete existing routines.';
 
 const ActionSchema = z.enum(['create', 'list', 'pause', 'resume', 'delete']);
 const ListFilterSchema = z.enum(['all', 'active', 'paused']);
