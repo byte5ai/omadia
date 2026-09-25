@@ -1,6 +1,7 @@
 import {
   MemoryPathError,
   type MemoryAccessor,
+  type MemoryEntry,
   type MemoryEntryInfo,
   type MemoryStore,
 } from '@omadia/plugin-api';
@@ -17,6 +18,68 @@ interface MemoryScope {
 }
 
 /**
+ * Relative-path normalisation shared by every view in this module. Rejects
+ * absolute paths, `..` segments and NUL bytes before any store call; empty /
+ * `.` / `./` resolve to the scope root (returned as `''`).
+ */
+function normalizeRelPath(relPath: string): string {
+  if (typeof relPath !== 'string') {
+    throw new MemoryPathError('memory path must be a string');
+  }
+  if (relPath.startsWith('/')) {
+    throw new MemoryPathError(
+      `memory path must be relative (got absolute): ${relPath}`,
+    );
+  }
+  if (relPath.includes('..')) {
+    throw new MemoryPathError(`memory path must not contain '..': ${relPath}`);
+  }
+  if (relPath.includes('\u0000')) {
+    throw new MemoryPathError('memory path must not contain null bytes');
+  }
+  // Empty / '.' / './' all point to the scope root.
+  return relPath.replace(/^\.\/?|^$/, '');
+}
+
+/** Resolve a relative path against a given scope prefix. */
+function resolveInScope(prefix: string, relPath: string): string {
+  const trimmed = normalizeRelPath(relPath);
+  return trimmed.length === 0 ? prefix : `${prefix}/${trimmed}`;
+}
+
+/** Store path → path relative to `prefix`; refuses anything outside it. */
+function relativeToScope(prefix: string, abs: string): string {
+  if (abs === prefix) return '';
+  if (abs.startsWith(prefix + '/')) return abs.slice(prefix.length + 1);
+  // Stay defensive: don't leak out-of-scope paths back to plugin code.
+  throw new MemoryPathError(`store returned out-of-scope path: ${abs}`);
+}
+
+/**
+ * The per-plugin, per-orchestrator scope that BOTH `ctx.memory`
+ * (`createMemoryAccessor`) and the scoped `memory` tool view
+ * (`createPluginMemoryToolStore`) resolve against. One function, so the two
+ * paths cannot disagree about where a plugin's memory lives:
+ *
+ *   /memories/orchestrators/<agentSlug>/plugins/<pluginId>
+ *
+ * The slug is resolved per call; `undefined` (no turn) ⇒ `'default'`. The
+ * pre-isolation tree `/memories/agents/<pluginId>` is offered as a READ-ONLY
+ * fallback for the default Agent only.
+ */
+function pluginMemoryScope(
+  pluginId: string,
+  resolveAgentSlug: () => string | undefined,
+): () => MemoryScope {
+  const legacyPrefix = `/memories/agents/${pluginId}`;
+  return () => {
+    const slug = resolveAgentSlug() ?? 'default';
+    const prefix = `/memories/orchestrators/${slug}/plugins/${pluginId}`;
+    return slug === 'default' ? { prefix, legacyPrefix } : { prefix };
+  };
+}
+
+/**
  * The shared engine behind every accessor in this module: relative-path
  * normalisation plus the prefix/legacy-prefix resolution, with the scope
  * resolved per call so a caller can move its subtree between turns.
@@ -29,37 +92,8 @@ function createScopedMemoryAccessor(
   store: MemoryStore,
   scope: () => MemoryScope,
 ): MemoryAccessor {
-  const normalize = (relPath: string): string => {
-    if (typeof relPath !== 'string') {
-      throw new MemoryPathError('memory path must be a string');
-    }
-    if (relPath.startsWith('/')) {
-      throw new MemoryPathError(
-        `memory path must be relative (got absolute): ${relPath}`,
-      );
-    }
-    if (relPath.includes('..')) {
-      throw new MemoryPathError(`memory path must not contain '..': ${relPath}`);
-    }
-    if (relPath.includes('\u0000')) {
-      throw new MemoryPathError('memory path must not contain null bytes');
-    }
-    // Empty / '.' / './' all point to the scope root.
-    return relPath.replace(/^\.\/?|^$/, '');
-  };
-
-  /** Resolve a relative path against a given scope prefix. */
-  const resolveAt = (prefix: string, relPath: string): string => {
-    const trimmed = normalize(relPath);
-    return trimmed.length === 0 ? prefix : `${prefix}/${trimmed}`;
-  };
-
-  const toRel = (prefix: string, abs: string): string => {
-    if (abs === prefix) return '';
-    if (abs.startsWith(prefix + '/')) return abs.slice(prefix.length + 1);
-    // Stay defensive: don't leak out-of-scope paths back to plugin code.
-    throw new MemoryPathError(`store returned out-of-scope path: ${abs}`);
-  };
+  const resolveAt = resolveInScope;
+  const toRel = relativeToScope;
 
   const listAt = async (
     prefix: string,
@@ -178,17 +212,11 @@ export function createMemoryAccessor(opts: {
    */
   resolveAgentSlug?: () => string | undefined;
 }): MemoryAccessor {
-  const { pluginId, store } = opts;
   const resolveAgentSlug = opts.resolveAgentSlug ?? ((): undefined => undefined);
-  const legacyPrefix = `/memories/agents/${pluginId}`;
-
-  return createScopedMemoryAccessor(store, () => {
-    const slug = resolveAgentSlug() ?? 'default';
-    const prefix = `/memories/orchestrators/${slug}/plugins/${pluginId}`;
-    // Pre-isolation data lived under /memories/agents/<pluginId>/; the
-    // read-through is only offered for the default Agent.
-    return slug === 'default' ? { prefix, legacyPrefix } : { prefix };
-  });
+  return createScopedMemoryAccessor(
+    opts.store,
+    pluginMemoryScope(opts.pluginId, resolveAgentSlug),
+  );
 }
 
 /**
@@ -222,4 +250,155 @@ export function createRootedMemoryAccessor(opts: {
     throw new MemoryPathError(`memory root is not normalised: ${root}`);
   }
   return createScopedMemoryAccessor(opts.store, () => ({ prefix: root }));
+}
+
+const MEMORIES_ROOT = '/memories';
+
+/**
+ * A `MemoryStore` view in which the model-facing `/memories` root IS the
+ * plugin's own `ctx.memory` scope (`pluginMemoryScope`). Built for
+ * `ctx.tools.invoke('memory', …)` (#909): the kernel runs a
+ * `MemoryToolHandler` over this view, so a plugin replaying a memory-tool
+ * call gets the exact replies of the model-facing tool, but only ever inside
+ * `/memories/orchestrators/<agentSlug>/plugins/<pluginId>/`. Same bijection
+ * idea as `OrchestratorMemoryNamespacer` for Agents, minus the shared
+ * pass-through segments — a plugin has no business in `core`/`sessions`.
+ *
+ * Path rules:
+ *   - Input must be `/memories` or start with `/memories/`; anything else
+ *     throws `MemoryPathError`.
+ *   - The remainder passes the same `normalizeRelPath` gate as `ctx.memory`
+ *     (`..`, NUL rejected) before any store call.
+ *   - `list` entries are mapped back to `/memories/...`; a store entry outside
+ *     the scope throws instead of leaking.
+ *
+ * Legacy tree (default Agent only) is READ-ONLY, as for `ctx.memory`: a miss
+ * in the primary prefix falls back to it for `fileExists`,
+ * `directoryExists`, `readFile` and `list`; writes, deletes and renames only
+ * ever touch the primary prefix.
+ *
+ * The scope root always "exists" (an empty listing, not "path not found"),
+ * matching `ctx.memory.list('')` on a scope nothing was written to yet.
+ */
+export function createPluginMemoryToolStore(opts: {
+  pluginId: string;
+  store: MemoryStore;
+  /** Same contract as `createMemoryAccessor`'s `resolveAgentSlug`. */
+  resolveAgentSlug?: () => string | undefined;
+}): MemoryStore {
+  const { store } = opts;
+  const scope = pluginMemoryScope(
+    opts.pluginId,
+    opts.resolveAgentSlug ?? ((): undefined => undefined),
+  );
+
+  /** `/memories/...` → path relative to the scope root (`''` = root). */
+  const toScopeRel = (virtualPath: string): string => {
+    if (typeof virtualPath !== 'string') {
+      throw new MemoryPathError('memory path must be a string');
+    }
+    // Same canonicalisation the stores apply: collapse `//`, drop a trailing
+    // slash. Nothing here can widen the path — `..` is refused below.
+    const collapsed = virtualPath.replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+    if (collapsed === MEMORIES_ROOT) return '';
+    if (!collapsed.startsWith(`${MEMORIES_ROOT}/`)) {
+      throw new MemoryPathError(
+        `memory path must be ${MEMORIES_ROOT} or start with ${MEMORIES_ROOT}/: ${virtualPath}`,
+      );
+    }
+    return normalizeRelPath(collapsed.slice(MEMORIES_ROOT.length + 1));
+  };
+
+  const primary = (virtualPath: string): string =>
+    resolveInScope(scope().prefix, toScopeRel(virtualPath));
+
+  /** Legacy store path for a READ, or `undefined` when no fallback applies. */
+  const legacy = (virtualPath: string): string | undefined => {
+    const { legacyPrefix } = scope();
+    return legacyPrefix === undefined
+      ? undefined
+      : resolveInScope(legacyPrefix, toScopeRel(virtualPath));
+  };
+
+  const listUnder = async (
+    prefix: string,
+    rel: string,
+  ): Promise<MemoryEntry[]> => {
+    const entries = await store.list(resolveInScope(prefix, rel));
+    return entries.map((e) => {
+      const inner = relativeToScope(prefix, e.virtualPath);
+      return {
+        ...e,
+        virtualPath:
+          inner.length === 0 ? MEMORIES_ROOT : `${MEMORIES_ROOT}/${inner}`,
+      };
+    });
+  };
+
+  return {
+    async list(virtualPath: string): Promise<MemoryEntry[]> {
+      const rel = toScopeRel(virtualPath);
+      const { prefix, legacyPrefix } = scope();
+      const abs = resolveInScope(prefix, rel);
+      if ((await store.fileExists(abs)) || (await store.directoryExists(abs))) {
+        return listUnder(prefix, rel);
+      }
+      if (legacyPrefix !== undefined) {
+        const legacyAbs = resolveInScope(legacyPrefix, rel);
+        if (
+          (await store.fileExists(legacyAbs)) ||
+          (await store.directoryExists(legacyAbs))
+        ) {
+          return listUnder(legacyPrefix, rel);
+        }
+      }
+      if (rel.length === 0) return [];
+      // Surface the store's own "not found" for the primary path.
+      return listUnder(prefix, rel);
+    },
+
+    async fileExists(virtualPath: string): Promise<boolean> {
+      if (await store.fileExists(primary(virtualPath))) return true;
+      const legacyAbs = legacy(virtualPath);
+      return legacyAbs !== undefined && store.fileExists(legacyAbs);
+    },
+
+    async directoryExists(virtualPath: string): Promise<boolean> {
+      if (toScopeRel(virtualPath).length === 0) return true;
+      if (await store.directoryExists(primary(virtualPath))) return true;
+      const legacyAbs = legacy(virtualPath);
+      return legacyAbs !== undefined && store.directoryExists(legacyAbs);
+    },
+
+    async readFile(virtualPath: string): Promise<string> {
+      const abs = primary(virtualPath);
+      try {
+        return await store.readFile(abs);
+      } catch (err) {
+        const legacyAbs = legacy(virtualPath);
+        if (legacyAbs !== undefined && (await store.fileExists(legacyAbs))) {
+          return store.readFile(legacyAbs);
+        }
+        throw err;
+      }
+    },
+
+    // `async` so a path violation REJECTS like every other store error
+    // instead of throwing synchronously out of a Promise-returning method.
+    async createFile(virtualPath: string, content: string): Promise<void> {
+      await store.createFile(primary(virtualPath), content);
+    },
+
+    async writeFile(virtualPath: string, content: string): Promise<void> {
+      await store.writeFile(primary(virtualPath), content);
+    },
+
+    async delete(virtualPath: string): Promise<void> {
+      await store.delete(primary(virtualPath));
+    },
+
+    async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
+      await store.rename(primary(fromVirtualPath), primary(toVirtualPath));
+    },
+  };
 }
