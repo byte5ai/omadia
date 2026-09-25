@@ -1628,6 +1628,15 @@ export interface TurnIngestResult {
   sessionId: string;
   turnId: string;
   entityNodeIds: string[];
+  /**
+   * #1082 — `true` when a capture decorator wrote the turn for session
+   * continuity only (see {@link TurnIngest.tailOnly}): the turn happened and
+   * is in the session record, but its content was judged below the capture
+   * threshold. Lets the caller count filtered turns without parsing a log
+   * line. Absent means an ordinary knowledge turn. Backends need not set it —
+   * the decorator that made the decision does.
+   */
+  tailOnly?: boolean;
 }
 
 // ---------------------------------------------------------------------------

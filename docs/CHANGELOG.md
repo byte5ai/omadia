@@ -56,6 +56,43 @@ audits the dropped names, and maps failures to sanitized `upstream-timeout` /
 `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10c.
 
+### Fixed — filtered turns are counted, and the run-ingest hint no longer blames the User-Cluster (#1082)
+
+2026-09-24 — #1171 (the #1096 fix) already made a turn below the capture
+threshold a tail-only Turn instead of a skipped one, so its run trace is
+recorded, promotion reports `tail-only` rather than `missing-turn`, and the
+`run-ingest-failed` / #684 warning no longer fires for it. That covered the
+first three acceptance criteria of #1082. The fourth, that the number of
+filtered turns is a counter and not only the `[capture-filter] turn tail-only`
+log line, was still open: `SessionLogger` threw the `ingestTurn` result away,
+and the result had no way to say the turn was tail-only.
+
+`TurnIngestResult` gains an optional `tailOnly` (plugin-api **1.19.0**,
+additive), which `CaptureFilteringKnowledgeGraph` sets on the result of a
+tail-only write. `SessionLogger` reads it and counts the turn on its
+`RunTraceOutcomeStats` as `captureTailOnlyTurns()`, with or without a trace,
+next to the existing run-trace counters. It is deliberately not a sixth
+`RunTraceOutcome`: the filtered turn's trace is `recorded`, so an outcome would
+count it twice, raise `droppedTotal()` and print a false "run trace not
+recorded" warning.
+
+A counter nobody can read is still only a log line, and until now nothing read
+these tallies, the #684 ones included: every `SessionLogger` held a private
+instance, split per Agent and reset whenever a config diff rebuilt one. The
+orchestrator plugin now hands ONE `RunTraceOutcomeStats` to every logger it
+builds (each Agent, registry rebuilds, `transcribe_recording`) and publishes it
+as `runTraceStats`. `GET /api/admin/run-trace` (Bearer `ADMIN_TOKEN`, like
+`/api/admin/security/screening`) returns the outcome counts, `droppedTotal`
+and `captureTailOnlyTurns`; process-scoped, reset on restart. It is not on the
+public `/health`, which carries no traffic figures.
+
+The `run-ingest-failed` text no longer claims the cause is "most often" a
+missing User-Cluster that is "resolved only on the browser-login path".
+`ingestRun` also fails on pool, connection and insert errors, and a missing
+Turn is a second known cause, not only a missing node. The text no longer
+asserts a cause: it says the trace was not written, defers to the error detail,
+and lists a missing Turn and a missing User-Cluster (#684) only as known cases.
+
 ### Fixed — receipts page states when privacy receipts are written (#1081)
 
 2026-09-24 — the `/operator/receipts` subtitle promised that "every completed
