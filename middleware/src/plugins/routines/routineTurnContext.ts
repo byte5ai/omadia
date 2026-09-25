@@ -13,16 +13,19 @@ import type { ManageRoutineContext } from './manageRoutineTool.js';
  *   - a channel adapter, via `RoutinesIntegration.captureRoutineTurn`
  *     (Teams) — `enterWith`, so it never exits (see `enter` below);
  *   - the HTTP chat route (`routes/chat.ts`, OM-82), from the session;
- *   - `CoreApi.handleTurnStream` (#1086) for every channel plugin whose
- *     adapter installed nothing — the channel-agnostic default.
- * The last two use `run`, so their scope ends with the turn.
+ *   - `CoreApi.handleTurnStream` (#1086) for every channel plugin that
+ *     drives its turn through it and whose adapter installed nothing.
+ * The last two use `run`, so their scope ends with the turn. An adapter
+ * that calls the `chatAgent` capability directly reaches none of them
+ * unless it calls `captureRoutineTurn` / `beginRoutineTurn` itself.
  *
  * Decoupled from the orchestrator's `turnContext` so we don't have to
  * touch that package — the cost is one extra ALS per turn (negligible)
  * in exchange for plugin isolation.
  *
- * Outside a turn (unit tests, ad-hoc invocations) the context is
- * undefined and the tool returns a clear error string.
+ * Outside a turn (unit tests, ad-hoc invocations) and on channels no
+ * producer covers, the context is undefined and the tool returns
+ * `ROUTINE_NO_CONTEXT_ERROR`.
  */
 
 const storage = new AsyncLocalStorage<ManageRoutineContext>();

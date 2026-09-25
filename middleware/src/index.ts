@@ -461,7 +461,7 @@ import { createUiPrefsRouter } from './routes/uiPrefs.js';
 import { ExpressRouteRegistry } from './channels/routeRegistry.js';
 import { WebSocketRegistry } from './channels/webSocketRegistry.js';
 import { createCoreApi } from './channels/coreApi.js';
-import type { RoutineTurnInfo } from './channels/coreApi.js';
+import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
@@ -2949,10 +2949,12 @@ async function main(): Promise<void> {
   // `routinesHandle.senderRegistry` after this call (Teams: wrap a
   // long-lived `CloudAdapter.continueConversationAsync` via
   // `createProactiveSender('teams', sendFn)`). The per-turn principal the
-  // `manage_routine` tool needs is NO LONGER adapter-side work (#1086):
-  // `CoreApi.handleTurnStream` installs one for every channel that does not
-  // bring its own. An adapter that holds a richer channel-native
-  // `conversationRef` (Teams) still installs it itself and keeps precedence.
+  // `manage_routine` tool needs is installed by the core (#1086) only for
+  // turns driven through `CoreApi.handleTurnStream` (in-tree: public API,
+  // canvas). An adapter that calls the `chatAgent` capability directly —
+  // Teams, Telegram, Slack, Discord, WhatsApp — still has to install it
+  // itself via `captureRoutineTurn` / `beginRoutineTurn`; without one the
+  // tool refuses with `ROUTINE_NO_CONTEXT_ERROR`.
   let routinesHandle: RoutinesHandle | undefined;
   // #1086 — held in a variable (not only in the service registry) so the
   // channel CoreApi below can wire the channel-agnostic routine-turn producer.
@@ -6110,8 +6112,6 @@ async function main(): Promise<void> {
     }),
   );
 
-  // Narrowed once here: TS cannot keep a `let` narrowed inside the closures below.
-  const routines = routinesIntegration;
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,
     routes: routeRegistry,
@@ -6120,49 +6120,16 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
-    // #1086 — the channel-agnostic producer of the routines principal. Before
-    // this, the Teams adapter's own `captureRoutineTurn` call was the only
-    // producer in the tree, so `manage_routine` refused every action on every
-    // other channel. Absent when routines are off (no pg pool), which leaves
-    // `handleTurnStream` byte-for-byte on its old behaviour.
+    // #1086 — the channel-agnostic producer of the routines principal, for
+    // every channel that drives its turn through `handleTurnStream` (in-tree:
+    // public API, canvas). Adapters that call the `chatAgent` capability
+    // directly never reach it. Absent when routines are off (no pg pool),
+    // which leaves `handleTurnStream` byte-for-byte on its old behaviour.
+    // Tenant default and the always-closed `canTargetOthers` live in
+    // `createCoreRoutineTurnScope`, where they are tested.
     channelTypeFor,
-    ...(routines
-      ? {
-          routineTurn: {
-            // An adapter-installed context wins — its conversationRef is the
-            // channel-native delivery handle. But `captureRoutineTurn` uses
-            // `enterWith` and never exits (#1016), so a context found here may
-            // be the PREVIOUS turn's: only one that names THIS turn's user is
-            // treated as the adapter's own. Trimmed on both sides for the same
-            // reason `turnOwnerGuard` trims: a stray space must not silently
-            // turn "the adapter's own context" into "someone else's", which
-            // here would mean overwriting a working delivery handle.
-            hasContextFor: (userId: string): boolean => {
-              const current = routineTurnContext.current()?.userId?.trim();
-              return current !== undefined && current !== '' && current === userId.trim();
-            },
-            begin: (info: RoutineTurnInfo) =>
-              routines.beginRoutineTurn({
-                // Classic channels declare no tenant; the deployment one is the
-                // same value `routes/chat.ts` gives the web chat, so both name
-                // the same tenant. (The USER id still differs per channel by
-                // design — see the handoff doc: `manage_routine` scopes rows by
-                // (tenant, userId), and the channel-native id is what the
-                // #1016 guard compares against.)
-                tenant: info.tenant ?? graphTenantId,
-                userId: info.userId,
-                ...(info.principalRef !== undefined
-                  ? { principalRef: info.principalRef }
-                  : {}),
-                channel: info.channel,
-                conversationRef: info.conversationRef,
-                // Cold-start outreach to OTHER people needs an explicit
-                // governance source. The core has none, so it stays closed
-                // for every channel; only an adapter may grant it.
-                canTargetOthers: false,
-              }),
-          },
-        }
+    ...(routinesIntegration
+      ? { routineTurn: createCoreRoutineTurnScope(routinesIntegration, graphTenantId) }
       : {}),
   });
 

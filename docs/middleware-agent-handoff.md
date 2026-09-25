@@ -3413,19 +3413,26 @@ die tatsächliche Grenze benennt. `list`/`pause`/`resume`/`delete` funktionieren
 ### Der Principal für *jeden* Kanal: Producer in `CoreApi` (#1086)
 
 Der OM-82-Fix oben war route-lokal. Channel-Plugins hatten weiter keinen Producer:
-`RoutinesIntegration.captureRoutineTurn` rief nur der (out-of-tree) Teams-Adapter, und
-alle anderen Kanäle laufen über `CoreApi.handleTurnStream`
-(`middleware/src/channels/coreApi.ts`), das den Kontext nie gesetzt hat. `manage_routine`
-lehnte dort **alle fünf** Aktionen ab, inklusive des lesenden `list` — auch auf den zwei
-Kanälen, die in diesem Repo liegen: `@omadia/channel-api` (Public API) und
-`@omadia/ui-channel` (Canvas).
+`RoutinesIntegration.captureRoutineTurn` rief nur der (out-of-tree) Teams-Adapter. Kanäle
+erreichen den Orchestrator über **zwei** Türen: `CoreApi.handleTurnStream`
+(`middleware/src/channels/coreApi.ts`) oder direkt über die `chatAgent`-Capability. Keine
+der beiden hat den Kontext gesetzt. `manage_routine` lehnte dort **alle fünf** Aktionen
+ab, inklusive des lesenden `list` — auch auf den zwei Kanälen, die in diesem Repo liegen:
+`@omadia/channel-api` (Public API) und `@omadia/ui-channel` (Canvas), beide über
+`handleTurnStream`.
 
-`handleTurnStream` ist die einzige Tür, durch die jedes Channel-Plugin geht, also sitzt
-der generische Producer dort. Fünf Entscheidungen, die dazugehören:
+Der generische Producer sitzt in `handleTurnStream`. Das deckt **nicht** die Adapter ab,
+die `chatAgent` direkt rufen — Stand 2026-09 sind das Teams, Telegram, Slack, Discord und
+WhatsApp. Das Telegram-Repro aus #1086 hat also weiter keinen Kontext; es bekommt jetzt
+aber eine ehrliche Antwort (`ROUTINE_NO_CONTEXT_ERROR`: in diesem Kanal nicht verfügbar,
+Routines-Seite nutzen) statt „runtime wiring issue, melde das deinem Operator". Volle
+Unterstützung dort braucht `captureRoutineTurn` / `beginRoutineTurn` im jeweiligen Adapter.
+Fünf Entscheidungen, die zum Producer gehören:
 
-- **Adapter-Kontext gewinnt — aber nur der eigene.** Teams ruft `captureRoutineTurn`
-  *vor* `handleTurnStream`; dessen `conversationRef` ist die Bot-Framework-
-  `ConversationReference`, also der echte Zustell-Handle. Ihn mit dem generischen Ref zu
+- **Adapter-Kontext gewinnt — aber nur der eigene.** Ein Adapter, der `captureRoutineTurn`
+  *vor* `handleTurnStream` ruft, hält den echten Zustell-Handle (bei Teams wäre das die
+  Bot-Framework-`ConversationReference`; Teams selbst ruft allerdings `chatAgent` direkt und
+  kommt hier nie an). Ihn mit dem generischen Ref zu
   überschreiben hieße: Routine wird angelegt, ist aber nicht zustellbar. Gleichzeitig hat
   `captureRoutineTurn` kein Scope-Ende (`enterWith`, #1016), ein gefundener Kontext kann
   also der des *vorigen* Turns sein. Der Producer fragt deshalb `hasContextFor(userId)`:
@@ -3449,7 +3456,7 @@ der generische Producer dort. Fünf Entscheidungen, die dazugehören:
   nicht ausdrücken — nur ein Adapter über `captureRoutineTurn`.
 
 Verdrahtung: `createRoutinesIntegration` bekommt `beginRoutineTurn(info)`
-(`@omadia/plugin-api` 1.15.0, additiv). Der Aufruf schreibt die Conductor-Channel-Bindung
+(`@omadia/plugin-api` 1.18.0, additiv). Der Aufruf schreibt die Conductor-Channel-Bindung
 **einmal** und liefert einen Runner zurück, der je *Segment* des Turns den Principal
 setzt. Zwei Stufen statt einer, weil ein gestreamter Turn viele Segmente hat: eine Bindung
 im Runner wäre ein Postgres-Upsert pro Text-Delta. Reminder/Approvals erreichen damit auch
@@ -3481,8 +3488,11 @@ Zwei Grenzen, die bewusst offen bleiben:
 - **Ein Mensch, mehrere Routinen-Besitzer.** `manage_routine` scopet Zeilen auf
   `(tenant, userId)`, und `userId` ist die *kanal-native* Id — der Wert, gegen den der
   #1016-Guard vergleicht. Web-Chat keyt auf `req.session.omadia_user_id`, der Canvas-Kanal
-  auf `session.subject`, Telegram auf die Chat-Id. Derselbe Mensch sieht also pro Kanal
-  seine eigene Routinen-Liste. Der *Tenant* stimmt seit #1086 überein, die User-Id
+  auf `session.subject`, die Public API auf `key:<uuid>`. Derselbe Mensch sieht also pro
+  Kanal seine eigene Routinen-Liste. Umgekehrt teilen sich alle Kanäle *eines* Tenants
+  denselben `(tenant, userId)`-Topf: ein Kanal, der neu über `handleTurnStream` läuft, muss
+  Ids liefern, die nicht mit den Ids eines anderen Kanals kollidieren können (Präfix wie
+  `key:` / `telegram:`), sonst sehen zwei Personen dieselben Routinen. Der *Tenant* stimmt seit #1086 überein, die User-Id
   bewusst nicht — eine kanalübergreifende Identität ist ein eigenes Thema
   (`resolveTurnOwnerIdentity`), nicht Teil dieses Fixes. Auf der Public API ist der
   Principal der **API-Key** (`userRef.id` = `key:<uuid>`, #438), nicht eine Person —

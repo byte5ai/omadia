@@ -197,12 +197,15 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
           ...(turn.target !== undefined ? { target: turn.target } : {}),
         });
 
-      // #1086 — install the routines principal for EVERY channel. Before this,
-      // the only producer was the Teams adapter's own `captureRoutineTurn`
-      // call, so `manage_routine` refused all five actions everywhere else —
-      // including the two channels shipped in this repo (public API, canvas).
-      // This method is the single door every channel plugin goes through, so
-      // it is the one place the context can be produced once for all of them.
+      // #1086 — install the routines principal for every channel that drives
+      // its turn through this method. Before this, the only producer was the
+      // Teams adapter's own `captureRoutineTurn` call, so `manage_routine`
+      // refused all five actions everywhere else — including the two channels
+      // shipped in this repo (public API, canvas), which both come through here.
+      // This is NOT the only door: an adapter that calls the `chatAgent`
+      // capability directly (Teams, Telegram, Slack, Discord and WhatsApp all
+      // do, as of 2026-09) never reaches this method and still has to install
+      // its own context via `captureRoutineTurn` / `beginRoutineTurn`.
       const routineTurn = opts.routineTurn;
       // A blank user id is not a principal. Installing one would ALSO break the
       // turn beyond routines: the #1016 owner guard refuses whenever a context
@@ -347,9 +350,14 @@ function withRoutineTurnScope(
   // an async generator's body does not start until the first `next()` anyway.
   let run: (<T>(fn: () => Promise<T>) => Promise<T>) | undefined;
   let inner: AsyncIterator<ChatStreamEvent> | undefined;
+  // Closed before the first pull. An async generator in that state reports
+  // `done` on every later `next()`; without this flag a later pull here would
+  // still open the turn and start a model run the consumer already cancelled.
+  let closedBeforeStart = false;
 
   const iterator: AsyncIterator<ChatStreamEvent> = {
     next: () => {
+      if (closedBeforeStart) return Promise.resolve({ done: true, value: undefined });
       run ??= scope.begin(info);
       return run(async () => {
         inner ??= dispatch()[Symbol.asyncIterator]();
@@ -363,14 +371,20 @@ function withRoutineTurnScope(
     // BEFORE the first pull opens nothing — there is no turn to scope, and
     // opening one would write a Conductor binding for a turn that never ran.
     return: async (value?: unknown) => {
-      if (!run) return { done: true, value: undefined };
+      if (!run) {
+        closedBeforeStart = true;
+        return { done: true, value: undefined };
+      }
       return run(async () => {
         const result = await inner?.return?.(value);
         return result ?? { done: true, value: undefined };
       });
     },
     throw: async (err?: unknown) => {
-      if (!run) throw err;
+      if (!run) {
+        closedBeforeStart = true;
+        throw err;
+      }
       return run(async () => {
         if (inner?.throw) return inner.throw(err);
         throw err;

@@ -2,11 +2,16 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import type { ChatStreamEvent, IncomingTurn } from '@omadia/channel-sdk';
+import type { RoutineTurnInput, RoutinesIntegration } from '@omadia/plugin-api';
 
 import { createCoreApi } from '../src/channels/coreApi.js';
 import type { CreateCoreApiOptions, RoutineTurnInfo } from '../src/channels/coreApi.js';
+import { createCoreRoutineTurnScope } from '../src/plugins/routines/coreRoutineTurnScope.js';
 import { routineTurnContext } from '../src/plugins/routines/routineTurnContext.js';
-import type { ManageRoutineContext } from '../src/plugins/routines/manageRoutineTool.js';
+import {
+  ROUTINE_NO_CONTEXT_ERROR,
+  type ManageRoutineContext,
+} from '../src/plugins/routines/manageRoutineTool.js';
 
 /**
  * #1086 — `manage_routine` worked only in Teams because the Teams adapter was
@@ -75,6 +80,8 @@ function baseOptions(dispatcher: CreateCoreApiOptions['dispatcher']): CreateCore
   };
 }
 
+// A fixture shape only: the shipped Telegram adapter calls the `chatAgent`
+// capability directly and does not come through `handleTurnStream` at all.
 function telegramTurn(overrides: Partial<IncomingTurn> = {}): IncomingTurn {
   return {
     channelId: 'de.byte5.channel.telegram',
@@ -345,5 +352,99 @@ describe('CoreApi.handleTurnStream — #1086 channel-agnostic routine principal'
 
     assert.equal(routineTurnContext.current(), undefined);
     assert.equal(seen.length, 1);
+  });
+
+  it('stays closed after a close before the first pull — no late turn', async () => {
+    const seen: (ManageRoutineContext | undefined)[] = [];
+    const infos: RoutineTurnInfo[] = [];
+    const api = createCoreApi({
+      ...baseOptions(recordingDispatcher(seen)),
+      routineTurn: realScope(infos),
+    });
+
+    const it = api.handleTurnStream(telegramTurn())[Symbol.asyncIterator]();
+    await it.return?.(undefined);
+    const after = await it.next();
+
+    // An async generator closed before it started reports `done` from then on.
+    // A late pull must not open the turn or start the model run it cancelled.
+    assert.equal(after.done, true);
+    assert.equal(infos.length, 0);
+    assert.equal(seen.length, 0);
+  });
+});
+
+describe('createCoreRoutineTurnScope — the kernel wiring of the #1086 producer', () => {
+  function captureBegin(): { inputs: RoutineTurnInput[]; routines: Pick<RoutinesIntegration, 'beginRoutineTurn'> } {
+    const inputs: RoutineTurnInput[] = [];
+    return {
+      inputs,
+      routines: {
+        beginRoutineTurn: (info) => {
+          inputs.push(info);
+          return (fn) => fn();
+        },
+      },
+    };
+  }
+
+  const info: RoutineTurnInfo = {
+    userId: 'key:abc',
+    channel: 'api',
+    conversationRef: { kind: 'channel', channelId: 'x', conversationId: 'y' },
+  };
+
+  it('falls back to the deployment tenant and keeps cold-start outreach closed', () => {
+    const { inputs, routines } = captureBegin();
+    createCoreRoutineTurnScope(routines, 'deploy-tenant').begin(info);
+
+    assert.equal(inputs[0]?.tenant, 'deploy-tenant');
+    assert.equal(inputs[0]?.userId, 'key:abc');
+    assert.equal(inputs[0]?.canTargetOthers, false);
+    assert.equal('principalRef' in (inputs[0] ?? {}), false);
+  });
+
+  it('keeps a channel-declared tenant and forwards principalRef', () => {
+    const { inputs, routines } = captureBegin();
+    createCoreRoutineTurnScope(routines, 'deploy-tenant').begin({
+      ...info,
+      tenant: 'canvas-tenant',
+      principalRef: 'user@example.com',
+    });
+
+    assert.equal(inputs[0]?.tenant, 'canvas-tenant');
+    assert.equal(inputs[0]?.principalRef, 'user@example.com');
+    assert.equal(inputs[0]?.canTargetOthers, false);
+  });
+
+  it('treats only a context naming THIS user as the adapter-installed one', async () => {
+    const scope = createCoreRoutineTurnScope(captureBegin().routines, 'deploy-tenant');
+    const ctx = (userId: string): ManageRoutineContext => ({
+      tenant: 'deploy-tenant',
+      userId,
+      channel: 'teams',
+      conversationRef: {},
+      canTargetOthers: false,
+    });
+
+    assert.equal(scope.hasContextFor('u-1'), false); // nothing installed
+    await routineTurnContext.run(ctx(' u-1 '), async () => {
+      assert.equal(scope.hasContextFor('u-1'), true); // trimmed on both sides
+      assert.equal(scope.hasContextFor('u-2'), false); // stale, someone else's
+    });
+    await routineTurnContext.run(ctx('  '), async () => {
+      assert.equal(scope.hasContextFor('  '), false); // a blank id is no principal
+    });
+  });
+});
+
+describe('ROUTINE_NO_CONTEXT_ERROR (#1086)', () => {
+  it('is an honest tool error, not a call to an operator who has no lever', () => {
+    // Channels that call the `chatAgent` capability directly still reach the
+    // tool without a context. Nothing is misconfigured for them.
+    assert.ok(ROUTINE_NO_CONTEXT_ERROR.startsWith('Error:'));
+    assert.doesNotMatch(ROUTINE_NO_CONTEXT_ERROR, /wiring|operator/i);
+    assert.match(ROUTINE_NO_CONTEXT_ERROR, /not available/);
+    assert.match(ROUTINE_NO_CONTEXT_ERROR, /Routines page/);
   });
 });

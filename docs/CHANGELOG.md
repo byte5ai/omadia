@@ -36,7 +36,7 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — `manage_routine` works on every channel, not only Teams (#1086)
+### Fixed — `manage_routine` works on core-dispatched channels, and says so honestly elsewhere (#1086)
 
 2026-09-24 — asking an agent to create, list, pause, resume or delete a routine
 from any channel other than Microsoft Teams failed with *"routines are
@@ -46,21 +46,29 @@ did not exist: no channel other than Teams could supply that context.
 
 `manage_routine` resolves its principal from `routineTurnContext.current()`, and
 the only producer for channel traffic was `RoutinesIntegration.captureRoutineTurn`
-— called solely by the out-of-tree Teams adapter. Every other channel reaches the
-orchestrator through `CoreApi.handleTurnStream`, which never installed one, so
-the context was `undefined` for the whole turn and all five actions refused,
-including the read-only `list`. That included the two channels shipped in this
-repo, `@omadia/channel-api` (public API) and `@omadia/ui-channel` (canvas). The
-web chat had been fixed route-locally in v0.159.0 (`routes/chat.ts`); channel
-plugins got no equivalent.
+— called solely by the out-of-tree Teams adapter. Channels reach the orchestrator
+through one of two doors: `CoreApi.handleTurnStream`, or the `chatAgent`
+capability called directly. Neither installed a context, so it was `undefined`
+for the whole turn and all five actions refused, including the read-only `list`.
+That included the two channels shipped in this repo, `@omadia/channel-api`
+(public API) and `@omadia/ui-channel` (canvas), which both use
+`handleTurnStream`. The web chat had been fixed route-locally in v0.159.0
+(`routes/chat.ts`); channel plugins got no equivalent.
 
-`CoreApi.handleTurnStream` — the single door every channel plugin goes through —
-now installs the principal itself. Details that are load-bearing:
+`CoreApi.handleTurnStream` now installs the principal itself. That covers every
+channel that drives its turn through it — but **not** adapters that call the
+`chatAgent` capability directly, which is what Teams, Telegram, Slack, Discord
+and WhatsApp do as of 2026-09. The issue's own reproduction (Telegram) therefore
+still has no context; it now gets an honest answer instead of a false fault
+report (see below), and full support needs those adapters to call
+`captureRoutineTurn` / `beginRoutineTurn` themselves. Details that are
+load-bearing:
 
-- **An adapter's own context still wins, a stale one does not.** Teams installs
-  its context before calling `handleTurnStream`, and its `conversationRef` is the
-  Bot Framework handle the proactive sender delivers through; replacing it would
-  produce routines that cannot be delivered. But `captureRoutineTurn` uses
+- **An adapter's own context still wins, a stale one does not.** An adapter that
+  installs its context before calling `handleTurnStream` holds the channel-native
+  delivery handle the proactive sender delivers through; replacing it would
+  produce routines that cannot be delivered. (No shipped adapter does this today:
+  Teams installs its context but calls `chatAgent` directly.) But `captureRoutineTurn` uses
   `enterWith` and never exits (#1016), so a context found here may belong to the
   previous turn. The producer skips only a context that names **this turn's**
   user, and installs its own over any other.
@@ -103,9 +111,14 @@ Delivery is unchanged and already honest: `RoutineRunner.createRoutine` refuses 
 front when no `ProactiveSender` is registered for the channel, with *"no proactive
 sender registered for channel '<x>'"*. So on a channel without a sender, `create`
 names the real limitation and `list`/`pause`/`resume`/`delete` simply work.
-`ROUTINE_NO_CONTEXT_ERROR` keeps its wording, which is now accurate: reaching it
-means a genuine wiring fault. Registering senders for `web` and the reference
-channels remains open.
+`ROUTINE_NO_CONTEXT_ERROR` no longer calls a missing context "a runtime wiring
+issue" or sends the user to their operator. Reaching it now almost always means a
+channel no producer covers (the direct-`chatAgent` adapters above), which no
+operator can configure, so it says routines are not available in this
+conversation and points at the Routines page. The issue's suggested split into a
+second, operator-facing "genuine wiring fault" message is not done: the tool has
+no signal that tells the two cases apart. Registering senders for `web` and the
+reference channels, and wiring the direct-`chatAgent` adapters, remain open.
 
 **Known limitation — the generic `conversationRef`.** The core cannot know a
 channel's wire shape, so for a turn whose adapter installed no context it stores
