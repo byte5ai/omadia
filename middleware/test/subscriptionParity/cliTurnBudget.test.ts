@@ -5,6 +5,15 @@ import {
   CLI_SPAWN_TIMEOUT_ENV_KEY,
   resolveCliSpawnTimeoutMs,
 } from '@omadia/orchestrator';
+import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
+import type { EntityRefBus, KnowledgeGraph, MemoryStore } from '@omadia/plugin-api';
+
+import {
+  buildOrchestratorForAgent,
+  type OrchestratorDeps,
+} from '../../packages/harness-orchestrator/src/buildOrchestrator.js';
+
+import { agentDeps, fakeNativeToolRegistry } from './orchestratorActivateFixture.js';
 
 /**
  * OM-104 — the turn budget's precedence: an operator setting beats the
@@ -45,11 +54,36 @@ describe('OM-104 — CLI turn budget precedence', () => {
     }
   });
 
-  it('converts the configured seconds to the milliseconds the agent takes', () => {
-    // Mirrors the conversion in `buildOrchestrator.ts`; kept here so a change
-    // to the unit on either side breaks a test rather than a live turn.
-    const cliTurnSeconds = 240;
-    assert.equal(Math.trunc(cliTurnSeconds * 1000), 240_000);
-    assert.equal(resolveCliSpawnTimeoutMs(240_000, {}), 240_000);
+  it('the budget the production build installs wins over the environment', () => {
+    // #1077 — this case used to recompute `Math.trunc(s * 1000)` itself, so a
+    // unit change in `buildOrchestrator.ts` left it green. It now reads the
+    // value the real construction path installs on the CliChatAgent and feeds
+    // exactly that into the resolver the agent calls at spawn time.
+    const deps: OrchestratorDeps = {
+      provider: { id: 'claude-cli' } as unknown as OrchestratorDeps['provider'],
+      knowledgeGraph: {} as KnowledgeGraph,
+      memoryStore: {} as MemoryStore,
+      entityRefBus: {} as EntityRefBus,
+      nativeToolRegistry: fakeNativeToolRegistry(),
+      nudgeRegistry: new InMemoryNudgeRegistry(),
+      responseGuard: () => undefined,
+      privacyGuard: () => undefined,
+    };
+    const built = buildOrchestratorForAgent(
+      {
+        agentId: 'cli',
+        model: 'opus-cli',
+        maxTokens: 100,
+        maxToolIterations: 4,
+        cliTurnSeconds: 240,
+      },
+      deps,
+    );
+    const installed = agentDeps(built.bundle.agent)?.['spawnTimeoutMs'];
+    assert.equal(installed, 240_000);
+    assert.equal(
+      resolveCliSpawnTimeoutMs(installed as number, { [CLI_SPAWN_TIMEOUT_ENV_KEY]: '90000' }),
+      240_000,
+    );
   });
 });

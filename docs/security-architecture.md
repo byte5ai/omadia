@@ -191,7 +191,13 @@ working across it:
 - **Foreign tool marking.** `StreamJsonParser` sets `foreign: true` on every
   `tool_use` event whose name is not `mcp__omadia__*`. The built-ins are
   removed at spawn time; if one ever surfaces anyway it can never read like an
-  omadia tool in the trace.
+  omadia tool in the trace. CLI sub-agents (`createCliSubAgent`: the builder
+  and its preview chat, #1072) never forward such a call to their
+  `AskObserver`, because the builder trace cannot mark it; they count it via
+  `recordForeignToolCall` (`builder` / `builder-preview`) or, with no counter
+  wired, log `[security] FOREIGN`. Their `AskOptions` only shape the text of
+  the one post-turn re-prompt and never reach the spawn argv, so they cannot
+  widen the gate.
 - **Turn context across the process hop (#993).** A tool call on this path
   arrives as an HTTP request from the external process, in a fresh async
   context, so `AsyncLocalStorage` values the channel set around `chat()`
@@ -599,6 +605,12 @@ passthrough writes no receipt entry. The shape classifier has **no**
 control-flow exemption — verbs re-classify derived datasets, so one would turn
 `filter` + `select` into a cleartext channel — and `ToolDispatchService`
 still masks a thrown exception's message even when it starts with `Error:`.
+
+### 6d. `agents.privacy_profile` is not a Privacy Shield control (#978)
+
+`agents.privacy_profile` (`'strict' | 'default'`, CHECK since migration `0001`) is written by the operator API (`POST` / `PATCH /api/v1/operator/agents`) and `scripts/agents-apply.ts`, and reported by `GET /api/v1/operator/agents`, `GET /api/v1/operator/agents/enabled`, `POST /api/v1/operator/agents/resolve-channel` and the Agent Builder graph (`agentNode()` in `routes/agentBuilder.ts`; contract field `AgentNode.privacyProfile` in `@omadia/plugin-api`). No runtime path reads it: `AgentRuntimeConfig` has no posture field, `buildForAgent` does not forward the value, and nothing branches on `'strict'`. What masks a turn is the `privacy.redact@1` provider, reached through the late-bound `OrchestratorDeps.privacyGuard` lookup that the registry passes unchanged into every agent's build, plus the tool-name-only exemptions in `privacyInternPolicy.ts`; neither receives the agent's profile. `strict` therefore behaves exactly like `default`, including for the first-boot fallback agent that `registry/onboarding.ts` seeds as `strict`: a `strict` value in the table, the API or the UI is not evidence that an agent's traffic is masked.
+
+Since #978 a change to the value is a metadata `update` (registry row refreshed, live orchestrator kept), not a `rebuild`; the web UI no longer offers a toggle and labels the value "(not enforced)"; migration `0061` records the status as a column comment. Making `strict` enforce anything is a security decision that must update this section: the posture has to reach `AgentRuntimeConfig`, survive the sub-agent boundary (`turnContext.privacyHandle` in `localSubAgent.ts` / `toolDispatchService.ts`), go back into `runtimeChangeReasons` in `applyDiff.ts`, and it changes behaviour for the seeded fallback agent without operator action (open decision: `docs/middleware-agent-handoff.md` §13).
 
 ## 7. Conductor generic webhooks (#437)
 

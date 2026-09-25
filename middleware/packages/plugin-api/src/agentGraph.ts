@@ -85,6 +85,12 @@ export interface AgentNode {
   readonly slug: string;
   readonly name: string;
   readonly description: string | null;
+  /**
+   * Reserved, not enforced (#978). Persisted and reported, but no runtime path
+   * reads it: `'strict'` currently behaves exactly like `'default'`, and a
+   * change does not rebuild the agent. Kept for API stability while the
+   * product decision on what `'strict'` should enforce is open.
+   */
   readonly privacyProfile: 'strict' | 'default';
   readonly status: 'enabled' | 'disabled';
   readonly modelRouting: ModelRoutingConfig | null;

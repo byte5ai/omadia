@@ -55,6 +55,119 @@ of 8+ characters), filters caller headers against a static allow-list and
 audits the dropped names, and maps failures to sanitized `upstream-timeout` /
 `upstream-unreachable` denials. `dispatch-failed`, which had no call site, is
 replaced by those two reasons. See `docs/security-architecture.md` §10c.
+### Changed — direct tests for the Runde-5 code paths (#1077)
+
+2026-09-24 — the Runde-5 cross-vendor audit listed 14 changed production paths
+that CI only exercised through substitute factories, mocked APIs or logic the
+test recomputed itself, so a regression in any of them would have passed. This
+change pins 12 of the 14 with a test that calls (or renders) the real path; the
+other two, the `BuilderAgent` and `PreviewChatService` subscription-CLI
+factories, are covered by the separate #1072 change and stay open on #1077 until
+it lands. The new tests were mutation-checked: breaking the production line
+they cover turns them red.
+
+- Middleware: the `cli_turn_seconds` → `spawnTimeoutMs` hop in
+  `buildOrchestratorForAgent`, the orchestrator plugin's real `activate()`
+  (default Agent and, against Postgres, the registry runtime defaults),
+  `getUsageDashboard` over a real `token_usage` table, the `claude-cli`
+  completion adapter against a fake `claude` binary (version gate, exit/parse
+  errors, ledger row, forced tool), and the orchestrator-extras `activate()`:
+  provider resolution, `memoryFeatureStatus@1`, and the model coercion that
+  turns the Anthropic default or an operator-typed model into the provider's
+  same-class model (checked against the shipped model catalog). A shared
+  `test/_helpers/fakePluginContext.ts` backs the two `activate()` suites.
+- Web UI: `TurnBudgetField`, the usage page's subscription block, the
+  missing-LLM-access branch of both builder chat panes, the dashboard's
+  last-turn card, the root `loading.tsx` boundary and the
+  `reactivateEmbeddingProvider` request wrapper.
+- CI: `PG_TEST_FLOOR` 281 → 365 (main measured 359, plus 6 new Postgres tests).
+
+Tests only; no production code changed. Writing the tests surfaced two
+pre-existing defects that are deliberately not fixed here; both are recorded as
+#1077 follow-ups in `docs/middleware-agent-handoff.md` §13:
+
+- `registry/applyDiff.ts` `buildForAgent` forwards the loop guards,
+  `maxTurnSeconds` and `directLineSticky` from the registry runtime defaults,
+  but not `cliTurnSeconds`. Every Agent the registry builds ignores the turn
+  budget, and with a database the web chat runs on the registry's fallback
+  Agent, so on those deployments the OM-104 setting has no effect.
+- `TurnBudgetField` keeps Save enabled after a failed load; saving then sends
+  `null` and wipes the stored budget while the field reads "Saved". It also
+  stores a fractional entry such as `240.5` verbatim, and shows raw exception
+  text instead of a catalog message.
+
+### Fixed — plugin-office/web-search Hub drift: lost setup guide restored, versions bumped, build-zip + drift guards (#1075)
+
+2026-09-24 — the Hub served `@omadia/plugin-office` 0.1.2, a version no commit
+ever carried, while the repo sat on 0.1.1 with months of newer content (#656,
+#1020, #1118, #1120) and no bump. Diffing the Hub ZIPs showed `dist/` in 0.1.2
+byte-identical to 0.1.1: the whole +826 B was a `setup.guide` (en + de) that was
+written, bumped and published from a working tree nobody committed.
+`@omadia/plugin-web-search` 0.1.0 on the Hub likewise predated #477 and #1020
+without a bump. Neither package had a way to build its own release artifact.
+
+The office guide is restored verbatim from the 0.1.2 ZIP. `plugin-office` goes
+to **0.1.3** (0.1.2 is never reused) and `plugin-web-search` to **0.1.1**, each
+in `manifest.yaml`, `package.json` and the lockfile workspace entry. New
+`middleware/scripts/build-plugin-zip.mjs`, wired as `npm run package` in both
+packages, is the only way to cut their ZIPs. It hard-fails on manifest vs.
+`package.json` version or id drift, on any uncommitted, untracked or gitignored
+non-build file under the package (the actual root cause), on a HEAD no
+remote-tracking ref contains (unless `--allow-unpushed-commit`, which marks the
+output not publishable), on a `lifecycle.entry` that is missing after a fresh
+build or absent from the archive, and on symlinks under `dist/`. It writes a
+flat, byte-reproducible ZIP to `<repo>/out/` with `yazl` and prints the commit
+SHA and sha256. `test/pluginPackageVersions.test.ts` holds manifest,
+`package.json` and lockfile versions equal for every in-tree package with a
+`manifest.yaml`, so a manifest/`package.json`/lockfile disagreement fails CI.
+It does not catch the other #1075 drift classes — a Hub version the repo never
+had, or content changing without a bump. Publishing the two new versions is an
+operator step after merge (docs/creating-plugins.md §8); publishing web-search
+0.1.1 puts a dead "update available" badge on kernels that installed 0.1.0,
+because store update detection does not skip bundled IDs.
+
+### Fixed — `agents.privacy_profile` no longer rebuilds live agents; declared inert (#978)
+
+2026-09-24 — `agents.privacy_profile` (`'strict' | 'default'`, since migration
+`0001`) was written by the operator API, returned by `GET /operator/agents`,
+shown in the web UI, and treated by the registry diff as a *rebuild* reason:
+every flip threw away the agent's live `Orchestrator` and rolled all of its
+sessions. No runtime path read the value, though. `AgentRuntimeConfig` has no
+posture field and nothing branches on `'strict'`, so the rebuild changed
+nothing an operator could observe except the dropped sessions. The column is
+now declared **reserved, not enforced**. What `strict` should mean is an open
+product decision (see `docs/middleware-agent-handoff.md` §13); enforcing it
+now would silently switch masking on for the seeded fallback agent, which is
+`strict`. So `applyDiff.ts` no longer lists `privacy_profile` as a rebuild
+reason. A privacy-only edit becomes a metadata `update` that refreshes the
+registry row, so `/operator/agents/resolve-channel` keeps reporting the current
+value, and the running orchestrator stays in place. The column, the API field
+and `AgentNode.privacyProfile` in `@omadia/plugin-api` (JSDoc only, 1.19.1)
+are unchanged. In the web UI, the "Toggle privacy" button and the create-form
+privacy select are gone, the canvas agent node no longer shows a bare
+`strict`/`default` pill, and the card and detail summaries show the value as
+"(not enforced)" / "(nicht wirksam)". **Migration `0061_agent_privacy_profile_reserved`**
+records this status on the column: it is a comment-only `COMMENT ON COLUMN
+agents.privacy_profile` and makes no data or constraint change.
+
+### Fixed — builder live view and fill_slot obligation on the subscription path (#1072)
+
+2026-09-24 — on the Claude subscription-CLI provider the plugin builder and its
+preview chat ran through `createCliSubAgent`, whose `ask()` dropped the
+`AskObserver` and took no `AskOptions`. The builder UI got no `tool_use` /
+`tool_result` / token / usage events (the live view sat on the heartbeat), and
+`expectedTurnToolUse: 'fill_slot'` for a build-intent turn had no effect.
+
+`CliChatAgent.chat(input, hooks?)` now hands every lifecycle event and the
+terminal usage to the caller while still throwing on a terminal `is_error`
+result, and a new `CliObserverBridge` maps those events onto the observer:
+omadia tool calls with the `mcp__omadia__` prefix stripped, per-iteration token
+chunks (chars/4), phases, iteration boundaries after tool results, and one
+aggregate usage per CLI spawn. Foreign (non-omadia) tool calls are never
+forwarded; builder and preview count them via `recordForeignToolCall`. Because
+the CLI has no `tool_choice`, `expectedTurnToolUse` is enforced by a post-turn
+check with exactly one re-prompt; a failing re-prompt fails the ask, as on the
+API path.
 
 ### Fixed — filtered turns are counted, and the run-ingest hint no longer blames the User-Cluster (#1082)
 
