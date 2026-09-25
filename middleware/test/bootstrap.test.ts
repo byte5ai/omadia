@@ -1285,7 +1285,7 @@ describe('onPluginRemoved — bootstrap auto-removals report the removed id (#10
     const removed: string[] = [];
     await bootstrapKnowledgeGraphFromEnv(deps(reg, { GRAPH_TENANT_ID: 'default' }, removed));
     assert.equal(reg.get(KG_LEGACY), undefined);
-    assert.ok(removed.includes(KG_LEGACY), `expected ${KG_LEGACY} in ${JSON.stringify(removed)}`);
+    assert.deepEqual(removed, [KG_LEGACY]);
   });
 
   it('KG dual-active conflict reports the dropped sibling', async () => {

@@ -1562,6 +1562,7 @@ async function main(): Promise<void> {
   const pendingBindingPurge = createPendingBindingPurge({
     getStore: agentPluginBindingStore,
     hasDatabase: Boolean(config.DATABASE_URL),
+    isInstalled: (pluginId) => installedRegistry.has(pluginId),
   });
 
   const installService = new InstallService({

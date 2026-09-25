@@ -53,8 +53,10 @@ gets its store only after `/setup`. A failed DELETE is logged with
 `console.error` and the plugin id; a still-missing store is a `console.warn`
 listing the ids on a Postgres host and an info line without `DATABASE_URL`.
 The queue is kept in both cases, because the KG can publish a `graphPool` from
-a vault-stored DSN without `DATABASE_URL`. A throwing hook is logged and never
-aborts boot. Residual: the queue lives in memory only, so ids still pending
+a vault-stored DSN without `DATABASE_URL`. An id that is installed again by
+flush time (operator reinstall while the store was still missing) is dropped
+without a purge, so bindings granted after the reinstall are never deleted. A
+throwing hook is logged and never aborts boot. Residual: the queue lives in memory only, so ids still pending
 when the process exits (Postgres host whose orchestrator never activated in
 that lifetime) are not retried on the next boot.
 

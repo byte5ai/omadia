@@ -33,6 +33,7 @@ describe('createPendingBindingPurge (#1070)', () => {
     const queue = createPendingBindingPurge({
       getStore: () => undefined,
       hasDatabase: true,
+      isInstalled: () => false,
     });
     queue.enqueue('a');
     queue.enqueue('b');
@@ -54,6 +55,7 @@ describe('createPendingBindingPurge (#1070)', () => {
     const queue = createPendingBindingPurge({
       getStore: () => current,
       hasDatabase: true,
+      isInstalled: () => false,
     });
     queue.enqueue('a');
     queue.enqueue('b');
@@ -79,6 +81,7 @@ describe('createPendingBindingPurge (#1070)', () => {
     const queue = createPendingBindingPurge({
       getStore: () => current,
       hasDatabase: false,
+      isInstalled: () => false,
     });
     queue.enqueue('a');
 
@@ -104,6 +107,7 @@ describe('createPendingBindingPurge (#1070)', () => {
     const queue = createPendingBindingPurge({
       getStore: () => store,
       hasDatabase: true,
+      isInstalled: () => false,
     });
     queue.enqueue('a');
 
@@ -120,6 +124,7 @@ describe('createPendingBindingPurge (#1070)', () => {
     const queue = createPendingBindingPurge({
       getStore: () => store,
       hasDatabase: true,
+      isInstalled: () => false,
     });
     queue.enqueue('a');
     queue.enqueue('a');
@@ -139,6 +144,7 @@ describe('createPendingBindingPurge (#1070)', () => {
         return undefined;
       },
       hasDatabase: true,
+      isInstalled: () => false,
     });
 
     await queue.flush();
@@ -146,5 +152,35 @@ describe('createPendingBindingPurge (#1070)', () => {
     assert.equal(lookups, 0);
     assert.equal(warn.mock.callCount(), 0);
     assert.equal(log.mock.callCount(), 0);
+  });
+
+  it('never purges an id that was reinstalled before the store appeared', async (t) => {
+    t.mock.method(console, 'warn', () => {});
+    const log = t.mock.method(console, 'log', () => {});
+    const { store, calls } = recordingStore();
+    let current: AgentPluginBindingStore | undefined;
+    const installed = new Set<string>();
+    const queue = createPendingBindingPurge({
+      getStore: () => current,
+      hasDatabase: true,
+      isInstalled: (id) => installed.has(id),
+    });
+    queue.enqueue('reinstalled');
+    queue.enqueue('gone');
+    await queue.flush();
+
+    // The operator reinstalls one of them while the orchestrator store is
+    // still missing; the bindings it gets from here on are fresh consent.
+    installed.add('reinstalled');
+    current = store;
+    await queue.flush();
+
+    assert.deepEqual(calls, ['gone'], 'only the still-removed plugin is purged');
+    assert.deepEqual([...queue.pending()], [], 'a skipped id is not retried');
+    assert.ok(
+      log.mock.calls.some((c) =>
+        String(c.arguments[0]).includes('purge SKIPPED for reinstalled'),
+      ),
+    );
   });
 });

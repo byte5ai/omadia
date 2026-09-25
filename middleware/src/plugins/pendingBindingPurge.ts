@@ -20,7 +20,8 @@ import {
 export interface PendingBindingPurge {
   /** Queue a removed plugin id. Synchronous, never purges, never throws. */
   enqueue(pluginId: string): void;
-  /** Purge every queued id if the store exists; otherwise keep them and log.
+  /** Purge every queued id that is still uninstalled, if the store exists;
+   *  otherwise keep them and log.
    *  Never rejects: a failed DELETE is logged with the plugin id by
    *  `purgePluginAgentBindings`. */
   flush(): Promise<void>;
@@ -33,6 +34,11 @@ export interface PendingBindingPurgeDeps {
   /** Whether the host runs on Postgres (`DATABASE_URL`). Only picks the log
    *  level for a missing store: warn on a DB host, info without one. */
   hasDatabase: boolean;
+  /** Whether the plugin is in the installed registry NOW. A queued id that is
+   *  back by flush time (operator reinstall, provider switch while the store
+   *  was still missing) is dropped unpurged: its bindings may be fresh
+   *  consent, and this queue may only ever touch plugins that are still gone. */
+  isInstalled: (pluginId: string) => boolean;
 }
 
 export function createPendingBindingPurge(
@@ -52,6 +58,12 @@ export function createPendingBindingPurge(
     const ids = [...queue];
     queue.clear();
     for (const id of ids) {
+      if (deps.isInstalled(id)) {
+        console.log(
+          `[bootstrap] agent-plugin binding purge SKIPPED for ${id} — reinstalled since bootstrap removed it; bindings kept`,
+        );
+        continue;
+      }
       await purgePluginAgentBindings(id, () => store);
     }
   };
