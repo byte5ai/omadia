@@ -291,6 +291,17 @@ export interface CliUsage {
 }
 
 /**
+ * #1072 — optional observers for {@link CliChatAgent.chat}. Both are
+ * fire-and-forget: a throwing hook is logged and swallowed.
+ */
+export interface CliChatHooks {
+  /** Every event the turn produces, in order (text, tool calls, `done`). */
+  onEvent?(event: ChatStreamEvent): void;
+  /** The CLI's terminal usage, once, after the turn succeeded. */
+  onUsage?(usage: CliUsage): void;
+}
+
+/**
  * OM-103 — one subscription turn, in the ledger's vocabulary.
  *
  * `recordUsage` is fire-and-forget and no-ops until a pool is wired, so this
@@ -821,7 +832,18 @@ export class CliChatAgent implements ChatAgent {
     return guard ? { runInTurnContext, assertTurnOwner: guard } : { runInTurnContext };
   }
 
-  public async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
+  /**
+   * Run one turn to completion and return its answer.
+   *
+   * #1072 — `hooks` lets a caller watch the turn without switching to
+   * `chatStream()`: every lifecycle event goes to `onEvent`, and the terminal
+   * usage goes to `onUsage` once the turn has succeeded. `chat()` keeps its
+   * error semantics — a terminal `is_error` result still throws, which
+   * `chatStream()` does not do — so `createCliSubAgent` builds its observer
+   * bridge on this method. A throwing hook is logged and ignored; it can never
+   * fail the turn.
+   */
+  public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
@@ -837,8 +859,29 @@ export class CliChatAgent implements ChatAgent {
         if (parser.isError()) {
           throw new Error(parser.errorMessage());
         }
+        if (hooks?.onUsage) {
+          const onUsage = hooks.onUsage;
+          const usage = parser.usage();
+          this.runHook('onUsage', () => onUsage(usage));
+        }
         return { text: parser.finalAnswer() };
       }
+      if (hooks?.onEvent) {
+        const onEvent = hooks.onEvent;
+        const event = step.value;
+        this.runHook('onEvent', () => onEvent(event));
+      }
+    }
+  }
+
+  private runHook(name: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('chat hook threw', {
+        hook: name,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
