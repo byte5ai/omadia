@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — header nav no longer overlaps at desktop-window widths (#1073)
+
+At the desktop shell's ~1100 px window the palette select covered HELP and the
+ADMIN trigger covered the "create issue" button. The header row and `<nav>`
+carried `min-w-0`, but every nav item is `whitespace-nowrap`, so only the nav's
+box shrank while its content spilled over the controls to its right. The row
+now fits by construction: below `xl` the palette and appearance selects
+collapse into one icon-triggered panel and the account badge shows initials
+only, and the wide nav spacing starts at `2xl` instead of `xl`. Every nav
+target stays reachable without overlap from 1024 px up; narrower desktop
+windows (880–1023 px) overflow at the right edge instead of overlapping.
+
 ### Fixed — bootstrap auto-removals purge agent bindings (#1070)
 
 2026-09-24 — the boot-time bootstrap removes a plugin on its own at four
