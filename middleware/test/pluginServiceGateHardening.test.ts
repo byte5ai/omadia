@@ -16,7 +16,7 @@
  *     plugin's object instead;
  *   - read `LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20[agentId]` directly
  *     instead of going through `legacyServiceGrantsFor` → §2's shadowing cases
- *     inherit all nineteen of `@omadia/orchestrator`'s grandfathered names;
+ *     inherit every one of `@omadia/orchestrator`'s grandfathered names;
  *   - delete the `isBundledId` branch in `PackageUploadService.ingest` → §3's
  *     upload lands.
  *
@@ -463,7 +463,7 @@ describe('#789 — the dated legacy allowlist is keyed by more than an id', () =
     );
   });
 
-  it('refuses every one of the nineteen names, not just graphPool', () => {
+  it('refuses every name in the orchestrator row, not just graphPool', () => {
     // A partial fix that closed only the capability named in the issue would
     // still hand over `tigrisStore`, `privacyRedact`, `processMemory`, …
     const catalog = catalogOf([pluginOf({ id: BUNDLED_ID })], {
@@ -472,7 +472,9 @@ describe('#789 — the dated legacy allowlist is keyed by more than an id', () =
     });
     const { ctx } = makeCtx(BUNDLED_ID, catalog);
     const row = BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20[BUNDLED_ID] ?? [];
-    assert.ok(row.length >= 19, 'fixture assumption: the orchestrator row is the big one');
+    // Nineteen at the 2026-08-20 audit; #1076 drained two (now declared in
+    // the manifest). Still by far the biggest row.
+    assert.ok(row.length >= 17, 'fixture assumption: the orchestrator row is the big one');
     for (const name of row) {
       assert.throws(
         () => ctx.services.get(name),

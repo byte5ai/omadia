@@ -64,6 +64,78 @@ function errorCode(err: unknown): string | null {
 }
 
 /**
+ * #1076 — the failures after which the assignment IS persisted: the server
+ * wrote the new provider/model, then a plugin inheriting it (extras) or the
+ * plugin itself did not come back up on it. `primaryApplied: false` on the
+ * envelope means the plugin itself is down.
+ */
+const DEPENDENT_REBUILD_FAILED = 'providers.dependent_rebuild_failed';
+const REBUILD_FAILED = 'providers.rebuild_failed';
+
+/**
+ * True when a failed assignment still landed. The row must then show the NEW
+ * provider: snapping the controlled select back to the old one would misstate
+ * what the server now holds, and would point the row's Retry at the old
+ * assignment.
+ */
+function isAssignmentPersisted(err: unknown): boolean {
+  const code = errorCode(err);
+  return code === DEPENDENT_REBUILD_FAILED || code === REBUILD_FAILED;
+}
+
+/** `primaryApplied` off the error envelope; `null` when absent. */
+function primaryApplied(err: unknown): boolean | null {
+  if (!(err instanceof ApiError)) return null;
+  try {
+    const parsed = JSON.parse(err.body) as { primaryApplied?: unknown };
+    return typeof parsed.primaryApplied === 'boolean' ? parsed.primaryApplied : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The code whose copy the row shows. A dependent failure whose plugin is down
+ * too gets the plugin-down copy: "only the background memory features" would
+ * understate an orchestrator that runs on nothing.
+ */
+function assignmentHelpCode(err: unknown): string | null {
+  const code = errorCode(err);
+  return code === DEPENDENT_REBUILD_FAILED && primaryApplied(err) === false
+    ? REBUILD_FAILED
+    : code;
+}
+
+/**
+ * The providers response with `pluginId`'s row moved to `provider` / `model`,
+ * mirroring what the server persisted.
+ */
+function withAssignment(
+  data: ProvidersResponse,
+  pluginId: string,
+  provider: string,
+  model: string,
+): ProvidersResponse {
+  return {
+    ...data,
+    assignments: data.assignments.map((a) => {
+      if (a.pluginId !== pluginId) return a;
+      // #1099 — mirror the server: a non-Anthropic assignment force-writes
+      // `orchestrator_model_routing: 'false'`
+      // (`LLM_PLUGINS[orchestrator].extraOnNonAnthropic` in
+      // pluginLlmReadiness.ts, applied by providerAssignment.ts). Keeping the
+      // old value would show routing ON after an Anthropic → other → Anthropic
+      // round-trip while it is off.
+      const routingReset =
+        provider !== 'anthropic' && a.modelRouting !== undefined
+          ? { modelRouting: 'false' }
+          : {};
+      return { ...a, provider, model, ...routingReset };
+    }),
+  };
+}
+
+/**
  * LLM provider admin (S4). Two concerns on one page:
  *  1. Providers — which LLM providers exist, whether a key is connected in the
  *     vault, and what models each serves. The API key is entered inline here
@@ -130,34 +202,20 @@ export function ProvidersPanel({
         delete n[pluginId];
         return n;
       });
-      try {
-        await assignProvider({ pluginId, provider, model });
+      const commitRow = (): void =>
         setState((prev) =>
           prev.kind === 'ready'
-            ? {
-                ...prev,
-                data: {
-                  ...prev.data,
-                  assignments: prev.data.assignments.map((a) => {
-                    if (a.pluginId !== pluginId) return a;
-                    // #1099 — mirror the server: a non-Anthropic assignment
-                    // force-writes `orchestrator_model_routing: 'false'`
-                    // (`LLM_PLUGINS[orchestrator].extraOnNonAnthropic` in
-                    // pluginLlmReadiness.ts, applied by providerAssignment.ts).
-                    // Keeping the old value would show routing ON after an
-                    // Anthropic → other → Anthropic round-trip while it is off.
-                    const routingReset =
-                      provider !== 'anthropic' && a.modelRouting !== undefined
-                        ? { modelRouting: 'false' }
-                        : {};
-                    return { ...a, provider, model, ...routingReset };
-                  }),
-                },
-              }
+            ? { ...prev, data: withAssignment(prev.data, pluginId, provider, model) }
             : prev,
         );
+      try {
+        await assignProvider({ pluginId, provider, model });
+        commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
+        // #1076 — the assignment landed; a rebuild failed. Show the row on
+        // the provider the server now holds, AND the error with its Retry.
+        if (isAssignmentPersisted(err)) commitRow();
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
         setErrors((e) => ({ ...e, [pluginId]: err }));
       }
@@ -966,7 +1024,25 @@ function AssignmentRow({
         </p>
       )}
       {error !== undefined && (
-        <ErrorHelp code={errorCode(error)} rawDetail={error} />
+        <ErrorHelp code={assignmentHelpCode(error)} rawDetail={error} />
+      )}
+      {/* #1076 — after a persisted-but-failed rebuild both selects already
+          hold the saved values (the row was committed), so re-picking them
+          fires no change event. Retry re-sends the same assignment; the
+          server then rebuilds the plugin and every dependent still errored. */}
+      {isAssignmentPersisted(error) && a.model !== null && (
+        <div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={status === 'saving'}
+            onClick={() => {
+              if (a.model !== null) onApply(a.pluginId, a.provider, a.model);
+            }}
+          >
+            {t('assignments.retryDependentRebuild')}
+          </Button>
+        </div>
       )}
     </div>
   );
